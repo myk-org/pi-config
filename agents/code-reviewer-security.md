@@ -37,7 +37,8 @@ You are a code review specialist focused on **bugs, logic errors, and security v
 ## Output Format
 
 For each finding:
-```
+
+```text
 [SEVERITY] file:line — Description
   Risk: What could go wrong
   Suggestion: How to fix

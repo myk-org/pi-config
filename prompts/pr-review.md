@@ -12,7 +12,7 @@ Execute this workflow step by step. Run bash commands directly — do NOT delega
 uv --version
 ```
 
-If not found, stop and tell the user to install from https://docs.astral.sh/uv/getting-started/installation/
+If not found, stop and tell the user to install from <https://docs.astral.sh/uv/getting-started/installation/>
 
 ### Step 1: Check myk-pi-tools
 
@@ -21,6 +21,7 @@ myk-pi-tools --version
 ```
 
 If not found, ask the user: "myk-pi-tools is required. Install with: `uv tool install myk-pi-tools`. Install now?"
+
 - Yes: Run `uv tool install myk-pi-tools`
 - No: Abort
 
@@ -77,6 +78,7 @@ Use the subagent tool to run ALL 3 review agents IN PARALLEL (using the `tasks` 
 Pass each agent the full diff content from Phase 1a and the guidelines from Phase 1b.
 
 After all 3 finish, merge and deduplicate findings:
+
 - Same file/line range + same issue type = duplicate → keep most actionable
 - Conflicting suggestions → priority: security > correctness > performance > style
 - Complementary findings (different issue types) → keep both
@@ -86,6 +88,7 @@ After all 3 finish, merge and deduplicate findings:
 Present findings grouped by severity (CRITICAL, WARNING, SUGGESTION), numbered.
 
 Ask the user which to post:
+
 - `all` = Post all findings
 - `none` = Skip posting
 - Specific numbers (e.g., `1,3,5`) = Post only those
@@ -99,6 +102,7 @@ mkdir -p /tmp/pi-work
 ```
 
 Write a JSON array to `/tmp/pi-work/pr-review-comments.json` with format:
+
 ```json
 [{"path": "file.py", "line": 42, "body": "Comment text"}]
 ```
@@ -112,6 +116,7 @@ myk-pi-tools pr post-comment <owner>/<repo> <pr_number> <head_sha> /tmp/pi-work/
 ## Phase 5: Summary
 
 Display final summary:
+
 - Number of findings by severity
 - Number of comments posted
 - PR URL for reference

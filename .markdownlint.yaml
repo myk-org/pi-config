@@ -1,0 +1,12 @@
+# Default state for all rules
+default: true
+
+# MD013/line-length - Line length
+MD013:
+  line_length: 180
+  code_blocks: false
+  tables: false
+
+# MD041/first-line-heading - Disabled because agent and prompt files
+# use YAML frontmatter; the body is a system prompt, not a document.
+MD041: false

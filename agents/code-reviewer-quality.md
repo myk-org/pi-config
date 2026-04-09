@@ -26,7 +26,8 @@ You are a code review specialist focused on **general code quality and maintaina
 ## Output Format
 
 For each finding:
-```
+
+```text
 [SEVERITY] file:line — Description
   Suggestion: What to change and why
 ```

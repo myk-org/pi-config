@@ -39,12 +39,14 @@ Use the `subagent` tool to delegate. Route by **intent**, not tool:
 ## Parallel Execution
 
 Before every response: can operations run in parallel?
+
 - **YES** → use `tasks` array in subagent tool
 - **NO** → prove dependency before sequencing
 
 ## Code Review Loop
 
 After ANY code change:
+
 1. Run 3 reviewers **in parallel**: `code-reviewer-quality`, `code-reviewer-guidelines`, `code-reviewer-security`
 2. Merge and deduplicate findings
 3. Fix issues → re-review until all approve
@@ -86,20 +88,34 @@ All temp files go to `/tmp/pi-work/` — never in the project directory.
 ## Python Execution with uv
 
 When running arbitrary Python files:
+
 - Use `uv run --with <package> script.py` for dependencies
 - NEVER use `uv run pip install`
 
 ## External Git Repos
 
 When exploring external repos, clone locally first:
+
 ```bash
 git clone --depth 1 https://github.com/org/repo.git /tmp/pi-work/repo
 ```
+
 Never use full clones. Clean up when done.
+
+## Docker / Dockerfile
+
+This repo includes a `Dockerfile` for running pi in a sandboxed container.
+
+**When adding a new feature that requires a new CLI tool or system dependency:**
+
+- ✅ Update the `Dockerfile` to install the new tool
+- ✅ Update the README Docker section if new mounts or env vars are needed
+- ❌ Never assume a tool exists in the container — check the Dockerfile
 
 ## Agent Bug Reporting
 
 If you discover a logic flaw or bug in an agent's instructions:
+
 1. Ask user: "I found a bug in [agent]. Create a GitHub issue?"
 2. If yes → delegate to `github-expert` to create issue on `myk-org/pi-config`
 3. Continue with original task (fix or workaround)

@@ -76,13 +76,13 @@ After updating, run `/reload` in pi or restart pi to pick up changes.
 
 Just describe your task — the orchestrator routes to the right specialist:
 
-```
+```text
 Add retry logic to the HTTP client in src/api.py
 ```
 
 ### Workflow prompts
 
-```
+```text
 /implement add Redis caching to the session store
 /scout-and-plan refactor auth to support OAuth
 /implement-and-review add input validation to API endpoints
@@ -90,7 +90,7 @@ Add retry logic to the HTTP client in src/api.py
 
 ### Slash commands
 
-```
+```text
 /pr-review 42
 /release --dry-run
 /review-local main
@@ -99,7 +99,7 @@ Add retry logic to the HTTP client in src/api.py
 
 ### Direct subagent usage
 
-```
+```text
 Use python-expert to fix the type errors in src/models.py
 Run scout and planner in a chain to analyze the auth module
 ```
@@ -137,6 +137,114 @@ Agent system prompt here.
 ```
 
 Use `agentScope: "both"` in the subagent tool to include project agents.
+
+## Docker (Sandboxed Execution)
+
+Run pi inside a disposable container for **filesystem isolation** — the agent can only access your mounted project directory and pi settings. Everything else on the host is protected.
+
+### Why?
+
+- **Safety** — Prevents accidental `rm -rf`, modifications outside the project, or unintended system changes
+- **Filesystem isolation** — pi can only read/write the mounted project directory
+- **Consistent tooling** — All required tools pre-installed in a single image
+- **Disposable** — Container is destroyed after each session (`--rm`)
+
+### Build the image
+
+> **Note:** The image is built for **linux/amd64** only. Go, kubectl, and oc binaries are x86_64. On ARM hosts, build with `--platform linux/amd64`.
+
+```bash
+git clone https://github.com/myk-org/pi-config.git
+cd pi-config
+
+# On x86_64 hosts:
+docker build -t pi-agent .
+
+# On ARM hosts (Apple Silicon, etc.):
+docker build --platform linux/amd64 -t pi-agent .
+```
+
+### Run
+
+```bash
+docker run --rm -it \
+  --network host \
+  -v "$PWD":/workspace:rw \
+  -v "$HOME/.pi":/home/node/.pi:rw \
+  -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
+  -v "$HOME/.ssh":/home/node/.ssh:ro \
+  -v "$HOME/.config/gh":/home/node/.config/gh:ro \
+  -w /workspace \
+  pi-agent
+```
+
+### Optional mounts
+
+| Mount | Purpose |
+|---|---|
+| `-v "$HOME/.exports":/home/node/.exports:ro` | Shell env vars (API keys, tokens) — sourced on startup |
+| `-v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro` | MCP server config for `mcpl` |
+| `-v "$HOME/.agents":/home/node/.agents:ro` | User-level skills (if not in the project) |
+
+### What's in the image
+
+| Tool | Purpose |
+|---|---|
+| `pi` | Coding agent |
+| `git` | Version control |
+| `gh` | GitHub CLI (PRs, issues) |
+| `uv` / `uvx` | Python execution (enforced by orchestrator) |
+| `go` | Go development and code review |
+| `mcpl` | MCP server access (search, Jenkins, etc.) |
+| `myk-pi-tools` | PR review, release, and other CLI utilities |
+| `prek` | Pre-commit hook runner |
+| `acpx` | Agent proxy for remote models |
+| `kubectl` / `oc` | Kubernetes and OpenShift CLI |
+| `jq` | JSON processing |
+| `curl` | HTTP requests |
+
+### What's protected
+
+**Filesystem isolation** — the container cannot access anything outside the mounted volumes:
+
+- ✅ `$PWD` (your project) — read/write
+- ✅ `~/.pi` (pi settings/sessions) — read/write
+- ✅ Git, GitHub, SSH config — read-only
+- ❌ Other directories on your host — not accessible
+- ❌ Other git repos — not accessible
+- ❌ System files — not accessible
+
+**Network** — `--network host` shares the host network stack,
+so the container can reach any service your host can (LAN, localhost).
+This is required for local MCP servers, LiteLLM proxy, etc.
+If your LLM provider is cloud-based and you don't use local MCPs,
+you can omit `--network host` for full network isolation.
+
+### Shell alias
+
+Add to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+alias pi-docker='docker run --rm -it \
+  --network host \
+  -v "$PWD":/workspace:rw \
+  -v "$HOME/.pi":/home/node/.pi:rw \
+  -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
+  -v "$HOME/.ssh":/home/node/.ssh:ro \
+  -v "$HOME/.config/gh":/home/node/.config/gh:ro \
+  -v "$HOME/.exports":/home/node/.exports:ro \
+  -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
+  -w /workspace \
+  pi-agent'
+```
+
+Then just run `pi-docker` from any project directory.
+
+> **Startup note:** The container runs as non-root user `node` (UID 1000).
+> `pi install` runs on each start.
+> A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
+> If pi misbehaves or the warning persists, verify network connectivity
+> and run `pi install git:github.com/myk-org/pi-config` manually.
 
 ## Prerequisites
 
