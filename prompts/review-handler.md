@@ -5,6 +5,8 @@ description: "Process ALL review sources (human, Qodo, CodeRabbit) from current 
 Execute this workflow step by step. Run bash commands directly for CLI operations.
 Delegate code fixes to the appropriate specialist subagent.
 
+If `--autorabbit` mode: [PUSH_APPROVED]
+
 ## Prerequisites Check (MANDATORY)
 
 ### Step 0: Check uv

@@ -266,6 +266,17 @@ const SubagentParams = Type.Object({
 
 export default function (pi: ExtensionAPI) {
 
+	// ── Push approval state ─────────────────────────────────────────────
+	// Prompt templates can allow auto-push by including the marker:
+	//   [PUSH_APPROVED]
+	// Currently used by: /release, /review-handler --autorabbit
+
+	let pushApproved = false;
+
+	pi.on("before_agent_start", async (event) => {
+		pushApproved = event.prompt.includes("[PUSH_APPROVED]");
+	});
+
 	// ── Subagent tool ──────────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -533,12 +544,14 @@ export default function (pi: ExtensionAPI) {
 					if (pr.merged) return { block: true, reason: `⛔ PR #${pr.info} for '${branch}' already merged. Create a new branch.` };
 					if (mainBranch && isBranchMerged(branch, mainBranch, ctx.cwd)) return { block: true, reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.` };
 				}
-				// Require user approval for all pushes
-				if (ctx.hasUI) {
-					const ok = await ctx.ui.select(`🔀 Push to '${branch || "remote"}'?\n\n  ${command}\n\nApprove?`, ["Yes", "No"]);
-					if (ok !== "Yes") return { block: true, reason: "Push cancelled by user" };
-				} else {
-					return { block: true, reason: "⛔ git push requires user approval (no UI available)" };
+				// Require user approval for pushes (unless auto-approved by prompt template)
+				if (!pushApproved) {
+					if (ctx.hasUI) {
+						const ok = await ctx.ui.select(`🔀 Push to '${branch || "remote"}'?\n\n  ${command}\n\nApprove?`, ["Yes", "No"]);
+						if (ok !== "Yes") return { block: true, reason: "Push cancelled by user" };
+					} else {
+						return { block: true, reason: "⛔ git push requires user approval (no UI available)" };
+					}
 				}
 			}
 		}
