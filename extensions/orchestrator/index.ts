@@ -585,7 +585,34 @@ export default function (pi: ExtensionAPI) {
 	// ── Git branch status line ─────────────────────────────────────────────
 
 	const updateBranch = (_event: any, ctx: any) => {
-		try { const b = getCurrentBranch(ctx.cwd); if (b) ctx.ui.setStatus("git", `🌿 ${b}`); } catch {}
+		try {
+			const b = getCurrentBranch(ctx.cwd);
+			if (!b) return;
+
+			const status = runGit(["status", "--porcelain"], ctx.cwd);
+			let modified = 0, added = 0, deleted = 0, untracked = 0;
+			if (status.code === 0 && status.stdout) {
+				for (const line of status.stdout.split("\n")) {
+					if (!line.trim()) continue;
+					const xy = line.slice(0, 2);
+					if (xy.includes("?")) untracked++;
+					else if (xy.includes("D")) deleted++;
+					else if (xy.includes("A")) added++;
+					else if (xy.includes("M") || xy.includes("R") || xy.includes("C")) modified++;
+				}
+			}
+
+			const parts: string[] = [`🌿 ${b}`];
+			const changes: string[] = [];
+			if (modified > 0) changes.push(`~${modified}`);
+			if (added > 0) changes.push(`+${added}`);
+			if (deleted > 0) changes.push(`-${deleted}`);
+			if (untracked > 0) changes.push(`?${untracked}`);
+			if (changes.length > 0) parts.push(changes.join(" "));
+			else parts.push("✓");
+
+			ctx.ui.setStatus("git", parts.join(" "));
+		} catch {}
 	};
 	pi.on("session_start", updateBranch);
 	pi.on("agent_end", updateBranch);
