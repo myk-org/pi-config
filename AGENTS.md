@@ -105,6 +105,7 @@ Never use full clones. Clean up when done.
 ## Docker / Dockerfile
 
 This repo includes a `Dockerfile` for running pi in a sandboxed container.
+The image is published at `ghcr.io/myk-org/pi-config:latest`.
 
 **When adding a new feature that requires a new CLI tool or system dependency:**
 

@@ -149,19 +149,21 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 - **Consistent tooling** — All required tools pre-installed in a single image
 - **Disposable** — Container is destroyed after each session (`--rm`)
 
-### Build the image
+### Pre-built image
 
-> **Note:** The image is built for **linux/amd64** only. Go, kubectl, and oc binaries are x86_64. On ARM hosts, build with `--platform linux/amd64`.
+```bash
+docker pull ghcr.io/myk-org/pi-config:latest
+```
+
+### Build from source (optional)
+
+> **Note:** The image is built for **linux/amd64** only.
+> On ARM hosts, build with `--platform linux/amd64`.
 
 ```bash
 git clone https://github.com/myk-org/pi-config.git
 cd pi-config
-
-# On x86_64 hosts:
-docker build -t pi-agent .
-
-# On ARM hosts (Apple Silicon, etc.):
-docker build --platform linux/amd64 -t pi-agent .
+docker build -t ghcr.io/myk-org/pi-config:latest .
 ```
 
 ### Run
@@ -175,7 +177,7 @@ docker run --rm -it \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.config/gh:ro \
   -w /workspace \
-  pi-agent
+  ghcr.io/myk-org/pi-config:latest
 ```
 
 ### Optional mounts
@@ -235,7 +237,7 @@ alias pi-docker='docker run --rm -it \
   -v "$HOME/.exports":/home/node/.exports:ro \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
   -w /workspace \
-  pi-agent'
+  ghcr.io/myk-org/pi-config:latest'
 ```
 
 Then just run `pi-docker` from any project directory.
