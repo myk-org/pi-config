@@ -11,4 +11,4 @@ fi
 pi install git:github.com/myk-org/pi-config || \
     echo 'WARNING: pi install failed, starting pi without package' >&2
 
-exec pi --approve-all "$@"
+exec pi "$@"
