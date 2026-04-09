@@ -557,7 +557,8 @@ export default function (pi: ExtensionAPI) {
 			"- Tests → test-runner / test-automator subagent\n" +
 			"- Debugging → debugger subagent\n" +
 			"Route by INTENT not tool. Maximize parallel execution.\n" +
-			"After code changes: run 3 review subagents in parallel (code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security).\n";
+			"After code changes: run 3 review subagents in parallel (code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security).\n" +
+			"MCP servers available via mcpl CLI: mcpl search, mcpl list, mcpl call. Subagents can use mcpl directly.\n";
 		return { systemPrompt: event.systemPrompt + rules };
 	});
 
@@ -573,6 +574,41 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async () => {
 		try { execSync('notify-send "pi" "Task completed" 2>/dev/null || true', { timeout: 2000, stdio: ["pipe", "pipe", "pipe"] }); } catch {}
+	});
+
+	// ── Session start: validate required tools ───────────────────────────
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+
+		const missing: string[] = [];
+		const optional: string[] = [];
+
+		const hasCmd = (cmd: string): boolean => {
+			try { execSync(`command -v ${cmd}`, { timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }); return true; } catch { return false; }
+		};
+
+		// Critical
+		if (!hasCmd("uv")) missing.push("uv — Required for Python. Install: https://docs.astral.sh/uv/");
+
+		// Optional
+		if (!hasCmd("gh")) optional.push("gh — GitHub CLI. Install: https://cli.github.com/");
+		if (!hasCmd("mcpl")) optional.push("mcpl — MCP Launchpad. Install: https://github.com/kenneth-liao/mcp-launchpad");
+		if (!hasCmd("myk-pi-tools")) optional.push("myk-pi-tools — PR/release/review CLI. Install: uv tool install git+https://github.com/myk-org/pi-config");
+
+		// Check prek only if .pre-commit-config.yaml exists
+		try {
+			if (fs.existsSync(path.join(ctx.cwd, ".pre-commit-config.yaml")) && !hasCmd("prek")) {
+				optional.push("prek — pre-commit wrapper (.pre-commit-config.yaml detected). Install: https://github.com/j178/prek");
+			}
+		} catch {}
+
+		if (missing.length > 0 || optional.length > 0) {
+			const parts: string[] = [];
+			if (missing.length > 0) parts.push(`⚠️ CRITICAL missing:\n${missing.map(m => `  • ${m}`).join("\n")}`);
+			if (optional.length > 0) parts.push(`Optional missing:\n${optional.map(m => `  • ${m}`).join("\n")}`);
+			ctx.ui.notify(parts.join("\n\n"), missing.length > 0 ? "warning" : "info");
+		}
 	});
 
 }
