@@ -4,8 +4,6 @@ description: "Create a GitHub release with changelog — /release [--dry-run] [-
 
 Execute this workflow step by step. Run bash commands directly — do NOT delegate to subagents for CLI commands.
 
-[PUSH_APPROVED]
-
 ## Prerequisites Check (MANDATORY)
 
 ```bash
