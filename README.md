@@ -171,12 +171,12 @@ docker build -t ghcr.io/myk-org/pi-config:latest .
 ```bash
 docker run --rm -it \
   --network host \
-  -v "$PWD":/workspace:rw \
+  -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.config/gh:ro \
-  -w /workspace \
+  -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
 
@@ -230,14 +230,14 @@ Add to your `~/.bashrc` or `~/.zshrc`:
 alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   docker run --rm -it \
   --network host \
-  -v "$PWD":/workspace:rw \
+  -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.config/gh:ro \
   -v "$HOME/.exports":/home/node/.exports:ro \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
-  -w /workspace \
+  -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```
 
