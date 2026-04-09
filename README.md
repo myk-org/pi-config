@@ -227,7 +227,8 @@ you can omit `--network host` for full network isolation.
 Add to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias pi-docker='docker run --rm -it \
+alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
+  docker run --rm -it \
   --network host \
   -v "$PWD":/workspace:rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
