@@ -33,7 +33,8 @@ You are a code review specialist focused on **project guidelines and style adher
 ## Output Format
 
 For each finding:
-```
+
+```text
 [SEVERITY] file:line — Description
   Rule: Which guideline is violated
   Suggestion: How to fix

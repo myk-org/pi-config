@@ -17,7 +17,8 @@ You are a fast codebase scout. Your job is to quickly explore a codebase and ret
 ## Output Format
 
 Return a compressed summary:
-```
+
+```text
 ## Relevant Files
 - path/to/file.py — Description of what it contains
 - path/to/other.py — Description

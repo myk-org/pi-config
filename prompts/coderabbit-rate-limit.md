@@ -12,7 +12,7 @@ Execute this workflow step by step. Run bash commands directly.
 uv --version
 ```
 
-If not found, stop — install from https://docs.astral.sh/uv/getting-started/installation/
+If not found, stop — install from <https://docs.astral.sh/uv/getting-started/installation/>
 
 ### Step 1: Check myk-pi-tools
 
@@ -46,6 +46,7 @@ myk-pi-tools coderabbit check <owner/repo> <pr_number>
 ```
 
 Parse the JSON result:
+
 - If `rate_limited` is `false` — notify user "Not rate limited" and exit
 - If `rate_limited` is `true` — read `wait_seconds` and proceed to Phase 3
 
@@ -58,6 +59,7 @@ myk-pi-tools coderabbit trigger <owner/repo> <pr_number> --wait <wait_seconds + 
 ```
 
 This command will:
+
 1. Sleep for the specified wait duration
 2. Post `@coderabbitai review` to re-trigger the review
 3. Poll every 60s (max 10 min) until the review starts
@@ -65,5 +67,6 @@ This command will:
 ## Phase 4: Notify User
 
 Based on the exit code of the trigger command:
+
 - **Exit 0** — Report success: "CodeRabbit review started on PR #N"
 - **Exit 1** — Report the error message from stderr

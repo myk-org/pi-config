@@ -52,6 +52,7 @@ Merge and deduplicate findings from all 3 reviewers:
 - Complementary findings → keep both
 
 Display grouped by:
+
 - **Critical issues** (must fix)
 - **Warnings** (should fix)
 - **Suggestions** (nice to have)

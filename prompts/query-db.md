@@ -12,7 +12,7 @@ Execute this workflow step by step. Run bash commands directly.
 uv --version
 ```
 
-If not found, stop — install from https://docs.astral.sh/uv/getting-started/installation/
+If not found, stop — install from <https://docs.astral.sh/uv/getting-started/installation/>
 
 ### Step 1: Check myk-pi-tools
 
@@ -66,7 +66,8 @@ echo '[{"body": "Consider adding error handling", "path": "src/main.py"}]' | myk
 
 **reviews table:** id, pr_number, owner, repo, commit_sha, created_at
 
-**comments table:** id, review_id (FK), source (human/qodo/coderabbit), thread_id, node_id, comment_id, author, path, line, body, priority (HIGH/MEDIUM/LOW), status (pending/addressed/skipped/not_addressed), reply, skip_reason, posted_at, resolved_at
+**comments table:** id, review_id (FK), source (human/qodo/coderabbit), thread_id, node_id, comment_id, author, path, line, body,
+priority (HIGH/MEDIUM/LOW), status (pending/addressed/skipped/not_addressed), reply, skip_reason, posted_at, resolved_at
 
 **Constraints:** Only SELECT statements and CTEs are allowed. INSERT/UPDATE/DELETE/DROP are blocked.
 

@@ -15,7 +15,7 @@ If `--autorabbit` mode: [PUSH_APPROVED]
 uv --version
 ```
 
-If not found, stop — install from https://docs.astral.sh/uv/getting-started/installation/
+If not found, stop — install from <https://docs.astral.sh/uv/getting-started/installation/>
 
 ### Step 1: Check myk-pi-tools
 
@@ -35,6 +35,7 @@ Before calling ANY `myk-pi-tools` command, parse `{{args}}`:
 4. If NO: proceed normally
 
 **Example:** If `{{args}}` = `--autorabbit`, then:
+
 - autorabbit mode = ON
 - cleaned arguments = (empty)
 - CLI call = `myk-pi-tools reviews fetch` (NO `--autorabbit` flag)
@@ -58,6 +59,7 @@ myk-pi-tools reviews fetch
 ```
 
 Returns JSON with:
+
 - `metadata`: owner, repo, pr_number, json_path
 - `human`: Human review threads
 - `qodo`: Qodo AI review threads
@@ -65,22 +67,25 @@ Returns JSON with:
 
 ## Phase 2: User Decision Collection
 
-### AUTORABBIT MODE CHECK (do this FIRST):
+### AUTORABBIT MODE CHECK (do this FIRST)
 
 If autorabbit mode is ON:
+
 1. CodeRabbit comments → ALL auto-approved. Do NOT ask the user. Set every CodeRabbit item to "yes" automatically. Display the table for visibility only.
 2. Human/Qodo comments → follow the normal decision flow below.
 3. If there are ONLY CodeRabbit comments (no human, no Qodo) → skip this entire phase and go directly to Phase 3.
 
 **In autorabbit mode, the user is NEVER asked about CodeRabbit items.**
 
-### Normal mode:
+### Normal mode
 
 Present ALL fetched items to the user for decision. Never silently hide or omit items — including auto-skipped ones.
 
 **Presentation format (MANDATORY):**
 
-Present one table per source (human, qodo, coderabbit). Skip sources with zero items. Within each table, sort by priority (HIGH → MEDIUM → LOW). Use a global counter for the `#` column across all tables.
+Present one table per source (human, qodo, coderabbit). Skip sources with zero items.
+Within each table, sort by priority (HIGH → MEDIUM → LOW).
+Use a global counter for the `#` column across all tables.
 
 ```text
 ## Review Items: {source} ({total} total, {auto_skipped} auto-skipped)
@@ -106,7 +111,8 @@ Respond with:
 
 For each approved comment, delegate to the appropriate specialist subagent using the subagent tool.
 
-When delegating, pass the FULL original review thread — including the complete comment body, all replies, every code suggestion/diff, and all referenced locations. Do NOT summarize or compress the thread.
+When delegating, pass the FULL original review thread — including the complete comment body, all replies,
+every code suggestion/diff, and all referenced locations. Do NOT summarize or compress the thread.
 
 **When fixing review comments (MANDATORY):**
 
@@ -114,7 +120,9 @@ When delegating, pass the FULL original review thread — including the complete
 - Do NOT simplify, minimize, or "half-fix" the suggestion
 - After fixing, verify your code matches what the reviewer asked for
 - **NO SKIP WITHOUT USER APPROVAL:** If you disagree with a suggestion, ASK THE USER before skipping
-- **Read the ENTIRE review thread before acting.** Comments often contain multiple parts: a main issue description, code suggestions, AND additional references like "Also applies to: 663-668" or mentions of other files/lines. You MUST address ALL parts.
+- **Read the ENTIRE review thread before acting.** Comments often contain multiple parts: a main issue description,
+  code suggestions, AND additional references like "Also applies to: 663-668" or mentions of other files/lines.
+  You MUST address ALL parts.
 - **Multi-location fixes are MANDATORY.** When a comment says "Also applies to: X-Y" or references other lines/files, apply the same fix to each location.
 - **Post-fix verification checklist.** After fixing a comment, re-read the ORIGINAL review thread in full and verify:
   1. Every code suggestion or diff was implemented
@@ -146,7 +154,7 @@ Update each JSON entry with `status` and `reply` fields before posting.
 - User said **yes** but change was not implemented → `not_addressed`
 - User said **no** → `skipped` (include the user's skip reason in `reply`)
 - User said **all** → same as **yes** for each remaining comment
-- User said **skip <source>** → `skipped` for all remaining from that source
+- User said **skip `<source>`** → `skipped` for all remaining from that source
 - User said **skip ai** → `skipped` for all remaining AI sources
 
 ## Phase 6: Testing

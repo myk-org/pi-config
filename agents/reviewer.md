@@ -17,7 +17,8 @@ You are a code reviewer. Review code changes thoroughly.
 ## Output Format
 
 For each finding:
-```
+
+```text
 [SEVERITY] file:line — Description
   Suggestion: How to fix
 ```

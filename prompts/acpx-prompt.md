@@ -55,6 +55,7 @@ Parse `{{args}}` to extract:
 3. **Everything after flags** = prompt text
 
 **Validation:**
+
 - `--fix` and `--peer` are mutually exclusive → abort if both present
 - Multiple agents + `--fix` are mutually exclusive → abort if both
 - Duplicate flags → abort
@@ -85,6 +86,7 @@ git status --short
 
 If not a git repo: ask "Continue without git? No easy rollback."
 If dirty worktree: ask user:
+
 - **Commit first (Recommended)** — `git add -A && git commit -m "chore: checkpoint before acpx changes"`
 - **Continue anyway** — proceed, remember worktree was dirty
 - **Abort** — stop
@@ -98,11 +100,13 @@ Build the acpx command:
 **Model handling:** If agent spec includes `:model`, pass `--model <model>`.
 
 **Fix mode:**
+
 ```bash
 acpx --approve-all <agent> '<prompt> You have full permission to modify, create, and delete files as needed.'
 ```
 
 **Read-only (default):**
+
 ```bash
 acpx --approve-reads --non-interactive-permissions fail <agent> '<prompt> IMPORTANT: This is a read-only request. Do NOT modify any files. Report findings only.'
 ```
@@ -164,6 +168,7 @@ Original prompt: <user's prompt>
 ```
 
 Execute:
+
 ```bash
 acpx --approve-reads --non-interactive-permissions fail <agent> '<peer_framing_prompt>'
 ```
@@ -175,6 +180,7 @@ If ALL agents report no findings, skip to Step 9e.
 ### 9b: Act on Findings
 
 For each finding:
+
 1. **If agree** — Fix by delegating to the appropriate specialist subagent
 2. **If disagree** — Prepare technical counter-argument with specific reasoning
 

@@ -34,6 +34,7 @@ echo -e "Your commit title\n\nYour commit body" | git commit -F -
 ```
 
 Format rules:
+
 - First line: Clear, concise title (50 chars or less)
 - Blank line separator
 - Body: Detailed explanation if needed
@@ -42,12 +43,14 @@ Format rules:
 ## Standard Workflows
 
 **Commit changes:**
+
 1. `git status` to see changes
 2. `git add <specific files>` for each file (NEVER `git add .`)
 3. Commit with proper format
 4. Report the result
 
 **Create branch and push:**
+
 1. `git checkout -b branch-name`
 2. Verify changes committed
 3. Ask orchestrator: "Have all tests passed?"
