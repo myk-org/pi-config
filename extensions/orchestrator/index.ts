@@ -487,10 +487,10 @@ export default function (pi: ExtensionAPI) {
 		const command = event.input.command;
 		const cmdLower = command.trim().toLowerCase();
 
-		// Block direct python/pip
+		// Block direct python/pip — check at start or after pipe/semicolon/&& operators
 		if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
-			if (["python ", "python3 ", "pip ", "pip3 "].some((f) => cmdLower.startsWith(f))) {
-				return { block: true, reason: "Direct python/pip forbidden. Use: uv run script.py / uvx tool / uv add pkg" };
+			if (/(?:^|[|;&]\s*)(?:python3?|pip3?)\b/.test(cmdLower)) {
+				return { block: true, reason: "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg" };
 			}
 		}
 
