@@ -47,10 +47,14 @@ RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 USER node
 ENV PATH="/home/node/.local/bin:$PATH"
+
+# Install uv tools
 RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
     uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git" && \
     uv tool install prek
 
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
 WORKDIR /workspace
 
-ENTRYPOINT ["bash", "-c", "[ -f ~/.exports ] && source ~/.exports; pi install git:github.com/myk-org/pi-config || echo 'WARNING: pi install failed, starting pi without package' >&2; exec pi \"$@\"", "--"]
+ENTRYPOINT ["entrypoint.sh"]
