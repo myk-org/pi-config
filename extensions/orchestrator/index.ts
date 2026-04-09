@@ -525,13 +525,20 @@ export default function (pi: ExtensionAPI) {
 				if (mainBranch && isBranchMerged(branch, mainBranch, ctx.cwd)) return { block: true, reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.` };
 			}
 
-			// Block pushes to protected branches
+			// Block pushes to protected branches + require user approval for all pushes
 			if (hasGitSub(command, "push")) {
 				if (branch === "main" || branch === "master") return { block: true, reason: `⛔ Cannot push to '${branch}'. Create a feature branch.` };
 				if (branch) {
 					const pr = getPrMergeStatus(branch, ctx.cwd);
 					if (pr.merged) return { block: true, reason: `⛔ PR #${pr.info} for '${branch}' already merged. Create a new branch.` };
 					if (mainBranch && isBranchMerged(branch, mainBranch, ctx.cwd)) return { block: true, reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.` };
+				}
+				// Require user approval for all pushes
+				if (ctx.hasUI) {
+					const ok = await ctx.ui.select(`🔀 Push to '${branch || "remote"}'?\n\n  ${command}\n\nApprove?`, ["Yes", "No"]);
+					if (ok !== "Yes") return { block: true, reason: "Push cancelled by user" };
+				} else {
+					return { block: true, reason: "⛔ git push requires user approval (no UI available)" };
 				}
 			}
 		}
