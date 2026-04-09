@@ -53,4 +53,4 @@ RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com
 
 WORKDIR /workspace
 
-ENTRYPOINT ["bash", "-c", "[ -f ~/.exports ] && source ~/.exports; pi install git:github.com/myk-org/pi-config || echo 'WARNING: pi install failed, starting pi without package' >&2; exec pi \"$@\"", "--"]
+ENTRYPOINT ["bash", "-c", "[ -f ~/.exports ] && source ~/.exports; pi install git:github.com/myk-org/pi-config || echo 'WARNING: pi install failed, starting pi without package' >&2; exec pi --approve-all \"$@\"", "--"]
