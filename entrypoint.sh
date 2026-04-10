@@ -1,14 +1,6 @@
 #!/bin/bash
 set -e
 
-# Point agent-browser at Playwright's Chromium
-if [ -z "$AGENT_BROWSER_EXECUTABLE_PATH" ] && [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
-    CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name chrome -type f -path "*/chrome-linux/*" 2>/dev/null | head -1)
-    if [ -n "$CHROME_BIN" ]; then
-        export AGENT_BROWSER_EXECUTABLE_PATH="$CHROME_BIN"
-    fi
-fi
-
 # Install or update packages
 PI_PKG_DIR="$HOME/.pi/agent/git/github.com"
 
