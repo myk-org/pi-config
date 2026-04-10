@@ -171,6 +171,9 @@ docker build -t ghcr.io/myk-org/pi-config:latest .
 ```bash
 docker run --rm -it \
   --network host \
+  --security-opt seccomp=unconfined \
+  --shm-size=2g \
+  --env-file /path/to/.env \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
@@ -180,22 +183,39 @@ docker run --rm -it \
   ghcr.io/myk-org/pi-config:latest
 ```
 
+### Environment file
+
+Create a `.env` file with container-specific variables:
+
+```env
+# Google Cloud / Vertex AI
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/node/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_REGION=us-east5
+
+# GitHub
+GITHUB_TOKEN=ghp_xxx
+GITHUB_API_TOKEN=ghp_xxx
+
+# Gemini (optional)
+GEMINI_API_KEY=xxx
+
+# acpx agents (optional)
+# ACPX_AGENTS=cursor
+```
+
+Pass via `--env-file /path/to/.env` in the docker run command.
+
 ### Optional mounts
 
 | Mount | Purpose |
 |---|---|
-| `-v "$HOME/.exports":/home/node/.exports:ro` | Shell env vars (API keys, tokens) — sourced on startup |
+| `-v "$HOME/.exports":/home/node/.exports:ro` | Shell env vars (sourced on startup, `.env` takes priority for container paths) |
 | `-v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro` | MCP server config for `mcpl` |
 | `-v "$HOME/.agents":/home/node/.agents:ro` | User-level skills (if not in the project) |
-| `-v "$HOME/.config/gcloud":/home/node/.config/gcloud:rw` | Google Cloud credentials (for Claude via Vertex AI, needs rw for token refresh) |
-
-### Optional environment variables
-
-| Variable | Purpose |
-|---|---|
-| `ACPX_AGENTS` | Comma-separated list of acpx agents to register as model providers (e.g., `cursor,claude,gemini`) |
-| `GOOGLE_CLOUD_PROJECT` | GCP project ID for Vertex AI (Claude and Gemini models) |
-| `GOOGLE_CLOUD_LOCATION` | GCP region (e.g., `us-east5`, `global`) |
+| `-v "$HOME/.config/gcloud":/home/node/.config/gcloud:ro` | Google Cloud credentials (for Claude via Vertex AI) |
 
 ### What's in the image
 
@@ -211,6 +231,7 @@ docker run --rm -it \
 | `prek` | Pre-commit hook runner |
 | `acpx` | Agent proxy for remote models |
 | `kubectl` / `oc` | Kubernetes and OpenShift CLI |
+| `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
 | `gcloud` | Google Cloud CLI (Vertex AI authentication) |
 | `jq` | JSON processing |
 | `curl` | HTTP requests |
@@ -240,21 +261,21 @@ Add to your `~/.bashrc` or `~/.zshrc`:
 alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   docker run --rm -it \
   --network host \
+  --security-opt seccomp=unconfined \
+  --shm-size=2g \
+  --env-file "$HOME/.pi/.env" \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.config/gh:ro \
-  -v "$HOME/.exports":/home/node/.exports:ro \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
-  -v "$HOME/.config/gcloud":/home/node/.config/gcloud:rw \
-  -e ACPX_AGENTS \
+  -v "$HOME/.config/gcloud":/home/node/.config/gcloud:ro \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```
 
 Then just run `pi-docker` from any project directory.
-To enable acpx model providers: `ACPX_AGENTS=cursor pi-docker`.
 
 > **Startup note:** The container runs as non-root user `node` (UID 1000).
 > `pi install` runs on each start.
