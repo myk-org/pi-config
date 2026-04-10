@@ -731,17 +731,19 @@ export default function (pi: ExtensionAPI) {
 			if (added > 0) changes.push(`+${added}`);
 			if (deleted > 0) changes.push(`-${deleted}`);
 			if (untracked > 0) changes.push(`?${untracked}`);
-			ctx.ui.setStatus("git", changes.length > 0 ? `git-status: ${changes.join(" ")}` : "git-status: ✓");
+			const sep = IN_CONTAINER ? "| " : "";
+			ctx.ui.setStatus("git", changes.length > 0 ? `${sep}git-status: ${changes.join(" ")}` : `${sep}git-status: ✓`);
 		} catch {}
 	};
 	pi.on("session_start", updateBranch);
 	pi.on("agent_end", updateBranch);
+	pi.on("turn_end", updateBranch);
 
 	// ── Container indicator in status line ─────────────────────────────────
 
 	if (IN_CONTAINER) {
 		pi.on("session_start", (_event, ctx) => {
-			ctx.ui.setStatus("container", "📦 run in container");
+			ctx.ui.setStatus("container", "📦 container");
 		});
 	}
 
