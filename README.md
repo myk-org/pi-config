@@ -178,7 +178,8 @@ docker run --rm -it \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
-  -v "$HOME/.config/gh":/home/node/.config/gh:ro \
+  -v "$HOME/.config/gh":/home/node/.gh-config:ro \
+  -e GH_CONFIG_DIR=/home/node/.gh-config \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
@@ -191,7 +192,7 @@ Create a `.env` file with container-specific variables:
 # Google Cloud / Vertex AI
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/node/.config/gcloud/application_default_credentials.json
+GOOGLE_APPLICATION_CREDENTIALS=/home/node/.gcloud-adc.json
 VERTEX_PROJECT_ID=your-project-id
 VERTEX_REGION=us-east5
 
@@ -212,10 +213,10 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 
 | Mount | Purpose |
 |---|---|
-| `-v "$HOME/.exports":/home/node/.exports:ro` | Shell env vars (sourced on startup, `.env` takes priority for container paths) |
 | `-v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro` | MCP server config for `mcpl` |
 | `-v "$HOME/.agents":/home/node/.agents:ro` | User-level skills (if not in the project) |
-| `-v "$HOME/.config/gcloud":/home/node/.config/gcloud:ro` | Google Cloud credentials (for Claude via Vertex AI) |
+| `-v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro` | Google Cloud ADC (for Claude via Vertex AI) |
+| `-v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro` | Cursor CLI auth (for acpx cursor models) |
 
 ### What's in the image
 
@@ -268,9 +269,11 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
-  -v "$HOME/.config/gh":/home/node/.config/gh:ro \
+  -v "$HOME/.config/gh":/home/node/.gh-config:ro \
+  -e GH_CONFIG_DIR=/home/node/.gh-config \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
-  -v "$HOME/.config/gcloud":/home/node/.config/gcloud:ro \
+  -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
+  -v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```

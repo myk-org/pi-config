@@ -68,6 +68,11 @@ RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com
 # Install Cursor Agent CLI
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 
+# Cursor auth: symlink from default location to mount-safe path
+# (mounting dirs under ~/.config/ breaks Chrome, so cursor auth mounts to ~/.cursor/)
+RUN mkdir -p /home/node/.config/cursor /home/node/.cursor && \
+    ln -sf /home/node/.cursor/auth.json /home/node/.config/cursor/auth.json
+
 # agent-browser: use Playwright's Chromium with container-safe flags
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 
