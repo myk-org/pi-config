@@ -308,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
 				const container = new Container();
+				let mode: "select" | "input" = params.options?.length ? "select" : "input";
 
 				// Top border
 				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -316,56 +317,71 @@ export default function (pi: ExtensionAPI) {
 				container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
 				container.addChild(new Spacer(1));
 
-				if (params.options && params.options.length > 0) {
-					// Add options + free-text option
-					const items: SelectItem[] = params.options.map((opt: string) => ({
-						value: opt,
-						label: opt,
-					}));
+				// Free-text input (always created, shown/hidden based on mode)
+				const input = new Input();
+				const inputLabel = new Text(theme.fg("dim", "Type your response • enter submit • esc back"), 1, 0);
 
-					const selectList = new SelectList(items, Math.min(items.length + 2, 15), {
+				// SelectList (only if options provided)
+				let selectList: SelectList | null = null;
+				if (params.options && params.options.length > 0) {
+					const items: SelectItem[] = [
+						...params.options.map((opt: string) => ({ value: opt, label: opt })),
+						{ value: "__free_input__", label: "✎  Other (type custom answer)", description: "free-text" },
+					];
+					selectList = new SelectList(items, Math.min(items.length + 1, 15), {
 						selectedPrefix: (t: string) => theme.fg("accent", t),
 						selectedText: (t: string) => theme.fg("accent", t),
 						description: (t: string) => theme.fg("muted", t),
 						scrollInfo: (t: string) => theme.fg("dim", t),
 						noMatch: (t: string) => theme.fg("warning", t),
 					});
-					selectList.onSelect = (item: SelectItem) => done(item.value);
-					selectList.onCancel = () => done(null);
-					container.addChild(selectList);
-
-					// Help text
-					container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • type to filter/free-input • esc cancel"), 1, 0));
-				} else {
-					// Free-text only mode
-					const input = new Input();
-					container.addChild(input);
-					container.addChild(new Text(theme.fg("dim", "Type your response • enter submit • esc cancel"), 1, 0));
-
-					return {
-						render: (w: number) => container.render(w),
-						invalidate: () => container.invalidate(),
-						handleInput: (data: string) => {
-							if (matchesKey(data, Key.enter)) {
-								done(input.getText());
-							} else if (matchesKey(data, Key.escape)) {
-								done(null);
-							} else {
-								input.handleInput(data);
-								tui.requestRender();
-							}
-						},
+					selectList.onSelect = (item: SelectItem) => {
+						if (item.value === "__free_input__") {
+							mode = "input";
+							tui.requestRender();
+						} else {
+							done(item.value);
+						}
 					};
+					selectList.onCancel = () => done(null);
 				}
 
+				const selectHelp = new Text(theme.fg("dim", "↑↓ navigate • enter select • esc cancel"), 1, 0);
+
 				// Bottom border
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				const bottomBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
 
 				return {
-					render: (w: number) => container.render(w),
+					render: (w: number) => {
+						// Rebuild container based on current mode
+						container.clear();
+						container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+						container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
+						container.addChild(new Spacer(1));
+						if (mode === "select" && selectList) {
+							container.addChild(selectList);
+							container.addChild(selectHelp);
+						} else {
+							container.addChild(input);
+							container.addChild(inputLabel);
+						}
+						container.addChild(bottomBorder);
+						return container.render(w);
+					},
 					invalidate: () => container.invalidate(),
 					handleInput: (data: string) => {
-						(container.children[3] as any)?.handleInput?.(data);
+						if (mode === "select" && selectList) {
+							selectList.handleInput(data);
+						} else {
+							if (matchesKey(data, Key.enter)) {
+								const text = input.getText().trim();
+								if (text) done(text);
+							} else if (matchesKey(data, Key.escape)) {
+								if (selectList) { mode = "select"; } else { done(null); }
+							} else {
+								input.handleInput(data);
+							}
+						}
 						tui.requestRender();
 					},
 				};
@@ -710,16 +726,12 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			const parts: string[] = [`🌿 ${b}`];
 			const changes: string[] = [];
 			if (modified > 0) changes.push(`~${modified}`);
 			if (added > 0) changes.push(`+${added}`);
 			if (deleted > 0) changes.push(`-${deleted}`);
 			if (untracked > 0) changes.push(`?${untracked}`);
-			if (changes.length > 0) parts.push(changes.join(" "));
-			else parts.push("✓");
-
-			ctx.ui.setStatus("git", parts.join(" "));
+			ctx.ui.setStatus("git", changes.length > 0 ? changes.join(" ") : "✓");
 		} catch {}
 	};
 	pi.on("session_start", updateBranch);
