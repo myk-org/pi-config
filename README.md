@@ -187,7 +187,7 @@ docker run --rm -it \
 | `-v "$HOME/.exports":/home/node/.exports:ro` | Shell env vars (API keys, tokens) — sourced on startup |
 | `-v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro` | MCP server config for `mcpl` |
 | `-v "$HOME/.agents":/home/node/.agents:ro` | User-level skills (if not in the project) |
-| `-v "$HOME/.config/gcloud":/home/node/.config/gcloud:ro` | Google Cloud credentials (for Claude via Vertex AI) |
+| `-v "$HOME/.config/gcloud":/home/node/.config/gcloud:rw` | Google Cloud credentials (for Claude via Vertex AI, needs rw for token refresh) |
 
 ### Optional environment variables
 
@@ -247,7 +247,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/gh":/home/node/.config/gh:ro \
   -v "$HOME/.exports":/home/node/.exports:ro \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
-  -v "$HOME/.config/gcloud":/home/node/.config/gcloud:ro \
+  -v "$HOME/.config/gcloud":/home/node/.config/gcloud:rw \
   -e ACPX_AGENTS \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
