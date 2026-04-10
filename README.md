@@ -188,6 +188,12 @@ docker run --rm -it \
 | `-v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro` | MCP server config for `mcpl` |
 | `-v "$HOME/.agents":/home/node/.agents:ro` | User-level skills (if not in the project) |
 
+### Optional environment variables
+
+| Variable | Purpose |
+|---|---|
+| `ACPX_AGENTS` | Comma-separated list of acpx agents to register as model providers (e.g., `cursor,claude,gemini`) |
+
 ### What's in the image
 
 | Tool | Purpose |
@@ -237,11 +243,13 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/gh":/home/node/.config/gh:ro \
   -v "$HOME/.exports":/home/node/.exports:ro \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
+  -e ACPX_AGENTS \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```
 
 Then just run `pi-docker` from any project directory.
+To enable acpx model providers: `ACPX_AGENTS=cursor pi-docker`.
 
 > **Startup note:** The container runs as non-root user `node` (UID 1000).
 > `pi install` runs on each start.
