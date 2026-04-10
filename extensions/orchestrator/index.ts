@@ -18,11 +18,12 @@ import type { Message } from "@mariozechner/pi-ai";
 import { StringEnum } from "@mariozechner/pi-ai";
 import {
 	type ExtensionAPI,
+	DynamicBorder,
 	getMarkdownTheme,
 	isToolCallEventType,
 	withFileMutationQueue,
 } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { Container, type SelectItem, SelectList, Input, Markdown, Spacer, Text, matchesKey, Key } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 
@@ -264,7 +265,133 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory (single mode)" })),
 });
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Container detection
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function isRunningInContainer(): boolean {
+	try {
+		// Check for /.dockerenv (Docker) or /run/.containerenv (Podman)
+		if (fs.existsSync("/.dockerenv") || fs.existsSync("/run/.containerenv")) return true;
+		// Check cgroup for container runtimes
+		const cgroup = fs.readFileSync("/proc/1/cgroup", "utf-8");
+		if (/docker|containerd|kubepods|libpod/.test(cgroup)) return true;
+	} catch {}
+	return false;
+}
+
+const IN_CONTAINER = isRunningInContainer();
+
 export default function (pi: ExtensionAPI) {
+
+	// ── ask_user tool ─────────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "ask_user",
+		label: "Ask User",
+		description: "Present a question to the user with selectable options. Returns the user's choice or free-text input. Use this whenever a workflow needs user input — never ask via plain text.",
+		promptSnippet: "Ask the user a question with selectable options",
+		promptGuidelines: [
+			"Use ask_user when you need user input during a workflow (approvals, selections, confirmations).",
+			"Do NOT ask users questions via plain text — always use this tool for structured choices.",
+			"Provide clear, concise options. Include a 'no' or 'cancel' option when appropriate.",
+		],
+		parameters: Type.Object({
+			question: Type.String({ description: "The question to display to the user" }),
+			options: Type.Optional(Type.Array(Type.String(), { description: "List of selectable options. If omitted, only free-text input is shown." })),
+		}),
+
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (!ctx.hasUI) {
+				return { content: [{ type: "text", text: "No UI available for user interaction" }], isError: true };
+			}
+
+			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+				const container = new Container();
+
+				// Top border
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				// Question
+				container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
+				container.addChild(new Spacer(1));
+
+				if (params.options && params.options.length > 0) {
+					// Add options + free-text option
+					const items: SelectItem[] = params.options.map((opt: string) => ({
+						value: opt,
+						label: opt,
+					}));
+
+					const selectList = new SelectList(items, Math.min(items.length + 2, 15), {
+						selectedPrefix: (t: string) => theme.fg("accent", t),
+						selectedText: (t: string) => theme.fg("accent", t),
+						description: (t: string) => theme.fg("muted", t),
+						scrollInfo: (t: string) => theme.fg("dim", t),
+						noMatch: (t: string) => theme.fg("warning", t),
+					});
+					selectList.onSelect = (item: SelectItem) => done(item.value);
+					selectList.onCancel = () => done(null);
+					container.addChild(selectList);
+
+					// Help text
+					container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • type to filter/free-input • esc cancel"), 1, 0));
+				} else {
+					// Free-text only mode
+					const input = new Input();
+					container.addChild(input);
+					container.addChild(new Text(theme.fg("dim", "Type your response • enter submit • esc cancel"), 1, 0));
+
+					return {
+						render: (w: number) => container.render(w),
+						invalidate: () => container.invalidate(),
+						handleInput: (data: string) => {
+							if (matchesKey(data, Key.enter)) {
+								done(input.getText());
+							} else if (matchesKey(data, Key.escape)) {
+								done(null);
+							} else {
+								input.handleInput(data);
+								tui.requestRender();
+							}
+						},
+					};
+				}
+
+				// Bottom border
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				return {
+					render: (w: number) => container.render(w),
+					invalidate: () => container.invalidate(),
+					handleInput: (data: string) => {
+						(container.children[3] as any)?.handleInput?.(data);
+						tui.requestRender();
+					},
+				};
+			});
+
+			if (result === null) {
+				return { content: [{ type: "text", text: "User cancelled" }] };
+			}
+			return { content: [{ type: "text", text: result }] };
+		},
+
+		renderCall(args, theme) {
+			let t = theme.fg("toolTitle", theme.bold("ask_user ")) + theme.fg("accent", args.question || "...");
+			if (args.options?.length > 0) {
+				t += `\n  ${theme.fg("dim", args.options.join(" • "))}`;
+			}
+			return new Text(t, 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			const text = result.content[0];
+			const value = text?.type === "text" ? text.text : "(no response)";
+			const icon = value === "User cancelled" ? theme.fg("warning", "✗") : theme.fg("success", "✓");
+			return new Text(`${icon} ${theme.fg("toolOutput", value)}`, 0, 0);
+		},
+	});
 
 	// ── Subagent tool ──────────────────────────────────────────────────────
 
@@ -558,7 +685,8 @@ export default function (pi: ExtensionAPI) {
 			"- Debugging → debugger subagent\n" +
 			"Route by INTENT not tool. Maximize parallel execution.\n" +
 			"After code changes: run 3 review subagents in parallel (code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security).\n" +
-			"MCP servers available via mcpl CLI: mcpl search, mcpl list, mcpl call. Subagents can use mcpl directly.\n";
+			"MCP servers available via mcpl CLI: mcpl search, mcpl list, mcpl call. Subagents can use mcpl directly.\n" +
+			"When you need user input (approvals, selections, confirmations), use the ask_user tool — never ask via plain text.\n";
 		return { systemPrompt: event.systemPrompt + rules };
 	});
 
@@ -596,6 +724,14 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", updateBranch);
 	pi.on("agent_end", updateBranch);
+
+	// ── Container indicator in status line ─────────────────────────────────
+
+	if (IN_CONTAINER) {
+		pi.on("session_start", (_event, ctx) => {
+			ctx.ui.setStatus("container", "📦 container");
+		});
+	}
 
 	// ── Notification on task completion ─────────────────────────────────────
 
