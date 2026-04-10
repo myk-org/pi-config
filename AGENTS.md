@@ -102,6 +102,14 @@ git clone --depth 1 https://github.com/org/repo.git /tmp/pi-work/repo
 
 Never use full clones. Clean up when done.
 
+## User Interaction
+
+When a workflow or prompt template needs user input (approvals, selections, confirmations):
+
+- ✅ Use the `ask_user` tool with clear options
+- ❌ Never ask users questions via plain text in the conversation
+- This applies to all prompt templates, extensions, and workflows in this repo
+
 ## Docker / Dockerfile
 
 This repo includes a `Dockerfile` for running pi in a sandboxed container.
