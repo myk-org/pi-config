@@ -495,7 +495,7 @@ export default function (pi: ExtensionAPI) {
 	// acpx needs this to find session markers in the project directory tree.
 	projectCwd = process.cwd();
 
-	const agentList = (process.env.ACPX_AGENTS || "cursor")
+	const agentList = (process.env.ACPX_AGENTS || "")
 		.split(",")
 		.map((a) => a.trim())
 		.filter(Boolean);
