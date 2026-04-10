@@ -102,6 +102,14 @@ git clone --depth 1 https://github.com/org/repo.git /tmp/pi-work/repo
 
 Never use full clones. Clean up when done.
 
+## Web Access
+
+- **Web search and fetch**: Use the `web_search` and `fetch_content` tools (from pi-web-access)
+- **Browser automation**: Use `agent-browser` CLI via bash for interactive web pages
+  (navigate, click, fill forms, screenshots)
+- Do NOT use `curl` for reading web pages — use `fetch_content` instead
+- Do NOT use SearXNG MCP for web search — use `web_search` instead
+
 ## User Interaction
 
 When a workflow or prompt template needs user input (approvals, selections, confirmations):

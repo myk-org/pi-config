@@ -731,7 +731,7 @@ export default function (pi: ExtensionAPI) {
 			if (added > 0) changes.push(`+${added}`);
 			if (deleted > 0) changes.push(`-${deleted}`);
 			if (untracked > 0) changes.push(`?${untracked}`);
-			ctx.ui.setStatus("git", changes.length > 0 ? changes.join(" ") : "✓");
+			ctx.ui.setStatus("git", changes.length > 0 ? `git-status: ${changes.join(" ")}` : "git-status: ✓");
 		} catch {}
 	};
 	pi.on("session_start", updateBranch);
@@ -741,7 +741,7 @@ export default function (pi: ExtensionAPI) {
 
 	if (IN_CONTAINER) {
 		pi.on("session_start", (_event, ctx) => {
-			ctx.ui.setStatus("container", "📦 container");
+			ctx.ui.setStatus("container", "📦 run in container");
 		});
 	}
 
