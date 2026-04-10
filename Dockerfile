@@ -53,6 +53,13 @@ RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com
     uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git" && \
     uv tool install prek
 
+# Install Cursor Agent CLI
+RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
+
+# acpx agents to register as pi model providers (comma-separated)
+# e.g., cursor, claude, gemini, copilot
+ENV ACPX_AGENTS=""
+
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
