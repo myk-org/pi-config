@@ -692,17 +692,16 @@ export default function (pi: ExtensionAPI) {
 	// ── Rule injection ─────────────────────────────────────────────────────
 
 	pi.on("before_agent_start", async (event, _ctx) => {
-		const rules =
-			"\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents:\n" +
-			"- Code changes → language specialists (python-expert, go-expert, etc.)\n" +
-			"- Git commands → git-expert subagent\n" +
-			"- GitHub operations → github-expert subagent\n" +
-			"- Tests → test-runner / test-automator subagent\n" +
-			"- Debugging → debugger subagent\n" +
-			"Route by INTENT not tool. Maximize parallel execution.\n" +
-			"After code changes: run 3 review subagents in parallel (code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security).\n" +
-			"MCP servers available via mcpl CLI: mcpl search, mcpl list, mcpl call. Subagents can use mcpl directly.\n" +
-			"When you need user input (approvals, selections, confirmations), use the ask_user tool — never ask via plain text.\n";
+		// Load rules from rules/ directory (sorted alphabetically)
+		const rulesDir = path.resolve(__dirname, "..", "..", "rules");
+		let rules = "";
+		try {
+			const files = fs.readdirSync(rulesDir).filter(f => f.endsWith(".md")).sort();
+			rules = "\n\n" + files.map(f => fs.readFileSync(path.join(rulesDir, f), "utf-8")).join("\n\n");
+		} catch {
+			// Fallback if rules dir not found
+			rules = "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+		}
 		return { systemPrompt: event.systemPrompt + rules };
 	});
 

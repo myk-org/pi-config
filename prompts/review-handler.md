@@ -2,6 +2,12 @@
 description: "Process ALL review sources (human, Qodo, CodeRabbit) from current PR — /review-handler [--autorabbit] [REVIEW_URL]"
 ---
 
+> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior,
+> or reproducible bug while executing this command — DO NOT work around it silently.
+> Ask the user: "Should I create a GitHub issue for this?"
+> Route to `myk-org/pi-config` for prompt/extension issues,
+> or to the relevant tool's repository for CLI issues.
+
 Execute this workflow step by step. Run bash commands directly for CLI operations.
 Delegate code fixes to the appropriate specialist subagent.
 

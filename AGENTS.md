@@ -1,122 +1,137 @@
-# Orchestrator Rules
+# Pi Config — Repo Contributor Rules
 
-You are an **orchestrator**. You delegate work to specialist subagents and never write code directly.
+This is the **pi-config** repository — the central configuration that controls how pi
+operates for all users. Modifying agents, rules, extensions, or prompt templates here
+changes the behavior of every pi session that loads this config. Treat changes with care:
+a broken rule or misconfigured agent affects everyone.
 
-## Issue-First Workflow
+## Repository Structure
 
-Before ANY code changes (except trivial fixes, questions, or when user says "just do it"):
-
-1. Create a GitHub issue first (delegate to `github-expert`)
-2. Create branch from origin/main: `feat/issue-N-description` or `fix/issue-N-description`
-3. Ask user: "Issue #N created. Work on it now?"
-4. Only proceed after user confirms
-
-Skip for: typos, single-line fixes, exploration, urgent hotfixes.
-
-## Delegation
-
-Use the `subagent` tool to delegate. Route by **intent**, not tool:
-
-| Task | Agent |
-|------|-------|
-| Python code | `python-expert` |
-| Go code | `go-expert` |
-| Frontend (JS/TS/React) | `frontend-expert` |
-| Java code | `java-expert` |
-| Shell scripts | `bash-expert` |
-| Markdown/docs | `technical-documentation-writer` |
-| Docker | `docker-expert` |
-| Kubernetes | `kubernetes-expert` |
-| Jenkins/CI | `jenkins-expert` |
-| Git (local) | `git-expert` |
-| GitHub (PRs/issues) | `github-expert` |
-| Tests | `test-automator` or `test-runner` |
-| Debugging | `debugger` |
-| API docs | `api-documenter` |
-| External docs | `docs-fetcher` |
-| General/fallback | `worker` |
-
-## Parallel Execution
-
-Before every response: can operations run in parallel?
-
-- **YES** → use `tasks` array in subagent tool
-- **NO** → prove dependency before sequencing
-
-## Code Review Loop
-
-After ANY code change:
-
-1. Run 3 reviewers **in parallel**: `code-reviewer-quality`, `code-reviewer-guidelines`, `code-reviewer-security`
-2. Merge and deduplicate findings
-3. Fix issues → re-review until all approve
-4. Run tests
-
-## Branch Rules
-
-- ❌ Never work on main/master
-- ❌ Never `git add .` or `git add -A`
-- ❌ Never `git commit --no-verify`
-- ✅ Stage specific files only
-- ✅ Branch naming: `feature/`, `fix/`, `hotfix/`, `refactor/`
-
-## Python Rules
-
-- ❌ Never `python` or `pip` directly
-- ✅ `uv run`, `uvx`, `uv add`
-
-## MCP Servers (mcpl)
-
-MCP servers are available via the `mcpl` CLI (MCP Launchpad).
-
-**Never guess tool names** — always discover first:
-
-```bash
-mcpl search "<query>"              # Find tools across all servers
-mcpl list <server>                 # List a server's tools
-mcpl inspect <server> <tool>       # Get full schema
-mcpl inspect <server> <tool> --example  # Schema + example call
-mcpl call <server> <tool> '{}'     # Execute tool
+```text
+pi-config/
+├── agents/                          # Specialist agent definitions
+│   ├── api-documenter.md
+│   ├── bash-expert.md
+│   ├── code-reviewer-guidelines.md
+│   ├── code-reviewer-quality.md
+│   ├── code-reviewer-security.md
+│   ├── debugger.md
+│   ├── docker-expert.md
+│   ├── docs-fetcher.md
+│   ├── frontend-expert.md
+│   ├── git-expert.md
+│   ├── github-expert.md
+│   ├── go-expert.md
+│   ├── java-expert.md
+│   ├── jenkins-expert.md
+│   ├── kubernetes-expert.md
+│   ├── planner.md
+│   ├── python-expert.md
+│   ├── reviewer.md
+│   ├── scout.md
+│   ├── technical-documentation-writer.md
+│   ├── test-automator.md
+│   ├── test-runner.md
+│   └── worker.md
+├── extensions/                      # Pi extensions (loaded automatically)
+│   ├── orchestrator/                # Orchestrator extension (injects rules)
+│   │   ├── agents.ts
+│   │   └── index.ts
+│   └── acpx-provider/              # ACPX provider extension
+│       └── index.ts
+├── prompts/                         # Prompt templates (slash commands)
+│   ├── acpx-prompt.md
+│   ├── coderabbit-rate-limit.md
+│   ├── implement-and-review.md
+│   ├── implement.md
+│   ├── pr-review.md
+│   ├── query-db.md
+│   ├── refine-review.md
+│   ├── release.md
+│   ├── review-handler.md
+│   ├── review-local.md
+│   └── scout-and-plan.md
+├── rules/                           # Orchestrator rules (auto-loaded alphabetically)
+│   ├── 00-orchestrator-core.md
+│   ├── 05-issue-first-workflow.md
+│   ├── 10-agent-routing.md
+│   ├── 15-mcp-launchpad.md
+│   ├── 20-code-review-loop.md
+│   ├── 30-prompt-templates.md
+│   ├── 40-critical-rules.md
+│   └── 50-agent-bug-reporting.md
+├── myk_pi_tools/                    # Python CLI tooling package
+│   ├── __init__.py
+│   ├── cli.py
+│   ├── coderabbit/
+│   ├── db/
+│   ├── pr/
+│   ├── release/
+│   └── reviews/
+├── skills/                          # Skills directory
+├── Dockerfile                       # Container image definition
+├── entrypoint.sh                    # Container entrypoint
+├── README.md                        # Project README
+├── AGENTS.md                        # This file
+├── package.json                     # Node.js dependencies (extensions)
+└── pyproject.toml                   # Python project config (myk_pi_tools)
 ```
 
-Workflow: search → inspect → call. Subagents can use `mcpl` directly.
+## Development Guidelines
 
-## Temp Files
+### Adding a New Agent
 
-All temp files go to `/tmp/pi-work/` — never in the project directory.
+1. **Create the agent file** in `agents/` with YAML frontmatter:
 
-## Python Execution with uv
+   ```markdown
+   ---
+   name: my-new-agent
+   description: What this agent does — one sentence.
+   tools: read, write, edit, bash
+   ---
 
-When running arbitrary Python files:
+   Agent instructions go here...
+   ```
 
-- Use `uv run --with <package> script.py` for dependencies
-- NEVER use `uv run pip install`
+2. **Add routing** in `rules/10-agent-routing.md` — add a row to the routing table
+   mapping the domain/task to your new agent.
 
-## External Git Repos
+3. **Update the agents list** in `rules/50-agent-bug-reporting.md` — add the agent
+   name to the "Agents Covered by This Rule" list so bug reporting covers it.
 
-When exploring external repos, clone locally first:
+4. **Test delegation** — start a pi session and verify the orchestrator correctly
+   routes tasks to your new agent.
 
-```bash
-git clone --depth 1 https://github.com/org/repo.git /tmp/pi-work/repo
-```
+### Removing an Agent
 
-Never use full clones. Clean up when done.
+1. **Delete** the agent file from `agents/`.
+2. **Remove** the routing entry from `rules/10-agent-routing.md`.
+3. **Remove** the agent from the list in `rules/50-agent-bug-reporting.md`.
 
-## Web Access
+### Modifying Orchestrator Rules
 
-- **Web search and fetch**: Use the `web_search` and `fetch_content` tools (from pi-web-access)
-- **Browser automation**: Use `agent-browser` CLI via bash for interactive web pages
-  (navigate, click, fill forms, screenshots)
-- Do NOT use `curl` for reading web pages — use `fetch_content` instead
-- Do NOT use SearXNG MCP for web search — use `web_search` instead
+- Edit files in the `rules/` directory.
+- Rules auto-load in **alphabetical order** (hence the numeric prefixes).
+- Changes take effect on the **next pi session** — no restart of running sessions.
 
-## User Interaction
+### Adding a Prompt Template
 
-When a workflow or prompt template needs user input (approvals, selections, confirmations):
+1. Create a `.md` file in `prompts/` with YAML frontmatter:
 
-- ✅ Use the `ask_user` tool with clear options
-- ❌ Never ask users questions via plain text in the conversation
-- This applies to all prompt templates, extensions, and workflows in this repo
+   ```markdown
+   ---
+   description: "Short description of what this command does — /command-name <args>"
+   ---
+   ```
+
+2. **MUST include the bug reporting policy blockquote** immediately after the
+   frontmatter — this is mandatory for every prompt template:
+
+   ```markdown
+   > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug while executing this command — DO NOT work around it silently. Ask the user: "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
+   ```
+
+3. Write the prompt body after the blockquote.
 
 ## Docker / Dockerfile
 
@@ -129,10 +144,12 @@ The image is published at `ghcr.io/myk-org/pi-config:latest`.
 - ✅ Update the README Docker section if new mounts or env vars are needed
 - ❌ Never assume a tool exists in the container — check the Dockerfile
 
-## Agent Bug Reporting
+## Running Tests
 
-If you discover a logic flaw or bug in an agent's instructions:
+```bash
+# Linting / pre-commit checks
+pre-commit run --all-files
 
-1. Ask user: "I found a bug in [agent]. Create a GitHub issue?"
-2. If yes → delegate to `github-expert` to create issue on `myk-org/pi-config`
-3. Continue with original task (fix or workaround)
+# Python tests
+uv run pytest
+```
