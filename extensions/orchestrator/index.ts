@@ -374,7 +374,7 @@ export default function (pi: ExtensionAPI) {
 							selectList.handleInput(data);
 						} else {
 							if (matchesKey(data, Key.enter)) {
-								const text = input.getText().trim();
+								const text = input.getValue().trim();
 								if (text) done(text);
 							} else if (matchesKey(data, Key.escape)) {
 								if (selectList) { mode = "select"; } else { done(null); }
