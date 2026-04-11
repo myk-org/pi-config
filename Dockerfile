@@ -56,7 +56,6 @@ RUN npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-acces
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 USER node
-RUN git config --global core.excludesFile /home/node/.gitignore-global
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
