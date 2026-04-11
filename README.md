@@ -212,7 +212,7 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | Mount | Purpose |
 |---|---|
 | `-v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro` | MCP server config for `mcpl` |
-| `-v "$HOME/.agents":/home/node/.agents:ro` | User-level skills (if not in the project) |
+| `-v "$HOME/.agents":/home/node/.agents:rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro` | Google Cloud ADC (for Claude via Vertex AI) |
 | `-v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro` | Cursor CLI auth (for acpx cursor models) |
 
@@ -268,6 +268,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/gh":/home/node/.gh-config:ro \
   -e GH_CONFIG_DIR=/home/node/.gh-config \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
+  -v "$HOME/.agents":/home/node/.agents:rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
   -v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro \
   -w "$PWD" \
