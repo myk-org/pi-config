@@ -31,15 +31,6 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     apt-get update && apt-get install -y --no-install-recommends gh google-cloud-cli && \
     rm -rf /var/lib/apt/lists/*
 
-# Install pi coding agent, acpx, agent-browser, and pi-web-access
-RUN npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access
-
-# Install Chromium via Playwright (--with-deps installs all system libs)
-RUN mkdir -p /home/node/.cache/ms-playwright && \
-    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
-    npx playwright install --with-deps chromium && \
-    chown -R node:node /home/node/.cache
-
 # Copy uv and uvx from official image
 COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=uv /uvx /usr/local/bin/uvx
@@ -54,16 +45,20 @@ RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL
     curl -fsSL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
       | tar -C /usr/local/bin -xzf - oc
 
+# Install Chromium via Playwright (--with-deps installs all system libs)
+RUN mkdir -p /home/node/.cache/ms-playwright && \
+    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
+    npx playwright install --with-deps chromium && \
+    chown -R node:node /home/node/.cache
+
+# Install pi coding agent, acpx, agent-browser, and pi-web-access
+RUN npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access
+
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
-
-# Install uv tools
-RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
-    uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git" && \
-    uv tool install prek
 
 # Install Cursor Agent CLI
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
@@ -78,6 +73,11 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 
 # acpx agents to register as pi model providers (comma-separated)
 ENV ACPX_AGENTS=""
+
+# Install uv tools
+RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
+    uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git" && \
+    uv tool install prek
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
