@@ -38,7 +38,7 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 
 ### Phase 1: Fetch Pending Review
 
-Parse `{{args}}` as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
+Parse `$ARGUMENTS` as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
 
 ```bash
 myk-pi-tools reviews pending-fetch "<PR_URL>"

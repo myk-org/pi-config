@@ -24,12 +24,12 @@ Review uncommitted changes or changes compared to a specified branch.
 
 ### Step 1: Get the diff
 
-**If argument is provided (`{{args}}` is not empty):**
+**If argument is provided (`$ARGUMENTS` is not empty):**
 
 Compare current branch against the specified branch:
 
 ```bash
-git diff "{{args}}"...HEAD
+git diff "$ARGUMENTS"...HEAD
 ```
 
 **If no argument provided:**
