@@ -1,101 +1,135 @@
 ---
-description: "Create a GitHub release with changelog — /release [--dry-run] [--prerelease] [--draft] [--target <branch>]"
+description: Create a GitHub release with automatic changelog generation
 ---
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior,
-> or reproducible bug while executing this command — DO NOT work around it silently.
-> Ask the user: "Should I create a GitHub issue for this?"
-> Route to `myk-org/pi-config` for prompt/extension issues,
-> or to the relevant tool's repository for CLI issues.
+# GitHub Release Command
 
-Execute this workflow step by step. Run bash commands directly — do NOT delegate to subagents for CLI commands.
+> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
+> while executing this command — DO NOT work around it silently. Ask the user:
+> "Should I create a GitHub issue for this?" Route to:
+> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
+> Do not silently skip steps or apply manual fixes that hide the root cause.
+
+Creates a GitHub release with automatic changelog generation based on conventional commits.
+Optionally detects and updates version files before creating the release.
 
 ## Prerequisites Check (MANDATORY)
+
+### Step 1: Check myk-pi-tools
 
 ```bash
 myk-pi-tools --version
 ```
 
-If not found, ask user to install: `uv tool install myk-pi-tools`
+If not found, prompt to install: `uv tool install myk-pi-tools`
 
-## Phase 1: Validation
+## Usage
 
-Parse `{{args}}` for flags: `--dry-run`, `--prerelease`, `--draft`, `--target <branch>`, `--tag-match <pattern>`.
+- `/release` - Normal release
+- `/release --dry-run` - Preview without creating
+- `/release --prerelease` - Create prerelease
+- `/release --draft` - Create draft release
 
-Build the release info command:
+## Workflow
 
-- If `--target <branch>` was passed: `myk-pi-tools release info --target <branch>`
-- If `--tag-match <pattern>` was also passed: add `--tag-match <pattern>`
-- Otherwise: `myk-pi-tools release info`
+### Phase 1: Validation
 
-Run the command. Check validations:
+If `--target <branch>` was passed to the release command:
 
-- Must be on default branch (or target/auto-detected version branch)
+```bash
+myk-pi-tools release info --target <branch>
+```
+
+If `--tag-match <pattern>` was also passed:
+
+```bash
+myk-pi-tools release info --target <branch> --tag-match <pattern>
+```
+
+Otherwise (auto-detect from current branch):
+
+```bash
+myk-pi-tools release info
+```
+
+Note: If on a version branch (e.g., `v2.10`), the command auto-detects the target
+and filters tags to that version range. No `--target` flag needed.
+
+Check validations:
+
+- Must be on default branch (or target branch if `--target` specified, or auto-detected version branch like `v2.10`)
 - Working tree must be clean
 - Must be synced with remote
 
-If validation fails, display the error and stop.
-
-## Phase 2: Version Detection
+### Phase 2: Version Detection
 
 ```bash
 myk-pi-tools release detect-versions
 ```
 
-Parse the JSON output. Key fields:
+Parse the JSON output. If version files are found, store them for Phase 4.
+If no version files are detected, skip version bumping phases and continue normally.
 
-- `version_files[].path` — file path relative to repo root
-- `version_files[].current_version` — current version string
-- `count` — number of detected files (0 = skip version bumping)
+Store the detect-versions JSON output for use in Phase 4. The key fields are:
 
-Store for Phase 4.
+- `version_files[].path` -- file path relative to repo root
+- `version_files[].current_version` -- current version string
+- `count` -- number of detected files (0 means skip version bumping)
 
-## Phase 3: Changelog Analysis
+### Phase 3: Changelog Analysis
 
-Parse commits from Phase 1 output. Categorize by conventional commit type:
+Parse commits from Phase 1 output and categorize by conventional commit type:
 
-- Breaking Changes → MAJOR bump
-- Features (`feat:`) → MINOR bump
-- Bug Fixes (`fix:`), Docs (`docs:`), Maintenance (`chore:`) → PATCH bump
+- Breaking Changes (MAJOR)
+- Features (MINOR)
+- Bug Fixes, Docs, Maintenance (PATCH)
 
-Determine the version bump type and generate a changelog in markdown format.
+Determine version bump and generate changelog.
 
-## Phase 4: User Approval
+### Phase 4: User Approval
 
-Present the proposed release info to the user.
+Display the proposed release information. If version files were detected in Phase 2,
+include them in the approval prompt.
 
-**If version files were detected:**
+**With version files:**
 
-Show:
+Present using AskUserQuestion. Show:
 
 - Proposed version (e.g., v1.2.0, minor bump)
-- List of version files to update with current → new version
+- List of version files to update with current to new version
 - Changelog preview
 
-Ask the user (options):
+User options:
 
-- `yes` — Proceed with proposed version and all listed files
-- `major`/`minor`/`patch` — Override the version bump type
-- `exclude N` — Exclude file by number from the version bump
-- `no` — Cancel the release
+- 'yes' -- Proceed with proposed version and all listed files
+- 'major/minor/patch' -- Override the version bump type
+- 'exclude N' -- Exclude file by number from the version bump (e.g., 'exclude 2')
+- 'no' -- Cancel the release
 
-**If --dry-run:** Show what would happen and stop here.
+To exclude files, remove them from the list. Pass remaining file paths as
+`--files <path>` arguments to `bump-version` in Phase 5.
 
-**Without version files:** Show proposed version and changelog, ask for confirmation.
+**Without version files:**
 
-## Phase 5: Bump Version (if version files detected)
+Same as before -- show proposed version and changelog, ask for confirmation.
 
-Skip if no version files detected in Phase 2 or all excluded.
+### Phase 5: Bump Version (if version files detected)
+
+Skip this phase if no version files were detected in Phase 2.
+
+Run the bump command with the confirmed version and files:
 
 ```bash
 myk-pi-tools release bump-version <VERSION> --files <file1> --files <file2>
 ```
 
-Where `<VERSION>` is without `v` prefix (e.g., `1.2.0`).
+Where `<VERSION>` is the version number without `v` prefix (e.g., `1.2.0`, not `v1.2.0`).
 
-Parse JSON output. Only stage files listed in `updated[]` array. If `skipped[]` is non-empty, inform the user.
+Parse the JSON output from bump-version. Only stage the files listed in the
+`updated[]` array. If `skipped[]` is non-empty, inform the user which files were
+skipped and why before proceeding.
 
-Then create branch, stage, sync lockfile, commit, push — ALL in one sequence:
+Then create a branch, stage files, sync lockfile, commit, and push — **all in one sequence**:
 
 ```bash
 BUMP_BRANCH="chore/bump-version-<VERSION>-$(date +%s)"
@@ -103,52 +137,72 @@ git checkout -b "$BUMP_BRANCH"
 git add <updated-files>
 # MANDATORY: sync uv.lock when pyproject.toml is bumped
 if [ -f uv.lock ]; then uv lock && git add uv.lock; fi
-echo -e "chore: bump version to <VERSION>" | git commit -F -
+git commit -m "chore: bump version to <VERSION>"
 git push -u origin "$BUMP_BRANCH"
 ```
 
-Create and merge PR:
+> **DO NOT split this block.** The `uv lock` step syncs the lockfile after
+> `pyproject.toml` version changes. Skipping it leaves a dirty `uv.lock`
+> after the release merge.
+
+Note: The timestamp suffix prevents conflicts with previous bump attempts.
+
+Create a PR and capture its URL:
 
 ```bash
-PR_URL=$(gh pr create --title "chore: bump version to <VERSION>" --body "Bump version to <VERSION>" --base <target_branch>)
+PR_URL=$(gh pr create --title "chore: bump version to <VERSION>" \
+  --body "Bump version to <VERSION>" --base <target_branch>)
+```
+
+Merge the PR using admin privileges:
+
+```bash
 gh pr merge --merge --admin --delete-branch
 ```
 
-If `--admin` merge fails:
+If the `--admin` merge fails, check the error:
 
-- **Permission denied** — Show PR_URL, tell user to merge manually, wait for confirmation, verify merge state
-- **Other errors** — Abort and display error
+- **Permission denied / not admin** -- Fall back to manual merge:
+  1. Display `PR_URL` to the user
+  2. Tell the user: "Admin merge failed. Please merge the PR manually
+     (or wait for CI checks to pass). Let me know when it's merged."
+  3. Use `AskUserQuestion` to wait for confirmation
+  4. After user confirms, verify the PR is merged:
 
-After merge, sync local:
+     ```bash
+     gh pr view "$PR_URL" --json state --jq '.state'
+     ```
+
+     If the state is not `MERGED`, ask the user again.
+- **Other errors** (network, auth, etc.) -- Abort the release and
+  display the error.
+
+After merge (either admin or manual), sync the local target branch:
 
 ```bash
 git checkout <target_branch>
 git pull origin <target_branch>
 ```
 
-## Phase 6: Create Release
+Where `<target_branch>` is the branch from Phase 1 validation
+(default branch or `--target` value).
+
+### Phase 6: Create Release
+
+Create a temp file with cleanup, write changelog to it, and create release:
 
 ```bash
 CHANGELOG_FILE=$(mktemp /tmp/pi-release-XXXXXX.md)
+trap "rm -f $CHANGELOG_FILE" EXIT
+
+cat > "$CHANGELOG_FILE" << 'EOF'
+<changelog content from Phase 3>
+EOF
+
+myk-pi-tools release create {owner}/{repo} {tag} "$CHANGELOG_FILE" [--prerelease] [--draft] [--target {target_branch}]
 ```
 
-Write changelog content to the file.
+### Phase 7: Summary
 
-```bash
-myk-pi-tools release create <owner>/<repo> <tag> "$CHANGELOG_FILE" [--prerelease] [--draft] [--target <target_branch>]
-```
-
-Clean up:
-
-```bash
-rm -f "$CHANGELOG_FILE"
-```
-
-## Phase 7: Summary
-
-Display:
-
-- Release URL
-- Version bumped (if applicable)
-- Files updated (if applicable)
-- Changelog summary
+Display release URL and summary.
+If version files were bumped, include the list of updated files in the summary.

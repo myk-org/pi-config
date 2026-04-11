@@ -1,16 +1,20 @@
 ---
-description: "Review a GitHub PR and post inline comments — /pr-review [PR_NUMBER|PR_URL]"
+description: Review a GitHub PR and post inline comments on selected findings
 ---
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior,
-> or reproducible bug while executing this command — DO NOT work around it silently.
-> Ask the user: "Should I create a GitHub issue for this?"
-> Route to `myk-org/pi-config` for prompt/extension issues,
-> or to the relevant tool's repository for CLI issues.
+# GitHub PR Review Command
 
-Execute this workflow step by step. Run bash commands directly — do NOT delegate to subagents for CLI commands.
+> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
+> while executing this command — DO NOT work around it silently. Ask the user:
+> "Should I create a GitHub issue for this?" Route to:
+> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
+> Do not silently skip steps or apply manual fixes that hide the root cause.
+
+Reviews a GitHub PR and posts inline review comments on selected findings.
 
 ## Prerequisites Check (MANDATORY)
+
+Before starting, verify the tools are available:
 
 ### Step 0: Check uv
 
@@ -18,7 +22,7 @@ Execute this workflow step by step. Run bash commands directly — do NOT delega
 uv --version
 ```
 
-If not found, stop and tell the user to install from <https://docs.astral.sh/uv/getting-started/installation/>
+If not found, install from <https://docs.astral.sh/uv/getting-started/installation/>
 
 ### Step 1: Check myk-pi-tools
 
@@ -26,109 +30,131 @@ If not found, stop and tell the user to install from <https://docs.astral.sh/uv/
 myk-pi-tools --version
 ```
 
-If not found, ask the user: "myk-pi-tools is required. Install with: `uv tool install myk-pi-tools`. Install now?"
+If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool install myk-pi-tools`. Install now?"
 
 - Yes: Run `uv tool install myk-pi-tools`
-- No: Abort
+- No: Abort with instructions
 
-## Phase 0: PR Detection
+### Step 2: Continue with workflow
 
-If `{{args}}` is empty — auto-detect from current branch:
+## Usage
+
+- `/pr-review` - Review PR from current branch (auto-detect)
+- `/pr-review 123` - Review PR #123 in current repo
+- `/pr-review https://github.com/owner/repo/pull/123` - Review from URL
+
+## Workflow
+
+### Phase 0: PR Detection (when no arguments provided)
+
+If `{{args}}` is empty:
+
+1. Detect PR from current branch:
+
+   ```bash
+   gh pr view --json number,headRefOid
+   ```
+
+2. Get base repository context (where PR targets):
+
+   The base repository (where the PR is opened) is determined by the current working directory context.
+   When you run `gh pr view` from a cloned repository, it operates in that repository's context.
+
+   To get `owner` and `repo`:
+
+   ```bash
+   gh repo view --json owner,name
+   ```
+
+   This returns the base repository information regardless of whether the PR comes from a fork.
+
+   **Note:** `baseRepository` is NOT available in `gh pr view --json`. For fork PRs, `headRepository` would incorrectly point to the fork, not the target repository.
+
+3. Extract and store:
+
+   - `pr_number` from the PR JSON response
+   - `owner` from `gh repo view` → `owner.login`
+   - `repo` from `gh repo view` → `name`
+   - `head_sha` from `headRefOid`
+
+4. Use `{pr_number}` for subsequent CLI commands
+
+If `{{args}}` contains a PR number or URL, use it directly.
+
+### Phase 1a: Data Fetching
+
+Run the diff command to get PR data:
+
+If PR was auto-detected (no arguments):
 
 ```bash
-gh pr view --json number,headRefOid -q '.'
+myk-pi-tools pr diff {pr_number}
 ```
 
-Extract `pr_number` and `head_sha` (headRefOid).
-
-Then get the base repository:
+Otherwise:
 
 ```bash
-gh repo view --json owner,name -q '.'
-```
-
-Extract `owner` (owner.login) and `repo` (name).
-
-If `{{args}}` contains a URL — extract owner/repo/number from it. Get head SHA:
-
-```bash
-gh pr view <number> --repo <owner>/<repo> --json headRefOid -q '.headRefOid'
-```
-
-If `{{args}}` is a number — use it as pr_number, detect repo with `gh repo view`, get head SHA.
-
-## Phase 1a: Fetch Diff
-
-```bash
-myk-pi-tools pr diff <pr_number_or_url>
+myk-pi-tools pr diff {{args}}
 ```
 
 Store the JSON output containing metadata, diff, and files.
 
-## Phase 1b: Fetch CLAUDE.md / AGENTS.md
+### Phase 1b: Fetch AGENTS.md
+
+Run the claude-md command to get project rules:
+
+If PR was auto-detected (no arguments):
 
 ```bash
-myk-pi-tools pr claude-md <pr_number_or_url>
+myk-pi-tools pr claude-md {pr_number}
 ```
 
-Store the output as project guidelines context.
+Otherwise:
 
-## Phase 2: Code Analysis
+```bash
+myk-pi-tools pr claude-md {{args}}
+```
 
-Use the subagent tool to run ALL 3 review agents IN PARALLEL (using the `tasks` array):
+Store the output as `claude_md_content`.
 
-1. **code-reviewer-quality** — General code quality and maintainability
-2. **code-reviewer-guidelines** — Project guidelines and style adherence (pass the CLAUDE.md/AGENTS.md content)
-3. **code-reviewer-security** — Bugs, logic errors, and security vulnerabilities
+### Phase 2: Code Analysis
 
-Pass each agent the full diff content from Phase 1a and the guidelines from Phase 1b.
+Delegate to ALL 3 review agents IN PARALLEL (single message with 3 Task tool calls):
 
-After all 3 finish, merge and deduplicate findings:
+- `superpowers:code-reviewer` - General code quality and maintainability
+- `pr-review-toolkit:code-reviewer` - Project guidelines and style adherence
+- `feature-dev:code-reviewer` - Bugs, logic errors, and security vulnerabilities
 
-- Same file/line range + same issue type = duplicate → keep most actionable
-- Conflicting suggestions → priority: security > correctness > performance > style
-- Complementary findings (different issue types) → keep both
+Provide each agent with:
 
-**Deduplication Criteria:**
+- The diff content from Phase 1a
+- The AGENTS.md content from Phase 1b (or "No AGENTS.md found" if empty)
 
-- Same file/line range + same issue type or root cause = duplicate. Keep the most actionable version.
-- Conflicting suggestions = follow priority order: security > correctness > performance > style. If still ambiguous, escalate to the user.
-- Complementary findings on the same code (different issue types) = keep both.
+Each agent should analyze for security, bugs, error handling, and performance issues and return their findings as prose.
+Merge and deduplicate the findings from all 3 reviewers before proceeding.
 
-## Phase 3: User Selection
+### Phase 3: User Selection
 
-Present findings grouped by severity (CRITICAL, WARNING, SUGGESTION), numbered.
+Present findings to user grouped by severity (CRITICAL, WARNING, SUGGESTION). Ask which to post:
 
-Ask the user which to post:
+- 'all' = Post all
+- 'none' = Skip posting
+- Specific numbers = Post only those
 
-- `all` = Post all findings
-- `none` = Skip posting
-- Specific numbers (e.g., `1,3,5`) = Post only those
+### Phase 4: Post Comments
 
-## Phase 4: Post Comments
-
-If user selected findings, create the JSON comment file:
+If user selected findings, create temp directory and write JSON to temp file:
 
 ```bash
 mkdir -p /tmp/pi-work
 ```
 
-Write a JSON array to `/tmp/pi-work/pr-review-comments.json` with format:
-
-```json
-[{"path": "file.py", "line": 42, "body": "Comment text"}]
-```
-
-Post using the owner, repo, pr_number, and head_sha from Phase 0/1a:
+Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
 
 ```bash
-myk-pi-tools pr post-comment <owner>/<repo> <pr_number> <head_sha> /tmp/pi-work/pr-review-comments.json
+myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} /tmp/pi-work/pr-review-comments.json
 ```
 
-## Phase 5: Summary
+### Phase 5: Summary
 
-Display final summary:
-
-- Number of findings by severity
-- Number of comments posted
-- PR URL for reference
+Display final summary with counts and links.
