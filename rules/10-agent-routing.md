@@ -21,6 +21,7 @@
 | Tests                                                        | `test-automator`                 |
 | Debugging                                                    | `debugger`                       |
 | API docs                                                     | `api-documenter`                 |
+| External AI agents (cursor, codex, gemini, claude, copilot, etc.) | `/acpx-prompt`               |
 | External library/framework docs (React, FastAPI, Django, etc.) | `docs-fetcher`                 |
 
 ## Routing by Intent, Not Tool
