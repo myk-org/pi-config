@@ -37,29 +37,35 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 - `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
 - `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 ## Workflow
 
 > **CRITICAL — BEFORE ANY CLI COMMAND:**
 > `--autorabbit` is a **command-level flag**, NOT a CLI argument.
 > **NEVER** pass `--autorabbit` to `myk-pi-tools`. The CLI will reject it.
-> You MUST strip it from `$ARGUMENTS` first. See Phase 0 below.
+> You MUST strip it from the raw arguments first. See Phase 0 below.
 
 ### Phase 0: Parse Arguments (MANDATORY — DO NOT SKIP)
 
-**Before calling ANY `myk-pi-tools` command**, parse `$ARGUMENTS`:
+Read the **Raw Arguments** section above. Parse as follows:
 
-1. Check if `--autorabbit` is present in `$ARGUMENTS`
-2. If YES: **Remove** `--autorabbit` from `$ARGUMENTS` and set autorabbit mode = ON
-3. Store the cleaned `$ARGUMENTS` (without `--autorabbit`) for all subsequent CLI calls
-4. If NO: proceed normally
+1. Check if the text `--autorabbit` appears in the raw arguments
+2. If YES: set autorabbit mode = ON, and remove `--autorabbit` from the text. The remaining text (if any) is the cleaned arguments.
+3. If NO: autorabbit mode = OFF, the entire raw arguments text is the cleaned arguments.
+4. Use ONLY the cleaned arguments for all subsequent CLI calls.
 
-**Example:** If `$ARGUMENTS` = `--autorabbit`, then after parsing:
+**Example:** Raw arguments = `--autorabbit`
 
 - autorabbit mode = ON
 - cleaned arguments = (empty)
 - CLI call = `myk-pi-tools reviews fetch` (NO `--autorabbit` flag)
 
-**Example:** If `$ARGUMENTS` = `--autorabbit https://github.com/org/repo/pull/123#pullrequestreview-456`, then after parsing:
+**Example:** Raw arguments = `--autorabbit https://github.com/org/repo/pull/123#pullrequestreview-456`
 
 - autorabbit mode = ON
 - cleaned arguments = `https://github.com/org/repo/pull/123#pullrequestreview-456`
