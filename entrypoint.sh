@@ -29,4 +29,7 @@ if [ ! -d "$SKILL_DIR" ]; then
     ln -sf /usr/local/lib/node_modules/agent-browser/skills/agent-browser "$SKILL_DIR"
 fi
 
+# Fix git excludesFile path for container (host .gitconfig may have host-specific paths)
+git config --global core.excludesFile /home/node/.gitignore-global
+
 exec pi "$@"
