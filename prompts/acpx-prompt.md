@@ -86,7 +86,7 @@ The underlying coding agent must be installed separately. acpx auto-downloads AC
 
 ### Step 2: Parse Arguments
 
-Parse `{{args}}` to extract the agent name(s) and prompt:
+Parse `$ARGUMENTS` to extract the agent name(s) and prompt:
 
 1. The **first token** is the agent specification (required). Format:
    `agent[:model]` or comma-separated `agent1[:model1],agent2[:model2],...`

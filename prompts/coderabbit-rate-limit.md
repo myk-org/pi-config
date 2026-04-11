@@ -40,15 +40,15 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ### Phase 1: Detect PR
 
-If `{{args}}` contains a URL, extract owner/repo and PR number from it.
+If `$ARGUMENTS` contains a URL, extract owner/repo and PR number from it.
 
-If `{{args}}` contains a number, detect the repository:
+If `$ARGUMENTS` contains a number, detect the repository:
 
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner
 ```
 
-If `{{args}}` is empty, detect PR from current branch:
+If `$ARGUMENTS` is empty, detect PR from current branch:
 
 ```bash
 gh pr view --json number,url -q '.number'

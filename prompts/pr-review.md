@@ -47,7 +47,7 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 
 ### Phase 0: PR Detection (when no arguments provided)
 
-If `{{args}}` is empty:
+If `$ARGUMENTS` is empty:
 
 1. Detect PR from current branch:
 
@@ -79,7 +79,7 @@ If `{{args}}` is empty:
 
 4. Use `{pr_number}` for subsequent CLI commands
 
-If `{{args}}` contains a PR number or URL, use it directly.
+If `$ARGUMENTS` contains a PR number or URL, use it directly.
 
 ### Phase 1a: Data Fetching
 
@@ -94,7 +94,7 @@ myk-pi-tools pr diff {pr_number}
 Otherwise:
 
 ```bash
-myk-pi-tools pr diff {{args}}
+myk-pi-tools pr diff $ARGUMENTS
 ```
 
 Store the JSON output containing metadata, diff, and files.
@@ -112,7 +112,7 @@ myk-pi-tools pr claude-md {pr_number}
 Otherwise:
 
 ```bash
-myk-pi-tools pr claude-md {{args}}
+myk-pi-tools pr claude-md $ARGUMENTS
 ```
 
 Store the output as `claude_md_content`.

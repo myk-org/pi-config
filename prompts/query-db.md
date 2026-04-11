@@ -141,7 +141,7 @@ The reviews database is located at `<project-root>/.claude/data/reviews.db`.
 
 ## Workflow
 
-1. Parse {{args}} to determine which query to run
+1. Parse $ARGUMENTS to determine which query to run
 2. Execute the appropriate myk-pi-tools db command
 3. Present results in a clear, formatted way
 4. For natural language questions, compose the appropriate query
