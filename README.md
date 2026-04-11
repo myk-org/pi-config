@@ -247,10 +247,12 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 - ❌ System files — not accessible
 
 **Network** — `--network host` shares the host network stack,
-so the container can reach any service your host can (LAN, localhost).
-This is required for local MCP servers, LiteLLM proxy, etc.
-If your LLM provider is cloud-based and you don't use local MCPs,
-you can omit `--network host` for full network isolation.
+so the container can reach any service your host can (LAN, localhost),
+and the host can reach services started inside the container.
+This is required for local MCP servers, LiteLLM proxy, and file preview
+(agents serve generated HTML/frontend files via HTTP for browser access).
+If your LLM provider is cloud-based, you don't use local MCPs,
+and you don't need file preview, you can omit `--network host`.
 
 ### Shell alias
 
