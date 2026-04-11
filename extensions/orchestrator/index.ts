@@ -9,7 +9,7 @@
  * - Notifications and status line
  */
 
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -26,6 +26,11 @@ import {
 import { Container, type SelectItem, SelectList, Input, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+
+/** Send a desktop notification via notify-send (Linux only, no-op if unavailable) */
+function terminalNotify(title: string, body: string): void {
+	try { execFileSync("notify-send", [title, body], { timeout: 2000, stdio: ["pipe", "pipe", "pipe"] }); } catch {}
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Subagent tool internals
@@ -306,6 +311,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No UI available for user interaction" }], isError: true };
 			}
 
+			terminalNotify("pi", "Action required");
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
 				let mode: "select" | "input" = params.options?.length ? "select" : "input";
 				let resolved = false;
@@ -771,10 +777,21 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	// ── Notification on task completion ─────────────────────────────────────
+	// ── Desktop notifications — notify when user attention is needed ─────
+
+	let agentEnded = false;
 
 	pi.on("agent_end", async () => {
-		try { execSync('notify-send "pi" "Task completed" 2>/dev/null || true', { timeout: 2000, stdio: ["pipe", "pipe", "pipe"] }); } catch {}
+		agentEnded = true;
+		terminalNotify("pi", "Task completed");
+	});
+
+	pi.on("turn_end", async () => {
+		if (agentEnded) {
+			agentEnded = false;
+			return; // agent_end already sent notification
+		}
+		terminalNotify("pi", "Waiting for input");
 	});
 
 	// ── Session start: validate required tools ───────────────────────────
