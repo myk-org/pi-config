@@ -1,5 +1,5 @@
 ---
-description: Run a prompt via acpx to any supported coding agent
+description: "Run a prompt via acpx to any coding agent (cursor, codex, gemini, claude, copilot, droid, kiro, opencode, qwen, etc.). Use for peer review, code review, or any task involving an external AI agent — /acpx-prompt <agent> <prompt>"
 ---
 
 # acpx Multi-Agent Prompt Command
