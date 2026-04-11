@@ -175,6 +175,7 @@ docker run --rm -it \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
+  -v "$HOME/.gitignore-global":/home/node/.gitignore-global:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.gh-config:ro \
   -e GH_CONFIG_DIR=/home/node/.gh-config \
@@ -266,6 +267,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
   -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
+  -v "$HOME/.gitignore-global":/home/node/.gitignore-global:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.gh-config:ro \
   -e GH_CONFIG_DIR=/home/node/.gh-config \
