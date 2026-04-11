@@ -171,8 +171,6 @@ docker build -t ghcr.io/myk-org/pi-config:latest .
 ```bash
 docker run --rm -it \
   --network host \
-  --security-opt seccomp=unconfined \
-  --shm-size=2g \
   --env-file /path/to/.env \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
@@ -262,8 +260,6 @@ Add to your `~/.bashrc` or `~/.zshrc`:
 alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   docker run --rm -it \
   --network host \
-  --security-opt seccomp=unconfined \
-  --shm-size=2g \
   --env-file "$HOME/.pi/.env" \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":/home/node/.pi:rw \
