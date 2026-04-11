@@ -1,18 +1,30 @@
 ---
-description: "Review uncommitted changes with 3 parallel reviewers — /review-local [BRANCH]"
+description: Review uncommitted changes or changes compared to a branch
 ---
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior,
-> or reproducible bug while executing this command — DO NOT work around it silently.
-> Ask the user: "Should I create a GitHub issue for this?"
-> Route to `myk-org/pi-config` for prompt/extension issues,
-> or to the relevant tool's repository for CLI issues.
+# Local Code Review Command
 
-Execute this workflow step by step.
+> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
+> while executing this command — DO NOT work around it silently. Ask the user:
+> "Should I create a GitHub issue for this?" Route to:
+> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
+> Do not silently skip steps or apply manual fixes that hide the root cause.
 
-## Step 1: Get the diff
+Review uncommitted changes or changes compared to a specified branch.
 
-**If `{{args}}` is provided (not empty):**
+**MANDATORY: This command MUST use 3 review agents in parallel via Task tool.**
+
+## Usage
+
+- `/review-local` - Review uncommitted changes (staged + unstaged)
+- `/review-local main` - Review changes compared to main branch
+- `/review-local feature/branch` - Review changes compared to specified branch
+
+## Workflow
+
+### Step 1: Get the diff
+
+**If argument is provided (`{{args}}` is not empty):**
 
 Compare current branch against the specified branch:
 
@@ -28,17 +40,15 @@ Get all uncommitted changes (staged + unstaged):
 git diff HEAD
 ```
 
-If the diff is empty, report "No changes to review" and stop.
+### Step 2: Route to review agents (MANDATORY)
 
-## Step 2: Route to review agents (MANDATORY)
+**CRITICAL: You MUST use the Task tool to call ALL 3 review agents IN PARALLEL (single message):**
 
-Use the subagent tool to run ALL 3 review agents IN PARALLEL (using the `tasks` array):
+- `superpowers:code-reviewer` - General code quality and maintainability
+- `pr-review-toolkit:code-reviewer` - Project guidelines and style adherence
+- `feature-dev:code-reviewer` - Bugs, logic errors, and security vulnerabilities
 
-1. **code-reviewer-quality** — General code quality and maintainability
-2. **code-reviewer-guidelines** — Project guidelines and style adherence
-3. **code-reviewer-security** — Bugs, logic errors, and security vulnerabilities
-
-Pass each agent the full diff and ask them to analyze for:
+Delegate to all 3 with the diff and ask them to analyze for:
 
 1. Code quality and best practices
 2. Potential bugs or logic errors
@@ -49,16 +59,10 @@ Pass each agent the full diff and ask them to analyze for:
 7. Code duplication
 8. Suggestions for improvement
 
-## Step 3: Present the review
+### Step 3: Present the review
 
-Merge and deduplicate findings from all 3 reviewers:
+Merge and deduplicate findings from all 3 reviewers. Display grouped by:
 
-- Same file/line + same issue = duplicate → keep most actionable
-- Conflicting suggestions → priority: security > correctness > performance > style
-- Complementary findings → keep both
-
-Display grouped by:
-
-- **Critical issues** (must fix)
-- **Warnings** (should fix)
-- **Suggestions** (nice to have)
+- Critical issues (must fix)
+- Warnings (should fix)
+- Suggestions (nice to have)
