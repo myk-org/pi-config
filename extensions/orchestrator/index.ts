@@ -23,7 +23,7 @@ import {
 	isToolCallEventType,
 	withFileMutationQueue,
 } from "@mariozechner/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Input, Markdown, Spacer, Text, matchesKey, Key } from "@mariozechner/pi-tui";
+import { Container, type SelectItem, SelectList, Input, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 
@@ -307,18 +307,30 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-				const container = new Container();
 				let mode: "select" | "input" = params.options?.length ? "select" : "input";
+				let resolved = false;
 
-				// Top border
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				const resolve = (value: string | null) => {
+					if (resolved) return;
+					resolved = true;
+					done(value);
+				};
 
-				// Question
-				container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
-				container.addChild(new Spacer(1));
-
-				// Free-text input (always created, shown/hidden based on mode)
+				// Free-text input with built-in callbacks
 				const input = new Input();
+				input.onSubmit = (value: string) => {
+					const text = value.trim();
+					if (text) resolve(text);
+				};
+				input.onEscape = () => {
+					if (selectList) {
+						mode = "select";
+						tui.requestRender();
+					} else {
+						resolve(null);
+					}
+				};
+
 				const inputLabel = new Text(theme.fg("dim", "Type your response • enter submit • esc back"), 1, 0);
 
 				// SelectList (only if options provided)
@@ -340,47 +352,60 @@ export default function (pi: ExtensionAPI) {
 							mode = "input";
 							tui.requestRender();
 						} else {
-							done(item.value);
+							resolve(item.value);
 						}
 					};
-					selectList.onCancel = () => done(null);
+					selectList.onCancel = () => resolve(null);
 				}
 
 				const selectHelp = new Text(theme.fg("dim", "↑↓ navigate • enter select • esc cancel"), 1, 0);
-
-				// Bottom border
+				const topBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
+				const question = new Text(theme.fg("accent", theme.bold(params.question)), 1, 0);
+				const spacer = new Spacer(1);
 				const bottomBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
 
+				// Build container for each mode without recreating components
+				const buildContainer = () => {
+					const c = new Container();
+					c.addChild(topBorder);
+					c.addChild(question);
+					c.addChild(spacer);
+					if (mode === "select" && selectList) {
+						c.addChild(selectList);
+						c.addChild(selectHelp);
+					} else {
+						c.addChild(input);
+						c.addChild(inputLabel);
+					}
+					c.addChild(bottomBorder);
+					return c;
+				};
+
+				let container = buildContainer();
+
+				let _focused = false;
+
 				return {
+					// Focusable interface — propagate to Input for IME cursor positioning
+					set focused(value: boolean) {
+						_focused = value;
+						input.focused = value;
+					},
+					get focused(): boolean {
+						return _focused;
+					},
+
 					render: (w: number) => {
-						// Rebuild container based on current mode
-						container.clear();
-						container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-						container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
-						container.addChild(new Spacer(1));
-						if (mode === "select" && selectList) {
-							container.addChild(selectList);
-							container.addChild(selectHelp);
-						} else {
-							container.addChild(input);
-							container.addChild(inputLabel);
-						}
-						container.addChild(bottomBorder);
+						container = buildContainer();
 						return container.render(w);
 					},
 					invalidate: () => container.invalidate(),
 					handleInput: (data: string) => {
+						if (resolved) return;
 						if (mode === "select" && selectList) {
 							selectList.handleInput(data);
 						} else {
-							if (matchesKey(data, Key.enter)) {
-								const text = input.getValue().trim();
-								if (text) done(text);
-							} else if (matchesKey(data, Key.escape)) {
-								if (selectList) { mode = "select"; } else { done(null); }
-							} else {
-								input.handleInput(data);
-							}
+							input.handleInput(data);
 						}
 						tui.requestRender();
 					},
