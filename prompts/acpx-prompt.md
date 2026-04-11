@@ -184,11 +184,13 @@ Follow this decision process:
      diff summary may include pre-existing edits
    - **Abort** — Stop here to handle changes manually
 3. Handle the response:
-   - **Commit first**: Stage all changes with `git add -A` and create a
-     checkpoint commit with the message `chore: checkpoint before acpx changes`.
-     After the commit, verify with `git status --porcelain -z` that the
-     output is empty (workspace is clean) before proceeding. If the commit
-     fails or the workspace is still dirty, display the raw output and abort.
+   - **Commit first**: Stage only tracked modified files with `git add -u`
+     and create a checkpoint commit with the message
+     `chore: checkpoint before acpx changes`. This avoids staging
+     untracked files (e.g., `.envrc`, `.claude/`) that may contain
+     secrets or local config. After the commit, proceed. If untracked
+     files remain, that is expected — do not treat them as dirty.
+     If the commit fails, display the raw output and abort.
    - **Continue anyway**: Proceed and remember the workspace was dirty.
    - **Abort**: Stop immediately.
 4. If the user declines the non-git prompt from step 1, abort.
