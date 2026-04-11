@@ -29,7 +29,11 @@ if [ ! -d "$SKILL_DIR" ]; then
     ln -sf /usr/local/lib/node_modules/agent-browser/skills/agent-browser "$SKILL_DIR"
 fi
 
-# Fix git excludesFile path for container (host .gitconfig may have host-specific paths)
-git config --global core.excludesFile /home/node/.gitignore-global
+# Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
+cp /home/node/.gitconfig /home/node/.gitconfig-local 2>/dev/null || true
+if [ -f /home/node/.gitconfig-local ]; then
+    export GIT_CONFIG_GLOBAL=/home/node/.gitconfig-local
+    git config --global core.excludesFile /home/node/.gitignore-global
+fi
 
 exec pi "$@"
