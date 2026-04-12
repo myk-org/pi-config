@@ -54,21 +54,23 @@ export function registerDiffity(pi: ExtensionAPI, inContainer: boolean): void {
     if (!port) return;
 
     try {
-      diffityProc = spawn("diffity", [
-        "--dark",
-        "--no-open",
-        "--quiet",
-        "--port", String(port),
-      ], {
-        cwd: ctx.cwd,
-        detached: true,
-        stdio: "ignore",
-      });
+      diffityProc = spawn(
+        "diffity",
+        ["--dark", "--no-open", "--quiet", "--port", String(port)],
+        {
+          cwd: ctx.cwd,
+          detached: true,
+          stdio: "ignore",
+        },
+      );
       diffityProc.unref();
       diffityPort = port;
 
       // Show link in status line
-      ctx.ui.setStatus("diffity", ctx.ui.theme.fg("accent", `📊 diff: http://localhost:${port}`));
+      ctx.ui.setStatus(
+        "diffity",
+        ctx.ui.theme.fg("accent", ` http://localhost:${port}`),
+      );
     } catch {
       // diffity failed to start, ignore silently
     }
@@ -76,7 +78,9 @@ export function registerDiffity(pi: ExtensionAPI, inContainer: boolean): void {
 
   pi.on("session_shutdown", () => {
     if (diffityProc) {
-      try { diffityProc.kill(); } catch {}
+      try {
+        diffityProc.kill();
+      } catch {}
       diffityProc = null;
       diffityPort = null;
     }
