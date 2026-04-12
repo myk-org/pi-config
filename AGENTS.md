@@ -34,9 +34,20 @@ pi-config/
 │   ├── test-runner.md
 │   └── worker.md
 ├── extensions/                      # Pi extensions (loaded automatically)
-│   ├── orchestrator/                # Orchestrator extension (injects rules)
-│   │   ├── agents.ts
-│   │   └── index.ts
+│   ├── orchestrator/                # Orchestrator extension
+│   │   ├── index.ts                 # Main entry — imports and wires all modules
+│   │   ├── agents.ts                # Agent discovery
+│   │   ├── ask-user.ts              # ask_user tool
+│   │   ├── async-agents.ts          # Async background agent infrastructure
+│   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
+│   │   ├── btw.ts                   # /btw command
+│   │   ├── enforcement.ts           # Python/git/dangerous command enforcement
+│   │   ├── git-helpers.ts           # Git utility functions
+│   │   ├── rules.ts                 # Rule injection (before_agent_start)
+│   │   ├── session-validation.ts    # Session start tool checks
+│   │   ├── status-line.ts           # Git status, notifications, container indicator
+│   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent
+│   │   └── utils.ts                 # Shared utilities
 │   └── acpx-provider/              # ACPX provider extension
 │       └── index.ts
 ├── prompts/                         # Prompt templates (slash commands)
