@@ -230,6 +230,7 @@ export function registerAsyncAgents(
       detached: true,
       stdio: "ignore",
       windowsHide: true,
+      env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
     });
     proc.unref();
 

@@ -377,6 +377,7 @@ export async function runSingleAgent(
         cwd: cwd ?? defaultCwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
       });
       let buf = "";
 
@@ -463,6 +464,10 @@ export function registerSubagentTool(
   pi: ExtensionAPI,
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[]) => { id: string; error?: string },
 ): void {
+  // Only the orchestrator (top-level pi) can spawn subagents.
+  // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
