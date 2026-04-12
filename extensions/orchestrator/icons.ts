@@ -4,7 +4,7 @@
  */
 
 export const ICON_SEP = " ❱ ";
-export const ICON_CONTAINER = "󰡨 ";
+export const ICON_CONTAINER = "󰡨";
 export const ICON_GIT_CLEAN = "";
 export const ICON_GIT_DIRTY = "";
 export const ICON_DIFF = "";
