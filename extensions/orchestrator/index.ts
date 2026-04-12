@@ -1906,6 +1906,15 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", updateBranch);
   pi.on("tool_execution_end", updateBranch);
 
+  // Poll git status every 5s for updates during long-running operations
+  let gitPollCtx: any = null;
+  pi.on("session_start", (_event, ctx) => { gitPollCtx = ctx; });
+  const gitPoller = setInterval(() => {
+    if (gitPollCtx) updateBranch(null, gitPollCtx);
+  }, 5000);
+  if (gitPoller.unref) gitPoller.unref();
+  pi.on("session_shutdown", () => { clearInterval(gitPoller); });
+
   // ── Container indicator in status line ─────────────────────────────────
 
   if (IN_CONTAINER) {
