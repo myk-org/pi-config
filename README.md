@@ -265,6 +265,7 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
 | `gcloud` | Google Cloud CLI (Vertex AI authentication) |
 | `procps` | Process utilities (ps, top, pgrep, pkill) |
+| `diffity` | Git diff viewer in the browser (auto-starts in container) |
 | `jq` | JSON processing |
 | `curl` | HTTP requests |
 

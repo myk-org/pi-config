@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
+import { registerDiffity } from "./diffity.js";
 import { registerEnforcement } from "./enforcement.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
@@ -34,5 +35,6 @@ export default function (pi: ExtensionAPI) {
   registerRules(pi);
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
+  registerDiffity(pi, IN_CONTAINER);
   registerSessionValidation(pi);
 }
