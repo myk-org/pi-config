@@ -200,7 +200,7 @@ docker build -t ghcr.io/myk-org/pi-config:latest .
 
 ```bash
 docker run --rm -it \
-  --name "pi-config-$(date +%s)" \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
   --network host \
   --env-file /path/to/.env \
   -v "$PWD":"$PWD":rw \
@@ -294,7 +294,7 @@ Add to your `~/.bashrc` or `~/.zshrc`:
 ```bash
 alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   docker run --rm -it \
-  --name "pi-config-$(date +%s)" \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
   --network host \
   --env-file "$HOME/.pi/.env" \
   -v "$PWD":"$PWD":rw \

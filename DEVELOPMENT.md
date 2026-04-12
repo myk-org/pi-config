@@ -23,6 +23,26 @@ pre-commit run --all-files
 uv run pytest
 ```
 
+## Debugging a Running Container
+
+Container names include the project directory: `pi-config-<project>-<timestamp>`.
+
+Requires [`fzf`](https://github.com/junegunn/fzf) on the host. Add to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+alias pi-docker-exec='docker exec -it $(docker ps --filter name=pi-config --format "{{.Names}}" | fzf --height 40% --reverse --prompt "Select container: ") bash'
+```
+
+This lists all running pi-config containers via `fzf` — select one and it drops you into a bash shell.
+
+Useful debug commands inside the container:
+
+```bash
+ps aux | grep pi              # Find stuck pi/subagent processes
+pkill -f 'pi.*--mode.*json'   # Kill stuck subagent processes
+cat /tmp/pi-async-agents/*/status.json  # Check async agent status
+```
+
 ## Python Dependencies
 
 Never use `pip` directly — always use `uv`:
