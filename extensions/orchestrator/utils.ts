@@ -8,8 +8,9 @@ import * as path from "node:path";
 
 /** Send a desktop notification via notify-send (Linux only, no-op if unavailable) */
 export function terminalNotify(title: string, body: string): void {
+  const project = path.basename(process.cwd());
   try {
-    execFileSync("notify-send", [title, body], {
+    execFileSync("notify-send", [`${title} (${project})`, body], {
       timeout: 2000,
       stdio: ["pipe", "pipe", "pipe"],
     });
