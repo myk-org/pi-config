@@ -7,6 +7,9 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 export function registerRules(pi: ExtensionAPI): void {
+  // Skip orchestrator rules in child processes — they are specialists, not managers
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
   pi.on("before_agent_start", async (event, _ctx) => {
     // Load rules from rules/ directory (sorted alphabetically)
     const rulesDir = path.resolve(__dirname, "..", "..", "rules");
