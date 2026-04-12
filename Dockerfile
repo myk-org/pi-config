@@ -53,7 +53,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
     chown -R node:node /home/node/.cache
 
 # Install pi coding agent, acpx, agent-browser, and pi-web-access
-RUN npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access
+RUN npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access diffity
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 USER node

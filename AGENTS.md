@@ -41,6 +41,7 @@ pi-config/
 │   │   ├── async-agents.ts          # Async background agent infrastructure
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
+│   │   ├── diffity.ts               # Auto-start diffity diff viewer (container)
 │   │   ├── enforcement.ts           # Python/git/dangerous command enforcement
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── rules.ts                 # Rule injection (before_agent_start)
