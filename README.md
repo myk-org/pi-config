@@ -79,6 +79,15 @@ pi install git:github.com/myk-org/pi-config
 uv tool install git+https://github.com/myk-org/pi-config
 ```
 
+#### Optional: Browser automation
+
+For browser automation (screenshots, form filling, web testing), install [agent-browser](https://github.com/nicobailon/agent-browser):
+
+```bash
+npm install -g agent-browser
+npx playwright install --with-deps chromium
+```
+
 The pi package installs globally to `~/.pi/agent/git/`. Agents are bundled with the extension and discovered automatically.
 
 ## Updating

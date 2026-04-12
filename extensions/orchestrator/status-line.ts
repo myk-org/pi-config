@@ -4,15 +4,43 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getCurrentBranch, runGit } from "./git-helpers.js";
+import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 
 export function registerStatusLine(
   pi: ExtensionAPI,
   IN_CONTAINER: boolean,
   terminalNotify: (title: string, body: string) => void,
 ): void {
+  // Track diffity URL so we can include it in the combined status
+  let diffityStatus = "";
+
+  // Called by diffity module to set its status text
+  const setDiffityStatus = (text: string) => {
+    diffityStatus = text;
+  };
+
+  // ── Combined status line builder ───────────────────────────────────────
+
+  const buildStatus = (ctx: any, gitPart: string) => {
+    const parts: string[] = [];
+
+    if (IN_CONTAINER) parts.push(ICON_CONTAINER);
+    if (diffityStatus) parts.push(diffityStatus);
+    parts.push(gitPart);
+
+    ctx.ui.setStatus("combined", parts.join(ctx.ui.theme.fg("dim", ICON_SEP)));
+    // Clear individual statuses to avoid duplicates
+    ctx.ui.setStatus("container", undefined);
+    ctx.ui.setStatus("git", undefined);
+    ctx.ui.setStatus("diffity", undefined);
+  };
+
   // ── Git branch status line ─────────────────────────────────────────────
 
+  let lastCtx: any = null;
+
   const updateBranch = (_event: any, ctx: any) => {
+    lastCtx = ctx;
     try {
       const b = getCurrentBranch(ctx.cwd);
       if (!b) return;
@@ -35,20 +63,22 @@ export function registerStatusLine(
       }
 
       const changes: string[] = [];
-      if (modified > 0) changes.push(ctx.ui.theme.fg("warning", `~${modified}`));
+      if (modified > 0)
+        changes.push(ctx.ui.theme.fg("warning", `~${modified}`));
       if (added > 0) changes.push(ctx.ui.theme.fg("success", `+${added}`));
       if (deleted > 0) changes.push(ctx.ui.theme.fg("error", `-${deleted}`));
       if (untracked > 0) changes.push(ctx.ui.theme.fg("dim", `?${untracked}`));
       const icon =
         changes.length > 0
-          ? ctx.ui.theme.fg("error", " ")
-          : ctx.ui.theme.fg("success", " ");
-      ctx.ui.setStatus(
-        "git",
-        changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon,
-      );
+          ? ctx.ui.theme.fg("error", ICON_GIT_DIRTY)
+          : ctx.ui.theme.fg("success", ICON_GIT_CLEAN);
+      const gitPart =
+        changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
+
+      buildStatus(ctx, gitPart);
     } catch {}
   };
+
   pi.on("session_start", updateBranch);
   pi.on("agent_end", updateBranch);
   pi.on("turn_end", updateBranch);
@@ -56,25 +86,16 @@ export function registerStatusLine(
   pi.on("tool_execution_end", updateBranch);
 
   // Poll git status every 5s for updates during long-running operations
-  let gitPollCtx: any = null;
   pi.on("session_start", (_event, ctx) => {
-    gitPollCtx = ctx;
+    lastCtx = ctx;
   });
   const gitPoller = setInterval(() => {
-    if (gitPollCtx) updateBranch(null, gitPollCtx);
+    if (lastCtx) updateBranch(null, lastCtx);
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
   pi.on("session_shutdown", () => {
     clearInterval(gitPoller);
   });
-
-  // ── Container indicator in status line ─────────────────────────────────
-
-  if (IN_CONTAINER) {
-    pi.on("session_start", (_event, ctx) => {
-      ctx.ui.setStatus("container", "󰡨 ");
-    });
-  }
 
   // ── Desktop notifications — notify when user attention is needed ─────
 
@@ -92,4 +113,6 @@ export function registerStatusLine(
     }
     terminalNotify("pi", "Waiting for input");
   });
+
+  return { setDiffityStatus } as any;
 }
