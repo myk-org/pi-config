@@ -9,8 +9,10 @@ LABEL maintainer="myk-org" \
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install base system dependencies
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     jq \
@@ -20,17 +22,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install GitHub CLI and Google Cloud SDK
+# Install GitHub CLI (signed repo, uses curl+gpg from above)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null && \
+      | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-      | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null && \
-    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
-      | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    apt-get update && apt-get install -y --no-install-recommends gh google-cloud-cli && \
+    apt-get update && apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Chromium via Playwright (--with-deps installs all system libs)
+RUN mkdir -p /home/node/.cache/ms-playwright && \
+    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
+    npx playwright install --with-deps chromium && \
+    chown -R node:node /home/node/.cache
 
 # Copy uv and uvx from official image
 COPY --from=uv /uv /usr/local/bin/uv
@@ -46,23 +50,15 @@ RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL
     curl -fsSL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
       | tar -C /usr/local/bin -xzf - oc
 
-# Install Chromium via Playwright (--with-deps installs all system libs)
-RUN mkdir -p /home/node/.cache/ms-playwright && \
-    PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
-    npx playwright install --with-deps chromium && \
-    chown -R node:node /home/node/.cache
-
-# Install pi coding agent, acpx, agent-browser, and pi-web-access
-RUN npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access diffity
+# Install pi coding agent, acpx, agent-browser, pi-web-access, diffity
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access diffity
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
-
-# Install Cursor Agent CLI
-RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 
 # Cursor auth: symlink from default location to mount-safe path
 # (mounting dirs under ~/.config/ breaks Chrome, so cursor auth mounts to ~/.cursor/)
@@ -75,10 +71,14 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 # acpx agents to register as pi model providers (comma-separated)
 ENV ACPX_AGENTS=""
 
-# Install uv tools
-RUN uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
+# Install uv tools (volatile — keep near bottom for cache efficiency)
+RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
+    uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
     uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git" && \
     uv tool install prek
+
+# Install Cursor Agent CLI (after uv tools — cursor changes rarely)
+RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
