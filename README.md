@@ -10,14 +10,19 @@ Single extension that provides:
 
 | Feature | Description |
 |---------|-------------|
-| **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain modes) |
+| **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete |
+| **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
+| **`/async-status` command** | Show status of running/completed background agents |
+| **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
 | **Python/pip enforcement** | Blocks `python`/`pip` — requires `uv`/`uvx` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
 | **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
 | **Rule injection** | Injects orchestrator routing rules into system prompt |
-| **Status line** | Shows current git branch |
-| **Notifications** | Desktop notification on task completion |
-| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db` |
+| **Git status** | Live git status in status line with colored icons — updates after every tool call |
+| **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
+| **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
+| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status` |
 
 ### Agents (23)
 
@@ -32,21 +37,43 @@ Single extension that provides:
 
 ### Prompt Templates
 
-| Prompt | Flow |
-|--------|------|
+| Prompt | Description |
+|--------|-------------|
 | `/implement <task>` | scout → planner → worker |
 | `/scout-and-plan <task>` | scout → planner |
 | `/implement-and-review <task>` | worker → 3 reviewers → worker |
+| `/pr-review [number\|url]` | Fetch PR diff, review with guidelines, post comments |
+| `/release [flags]` | Create GitHub release with changelog and version bumping |
+| `/review-local [branch]` | Review local uncommitted or branch changes |
+| `/review-handler [url] [--autorabbit]` | Process PR review comments, fix approved items |
+| `/refine-review <url>` | Refine and improve existing PR review comments |
+| `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
+| `/query-db <command>` | Query the review comments database |
+| `/acpx-prompt <agent> [--fix\|--peer] <prompt>` | Run prompts via external AI agents (cursor, codex, gemini, etc.) |
 
 ## Installation
 
-### Pi package (extension + agents + prompts)
+### Docker (Recommended)
+
+The recommended way to run pi-config is via the pre-built container image. It provides filesystem isolation, consistent tooling, and all dependencies pre-installed.
+
+```bash
+docker pull ghcr.io/myk-org/pi-config:latest
+```
+
+See the [Docker section](#docker-sandboxed-execution) below for the full run command and shell alias.
+
+### Native (without Docker)
+
+If you prefer running pi directly on your host:
+
+#### Pi package (extension + agents + prompts)
 
 ```bash
 pi install git:github.com/myk-org/pi-config
 ```
 
-### CLI tool (myk-pi-tools)
+#### CLI tool (myk-pi-tools)
 
 ```bash
 uv tool install git+https://github.com/myk-org/pi-config
@@ -56,16 +83,19 @@ The pi package installs globally to `~/.pi/agent/git/`. Agents are bundled with 
 
 ## Updating
 
-### Pi package
+### Docker
 
 ```bash
-pi update
+docker pull ghcr.io/myk-org/pi-config:latest
 ```
 
-### CLI tool
+The container runs `pi update` automatically on each start.
+
+### Native
 
 ```bash
-uv tool upgrade myk-pi-tools
+pi update                          # Pi package
+uv tool upgrade myk-pi-tools      # CLI tool
 ```
 
 After updating, run `/reload` in pi or restart pi to pick up changes.
@@ -234,6 +264,7 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | `kubectl` / `oc` | Kubernetes and OpenShift CLI |
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
 | `gcloud` | Google Cloud CLI (Vertex AI authentication) |
+| `procps` | Process utilities (ps, top, pgrep, pkill) |
 | `jq` | JSON processing |
 | `curl` | HTTP requests |
 
@@ -288,6 +319,10 @@ Then just run `pi-docker` from any project directory.
 > A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
 > If pi misbehaves or the warning persists, verify network connectivity
 > and run `pi install git:github.com/myk-org/pi-config` manually.
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, running tests, and managing Python dependencies.
 
 ## Prerequisites
 
