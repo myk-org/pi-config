@@ -13,6 +13,10 @@ pi -ne -e ~/git/pi-config/extensions/orchestrator/index.ts
 | `-ne` | Disables extension discovery so the installed version doesn't conflict |
 | `-e <path>` | Loads the extension from a local file for this session only |
 
+> **Note:** `-ne -e` only loads your extension in the **parent** process.
+> Subagent child processes load the **installed** version from `~/.pi/agent/`.
+> To test changes that affect child processes, run `pi update git:github.com/myk-org/pi-config` first.
+
 ## Running Tests
 
 ```bash
