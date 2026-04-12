@@ -1,0 +1,1 @@
+/home/myakove/git/pi-config/AGENTS.md
