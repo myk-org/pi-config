@@ -21,9 +21,10 @@ import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
 import { registerStatusLine } from "./status-line.js";
 import { registerSubagentTool } from "./subagent-tool.js";
-import { isRunningInContainer, terminalNotify } from "./utils.js";
+import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
+ensureGitSshTimeout();
 
 export default function (pi: ExtensionAPI) {
   registerAskUser(pi, terminalNotify);

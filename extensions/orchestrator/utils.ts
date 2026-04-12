@@ -17,6 +17,13 @@ export function terminalNotify(title: string, body: string): void {
   } catch {}
 }
 
+/** Set SSH timeout for git operations — prevents hung connections */
+export function ensureGitSshTimeout(): void {
+  if (!process.env.GIT_SSH_COMMAND) {
+    process.env.GIT_SSH_COMMAND = "ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10";
+  }
+}
+
 export function isRunningInContainer(): boolean {
   try {
     // Check for /.dockerenv (Docker) or /run/.containerenv (Podman)

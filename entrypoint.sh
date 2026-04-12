@@ -36,4 +36,10 @@ if [ -f /home/node/.gitconfig-local ]; then
     git config --global core.excludesFile /home/node/.gitignore-global
 fi
 
+# SSH timeout — detect dead connections during git fetch/push/pull
+# ServerAliveInterval: send keepalive every 15s
+# ServerAliveCountMax: give up after 3 missed responses (45s total)
+# ConnectTimeout: fail if can't connect within 10s
+export GIT_SSH_COMMAND="ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10"
+
 exec pi "$@"
