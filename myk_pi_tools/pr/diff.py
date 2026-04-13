@@ -143,16 +143,19 @@ def fetch_pr_files(pr_info: PRInfo) -> list[dict[str, Any]]:
                 "api",
                 f"/repos/{pr_info.owner}/{pr_info.repo}/pulls/{pr_info.pr_number}/files",
                 "--paginate",
-                "--slurp",
-                "--jq",
-                "flatten",
             ],
             capture_output=True,
             text=True,
             check=True,
             timeout=120,
         )
-        files_data = json.loads(result.stdout)
+        # --paginate returns concatenated JSON arrays, merge them
+        files_data = []
+        for item in json.loads(f"[{result.stdout.replace('][', ',')}]"):
+            if isinstance(item, list):
+                files_data.extend(item)
+            else:
+                files_data.append(item)
         # Extract relevant fields
         return [
             {

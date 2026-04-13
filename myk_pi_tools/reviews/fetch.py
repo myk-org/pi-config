@@ -307,7 +307,7 @@ def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
     """Run a REST API call via gh api. Returns parsed JSON or None on error."""
     cmd = ["gh", "api"]
     if paginate:
-        cmd.extend(["--paginate", "--slurp"])
+        cmd.append("--paginate")
     cmd.append(endpoint)
 
     try:
@@ -322,10 +322,9 @@ def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
         return None
 
     try:
-        data = json.loads(result.stdout)
-        # With --slurp, paginated results are wrapped in an outer array
-        # Flatten nested arrays for consistency
-        if paginate and isinstance(data, list):
+        # --paginate returns concatenated JSON arrays, merge them
+        if paginate:
+            data = json.loads(f"[{result.stdout.replace('][', ',')}]")
             merged = []
             for item in data:
                 if isinstance(item, list):
@@ -333,7 +332,7 @@ def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
                 else:
                     merged.append(item)
             return merged
-        return data
+        return json.loads(result.stdout)
     except json.JSONDecodeError as e:
         print_stderr(f"Error parsing JSON from gh api: {e}")
         return None
