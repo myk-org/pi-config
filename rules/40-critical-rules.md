@@ -14,6 +14,15 @@
 
 Always maximize parallelism. Only execute sequentially when there's a proven dependency between operations.
 
+### Async Agents (MANDATORY)
+
+**ALWAYS use `async: true`** for independent tasks that can run in parallel —
+code reviews, opening issues, research, analysis.
+Only use sync (default) when the **very next step** depends on this agent's output.
+
+❌ **WRONG:** Spawn 3 sync reviewers → wait for all → respond
+✅ **RIGHT:** Spawn 3 async reviewers → continue → results surface when complete
+
 ---
 
 ## User Interaction (MANDATORY)
