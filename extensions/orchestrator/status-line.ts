@@ -99,19 +99,8 @@ export function registerStatusLine(
 
   // ── Desktop notifications — notify when user attention is needed ─────
 
-  let agentEnded = false;
-
   pi.on("agent_end", async () => {
-    agentEnded = true;
     terminalNotify("pi", "Task completed");
-  });
-
-  pi.on("turn_end", async () => {
-    if (agentEnded) {
-      agentEnded = false;
-      return; // agent_end already sent notification
-    }
-    terminalNotify("pi", "Waiting for input");
   });
 
   return { setDiffityStatus } as any;
