@@ -39,15 +39,14 @@ export function registerEnforcement(pi: ExtensionAPI): void {
         reason: "Direct pre-commit forbidden. Use: prek run --all-files",
       };
 
-    // Warn on long sleep commands — suggest async subagent instead
+    // Block sleep inside loops — force async subagent for polling
+    const hasLoop = /\b(while|for|until)\b/.test(command);
     const sleepMatch = command.match(/\bsleep\s+(\d+)/);
-    if (sleepMatch && parseInt(sleepMatch[1], 10) > 5) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `⚠️ sleep ${sleepMatch[1]}s — consider using subagent with async: true for polling/monitoring instead of blocking the session.`,
-          "warning",
-        );
-      }
+    if (hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 5) {
+      return {
+        block: true,
+        reason: `⚠️ Polling loop with sleep ${sleepMatch[1]}s blocked. Use subagent with async: true for polling/monitoring tasks instead of blocking the session.`,
+      };
     }
 
     // Git protection
