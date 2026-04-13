@@ -256,6 +256,7 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | `-v "$HOME/.agents":/home/node/.agents:rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro` | Google Cloud ADC (for Claude via Vertex AI) |
 | `-v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro` | Cursor CLI auth (for acpx cursor models) |
+| `-v "$HOME/screenshots":/home/node/screenshots` | Share screenshots/images with the agent |
 
 ### What's in the image
 
@@ -317,6 +318,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.agents":/home/node/.agents:rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
   -v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro \
+  -v "$HOME/screenshots":/home/node/screenshots \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```
