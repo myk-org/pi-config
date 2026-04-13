@@ -95,12 +95,19 @@ export function registerEnforcement(pi: ExtensionAPI): void {
           };
       }
 
-      // Block pushes to protected branches + require user approval for all pushes
+      // Block pushes to protected branches
       if (hasGitSub(command, "push")) {
+        // Block if currently on main/master
         if (branch === "main" || branch === "master")
           return {
             block: true,
             reason: `⛔ Cannot push to '${branch}'. Create a feature branch.`,
+          };
+        // Block explicit push to main/master (e.g., git push origin main)
+        if (/\bgit\b.*\bpush\b.*\b(main|master)\b/.test(command))
+          return {
+            block: true,
+            reason: "⛔ Cannot push to main/master. Create a feature branch.",
           };
         if (branch) {
           const pr = getPrMergeStatus(branch, ctx.cwd);
