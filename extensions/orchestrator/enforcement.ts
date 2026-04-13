@@ -39,6 +39,17 @@ export function registerEnforcement(pi: ExtensionAPI): void {
         reason: "Direct pre-commit forbidden. Use: prek run --all-files",
       };
 
+    // Warn on long sleep commands — suggest async subagent instead
+    const sleepMatch = command.match(/\bsleep\s+(\d+)/);
+    if (sleepMatch && parseInt(sleepMatch[1], 10) > 5) {
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `⚠️ sleep ${sleepMatch[1]}s — consider using subagent with async: true for polling/monitoring instead of blocking the session.`,
+          "warning",
+        );
+      }
+    }
+
     // Git protection
     if (isGitRepo(ctx.cwd)) {
       // Block git add . / git add -A
