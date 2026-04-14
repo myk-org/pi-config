@@ -248,7 +248,10 @@ Run tests with coverage.
 
 ### Phase 7: Commit & Push
 
-Ask user if they want to commit and push changes.
+**If autorabbit mode is ON and there are ONLY CodeRabbit comments (no human, no qodo):**
+Skip asking the user — commit and push automatically.
+
+**Otherwise:** Ask user if they want to commit and push changes.
 
 Code must be pushed before posting replies so that reviewers can see the fixes
 when threads are resolved.
