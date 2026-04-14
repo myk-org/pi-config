@@ -292,5 +292,56 @@ export function registerAsyncAgents(
     },
   });
 
+  // /async-kill command — interactive selection
+  pi.registerCommand("async-kill", {
+    description: "Kill a running async agent",
+    handler: async (_args, ctx) => {
+      const running = Array.from(asyncState.jobs.values()).filter(
+        (j) => j.status === "running" || j.status === "queued",
+      );
+
+      if (running.length === 0) {
+        ctx.ui.notify("No running async agents.", "info");
+        return;
+      }
+
+      // Build selection list: agent name + task preview
+      const options = running.map((j) => {
+        const duration = formatDuration(Date.now() - j.startedAt);
+        const taskPreview = j.task.length > 60 ? j.task.slice(0, 60) + "..." : j.task;
+        return `${j.agent} (${duration}) — ${taskPreview}`;
+      });
+
+      const selected = await ctx.ui.select("Kill which async agent?", options);
+      if (!selected) return;
+
+      const idx = options.indexOf(selected);
+      if (idx < 0) return;
+
+      const job = running[idx];
+
+      // Read PID from status file
+      const status = readAsyncStatus(job.asyncDir);
+      if (status?.pid) {
+        try {
+          process.kill(status.pid, "SIGTERM");
+          // Also kill child processes
+          try { process.kill(-status.pid, "SIGTERM"); } catch {}
+        } catch {}
+      }
+
+      job.status = "failed";
+      job.updatedAt = Date.now();
+      updateAsyncWidget();
+      ctx.ui.notify(`Killed: ${job.agent}`, "info");
+
+      // Clean up after 5s
+      setTimeout(() => {
+        asyncState.jobs.delete(job.id);
+        updateAsyncWidget();
+      }, 5000);
+    },
+  });
+
   return { spawnAsyncAgent };
 }
