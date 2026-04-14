@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     git \
     openssh-client \
     procps \
+    psmisc \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI (signed repo, uses curl+gpg from above)
