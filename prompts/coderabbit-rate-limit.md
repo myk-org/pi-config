@@ -2,6 +2,12 @@
 description: Handle CodeRabbit rate limits - waits and re-triggers review automatically
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # CodeRabbit Rate Limit Handler
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
@@ -40,15 +46,15 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ### Phase 1: Detect PR
 
-If `$ARGUMENTS` contains a URL, extract owner/repo and PR number from it.
+If the raw arguments contain a URL, extract owner/repo and PR number from it.
 
-If `$ARGUMENTS` contains a number, detect the repository:
+If the raw arguments contain a number, detect the repository:
 
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner
 ```
 
-If `$ARGUMENTS` is empty, detect PR from current branch:
+If the raw arguments are empty, detect PR from current branch:
 
 ```bash
 gh pr view --json number,url -q '.number'

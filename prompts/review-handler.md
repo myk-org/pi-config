@@ -2,6 +2,12 @@
 description: Process ALL review sources (human, Qodo, CodeRabbit) from current PR
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # GitHub Review Handler
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
@@ -36,12 +42,6 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 - `/review-handler` - Process reviews from current PR
 - `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
 - `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
-
-## Raw Arguments
-
-```text
-$ARGUMENTS
-```
 
 ## Workflow
 

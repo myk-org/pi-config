@@ -2,6 +2,12 @@
 description: Create a GitHub release with automatic changelog generation
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # GitHub Release Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug

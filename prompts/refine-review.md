@@ -2,6 +2,12 @@
 description: Refine pending PR review comments with AI before submitting
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # Refine Pending Review Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
@@ -38,7 +44,7 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 
 ### Phase 1: Fetch Pending Review
 
-Parse `$ARGUMENTS` as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
+Parse the raw arguments above as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
 
 ```bash
 myk-pi-tools reviews pending-fetch "<PR_URL>"
