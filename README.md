@@ -323,6 +323,8 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
   -v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro \
   -v "$HOME/screenshots":/home/node/screenshots \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  --group-add $(stat -c '%g' /var/run/docker.sock) \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```
