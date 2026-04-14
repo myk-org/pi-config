@@ -278,7 +278,7 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | `procps` | Process utilities (ps, top, pgrep, pkill) |
 | `diffity` | Git diff viewer in the browser (auto-starts in container) |
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
-| `docker-safe` | Restricted Docker/Podman wrapper (ps, logs, inspect, top, stats) |
+| `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
 | `jq` | JSON processing |
 | `curl` | HTTP requests |
 
