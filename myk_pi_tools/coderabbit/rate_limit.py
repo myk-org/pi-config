@@ -40,10 +40,10 @@ def _run_gh(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
         return 1, "", f"Command timed out after {timeout}s"
 
 
-def _find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, str | None, str]:
+def _find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, str | None, str | None, str]:
     """Find the CodeRabbit summary comment on a PR.
 
-    Returns (comment_id, comment_body, error) where error is empty string on success.
+    Returns (comment_id, comment_body, updated_at, error) where error is empty string on success.
     """
     owner, repo = owner_repo.split("/")
     code, output, _stderr = _run_gh(
@@ -51,26 +51,28 @@ def _find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, 
             "api",
             f"repos/{owner}/{repo}/issues/{pr_number}/comments",
             "--jq",
-            f'[.[] | select(.body | contains("{_SUMMARY_MARKER}"))] | last | {{id: .id, body: .body}}',
+            f'[.[] | select(.body | contains("{_SUMMARY_MARKER}"))]'
+            f" | last | {{id: .id, body: .body, updated_at: .updated_at}}",
         ],
         timeout=60,
     )
 
     if code != 0:
-        return None, None, f"GitHub API error: {_stderr}" if _stderr else "GitHub API request failed"
+        return None, None, None, f"GitHub API error: {_stderr}" if _stderr else "GitHub API request failed"
 
     if not output:
-        return None, None, "No CodeRabbit summary comment found on this PR"
+        return None, None, None, "No CodeRabbit summary comment found on this PR"
 
     try:
         data = json.loads(output)
         comment_id = data.get("id")
         body = data.get("body")
+        updated_at = data.get("updated_at")
         if comment_id is None or body is None:
-            return None, None, "No CodeRabbit summary comment found on this PR"
-        return comment_id, body, ""
+            return None, None, None, "No CodeRabbit summary comment found on this PR"
+        return comment_id, body, updated_at, ""
     except (json.JSONDecodeError, KeyError):
-        return None, None, "Failed to parse CodeRabbit comment data"
+        return None, None, None, "Failed to parse CodeRabbit comment data"
 
 
 def _parse_wait_seconds(body: str) -> int | None:
@@ -113,7 +115,7 @@ def _is_rate_limited(owner_repo: str, pr_number: int) -> bool | str:
         "no_comment" if summary comment not found (likely replaced)
         "error" if API call failed
     """
-    _, body, error = _find_summary_comment(owner_repo, pr_number)
+    _, body, _, error = _find_summary_comment(owner_repo, pr_number)
     if body is None:
         if error == "No CodeRabbit summary comment found on this PR":
             return "no_comment"
@@ -137,7 +139,7 @@ def run_check(owner_repo: str, pr_number: int) -> int:
     if not _validate_owner_repo(owner_repo):
         return 1
 
-    comment_id, body, error = _find_summary_comment(owner_repo, pr_number)
+    comment_id, body, _, error = _find_summary_comment(owner_repo, pr_number)
 
     if comment_id is None or body is None:
         print(f"Error: {error}")

@@ -242,12 +242,10 @@ export function registerAsyncAgents(
     // Spawn detached
     const proc = spawn(process.execPath, spawnArgs, {
       cwd,
-      detached: true,
       stdio: "ignore",
       windowsHide: true,
       env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
     });
-    proc.unref();
 
     // Track the job
     const job: AsyncJob = {
@@ -335,33 +333,26 @@ export function registerAsyncAgents(
 
       const job = running[idx];
 
-      // Kill entire process tree recursively
+      // Kill entire process tree
       const status = readAsyncStatus(job.asyncDir);
-      if (status) {
-        const pids = [status.pid, status.childPid].filter(Boolean);
-        for (const p of pids) {
-          try {
-            // Get all descendant PIDs via pstree
-            const tree = execSync(`pstree -p ${p} 2>/dev/null || true`, { encoding: "utf-8", timeout: 5000 });
-            const allPids = tree.match(/\((\d+)\)/g)?.map((m: string) => parseInt(m.slice(1, -1), 10)) || [];
-            // Kill all descendants + the process itself
-            for (const pid of [...allPids, p]) {
-              try { process.kill(pid, "SIGTERM"); } catch {}
-            }
-          } catch {}
-        }
-        // Force kill survivors after 2s
-        setTimeout(() => {
-          for (const p of pids) {
-            try {
-              const tree = execSync(`pstree -p ${p} 2>/dev/null || true`, { encoding: "utf-8", timeout: 5000 });
-              const allPids = tree.match(/\((\d+)\)/g)?.map((m: string) => parseInt(m.slice(1, -1), 10)) || [];
-              for (const pid of [...allPids, p]) {
-                try { process.kill(pid, "SIGKILL"); } catch {}
-              }
-            } catch {}
+      if (status?.pid) {
+        const killLog: string[] = [];
+        try {
+          const tree = execSync(`pstree -p ${status.pid} 2>&1`, { encoding: "utf-8", timeout: 3000 });
+          killLog.push(`pstree output: ${tree.trim()}`);
+          const matches = tree.match(/\((\d+)\)/g);
+          const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
+          killLog.push(`PIDs to kill: ${allPids.join(", ")}`);
+          for (const pid of allPids) {
+            try { process.kill(pid, "SIGKILL"); killLog.push(`killed ${pid}`); } catch (e: any) { killLog.push(`failed ${pid}: ${e.message}`); }
           }
-        }, 2000);
+        } catch (e: any) {
+          killLog.push(`pstree failed: ${e.message}`);
+          try { process.kill(status.pid, "SIGKILL"); killLog.push(`killed runner ${status.pid}`); } catch {}
+          if (status.childPid) try { process.kill(status.childPid, "SIGKILL"); killLog.push(`killed child ${status.childPid}`); } catch {}
+        }
+        const logPath = path.join(job.asyncDir, "kill.log");
+        fs.writeFileSync(logPath, killLog.join("\n"), "utf-8");
       }
 
       job.status = "failed";

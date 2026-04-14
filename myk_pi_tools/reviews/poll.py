@@ -6,6 +6,8 @@ atomic operation so the AI cannot skip the rate limit check.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 _RATE_LIMIT_BUFFER_SECONDS = 30
 
 
@@ -41,16 +43,29 @@ def run(review_url: str = "") -> int:
 
     # Step 2: Check CodeRabbit rate limit
     print_stderr(f"[poll] Checking CodeRabbit rate limit for {owner_repo}#{pr_number}...")
-    comment_id, body, error = _find_summary_comment(owner_repo, int(pr_number))
+    comment_id, body, updated_at, error = _find_summary_comment(owner_repo, int(pr_number))
 
     if comment_id is not None and body is not None and _RATE_LIMITED_MARKER in body:
-        # Rate limited -- parse wait time and trigger
+        # Rate limited -- parse wait time and subtract elapsed time
         wait_seconds = _parse_wait_seconds(body)
         if wait_seconds is None:
             print_stderr("[poll] Warning: Rate limited but could not parse wait time. Using 300s default.")
             wait_seconds = 300
 
-        total_wait = wait_seconds + _RATE_LIMIT_BUFFER_SECONDS
+        # Calculate remaining wait time based on when the comment was posted
+        remaining = wait_seconds
+        if updated_at:
+            try:
+                comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                elapsed = (datetime.now(timezone.utc) - comment_time).total_seconds()
+                remaining = max(0, wait_seconds - int(elapsed))
+                print_stderr(
+                    f"[poll] Rate limit posted {int(elapsed)}s ago. Original: {wait_seconds}s, remaining: {remaining}s"
+                )
+            except (ValueError, TypeError):
+                print_stderr("[poll] Warning: Could not parse comment timestamp. Using full wait time.")
+
+        total_wait = remaining + _RATE_LIMIT_BUFFER_SECONDS
         print_stderr(f"[poll] CodeRabbit is rate limited. Waiting {total_wait}s then triggering re-review...")
 
         # Step 3: Trigger (waits internally, posts trigger, polls until review starts)
