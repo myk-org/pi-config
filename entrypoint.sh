@@ -22,12 +22,6 @@ if ! grep -q 'pi-web-access' "$HOME/.pi/agent/settings.json" 2>/dev/null; then
     pi install npm:pi-web-access 2>/dev/null || true
 fi
 
-# agent-browser skill (link to installed npm package)
-SKILL_DIR="$HOME/.pi/agent/skills/agent-browser"
-if [ ! -d "$SKILL_DIR" ]; then
-    mkdir -p "$(dirname "$SKILL_DIR")"
-    ln -sf /usr/local/lib/node_modules/agent-browser/skills/agent-browser "$SKILL_DIR"
-fi
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
 cp /home/node/.gitconfig /home/node/.gitconfig-local 2>/dev/null || true
