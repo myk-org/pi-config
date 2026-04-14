@@ -2,6 +2,12 @@
 description: "Run a prompt via acpx to any coding agent (cursor, codex, gemini, claude, copilot, droid, kiro, opencode, qwen, etc.). Use for peer review, code review, or any task involving an external AI agent — /acpx-prompt <agent> <prompt>"
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # acpx Multi-Agent Prompt Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
@@ -86,7 +92,7 @@ The underlying coding agent must be installed separately. acpx auto-downloads AC
 
 ### Step 2: Parse Arguments
 
-Parse `$ARGUMENTS` to extract the agent name(s) and prompt:
+Read the **Raw Arguments** section above. Parse the text to extract the agent name(s) and prompt:
 
 1. The **first token** is the agent specification (required). Format:
    `agent[:model]` or comma-separated `agent1[:model1],agent2[:model2],...`

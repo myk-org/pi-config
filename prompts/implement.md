@@ -1,9 +1,16 @@
 ---
 description: "Scout → plan → implement a task — /implement <task>"
 ---
+
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 Use the subagent tool with a chain of 3 agents:
 
-1. **scout** — Explore the codebase to find all relevant code for: {{task}}
+1. **scout** — Explore the codebase to find all relevant code for the task described in the raw arguments above.
    Return a compressed summary of file locations, key functions, and dependencies.
 
 2. **planner** — Based on {previous}, create a detailed implementation plan:
@@ -16,5 +23,3 @@ Use the subagent tool with a chain of 3 agents:
    - Make all code changes
    - Follow project conventions
    - Handle edge cases identified in the plan
-
-Task: {{task}}

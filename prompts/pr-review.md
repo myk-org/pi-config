@@ -2,6 +2,12 @@
 description: Review a GitHub PR and post inline comments on selected findings
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # GitHub PR Review Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
@@ -47,7 +53,7 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 
 ### Phase 0: PR Detection (when no arguments provided)
 
-If `$ARGUMENTS` is empty:
+If the raw arguments are empty:
 
 1. Detect PR from current branch:
 
@@ -79,7 +85,7 @@ If `$ARGUMENTS` is empty:
 
 4. Use `{pr_number}` for subsequent CLI commands
 
-If `$ARGUMENTS` contains a PR number or URL, use it directly.
+If the raw arguments contain a PR number or URL, use it directly.
 
 ### Phase 1a: Data Fetching
 
@@ -94,7 +100,7 @@ myk-pi-tools pr diff {pr_number}
 Otherwise:
 
 ```bash
-myk-pi-tools pr diff $ARGUMENTS
+myk-pi-tools pr diff <raw_arguments>
 ```
 
 Store the JSON output containing metadata, diff, and files.
@@ -112,7 +118,7 @@ myk-pi-tools pr claude-md {pr_number}
 Otherwise:
 
 ```bash
-myk-pi-tools pr claude-md $ARGUMENTS
+myk-pi-tools pr claude-md <raw_arguments>
 ```
 
 Store the output as `claude_md_content`.

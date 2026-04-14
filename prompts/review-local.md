@@ -2,6 +2,12 @@
 description: Review uncommitted changes or changes compared to a branch
 ---
 
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
 # Local Code Review Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
@@ -24,12 +30,12 @@ Review uncommitted changes or changes compared to a specified branch.
 
 ### Step 1: Get the diff
 
-**If argument is provided (`$ARGUMENTS` is not empty):**
+**If the raw arguments are not empty:**
 
 Compare current branch against the specified branch:
 
 ```bash
-git diff "$ARGUMENTS"...HEAD
+git diff "<raw_arguments>"...HEAD
 ```
 
 **If no argument provided:**
