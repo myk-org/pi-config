@@ -1,0 +1,76 @@
+#!/bin/bash
+# docker-safe — restricted Docker/Podman CLI wrapper
+# Only allows read-only inspection commands. Blocks anything that modifies state.
+# Supports both Docker and Podman via --runtime flag or DOCKER_SAFE_RUNTIME env var.
+
+set -euo pipefail
+
+ALLOWED_COMMANDS="ps|logs|inspect|top|stats|port|diff|images|version|info"
+
+usage() {
+    cat <<EOF
+docker-safe — read-only Docker/Podman wrapper
+
+Usage: docker-safe [--runtime docker|podman] <command> [args]
+
+Allowed commands:
+  docker-safe ps [args]          List containers
+  docker-safe logs [args]        View container logs
+  docker-safe inspect [args]     Inspect container/image
+  docker-safe top [args]         Display running processes
+  docker-safe stats [args]       Display resource usage
+  docker-safe port [args]        List port mappings
+  docker-safe diff [args]        Show filesystem changes
+  docker-safe images [args]      List images
+  docker-safe version            Show Docker/Podman version
+  docker-safe info               Show system info
+
+Options:
+  --runtime docker|podman    Select runtime (default: docker)
+                             Can also set DOCKER_SAFE_RUNTIME env var
+
+All other commands (exec, run, rm, cp, build, etc.) are blocked.
+EOF
+    exit 1
+}
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+# Parse --runtime flag
+RUNTIME="${DOCKER_SAFE_RUNTIME:-docker}"
+if [ "$1" = "--runtime" ]; then
+    if [ $# -lt 2 ]; then
+        echo "⛔ --runtime requires a value: docker or podman" >&2
+        exit 1
+    fi
+    RUNTIME="$2"
+    shift 2
+fi
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+# Validate runtime
+if [ "$RUNTIME" != "docker" ] && [ "$RUNTIME" != "podman" ]; then
+    echo "⛔ Invalid runtime '$RUNTIME'. Use 'docker' or 'podman'." >&2
+    exit 1
+fi
+
+if ! command -v "$RUNTIME" &>/dev/null; then
+    echo "⛔ $RUNTIME CLI not found." >&2
+    exit 1
+fi
+
+CMD="$1"
+
+# Check if command is allowed
+if ! echo "$CMD" | grep -qwE "^($ALLOWED_COMMANDS)$"; then
+    echo "⛔ docker-safe: '$CMD' is not allowed. Only read-only commands permitted." >&2
+    echo "Allowed: ${ALLOWED_COMMANDS//|/, }" >&2
+    exit 1
+fi
+
+exec "$RUNTIME" "$@"
