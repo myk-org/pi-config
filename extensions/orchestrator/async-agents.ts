@@ -335,20 +335,33 @@ export function registerAsyncAgents(
 
       const job = running[idx];
 
-      // Kill runner + child pi process tree
+      // Kill entire process tree recursively
       const status = readAsyncStatus(job.asyncDir);
       if (status) {
         const pids = [status.pid, status.childPid].filter(Boolean);
-        try {
-          const killCmd = pids.map((p: number) => `pkill -TERM -P ${p} 2>/dev/null; kill ${p} 2>/dev/null`).join("; ");
-          execSync(`${killCmd} || true`, { timeout: 5000, stdio: "ignore" });
-          setTimeout(() => {
+        for (const p of pids) {
+          try {
+            // Get all descendant PIDs via pstree
+            const tree = execSync(`pstree -p ${p} 2>/dev/null || true`, { encoding: "utf-8", timeout: 5000 });
+            const allPids = tree.match(/\((\d+)\)/g)?.map((m: string) => parseInt(m.slice(1, -1), 10)) || [];
+            // Kill all descendants + the process itself
+            for (const pid of [...allPids, p]) {
+              try { process.kill(pid, "SIGTERM"); } catch {}
+            }
+          } catch {}
+        }
+        // Force kill survivors after 2s
+        setTimeout(() => {
+          for (const p of pids) {
             try {
-              const forceCmd = pids.map((p: number) => `pkill -KILL -P ${p} 2>/dev/null; kill -9 ${p} 2>/dev/null`).join("; ");
-              execSync(`${forceCmd} || true`, { timeout: 5000, stdio: "ignore" });
+              const tree = execSync(`pstree -p ${p} 2>/dev/null || true`, { encoding: "utf-8", timeout: 5000 });
+              const allPids = tree.match(/\((\d+)\)/g)?.map((m: string) => parseInt(m.slice(1, -1), 10)) || [];
+              for (const pid of [...allPids, p]) {
+                try { process.kill(pid, "SIGKILL"); } catch {}
+              }
             } catch {}
-          }, 2000);
-        } catch {}
+          }
+        }, 2000);
       }
 
       job.status = "failed";
