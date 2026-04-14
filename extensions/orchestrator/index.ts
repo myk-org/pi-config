@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI) {
   registerAskUser(pi, terminalNotify);
   const { spawnAsyncAgent } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent);
-  registerEnforcement(pi);
+  registerEnforcement(pi, IN_CONTAINER);
   registerRules(pi);
   const { setDiffityStatus } = registerStatusLine(pi, IN_CONTAINER, terminalNotify) as any;
   registerBtw(pi);

@@ -15,7 +15,7 @@ import {
   isGitRepo,
 } from "./git-helpers.js";
 
-export function registerEnforcement(pi: ExtensionAPI): void {
+export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("bash", event)) return undefined;
     const command = event.input.command;
@@ -39,8 +39,8 @@ export function registerEnforcement(pi: ExtensionAPI): void {
         reason: "Direct pre-commit forbidden. Use: prek run --all-files",
       };
 
-    // Block direct docker/podman CLI — force docker-safe wrapper
-    if (/(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower) && !cmdLower.includes("docker-safe")) {
+    // Block direct docker/podman CLI in container — force docker-safe wrapper
+    if (inContainer && /(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower) && !cmdLower.includes("docker-safe")) {
       return {
         block: true,
         reason: "Direct docker/podman forbidden. Use docker-safe for read-only container inspection (ps, logs, inspect, top, stats).",
