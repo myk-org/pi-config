@@ -95,6 +95,53 @@ export function getPrMergeStatus(
   }
 }
 
+// Cache protected branches per repo (fetched once per session)
+const protectedBranchesCache = new Map<string, Set<string>>();
+
+export function getProtectedBranches(cwd?: string): Set<string> {
+  const repoKey = cwd || process.cwd();
+  if (protectedBranchesCache.has(repoKey)) return protectedBranchesCache.get(repoKey)!;
+
+  const fallback = new Set(["main", "master"]);
+
+  if (!isGithubRepo(cwd)) {
+    protectedBranchesCache.set(repoKey, fallback);
+    return fallback;
+  }
+
+  // Get owner/repo from remote URL
+  const remote = runGit(["remote", "get-url", "origin"], cwd);
+  if (remote.code !== 0) {
+    protectedBranchesCache.set(repoKey, fallback);
+    return fallback;
+  }
+
+  const match = remote.stdout.match(/github\.com[:/]([^/]+\/[^/.]+)/);
+  if (!match) {
+    protectedBranchesCache.set(repoKey, fallback);
+    return fallback;
+  }
+
+  const repo = match[1];
+  try {
+    const out = execSync(
+      `gh api repos/${repo}/branches --paginate --jq '.[] | select(.protected==true) | .name'`,
+      { cwd, timeout: 10000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const branches = new Set(
+      out.split("\n").map((b) => b.trim()).filter(Boolean),
+    );
+    // Always include main/master as fallback
+    branches.add("main");
+    branches.add("master");
+    protectedBranchesCache.set(repoKey, branches);
+    return branches;
+  } catch {
+    protectedBranchesCache.set(repoKey, fallback);
+    return fallback;
+  }
+}
+
 export function hasGitSub(command: string, sub: string): boolean {
   return new RegExp(
     `\\bgit\\b(?:\\s+(?:-[a-zA-Z]\\s+\\S+|-\\S+))*\\s+${sub}\\b`,
