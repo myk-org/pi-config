@@ -2,7 +2,7 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
