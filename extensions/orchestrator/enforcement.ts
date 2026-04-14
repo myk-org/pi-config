@@ -89,9 +89,6 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           }
         }
       }
-            "⛔ 'git add .' / 'git add -A' forbidden. Stage specific files.",
-        };
-      }
 
       // Block --no-verify
       if (hasGitSub(command, "commit") && command.includes("--no-verify")) {
