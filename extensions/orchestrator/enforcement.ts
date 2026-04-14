@@ -8,6 +8,7 @@ import {
   DANGEROUS,
   getCurrentBranch,
   getMainBranch,
+  getProtectedBranches,
   getPrMergeStatus,
   hasGitSub,
   isBranchAhead,
@@ -81,6 +82,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
       const branch = getCurrentBranch(ctx.cwd);
       const mainBranch = getMainBranch(ctx.cwd);
+      const protectedBranches = getProtectedBranches(ctx.cwd);
 
       // Block commits to protected branches
       if (hasGitSub(command, "commit")) {
@@ -90,10 +92,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason:
               "⛔ Detached HEAD. Create a branch first: git checkout -b my-branch",
           };
-        if (branch === "main" || branch === "master")
+        if (protectedBranches.has(branch))
           return {
             block: true,
-            reason: `⛔ Cannot commit to '${branch}'. Create a feature branch.`,
+            reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.`,
           };
 
         const pr = getPrMergeStatus(branch, ctx.cwd);
@@ -115,18 +117,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
       // Block pushes to protected branches
       if (hasGitSub(command, "push")) {
-        // Block if currently on main/master
-        if (branch === "main" || branch === "master")
+        // Block if currently on a protected branch
+        if (branch && protectedBranches.has(branch))
           return {
             block: true,
-            reason: `⛔ Cannot push to '${branch}'. Create a feature branch.`,
+            reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.`,
           };
-        // Block explicit push to main/master (e.g., git push origin main)
-        if (/\bgit\b.*\bpush\b.*\b(main|master)\b/.test(command))
-          return {
-            block: true,
-            reason: "⛔ Cannot push to main/master. Create a feature branch.",
-          };
+        // Block explicit push to any protected branch (e.g., git push origin v2.10)
+        for (const pb of protectedBranches) {
+          if (new RegExp(`\\bgit\\b.*\\bpush\\b.*\\b${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(command))
+            return {
+              block: true,
+              reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+            };
+        }
         if (branch) {
           const pr = getPrMergeStatus(branch, ctx.cwd);
           if (pr.merged)
