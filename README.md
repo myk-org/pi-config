@@ -257,6 +257,8 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro` | Google Cloud ADC (for Claude via Vertex AI) |
 | `-v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro` | Cursor CLI auth (for acpx cursor models) |
 | `-v "$HOME/screenshots":/home/node/screenshots` | Share screenshots/images with the agent |
+| `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
+| `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
 
 ### What's in the image
 
@@ -275,6 +277,8 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
 | `procps` | Process utilities (ps, top, pgrep, pkill) |
 | `diffity` | Git diff viewer in the browser (auto-starts in container) |
+| `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
+| `docker-safe` | Restricted Docker/Podman wrapper (ps, logs, inspect, top, stats) |
 | `jq` | JSON processing |
 | `curl` | HTTP requests |
 
