@@ -44,6 +44,17 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
         "myk-pi-tools — PR/release/review CLI. Install: uv tool install git+https://github.com/myk-org/pi-config",
       );
 
+    // Check agent-browser skill
+    const agentBrowserPaths = [
+      path.join(process.env.HOME || "", ".agents", "skills", "agent-browser", "SKILL.md"),
+      path.join(process.env.HOME || "", ".pi", "agent", "skills", "agent-browser", "SKILL.md"),
+    ];
+    if (!agentBrowserPaths.some((p) => fs.existsSync(p))) {
+      optional.push(
+        "agent-browser skill — browser automation. Install: npx skills add vercel-labs/agent-browser@agent-browser -g -y",
+      );
+    }
+
     // Check prek only if .pre-commit-config.yaml exists
     try {
       if (
