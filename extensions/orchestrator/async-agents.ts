@@ -101,6 +101,21 @@ export function registerAsyncAgents(
           job.status = status.state;
           job.updatedAt = status.lastUpdate ?? Date.now();
           if (status.exitCode !== undefined) job.exitCode = status.exitCode;
+
+          // Check if process is actually alive — clean up zombies
+          if (job.status === "running" && status.pid) {
+            try { process.kill(status.pid, 0); } catch {
+              job.status = "failed";
+              job.updatedAt = Date.now();
+            }
+          }
+        }
+      }
+
+      // Remove completed/failed jobs older than 30s
+      for (const [id, job] of asyncState.jobs.entries()) {
+        if ((job.status === "complete" || job.status === "failed") && Date.now() - job.updatedAt > 30000) {
+          asyncState.jobs.delete(id);
         }
       }
       updateAsyncWidget();
@@ -320,13 +335,19 @@ export function registerAsyncAgents(
 
       const job = running[idx];
 
-      // Read PID from status file
+      // Kill runner + child pi process tree
       const status = readAsyncStatus(job.asyncDir);
-      if (status?.pid) {
+      if (status) {
+        const pids = [status.pid, status.childPid].filter(Boolean);
         try {
-          process.kill(status.pid, "SIGTERM");
-          // Also kill child processes
-          try { process.kill(-status.pid, "SIGTERM"); } catch {}
+          const killCmd = pids.map((p: number) => `pkill -TERM -P ${p} 2>/dev/null; kill ${p} 2>/dev/null`).join("; ");
+          execSync(`${killCmd} || true`, { timeout: 5000, stdio: "ignore" });
+          setTimeout(() => {
+            try {
+              const forceCmd = pids.map((p: number) => `pkill -KILL -P ${p} 2>/dev/null; kill -9 ${p} 2>/dev/null`).join("; ");
+              execSync(`${forceCmd} || true`, { timeout: 5000, stdio: "ignore" });
+            } catch {}
+          }, 2000);
         } catch {}
       }
 

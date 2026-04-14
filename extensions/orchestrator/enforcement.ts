@@ -14,6 +14,7 @@ import {
   isBranchAhead,
   isBranchMerged,
   isGitRepo,
+  runGit,
 } from "./git-helpers.js";
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {

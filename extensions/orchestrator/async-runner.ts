@@ -32,6 +32,7 @@ interface StatusPayload {
   endedAt?: number;
   lastUpdate: number;
   pid: number;
+  childPid?: number;
   cwd: string;
   exitCode?: number | null;
   error?: string;
@@ -76,6 +77,12 @@ async function run(config: RunConfig): Promise<void> {
       cwd: config.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    // Store child PID in status file so /async-kill can find it
+    if (proc.pid) {
+      status.childPid = proc.pid;
+      writeJson(statusPath, status);
+    }
 
     proc.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
