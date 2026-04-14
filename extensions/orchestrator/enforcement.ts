@@ -72,6 +72,27 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         };
       }
 
+      // Block staging gitignored files
+      if (hasGitSub(command, "add") && !/\bgit\b.*\badd\b\s+(\.|--all|-A)\b/.test(command)) {
+        // Extract file paths from git add command
+        const addMatch = command.match(/\bgit\b.*\badd\b\s+(.+)/);
+        if (addMatch) {
+          const files = addMatch[1].split(/\s+/).filter((f) => !f.startsWith("-"));
+          for (const file of files) {
+            const checkIgnored = runGit(["check-ignore", "-q", file], ctx.cwd);
+            if (checkIgnored.code === 0) {
+              return {
+                block: true,
+                reason: `⛔ '${file}' is in .gitignore. Do not stage ignored files.`,
+              };
+            }
+          }
+        }
+      }
+            "⛔ 'git add .' / 'git add -A' forbidden. Stage specific files.",
+        };
+      }
+
       // Block --no-verify
       if (hasGitSub(command, "commit") && command.includes("--no-verify")) {
         return {
