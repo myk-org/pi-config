@@ -101,6 +101,21 @@ export function registerAsyncAgents(
           job.status = status.state;
           job.updatedAt = status.lastUpdate ?? Date.now();
           if (status.exitCode !== undefined) job.exitCode = status.exitCode;
+
+          // Check if process is actually alive — clean up zombies
+          if (job.status === "running" && status.pid) {
+            try { process.kill(status.pid, 0); } catch {
+              job.status = "failed";
+              job.updatedAt = Date.now();
+            }
+          }
+        }
+      }
+
+      // Remove completed/failed jobs older than 30s
+      for (const [id, job] of asyncState.jobs.entries()) {
+        if ((job.status === "complete" || job.status === "failed") && Date.now() - job.updatedAt > 30000) {
+          asyncState.jobs.delete(id);
         }
       }
       updateAsyncWidget();
@@ -227,12 +242,10 @@ export function registerAsyncAgents(
     // Spawn detached
     const proc = spawn(process.execPath, spawnArgs, {
       cwd,
-      detached: true,
       stdio: "ignore",
       windowsHide: true,
       env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
     });
-    proc.unref();
 
     // Track the job
     const job: AsyncJob = {
@@ -320,25 +333,26 @@ export function registerAsyncAgents(
 
       const job = running[idx];
 
-      // Kill the process tree
+      // Kill entire process tree
       const status = readAsyncStatus(job.asyncDir);
       if (status?.pid) {
+        const killLog: string[] = [];
         try {
-          // pkill -P kills all children recursively
-          execSync(`pkill -TERM -P ${status.pid} 2>/dev/null; kill ${status.pid} 2>/dev/null || true`, {
-            timeout: 5000,
-            stdio: "ignore",
-          });
-          // Wait briefly then force kill any survivors
-          setTimeout(() => {
-            try {
-              execSync(`pkill -KILL -P ${status.pid} 2>/dev/null; kill -9 ${status.pid} 2>/dev/null || true`, {
-                timeout: 5000,
-                stdio: "ignore",
-              });
-            } catch {}
-          }, 2000);
-        } catch {}
+          const tree = execSync(`pstree -p ${status.pid} 2>&1`, { encoding: "utf-8", timeout: 3000 });
+          killLog.push(`pstree output: ${tree.trim()}`);
+          const matches = tree.match(/\((\d+)\)/g);
+          const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
+          killLog.push(`PIDs to kill: ${allPids.join(", ")}`);
+          for (const pid of allPids) {
+            try { process.kill(pid, "SIGKILL"); killLog.push(`killed ${pid}`); } catch (e: any) { killLog.push(`failed ${pid}: ${e.message}`); }
+          }
+        } catch (e: any) {
+          killLog.push(`pstree failed: ${e.message}`);
+          try { process.kill(status.pid, "SIGKILL"); killLog.push(`killed runner ${status.pid}`); } catch {}
+          if (status.childPid) try { process.kill(status.childPid, "SIGKILL"); killLog.push(`killed child ${status.childPid}`); } catch {}
+        }
+        const logPath = path.join(job.asyncDir, "kill.log");
+        fs.writeFileSync(logPath, killLog.join("\n"), "utf-8");
       }
 
       job.status = "failed";

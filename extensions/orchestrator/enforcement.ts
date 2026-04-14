@@ -14,6 +14,7 @@ import {
   isBranchAhead,
   isBranchMerged,
   isGitRepo,
+  runGit,
 } from "./git-helpers.js";
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
@@ -90,7 +91,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         }
       }
 
-      // Block --no-verify
+      // Block hooks bypass
+      if (command.includes("core.hooksPath=/dev/null") || command.includes("core.hooksPath=\"/dev/null\"")) {
+        return {
+          block: true,
+          reason: "⛔ Bypassing git hooks via core.hooksPath=/dev/null is forbidden.",
+        };
+      }
       if (hasGitSub(command, "commit") && command.includes("--no-verify")) {
         return {
           block: true,
