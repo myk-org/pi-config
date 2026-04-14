@@ -80,10 +80,8 @@ pi-config/
 │   ├── pr/
 │   ├── release/
 │   └── reviews/
-├── skills/                          # Skills directory
-│   └── docker-safe/                 # Read-only Docker/Podman inspection skill
 ├── scripts/                         # Utility scripts
-│   └── docker-safe                  # Restricted Docker/Podman CLI wrapper
+│   └── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README
