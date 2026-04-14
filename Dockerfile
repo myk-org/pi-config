@@ -81,11 +81,17 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 # acpx agents to register as pi model providers (comma-separated)
 ENV ACPX_AGENTS=""
 
-# Install uv tools (volatile — keep near bottom for cache efficiency)
+# Install remote uv tools (cached independently of local source changes)
 RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
     uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
-    uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git" && \
     uv tool install prek
+
+# Copy and install myk-pi-tools from local source
+COPY --chown=node:node pyproject.toml README.md /tmp/myk-pi-tools/
+COPY --chown=node:node myk_pi_tools/ /tmp/myk-pi-tools/myk_pi_tools/
+RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
+    uv tool install myk-pi-tools --from /tmp/myk-pi-tools && \
+    rm -rf /tmp/myk-pi-tools
 
 # Install Cursor Agent CLI (after uv tools — cursor changes rarely)
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
