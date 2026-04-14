@@ -39,6 +39,14 @@ export function registerEnforcement(pi: ExtensionAPI): void {
         reason: "Direct pre-commit forbidden. Use: prek run --all-files",
       };
 
+    // Block direct docker/podman CLI — force docker-safe wrapper
+    if (/(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower) && !cmdLower.includes("docker-safe")) {
+      return {
+        block: true,
+        reason: "Direct docker/podman forbidden. Use docker-safe for read-only container inspection (ps, logs, inspect, top, stats).",
+      };
+    }
+
     // Block sleep inside loops — force async subagent for polling
     const hasLoop = /\b(while|for|until)\b/.test(command);
     const sleepMatch = command.match(/\bsleep\s+(\d+)/);

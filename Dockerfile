@@ -50,6 +50,16 @@ RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL
     curl -fsSL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
       | tar -C /usr/local/bin -xzf - oc
 
+# Install Docker and Podman CLIs (for docker-safe wrapper — read-only container inspection)
+RUN DOCKER_VERSION=$(curl -fsSL https://download.docker.com/linux/static/stable/x86_64/ | grep -oP 'docker-\K[0-9.]+(?=\.tgz)' | sort -V | tail -1) && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
+      | tar -xzf - --strip-components=1 -C /usr/local/bin docker/docker && \
+    apt-get update && apt-get install -y --no-install-recommends podman && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy docker-safe wrapper
+COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
+
 # Install pi coding agent, acpx, agent-browser, pi-web-access, diffity
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install -g @mariozechner/pi-coding-agent acpx agent-browser pi-web-access diffity
