@@ -1,11 +1,11 @@
 ---
 name: docker-safe
-description: Inspect and debug Docker/Podman containers safely. Use when the user asks to check container logs, debug a running container, inspect container state, or troubleshoot container issues.
+description: ALL Docker and Podman operations — list containers, view logs, inspect, check status, debug. This is the ONLY way to interact with Docker/Podman. Use for ANY container-related request including simple ones like listing running containers.
 ---
 
-# Docker Safe — Read-Only Container Inspection
+# Docker Safe — ALL Docker/Podman Operations
 
-Use `docker-safe` to inspect and debug containers. This is a restricted wrapper that only allows read-only commands — it cannot modify, create, or delete containers.
+**ALWAYS use `docker-safe` for ANY Docker or Podman interaction.** Direct `docker` or `podman` commands are blocked in the container. This wrapper allows read-only commands only.
 
 ## Runtime Selection
 
