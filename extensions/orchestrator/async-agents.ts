@@ -2,7 +2,7 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -320,13 +320,24 @@ export function registerAsyncAgents(
 
       const job = running[idx];
 
-      // Read PID from status file
+      // Kill the process tree
       const status = readAsyncStatus(job.asyncDir);
       if (status?.pid) {
         try {
-          process.kill(status.pid, "SIGTERM");
-          // Also kill child processes
-          try { process.kill(-status.pid, "SIGTERM"); } catch {}
+          // pkill -P kills all children recursively
+          execSync(`pkill -TERM -P ${status.pid} 2>/dev/null; kill ${status.pid} 2>/dev/null || true`, {
+            timeout: 5000,
+            stdio: "ignore",
+          });
+          // Wait briefly then force kill any survivors
+          setTimeout(() => {
+            try {
+              execSync(`pkill -KILL -P ${status.pid} 2>/dev/null; kill -9 ${status.pid} 2>/dev/null || true`, {
+                timeout: 5000,
+                stdio: "ignore",
+              });
+            } catch {}
+          }, 2000);
         } catch {}
       }
 
