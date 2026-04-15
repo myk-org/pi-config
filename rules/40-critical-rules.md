@@ -23,6 +23,16 @@ Only use sync (default) when the **very next step** depends on this agent's outp
 ❌ **WRONG:** Spawn 3 sync reviewers → wait for all → respond
 ✅ **RIGHT:** Spawn 3 async reviewers → continue → results surface when complete
 
+### Subagent cwd (MANDATORY)
+
+**ALWAYS pass `cwd`** when delegating to subagents — in ALL modes (single, parallel, chain, async).
+
+- Use the project directory when working in the current repo
+- Use the target repo path when working in external repos (e.g., `/tmp/pi-work/...`)
+
+❌ **WRONG:** Omit cwd (subagent inherits session cwd, enforcement checks wrong repo)
+✅ **RIGHT:** Always pass explicit cwd
+
 ---
 
 ## User Interaction (MANDATORY)

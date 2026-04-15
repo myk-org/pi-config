@@ -13,10 +13,16 @@ else
     pi update git:github.com/myk-org/pi-config
 fi
 
-if [ ! -d "$PI_PKG_DIR/isaacraja/pi-vertex-claude" ]; then
-    pi install git:github.com/isaacraja/pi-vertex-claude
+# TODO: Switch back to upstream once PR is merged: https://github.com/isaacraja/pi-vertex-claude/pull/3
+# if [ ! -d "$PI_PKG_DIR/isaacraja/pi-vertex-claude" ]; then
+#     pi install git:github.com/isaacraja/pi-vertex-claude
+# else
+#     pi update git:github.com/isaacraja/pi-vertex-claude
+# fi
+if [ ! -d "$PI_PKG_DIR/myk-org/pi-vertex-claude" ]; then
+    pi install git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
 else
-    pi update git:github.com/isaacraja/pi-vertex-claude
+    pi update git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
 fi
 
 # pi-web-access: register in pi settings if not already present
