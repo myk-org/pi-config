@@ -29,6 +29,7 @@ pi-config/
 │   ├── python-expert.md
 │   ├── reviewer.md
 │   ├── scout.md
+│   ├── security-auditor.md
 │   ├── technical-documentation-writer.md
 │   ├── test-automator.md
 │   ├── test-runner.md
