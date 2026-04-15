@@ -234,6 +234,7 @@ GOOGLE_CLOUD_LOCATION=us-east5
 GOOGLE_APPLICATION_CREDENTIALS=/home/node/.gcloud-adc.json
 VERTEX_PROJECT_ID=your-project-id
 VERTEX_REGION=us-east5
+VERTEX_CLAUDE_1M=true
 
 # GitHub
 GITHUB_TOKEN=ghp_xxx

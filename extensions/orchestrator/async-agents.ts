@@ -17,7 +17,7 @@ import { getPiInvocation } from "./utils.js";
 // ── Constants ────────────────────────────────────────────────────────────
 
 const ASYNC_DIR = path.join(os.tmpdir(), "pi-async-agents");
-const ASYNC_RESULTS_DIR = path.join(ASYNC_DIR, "results");
+const ASYNC_RESULTS_DIR = path.join(ASYNC_DIR, `results-${process.pid}`);
 const ASYNC_POLL_INTERVAL_MS = 3000;
 
 // ── Interfaces ───────────────────────────────────────────────────────────
@@ -138,13 +138,13 @@ export function registerAsyncAgents(
             if (!fs.existsSync(resultPath)) return;
             const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
             const job = asyncState.jobs.get(data.id);
-            if (job) {
-              job.status = data.success ? "complete" : "failed";
-              job.output = data.output;
-              job.exitCode = data.exitCode;
-              job.durationMs = data.durationMs;
-              job.updatedAt = Date.now();
-            }
+            if (!job) return; // Ignore results from unknown jobs (stale/PID reuse)
+
+            job.status = data.success ? "complete" : "failed";
+            job.output = data.output;
+            job.exitCode = data.exitCode;
+            job.durationMs = data.durationMs;
+            job.updatedAt = Date.now();
 
             // Notify user
             terminalNotify("pi", `Async agent ${data.agent} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
@@ -268,6 +268,19 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
+
+    // Clean up orphaned results directories from crashed sessions
+    try {
+      for (const entry of fs.readdirSync(ASYNC_DIR)) {
+        const m = entry.match(/^results-(\d+)$/);
+        if (m) {
+          try { process.kill(+m[1], 0); } catch {
+            try { fs.rmSync(path.join(ASYNC_DIR, entry), { recursive: true, force: true }); } catch {}
+          }
+        }
+      }
+    } catch {}
+
     startResultWatcher();
   });
 
@@ -275,6 +288,8 @@ export function registerAsyncAgents(
   pi.on("session_shutdown", () => {
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
+    // Clean up PID-scoped results directory
+    try { fs.rmSync(ASYNC_RESULTS_DIR, { recursive: true, force: true }); } catch {}
   });
 
   // /async-status command
