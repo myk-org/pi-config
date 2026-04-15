@@ -32,6 +32,7 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 - python-expert
 - reviewer
 - scout
+- security-auditor
 - technical-documentation-writer
 - test-automator
 - test-runner

@@ -58,6 +58,29 @@ Provide clear, concise options. Include a 'no' or 'cancel' option when appropria
 
 ---
 
+## External Repo Security Audit (MANDATORY)
+
+**Before adopting any external repository, tool, or library:**
+
+1. Clone to `/tmp/pi-work/`
+2. Delegate a full security audit to `security-auditor`
+3. Only proceed if the audit verdict is ✅ SAFE or ⚠️ CAUTION with acceptable risks
+4. If ❌ UNSAFE — do not use, inform the user with findings
+
+**This applies to:**
+
+- CLI tools being considered for installation
+- Libraries being evaluated for integration
+- External extensions or plugins
+- Any third-party code that will run in our environment
+
+**Skip when:**
+
+- User explicitly says "skip audit" or "I already reviewed it"
+- The tool is from a trusted source the user has previously approved
+
+---
+
 ## Temp Files
 
 **ALL temp files MUST go to `/tmp/pi-work/`** - NEVER create temp files in project directory.
