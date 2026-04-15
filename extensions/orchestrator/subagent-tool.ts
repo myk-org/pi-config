@@ -34,20 +34,21 @@ import { getPiInvocation } from "./utils.js";
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
+const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
 
 // ── Schemas ──────────────────────────────────────────────────────────────
 
 const TaskItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
   task: Type.String({ description: "Task to delegate" }),
-  cwd: Type.Optional(Type.String({ description: "Working directory" })),
+  cwd: Type.String({ description: "Working directory" }),
 });
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
   task: Type.String({
     description: "Task with optional {previous} placeholder",
   }),
-  cwd: Type.Optional(Type.String({ description: "Working directory" })),
+  cwd: Type.String({ description: "Working directory" }),
 });
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description: 'Agent directories to use. Default: "user".',
@@ -75,7 +76,7 @@ const SubagentParams = Type.Object({
     }),
   ),
   cwd: Type.Optional(
-    Type.String({ description: "Working directory (single mode)" }),
+    Type.String({ description: "Working directory. Required for single/async mode." }),
   ),
   async: Type.Optional(
     Type.Boolean({ description: "Run in background (default: false). Agent runs detached, results surface when complete.", default: false }),
@@ -287,11 +288,10 @@ type OnUpdate = (partial: AgentToolResult<SubagentDetails>) => void;
 // ── runSingleAgent ───────────────────────────────────────────────────────
 
 export async function runSingleAgent(
-  defaultCwd: string,
   agents: AgentConfig[],
   agentName: string,
   task: string,
-  cwd: string | undefined,
+  cwd: string,
   step: number | undefined,
   signal: AbortSignal | undefined,
   onUpdate: OnUpdate | undefined,
@@ -374,7 +374,7 @@ export async function runSingleAgent(
     const exitCode = await new Promise<number>((resolve) => {
       const inv = getPiInvocation(args);
       const proc = spawn(inv.command, inv.args, {
-        cwd: cwd ?? defaultCwd,
+        cwd: cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
@@ -485,6 +485,7 @@ export function registerSubagentTool(
       "For multi-step workflows, use chain mode with {previous} placeholder.",
       "Set async: true when you don't need the result immediately for your next step. The result will surface automatically when complete. Use sync (default) only when the next step depends on this agent's output.",
       "ALWAYS use async: true for independent tasks that can run in parallel — code reviews, opening issues, research, analysis. Only use sync when the very next step depends on this agent's output (e.g., chain where step 2 needs step 1's result).",
+      "ALWAYS pass cwd — use the project directory for current repo work, or the target path for external repos (e.g., /tmp/pi-work/...).",
     ],
     parameters: SubagentParams,
 
@@ -567,7 +568,14 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd ?? ctx.cwd, agents);
+        if (!params.cwd) {
+          return {
+            content: [{ type: "text", text: MISSING_CWD_ERROR }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents);
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],
@@ -585,6 +593,22 @@ export function registerSubagentTool(
       if (params.chain && params.chain.length > 0) {
         const results: SingleResult[] = [];
         let prev = "";
+
+        for (let i = 0; i < params.chain.length; i++) {
+          if (!params.chain[i].cwd) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `${MISSING_CWD_ERROR} (chain step ${i + 1}, agent: ${params.chain[i].agent})`,
+                },
+              ],
+              details: mkd("chain")([]),
+              isError: true,
+            };
+          }
+        }
+
         for (let i = 0; i < params.chain.length; i++) {
           const s = params.chain[i];
           const t = s.task.replace(/\{previous\}/g, prev);
@@ -599,7 +623,6 @@ export function registerSubagentTool(
               }
             : undefined;
           const r = await runSingleAgent(
-            ctx.cwd,
             agents,
             s.agent,
             t,
@@ -685,12 +708,25 @@ export function registerSubagentTool(
             });
           }
         };
+        for (let i = 0; i < params.tasks.length; i++) {
+          if (!params.tasks[i].cwd) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `${MISSING_CWD_ERROR} (parallel task ${i + 1}, agent: ${params.tasks[i].agent})`,
+                },
+              ],
+              details: mkd("parallel")([]),
+              isError: true,
+            };
+          }
+        }
         const results = await mapWithConcurrency(
           params.tasks,
           MAX_CONCURRENCY,
           async (t, i) => {
             const r = await runSingleAgent(
-              ctx.cwd,
               agents,
               t.agent,
               t.task,
@@ -729,8 +765,19 @@ export function registerSubagentTool(
 
       // Single mode
       if (params.agent && params.task) {
+        if (!params.cwd) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: MISSING_CWD_ERROR,
+              },
+            ],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
         const r = await runSingleAgent(
-          ctx.cwd,
           agents,
           params.agent,
           params.task,
