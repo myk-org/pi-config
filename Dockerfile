@@ -66,6 +66,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install -g acpx agent-browser pi-web-access diffity
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
+RUN chown node:node /home/node
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
