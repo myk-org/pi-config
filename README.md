@@ -218,7 +218,6 @@ docker run --rm -it \
   -v "$HOME/.gitignore-global":/home/node/.gitignore-global:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.gh-config:ro \
-  -e GH_CONFIG_DIR=/home/node/.gh-config \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
@@ -239,6 +238,7 @@ VERTEX_CLAUDE_1M=true
 # GitHub
 GITHUB_TOKEN=ghp_xxx
 GITHUB_API_TOKEN=ghp_xxx
+GH_CONFIG_DIR=/home/node/.gh-config
 
 # Gemini (optional)
 GEMINI_API_KEY=xxx
@@ -318,7 +318,6 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.gitignore-global":/home/node/.gitignore-global:ro \
   -v "$HOME/.ssh":/home/node/.ssh:ro \
   -v "$HOME/.config/gh":/home/node/.gh-config:ro \
-  -e GH_CONFIG_DIR=/home/node/.gh-config \
   -v "$HOME/.claude/mcp.json":/home/node/.claude/mcp.json:ro \
   -v "$HOME/.agents":/home/node/.agents:rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
