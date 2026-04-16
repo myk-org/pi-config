@@ -78,6 +78,7 @@ pi-config/
 │   ├── cli.py
 │   ├── coderabbit/
 │   ├── db/
+│   ├── memory/
 │   ├── pr/
 │   ├── release/
 │   └── reviews/

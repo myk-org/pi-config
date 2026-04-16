@@ -249,6 +249,18 @@ GEMINI_API_KEY=xxx
 
 Pass via `--env-file /path/to/.env` in the docker run command.
 
+### Project memory
+
+The memory system stores per-repo lessons and patterns in `.pi/memory/memories.db`.
+This file is auto-added to the global gitignore in the container.
+
+For **native** (non-container) usage, add it to your global gitignore:
+
+```bash
+echo '.pi/memory/' >> ~/.gitignore-global
+git config --global core.excludesFile ~/.gitignore-global
+```
+
 ### Optional mounts
 
 | Mount | Purpose |
