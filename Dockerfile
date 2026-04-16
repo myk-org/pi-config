@@ -66,7 +66,9 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install -g acpx agent-browser pi-web-access diffity
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
-RUN chown -R node:node /home/node
+# Note: node:22 base image creates /home/node as root — fix ownership
+# of the directory itself and all contents before switching to non-root
+RUN chown -R node:node /home/node && chmod 755 /home/node
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
