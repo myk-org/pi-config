@@ -68,7 +68,9 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 # Note: node:22 base image creates /home/node as root — fix ownership
 # of the directory itself and all contents before switching to non-root
-RUN chown -R node:node /home/node && chmod 755 /home/node
+# Explicit chown of /home/node is needed because buildah's chown -R
+# may skip the target directory itself
+RUN chown node:node /home/node && chown -R node:node /home/node
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
