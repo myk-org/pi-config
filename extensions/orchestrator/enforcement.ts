@@ -41,6 +41,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         reason: "Direct pre-commit forbidden. Use: prek run --all-files",
       };
 
+    // Block memory writes from specialist agents — only orchestrator can write
+    if (process.env.PI_SUBAGENT_CHILD === "1" && /\bmyk-pi-tools\b.*\bmemory\s+(add|delete)\b/.test(command)) {
+      return {
+        block: true,
+        reason: "Memory writes are restricted to the orchestrator. Specialists can only search/list memories.",
+      };
+    }
+
     // Block direct docker/podman CLI in container — force docker-safe wrapper
     if (inContainer && /(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower) && !cmdLower.includes("docker-safe")) {
       return {

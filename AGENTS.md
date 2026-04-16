@@ -46,7 +46,7 @@ pi-config/
 │   │   ├── enforcement.ts           # Python/git/dangerous command enforcement
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
-│   │   ├── rules.ts                 # Rule injection (before_agent_start)
+│   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-validation.ts    # Session start tool checks
 │   │   ├── status-line.ts           # Git status, notifications, container indicator
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent
@@ -62,6 +62,7 @@ pi-config/
 │   ├── query-db.md
 │   ├── refine-review.md
 │   ├── release.md
+│   ├── remember.md
 │   ├── review-handler.md
 │   ├── review-local.md
 │   └── scout-and-plan.md
@@ -71,8 +72,11 @@ pi-config/
 │   ├── 10-agent-routing.md
 │   ├── 15-mcp-launchpad.md
 │   ├── 20-code-review-loop.md
+│   ├── 25-documentation-updates.md
 │   ├── 30-prompt-templates.md
+│   ├── 35-memory.md
 │   ├── 40-critical-rules.md
+│   ├── 45-file-preview.md
 │   └── 50-agent-bug-reporting.md
 ├── myk_pi_tools/                    # Python CLI tooling package
 │   ├── __init__.py
