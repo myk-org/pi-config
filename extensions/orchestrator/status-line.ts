@@ -11,28 +11,18 @@ export function registerStatusLine(
   IN_CONTAINER: boolean,
   terminalNotify: (title: string, body: string) => void,
 ): void {
-  // Track diffity URL so we can include it in the combined status
-  let diffityStatus = "";
-
-  // Called by diffity module to set its status text
-  const setDiffityStatus = (text: string) => {
-    diffityStatus = text;
-  };
-
   // ── Combined status line builder ───────────────────────────────────────
 
   const buildStatus = (ctx: any, gitPart: string) => {
     const parts: string[] = [];
 
     if (IN_CONTAINER) parts.push(ICON_CONTAINER);
-    if (diffityStatus) parts.push(diffityStatus);
     parts.push(gitPart);
 
     ctx.ui.setStatus("combined", parts.join(ctx.ui.theme.fg("dim", ICON_SEP)));
     // Clear individual statuses to avoid duplicates
     ctx.ui.setStatus("container", undefined);
     ctx.ui.setStatus("git", undefined);
-    ctx.ui.setStatus("diffity", undefined);
   };
 
   // ── Git branch status line ─────────────────────────────────────────────
@@ -103,5 +93,4 @@ export function registerStatusLine(
     terminalNotify("pi", "Task completed");
   });
 
-  return { setDiffityStatus } as any;
 }

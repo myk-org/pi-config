@@ -33,8 +33,8 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent);
   registerEnforcement(pi, IN_CONTAINER);
   registerRules(pi);
-  const { setDiffityStatus } = registerStatusLine(pi, IN_CONTAINER, terminalNotify) as any;
+  registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
-  registerDiffity(pi, setDiffityStatus);
+  registerDiffity(pi);
   registerSessionValidation(pi);
 }
