@@ -16,6 +16,7 @@ const PORT_CHECK_TIMEOUT_MS = 1000;
 const DIFFITY_READY_TIMEOUT_MS = 3000;
 const DIFFITY_READY_POLL_MS = 100;
 const SOCKET_CONNECT_TIMEOUT_MS = 1000;
+const KILL_SETTLE_MS = 500;
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -88,16 +89,32 @@ function hasDiffity(): boolean {
   }
 }
 
-function killProcessTree(proc: ChildProcess): void {
-  try {
-    // Kill the process group (negative PID kills the group)
-    if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-  } catch {
-    try { proc.kill("SIGTERM"); } catch {}
-  }
+function killProcess(proc: ChildProcess): void {
+  try { proc.kill("SIGTERM"); } catch {}
 }
 
-export function registerDiffity(pi: ExtensionAPI, setDiffityStatus?: (text: string) => void): void {
+// Linux-only: uses /proc to resolve process working directories
+function killExistingDiffity(cwd: string): void {
+  try {
+    const resolvedCwd = execFileSync("readlink", ["-f", cwd], { encoding: "utf-8" }).trim();
+    const result = execFileSync("ps", ["-eo", "pid,args"], { encoding: "utf-8" });
+    for (const line of result.split("\n")) {
+      if (!/\bdiffity\s+.*--port\b/.test(line)) continue;
+      const match = line.trim().match(/^(\d+)/);
+      if (!match) continue;
+      const pid = parseInt(match[1], 10);
+      if (pid === process.pid) continue;
+      try {
+        const cwdLink = execFileSync("readlink", ["-f", `/proc/${pid}/cwd`], { encoding: "utf-8" }).trim();
+        if (cwdLink === resolvedCwd) {
+          process.kill(pid, "SIGTERM");
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
+export function registerDiffity(pi: ExtensionAPI): void {
   if (!hasDiffity()) return;
 
   let diffityProc: ChildProcess | null = null;
@@ -108,13 +125,14 @@ export function registerDiffity(pi: ExtensionAPI, setDiffityStatus?: (text: stri
     if (diffityProc || starting) return; // Already running or starting
     starting = true;
 
-    const port = await findAvailablePort();
-    if (!port) {
-      starting = false;
-      return;
-    }
-
     try {
+      killExistingDiffity(ctx.cwd);
+      // Brief delay to let killed processes release their ports
+      await new Promise((r) => setTimeout(r, KILL_SETTLE_MS));
+
+      const port = await findAvailablePort();
+      if (!port) return;
+
       diffityProc = spawn("diffity", [
         "--dark",
         "--no-open",
@@ -122,34 +140,26 @@ export function registerDiffity(pi: ExtensionAPI, setDiffityStatus?: (text: stri
         "--port", String(port),
       ], {
         cwd: ctx.cwd,
-        detached: true,
         stdio: "ignore",
       });
-      diffityProc.unref();
-      starting = false;
 
       // Wait for diffity to be ready before showing the URL
       const isUp = await waitForPort(port);
       if (!isUp) {
-        killProcessTree(diffityProc);
+        killProcess(diffityProc);
         diffityProc = null;
         return;
       }
 
       // Show link in status line
       const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}?theme=dark`);
-      if (setDiffityStatus) {
-        setDiffityStatus(statusText);
-        // Trigger a git status refresh to rebuild combined status
-        pi.events?.emit("diffity:ready");
-      } else {
-        ctx.ui.setStatus("diffity", statusText);
-      }
+      ctx.ui.setStatus("diffity", statusText);
     } catch {
       if (diffityProc) {
-        killProcessTree(diffityProc);
+        killProcess(diffityProc);
       }
       diffityProc = null;
+    } finally {
       starting = false;
     }
   });
@@ -157,7 +167,7 @@ export function registerDiffity(pi: ExtensionAPI, setDiffityStatus?: (text: stri
   pi.on("session_shutdown", () => {
     starting = false;
     if (diffityProc) {
-      killProcessTree(diffityProc);
+      killProcess(diffityProc);
       diffityProc = null;
     }
   });
