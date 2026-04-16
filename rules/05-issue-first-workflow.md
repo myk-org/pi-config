@@ -107,9 +107,19 @@ The `github-expert` agent handles issue formatting. When delegating issue creati
 - Type (fix/feat/refactor/docs)
 - Problem/feature description
 - Requirements list
-- Deliverables checklist
+- **Deliverables checklist (MANDATORY)** — every issue MUST have a `## Done` section with checkboxes
 
-The agent will format the title and body according to its template.
+**Every issue MUST include a `## Done` section with checkboxes** that define what "done" means:
+
+```markdown
+## Done
+
+- [ ] Deliverable 1
+- [ ] Deliverable 2
+- [ ] Deliverable 3
+```
+
+These checkboxes are the **contract** for when the issue can be closed.
 
 ---
 
@@ -123,10 +133,13 @@ The agent will format the title and body according to its template.
 
 **When all deliverables are complete:**
 
-1. Verify all checklist items are checked
+1. **Verify ALL checkboxes in the `## Done` section are checked** — if any are unchecked, the issue MUST NOT be closed
 2. Ensure code review passed
 3. Ensure tests pass (if applicable)
 4. Close the issue with a summary comment
+
+🚨 **NEVER close an issue with unchecked deliverables.** An issue with unchecked boxes is NOT done.
+If deliverables are no longer needed, explicitly remove them or mark as N/A before closing.
 
 ---
 
