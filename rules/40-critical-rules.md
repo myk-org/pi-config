@@ -17,11 +17,15 @@ Always maximize parallelism. Only execute sequentially when there's a proven dep
 ### Async Agents (MANDATORY)
 
 **ALWAYS use `async: true`** for independent tasks that can run in parallel —
-code reviews, opening issues, research, analysis.
+code reviews, opening issues, research, analysis, polling, monitoring,
+waiting for builds/CI, and any task where you don't need the result immediately.
 Only use sync (default) when the **very next step** depends on this agent's output.
 
 ❌ **WRONG:** Spawn 3 sync reviewers → wait for all → respond
 ✅ **RIGHT:** Spawn 3 async reviewers → continue → results surface when complete
+
+❌ **WRONG:** `sleep 60 && check status` — blocks the session
+✅ **RIGHT:** Spawn async agent to poll and notify when done
 
 ### Subagent cwd (MANDATORY)
 
