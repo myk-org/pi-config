@@ -66,11 +66,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm install -g acpx agent-browser pi-web-access diffity
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
-# Note: node:22 base image creates /home/node as root — fix ownership
-# of the directory itself and all contents before switching to non-root
-# Explicit chown of /home/node is needed because buildah's chown -R
-# may skip the target directory itself
-RUN chown node:node /home/node && chown -R node:node /home/node
+RUN chown -R node:node /home/node
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
@@ -103,6 +99,13 @@ RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Workaround for buildah bug #6747: RUN --mount=type=cache resets
+# ownership of parent directories. Re-chown /home/node after all
+# mount-cached RUN instructions have completed.
+USER root
+RUN chown node:node /home/node
+USER node
 
 WORKDIR /workspace
 
