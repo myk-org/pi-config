@@ -45,4 +45,10 @@ fi
 # ConnectTimeout: fail if can't connect within 10s
 export GIT_SSH_COMMAND="ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10"
 
+# Ensure .pi/memory/ is in global gitignore (memory DB must not be committed)
+GITIGNORE_FILE="$(git config --global core.excludesFile 2>/dev/null || echo "$HOME/.gitignore-global")"
+if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/memory/' "$GITIGNORE_FILE" 2>/dev/null; then
+    echo '.pi/memory/' >> "$GITIGNORE_FILE"
+fi
+
 exec pi "$@"
