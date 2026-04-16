@@ -302,32 +302,21 @@ myk-pi-tools reviews store {json_path}
 After the review flow completes (Phases 1-8), enter a polling loop
 to watch for new CodeRabbit comments.
 
-#### 9a: Wait
+#### 9a+9b: Wait and Fetch (combined async)
 
-Wait 5 minutes before checking for new comments.
+Each poll cycle (wait + fetch) runs as a **single async subagent** to avoid
+blocking the session. The entire wait + poll happens in the background.
 
-**After waiting, ALWAYS proceed to 9b. NEVER exit the loop.
-If the wait is interrupted or errors, retry the wait. An error during waiting is NOT a reason to exit.**
-
-#### 9b: Fetch New Reviews
-
-Run `reviews poll` via an **async subagent** to avoid blocking the session.
-The command can block for extended periods when CodeRabbit is rate limited
-(up to 50+ minutes), so it MUST NOT run synchronously.
-
-**Spawn as async subagent:**
-
-Use `subagent` with `async: true` to run the poll command in the background:
+**Spawn the cycle as one async subagent:**
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the full output.`
+- Task: `Wait 5 minutes, then run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the full output.`
 - async: true
 
-The `reviews poll` command atomically:
+The worker will:
 
-1. Checks if CodeRabbit is rate limited
-2. If rate limited: waits the required time + 30s buffer, triggers re-review, polls until review starts
-3. Fetches all reviews (same output format as `reviews fetch`)
+1. Sleep 5 minutes (in the background — session stays interactive)
+2. Run `reviews poll` which atomically checks rate limits, triggers if needed, and fetches reviews
 
 **While waiting for the async result**, the session remains interactive — the user
 can continue working. When the result surfaces, process it:
@@ -337,11 +326,11 @@ Check if there are new CodeRabbit comments (comments without
 
 - If **new CodeRabbit comments found**: Run Phases 2-8 again with
   autorabbit behavior (auto-approve CodeRabbit, ask user for others).
-  After completing (or if any phase errors), **MUST** return to Step 9a (NEVER exit).
+  After completing (or if any phase errors), **MUST** spawn the next cycle (go to 9a+9b again).
 - If **no new CodeRabbit comments**: Display "No new CodeRabbit
-  comments. Checking again in 5 minutes..." and **MUST** return to Step 9a (NEVER exit).
+  comments. Spawning next poll cycle..." and **MUST** spawn the next cycle (go to 9a+9b again).
 
-**Both paths return to 9a. NEVER exit the loop. Only the user can stop it.**
+**Both paths spawn a new async cycle. NEVER exit the loop. Only the user can stop it.**
 
 #### 9c: NEVER EXIT (MANDATORY)
 
