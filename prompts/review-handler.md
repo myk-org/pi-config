@@ -311,18 +311,26 @@ If the wait is interrupted or errors, retry the wait. An error during waiting is
 
 #### 9b: Fetch New Reviews
 
-Use the `reviews poll` command which atomically handles rate limit
-checking, triggering, and fetching in a single command:
+Run `reviews poll` via an **async subagent** to avoid blocking the session.
+The command can block for extended periods when CodeRabbit is rate limited
+(up to 50+ minutes), so it MUST NOT run synchronously.
 
-```bash
-myk-pi-tools reviews poll [same arguments as Phase 1]
-```
+**Spawn as async subagent:**
 
-This command:
+Use `subagent` with `async: true` to run the poll command in the background:
+
+- Agent: `worker`
+- Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the full output.`
+- async: true
+
+The `reviews poll` command atomically:
 
 1. Checks if CodeRabbit is rate limited
 2. If rate limited: waits the required time + 30s buffer, triggers re-review, polls until review starts
 3. Fetches all reviews (same output format as `reviews fetch`)
+
+**While waiting for the async result**, the session remains interactive — the user
+can continue working. When the result surfaces, process it:
 
 Check if there are new CodeRabbit comments (comments without
 `posted_at` timestamps, not auto-skipped).
