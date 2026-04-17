@@ -2,7 +2,7 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -90,7 +90,6 @@ export function registerAsyncAgents(
       if (!asyncState.lastCtx?.hasUI) return;
       if (asyncState.jobs.size === 0) {
         updateAsyncWidget();
-        if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
         return;
       }
 
@@ -112,6 +111,14 @@ export function registerAsyncAgents(
         }
       }
 
+      // Fallback: check for result files the watcher may have missed
+      try {
+        const files = fs.readdirSync(ASYNC_RESULTS_DIR).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+          processResultFile(path.join(ASYNC_RESULTS_DIR, file));
+        }
+      } catch {}
+
       // Remove completed/failed jobs older than 30s
       for (const [id, job] of asyncState.jobs.entries()) {
         if ((job.status === "complete" || job.status === "failed") && Date.now() - job.updatedAt > 30000) {
@@ -123,55 +130,51 @@ export function registerAsyncAgents(
     if (asyncState.poller.unref) asyncState.poller.unref();
   }
 
+  function processResultFile(resultPath: string) {
+    try {
+      const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+      const job = asyncState.jobs.get(data.id);
+      if (!job) return;
+      if (job.status === "complete" || job.status === "failed") return; // Already processed
+
+      // Notify user
+      terminalNotify("pi", `Async agent ${data.agent} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
+
+      // Surface result in conversation
+      if (asyncState.lastCtx) {
+        const resultStatus = data.success ? "✅ completed" : "❌ failed";
+        const output = (data.output || "").slice(0, 3000);
+        pi.sendMessage({
+          customType: "async-agent-result",
+          content: `## Async Agent Result: ${data.agent} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
+          display: true,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      }
+
+      // Mark as processed AFTER delivery succeeds
+      job.status = data.success ? "complete" : "failed";
+      job.output = data.output;
+      job.exitCode = data.exitCode;
+      job.durationMs = data.durationMs;
+      job.updatedAt = Date.now();
+
+      updateAsyncWidget();
+
+      // Clean up result file
+      try { fs.unlinkSync(resultPath); } catch {}
+    } catch {}
+  }
+
   function startResultWatcher() {
     if (asyncState.watcher) return;
     try {
-      fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true });
+      fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
       asyncState.watcher = fs.watch(ASYNC_RESULTS_DIR, (ev, file) => {
         if (ev !== "rename" || !file) return;
         const fileName = file.toString();
         if (!fileName.endsWith(".json")) return;
-
         const resultPath = path.join(ASYNC_RESULTS_DIR, fileName);
-        setTimeout(() => {
-          try {
-            if (!fs.existsSync(resultPath)) return;
-            const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
-            const job = asyncState.jobs.get(data.id);
-            if (!job) return; // Ignore results from unknown jobs (stale/PID reuse)
-
-            job.status = data.success ? "complete" : "failed";
-            job.output = data.output;
-            job.exitCode = data.exitCode;
-            job.durationMs = data.durationMs;
-            job.updatedAt = Date.now();
-
-            // Notify user
-            terminalNotify("pi", `Async agent ${data.agent} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
-
-            // Surface result in conversation
-            if (asyncState.lastCtx) {
-              const status = data.success ? "✅ completed" : "❌ failed";
-              const output = (data.output || "").slice(0, 3000);
-              pi.sendMessage({
-                customType: "async-agent-result",
-                content: `## Async Agent Result: ${data.agent} ${status}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
-                display: true,
-              }, { triggerTurn: true, deliverAs: "followUp" });
-            }
-
-            updateAsyncWidget();
-
-            // Clean up result file
-            try { fs.unlinkSync(resultPath); } catch {}
-
-            // Remove completed jobs after 30s
-            setTimeout(() => {
-              asyncState.jobs.delete(data.id);
-              updateAsyncWidget();
-            }, 30000);
-          } catch {}
-        }, 100); // Small delay to ensure file is fully written
+        setTimeout(() => processResultFile(resultPath), 100);
       });
       if (asyncState.watcher.unref) asyncState.watcher.unref();
     } catch {}
@@ -191,19 +194,17 @@ export function registerAsyncAgents(
     const resultPath = path.join(ASYNC_RESULTS_DIR, `${id}.json`);
 
     fs.mkdirSync(asyncDir, { recursive: true });
-    fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true });
+    fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
 
     // Build pi args
     const piArgs: string[] = ["--mode", "json", "-p", "--no-session"];
     if (agent.model) piArgs.push("--model", agent.model);
     if (agent.tools?.length) piArgs.push("--tools", agent.tools.join(","));
 
-    let systemPromptFile: string | undefined;
     if (agent.systemPrompt?.trim()) {
       const promptPath = path.join(asyncDir, "system-prompt.md");
       fs.writeFileSync(promptPath, agent.systemPrompt, { mode: 0o600 });
       piArgs.push("--append-system-prompt", promptPath);
-      systemPromptFile = promptPath;
     }
 
     piArgs.push(`Task: ${task}`);
@@ -222,7 +223,7 @@ export function registerAsyncAgents(
       asyncDir,
       piCommand: inv.command,
       piArgs: inv.args,
-    }));
+    }), { mode: 0o600 });
 
     // Find the runner script
     const runnerPath = path.join(path.dirname(new URL(import.meta.url).pathname), "async-runner.ts");
@@ -239,7 +240,6 @@ export function registerAsyncAgents(
       ? [jitiCliPath, runnerPath, configPath]
       : [runnerPath, configPath];
 
-    // Spawn detached
     const proc = spawn(process.execPath, spawnArgs, {
       cwd,
       stdio: "ignore",
@@ -353,7 +353,7 @@ export function registerAsyncAgents(
       if (status?.pid) {
         const killLog: string[] = [];
         try {
-          const tree = execSync(`pstree -p ${status.pid} 2>&1`, { encoding: "utf-8", timeout: 3000 });
+          const tree = execFileSync("pstree", ["-p", String(status.pid)], { encoding: "utf-8", timeout: 3000 });
           killLog.push(`pstree output: ${tree.trim()}`);
           const matches = tree.match(/\((\d+)\)/g);
           const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
