@@ -33,6 +33,7 @@ interface AsyncJob {
   output?: string;
   exitCode?: number | null;
   durationMs?: number;
+  delivered?: boolean;
 }
 
 interface AsyncState {
@@ -135,7 +136,7 @@ export function registerAsyncAgents(
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
       if (!job) return;
-      if (job.status === "complete" || job.status === "failed") return; // Already processed
+      if (job.delivered) return; // Already delivered to user
 
       // Notify user
       terminalNotify("pi", `Async agent ${data.agent} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
@@ -151,7 +152,8 @@ export function registerAsyncAgents(
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
 
-      // Mark as processed AFTER delivery succeeds
+      // Mark as delivered AFTER delivery succeeds
+      job.delivered = true;
       job.status = data.success ? "complete" : "failed";
       job.output = data.output;
       job.exitCode = data.exitCode;
