@@ -62,26 +62,32 @@ Provide clear, concise options. Include a 'no' or 'cancel' option when appropria
 
 ---
 
-## External Repo Security Audit (MANDATORY)
+## External Code Security Audit (MANDATORY)
 
-**Before adopting any external repository, tool, or library:**
+**Before adopting any external code from an untrusted source:**
 
-1. Clone to `/tmp/pi-work/`
+1. Obtain the source code (clone repo, download package source, inspect skill files)
 2. Delegate a full security audit to `security-auditor`
 3. Only proceed if the audit verdict is ✅ SAFE or ⚠️ CAUTION with acceptable risks
 4. If ❌ UNSAFE — do not use, inform the user with findings
 
-**This applies to:**
+### What triggers an audit
 
-- CLI tools being considered for installation
-- Libraries being evaluated for integration
-- External extensions or plugins
-- Any third-party code that will run in our environment
+| Source | Trigger | Audit approach |
+|--------|---------|----------------|
+| **Git repos** | Adopting external repo/tool/library | Clone to `/tmp/pi-work/`, run `security-auditor` |
+| **Pi skills** | `pi skill install`, adding skill files | Clone/download source to `/tmp/pi-work/`, run `security-auditor` |
+| **PyPI packages** | `uv add <unknown-pkg>`, `uv run --with <unknown-pkg>` | Clone source repo from PyPI metadata, check install hooks, scan code |
+| **npm packages** | `npm install <unknown-pkg>` | Download source, check `postinstall` scripts, scan code |
+| **MCP servers** | Adding new server to `mcp.json` | Audit the server source code before adding config |
+| **Docker images** | `FROM unknown-registry/image` in Dockerfile | Inspect Dockerfile source, check base image provenance |
+| **Remote scripts** | `curl \| bash`, `wget \| sh` | **ALWAYS block** — download first, audit, then run if safe |
 
-**Skip when:**
+### Skip when
 
 - User explicitly says "skip audit" or "I already reviewed it"
-- The tool is from a trusted source the user has previously approved
+- The tool/package is from a trusted source the user has previously approved
+- Well-known, widely-used packages (e.g., `requests`, `flask`, `react`, `lodash`)
 
 ---
 
