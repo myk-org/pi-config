@@ -43,7 +43,7 @@ pi-config/
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── diffity.ts               # Auto-start diffity diff viewer
-│   │   ├── enforcement.ts           # Python/git/dangerous command enforcement
+│   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
