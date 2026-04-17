@@ -67,6 +67,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
+    // Block standalone sleep > 30s — use async subagent instead of blocking
+    if (!hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 30) {
+      return {
+        block: true,
+        reason: `⚠️ sleep ${sleepMatch[1]}s blocked — too long. Use subagent with async: true instead of blocking the session.`,
+      };
+    }
+
     // Git protection
     if (isGitRepo(ctx.cwd)) {
       // Block git add . / git add -A
