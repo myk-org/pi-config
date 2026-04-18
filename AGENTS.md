@@ -43,6 +43,7 @@ pi-config/
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── diffity.ts               # Auto-start diffity diff viewer
+│   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
@@ -56,6 +57,7 @@ pi-config/
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── acpx-prompt.md
 │   ├── coderabbit-rate-limit.md
+│   ├── dream.md
 │   ├── implement-and-review.md
 │   ├── implement.md
 │   ├── pr-review.md

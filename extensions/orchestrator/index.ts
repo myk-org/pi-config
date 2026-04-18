@@ -4,12 +4,13 @@
  * Bundles:
  * - Subagent tool (based on pi's subagent example, with package agent discovery)
  * - Enforcement handlers (python/pip, git protection, dangerous commands)
- * - Rule injection (before_agent_start)
- * - Slash commands (/btw, /async-status)
+ * - Rule injection & memory loading (before_agent_start)
+ * - Slash commands (/btw, /async-status, /dream-auto)
  * - Notifications and status line
  * - Session validation (required tools check)
  * - Async agent infrastructure
  * - ask_user tool
+ * - Memory dreaming (background consolidation)
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -17,6 +18,7 @@ import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
 import { registerDiffity } from "./diffity.js";
+import { registerDreaming } from "./dreaming.js";
 import { registerEnforcement } from "./enforcement.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
@@ -36,5 +38,6 @@ export default function (pi: ExtensionAPI) {
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
   registerDiffity(pi);
+  registerDreaming(pi, spawnAsyncAgent);
   registerSessionValidation(pi);
 }
