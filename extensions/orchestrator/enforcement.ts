@@ -76,22 +76,26 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
+    // Strip heredoc content before remote-exec checks — heredoc text
+    // (e.g., `cat << 'EOF'\n...curl|bash in docs...\nEOF`) is not executable.
+    const cmdForExecCheck = cmdLower.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
+
     // Block remote script execution — download first, audit, then run
     const remoteExecReason = "⛔ Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
     // Pipe to shell or interpreter: curl ... | sh, curl ... | /bin/bash, curl ... | sudo python3
-    if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdLower) ||
-        /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdLower)) {
+    if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
+        /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
     // Process substitution: bash <(curl ...), source <(curl ...), . <(curl ...)
-    if (/\b(ba|c|da|[akz]|fi|tc)?sh\b.*<\(\s*\b(curl|wget)\b/.test(cmdLower) ||
-        /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdLower) ||
-        /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdLower)) {
+    if (/\b(ba|c|da|[akz]|fi|tc)?sh\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+        /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+        /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
     // Command substitution / eval: sh -c "$(curl ...)", eval $(curl ...), `curl ...`
-    if (/\$\(\s*\b(curl|wget)\b/.test(cmdLower) || /`\s*(curl|wget)\b/.test(cmdLower) ||
-        /\beval\b.*\b(curl|wget)\b/.test(cmdLower)) {
+    if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*(curl|wget)\b/.test(cmdForExecCheck) ||
+        /\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
 
