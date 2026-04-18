@@ -183,6 +183,7 @@ export function registerAskUser(
             },
           };
         },
+        { overlay: true },
       );
 
       if (result === null) {
