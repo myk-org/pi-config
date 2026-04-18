@@ -1,6 +1,10 @@
 """Memory store — SQLite-backed per-repo memory.
 
 Database location: <git-root>/.pi/memory/memories.db
+
+The scoring, pruning, and dreaming features are inspired by OpenClaw's
+"Dreaming" memory consolidation system (v2026.4.5).
+See: https://docs.openclaw.ai/concepts/dreaming
 """
 
 import sqlite3
@@ -17,6 +21,11 @@ def log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _parse_utc(date_str: str) -> datetime:
+    """Parse a UTC datetime string from the database."""
+    return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,9 +34,22 @@ CREATE TABLE IF NOT EXISTS memories (
     sentiment TEXT DEFAULT 'neutral',
     summary TEXT NOT NULL,
     details TEXT,
-    tags TEXT
+    tags TEXT,
+    recall_count INTEGER DEFAULT 0,
+    last_recalled TEXT
 );
 """
+
+# Scoring weights — inspired by OpenClaw's deep-phase ranking signals
+# See: https://docs.openclaw.ai/concepts/dreaming
+_WEIGHT_RECALL_FREQ = 0.30
+_WEIGHT_RECALL_RECENCY = 0.25
+_WEIGHT_AGE_VALUE = 0.20
+_WEIGHT_CATEGORY = 0.15
+_WEIGHT_FRESHNESS = 0.10
+_RECALL_RECENCY_WINDOW_DAYS = 90
+_FRESHNESS_WINDOW_DAYS = 60
+_AGE_VALUE_WINDOW_DAYS = 30
 
 
 class MemoryDB:
@@ -55,8 +77,23 @@ class MemoryDB:
         conn = sqlite3.connect(str(self.db_path))
         try:
             conn.executescript(_SCHEMA)
+            self._migrate_schema(conn)
         finally:
             conn.close()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Apply forward-compatible schema migrations.
+
+        Uses PRAGMA table_info to check for missing columns before adding,
+        consistent with the ReviewDB migration pattern in db/query.py.
+        """
+        cursor = conn.execute("PRAGMA table_info(memories)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "recall_count" not in columns:
+            conn.execute("ALTER TABLE memories ADD COLUMN recall_count INTEGER DEFAULT 0")
+        if "last_recalled" not in columns:
+            conn.execute("ALTER TABLE memories ADD COLUMN last_recalled TEXT")
+        conn.commit()
 
     def _connect(self, readonly: bool = True) -> sqlite3.Connection:
         """Create a database connection."""
@@ -128,7 +165,7 @@ class MemoryDB:
         try:
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             sql = """
-                SELECT id, date, category, sentiment, summary, details, tags
+                SELECT id, date, category, sentiment, summary, details, tags, recall_count, last_recalled
                 FROM memories
                 WHERE (summary LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
             """
@@ -142,12 +179,32 @@ class MemoryDB:
             params.append(limit)
 
             cursor = conn.execute(sql, params)
-            return [dict(row) for row in cursor.fetchall()]
+            results = [dict(row) for row in cursor.fetchall()]
         except sqlite3.Error as e:
             log(f"Database error: {e}")
             return []
         finally:
             conn.close()
+
+        # Track recall for returned results
+        if results:
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            write_conn = self._connect(readonly=False)
+            try:
+                ids = [r["id"] for r in results]
+                placeholders = ",".join("?" * len(ids))
+                sql = (
+                    "UPDATE memories SET recall_count = recall_count + 1,"
+                    f" last_recalled = ? WHERE id IN ({placeholders})"
+                )
+                write_conn.execute(sql, [now, *ids])
+                write_conn.commit()
+            except sqlite3.Error:
+                pass  # Best-effort tracking
+            finally:
+                write_conn.close()
+
+        return results
 
     def list_memories(
         self,
@@ -170,7 +227,10 @@ class MemoryDB:
 
         conn = self._connect()
         try:
-            sql = "SELECT id, date, category, sentiment, summary, details, tags FROM memories WHERE 1=1"
+            sql = (
+                "SELECT id, date, category, sentiment, summary, details, tags,"
+                " recall_count, last_recalled FROM memories WHERE 1=1"
+            )
             params: list[Any] = []
 
             if category:
@@ -191,6 +251,233 @@ class MemoryDB:
             return []
         finally:
             conn.close()
+
+    def score_memories(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Score all memories by weighted signals.
+
+        Scoring approach inspired by OpenClaw's deep-phase ranking signals.
+        See: https://docs.openclaw.ai/concepts/dreaming
+
+        Signals:
+        - recall_frequency (0.30): recall_count normalized
+        - recency (0.25): days since last recalled (inverse)
+        - age_value (0.20): older memories that are still recalled are valuable
+        - category_weight (0.15): lessons/mistakes > decisions > preferences > done/pattern
+        - freshness (0.10): days since created (inverse)
+
+        Returns:
+            List of memory dicts with 'score' field, sorted by score descending.
+        """
+        if not self.db_path.exists():
+            return []
+
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT id, date, category, sentiment, summary, details, tags,"
+                " recall_count, last_recalled FROM memories"
+            )
+            memories = [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            log(f"Database error: {e}")
+            return []
+        finally:
+            conn.close()
+
+        if not memories:
+            return []
+
+        category_weights = {
+            "lesson": 1.0,
+            "mistake": 1.0,
+            "decision": 0.8,
+            "preference": 0.7,
+            "pattern": 0.5,
+            "done": 0.3,
+        }
+
+        now = datetime.now(timezone.utc)
+        max_recall = max((m.get("recall_count") or 0) for m in memories) or 1
+
+        for m in memories:
+            recall_count = m.get("recall_count") or 0
+            created = _parse_utc(m["date"])
+            age_days = (now - created).days
+
+            # Recall frequency (normalized)
+            recall_freq = recall_count / max_recall
+
+            # Recency of last recall
+            if m.get("last_recalled"):
+                last_recalled = _parse_utc(m["last_recalled"])
+                recall_recency = max(0, 1 - (now - last_recalled).days / _RECALL_RECENCY_WINDOW_DAYS)
+            else:
+                recall_recency = 0.0
+
+            # Age value: older + recalled = valuable
+            age_value = min(age_days / _AGE_VALUE_WINDOW_DAYS, 1.0) * (1 if recall_count > 0 else 0.2)
+
+            # Category weight
+            cat_weight = category_weights.get(m["category"], 0.5)
+
+            # Freshness (inverse age, for new memories)
+            freshness = max(0, 1 - age_days / _FRESHNESS_WINDOW_DAYS)
+
+            score = (
+                _WEIGHT_RECALL_FREQ * recall_freq
+                + _WEIGHT_RECALL_RECENCY * recall_recency
+                + _WEIGHT_AGE_VALUE * age_value
+                + _WEIGHT_CATEGORY * cat_weight
+                + _WEIGHT_FRESHNESS * freshness
+            )
+            m["score"] = round(score, 3)
+
+        memories.sort(key=lambda m: m["score"], reverse=True)
+        return memories[:limit]
+
+    def prune(self, min_score: float = 0.1, max_age_days: int = 90, dry_run: bool = True) -> list[dict[str, Any]]:
+        """Prune low-value memories.
+
+        Removes memories that:
+        - Score below min_score AND are older than 30 days
+        - Are category 'done' and older than max_age_days with no recalls
+        - Have never been recalled and are older than max_age_days
+
+        Args:
+            min_score: Minimum score threshold
+            max_age_days: Maximum age for unrecalled memories
+            dry_run: If True, return candidates without deleting
+
+        Returns:
+            List of pruned (or to-be-pruned) memory dicts.
+        """
+        scored = self.score_memories(limit=10000)
+        now = datetime.now(timezone.utc)
+
+        to_prune = []
+        for m in scored:
+            created = _parse_utc(m["date"])
+            age_days = (now - created).days
+            recall_count = m.get("recall_count") or 0
+
+            should_prune = False
+            reason = ""
+
+            # Low score + old enough
+            if m["score"] < min_score and age_days > 30:
+                should_prune = True
+                reason = f"low score ({m['score']}) and {age_days} days old"
+
+            # Done category, old, never recalled
+            elif m["category"] == "done" and age_days > max_age_days and recall_count == 0:
+                should_prune = True
+                reason = f"done category, {age_days} days old, never recalled"
+
+            # Never recalled and very old
+            elif recall_count == 0 and age_days > max_age_days:
+                should_prune = True
+                reason = f"never recalled, {age_days} days old"
+
+            if should_prune:
+                m["prune_reason"] = reason
+                to_prune.append(m)
+
+        if not dry_run and to_prune:
+            conn = self._connect(readonly=False)
+            try:
+                ids = [m["id"] for m in to_prune]
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", ids)
+                conn.commit()
+            finally:
+                conn.close()
+
+        return to_prune
+
+    def stats(self) -> dict[str, Any]:
+        """Get memory statistics.
+
+        Returns:
+            Dict with total count, category breakdown, recall stats.
+        """
+        if not self.db_path.exists():
+            return {"total": 0, "categories": {}, "recalled": 0, "never_recalled": 0}
+
+        conn = self._connect()
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            categories = {}
+            for row in conn.execute("SELECT category, COUNT(*) as cnt FROM memories GROUP BY category"):
+                categories[row[0]] = row[1]
+            recalled = conn.execute("SELECT COUNT(*) FROM memories WHERE recall_count > 0").fetchone()[0]
+            never_recalled = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE recall_count = 0 OR recall_count IS NULL"
+            ).fetchone()[0]
+            top_recalled = conn.execute(
+                "SELECT id, summary, recall_count FROM memories"
+                " WHERE recall_count > 0 ORDER BY recall_count DESC LIMIT 5"
+            ).fetchall()
+
+            return {
+                "total": total,
+                "categories": categories,
+                "recalled": recalled,
+                "never_recalled": never_recalled,
+                "top_recalled": [{"id": r[0], "summary": r[1], "recall_count": r[2]} for r in top_recalled],
+            }
+        except sqlite3.Error as e:
+            log(f"Database error: {e}")
+            return {"total": 0, "categories": {}, "recalled": 0, "never_recalled": 0}
+        finally:
+            conn.close()
+
+    def dream(self) -> str:
+        """Run memory consolidation — score, analyze, generate dream report.
+
+        Inspired by OpenClaw's dreaming system which consolidates short-term
+        signals into durable memory. See: https://docs.openclaw.ai/concepts/dreaming
+
+        Returns:
+            Dream report as markdown string.
+        """
+
+        scored = self.score_memories(limit=10000)
+        stats = self.stats()
+        pruned = self.prune(dry_run=True)
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        lines = [f"# Dream Report — {now}", ""]
+
+        # Stats
+        lines.append("## Stats")
+        lines.append(f"- Total memories: {stats['total']}")
+        lines.append(f"- Recalled at least once: {stats['recalled']}")
+        lines.append(f"- Never recalled: {stats['never_recalled']}")
+        if stats.get("categories"):
+            cats = ", ".join(f"{k}: {v}" for k, v in sorted(stats["categories"].items()))
+            lines.append(f"- Categories: {cats}")
+        lines.append("")
+
+        # Top memories
+        if scored:
+            lines.append("## Top memories by score")
+            for m in scored[:10]:
+                lines.append(f"- [{m['score']}] ({m['category']}) {m['summary']}")
+            lines.append("")
+
+        # Prune candidates
+        if pruned:
+            lines.append(f"## Prune candidates ({len(pruned)})")
+            for m in pruned:
+                lines.append(f"- #{m['id']} ({m['category']}) {m['summary']} — {m['prune_reason']}")
+            lines.append("")
+        else:
+            lines.append("## Prune candidates")
+            lines.append("None — all memories are healthy.")
+            lines.append("")
+
+        return "\n".join(lines)
 
     def delete(self, memory_id: int) -> bool:
         """Delete a memory by ID.

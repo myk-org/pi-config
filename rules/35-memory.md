@@ -52,3 +52,37 @@ uv run myk-pi-tools memory delete <id>
 ```
 
 **Categories:** `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`
+
+---
+
+## Dreaming (Background Consolidation)
+
+Inspired by [OpenClaw's dreaming system](https://docs.openclaw.ai/concepts/dreaming).
+
+Memory consolidation runs as a **background async agent** — never blocking the session.
+
+### Triggers
+
+- `/dream` command — manual trigger
+- Session shutdown — automatic lightweight pass
+
+### What it does
+
+1. **Scores** all memories by recall frequency, recency, age, and category
+2. **Identifies** prune candidates (low-score, never-recalled, stale)
+3. **Writes** a dream report to `.pi/memory/dreams.md`
+
+### CLI Commands
+
+```bash
+uv run myk-pi-tools memory stats           # Memory statistics
+uv run myk-pi-tools memory score           # Ranked memories by score
+uv run myk-pi-tools memory prune           # Preview prune candidates
+uv run myk-pi-tools memory prune --apply   # Actually prune
+uv run myk-pi-tools memory dream           # Run consolidation + report
+```
+
+### Rules
+
+- **ALWAYS run dreaming as async agent** — never block the session
+- Tell the user: "Running memory consolidation in background..."

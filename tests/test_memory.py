@@ -103,3 +103,157 @@ class TestMemoryDB:
         # Most recent first
         assert results[0]["summary"] == "Second"
         assert results[1]["summary"] == "First"
+
+
+class TestRecallTracking:
+    def test_search_increments_recall_count(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
+        memory_db.search("buildah")
+        results = memory_db.list_memories()
+        assert results[0]["recall_count"] == 1
+
+    def test_search_increments_multiple_times(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
+        memory_db.search("buildah")
+        memory_db.search("buildah")
+        memory_db.search("buildah")
+        results = memory_db.list_memories()
+        assert results[0]["recall_count"] == 3
+
+    def test_search_sets_last_recalled(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
+        memory_db.search("buildah")
+        results = memory_db.list_memories()
+        assert results[0]["last_recalled"] is not None
+
+    def test_search_no_match_no_recall(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
+        memory_db.search("nonexistent")
+        results = memory_db.list_memories()
+        assert results[0]["recall_count"] == 0
+
+    def test_new_memory_has_zero_recall(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="test")
+        results = memory_db.list_memories()
+        assert results[0]["recall_count"] == 0
+        assert results[0]["last_recalled"] is None
+
+
+class TestScoring:
+    def test_score_empty_db(self, memory_db: MemoryDB) -> None:
+        assert memory_db.score_memories() == []
+
+    def test_score_returns_scores(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Test lesson")
+        results = memory_db.score_memories()
+        assert len(results) == 1
+        assert "score" in results[0]
+        assert isinstance(results[0]["score"], float)
+
+    def test_recalled_memory_scores_higher(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="recalled lesson", tags="test")
+        memory_db.add(category="lesson", summary="forgotten lesson", tags="other")
+        # Recall the first one several times
+        for _ in range(5):
+            memory_db.search("recalled")
+        results = memory_db.score_memories()
+        recalled = next(m for m in results if "recalled" in m["summary"])
+        forgotten = next(m for m in results if "forgotten" in m["summary"])
+        assert recalled["score"] > forgotten["score"]
+
+    def test_score_respects_limit(self, memory_db: MemoryDB) -> None:
+        for i in range(10):
+            memory_db.add(category="done", summary=f"Task {i}")
+        results = memory_db.score_memories(limit=3)
+        assert len(results) == 3
+
+
+class TestPruning:
+    def test_prune_empty_db(self, memory_db: MemoryDB) -> None:
+        assert memory_db.prune() == []
+
+    def test_prune_dry_run_doesnt_delete(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="done", summary="Old task")
+        # Force old date
+        conn = memory_db._connect(readonly=False)
+        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
+        conn.commit()
+        conn.close()
+        pruned = memory_db.prune(dry_run=True)
+        assert len(pruned) > 0
+        # Still exists
+        assert len(memory_db.list_memories()) == 1
+
+    def test_prune_apply_deletes(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="done", summary="Old task")
+        conn = memory_db._connect(readonly=False)
+        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
+        conn.commit()
+        conn.close()
+        pruned = memory_db.prune(dry_run=False)
+        assert len(pruned) > 0
+        assert len(memory_db.list_memories()) == 0
+
+    def test_prune_keeps_recalled_memories(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Important lesson", tags="test")
+        # Make it old
+        conn = memory_db._connect(readonly=False)
+        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
+        conn.commit()
+        conn.close()
+        # But recall it frequently
+        for _ in range(10):
+            memory_db.search("Important")
+        pruned = memory_db.prune(dry_run=True)
+        # Should not be pruned because it's frequently recalled
+        assert all("Important" not in p["summary"] for p in pruned)
+
+
+class TestStats:
+    def test_stats_empty(self, memory_db: MemoryDB) -> None:
+        result = memory_db.stats()
+        assert result["total"] == 0
+
+    def test_stats_with_data(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="L1")
+        memory_db.add(category="lesson", summary="L2")
+        memory_db.add(category="done", summary="D1")
+        result = memory_db.stats()
+        assert result["total"] == 3
+        assert result["categories"]["lesson"] == 2
+        assert result["categories"]["done"] == 1
+
+    def test_stats_recall_tracking(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
+        memory_db.add(category="lesson", summary="not searched")
+        memory_db.search("buildah")
+        result = memory_db.stats()
+        assert result["recalled"] == 1
+        assert result["never_recalled"] == 1
+
+
+class TestDream:
+    def test_dream_empty_db(self, memory_db: MemoryDB) -> None:
+        report = memory_db.dream()
+        assert "Dream Report" in report
+        assert "Total memories: 0" in report
+
+    def test_dream_with_data(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Test lesson")
+        report = memory_db.dream()
+        assert "Dream Report" in report
+        assert "Total memories: 1" in report
+
+    def test_dream_shows_prune_candidates(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="done", summary="Old task")
+        # Make it old so it becomes a prune candidate
+        conn = memory_db._connect(readonly=False)
+        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
+        conn.commit()
+        conn.close()
+        report = memory_db.dream()
+        assert "Prune candidates" in report
+
+    def test_dream_returns_string(self, memory_db: MemoryDB) -> None:
+        report = memory_db.dream()
+        assert isinstance(report, str)
