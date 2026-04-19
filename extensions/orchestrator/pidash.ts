@@ -189,6 +189,7 @@ export function registerPidash(pi: ExtensionAPI): void {
       if (!(await isDaemonRunning())) {
         debugLog("daemon failed to start after 60s");
         spawning = false;
+        connecting = false;
         return;
       }
       spawning = false;
