@@ -4,6 +4,9 @@
   "description": "Orchestrator pattern for pi: specialist subagents, enforcement, code review loop, workflow commands",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
   "pi": {
     "extensions": ["./extensions"],
     "prompts": ["./prompts"]

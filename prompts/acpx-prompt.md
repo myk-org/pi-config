@@ -17,6 +17,12 @@ $ARGUMENTS
 > `openclaw/acpx` for acpx CLI issues.
 > Do not silently skip steps or apply manual fixes that hide the root cause.
 
+🚨 **CRITICAL: NEVER set a timeout on acpx agent execution commands** (Step 5 and Step 9).
+External agents can take minutes to complete (reading files, thinking, multi-step tool calls).
+Any bash call running an acpx prompt MUST NOT include a timeout parameter. Let it run
+until it finishes. Quick probes (`acpx --version`, `sessions ensure/new`) may use
+bounded timeouts (e.g., 30s).
+
 Run a prompt through [acpx](https://github.com/openclaw/acpx) to any ACP-compatible coding agent.
 
 ## Supported Agents
@@ -268,6 +274,10 @@ When multiple agents are specified (without `--peer`), run all agents **in paral
 ```
 
 **Shell safety:** Single-quote the prompt to prevent shell expansion. Replace any single quotes in the prompt with `'\''` before interpolation.
+
+**No timeout:** NEVER pass a timeout parameter to bash when running acpx agent
+execution commands (this step and Step 9). Agents need time to read files, think,
+and execute multi-step tool calls. Let the command run until completion.
 
 **Error handling:**
 
