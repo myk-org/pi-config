@@ -11,6 +11,7 @@
  * - Async agent infrastructure
  * - ask_user tool
  * - Memory dreaming (background consolidation)
+ * - Pidash web UI (live session viewer)
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -19,6 +20,7 @@ import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
 import { registerDiffity } from "./diffity.js";
 import { registerDreaming } from "./dreaming.js";
+import { registerPidash } from "./pidash.js";
 import { registerEnforcement } from "./enforcement.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
@@ -29,7 +31,19 @@ import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./uti
 const IN_CONTAINER = isRunningInContainer();
 ensureGitSshTimeout();
 
+// Shared command handler registry — pidash uses this to execute commands from the browser
+export const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
+
 export default function (pi: ExtensionAPI) {
+  // Wrap registerCommand to capture all handler functions
+  const originalRegisterCommand = pi.registerCommand.bind(pi);
+  pi.registerCommand = (name: string, options: any) => {
+    if (options?.handler) {
+      commandHandlerRegistry.set(name, options.handler);
+    }
+    return originalRegisterCommand(name, options);
+  };
+
   registerAskUser(pi, terminalNotify);
   const { spawnAsyncAgent } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent);
@@ -39,5 +53,6 @@ export default function (pi: ExtensionAPI) {
   registerBtw(pi);
   registerDiffity(pi);
   registerDreaming(pi, spawnAsyncAgent);
+  registerPidash(pi);
   registerSessionValidation(pi);
 }

@@ -219,6 +219,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           block: true,
           reason: "Dangerous command blocked (no UI for confirmation)",
         };
+
       const ok = await ctx.ui.select(
         `⚠️ Dangerous command:\n\n  ${command}\n\nAllow?`,
         ["Yes", "No"],

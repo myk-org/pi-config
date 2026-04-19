@@ -44,6 +44,10 @@ pi-config/
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── diffity.ts               # Auto-start diffity diff viewer
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
+│   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon)
+│   │   ├── pidash-ui/               # React + shadcn/ui web dashboard
+│   │   │   ├── src/                 # React source (components, hooks, types)
+│   │   │   └── dist/               # Built output (generated, gitignored)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
@@ -90,7 +94,8 @@ pi-config/
 │   ├── release/
 │   └── reviews/
 ├── scripts/                         # Utility scripts
-│   └── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
+│   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
+│   └── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README

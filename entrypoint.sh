@@ -51,4 +51,5 @@ if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/memory/' "$GITIGNORE_FILE" 2>/dev
     echo '.pi/memory/' >> "$GITIGNORE_FILE"
 fi
 
+
 exec pi "$@"

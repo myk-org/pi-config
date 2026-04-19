@@ -80,8 +80,10 @@ export function registerAsyncAgents(
     if (running.length > 0) {
       const names = running.map(j => j.agent).join(", ");
       ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("warning", `⏳ ${running.length} async: ${names}`));
+      pi.events.emit("pidash:async-status", { count: running.length, agents: names });
     } else {
       ctx.ui.setStatus("async-agents", undefined);
+      pi.events.emit("pidash:async-status", { count: 0, agents: "" });
     }
   }
 

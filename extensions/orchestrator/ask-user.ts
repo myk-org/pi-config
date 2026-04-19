@@ -52,8 +52,35 @@ export function registerAskUser(
       }
 
       terminalNotify("pi", "Action required");
+
+      // Emit ask request for pidash browser clients
+      const askId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      pi.events.emit("pidash:ui-request", {
+        id: askId,
+        type: "extension_ui_request",
+        method: params.options?.length ? "select" : "input",
+        title: params.question,
+        options: params.options,
+      });
+
+      // Track if resolved (from TUI or browser)
+      let externalDone: ((value: string | null) => void) | null = null;
+
+      // Listen for browser response
+      const unsubscribe = pi.events.on("pidash:ui-response", (data: unknown) => {
+        const resp = data as any;
+        if (resp.id === askId && externalDone) {
+          if (resp.cancelled) externalDone(null);
+          else if (resp.value) externalDone(resp.value);
+          else if (resp.confirmed !== undefined) externalDone(resp.confirmed ? "Yes" : "No");
+        }
+      });
+
       const result = await ctx.ui.custom<string | null>(
         (tui, theme, _kb, done) => {
+          // Allow browser to resolve this dialog
+          externalDone = done;
+
           let mode: "select" | "input" = params.options?.length
             ? "select"
             : "input";
@@ -62,8 +89,14 @@ export function registerAskUser(
           const resolve = (value: string | null) => {
             if (resolved) return;
             resolved = true;
+            externalDone = null;
+            // Dismiss browser dialog if TUI answered
+            pi.events.emit("pidash:ui-dismiss", { type: "ui-dismiss", id: askId });
             done(value);
           };
+
+          // Override externalDone to use resolve (prevents double-resolve)
+          externalDone = resolve;
 
           // Free-text input with built-in callbacks
           const input = new Input();
@@ -185,6 +218,8 @@ export function registerAskUser(
         },
         { overlay: true },
       );
+
+      unsubscribe();
 
       if (result === null) {
         return { content: [{ type: "text", text: "User cancelled" }] };

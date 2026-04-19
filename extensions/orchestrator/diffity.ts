@@ -154,6 +154,8 @@ export function registerDiffity(pi: ExtensionAPI): void {
       // Show link in status line
       const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}?theme=dark`);
       ctx.ui.setStatus("diffity", statusText);
+      // Notify pidash of the diffity port
+      pi.events?.emit("diffity:port", port);
     } catch {
       if (diffityProc) {
         killProcess(diffityProc);

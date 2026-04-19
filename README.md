@@ -22,9 +22,11 @@ Single extension that provides:
 | **Git status** | Live git status in status line with colored icons — updates after every tool call |
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
-| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status` |
+| **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
+| **Dreaming** | Background memory consolidation — scores, prunes, and generates dream reports |
+| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/dream`, `/remember` |
 
-### Agents (23)
+### Agents (24)
 
 | Category | Agents |
 |----------|--------|
@@ -33,6 +35,7 @@ Single extension that provides:
 | Dev workflow | git-expert, github-expert, test-runner, test-automator, debugger |
 | Documentation | technical-documentation-writer, api-documenter, docs-fetcher |
 | Code review | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security |
+| Security | security-auditor |
 | Workflow | scout, planner, worker, reviewer |
 
 ### Prompt Templates
@@ -50,6 +53,8 @@ Single extension that provides:
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/query-db <command>` | Query the review comments database |
 | `/acpx-prompt <agent> [--fix\|--peer] <prompt>` | Run prompts via external AI agents (cursor, codex, gemini, etc.) |
+| `/dream` | Run memory consolidation — score, prune, generate dream report |
+| `/remember <what>` | Save a memory for future sessions |
 
 ## Installation
 
@@ -260,6 +265,60 @@ For **native** (non-container) usage, add it to your global gitignore:
 echo '.pi/memory/' >> ~/.gitignore-global
 git config --global core.excludesFile ~/.gitignore-global
 ```
+
+### Pidash — live web dashboard
+
+Pidash is a web-based dashboard that runs alongside the TUI, accessible from any browser including mobile phones.
+
+**How it works:**
+
+- A daemon (`pidash-server.ts`) runs on port `19190` and aggregates all pi sessions
+- Each pi session's extension (`pidash.ts`) connects to the daemon and forwards events
+- The React web UI shows live conversations, tool calls, and session status
+
+**Features:**
+
+- Multi-session dashboard with sidebar grouped by project
+- Live conversation streaming (user, assistant, tool, thinking)
+- Send messages from browser to pi
+- Model and thinking level switching from browser
+- Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
+- Info bar: model, tokens, context %, git status, diffity link
+- Collapsible thinking and tool blocks with copy buttons
+- ask_user tool bridging (answer from browser or TUI)
+- Mobile responsive
+- Event buffering for message replay on refresh
+
+**Access:**
+
+```bash
+# Automatically starts with pi — open in browser:
+http://localhost:19190
+
+# From other devices on your network:
+http://<your-ip>:19190
+
+# Custom port:
+PI_PIDASH_PORT=9999 pi
+```
+
+**Management:**
+
+```bash
+/pidash status    # Check server status
+/pidash stop      # Stop the daemon
+/pidash start     # Start the daemon
+/pidash restart   # Restart the daemon
+```
+
+**Building the UI (first run only — auto-built):**
+
+```bash
+cd extensions/orchestrator/pidash-ui
+npm install && npm run build
+```
+
+> **Note:** Session switching (`/resume`) and new sessions (`/new`) from the browser are not yet supported due to a pi API limitation. Use the TUI for these operations.
 
 ### Optional mounts
 
