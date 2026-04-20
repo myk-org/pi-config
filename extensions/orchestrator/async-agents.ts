@@ -34,6 +34,7 @@ interface AsyncJob {
   exitCode?: number | null;
   durationMs?: number;
   delivered?: boolean;
+  fireAndForget?: boolean;
 }
 
 interface AsyncState {
@@ -65,7 +66,7 @@ export function formatDuration(ms: number): string {
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
-): { spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[]) => { id: string; error?: string } } {
+): { spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean }) => { id: string; error?: string } } {
   const asyncState: AsyncState = {
     jobs: new Map(),
     poller: null,
@@ -143,8 +144,8 @@ export function registerAsyncAgents(
       // Notify user
       terminalNotify("pi", `Async agent ${data.agent} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
 
-      // Surface result in conversation
-      if (asyncState.lastCtx) {
+      // Surface result in conversation (skip for fire-and-forget jobs)
+      if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
         pi.sendMessage({
@@ -189,6 +190,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
+    options?: { fireAndForget?: boolean },
   ): { id: string; error?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -260,6 +262,7 @@ export function registerAsyncAgents(
       asyncDir,
       startedAt: Date.now(),
       updatedAt: Date.now(),
+      fireAndForget: options?.fireAndForget,
     };
     asyncState.jobs.set(id, job);
     updateAsyncWidget();

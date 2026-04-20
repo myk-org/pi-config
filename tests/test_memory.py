@@ -244,7 +244,7 @@ class TestDream:
         assert "Dream Report" in report
         assert "Total memories: 1" in report
 
-    def test_dream_shows_prune_candidates(self, memory_db: MemoryDB) -> None:
+    def test_dream_prunes_low_value_memories(self, memory_db: MemoryDB) -> None:
         memory_db.add(category="done", summary="Old task")
         # Make it old so it becomes a prune candidate
         conn = memory_db._connect(readonly=False)
@@ -252,8 +252,156 @@ class TestDream:
         conn.commit()
         conn.close()
         report = memory_db.dream()
-        assert "Prune candidates" in report
+        assert "Pruned" in report
+        # Verify it was actually deleted
+        assert len(memory_db.list_memories()) == 0
 
     def test_dream_returns_string(self, memory_db: MemoryDB) -> None:
         report = memory_db.dream()
         assert isinstance(report, str)
+
+    def test_dream_no_duplicates(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Unique lesson")
+        report = memory_db.dream()
+        assert "## Duplicates merged" in report
+        assert "No duplicates found." in report
+
+    def test_dream_merges_exact_duplicates(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Same lesson")
+        memory_db.add(category="lesson", summary="Same lesson")
+        report = memory_db.dream()
+        assert "## Duplicates merged (1)" in report
+        assert "removed #" in report
+        # Should have deleted the duplicate
+        assert len(memory_db.list_memories()) == 1
+
+
+class TestFindDuplicates:
+    def test_no_duplicates(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="First unique lesson")
+        memory_db.add(category="lesson", summary="Completely different topic")
+        pairs = memory_db._find_duplicates()
+        assert pairs == []
+
+    def test_empty_db(self, memory_db: MemoryDB) -> None:
+        pairs = memory_db._find_duplicates()
+        assert pairs == []
+
+    def test_single_memory(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Only one")
+        pairs = memory_db._find_duplicates()
+        assert pairs == []
+
+    def test_exact_match(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Use uv run for Python")
+        memory_db.add(category="lesson", summary="Use uv run for Python")
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+        keep, remove = pairs[0]
+        # Same recall_count (0), so keep newer (higher id)
+        assert keep["id"] > remove["id"]
+
+    def test_exact_match_case_insensitive(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Use UV Run")
+        memory_db.add(category="lesson", summary="use uv run")
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+
+    def test_exact_match_whitespace_stripped(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="  spaced out  ")
+        memory_db.add(category="lesson", summary="spaced out")
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+
+    def test_fuzzy_match_high_similarity(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="use uv run for python scripts")
+        memory_db.add(category="lesson", summary="use uv run for python scripts always")
+        # 5/6 words overlap = Jaccard ~0.83
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+
+    def test_fuzzy_match_below_threshold(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="use uv run for python")
+        memory_db.add(category="lesson", summary="docker build container image deploy")
+        pairs = memory_db._find_duplicates()
+        assert pairs == []
+
+    def test_keeps_higher_recall_count(self, memory_db: MemoryDB) -> None:
+        _id1 = memory_db.add(category="lesson", summary="duplicate lesson", tags="dup")
+        memory_db.add(category="lesson", summary="duplicate lesson", tags="dup")
+        # Recall id1 several times to boost its recall count
+        for _ in range(5):
+            memory_db.search("duplicate")
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+        keep, remove = pairs[0]
+        # id1 was recalled more (both get recalled on search, but id1 has more total)
+        assert keep.get("recall_count", 0) >= remove.get("recall_count", 0)
+
+    def test_keeps_newer_on_equal_recall(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="same thing")
+        id2 = memory_db.add(category="lesson", summary="same thing")
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+        keep, _remove = pairs[0]
+        assert keep["id"] == id2  # newer (higher id) kept
+
+    def test_each_memory_appears_once(self, memory_db: MemoryDB) -> None:
+        # Add 3 identical memories — only 1 pair should be formed
+        # (the third is already matched in a pair)
+        memory_db.add(category="lesson", summary="triple dup")
+        memory_db.add(category="lesson", summary="triple dup")
+        memory_db.add(category="lesson", summary="triple dup")
+        pairs = memory_db._find_duplicates()
+        # Each memory appears in at most one pair
+        seen_ids: set[int] = set()
+        for keep, remove in pairs:
+            assert keep["id"] not in seen_ids
+            assert remove["id"] not in seen_ids
+            seen_ids.add(keep["id"])
+            seen_ids.add(remove["id"])
+
+    def test_punctuation_handling(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="don't use pip! ever.")
+        memory_db.add(category="lesson", summary="don't use pip ever")
+        pairs = memory_db._find_duplicates()
+        assert len(pairs) == 1
+
+
+class TestMergeDuplicates:
+    def test_dry_run_no_delete(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="dup entry")
+        memory_db.add(category="lesson", summary="dup entry")
+        pairs = memory_db.merge_duplicates(dry_run=True)
+        assert len(pairs) == 1
+        # Both still exist
+        assert len(memory_db.list_memories()) == 2
+
+    def test_merge_deletes_duplicates(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="dup entry")
+        memory_db.add(category="lesson", summary="dup entry")
+        pairs = memory_db.merge_duplicates(dry_run=False)
+        assert len(pairs) == 1
+        remaining = memory_db.list_memories()
+        assert len(remaining) == 1
+        # The kept one should still be there
+        keep, _remove = pairs[0]
+        assert remaining[0]["id"] == keep["id"]
+
+    def test_merge_no_duplicates(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="Unique A")
+        memory_db.add(category="lesson", summary="Unique B")
+        pairs = memory_db.merge_duplicates(dry_run=False)
+        assert pairs == []
+        assert len(memory_db.list_memories()) == 2
+
+    def test_merge_multiple_pairs(self, memory_db: MemoryDB) -> None:
+        memory_db.add(category="lesson", summary="alpha duplicate")
+        memory_db.add(category="lesson", summary="alpha duplicate")
+        memory_db.add(category="mistake", summary="beta duplicate")
+        memory_db.add(category="mistake", summary="beta duplicate")
+        memory_db.add(category="done", summary="unique entry")
+        pairs = memory_db.merge_duplicates(dry_run=False)
+        assert len(pairs) == 2
+        remaining = memory_db.list_memories()
+        assert len(remaining) == 3  # 2 kept + 1 unique

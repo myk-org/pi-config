@@ -14,13 +14,18 @@ Inspired by [OpenClaw's dreaming system](https://docs.openclaw.ai/concepts/dream
 
 Run memory consolidation as a **background async agent** — never block the session.
 
-Delegate to a `worker` agent with `async: true`:
+Dreaming is a **self-contained action** — one command does everything:
+
+1. Scores all memories by recall frequency, recency, age, and category
+2. Prunes low-value memories (actually deletes them)
+3. Merges duplicate memories (detects via text similarity)
+4. Generates a report of everything done
+
+Delegate to a `worker` agent with `async: true` and `fireAndForget: true` (no result injection into conversation):
 
 ```text
 Task:
-1. Run: uv run myk-pi-tools memory dream
-2. Run: uv run myk-pi-tools memory prune (dry-run, report candidates)
-3. Report the dream output and prune candidates
+Run: uv run myk-pi-tools memory dream
 ```
 
 Tell the user: "Running memory consolidation in background..."

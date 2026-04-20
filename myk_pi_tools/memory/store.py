@@ -7,6 +7,7 @@ The scoring, pruning, and dreaming features are inspired by OpenClaw's
 See: https://docs.openclaw.ai/concepts/dreaming
 """
 
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -431,8 +432,133 @@ class MemoryDB:
         finally:
             conn.close()
 
+    def _find_duplicates(self) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Find duplicate memory pairs using exact and fuzzy matching.
+
+        Compares every pair of memories for similarity:
+        - Exact match: normalized summaries identical (case-insensitive, stripped)
+        - Fuzzy match: Jaccard similarity of word sets >= 0.75
+
+        Returns:
+            List of (keep, remove) tuples. The memory with higher recall_count
+            is kept; ties broken by higher id (newer).
+        """
+        if not self.db_path.exists():
+            return []
+
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT id, date, category, sentiment, summary, details, tags,"
+                " recall_count, last_recalled FROM memories"
+            )
+            memories = [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            log(f"Database error: {e}")
+            return []
+        finally:
+            conn.close()
+
+        if len(memories) < 2:
+            return []
+
+        def _normalize(text: str) -> str:
+            return text.strip().lower()
+
+        def _tokenize(text: str) -> set[str]:
+            tokens = set()
+            for word in text.lower().split():
+                cleaned = re.sub(r"[^a-z0-9]", "", word)
+                if cleaned:
+                    tokens.add(cleaned)
+            return tokens
+
+        def _jaccard(set_a: set[str], set_b: set[str]) -> float:
+            if not set_a and not set_b:
+                return 1.0
+            union = set_a | set_b
+            if not union:
+                return 0.0
+            return len(set_a & set_b) / len(union)
+
+        def _pick_keep_remove(a: dict[str, Any], b: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            rc_a = a.get("recall_count") or 0
+            rc_b = b.get("recall_count") or 0
+            if rc_a > rc_b:
+                return a, b
+            if rc_b > rc_a:
+                return b, a
+            # Equal recall_count — keep newer (higher id)
+            return (a, b) if a["id"] > b["id"] else (b, a)
+
+        # Pre-compute normalized summaries and token sets
+        norm_cache: dict[int, str] = {}
+        token_cache: dict[int, set[str]] = {}
+        for m in memories:
+            norm_cache[m["id"]] = _normalize(m["summary"])
+            token_cache[m["id"]] = _tokenize(m["summary"])
+
+        matched_ids: set[int] = set()
+        pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+        for i, a in enumerate(memories):
+            if a["id"] in matched_ids:
+                continue
+            for b in memories[i + 1 :]:
+                if b["id"] in matched_ids:
+                    continue
+
+                is_dup = False
+                # Exact match
+                if norm_cache[a["id"]] == norm_cache[b["id"]]:
+                    is_dup = True
+                # Fuzzy match
+                elif _jaccard(token_cache[a["id"]], token_cache[b["id"]]) >= 0.75:
+                    is_dup = True
+
+                if is_dup:
+                    keep, remove = _pick_keep_remove(a, b)
+                    pairs.append((keep, remove))
+                    matched_ids.add(a["id"])
+                    matched_ids.add(b["id"])
+                    break  # a is matched, move to next i
+
+        return pairs
+
+    def merge_duplicates(self, dry_run: bool = True) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Detect and merge duplicate memories.
+
+        Args:
+            dry_run: If True, return duplicate pairs without deleting.
+
+        Returns:
+            List of (keep, remove) pairs.
+        """
+        pairs = self._find_duplicates()
+
+        if not dry_run and pairs:
+            conn = self._connect(readonly=False)
+            try:
+                ids_to_delete = [remove["id"] for _, remove in pairs]
+                placeholders = ",".join("?" * len(ids_to_delete))
+                conn.execute(
+                    f"DELETE FROM memories WHERE id IN ({placeholders})",
+                    ids_to_delete,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        return pairs
+
     def dream(self) -> str:
-        """Run memory consolidation — score, analyze, generate dream report.
+        """Run full memory consolidation — score, prune, merge duplicates, report.
+
+        Self-contained action that performs ALL maintenance in one call:
+        1. Score all memories
+        2. Prune low-value memories (actually deletes them)
+        3. Merge duplicate memories (actually deletes duplicates)
+        4. Generate a report of everything done
 
         Inspired by OpenClaw's dreaming system which consolidates short-term
         signals into durable memory. See: https://docs.openclaw.ai/concepts/dreaming
@@ -443,7 +569,7 @@ class MemoryDB:
 
         scored = self.score_memories(limit=10000)
         stats = self.stats()
-        pruned = self.prune(dry_run=True)
+        pruned = self.prune(dry_run=False)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -466,15 +592,32 @@ class MemoryDB:
                 lines.append(f"- [{m['score']}] ({m['category']}) {m['summary']}")
             lines.append("")
 
-        # Prune candidates
+        # Pruned
         if pruned:
-            lines.append(f"## Prune candidates ({len(pruned)})")
+            lines.append(f"## Pruned ({len(pruned)})")
             for m in pruned:
                 lines.append(f"- #{m['id']} ({m['category']}) {m['summary']} — {m['prune_reason']}")
             lines.append("")
         else:
-            lines.append("## Prune candidates")
+            lines.append("## Pruned")
             lines.append("None — all memories are healthy.")
+            lines.append("")
+
+        # Duplicates
+        merged_pairs = self.merge_duplicates(dry_run=False)
+        if merged_pairs:
+            lines.append(f"## Duplicates merged ({len(merged_pairs)})")
+            for keep, remove in merged_pairs:
+                keep_rc = keep.get("recall_count") or 0
+                remove_rc = remove.get("recall_count") or 0
+                lines.append(
+                    f'- Kept #{keep["id"]} "{keep["summary"]}" (recall: {keep_rc}),'
+                    f' removed #{remove["id"]} "{remove["summary"]}" (recall: {remove_rc})'
+                )
+            lines.append("")
+        else:
+            lines.append("## Duplicates merged")
+            lines.append("No duplicates found.")
             lines.append("")
 
         return "\n".join(lines)
