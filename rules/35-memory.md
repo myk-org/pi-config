@@ -70,10 +70,10 @@ Memory consolidation runs as a **background async agent** — never blocking the
 
 Dreaming is a **self-contained action** — one command does everything:
 
-1. **Scores** all memories by recall frequency, recency, age, and category
-2. **Prunes** low-value memories (actually deletes them)
-3. **Merges** duplicate memories (detects via text similarity)
-4. **Writes** a dream report to `.pi/memory/dreams.md`
+1. **Extracts** useful memories from the current session (user corrections, preferences, lessons, completed work)
+2. **Scores** all memories by recall frequency, recency, age, and category
+3. **Prunes** low-value memories (actually deletes them)
+4. **Merges** duplicate memories (detects via text similarity)
 
 ### CLI Commands
 

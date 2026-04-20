@@ -1,6 +1,5 @@
 """Memory CLI commands."""
 
-import fcntl
 import json
 import sys
 from pathlib import Path
@@ -259,17 +258,14 @@ def memory_prune(ctx: click.Context, min_score: float, max_age: int, apply: bool
                 click.echo(f"  #{m['id']} ({m['category']}) {m['summary']} — {m.get('prune_reason', '')}")
 
 
-_MAX_DREAM_REPORTS = 10
-
-
 @memory.command("dream")
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
 @click.pass_context
 def memory_dream(ctx: click.Context, output_json: bool) -> None:
-    """Run memory consolidation and generate dream report.
+    """Run memory consolidation — prune, merge duplicates, report.
 
-    Scores all memories, identifies prune candidates, and writes
-    a report to .pi/memory/dreams.md. Keeps only the last 10 reports.
+    Scores all memories, prunes low-value ones, merges duplicates.
+    All changes are made directly in the database.
 
     Examples:
 
@@ -279,33 +275,7 @@ def memory_dream(ctx: click.Context, output_json: bool) -> None:
     db = ctx.obj["db"]
     report = db.dream()
 
-    # Write dream report to file, rotating to keep only last N reports.
-    # Uses advisory file lock to prevent concurrent write races
-    # (e.g., /dream manual + auto-dream timer running simultaneously).
-    dream_path = db.db_path.parent / "dreams.md"
-    lock_path = dream_path.with_suffix(".lock")
-
-    wrote_file = False
-    try:
-        with open(lock_path, "w") as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            try:
-                existing = dream_path.read_text() if dream_path.exists() else ""
-                parts = [report] + [p for p in existing.split("\n---\n\n") if p.strip()]
-                parts = parts[:_MAX_DREAM_REPORTS]
-                dream_path.write_text("\n---\n\n".join(parts) + "\n")
-                wrote_file = True
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    except BlockingIOError:
-        click.echo("Another dream is running — skipped file write.", err=True)
-    except OSError as e:
-        click.echo(f"Failed to write dream report: {e}", err=True)
-        sys.exit(1)
-
     if output_json:
-        click.echo(json.dumps({"report": report, "path": str(dream_path), "wrote_file": wrote_file}, indent=2))
+        click.echo(json.dumps({"report": report}, indent=2))
     else:
         click.echo(report)
-        if wrote_file:
-            click.echo(f"\nDream report written to {dream_path}", err=True)

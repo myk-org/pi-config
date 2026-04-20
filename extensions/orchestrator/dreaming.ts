@@ -30,14 +30,30 @@ export function registerDreaming(
   let lastCwd = "";
 
   let dreamInFlight = false;
+  let lastSessionFile = "";
 
   function runDreamAsync(cwd: string) {
     if (dreamInFlight) return; // Prevent concurrent dreams
     dreamInFlight = true;
     const { agents } = discoverAgents(cwd, "user");
+    const sessionArg = lastSessionFile ? `\n\nSession file to analyze: ${lastSessionFile}` : "";
     const { id } = spawnAsyncAgent(
       "worker",
-      "Run memory consolidation: `uv run myk-pi-tools memory dream`.",
+      `Memory dreaming — analyze and consolidate.${sessionArg}\n\n` +
+      `Steps:\n` +
+      `1. If a session file is provided, read it and look for things worth remembering:\n` +
+      `   - User corrections ("no, do it this way") → category: lesson, sentiment: negative\n` +
+      `   - User preferences ("I prefer X", "always do Y") → category: preference, sentiment: neutral\n` +
+      `   - Mistakes or repeated fix attempts → category: mistake, sentiment: negative\n` +
+      `   - Completed features/PRs merged → category: done, sentiment: positive\n` +
+      `   - Patterns or conventions discovered → category: pattern, sentiment: neutral\n` +
+      `   For each memory found, check existing memories first to avoid duplicates:\n` +
+      `   uv run myk-pi-tools memory search "<relevant keywords>"\n` +
+      `   Only add if not already captured:\n` +
+      `   uv run myk-pi-tools memory add -c <category> -s "<one-line summary>" -t "<tags>" --sentiment <sentiment>\n` +
+      `   Memory rules: one line only, max ~100 chars, specific and actionable, no fluff.\n` +
+      `2. Run maintenance: uv run myk-pi-tools memory dream\n` +
+      `3. Done. Do not report output.`,
       cwd,
       agents,
       { fireAndForget: true },
@@ -88,6 +104,7 @@ export function registerDreaming(
   // Update cwd on session start
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
+    lastSessionFile = ctx.sessionFile || "";
     if (enabled) startTimer(ctx.cwd);
   });
 
