@@ -23,8 +23,8 @@ Single extension that provides:
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
-| **Dreaming** | Background memory consolidation — scores, prunes, and generates dream reports |
-| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/dream`, `/remember` |
+| **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains memory.md |
+| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/dream`, `/remember` — with autocomplete argument hints |
 
 ### Agents (24)
 
@@ -53,8 +53,9 @@ Single extension that provides:
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/query-db <command>` | Query the review comments database |
 | `/acpx-prompt <agent> [--fix\|--peer] <prompt>` | Run prompts via external AI agents (cursor, codex, gemini, etc.) |
-| `/dream` | Run memory consolidation — score, prune, generate dream report |
+| `/dream` | Run memory consolidation — extract, deduplicate, maintain memory.md |
 | `/remember <what>` | Save a memory for future sessions |
+| `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
 
 ## Installation
 
@@ -256,8 +257,12 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 
 ### Project memory
 
-The memory system stores per-repo lessons and patterns in `.pi/memory/memories.db`.
-This file is auto-added to the global gitignore in the container.
+The memory system stores per-repo lessons and patterns in `.pi/memory/memory.md` — a plain markdown file with two sections:
+
+- **Pinned** — user-requested memories (via `/remember`), never auto-removed
+- **Learned** — auto-extracted by dreaming, can be reorganized/removed
+
+The file is auto-added to the global gitignore in the container.
 
 For **native** (non-container) usage, add it to your global gitignore:
 
@@ -265,6 +270,8 @@ For **native** (non-container) usage, add it to your global gitignore:
 echo '.pi/memory/' >> ~/.gitignore-global
 git config --global core.excludesFile ~/.gitignore-global
 ```
+
+**Migration:** If you have an existing `memories.db`, it's automatically migrated to `memory.md` on the next session start.
 
 ### Pidash — live web dashboard
 
