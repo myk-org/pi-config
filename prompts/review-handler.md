@@ -323,40 +323,42 @@ to watch for new CodeRabbit comments.
 
 #### 9a+9b: Wait and Fetch (combined async)
 
-Each poll cycle (wait + fetch) runs as a **single async subagent** to avoid
-blocking the session. The entire wait + poll happens in the background.
+`reviews poll` loops internally until something actionable happens. Spawn ONE
+async worker and wait for the result.
 
-**Spawn the cycle as one async subagent:**
+**Spawn the poll as one async subagent:**
 
 - Agent: `worker`
-- Task: `Wait 5 minutes, then run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the full output.`
+- Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the full output.`
 - async: true
+- **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
-The worker will:
+The poll will loop internally:
 
-1. Sleep 5 minutes (in the background — session stays interactive)
-2. Run `reviews poll` which atomically checks rate limits, triggers if needed, and fetches reviews
+1. Check approval → return if approved
+2. Check rate limit → wait + trigger if needed
+3. Fetch reviews → return if new comments
+4. No new comments → sleep 5 min, loop back to step 1
 
 **While waiting for the async result**, the session remains interactive — the user
 can continue working. When the result surfaces, process it:
 
-Check if there are new CodeRabbit comments (comments without
-`posted_at` timestamps, not auto-skipped).
+Check the poll output:
 
+- If output contains `"approved": true`: **EXIT the loop**. Notify the user:
+  "🎉 CodeRabbit approved this PR — no actionable comments. Autorabbit loop complete."
 - If **new CodeRabbit comments found**: Run Phases 2-8 again with
   autorabbit behavior (auto-approve CodeRabbit, ask user for others).
-  After completing (or if any phase errors), **MUST** spawn the next cycle (go to 9a+9b again).
-- If **no new CodeRabbit comments**: Display "No new CodeRabbit
-  comments. Spawning next poll cycle..." and **MUST** spawn the next cycle (go to 9a+9b again).
+  After completing, spawn another `reviews poll` async worker (go to 9a+9b again).
 
-**Both paths spawn a new async cycle. NEVER exit the loop. Only the user can stop it.**
+#### 9c: Exit Conditions (MANDATORY)
 
-#### 9c: NEVER EXIT (MANDATORY)
+**The loop MUST run until one of these conditions is met:**
 
-**THE LOOP MUST NEVER STOP UNLESS THE USER EXPLICITLY REQUESTS IT.**
+1. **CodeRabbit approved** — `reviews poll` returns `{"approved": true}`. Exit and notify the user.
+2. **User explicitly stops** — user presses `Ctrl+C` or sends "stop", "exit", "done", or "quit".
 
-There is NO automatic exit condition. The AI does NOT decide when the loop ends.
-The loop runs forever until the user intervenes.
+**No other reason is valid to exit the loop.**
 
 ```text
 VIOLATION — The following rationalizations are FORBIDDEN reasons to exit the loop:
@@ -375,18 +377,10 @@ VIOLATION — The following rationalizations are FORBIDDEN reasons to exit the l
   - Any variation of the AI deciding there is no more work to do
 ```
 
-Even after 100 consecutive cycles with zero new comments, the loop continues.
-The absence of new comments is expected behavior, not a reason to stop.
-
 If any command in the loop fails, log the error, wait 5 minutes, and retry from 9a.
 Errors are recoverable — NEVER treat a command failure as a reason to exit.
 
-**ONLY these actions end the loop:**
-
-- The user presses `Ctrl+C`
-- The user sends an explicit message such as "stop", "exit", "done", or "quit"
-
-**Breaking the loop without user action is a HARD VIOLATION of this spec.**
+**Breaking the loop without a valid exit condition is a HARD VIOLATION of this spec.**
 
 Each cycle displays a status update so the user knows the loop is active:
 
@@ -396,4 +390,5 @@ Each cycle displays a status update so the user knows the loop is active:
 [autorabbit] Found {N} new comments — processing...
 [autorabbit] No new comments. Next check in 5 minutes...
 [autorabbit] CodeRabbit rate-limited. Handling automatically via reviews poll...
+[autorabbit] 🎉 CodeRabbit approved! No actionable comments. Loop complete.
 ```

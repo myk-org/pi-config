@@ -35,6 +35,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["myk_pi_tools"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["CLAUDE.md"]
+
 [tool.ruff]
 preview = true
 line-length = 120
@@ -42,11 +45,7 @@ fix = true
 output-format = "grouped"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "PLC0415", "ARG", "RUF059"]
-
-[tool.ruff.lint.per-file-ignores]
-# CLI command modules use lazy imports for faster startup
-"myk_pi_tools/*/commands.py" = ["PLC0415"]
+select = ["E", "F", "W", "I", "B", "UP", "ARG", "RUF059"]
 
 [tool.ruff.format]
 exclude = [".git", ".venv", ".mypy_cache", ".tox", "__pycache__"]

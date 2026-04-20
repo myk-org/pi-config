@@ -18,6 +18,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.db.query import ReviewDB, _body_similarity
+from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
+
 # Known AI reviewer usernames
 QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
 CODERABBIT_USERS = ["coderabbitai", "coderabbitai[bot]"]
@@ -72,12 +75,7 @@ def _fallback_body_similarity(body1: str, body2: str) -> float:
 
 def _load_review_db() -> tuple[type | None, Any | None]:
     """Try to load ReviewDB from db module."""
-    try:
-        from myk_pi_tools.db.query import ReviewDB, _body_similarity  # noqa: PLC0415
-
-        return ReviewDB, _body_similarity
-    except ImportError:
-        return None, None
+    return ReviewDB, _body_similarity
 
 
 def check_dependencies() -> None:
@@ -588,8 +586,6 @@ def fetch_coderabbit_body_comments(owner: str, repo: str, pr_number: str) -> lis
     Returns:
         List of thread-like dicts, one per parsed comment.
     """
-    from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments  # noqa: PLC0415
-
     endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews?per_page=100"
     reviews = run_gh_api(endpoint, paginate=True)
 
@@ -896,10 +892,6 @@ def run(review_url: str = "") -> int:
                 if review_meta:
                     review_author = review_meta.get("user", {}).get("login") if review_meta.get("user") else None
                     if review_author in CODERABBIT_USERS:
-                        from myk_pi_tools.reviews.coderabbit_parser import (  # noqa: PLC0415
-                            parse_review_body_comments,
-                        )
-
                         review_body = review_meta.get("body", "")
                         if review_body:
                             parsed = parse_review_body_comments(review_body)
