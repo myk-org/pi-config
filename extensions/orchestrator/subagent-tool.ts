@@ -571,6 +571,15 @@ export function registerSubagentTool(
 
         // Parallel async — spawn each task as a separate async agent
         if (params.tasks && params.tasks.length > 0) {
+          // Validate all tasks have names
+          const unnamed = params.tasks.filter(t => !(t as any).name);
+          if (unnamed.length > 0) {
+            return {
+              content: [{ type: "text", text: `Async agents require a name for display in status line. Missing name for: ${unnamed.map(t => t.agent).join(", ")}` }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
           const results: string[] = [];
           const errors: string[] = [];
           for (const t of params.tasks) {
@@ -607,6 +616,13 @@ export function registerSubagentTool(
         if (!params.cwd) {
           return {
             content: [{ type: "text", text: MISSING_CWD_ERROR }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        if (!params.name) {
+          return {
+            content: [{ type: "text", text: "Async agents require a name for display in status line (e.g., 'Dream', 'Code Review', 'PR #42')." }],
             details: mkd("single")([]),
             isError: true,
           };

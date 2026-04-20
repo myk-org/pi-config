@@ -20,6 +20,24 @@ $ARGUMENTS
 
 Unified handler that processes ALL review sources from the current branch's GitHub PR.
 
+## Multi-PR Handling (MANDATORY)
+
+When asked to handle reviews for **multiple PRs**, NEVER switch branches in the main worktree.
+Use `git worktree` to create isolated directories for each PR:
+
+```bash
+# Create a worktree per PR
+git worktree add /tmp/pi-work/pr-42 origin/fix/issue-42
+git worktree add /tmp/pi-work/pr-43 origin/feat/issue-43
+
+# Run review-handler in each worktree directory
+# When done, clean up
+git worktree remove /tmp/pi-work/pr-42
+```
+
+Branch switching corrupts parallel agent work — other agents running in the
+main worktree will see the wrong branch.
+
 ## Prerequisites Check (MANDATORY)
 
 ### Step 0: Check uv
