@@ -38,7 +38,7 @@ interface SessionInfo {
   gitDirty?: boolean;
   gitChanges?: number;
   container?: boolean;
-  diffityPort?: number | null;
+  diffPort?: number | null;
   contextWindow?: number;
   thinkingLevel?: string;
 }
@@ -155,7 +155,7 @@ piWss.on("connection", (ws: any) => {
           gitDirty: parsed.gitDirty || false,
           gitChanges: parsed.gitChanges || 0,
           container: parsed.container || false,
-          diffityPort: parsed.diffityPort || null,
+          diffPort: parsed.diffPort || null,
           contextWindow: parsed.contextWindow || 0,
           thinkingLevel: parsed.thinkingLevel || "medium",
         };
@@ -181,7 +181,7 @@ piWss.on("connection", (ws: any) => {
         if (parsed.gitDirty !== undefined) piClient.session.gitDirty = parsed.gitDirty;
         if (parsed.gitChanges !== undefined) piClient.session.gitChanges = parsed.gitChanges;
         if (parsed.contextWindow !== undefined) piClient.session.contextWindow = parsed.contextWindow;
-        if (parsed.diffityPort !== undefined) piClient.session.diffityPort = parsed.diffityPort;
+        if (parsed.diffPort !== undefined) piClient.session.diffPort = parsed.diffPort;
         if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
         piClient.session.lastActivity = Date.now();
         broadcastToBrowsers({ type: "session_updated", session: piClient.session });

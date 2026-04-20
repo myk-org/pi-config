@@ -199,11 +199,11 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         </>
       )}
 
-      {/* Diffity */}
-      {session.diffityPort && (
+      {/* Diff viewer */}
+      {session.diffPort && (
         <>
           <span className="text-border">|</span>
-          <a href={`http://localhost:${session.diffityPort}?theme=dark`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline">
+          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline">
              diff <ExternalLink className="h-3 w-3" />
           </a>
         </>

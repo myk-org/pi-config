@@ -137,7 +137,7 @@ function isContainer(): boolean {
   } catch { return false; }
 }
 
-let diffityPort: number | null = null;
+let diffPort: number | null = null;
 
 function getCurrentBranch(cwd: string): string {
   try {
@@ -226,7 +226,7 @@ export function registerPidash(
           gitDirty: git.dirty,
           gitChanges: git.changes,
           container: isContainer(),
-          diffityPort,
+          diffPort,
           model: m?.name || m?.id || "",
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
@@ -701,12 +701,12 @@ export function registerPidash(
     } catch {}
   });
 
-  // Track diffity port from diffity extension
-  pi.events.on("diffity:port", (port: unknown) => {
+  // Track diff viewer port
+  pi.events.on("diff-viewer:port", (port: unknown) => {
     if (typeof port === "number") {
-      diffityPort = port;
+      diffPort = port;
       if (ws && connected) {
-        ws.send(JSON.stringify({ type: "update_info", diffityPort: port }));
+        ws.send(JSON.stringify({ type: "update_info", diffPort: port }));
       }
     }
   });
