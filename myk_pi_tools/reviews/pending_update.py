@@ -34,6 +34,7 @@ Status handling:
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,8 +48,6 @@ VALID_SUBMIT_ACTIONS = {"COMMENT", "APPROVE", "REQUEST_CHANGES"}
 
 def check_dependencies() -> None:
     """Check required dependencies are available."""
-    import shutil  # noqa: PLC0415
-
     if shutil.which("gh") is None:
         print_stderr("Error: 'gh' is required but not installed.")
         sys.exit(1)
