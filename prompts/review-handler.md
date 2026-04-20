@@ -329,7 +329,7 @@ async worker and wait for the result.
 **Spawn the poll as one async subagent:**
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the full output.`
+- Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
@@ -343,10 +343,12 @@ The poll will loop internally:
 **While waiting for the async result**, the session remains interactive — the user
 can continue working. When the result surfaces, process it:
 
-Check the poll output:
+Check the poll RAW output (not the worker's summary — look for the exact JSON string):
 
-- If output contains `"approved": true`: **EXIT the loop**. Notify the user:
+- If output contains the EXACT string `"approved": true`: **EXIT the loop**. Notify the user:
   "🎉 CodeRabbit approved this PR — no actionable comments. Autorabbit loop complete."
+  **CRITICAL:** Only exit on the literal JSON `{"approved": true}` from the CLI output.
+  Do NOT exit because the worker says "approved" or "0 comments" in its summary.
 - If **new CodeRabbit comments found**: Run Phases 2-8 again with
   autorabbit behavior (auto-approve CodeRabbit, ask user for others).
   After completing, spawn another `reviews poll` async worker (go to 9a+9b again).
