@@ -51,6 +51,11 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   const pctColor = pct > 80 ? "text-red-500" : pct > 50 ? "text-orange-400" : "";
   const displayModel = model || session.model || "—";
 
+  // Reset async agents when session changes
+  useEffect(() => {
+    setAsyncAgents({ count: 0, agents: "", jobs: [] });
+  }, [session.pid]);
+
   useEffect(() => {
     return onMessage((ev: any) => {
       if (ev.type === "models-list" && ev.models) {
@@ -89,7 +94,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   }, [openMenu, send, session.pid]);
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:overflow-x-auto md:whitespace-nowrap md:scrollbar-none">
+    <div className="flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:whitespace-nowrap md:scrollbar-none">
       {/* Model */}
       <div className="relative">
         <button
@@ -213,11 +218,14 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
 
       {/* Async agents — always visible, pinned to far right */}
       <div className="relative inline-block ml-auto">
-        {asyncAgents.count > 0 ? (
-          <Popover>
-            <PopoverTrigger className="text-yellow-400 hover:text-yellow-300 cursor-pointer text-xs">
-              ⏳ {asyncAgents.count} async
-            </PopoverTrigger>
+        <Popover>
+          <PopoverTrigger className={cn(
+            "cursor-pointer text-xs",
+            asyncAgents.count > 0 ? "text-yellow-400 hover:text-yellow-300" : "text-muted-foreground/50"
+          )}>
+            ⏳ {asyncAgents.count} async
+          </PopoverTrigger>
+          {asyncAgents.count > 0 && (
             <PopoverContent className="w-72 max-h-60 overflow-y-auto">
               <div className="text-xs space-y-1.5">
                 <div className="font-bold text-foreground mb-1">Running Agents</div>
@@ -249,10 +257,8 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                 })}
               </div>
             </PopoverContent>
-          </Popover>
-        ) : (
-          <span className="text-muted-foreground/50 text-xs">⏳ 0 async</span>
-        )}
+          )}
+        </Popover>
       </div>
     </div>
   );

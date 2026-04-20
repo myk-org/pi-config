@@ -10,40 +10,51 @@ interface PopoverProps {
 const PopoverContext = React.createContext<{
   open: boolean;
   setOpen: (v: boolean) => void;
-}>({ open: false, setOpen: () => {} });
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
+}>({ open: false, setOpen: () => {}, triggerRef: { current: null } });
 
 export function Popover({ children, open: controlledOpen, onOpenChange }: PopoverProps) {
   const [internalOpen, setInternalOpen] = React.useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
-  return <PopoverContext.Provider value={{ open, setOpen }}>{children}</PopoverContext.Provider>;
+  return <PopoverContext.Provider value={{ open, setOpen, triggerRef }}>{children}</PopoverContext.Provider>;
 }
 
-export function PopoverTrigger({ children, className, asChild }: { children: React.ReactNode; className?: string; asChild?: boolean }) {
-  const { open, setOpen } = React.useContext(PopoverContext);
+export function PopoverTrigger({ children, className }: { children: React.ReactNode; className?: string; asChild?: boolean }) {
+  const { open, setOpen, triggerRef } = React.useContext(PopoverContext);
   return (
-    <button className={className} onClick={() => setOpen(!open)} type="button">
+    <button ref={triggerRef} className={className} onClick={(e) => { e.stopPropagation(); setOpen(!open); }} type="button">
       {children}
     </button>
   );
 }
 
-export function PopoverContent({ children, className, align }: { children: React.ReactNode; className?: string; align?: string }) {
-  const { open, setOpen } = React.useContext(PopoverContext);
+export function PopoverContent({ children, className }: { children: React.ReactNode; className?: string; align?: string }) {
+  const { open, setOpen, triggerRef } = React.useContext(PopoverContext);
   const ref = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (!open) return;
-    // Delay to avoid catching the trigger click
+
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      // Don't close if clicking inside popover or on trigger
+      if (ref.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+
+    // Delay adding listener to avoid catching the click that opened it
     const timer = setTimeout(() => {
-      const handler = (e: MouseEvent) => {
-        if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-      };
       document.addEventListener("mousedown", handler);
-      return () => document.removeEventListener("mousedown", handler);
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [open, setOpen]);
+    }, 10);
+
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("mousedown", handler);
+    };
+  }, [open, setOpen, triggerRef]);
 
   if (!open) return null;
   return (
