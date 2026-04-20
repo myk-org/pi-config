@@ -123,7 +123,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       res.end(html);
     } catch {
       res.writeHead(200, { "Content-Type": "text/html" });
-      res.end("<h1>pidash</h1><p>UI not found. Run: cd extensions/orchestrator/pidash-ui && npm run build</p>");
+      res.end("<h1>pidash</h1><p>UI is building... Run <code>/pidash restart</code> from the pi TUI, then refresh this page.</p>");
     }
   }
 });
