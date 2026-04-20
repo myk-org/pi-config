@@ -1,6 +1,6 @@
 /**
  * Rule & memory injection — loads rules/*.md for the orchestrator
- * and recent project memories for all agents.
+ * and project memories from memory.md for all agents.
  */
 
 import { execFileSync } from "node:child_process";
@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 export function registerRules(pi: ExtensionAPI): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
+  let migrationChecked = false;
 
   pi.on("before_agent_start", async (event, ctx) => {
     let extra = "";
@@ -33,16 +34,29 @@ export function registerRules(pi: ExtensionAPI): void {
       }
     }
 
-    // Project memories — injected for ALL agents (orchestrator + specialists)
-    const memories = loadRecentMemories(ctx.cwd);
+    // One-time migration: if memories.db exists, migrate to memory.md
+    if (!migrationChecked) {
+      migrationChecked = true;
+      try {
+        const memDir = path.join(ctx.cwd, ".pi", "memory");
+        const dbPath = path.join(memDir, "memories.db");
+        if (fs.existsSync(dbPath)) {
+          execFileSync(
+            "uv",
+            ["run", "myk-pi-tools", "memory", "migrate"],
+            { cwd: ctx.cwd, timeout: 10000, stdio: "ignore" },
+          );
+        }
+      } catch {}
+    }
+
+    // Project memories — read memory.md directly (no subprocess needed)
+    const memories = loadMemories(ctx.cwd);
     if (memories) {
       extra += memories;
       if (isSubagent) {
         extra +=
-          "\n\nYou can search for more project memories with:" +
-          " `uv run myk-pi-tools memory search \"<query>\"`" +
-          " — use this before implementing if the task relates to a past lesson or mistake." +
-          " **Do NOT write to memory** — only the orchestrator writes memories.\n";
+          "\n\n **Do NOT write to memory** — only the orchestrator writes memories.\n";
       }
     }
 
@@ -51,39 +65,15 @@ export function registerRules(pi: ExtensionAPI): void {
   });
 }
 
-interface Memory {
-  category: string;
-  summary: string;
-  tags?: string;
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? text.slice(0, max) + "…" : text;
-}
-
-// Loads recent memories from the per-repo SQLite DB (best-effort, non-critical)
-function loadRecentMemories(cwd: string): string {
+// Reads .pi/memory/memory.md directly — zero dependencies, instant
+function loadMemories(cwd: string): string {
   try {
-    const result = execFileSync(
-      "uv",
-      ["run", "myk-pi-tools", "memory", "list", "--last", "30", "-n", "10", "--json"],
-      { cwd, encoding: "utf-8", timeout: 5000, maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "ignore"] },
-    );
-    const memories: unknown[] = JSON.parse(result);
-    if (!Array.isArray(memories) || memories.length === 0) return "";
-
-    const SKIP_CATEGORIES = new Set(["done", "pattern"]);
-    const lines = memories
-      .filter((m): m is Memory => !!m && typeof m === "object" && "category" in m && "summary" in m)
-      .filter((m) => !SKIP_CATEGORIES.has(m.category))
-      .map(
-        (m) => `- [${m.category}] ${truncate(m.summary, 120)}${m.tags ? ` (${m.tags})` : ""}`,
-      );
-    if (lines.length === 0) return "";
-
-    return "\n\n# Project Memories\n\n" + lines.join("\n") + "\n";
+    const memPath = path.join(cwd, ".pi", "memory", "memory.md");
+    if (!fs.existsSync(memPath)) return "";
+    const content = fs.readFileSync(memPath, "utf-8").trim();
+    if (!content || content === "# Memories") return "";
+    return "\n\n" + content + "\n";
   } catch {
-    // Memory loading is best-effort — silently skip if CLI unavailable or DB empty
     return "";
   }
 }

@@ -1,407 +1,175 @@
 """Tests for the memory module."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from myk_pi_tools.memory.store import MemoryDB
+from myk_pi_tools.memory.store import _TEMPLATE, MemoryFile
 
 
 @pytest.fixture
-def memory_db(tmp_path: Path) -> MemoryDB:
-    """Create a MemoryDB with a temporary database."""
-    db_path = tmp_path / "memories.db"
-    return MemoryDB(db_path=db_path)
+def memory_file(tmp_path: Path) -> MemoryFile:
+    """Create a MemoryFile with a temporary path."""
+    file_path = tmp_path / "memory.md"
+    return MemoryFile(file_path=file_path)
 
 
-class TestMemoryDB:
-    def test_add_and_list(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Test lesson")
-        results = memory_db.list_memories()
-        assert len(results) == 1
-        assert results[0]["summary"] == "Test lesson"
-        assert results[0]["category"] == "lesson"
+class TestMemoryFile:
+    def test_creates_file_on_read(self, memory_file: MemoryFile) -> None:
+        content = memory_file.read()
+        assert memory_file.file_path.exists()
+        assert "# Memories" in content
+        assert "## Pinned" in content
+        assert "## Learned" in content
 
-    def test_add_with_all_fields(self, memory_db: MemoryDB) -> None:
-        mid = memory_db.add(
-            category="mistake",
-            summary="Used sleep for polling",
-            details="Should have used async agent",
-            sentiment="negative",
-            tags="async,polling",
+    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "sub" / "dir" / "memory.md"
+        mem = MemoryFile(file_path=file_path)
+        mem.read()
+        assert file_path.exists()
+
+    def test_write_and_read(self, memory_file: MemoryFile) -> None:
+        memory_file.write("custom content")
+        assert memory_file.read() == "custom content"
+
+    def test_template_structure(self) -> None:
+        assert "## Pinned" in _TEMPLATE
+        assert "## Learned" in _TEMPLATE
+
+
+class TestAddPinned:
+    def test_add_pinned(self, memory_file: MemoryFile) -> None:
+        memory_file.add_pinned("lesson", "Always use uv run")
+        content = memory_file.read()
+        assert "- [lesson] Always use uv run" in content
+
+    def test_pinned_appears_in_pinned_section(self, memory_file: MemoryFile) -> None:
+        memory_file.add_pinned("preference", "Never merge without asking")
+        content = memory_file.read()
+        lines = content.split("\n")
+        pinned_idx = next(i for i, line in enumerate(lines) if "## Pinned" in line)
+        learned_idx = next(i for i, line in enumerate(lines) if "## Learned" in line)
+        entry_idx = next(i for i, line in enumerate(lines) if "Never merge without asking" in line)
+        assert pinned_idx < entry_idx < learned_idx
+
+    def test_add_multiple_pinned(self, memory_file: MemoryFile) -> None:
+        memory_file.add_pinned("lesson", "First lesson")
+        memory_file.add_pinned("preference", "Second preference")
+        content = memory_file.read()
+        assert "- [lesson] First lesson" in content
+        assert "- [preference] Second preference" in content
+
+
+class TestAddLearned:
+    def test_add_learned(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("mistake", "Used sleep for polling")
+        content = memory_file.read()
+        assert "- [mistake] Used sleep for polling" in content
+
+    def test_learned_appears_in_learned_section(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Cache mounts need uid")
+        content = memory_file.read()
+        lines = content.split("\n")
+        learned_idx = next(i for i, line in enumerate(lines) if "## Learned" in line)
+        entry_idx = next(i for i, line in enumerate(lines) if "Cache mounts need uid" in line)
+        assert entry_idx > learned_idx
+
+    def test_add_multiple_learned(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "First")
+        memory_file.add_learned("mistake", "Second")
+        content = memory_file.read()
+        assert "- [lesson] First" in content
+        assert "- [mistake] Second" in content
+
+
+class TestMixedSections:
+    def test_pinned_and_learned_separate(self, memory_file: MemoryFile) -> None:
+        memory_file.add_pinned("preference", "Pinned entry")
+        memory_file.add_learned("lesson", "Learned entry")
+        content = memory_file.read()
+        lines = content.split("\n")
+        pinned_idx = next(i for i, line in enumerate(lines) if "## Pinned" in line)
+        learned_idx = next(i for i, line in enumerate(lines) if "## Learned" in line)
+        pinned_entry = next(i for i, line in enumerate(lines) if "Pinned entry" in line)
+        learned_entry = next(i for i, line in enumerate(lines) if "Learned entry" in line)
+        assert pinned_idx < pinned_entry < learned_idx < learned_entry
+
+
+class TestMigration:
+    def _create_test_db(self, db_path: Path) -> None:
+        """Create a test SQLite memory DB."""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE memories ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "date TEXT NOT NULL,"
+            "category TEXT NOT NULL,"
+            "summary TEXT NOT NULL,"
+            "sentiment TEXT DEFAULT 'neutral',"
+            "details TEXT,"
+            "tags TEXT,"
+            "recall_count INTEGER DEFAULT 0,"
+            "last_recalled TEXT"
+            ")"
         )
-        assert mid is not None
-        results = memory_db.list_memories()
-        assert len(results) == 1
-        assert results[0]["sentiment"] == "negative"
-        assert results[0]["tags"] == "async,polling"
-        assert results[0]["details"] == "Should have used async agent"
-
-    def test_invalid_category(self, memory_db: MemoryDB) -> None:
-        with pytest.raises(ValueError, match="Invalid category"):
-            memory_db.add(category="invalid", summary="test")
-
-    def test_invalid_sentiment(self, memory_db: MemoryDB) -> None:
-        with pytest.raises(ValueError, match="Invalid sentiment"):
-            memory_db.add(category="lesson", summary="test", sentiment="angry")
-
-    def test_search(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="buildah chown bug", tags="docker,buildah")
-        memory_db.add(category="done", summary="Added security auditor")
-        results = memory_db.search("buildah")
-        assert len(results) == 1
-        assert "buildah" in results[0]["summary"]
-
-    def test_search_by_tags(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Some lesson", tags="docker,buildah")
-        results = memory_db.search("docker")
-        assert len(results) == 1
-
-    def test_search_with_category_filter(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Docker lesson", tags="docker")
-        memory_db.add(category="done", summary="Docker task done", tags="docker")
-        results = memory_db.search("docker", category="lesson")
-        assert len(results) == 1
-        assert results[0]["category"] == "lesson"
-
-    def test_list_by_category(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Lesson 1")
-        memory_db.add(category="done", summary="Done 1")
-        memory_db.add(category="lesson", summary="Lesson 2")
-        results = memory_db.list_memories(category="lesson")
-        assert len(results) == 2
-        assert all(r["category"] == "lesson" for r in results)
-
-    def test_list_limit(self, memory_db: MemoryDB) -> None:
-        for i in range(10):
-            memory_db.add(category="done", summary=f"Task {i}")
-        results = memory_db.list_memories(limit=5)
-        assert len(results) == 5
-
-    def test_delete(self, memory_db: MemoryDB) -> None:
-        mid = memory_db.add(category="lesson", summary="To delete")
-        assert memory_db.delete(mid) is True
-        results = memory_db.list_memories()
-        assert len(results) == 0
-
-    def test_delete_nonexistent(self, memory_db: MemoryDB) -> None:
-        assert memory_db.delete(999) is False
-
-    def test_empty_search(self, memory_db: MemoryDB) -> None:
-        results = memory_db.search("nonexistent")
-        assert results == []
-
-    def test_db_created_on_init(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "subdir" / "memories.db"
-        MemoryDB(db_path=db_path)
-        assert db_path.exists()
-
-    def test_order_by_date_desc(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="done", summary="First")
-        memory_db.add(category="done", summary="Second")
-        results = memory_db.list_memories()
-        # Most recent first
-        assert results[0]["summary"] == "Second"
-        assert results[1]["summary"] == "First"
-
-
-class TestRecallTracking:
-    def test_search_increments_recall_count(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
-        memory_db.search("buildah")
-        results = memory_db.list_memories()
-        assert results[0]["recall_count"] == 1
-
-    def test_search_increments_multiple_times(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
-        memory_db.search("buildah")
-        memory_db.search("buildah")
-        memory_db.search("buildah")
-        results = memory_db.list_memories()
-        assert results[0]["recall_count"] == 3
-
-    def test_search_sets_last_recalled(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
-        memory_db.search("buildah")
-        results = memory_db.list_memories()
-        assert results[0]["last_recalled"] is not None
-
-    def test_search_no_match_no_recall(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
-        memory_db.search("nonexistent")
-        results = memory_db.list_memories()
-        assert results[0]["recall_count"] == 0
-
-    def test_new_memory_has_zero_recall(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="test")
-        results = memory_db.list_memories()
-        assert results[0]["recall_count"] == 0
-        assert results[0]["last_recalled"] is None
-
-
-class TestScoring:
-    def test_score_empty_db(self, memory_db: MemoryDB) -> None:
-        assert memory_db.score_memories() == []
-
-    def test_score_returns_scores(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Test lesson")
-        results = memory_db.score_memories()
-        assert len(results) == 1
-        assert "score" in results[0]
-        assert isinstance(results[0]["score"], float)
-
-    def test_recalled_memory_scores_higher(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="recalled lesson", tags="test")
-        memory_db.add(category="lesson", summary="forgotten lesson", tags="other")
-        # Recall the first one several times
-        for _ in range(5):
-            memory_db.search("recalled")
-        results = memory_db.score_memories()
-        recalled = next(m for m in results if "recalled" in m["summary"])
-        forgotten = next(m for m in results if "forgotten" in m["summary"])
-        assert recalled["score"] > forgotten["score"]
-
-    def test_score_respects_limit(self, memory_db: MemoryDB) -> None:
-        for i in range(10):
-            memory_db.add(category="done", summary=f"Task {i}")
-        results = memory_db.score_memories(limit=3)
-        assert len(results) == 3
-
-
-class TestPruning:
-    def test_prune_empty_db(self, memory_db: MemoryDB) -> None:
-        assert memory_db.prune() == []
-
-    def test_prune_dry_run_doesnt_delete(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="done", summary="Old task")
-        # Force old date
-        conn = memory_db._connect(readonly=False)
-        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
+        conn.execute(
+            "INSERT INTO memories (date, category, summary) VALUES ('2026-01-01 00:00:00', 'lesson', 'Test lesson one')"
+        )
+        conn.execute(
+            "INSERT INTO memories (date, category, summary) VALUES "
+            "('2026-01-02 00:00:00', 'preference', 'Test preference')"
+        )
+        conn.execute(
+            "INSERT INTO memories (date, category, summary) VALUES ('2026-01-03 00:00:00', 'mistake', 'Test mistake')"
+        )
         conn.commit()
         conn.close()
-        pruned = memory_db.prune(dry_run=True)
-        assert len(pruned) > 0
-        # Still exists
-        assert len(memory_db.list_memories()) == 1
 
-    def test_prune_apply_deletes(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="done", summary="Old task")
-        conn = memory_db._connect(readonly=False)
-        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
+    def test_migrate_from_db(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "memories.db"
+        self._create_test_db(db_path)
+        mem = MemoryFile(file_path=tmp_path / "memory.md")
+        count = mem.migrate_from_db()
+        assert count == 3
+        content = mem.read()
+        assert "- [lesson] Test lesson one" in content
+        assert "- [preference] Test preference" in content
+        assert "- [mistake] Test mistake" in content
+
+    def test_migrate_deletes_db(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "memories.db"
+        self._create_test_db(db_path)
+        # Also create dreams files
+        (tmp_path / "dreams.md").write_text("old dreams")
+        (tmp_path / "dreams.lock").write_text("")
+        mem = MemoryFile(file_path=tmp_path / "memory.md")
+        mem.migrate_from_db()
+        assert not db_path.exists()
+        assert not (tmp_path / "dreams.md").exists()
+        assert not (tmp_path / "dreams.lock").exists()
+
+    def test_migrate_no_db(self, tmp_path: Path) -> None:
+        mem = MemoryFile(file_path=tmp_path / "memory.md")
+        count = mem.migrate_from_db()
+        assert count == 0
+
+    def test_migrate_empty_db(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "memories.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, date TEXT, category TEXT, summary TEXT)")
         conn.commit()
         conn.close()
-        pruned = memory_db.prune(dry_run=False)
-        assert len(pruned) > 0
-        assert len(memory_db.list_memories()) == 0
+        mem = MemoryFile(file_path=tmp_path / "memory.md")
+        count = mem.migrate_from_db()
+        assert count == 0
+        assert not db_path.exists()
 
-    def test_prune_keeps_recalled_memories(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Important lesson", tags="test")
-        # Make it old
-        conn = memory_db._connect(readonly=False)
-        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
-        conn.commit()
-        conn.close()
-        # But recall it frequently
-        for _ in range(10):
-            memory_db.search("Important")
-        pruned = memory_db.prune(dry_run=True)
-        # Should not be pruned because it's frequently recalled
-        assert all("Important" not in p["summary"] for p in pruned)
-
-
-class TestStats:
-    def test_stats_empty(self, memory_db: MemoryDB) -> None:
-        result = memory_db.stats()
-        assert result["total"] == 0
-
-    def test_stats_with_data(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="L1")
-        memory_db.add(category="lesson", summary="L2")
-        memory_db.add(category="done", summary="D1")
-        result = memory_db.stats()
-        assert result["total"] == 3
-        assert result["categories"]["lesson"] == 2
-        assert result["categories"]["done"] == 1
-
-    def test_stats_recall_tracking(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="buildah bug", tags="docker")
-        memory_db.add(category="lesson", summary="not searched")
-        memory_db.search("buildah")
-        result = memory_db.stats()
-        assert result["recalled"] == 1
-        assert result["never_recalled"] == 1
-
-
-class TestDream:
-    def test_dream_empty_db(self, memory_db: MemoryDB) -> None:
-        report = memory_db.dream()
-        assert "Dream Report" in report
-        assert "Total memories: 0" in report
-
-    def test_dream_with_data(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Test lesson")
-        report = memory_db.dream()
-        assert "Dream Report" in report
-        assert "Total memories: 1" in report
-
-    def test_dream_prunes_low_value_memories(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="done", summary="Old task")
-        # Make it old so it becomes a prune candidate
-        conn = memory_db._connect(readonly=False)
-        conn.execute("UPDATE memories SET date = '2020-01-01 00:00:00'")
-        conn.commit()
-        conn.close()
-        report = memory_db.dream()
-        assert "Pruned" in report
-        # Verify it was actually deleted
-        assert len(memory_db.list_memories()) == 0
-
-    def test_dream_returns_string(self, memory_db: MemoryDB) -> None:
-        report = memory_db.dream()
-        assert isinstance(report, str)
-
-    def test_dream_no_duplicates(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Unique lesson")
-        report = memory_db.dream()
-        assert "## Duplicates merged" in report
-        assert "No duplicates found." in report
-
-    def test_dream_merges_exact_duplicates(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Same lesson")
-        memory_db.add(category="lesson", summary="Same lesson")
-        report = memory_db.dream()
-        assert "## Duplicates merged (1)" in report
-        assert "removed #" in report
-        # Should have deleted the duplicate
-        assert len(memory_db.list_memories()) == 1
-
-
-class TestFindDuplicates:
-    def test_no_duplicates(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="First unique lesson")
-        memory_db.add(category="lesson", summary="Completely different topic")
-        pairs = memory_db._find_duplicates()
-        assert pairs == []
-
-    def test_empty_db(self, memory_db: MemoryDB) -> None:
-        pairs = memory_db._find_duplicates()
-        assert pairs == []
-
-    def test_single_memory(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Only one")
-        pairs = memory_db._find_duplicates()
-        assert pairs == []
-
-    def test_exact_match(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Use uv run for Python")
-        memory_db.add(category="lesson", summary="Use uv run for Python")
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-        keep, remove = pairs[0]
-        # Same recall_count (0), so keep newer (higher id)
-        assert keep["id"] > remove["id"]
-
-    def test_exact_match_case_insensitive(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Use UV Run")
-        memory_db.add(category="lesson", summary="use uv run")
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-
-    def test_exact_match_whitespace_stripped(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="  spaced out  ")
-        memory_db.add(category="lesson", summary="spaced out")
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-
-    def test_fuzzy_match_high_similarity(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="use uv run for python scripts")
-        memory_db.add(category="lesson", summary="use uv run for python scripts always")
-        # 5/6 words overlap = Jaccard ~0.83
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-
-    def test_fuzzy_match_below_threshold(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="use uv run for python")
-        memory_db.add(category="lesson", summary="docker build container image deploy")
-        pairs = memory_db._find_duplicates()
-        assert pairs == []
-
-    def test_keeps_higher_recall_count(self, memory_db: MemoryDB) -> None:
-        _id1 = memory_db.add(category="lesson", summary="duplicate lesson", tags="dup")
-        memory_db.add(category="lesson", summary="duplicate lesson", tags="dup")
-        # Recall id1 several times to boost its recall count
-        for _ in range(5):
-            memory_db.search("duplicate")
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-        keep, remove = pairs[0]
-        # id1 was recalled more (both get recalled on search, but id1 has more total)
-        assert keep.get("recall_count", 0) >= remove.get("recall_count", 0)
-
-    def test_keeps_newer_on_equal_recall(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="same thing")
-        id2 = memory_db.add(category="lesson", summary="same thing")
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-        keep, _remove = pairs[0]
-        assert keep["id"] == id2  # newer (higher id) kept
-
-    def test_each_memory_appears_once(self, memory_db: MemoryDB) -> None:
-        # Add 3 identical memories — only 1 pair should be formed
-        # (the third is already matched in a pair)
-        memory_db.add(category="lesson", summary="triple dup")
-        memory_db.add(category="lesson", summary="triple dup")
-        memory_db.add(category="lesson", summary="triple dup")
-        pairs = memory_db._find_duplicates()
-        # Each memory appears in at most one pair
-        seen_ids: set[int] = set()
-        for keep, remove in pairs:
-            assert keep["id"] not in seen_ids
-            assert remove["id"] not in seen_ids
-            seen_ids.add(keep["id"])
-            seen_ids.add(remove["id"])
-
-    def test_punctuation_handling(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="don't use pip! ever.")
-        memory_db.add(category="lesson", summary="don't use pip ever")
-        pairs = memory_db._find_duplicates()
-        assert len(pairs) == 1
-
-
-class TestMergeDuplicates:
-    def test_dry_run_no_delete(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="dup entry")
-        memory_db.add(category="lesson", summary="dup entry")
-        pairs = memory_db.merge_duplicates(dry_run=True)
-        assert len(pairs) == 1
-        # Both still exist
-        assert len(memory_db.list_memories()) == 2
-
-    def test_merge_deletes_duplicates(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="dup entry")
-        memory_db.add(category="lesson", summary="dup entry")
-        pairs = memory_db.merge_duplicates(dry_run=False)
-        assert len(pairs) == 1
-        remaining = memory_db.list_memories()
-        assert len(remaining) == 1
-        # The kept one should still be there
-        keep, _remove = pairs[0]
-        assert remaining[0]["id"] == keep["id"]
-
-    def test_merge_no_duplicates(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="Unique A")
-        memory_db.add(category="lesson", summary="Unique B")
-        pairs = memory_db.merge_duplicates(dry_run=False)
-        assert pairs == []
-        assert len(memory_db.list_memories()) == 2
-
-    def test_merge_multiple_pairs(self, memory_db: MemoryDB) -> None:
-        memory_db.add(category="lesson", summary="alpha duplicate")
-        memory_db.add(category="lesson", summary="alpha duplicate")
-        memory_db.add(category="mistake", summary="beta duplicate")
-        memory_db.add(category="mistake", summary="beta duplicate")
-        memory_db.add(category="done", summary="unique entry")
-        pairs = memory_db.merge_duplicates(dry_run=False)
-        assert len(pairs) == 2
-        remaining = memory_db.list_memories()
-        assert len(remaining) == 3  # 2 kept + 1 unique
+    def test_migrate_idempotent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "memories.db"
+        self._create_test_db(db_path)
+        mem = MemoryFile(file_path=tmp_path / "memory.md")
+        mem.migrate_from_db()
+        # Second call — no DB, returns 0
+        count = mem.migrate_from_db()
+        assert count == 0

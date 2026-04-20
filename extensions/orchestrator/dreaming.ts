@@ -10,6 +10,7 @@
  */
 
 import { spawn } from "node:child_process";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { discoverAgents } from "./agents.js";
 
@@ -31,13 +32,37 @@ export function registerDreaming(
 
   let dreamInFlight = false;
 
-  function runDreamAsync(cwd: string) {
+  function runDreamAsync(cwd: string, lastSessionFile?: string) {
     if (dreamInFlight) return; // Prevent concurrent dreams
     dreamInFlight = true;
     const { agents } = discoverAgents(cwd, "user");
+    const memPath = path.join(cwd, ".pi", "memory", "memory.md");
+    const sessionArg = lastSessionFile ? `\nSession file: ${lastSessionFile}` : "";
     const { id } = spawnAsyncAgent(
       "worker",
-      "Run memory consolidation: `uv run myk-pi-tools memory dream`.",
+      `Memory dreaming — analyze session and maintain memory.md.${sessionArg}\nMemory file: ${memPath}\n\n` +
+      `Steps:\n` +
+      `1. Read the memory file (${memPath}).\n` +
+      `2. If a session file is provided, read it and extract things worth remembering:\n` +
+      `   - User corrections → [lesson]\n` +
+      `   - User preferences → [preference]\n` +
+      `   - Mistakes or repeated fix attempts → [mistake]\n` +
+      `   - Completed features/PRs merged → [done]\n` +
+      `   - Patterns or conventions → [pattern]\n` +
+      `   Add new entries to the Learned section. Do NOT add duplicates of existing entries.\n` +
+      `3. Reorganize the memory file:\n` +
+      `   - Remove duplicate or near-duplicate entries from Learned\n` +
+      `   - Remove stale/useless entries from Learned\n` +
+      `   - Keep file at a reasonable size (aim for under 50 entries)\n` +
+      `   - NEVER remove or modify entries in the Pinned section\n` +
+      `4. Write the updated file. Use the write tool to overwrite ${memPath}.\n` +
+      `   Keep the exact format:\n` +
+      `   # Memories\n` +
+      `   ## Pinned (user requested — never auto-remove)\n` +
+      `   - [category] summary\n` +
+      `   ## Learned (auto-extracted — dream may reorganize/remove)\n` +
+      `   - [category] summary\n` +
+      `5. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
       cwd,
       agents,
       { fireAndForget: true },
@@ -98,14 +123,10 @@ export function registerDreaming(
     stopTimer();
     if (!enabled || !lastCwd || dreamInFlight) return;
 
+    // On shutdown, run a lightweight dream via detached async runner
+    // (can't use spawnAsyncAgent since the session is ending)
     try {
-      const proc = spawn(
-        "uv",
-        ["run", "myk-pi-tools", "memory", "dream"],
-        { cwd: lastCwd, detached: true, stdio: "ignore" },
-      );
-      proc.on("error", () => {}); // Swallow async spawn errors (best-effort)
-      proc.unref();
+      runDreamAsync(lastCwd);
     } catch {}
   });
 }

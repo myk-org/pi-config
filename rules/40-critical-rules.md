@@ -1,5 +1,19 @@
 # Critical Rules
 
+## Task Focus (MANDATORY)
+
+**When executing a multi-step workflow** (e.g., implement → review → commit → push → PR):
+
+- **NEVER abandon the workflow** when the user asks a side question
+- Answer the side question, then **IMMEDIATELY resume** the original workflow from where you left off
+- Side questions, async agent results, and interruptions do NOT end the current task
+- The workflow is complete ONLY when all steps are done (e.g., PR created, issue closed)
+
+❌ **WRONG:** User asks a question mid-workflow → answer → stop (forget the workflow)
+✅ **RIGHT:** User asks a question mid-workflow → answer → resume workflow from the next pending step
+
+**After EVERY response, ask yourself:** "Was I in the middle of a workflow? If yes, what's the next step?"
+
 ## Parallel Execution (MANDATORY)
 
 **Before EVERY response:** Can operations run in parallel?

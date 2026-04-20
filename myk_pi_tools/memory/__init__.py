@@ -1,14 +1,14 @@
 """Project memory module.
 
-Persistent per-repo memory for lessons learned, decisions, mistakes, and patterns.
-Database location: <git-root>/.pi/memory/memories.db
+Persistent per-repo memory stored as a plain markdown file.
+File location: <git-root>/.pi/memory/memory.md
 
 Usage:
-    from myk_pi_tools.memory import MemoryDB
-    db = MemoryDB()
-    db.add(category="lesson", summary="buildah chown -R skips target dir with cache mounts", tags="docker,buildah")
+    from myk_pi_tools.memory import MemoryFile
+    mem = MemoryFile()
+    mem.add_pinned(category="lesson", summary="Always use uv run, never python directly")
 """
 
-from myk_pi_tools.memory.store import MemoryDB
+from myk_pi_tools.memory.store import MemoryFile
 
-__all__ = ["MemoryDB"]
+__all__ = ["MemoryFile"]
