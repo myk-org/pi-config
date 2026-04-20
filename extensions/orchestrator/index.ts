@@ -45,8 +45,8 @@ export default function (pi: ExtensionAPI) {
   };
 
   registerAskUser(pi, terminalNotify);
-  const { spawnAsyncAgent } = registerAsyncAgents(pi, terminalNotify);
-  registerSubagentTool(pi, spawnAsyncAgent);
+  const { spawnAsyncAgent, killAsyncAgent } = registerAsyncAgents(pi, terminalNotify);
+  registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerEnforcement(pi, IN_CONTAINER);
   registerRules(pi);
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);

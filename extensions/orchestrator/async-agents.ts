@@ -67,7 +67,10 @@ export function formatDuration(ms: number): string {
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
-): { spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string } } {
+): {
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string };
+  killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
+} {
   const asyncState: AsyncState = {
     jobs: new Map(),
     poller: null,
@@ -330,10 +333,76 @@ export function registerAsyncAgents(
     },
   });
 
-  // /async-kill command — interactive selection
+  // Kill an async agent by name, id prefix, or "all"
+  function killAsyncAgent(target: string): { killed: string[]; errors: string[] } {
+    const killed: string[] = [];
+    const errors: string[] = [];
+    const running = Array.from(asyncState.jobs.values()).filter(
+      (j) => j.status === "running" || j.status === "queued",
+    );
+
+    if (running.length === 0) {
+      errors.push("No running async agents.");
+      return { killed, errors };
+    }
+
+    const targets = target.toLowerCase() === "all"
+      ? running
+      : running.filter(j =>
+          (j.name && j.name.toLowerCase() === target.toLowerCase()) ||
+          j.id.startsWith(target) ||
+          j.agent.toLowerCase() === target.toLowerCase()
+        );
+
+    if (targets.length === 0) {
+      errors.push(`No matching async agent for: ${target}`);
+      return { killed, errors };
+    }
+
+    for (const job of targets) {
+      const status = readAsyncStatus(job.asyncDir);
+      if (status?.pid) {
+        try {
+          const tree = execFileSync("pstree", ["-p", String(status.pid)], { encoding: "utf-8", timeout: 3000 });
+          const matches = tree.match(/\((\d+)\)/g);
+          const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
+          for (const pid of allPids) {
+            try { process.kill(pid, "SIGKILL"); } catch {}
+          }
+        } catch {
+          try { process.kill(status.pid, "SIGKILL"); } catch {}
+          if (status.childPid) try { process.kill(status.childPid, "SIGKILL"); } catch {}
+        }
+      }
+      const label = job.name || job.agent;
+      killed.push(label);
+      job.status = "failed";
+      job.updatedAt = Date.now();
+      setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
+    }
+
+    updateAsyncWidget();
+    return { killed, errors };
+  }
+
+  // /async-kill command — accepts name/id/"all" or interactive selection
   pi.registerCommand("async-kill", {
-    description: "Kill a running async agent",
+    description: "Kill async agent(s) — /async-kill <name|id|all>",
     handler: async (_args, ctx) => {
+      const arg = (_args || "").trim();
+
+      // If arg provided, kill directly without interactive selection
+      if (arg) {
+        const { killed, errors } = killAsyncAgent(arg);
+        if (killed.length > 0) {
+          ctx.ui.notify(`Killed: ${killed.join(", ")}`, "info");
+        }
+        if (errors.length > 0) {
+          ctx.ui.notify(errors.join("\n"), "warning");
+        }
+        return;
+      }
+
       const running = Array.from(asyncState.jobs.values()).filter(
         (j) => j.status === "running" || j.status === "queued",
       );
@@ -393,5 +462,5 @@ export function registerAsyncAgents(
     },
   });
 
-  return { spawnAsyncAgent };
+  return { spawnAsyncAgent, killAsyncAgent };
 }
