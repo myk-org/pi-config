@@ -88,6 +88,9 @@ const SubagentParams = Type.Object({
   name: Type.Optional(
     Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
   ),
+  asyncKill: Type.Optional(
+    Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
+  ),
 });
 
 // ── Interfaces ───────────────────────────────────────────────────────────
@@ -470,6 +473,7 @@ export async function runSingleAgent(
 export function registerSubagentTool(
   pi: ExtensionAPI,
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
+  killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
   // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
@@ -515,6 +519,19 @@ export function registerSubagentTool(
           projectAgentsDir: discovery.projectAgentsDir,
           results,
         });
+
+      // Kill async agents — early return before mode validation
+      if (params.asyncKill) {
+        const { killed, errors } = killAsyncAgent(params.asyncKill);
+        const lines: string[] = [];
+        if (killed.length > 0) lines.push(`Killed: ${killed.join(", ")}`);
+        if (errors.length > 0) lines.push(errors.join("\n"));
+        return {
+          content: [{ type: "text", text: lines.join("\n") || "No action taken." }],
+          details: mkd("single")([]),
+          isError: errors.length > 0 && killed.length === 0,
+        };
+      }
 
       if (modes !== 1) {
         const avail =
