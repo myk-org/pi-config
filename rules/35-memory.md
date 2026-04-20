@@ -68,9 +68,12 @@ Memory consolidation runs as a **background async agent** — never blocking the
 
 ### What it does
 
+Dreaming is a **self-contained action** — one command does everything:
+
 1. **Scores** all memories by recall frequency, recency, age, and category
-2. **Identifies** prune candidates (low-score, never-recalled, stale)
-3. **Writes** a dream report to `.pi/memory/dreams.md`
+2. **Prunes** low-value memories (actually deletes them)
+3. **Merges** duplicate memories (detects via text similarity)
+4. **Writes** a dream report to `.pi/memory/dreams.md`
 
 ### CLI Commands
 
@@ -84,5 +87,5 @@ uv run myk-pi-tools memory dream           # Run consolidation + report
 
 ### Rules
 
-- **ALWAYS run dreaming as async agent** — never block the session
+- **ALWAYS run dreaming as async + fireAndForget** — never block the session, never inject results into conversation
 - Tell the user: "Running memory consolidation in background..."

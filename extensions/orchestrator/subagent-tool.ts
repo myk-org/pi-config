@@ -81,6 +81,9 @@ const SubagentParams = Type.Object({
   async: Type.Optional(
     Type.Boolean({ description: "Run in background (default: false). Agent runs detached, results surface when complete.", default: false }),
   ),
+  fireAndForget: Type.Optional(
+    Type.Boolean({ description: "When true with async, skip result delivery to conversation. Agent runs silently — only terminal notification on completion. Use for maintenance tasks like memory dreaming.", default: false }),
+  ),
 });
 
 // ── Interfaces ───────────────────────────────────────────────────────────
@@ -462,7 +465,7 @@ export async function runSingleAgent(
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[]) => { id: string; error?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean }) => { id: string; error?: string },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
   // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
@@ -575,7 +578,7 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents);
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget });
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],
