@@ -27,6 +27,7 @@ interface Props {
 }
 
 export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
+  const inactive = !session.active;
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [thinkingLevel, setThinkingLevel] = useState(session.thinkingLevel || "medium");
 
@@ -94,7 +95,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   }, [openMenu, send, session.pid]);
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:whitespace-nowrap md:scrollbar-none">
+    <div className={cn("flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:whitespace-nowrap md:scrollbar-none", inactive && "opacity-50 pointer-events-none")}>
       {/* Model */}
       <div className="relative">
         <button
