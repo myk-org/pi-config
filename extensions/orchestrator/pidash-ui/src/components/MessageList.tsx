@@ -10,6 +10,7 @@ interface Props {
   searchQuery?: string;
   searchType?: string;
   streaming?: boolean;
+  scrollKey?: number;
   onAskResponse?: (id: string, value: string) => void;
 }
 
@@ -32,7 +33,7 @@ function getRoleColor(role: string): string {
   return roleColors[role] || "text-orange-400";
 }
 
-export function MessageList({ messages, searchQuery, searchType, streaming, onAskResponse }: Props) {
+export function MessageList({ messages, searchQuery, searchType, streaming, scrollKey, onAskResponse }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -40,6 +41,17 @@ export function MessageList({ messages, searchQuery, searchType, streaming, onAs
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, autoScroll]);
+
+  // Force scroll to bottom on session switch — keep scrolling during replay
+  useEffect(() => {
+    setAutoScroll(true);
+    // Scroll multiple times during replay (messages arrive over ~2s)
+    const times = [50, 200, 500, 1000, 2000, 3000];
+    const timers = times.map(ms =>
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "instant" }), ms)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [scrollKey]);
 
   return (
     <div

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Circle, ExternalLink, Brain, Bot, ChevronDown } from "lucide-react";
+import { GitBranch, ExternalLink, Brain, Bot, ChevronDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
 
 function fk(n: number): string {
@@ -20,12 +22,11 @@ interface Props {
   session: SessionInfo;
   model: string;
   tokens: TokenUsage | null;
-  streaming: boolean;
   send: (data: object) => void;
   onMessage: (handler: (data: any) => void) => () => void;
 }
 
-export function InfoBar({ session, model, tokens, streaming, send, onMessage }: Props) {
+export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [thinkingLevel, setThinkingLevel] = useState(session.thinkingLevel || "medium");
 
@@ -35,7 +36,11 @@ export function InfoBar({ session, model, tokens, streaming, send, onMessage }: 
   }, [session.thinkingLevel]);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
-  const [asyncAgents, setAsyncAgents] = useState<{ count: number; agents: string }>({ count: 0, agents: "" });
+  const [asyncAgents, setAsyncAgents] = useState<{
+    count: number;
+    agents: string;
+    jobs: Array<{ id: string; name: string; agent: string; task: string; status: string; startedAt: number }>;
+  }>({ count: 0, agents: "", jobs: [] });
   const filterRef = useRef<HTMLInputElement>(null);
 
   const ctxWin = session.contextWindow || 1000000;
@@ -56,7 +61,12 @@ export function InfoBar({ session, model, tokens, streaming, send, onMessage }: 
         if (ev.thinkingLevel) setThinkingLevel(ev.thinkingLevel);
       }
       if (ev.type === "async-status") {
-        setAsyncAgents({ count: ev.count || 0, agents: ev.agents || "" });
+        const newCount = ev.count || 0;
+        const newAgents = ev.agents || "";
+        setAsyncAgents(prev => {
+          if (prev.count === newCount && prev.agents === newAgents) return prev;
+          return { count: newCount, agents: newAgents, jobs: ev.jobs || [] };
+        });
       }
     });
   }, [onMessage]);
@@ -156,12 +166,17 @@ export function InfoBar({ session, model, tokens, streaming, send, onMessage }: 
       <span className="text-border">|</span>
 
       {/* Tokens */}
-      <span>↑{fk(input)} ↓{fk(output)}{cache > 0 && ` 📦${fk(cache)}`}</span>
+      <span className="tabular-nums">
+        <span className="inline-block min-w-[3.5em] text-right">↑{fk(input)}</span>
+        {" "}
+        <span className="inline-block min-w-[3.5em] text-right">↓{fk(output)}</span>
+        {cache > 0 && <span className="inline-block min-w-[3.5em] text-right"> 📦{fk(cache)}</span>}
+      </span>
 
       <span className="text-border">|</span>
 
       {/* Context */}
-      <span className={pctColor}>ctx {pct}%</span>
+      <span className={cn("tabular-nums inline-block min-w-[4em] text-right", pctColor)}>ctx {pct}%</span>
 
       {/* Git */}
       {session.branch && (
@@ -196,19 +211,49 @@ export function InfoBar({ session, model, tokens, streaming, send, onMessage }: 
         </>
       )}
 
-      {/* Async agents */}
-      {asyncAgents.count > 0 && (
-        <>
-          <span className="text-border">|</span>
-          <span className="text-yellow-400">⏳ {asyncAgents.count} async: {asyncAgents.agents}</span>
-        </>
-      )}
-
-      {/* Status */}
-      <span className="flex items-center gap-1">
-        <Circle className={`h-2 w-2 fill-current ${streaming ? "text-cyan-400" : "text-green-500"}`} />
-        {streaming ? "streaming" : "idle"}
-      </span>
+      {/* Async agents — always visible, pinned to far right */}
+      <div className="relative inline-block ml-auto">
+        {asyncAgents.count > 0 ? (
+          <Popover>
+            <PopoverTrigger className="text-yellow-400 hover:text-yellow-300 cursor-pointer text-xs">
+              ⏳ {asyncAgents.count} async
+            </PopoverTrigger>
+            <PopoverContent className="w-72 max-h-60 overflow-y-auto">
+              <div className="text-xs space-y-1.5">
+                <div className="font-bold text-foreground mb-1">Running Agents</div>
+                {asyncAgents.jobs.map((job) => {
+                  const elapsed = Math.round((Date.now() - job.startedAt) / 1000);
+                  const mins = Math.floor(elapsed / 60);
+                  const secs = elapsed % 60;
+                  const duration = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                  return (
+                    <div key={job.id} className="flex items-center justify-between gap-2 p-1.5 rounded bg-muted/50">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-foreground truncate">{job.name}</div>
+                        <div className="text-muted-foreground truncate text-[10px]">{job.task.slice(0, 60)}</div>
+                        <div className="text-muted-foreground text-[10px]">{job.agent} · {duration}</div>
+                      </div>
+                      <div className="flex gap-1 shrink-0">
+                        <button
+                          onClick={() => {
+                            send({ type: "pidash-command", command: "async-kill", target: job.name, pid: session.pid });
+                          }}
+                          className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
+                          title="Kill this agent"
+                        >
+                          Kill
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <span className="text-muted-foreground/50 text-xs">⏳ 0 async</span>
+        )}
+      </div>
     </div>
   );
 }

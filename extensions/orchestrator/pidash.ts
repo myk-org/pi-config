@@ -150,7 +150,10 @@ function getCurrentBranch(cwd: string): string {
 
 // ── Registration ─────────────────────────────────────────────────────
 
-export function registerPidash(pi: ExtensionAPI): void {
+export function registerPidash(
+  pi: ExtensionAPI,
+  killAsyncAgent?: (target: string) => { killed: string[]; errors: string[] },
+): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   let ws: any = null;
@@ -511,6 +514,11 @@ export function registerPidash(pi: ExtensionAPI): void {
               }
             }
 
+            if (parsed.command === "async-kill" && parsed.target) {
+              debugLog(`async-kill from browser: ${parsed.target}`);
+              pi.events.emit("pidash:async-kill", parsed.target);
+            }
+
             if (parsed.command === "list-commands") {
               try {
                 const cmds = (pi as any).getCommands?.() || [];
@@ -716,6 +724,16 @@ export function registerPidash(pi: ExtensionAPI): void {
       try { ws.send(JSON.stringify(data)); } catch {}
     }
   });
+
+  // Handle async-kill from browser
+  if (killAsyncAgent) {
+    pi.events.on("pidash:async-kill", (target: unknown) => {
+      if (typeof target === "string") {
+        const { killed } = killAsyncAgent(target);
+        debugLog(`async-kill result: ${killed.join(", ") || "none"}`);
+      }
+    });
+  }
 
   // Forward async agent status to browser
   pi.events.on("pidash:async-status", (data: unknown) => {
