@@ -1,5 +1,6 @@
 ---
 description: Handle CodeRabbit rate limits - waits and re-triggers review automatically
+argument-hint: "[PR number]"
 ---
 
 ## Raw Arguments

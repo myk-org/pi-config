@@ -1,5 +1,6 @@
 ---
 description: Process ALL review sources (human, Qodo, CodeRabbit) from current PR
+argument-hint: "[--autorabbit]"
 ---
 
 ## Raw Arguments

@@ -20,7 +20,7 @@ const DREAM_INTERVAL_MS = DREAM_INTERVAL_HOURS * 60 * 60 * 1000;
 
 export function registerDreaming(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[]) => { id: string; error?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean }) => { id: string; error?: string },
 ): void {
   // Only the orchestrator (top-level pi) runs dreaming — skip in subagent children
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -37,9 +37,10 @@ export function registerDreaming(
     const { agents } = discoverAgents(cwd, "user");
     const { id } = spawnAsyncAgent(
       "worker",
-      "Run memory consolidation: `uv run myk-pi-tools memory dream`. Report the output.",
+      "Run memory consolidation: `uv run myk-pi-tools memory dream`.",
       cwd,
       agents,
+      { fireAndForget: true },
     );
     // Reset flag after reasonable timeout (dream should complete in <5 min)
     if (id) setTimeout(() => { dreamInFlight = false; }, 5 * 60 * 1000);

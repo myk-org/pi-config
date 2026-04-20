@@ -1,5 +1,6 @@
 ---
 description: "Save a memory for future sessions — /remember <what to remember>"
+argument-hint: "<what to remember>"
 ---
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior,

@@ -1,5 +1,6 @@
 ---
 description: Refine pending PR review comments with AI before submitting
+argument-hint: "[instructions]"
 ---
 
 ## Raw Arguments

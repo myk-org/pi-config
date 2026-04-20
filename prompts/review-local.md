@@ -1,5 +1,6 @@
 ---
 description: Review uncommitted changes or changes compared to a branch
+argument-hint: "[base branch]"
 ---
 
 ## Raw Arguments

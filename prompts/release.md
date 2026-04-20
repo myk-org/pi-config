@@ -1,5 +1,6 @@
 ---
 description: Create a GitHub release with automatic changelog generation
+argument-hint: "[version]"
 ---
 
 ## Raw Arguments

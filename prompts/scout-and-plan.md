@@ -1,5 +1,6 @@
 ---
 description: "Scout → plan without implementing — /scout-and-plan <task>"
+argument-hint: "<task>"
 ---
 
 ## Raw Arguments

@@ -1,5 +1,6 @@
 ---
 description: Query the reviews database for analytics and insights
+argument-hint: "<query>"
 ---
 
 ## Raw Arguments

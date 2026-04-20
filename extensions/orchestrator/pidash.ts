@@ -724,6 +724,22 @@ export function registerPidash(pi: ExtensionAPI): void {
     }
   });
 
+  // Forward provider response info to pidash
+  pi.on("after_provider_response" as any, (event: any) => {
+    if (!ws || !connected) return;
+    try {
+      const info: any = { type: "provider_response" };
+      if (event.status) info.status = event.status;
+      if (event.headers) {
+        if (event.headers["x-ratelimit-remaining"]) info.rateLimitRemaining = event.headers["x-ratelimit-remaining"];
+        if (event.headers["x-ratelimit-reset"]) info.rateLimitReset = event.headers["x-ratelimit-reset"];
+        if (event.headers["retry-after"]) info.retryAfter = event.headers["retry-after"];
+        if (event.headers["x-request-id"]) info.requestId = event.headers["x-request-id"];
+      }
+      ws.send(JSON.stringify(info));
+    } catch {}
+  });
+
   // Periodically update git status
   const statusInterval = setInterval(() => {
     if (!ws || !connected || !lastCtx) return;
