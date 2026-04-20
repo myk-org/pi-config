@@ -38,6 +38,7 @@ export function App() {
   const [streaming, setStreaming] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchType, setSearchType] = useState("all");
+  const [scrollKey, setScrollKey] = useState(0);
   const [availableCommands, setAvailableCommands] = useState<Array<{ name: string; description: string }>>([]);
   const saved = useRef(loadState());
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
@@ -161,8 +162,18 @@ export function App() {
           break;
 
         case "tool_execution_start": {
-          const name = ev.toolName || "tool";
-          const id = addMsg(name as any, `${ev.args?.command ? ev.args.command : ""}`, "tool-call");
+          let name = ev.toolName || "tool";
+          let detail = ev.args?.command ? ev.args.command : "";
+          // Show agent name for subagent tool calls
+          if (name === "subagent" && ev.args) {
+            const label = ev.args.name || ev.args.agent;
+            if (label) name = `subagent (${label})`;
+            if (ev.args.asyncKill) detail = `kill: ${ev.args.asyncKill}`;
+            else if (ev.args.task) detail = ev.args.task.slice(0, 150);
+            else if (ev.args.tasks) detail = `${ev.args.tasks.length} parallel tasks`;
+            else if (ev.args.chain) detail = `${ev.args.chain.length} chain steps`;
+          }
+          const id = addMsg(name as any, detail, "tool-call");
           toolRef.current = { id, name };
           break;
         }
@@ -220,6 +231,7 @@ export function App() {
     setStreaming(false);
     setSearchQuery("");
     setSearchType("all");
+    setScrollKey(k => k + 1);
     thinkRef.current = { id: "", text: "" };
     assistRef.current = { id: "", text: "" };
     lastUserRef.current = "";
@@ -228,7 +240,7 @@ export function App() {
     send({ type: "pidash-command", pid: s.pid, command: "list-commands" });
     // Events from buffer replay arrive synchronously — mark replay done after a short delay
     setTimeout(() => { replayingRef.current = false; }, 2000);
-    location.hash = `#session/${s.pid}`;
+    // Session persisted via localStorage — no URL hash needed
     // Auto-collapse sidebar on mobile
     if (typeof window !== 'undefined' && window.innerWidth <= 768) setSidebarCollapsed(true);
   }, [send]);
@@ -245,9 +257,8 @@ export function App() {
 
   useEffect(() => {
     if (!connected || !sessions.length || restoredRef.current) return;
-    // Restore from hash first, then from localStorage
-    const hashMatch = location.hash.match(/^#session\/(\d+)$/);
-    const pid = hashMatch ? parseInt(hashMatch[1], 10) : saved.current.watchPid;
+    // Restore from localStorage
+    const pid = saved.current.watchPid;
     if (pid) {
       const s = sessions.find((x) => x.pid === pid);
       if (s) { restoredRef.current = true; watchSession(s); }
@@ -348,6 +359,7 @@ export function App() {
               searchQuery={searchQuery}
               searchType={searchType}
               streaming={streaming}
+              scrollKey={scrollKey}
               onAskResponse={(id, value) => {
                 if (value === "__confirmed__") {
                   send({ type: "extension_ui_response", pid: session!.pid, id, confirmed: true });
@@ -359,7 +371,7 @@ export function App() {
               }}
             />
             <InputBar disabled={!session.active} streaming={streaming} onSend={handleSend} onAbort={handleAbort} commands={availableCommands} />
-            <InfoBar session={session} model={model} tokens={tokens} streaming={streaming} send={send} onMessage={onMessage} />
+            <InfoBar session={session} model={model} tokens={tokens} send={send} onMessage={onMessage} />
           </>
         )}
       </div>

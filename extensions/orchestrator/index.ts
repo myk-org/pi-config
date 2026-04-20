@@ -53,6 +53,6 @@ export default function (pi: ExtensionAPI) {
   registerBtw(pi);
   registerDiffity(pi);
   registerDreaming(pi, spawnAsyncAgent);
-  registerPidash(pi);
+  registerPidash(pi, killAsyncAgent);
   registerSessionValidation(pi);
 }

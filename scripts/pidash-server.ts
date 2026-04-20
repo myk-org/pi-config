@@ -12,6 +12,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 
 const DEFAULT_PORT = 19190;
 const port = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
@@ -122,7 +123,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 
 // ── WebSocket Server ────────────────────────────────────────────────
 
-const WebSocket = require("ws");
+const _require = createRequire(import.meta.url);
+const WebSocket = _require("ws");
 
 // Pi session clients
 const piWss = new WebSocket.Server({ noServer: true });
@@ -322,6 +324,19 @@ server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
     socket.destroy();
   }
 });
+
+// Clean up stale inactive sessions (disconnected > 5 min ago)
+const cleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [pid, client] of piClients.entries()) {
+    if (!client.session.active && now - client.session.lastActivity > 5 * 60 * 1000) {
+      piClients.delete(pid);
+      log(`cleaned up stale session: PID ${pid}`);
+      broadcastToBrowsers({ type: "session_removed", pid });
+    }
+  }
+}, 60 * 1000); // Check every minute
+if (cleanupInterval.unref) cleanupInterval.unref();
 
 // Ping all pi clients every 30s to keep connections alive
 const pingInterval = setInterval(() => {

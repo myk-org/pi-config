@@ -85,10 +85,21 @@ export function registerAsyncAgents(
     if (running.length > 0) {
       const names = running.map(j => j.name || j.agent).join(", ");
       ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("warning", `⏳ ${running.length} async: ${names}`));
-      pi.events.emit("pidash:async-status", { count: running.length, agents: names });
+      pi.events.emit("pidash:async-status", {
+        count: running.length,
+        agents: names,
+        jobs: running.map(j => ({
+          id: j.id,
+          name: j.name || j.agent,
+          agent: j.agent,
+          task: j.task,
+          status: j.status,
+          startedAt: j.startedAt,
+        })),
+      });
     } else {
       ctx.ui.setStatus("async-agents", undefined);
-      pi.events.emit("pidash:async-status", { count: 0, agents: "" });
+      pi.events.emit("pidash:async-status", { count: 0, agents: "", jobs: [] });
     }
   }
 
