@@ -106,7 +106,14 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   try {
     const data = fs.readFileSync(absPath);
     const ext = path.extname(absPath).toLowerCase();
-    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
+    const headers: Record<string, string> = { "Content-Type": MIME[ext] || "application/octet-stream" };
+    // No cache for HTML, long cache for hashed assets
+    if (ext === ".html") {
+      headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+    } else if (filePath.includes("/assets/")) {
+      headers["Cache-Control"] = "public, max-age=31536000, immutable";
+    }
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     // SPA fallback — serve index.html for unknown routes
