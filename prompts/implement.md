@@ -1,5 +1,6 @@
 ---
 description: "Scout → plan → implement a task — /implement <task>"
+argument-hint: "<task>"
 ---
 
 ## Raw Arguments

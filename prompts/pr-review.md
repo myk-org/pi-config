@@ -1,5 +1,6 @@
 ---
 description: Review a GitHub PR and post inline comments on selected findings
+argument-hint: "[PR number or URL]"
 ---
 
 ## Raw Arguments

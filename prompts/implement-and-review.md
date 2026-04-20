@@ -1,5 +1,6 @@
 ---
 description: "Implement → 3 parallel reviewers → fix — /implement-and-review <task>"
+argument-hint: "<task>"
 ---
 
 ## Raw Arguments

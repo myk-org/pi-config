@@ -203,7 +203,7 @@ export function registerAsyncAgents(
     fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
 
     // Build pi args
-    const piArgs: string[] = ["--mode", "json", "-p", "--no-session"];
+    const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
     if (agent.model) piArgs.push("--model", agent.model);
     if (agent.tools?.length) piArgs.push("--tools", agent.tools.join(","));
 
