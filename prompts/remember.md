@@ -15,7 +15,7 @@ argument-hint: "<what to remember>"
 $ARGUMENTS
 ```
 
-Save this as a project memory. Determine the best category and sentiment from the content:
+Save this as a **Pinned** project memory. Determine the best category:
 
 - `lesson` — something learned (how things work, gotchas, tips)
 - `decision` — an architectural or design choice made
@@ -27,7 +27,7 @@ Save this as a project memory. Determine the best category and sentiment from th
 Run:
 
 ```bash
-uv run myk-pi-tools memory add -c <category> -s "<concise one-line summary>" [-d "<details if the input is long>"] [-t "<relevant,tags>"] [--sentiment <positive|negative|neutral>]
+uv run myk-pi-tools memory add -c <category> -s "<concise one-line summary>" --pinned
 ```
 
-After saving, confirm what was stored and show the memory ID.
+After saving, confirm what was stored.
