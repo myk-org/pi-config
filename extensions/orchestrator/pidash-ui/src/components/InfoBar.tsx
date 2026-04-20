@@ -228,7 +228,29 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
           {asyncAgents.count > 0 && (
             <PopoverContent className="w-72 max-h-60 overflow-y-auto">
               <div className="text-xs space-y-1.5">
-                <div className="font-bold text-foreground mb-1">Running Agents</div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-foreground">Running Agents ({asyncAgents.count})</span>
+                  {asyncAgents.count > 1 && (
+                    <button
+                      onClick={() => {
+                        send({ type: "pidash-command", command: "async-kill", target: "all", pid: session.pid });
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
+                    >
+                      Kill All
+                    </button>
+                  )}
+                </div>
+                {asyncAgents.jobs.length === 0 && asyncAgents.agents && (
+                  <div className="text-muted-foreground">
+                    {asyncAgents.agents.split(", ").map((name, i) => (
+                      <div key={i} className="p-1.5 rounded bg-muted/50 mb-1">
+                        <span className="font-medium text-foreground">{name}</span>
+                      </div>
+                    ))}
+                    <div className="text-[10px] mt-1 italic">Relaunch session for full details + kill</div>
+                  </div>
+                )}
                 {asyncAgents.jobs.map((job) => {
                   const elapsed = Math.round((Date.now() - job.startedAt) / 1000);
                   const mins = Math.floor(elapsed / 60);
