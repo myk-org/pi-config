@@ -39,12 +39,12 @@ pi-config/
 │   │   ├── index.ts                 # Main entry — imports and wires all modules
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
-│   │   ├── async-agents.ts          # Async background agent infrastructure
+│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget support)
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── diffity.ts               # Auto-start diffity diff viewer
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
-│   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon)
+│   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon, forwards provider response info)
 │   │   ├── pidash-ui/               # React + shadcn/ui web dashboard
 │   │   │   ├── src/                 # React source (components, hooks, types)
 │   │   │   └── dist/               # Built output (generated, gitignored)
