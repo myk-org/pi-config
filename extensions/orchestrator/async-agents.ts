@@ -25,6 +25,7 @@ const ASYNC_POLL_INTERVAL_MS = 3000;
 interface AsyncJob {
   id: string;
   agent: string;
+  name?: string;
   task: string;
   status: "queued" | "running" | "complete" | "failed";
   asyncDir: string;
@@ -66,7 +67,7 @@ export function formatDuration(ms: number): string {
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
-): { spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean }) => { id: string; error?: string } } {
+): { spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string } } {
   const asyncState: AsyncState = {
     jobs: new Map(),
     poller: null,
@@ -79,7 +80,7 @@ export function registerAsyncAgents(
     const ctx = asyncState.lastCtx;
     const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
     if (running.length > 0) {
-      const names = running.map(j => j.agent).join(", ");
+      const names = running.map(j => j.name || j.agent).join(", ");
       ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("warning", `⏳ ${running.length} async: ${names}`));
       pi.events.emit("pidash:async-status", { count: running.length, agents: names });
     } else {
@@ -142,7 +143,8 @@ export function registerAsyncAgents(
       if (job.delivered) return; // Already delivered to user
 
       // Notify user
-      terminalNotify("pi", `Async agent ${data.agent} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
+      const displayName = job.name || data.agent;
+      terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
 
       // Surface result in conversation (skip for fire-and-forget jobs)
       if (asyncState.lastCtx && !job.fireAndForget) {
@@ -150,7 +152,7 @@ export function registerAsyncAgents(
         const output = (data.output || "").slice(0, 3000);
         pi.sendMessage({
           customType: "async-agent-result",
-          content: `## Async Agent Result: ${data.agent} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
+          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
@@ -190,7 +192,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean },
+    options?: { fireAndForget?: boolean; name?: string },
   ): { id: string; error?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -257,6 +259,7 @@ export function registerAsyncAgents(
     const job: AsyncJob = {
       id,
       agent: agentName,
+      name: options?.name,
       task: task.slice(0, 200),
       status: "queued",
       asyncDir,
@@ -310,15 +313,15 @@ export function registerAsyncAgents(
       }
 
       const lines: string[] = ["## Async Agents\n"];
-      lines.push("| Agent | Status | Duration | Task |");
-      lines.push("|-------|--------|----------|------|");
+      lines.push("| Name | Agent | Status | Duration | Task |");
+      lines.push("|------|-------|--------|----------|------|");
       for (const job of jobs) {
         const duration = job.durationMs
           ? formatDuration(job.durationMs)
           : formatDuration(Date.now() - job.startedAt);
         const statusIcon = job.status === "complete" ? "✅" : job.status === "failed" ? "❌" : job.status === "running" ? "⏳" : "⏸️";
         const taskPreview = job.task.length > 50 ? job.task.slice(0, 50) + "..." : job.task;
-        lines.push(`| ${job.agent} | ${statusIcon} ${job.status} | ${duration} | ${taskPreview} |`);
+        lines.push(`| ${job.name || "-"} | ${job.agent} | ${statusIcon} ${job.status} | ${duration} | ${taskPreview} |`);
       }
 
       if (ctx.hasUI) {

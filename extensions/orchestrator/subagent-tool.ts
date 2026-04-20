@@ -42,6 +42,7 @@ const TaskItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
   task: Type.String({ description: "Task to delegate" }),
   cwd: Type.String({ description: "Working directory" }),
+  name: Type.Optional(Type.String({ description: "Display name for async status" })),
 });
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
@@ -83,6 +84,9 @@ const SubagentParams = Type.Object({
   ),
   fireAndForget: Type.Optional(
     Type.Boolean({ description: "When true with async, skip result delivery to conversation. Agent runs silently — only terminal notification on completion. Use for maintenance tasks like memory dreaming.", default: false }),
+  ),
+  name: Type.Optional(
+    Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
   ),
 });
 
@@ -465,7 +469,7 @@ export async function runSingleAgent(
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean }) => { id: string; error?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
   // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
@@ -557,16 +561,54 @@ export function registerSubagentTool(
 
       // Async mode — spawn in background and return immediately
       if (params.async === true) {
-        if (params.chain || params.tasks) {
+        if (params.chain) {
           return {
-            content: [{ type: "text", text: "Async mode currently supports single agent only. Use agent + task without chain/tasks." }],
+            content: [{ type: "text", text: "Async mode does not support chain. Use agent + task or tasks array." }],
             details: mkd("single")([]),
             isError: true,
           };
         }
+
+        // Parallel async — spawn each task as a separate async agent
+        if (params.tasks && params.tasks.length > 0) {
+          // Validate all tasks have names
+          const unnamed = params.tasks.filter(t => !(t as any).name);
+          if (unnamed.length > 0) {
+            return {
+              content: [{ type: "text", text: `Async agents require a name for display in status line. Missing name for: ${unnamed.map(t => t.agent).join(", ")}` }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
+          const results: string[] = [];
+          const errors: string[] = [];
+          for (const t of params.tasks) {
+            const r = spawnAsyncAgent(t.agent, t.task, t.cwd, agents, {
+              fireAndForget: params.fireAndForget,
+              name: (t as any).name,
+            });
+            if (r.error) {
+              errors.push(`${t.agent}: ${r.error}`);
+            } else {
+              const label = (t as any).name || t.agent;
+              results.push(`${label} [${r.id}]`);
+            }
+          }
+          const lines: string[] = [];
+          if (results.length > 0) lines.push(`Spawned ${results.length} async agents:\n${results.map(r => `- ${r}`).join("\n")}`);
+          if (errors.length > 0) lines.push(`Failed:\n${errors.map(e => `- ${e}`).join("\n")}`);
+          lines.push("\nUse /async-status to check progress.");
+          return {
+            content: [{ type: "text", text: lines.join("\n") }],
+            details: mkd("single")([]),
+            isError: errors.length > 0 && results.length === 0,
+          };
+        }
+
+        // Single async
         if (!params.agent || !params.task) {
           return {
-            content: [{ type: "text", text: "Async mode requires agent and task." }],
+            content: [{ type: "text", text: "Async mode requires agent and task (or tasks array)." }],
             details: mkd("single")([]),
             isError: true,
           };
@@ -578,7 +620,14 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget });
+        if (!params.name) {
+          return {
+            content: [{ type: "text", text: "Async agents require a name for display in status line (e.g., 'Dream', 'Code Review', 'PR #42')." }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name });
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],
@@ -586,8 +635,9 @@ export function registerSubagentTool(
             isError: true,
           };
         }
+        const label = params.name || params.agent;
         return {
-          content: [{ type: "text", text: `Async agent spawned: ${params.agent} [${result.id}]\nUse /async-status to check progress. Results will appear when complete.` }],
+          content: [{ type: "text", text: `Async agent spawned: ${label} [${result.id}]\nUse /async-status to check progress. Results will appear when complete.` }],
           details: mkd("single")([]),
         };
       }

@@ -21,7 +21,7 @@ const DREAM_INTERVAL_MS = DREAM_INTERVAL_HOURS * 60 * 60 * 1000;
 
 export function registerDreaming(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean }) => { id: string; error?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
 ): void {
   // Only the orchestrator (top-level pi) runs dreaming — skip in subagent children
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -65,7 +65,7 @@ export function registerDreaming(
       `5. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
       cwd,
       agents,
-      { fireAndForget: true },
+      { fireAndForget: true, name: "Dream" },
     );
     // Reset flag after reasonable timeout (dream should complete in <5 min)
     if (id) setTimeout(() => { dreamInFlight = false; }, 5 * 60 * 1000);

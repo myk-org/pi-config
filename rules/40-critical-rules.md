@@ -53,6 +53,30 @@ Only use sync (default) when the **very next step** depends on this agent's outp
 
 ---
 
+## Multi-PR / Multi-Branch Work (MANDATORY)
+
+**When working on multiple PRs or branches simultaneously:**
+
+- ❌ **NEVER** switch branches in the main worktree — other agents may be running there
+- ✅ **ALWAYS** use `git worktree` for each PR/branch when handling more than one
+
+```bash
+# Create a worktree for each PR
+git worktree add /tmp/pi-work/pr-42 origin/fix/issue-42
+git worktree add /tmp/pi-work/pr-43 origin/feat/issue-43
+
+# Work in each directory independently
+# When done, clean up
+git worktree remove /tmp/pi-work/pr-42
+```
+
+**Why:** Branch switching in the main worktree corrupts parallel agent work.
+Agent A switches to branch X, Agent B thinks it's still on branch Y —
+wrong diffs, wrong commits, wrong everything.
+Worktrees give each branch its own directory, fully isolated.
+
+---
+
 ## User Interaction (MANDATORY)
 
 **When you need user input** (approvals, selections, confirmations):
