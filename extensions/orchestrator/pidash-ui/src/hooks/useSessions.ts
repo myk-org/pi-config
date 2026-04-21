@@ -15,6 +15,11 @@ export function useSessions(wsConnected: boolean, onMessage: (h: (d: any) => voi
   useEffect(() => {
     return onMessage((ev) => {
       if (ev.type === "session_added" || ev.type === "session_removed") load();
+      if (ev.type === "session_updated" && ev.session) {
+        setSessions((prev) => prev.map((s) =>
+          s.sessionId === ev.session.sessionId ? { ...s, ...ev.session } : s
+        ));
+      }
     });
   }, [onMessage, load]);
 

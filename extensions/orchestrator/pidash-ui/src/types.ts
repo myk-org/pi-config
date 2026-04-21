@@ -14,6 +14,7 @@ export interface SessionInfo {
   diffPort?: number | null;
   contextWindow?: number;
   thinkingLevel?: string;
+  working?: boolean;
 }
 
 export interface PiEvent {
@@ -34,7 +35,7 @@ export interface PiEvent {
   };
   toolCallId?: string;
   toolName?: string;
-  args?: { command?: string };
+  args?: { command?: string; agent?: string; name?: string; task?: string; tasks?: any[]; chain?: any[]; asyncKill?: string; async?: boolean };
   result?: {
     content?: Array<{ type: string; text: string }>;
     details?: {
@@ -48,6 +49,13 @@ export interface PiEvent {
     };
   };
   isError?: boolean;
+  // session_notification fields
+  sessionId?: string;
+  cwd?: string;
+  isSubagent?: boolean;
+  agentName?: string;
+  resultText?: string;
+  partialResult?: { content?: Array<{ type: string; text: string }> };
 }
 
 export interface TokenUsage {
@@ -56,6 +64,15 @@ export interface TokenUsage {
   cacheRead?: number;
   cacheWrite?: number;
   totalTokens?: number;
+}
+
+export interface NotificationPreferences {
+  turnComplete: boolean;
+  agentComplete: boolean;
+  testResults: boolean;
+  sessionError: boolean;
+  toolComplete: boolean;
+  inputNeeded: boolean;
 }
 
 export type MessageRole = "user" | "assistant" | "tool" | "thinking" | "system";

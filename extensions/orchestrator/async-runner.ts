@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 
 interface RunConfig {
   id: string;
@@ -69,6 +70,34 @@ async function run(config: RunConfig): Promise<void> {
   writeJson(statusPath, status);
 
   const outputStream = fs.createWriteStream(outputPath, { flags: "w" });
+
+  // Connect to pidash server to stream events
+  const pidashPort = parseInt(process.env.PI_PIDASH_PORT || "", 10) || 19190;
+  let pidashWs: any = null;
+  const pidashLog = path.join(config.asyncDir, "pidash-ws.log");
+  fs.writeFileSync(pidashLog, `START port=${pidashPort} id=${config.id}\n`);
+  try {
+    const _require = createRequire(import.meta.url);
+    fs.appendFileSync(pidashLog, `require ok, importing ws\n`);
+    const WebSocket = _require("ws");
+    fs.appendFileSync(pidashLog, `ws loaded, connecting...\n`);
+    pidashWs = new WebSocket(`ws://127.0.0.1:${pidashPort}/ws/async`);
+    pidashWs.on("open", () => {
+      fs.appendFileSync(pidashLog, `connected!\n`);
+      pidashWs.send(JSON.stringify({
+        type: "async_register",
+        id: config.id,
+        agent: config.agent,
+        task: config.task.slice(0, 200),
+        cwd: config.cwd,
+        sessionId: config.sessionId,
+      }));
+    });
+    pidashWs.on("error", (e: any) => { fs.appendFileSync(pidashLog, `error: ${e.message}\n`); });
+  } catch (e: any) {
+    fs.appendFileSync(pidashLog, `CATCH: ${e.message}\n${e.stack}\n`);
+  }
+
   let stdout = "";
   let lineCount = 0;
 
@@ -89,6 +118,17 @@ async function run(config: RunConfig): Promise<void> {
       stdout += text;
       outputStream.write(text);
       lineCount += text.split("\n").length - 1;
+
+      // Forward events to pidash
+      if (pidashWs?.readyState === 1) {
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const ev = JSON.parse(line);
+            pidashWs.send(JSON.stringify({ type: "async_event", id: config.id, event: ev }));
+          } catch {}
+        }
+      }
 
       // Update status periodically (every ~10 lines)
       if (lineCount % 10 === 0) {
@@ -137,6 +177,12 @@ async function run(config: RunConfig): Promise<void> {
   status.exitCode = exitCode;
   status.outputLines = lineCount;
   writeJson(statusPath, status);
+
+  // Notify pidash of completion and close
+  if (pidashWs?.readyState === 1) {
+    pidashWs.send(JSON.stringify({ type: "async_complete", id: config.id, success: exitCode === 0 }));
+    pidashWs.close();
+  }
 
   // Write result for the watcher to pick up
   writeJson(config.resultPath, {

@@ -30,7 +30,7 @@ export function PopoverTrigger({ children, className }: { children: React.ReactN
   );
 }
 
-export function PopoverContent({ children, className }: { children: React.ReactNode; className?: string; align?: string }) {
+export function PopoverContent({ children, className, side = "top" }: { children: React.ReactNode; className?: string; align?: string; side?: "top" | "bottom" }) {
   const { open, setOpen, triggerRef } = React.useContext(PopoverContext);
   const ref = React.useRef<HTMLDivElement>(null);
 
@@ -58,7 +58,7 @@ export function PopoverContent({ children, className }: { children: React.ReactN
 
   if (!open) return null;
   return (
-    <div ref={ref} className={cn("absolute bottom-full mb-2 right-0 z-50 rounded-md border border-border bg-popover p-2 shadow-lg", className)}>
+    <div ref={ref} className={cn("absolute right-0 z-50 rounded-md border border-border bg-popover p-2 shadow-lg", side === "top" ? "bottom-full mb-2" : "top-full mt-2", className)}>
       {children}
     </div>
   );
