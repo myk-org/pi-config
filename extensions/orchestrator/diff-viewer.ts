@@ -6,66 +6,25 @@
  */
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import * as net from "node:net";
-import * as http from "node:http";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-const DIFIT_START_PORT = 4966;
-const DIFIT_MAX_PORT = 5066;
-const DIFIT_PORT_TIMEOUT_MS = 5000;
 const KILL_SETTLE_MS = 500;
-const DIFIT_READY_TIMEOUT_MS = 5000;
-const DIFIT_READY_POLL_MS = 200;
+const STARTUP_TIMEOUT_MS = 15000;
 
 const ICON_DIFF = "";
-
-function findAvailablePort(): Promise<number | null> {
-  const start = Date.now();
-  return new Promise((resolve) => {
-    let port = DIFIT_START_PORT;
-    function tryNext() {
-      if (port > DIFIT_MAX_PORT || Date.now() - start > DIFIT_PORT_TIMEOUT_MS) {
-        resolve(null);
-        return;
-      }
-      const srv = net.createServer();
-      srv.once("error", () => { port++; tryNext(); });
-      srv.listen(port, "127.0.0.1", () => {
-        srv.close(() => resolve(port));
-      });
-    }
-    tryNext();
-  });
-}
-
-function waitForPort(port: number, timeoutMs: number = DIFIT_READY_TIMEOUT_MS): Promise<boolean> {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + timeoutMs;
-    function check() {
-      if (Date.now() > deadline) { resolve(false); return; }
-      const req = http.request(
-        { hostname: "127.0.0.1", port, path: "/", timeout: 500 },
-        (res) => {
-          res.resume();
-          resolve(true);
-        },
-      );
-      req.on("error", () => {
-        setTimeout(check, DIFIT_READY_POLL_MS);
-      });
-      req.on("timeout", () => {
-        req.destroy();
-        setTimeout(check, DIFIT_READY_POLL_MS);
-      });
-      req.end();
-    }
-    check();
-  });
-}
 
 function hasDifit(): boolean {
   try {
     execFileSync("which", ["difit"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isGitRepo(cwd: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--git-dir"], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -82,7 +41,7 @@ function killExistingDifit(cwd: string): void {
     const resolvedCwd = execFileSync("readlink", ["-f", cwd], { encoding: "utf-8" }).trim();
     const result = execFileSync("ps", ["-eo", "pid,args"], { encoding: "utf-8" });
     for (const line of result.split("\n")) {
-      if (!/\bdifit\s+.*--port\b/.test(line)) continue;
+      if (!/\bdifit\b/.test(line) || !/--keep-alive/.test(line)) continue;
       const match = line.trim().match(/^(\d+)/);
       if (!match) continue;
       const pid = parseInt(match[1], 10);
@@ -104,47 +63,55 @@ export function registerDifit(pi: ExtensionAPI): void {
   let starting = false;
 
   pi.on("session_start", async (_event, ctx) => {
-    if (difitProc || starting) return; // Already running or starting
-
-    // Skip if not in a git repo
-    try {
-      execFileSync("git", ["rev-parse", "--git-dir"], { cwd: ctx.cwd, stdio: "ignore" });
-    } catch {
-      return;
-    }
+    if (difitProc || starting) return;
+    if (!isGitRepo(ctx.cwd)) return;
 
     starting = true;
 
     try {
       killExistingDifit(ctx.cwd);
-      // Brief delay to let killed processes release their ports
       await new Promise((r) => setTimeout(r, KILL_SETTLE_MS));
 
-      const port = await findAvailablePort();
-      if (!port) return;
-
-      difitProc = spawn("difit", [
+      const proc = spawn("difit", [
         "--no-open",
         "--keep-alive",
         "--host", "127.0.0.1",
-        "--port", String(port),
       ], {
         cwd: ctx.cwd,
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
       });
 
-      // Wait for difit to be ready before showing the URL
-      const isUp = await waitForPort(port);
-      if (!isUp) {
-        killProcess(difitProc);
+      // Capture port from difit stdout
+      const port = await new Promise<number | null>((resolve) => {
+        const timeout = setTimeout(() => resolve(null), STARTUP_TIMEOUT_MS);
+        let output = "";
+        proc.stdout?.on("data", (data: Buffer) => {
+          output += data.toString();
+          const m = output.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+          if (m) {
+            clearTimeout(timeout);
+            resolve(parseInt(m[1], 10));
+          }
+        });
+        proc.on("error", () => { clearTimeout(timeout); resolve(null); });
+        proc.on("exit", () => { clearTimeout(timeout); resolve(null); });
+      });
+
+      if (!port) {
+        killProcess(proc);
         difitProc = null;
         return;
       }
 
-      // Show link in status line
+      // Stop reading stdout/stderr — let difit run detached
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
+      proc.unref();
+
+      difitProc = proc;
+
       const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
       ctx.ui.setStatus("diff-viewer", statusText);
-      // Notify pidash of the diff viewer port
       pi.events?.emit("diff-viewer:port", port);
     } catch {
       if (difitProc) {
