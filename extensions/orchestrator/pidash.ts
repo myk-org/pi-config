@@ -163,6 +163,7 @@ export function registerPidash(
   let spawning = false;
   const MAX_EVENT_BUFFER = 5000;
   let lastCtx: any = null;
+  const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
 
   async function connect(ctx: any) {
@@ -221,6 +222,7 @@ export function registerPidash(
         const reg = JSON.stringify({
           type: "register",
           pid: process.pid,
+          sessionId,
           cwd: ctx.cwd,
           branch: git.branch,
           gitDirty: git.dirty,
@@ -783,8 +785,10 @@ export function registerPidash(
       connect(ctx);
     } else if (ws) {
       // Already connected — session switched (e.g., /resume, /new)
+      eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
       ws.send(JSON.stringify({
         type: "session_switch",
+        sessionId,
         cwd: ctx.cwd,
         branch: getCurrentBranch(ctx.cwd),
         sessionFile: ctx.sessionFile || "",
@@ -797,6 +801,12 @@ export function registerPidash(
   pi.on("tool_result", (_event, ctx) => {
     if (!connected && !shuttingDown) connect(ctx);
   });
+
+  // Periodic reconnect — ensures sessions that started before the daemon still connect
+  const reconnectPoller = setInterval(() => {
+    if (!connected && !connecting && !shuttingDown && lastCtx) connect(lastCtx);
+  }, 15000);
+  if (reconnectPoller.unref) reconnectPoller.unref();
 
   // ── Command execution from browser ────────────────────────────────
   //
@@ -911,6 +921,7 @@ export function registerPidash(
 
   pi.on("session_shutdown", () => {
     shuttingDown = true;
+    clearInterval(reconnectPoller);
     if (ws) { try { ws.close(); } catch {} ws = null; }
     connected = false;
   });

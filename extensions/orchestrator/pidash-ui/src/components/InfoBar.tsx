@@ -55,7 +55,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   // Reset async agents when session changes
   useEffect(() => {
     setAsyncAgents({ count: 0, agents: "", jobs: [] });
-  }, [session.pid]);
+  }, [session.sessionId]);
 
   useEffect(() => {
     return onMessage((ev: any) => {
@@ -91,8 +91,8 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
     e.stopPropagation();
     if (openMenu === name) { setOpenMenu(null); return; }
     setOpenMenu(name);
-    if (name === "models") send({ type: "pidash-command", command: "list-models", pid: session.pid });
-  }, [openMenu, send, session.pid]);
+    if (name === "models") send({ type: "pidash-command", command: "list-models", sessionId: session.sessionId });
+  }, [openMenu, send, session.sessionId]);
 
   return (
     <div className={cn("flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:whitespace-nowrap md:scrollbar-none", inactive && "opacity-50 pointer-events-none")}>
@@ -127,7 +127,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                 key={m.id}
                 className={`w-full text-left px-3 py-1.5 text-sm hover:bg-accent transition-colors flex justify-between ${(m.name === displayModel || m.id === displayModel) ? "bg-accent/50" : ""}`}
                 onClick={() => {
-                  send({ type: "pidash-command", pid: session.pid, command: "set-model", modelId: m.id });
+                  send({ type: "pidash-command", sessionId: session.sessionId, command: "set-model", modelId: m.id });
                   setOpenMenu(null);
                 }}
               >
@@ -158,7 +158,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                 className={`w-full text-left px-3 py-1.5 text-sm hover:bg-accent transition-colors ${lvl === thinkingLevel ? "bg-accent/50" : ""}`}
                 onClick={() => {
                   setThinkingLevel(lvl);
-                  send({ type: "pidash-command", pid: session.pid, command: "set-thinking", level: lvl });
+                  send({ type: "pidash-command", sessionId: session.sessionId, command: "set-thinking", level: lvl });
                   setOpenMenu(null);
                 }}
               >
@@ -234,7 +234,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                   {asyncAgents.count > 1 && (
                     <button
                       onClick={() => {
-                        send({ type: "pidash-command", command: "async-kill", target: "all", pid: session.pid });
+                        send({ type: "pidash-command", command: "async-kill", target: "all", sessionId: session.sessionId });
                       }}
                       className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
                     >
@@ -267,7 +267,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                       <div className="flex gap-1 shrink-0">
                         <button
                           onClick={() => {
-                            send({ type: "pidash-command", command: "async-kill", target: job.name, pid: session.pid });
+                            send({ type: "pidash-command", command: "async-kill", target: job.name, sessionId: session.sessionId });
                           }}
                           className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
                           title="Kill this agent"

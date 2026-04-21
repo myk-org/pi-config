@@ -1,4 +1,5 @@
 export interface SessionInfo {
+  sessionId: string;
   pid: number;
   cwd: string;
   branch: string;
@@ -31,9 +32,21 @@ export interface PiEvent {
     delta?: string;
     partial?: { model?: string; usage?: TokenUsage };
   };
+  toolCallId?: string;
   toolName?: string;
   args?: { command?: string };
-  result?: { content?: Array<{ type: string; text: string }> };
+  result?: {
+    content?: Array<{ type: string; text: string }>;
+    details?: {
+      mode?: string;
+      results?: Array<{
+        agent?: string;
+        usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: number; contextTokens?: number; turns?: number };
+        model?: string;
+        exitCode?: number;
+      }>;
+    };
+  };
   isError?: boolean;
 }
 
@@ -52,4 +65,16 @@ export interface ChatMessage {
   role: MessageRole;
   text: string;
   className?: string;
+  meta?: {
+    turns?: number;
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    contextTokens?: number;
+    model?: string;
+    startTs?: number;
+    endTs?: number;
+    cost?: number;
+    callId?: string;
+  };
 }

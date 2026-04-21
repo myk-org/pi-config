@@ -10,15 +10,15 @@ import type { ChatMessage, PiEvent, SessionInfo, TokenUsage } from "@/types";
 
 const STORAGE_KEY = "pidash-state";
 
-function loadState(): { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null } {
+function loadState(): { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return { sidebarWidth: 280, sidebarCollapsed: false, watchPid: null };
+  return { sidebarWidth: 280, sidebarCollapsed: false, watchPid: null, watchSessionId: null };
 }
 
-function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null }) {
+function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null }) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 }
 
@@ -64,7 +64,7 @@ export function App() {
   const thinkRef = useRef({ id: "", text: "" });
   const assistRef = useRef({ id: "", text: "" });
   const lastUserRef = useRef("");
-  const toolRef = useRef({ id: "", name: "" });
+  const toolRef = useRef({ id: "", name: "", startTs: 0, callId: "" });
   const restoredRef = useRef(false);
   const replayingRef = useRef(false);
 
@@ -88,7 +88,7 @@ export function App() {
           if (ev.type === "session_updated" && ev.session) {
             // Update active session if it's the one we're watching
             setSession((prev) => {
-              if (prev?.pid === ev.session.pid) {
+              if (prev?.sessionId === ev.session.sessionId) {
                 if (ev.session.model !== undefined) setModel(ev.session.model);
                 return { ...prev, ...ev.session };
               }
@@ -173,8 +173,10 @@ export function App() {
             else if (ev.args.tasks) detail = `${ev.args.tasks.length} parallel tasks`;
             else if (ev.args.chain) detail = `${ev.args.chain.length} chain steps`;
           }
-          const id = addMsg(name as any, detail, "tool-call");
-          toolRef.current = { id, name };
+          const cid = ev.toolCallId || nextId();
+          const id = nextId();
+          setMessages((p) => [...p, { id, role: name as any, text: detail, className: "tool-call", meta: { callId: cid } }]);
+          toolRef.current = { id, name, startTs: ev.timestamp || Date.now(), callId: cid };
           break;
         }
 
@@ -186,10 +188,39 @@ export function App() {
 
         case "tool_execution_end": {
           const toolName = toolRef.current.name || ev.toolName || "tool";
-          toolRef.current = { id: "", name: "" };
+          const startTs = toolRef.current.startTs;
+          const callId = toolRef.current.callId;
+          toolRef.current = { id: "", name: "", startTs: 0, callId: "" };
           if (ev.result?.content?.[0]?.text) {
             const t = ev.result.content[0].text;
-            addMsg(toolName as any, `${ev.isError ? "✗ " : "✓ "}${t}`, "tool-result");
+            const endTs = ev.timestamp || Date.now();
+            let meta: ChatMessage["meta"] = startTs ? { startTs, endTs, callId } : { callId };
+            const results = ev.result?.details?.results;
+            if (results?.length) {
+              let totalInput = 0, totalOutput = 0, totalTurns = 0, totalCache = 0, totalCtx = 0, totalCost = 0;
+              for (const res of results) {
+                if (res.usage) {
+                  totalInput += res.usage.input || 0;
+                  totalOutput += res.usage.output || 0;
+                  totalTurns += res.usage.turns || 0;
+                  totalCache += res.usage.cacheRead || 0;
+                  totalCtx += res.usage.contextTokens || 0;
+                  totalCost += res.usage.cost || 0;
+                }
+              }
+              meta = {
+                ...meta,
+                turns: totalTurns,
+                input: totalInput,
+                output: totalOutput,
+                cacheRead: totalCache,
+                contextTokens: totalCtx,
+                cost: totalCost,
+                model: results[0]?.model,
+              };
+            }
+            const id = nextId();
+            setMessages((p) => [...p, { id, role: toolName as any, text: `${ev.isError ? "✗ " : "✓ "}${t}`, className: "tool-result", meta }]);
           }
           break;
         }
@@ -236,8 +267,8 @@ export function App() {
     assistRef.current = { id: "", text: "" };
     lastUserRef.current = "";
     replayingRef.current = true;
-    send({ type: "watch", pid: s.pid });
-    send({ type: "pidash-command", pid: s.pid, command: "list-commands" });
+    send({ type: "watch", sessionId: s.sessionId });
+    send({ type: "pidash-command", sessionId: s.sessionId, command: "list-commands" });
     // Events from buffer replay arrive synchronously — mark replay done after a short delay
     setTimeout(() => { replayingRef.current = false; }, 2000);
     // Session persisted via localStorage — no URL hash needed
@@ -252,24 +283,24 @@ export function App() {
       sidebarWidth,
       sidebarCollapsed: mobile ? true : sidebarCollapsed,
       watchPid: session?.pid ?? null,
+      watchSessionId: session?.sessionId ?? null,
     });
   }, [sidebarWidth, sidebarCollapsed, session]);
 
   useEffect(() => {
     if (!connected || !sessions.length || restoredRef.current) return;
     // Restore from localStorage
+    const sid = saved.current.watchSessionId;
     const pid = saved.current.watchPid;
-    if (pid) {
-      const s = sessions.find((x) => x.pid === pid);
-      if (s) { restoredRef.current = true; watchSession(s); }
-    }
+    const s = sid ? sessions.find((x) => x.sessionId === sid) : pid ? sessions.find((x) => x.pid === pid) : null;
+    if (s) { restoredRef.current = true; watchSession(s); }
   }, [connected, sessions, watchSession]);
 
 
 
 
   const handleAbort = useCallback(() => {
-    if (session) send({ type: "pidash-command", pid: session.pid, command: "abort" });
+    if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "abort" });
   }, [session, send]);
 
   useEffect(() => {
@@ -284,7 +315,7 @@ export function App() {
     if (!session) return;
     lastUserRef.current = text;
     addMsg("user", text);
-    send({ type: "prompt", pid: session.pid, text });
+    send({ type: "prompt", sessionId: session.sessionId, text });
   }, [session, send, addMsg]);
 
   return (
@@ -303,7 +334,7 @@ export function App() {
           >
             <SessionSidebar
             sessions={sessions}
-            activePid={session?.pid ?? null}
+            activeSessionId={session?.sessionId ?? null}
             connected={connected}
             onSelect={watchSession}
             collapsed={false}
@@ -362,11 +393,11 @@ export function App() {
               scrollKey={scrollKey}
               onAskResponse={(id, value) => {
                 if (value === "__confirmed__") {
-                  send({ type: "extension_ui_response", pid: session!.pid, id, confirmed: true });
+                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: true });
                 } else if (value === "__denied__") {
-                  send({ type: "extension_ui_response", pid: session!.pid, id, confirmed: false });
+                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: false });
                 } else {
-                  send({ type: "extension_ui_response", pid: session!.pid, id, value });
+                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, value });
                 }
               }}
             />
