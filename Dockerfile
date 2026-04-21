@@ -86,7 +86,8 @@ ENV ACPX_AGENTS=""
 # Install remote uv tools (cached independently of local source changes)
 RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
     uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
-    uv tool install prek
+    uv tool install prek && \
+    uv tool install mcp-proxy
 
 # Copy and install myk-pi-tools from local source
 COPY --chown=node:node pyproject.toml README.md /tmp/myk-pi-tools/
