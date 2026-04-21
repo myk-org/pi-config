@@ -318,6 +318,15 @@ myk-pi-tools reviews store {json_path}
 
 **Skip this phase if `--autorabbit` was NOT passed.**
 
+🚨 **ABSOLUTE RULE: NO USER INTERACTION DURING THE POLLING LOOP.**
+
+**NEVER call AskUserQuestion during Phase 9. NEVER present options,
+dialogs, choices, or questions to the user. The polling loop is FULLY
+AUTOMATIC. If something is stuck, stale, or unclear — keep polling
+silently. Do NOT invent questions like "PRs are stuck, what do you
+want to do?" or "Should I keep polling?" or any variation. The loop
+runs silently until an exit condition is met. Period.**
+
 After the review flow completes (Phases 1-8), enter a polling loop
 to watch for new CodeRabbit comments.
 
@@ -377,6 +386,22 @@ VIOLATION — The following rationalizations are FORBIDDEN reasons to exit the l
   - "The API returned an error"
   - "An error prevents continuing"
   - Any variation of the AI deciding there is no more work to do
+```
+
+```text
+VIOLATION — The following user interactions are FORBIDDEN during Phase 9:
+
+  - Calling AskUserQuestion for ANY reason
+  - Presenting options like "keep polling / stop / skip"
+  - Asking "should I continue?"
+  - Asking "PRs are stuck, what do you want to do?"
+  - Asking for user input about stale comments
+  - Asking for user decisions about polling strategy
+  - ANY dialog, question, or prompt to the user
+  - Any variation of the AI asking the user what to do
+
+The ONLY way the user interacts with the loop is by explicitly
+sending "stop", "exit", "done", or "quit" — unprompted by the AI.
 ```
 
 If any command in the loop fails, log the error, wait 5 minutes, and retry from 9a.
