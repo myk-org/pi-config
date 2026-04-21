@@ -90,7 +90,16 @@ Read the **Raw Arguments** section above. Parse as follows:
 - cleaned arguments = `https://github.com/org/repo/pull/123#pullrequestreview-456`
 - CLI call = `myk-pi-tools reviews fetch https://github.com/...`
 
+### Autorabbit Fast Path (MANDATORY)
+
+**If autorabbit mode is ON (set in Phase 0), skip Phases 1-8 entirely
+and jump directly to Phase 9 (Autorabbit Polling Loop).** The polling
+loop handles fetching, processing, and posting internally. There is no
+initial fetch/review cycle — the first fetch happens inside the poll.
+
 ### Phase 1: Fetch Reviews
+
+**Skip this phase if autorabbit mode is ON — see Autorabbit Fast Path above.**
 
 The `reviews fetch` command auto-detects the PR from the current branch.
 
