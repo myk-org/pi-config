@@ -81,12 +81,16 @@ export function registerAsyncAgents(
     lastCtx: null,
   };
 
+  let lastWidgetKey = "";
   function updateAsyncWidget() {
     if (!asyncState.lastCtx?.hasUI) return;
     const ctx = asyncState.lastCtx;
     const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
+    const names = running.map(j => j.name || j.agent).join(", ");
+    const widgetKey = `${running.length}:${names}`;
+    if (widgetKey === lastWidgetKey) return; // Nothing changed, skip re-render
+    lastWidgetKey = widgetKey;
     if (running.length > 0) {
-      const names = running.map(j => j.name || j.agent).join(", ");
       ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("warning", `⏳ ${running.length} async: ${names}`));
       pi.events.emit("pidash:async-status", {
         count: running.length,
