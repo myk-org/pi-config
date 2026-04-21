@@ -3,8 +3,9 @@ import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Fo
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { NotificationSettings } from "@/components/NotificationSettings";
 import { cn } from "@/lib/utils";
-import type { SessionInfo } from "@/types";
+import type { SessionInfo, NotificationPreferences } from "@/types";
 
 function ago(iso: string): string {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -21,9 +22,16 @@ interface Props {
   onSelect: (s: SessionInfo) => void;
   collapsed: boolean;
   onToggle: () => void;
+  notifications?: {
+    permission: NotificationPermission;
+    supported: boolean;
+    preferences: NotificationPreferences;
+    setPreference: <K extends keyof NotificationPreferences>(key: K, value: boolean) => void;
+    requestPermission: () => void;
+  };
 }
 
-export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, notifications }: Props) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [initialized, setInitialized] = useState(false);
 
@@ -77,6 +85,13 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
         <span className="text-sm font-bold text-primary">pidash</span>
         <span className="flex items-center gap-2">
           <Circle className={cn("h-2 w-2 fill-current", connected ? "text-green-500" : "text-red-500")} />
+          {notifications && <NotificationSettings
+            permission={notifications.permission}
+            supported={notifications.supported}
+            preferences={notifications.preferences}
+            setPreference={notifications.setPreference}
+            requestPermission={notifications.requestPermission}
+          />}
           <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground" onClick={onToggle}>
             <PanelLeftClose className="h-3.5 w-3.5" />
           </Button>
@@ -124,6 +139,12 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                   >
                     <div className={cn("text-xs font-medium truncate flex items-center gap-1.5", s.active ? "text-primary" : "text-muted-foreground")}>
                       {!s.active && <Pause className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
+                      {s.active && s.working && (
+                        <span className="relative flex h-2 w-2 flex-shrink-0">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+                        </span>
+                      )}
                       <span className="truncate">{s.model || "—"}</span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">

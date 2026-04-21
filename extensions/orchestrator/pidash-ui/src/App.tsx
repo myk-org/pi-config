@@ -6,6 +6,7 @@ import { MessageList } from "@/components/MessageList";
 import { InputBar } from "@/components/InputBar";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useSessions } from "@/hooks/useSessions";
+import { useNotifications } from "@/hooks/useNotifications";
 import type { ChatMessage, PiEvent, SessionInfo, TokenUsage } from "@/types";
 
 const STORAGE_KEY = "pidash-state";
@@ -30,6 +31,7 @@ const textFrom = (msg: any): string =>
 export function App() {
   const { connected, send, onMessage } = useWebSocket("/ws/browser");
   const sessions = useSessions(connected, onMessage);
+  const notifications = useNotifications();
 
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -40,6 +42,8 @@ export function App() {
   const [searchType, setSearchType] = useState("all");
   const [scrollKey, setScrollKey] = useState(0);
   const [availableCommands, setAvailableCommands] = useState<Array<{ name: string; description: string }>>([]);
+  const asyncMsgRef = useRef<Map<string, { msgId: string; text: string }>>(new Map());
+  const messagesRef = useRef(messages);
   const saved = useRef(loadState());
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
@@ -67,6 +71,12 @@ export function App() {
   const toolRef = useRef({ id: "", name: "", startTs: 0, callId: "" });
   const restoredRef = useRef(false);
   const replayingRef = useRef(false);
+  const notificationsRef = useRef(notifications);
+  const sessionRef = useRef(session);
+
+  useEffect(() => { notificationsRef.current = notifications; }, [notifications]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const addMsg = useCallback((role: ChatMessage["role"], text: string, className?: string): string => {
     const id = nextId();
@@ -225,6 +235,144 @@ export function App() {
           break;
         }
 
+        case "session_input_needed": {
+          const n = notificationsRef.current;
+          if (!n.preferences.inputNeeded) break;
+          const isWatched = ev.sessionId === sessionRef.current?.sessionId;
+          const tabFocused = document.hasFocus();
+          if (tabFocused && isWatched) break;
+          const repo = ev.cwd?.split("/").pop() || "session";
+          n.notify(`Input needed — ${repo}`, { body: ev.title || "Waiting for your response" });
+          break;
+        }
+
+        case "session_turn_complete": {
+          const n = notificationsRef.current;
+          if (!n.preferences.turnComplete) break;
+          const isWatched = ev.sessionId === sessionRef.current?.sessionId;
+          const tabFocused = document.hasFocus();
+          if (tabFocused && isWatched) break;
+          const repo = ev.cwd?.split("/").pop() || "session";
+          n.notify(`AI done — ${repo}`, { body: "Ready for input" });
+          break;
+        }
+
+        case "session_notification": {
+          const n = notificationsRef.current;
+          const isWatched = ev.sessionId === sessionRef.current?.sessionId;
+          const tabFocused = document.hasFocus();
+
+          // Tab not focused → notify for ALL sessions
+          // Tab focused → notify only for non-watched sessions
+          if (tabFocused && isWatched) break;
+
+          const repo = ev.cwd?.split("/").pop() || "session";
+
+          const txt = (ev.resultText || "").toLowerCase();
+              const tl = (ev.toolName || "").toLowerCase();
+              const isTestEvent = tl.includes("test") || txt.includes("pytest") || txt.includes("test_");
+
+              if (ev.isError && n.preferences.sessionError) {
+                n.notify(`Error — ${repo}`, { body: "Tool execution failed" });
+              } else if (ev.isSubagent && n.preferences.agentComplete) {
+                const agentLabel = ev.agentName || "agent";
+                n.notify(`Agent finished — ${repo}`, { body: agentLabel });
+              } else if (isTestEvent && n.preferences.testResults) {
+                const passed = !ev.isError && !txt.includes("fail") && !txt.includes("error");
+                n.notify(passed ? `Tests: ✓ Passed — ${repo}` : `Tests: ✗ Failed — ${repo}`);
+              } else if (n.preferences.toolComplete && !ev.isError && !ev.isSubagent) {
+                n.notify(`Tool: ${ev.toolName || "tool"} — ${repo}`);
+              }
+          break;
+        }
+
+        case "async_agent_start": {
+          const asyncId = ev.id as string;
+          if (!asyncId) break;
+          // Only show async agents from the watched session
+          if ((ev as any).sessionId && (ev as any).sessionId !== sessionRef.current?.sessionId) break;
+          // Find the subagent tool-result message that spawned this async agent
+          let targetMsgId = "";
+          const currentMsgs = messagesRef.current;
+          for (let i = currentMsgs.length - 1; i >= 0; i--) {
+            if (currentMsgs[i].className === "tool-result" && currentMsgs[i].text.includes(asyncId)) {
+              targetMsgId = currentMsgs[i].id;
+              break;
+            }
+          }
+          if (!targetMsgId) {
+            // Fallback: create inline message
+            const agent = (ev as any).agent || "agent";
+            const repo = ((ev as any).cwd || "").split("/").pop() || "";
+            targetMsgId = addMsg("system" as any, `⏳ ${agent} — ${repo}`, "async-agent-running");
+          }
+          asyncMsgRef.current.set(asyncId, { msgId: targetMsgId, text: "" });
+          break;
+        }
+
+        case "async_agent_event": {
+          const asyncId = ev.id as string;
+          const inner = (ev as any).event;
+          if (!asyncId || !inner) break;
+          if ((ev as any).sessionId && (ev as any).sessionId !== sessionRef.current?.sessionId) break;
+          const tracked = asyncMsgRef.current.get(asyncId);
+          if (!tracked) break;
+
+          let changed = false;
+
+          if (inner.type === "message_update" && inner.assistantMessageEvent) {
+            const ae = inner.assistantMessageEvent;
+            if (ae.type === "text_delta" && ae.delta) {
+              tracked.text += ae.delta;
+              changed = true;
+            }
+          }
+
+          if (inner.type === "tool_execution_start") {
+            const name = inner.toolName || "tool";
+            const detail = inner.args?.command ? ` ${inner.args.command.slice(0, 100)}` : "";
+            tracked.text += `\n🔧 ${name}${detail}`;
+            changed = true;
+          }
+
+          if (inner.type === "tool_execution_end" && inner.result?.content?.[0]?.text) {
+            const result = inner.result.content[0].text.slice(0, 200);
+            tracked.text += `\n${inner.isError ? "✗" : "✓"} ${result}`;
+            changed = true;
+          }
+
+          if (changed) {
+            setMessages(prev => prev.map(m => {
+              if (m.id !== tracked.msgId) return m;
+              const header = m.text.split("\n")[0];
+              return { ...m, text: header + "\n" + tracked.text.trim() };
+            }));
+          }
+          break;
+        }
+
+        case "async_agent_complete": {
+          const asyncId = ev.id as string;
+          if (!asyncId) break;
+          if ((ev as any).sessionId && (ev as any).sessionId !== sessionRef.current?.sessionId) break;
+          const tracked = asyncMsgRef.current.get(asyncId);
+          if (!tracked) break;
+          setMessages(prev => prev.map(m => {
+            if (m.id !== tracked.msgId) return m;
+            if (m.className === "async-agent-running") {
+              // Fallback system message — update icon
+              const header = m.text.split("\n")[0].replace("⏳", (ev as any).success === false ? "❌" : "✅");
+              return { ...m, text: header + "\n" + tracked.text.trim(), className: "async-agent-done" };
+            }
+            // Tool-result message — just mark as complete by appending status
+            const status = (ev as any).success === false ? "\n❌ Agent failed" : "\n✅ Agent complete";
+            const header = m.text.split("\n")[0];
+            return { ...m, text: header + "\n" + tracked.text.trim() + status };
+          }));
+          asyncMsgRef.current.delete(asyncId);
+          break;
+        }
+
         case "extension_ui_request":
           // Skip stale UI requests from replay (older than 10 seconds)
           if (ev.timestamp && Date.now() - ev.timestamp > 10000) break;
@@ -287,6 +435,11 @@ export function App() {
     });
   }, [sidebarWidth, sidebarCollapsed, session]);
 
+  // Reset restore state on disconnect so we re-watch after server restart
+  useEffect(() => {
+    if (!connected) restoredRef.current = false;
+  }, [connected]);
+
   useEffect(() => {
     if (!connected || !sessions.length || restoredRef.current) return;
     // Restore from localStorage
@@ -339,6 +492,7 @@ export function App() {
             onSelect={watchSession}
             collapsed={false}
             onToggle={() => setSidebarCollapsed(true)}
+            notifications={notifications}
           />
           <div
             className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 z-10 max-md:hidden"

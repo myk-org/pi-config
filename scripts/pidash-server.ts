@@ -42,12 +42,14 @@ interface SessionInfo {
   diffPort?: number | null;
   contextWindow?: number;
   thinkingLevel?: string;
+  working?: boolean;
 }
 
 interface PiClient {
   ws: any;
   session: SessionInfo;
   eventBuffer: string[];
+  replaying: boolean;
 }
 
 const piClients = new Map<string, PiClient>();
@@ -168,13 +170,15 @@ piWss.on("connection", (ws: any) => {
           existing.ws = ws;
           existing.session = session;
           existing.eventBuffer = []; // Clear stale buffer — extension will replay current events
+          existing.replaying = true;
           piClient = existing;
         } else {
-          piClient = { ws, session, eventBuffer: [] };
+          piClient = { ws, session, eventBuffer: [], replaying: true };
         }
         piClients.set(sessionId, piClient);
         log(`session registered: ${sessionId}, cwd: ${parsed.cwd}`);
         broadcastToBrowsers({ type: "session_added", session });
+        // replaying flag cleared when extension sends replay_complete
         return;
       }
 
@@ -203,9 +207,26 @@ piWss.on("connection", (ws: any) => {
         return;
       }
 
+      if (parsed.type === "replay_complete" && piClient) {
+        piClient.replaying = false;
+        log(`replay complete for ${piClient.session.sessionId}`);
+        return;
+      }
+
       // Forward pi event to browsers watching this session + buffer
       if (piClient) {
         piClient.session.lastActivity = Date.now();
+
+        // Track AI working state and broadcast to all browsers
+        if (parsed.type === "agent_start") {
+          piClient.session.working = true;
+          broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+        }
+        if (parsed.type === "agent_end") {
+          piClient.session.working = false;
+          broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+        }
+
         const sid = piClient.session.sessionId;
         const raw = data.toString();
 
@@ -213,12 +234,60 @@ piWss.on("connection", (ws: any) => {
         // Skip extension_ui_request — these are one-time interactions
         if (parsed.type !== "extension_ui_request") {
           piClient.eventBuffer.push(raw);
-          if (piClient.eventBuffer.length > 5000) piClient.eventBuffer.shift();
+          while (piClient.eventBuffer.length > 10000) piClient.eventBuffer.shift();
         }
 
         for (const browser of browserClients) {
           if (browserWatchMap.get(browser) === sid) {
             try { browser.send(raw); } catch {}
+          }
+        }
+
+        // Broadcast notification-worthy events to ALL browsers (skip during replay)
+        if (parsed.type === "tool_execution_end" && !piClient.replaying) {
+          const toolName = parsed.toolName || "";
+          const isSubagent = toolName === "subagent" || !!(parsed.args?.agent);
+          const isError = parsed.isError === true;
+          const resultText = parsed.result?.content?.[0]?.text || "";
+
+          const notifEvent = JSON.stringify({
+            type: "session_notification",
+            sessionId: sid,
+            cwd: piClient.session.cwd,
+            toolName,
+            isError,
+            isSubagent,
+            agentName: parsed.args?.name || parsed.args?.agent || "",
+            resultText: resultText.slice(0, 200),
+          });
+          for (const browser of browserClients) {
+            try { browser.send(notifEvent); } catch {}
+          }
+        }
+
+        // Broadcast AI turn complete to ALL browsers (skip during replay)
+        if (parsed.type === "agent_end" && !piClient.replaying) {
+          const notifEvent = JSON.stringify({
+            type: "session_turn_complete",
+            sessionId: sid,
+            cwd: piClient.session.cwd,
+          });
+          for (const browser of browserClients) {
+            try { browser.send(notifEvent); } catch {}
+          }
+        }
+
+        // Broadcast input-needed events to ALL browsers (skip during replay)
+        if (!piClient.replaying && parsed.type === "extension_ui_request" && parsed.id && (parsed.method === "select" || parsed.method === "confirm" || parsed.method === "input")) {
+          const notifEvent = JSON.stringify({
+            type: "session_input_needed",
+            sessionId: sid,
+            cwd: piClient.session.cwd,
+            title: parsed.title || "Input needed",
+            method: parsed.method,
+          });
+          for (const browser of browserClients) {
+            try { browser.send(notifEvent); } catch {}
           }
         }
       }
@@ -334,6 +403,73 @@ function sendToWatchers(sessionId: string, event: object) {
   }
 }
 
+// Async agent clients
+const asyncWss = new WebSocket.Server({ noServer: true });
+const asyncAgents = new Map<string, { id: string; agent: string; task: string; cwd: string; sessionId?: string }>();
+
+asyncWss.on("connection", (ws: any) => {
+  log("async agent WebSocket connected");
+  let agentId: string | null = null;
+
+  ws.on("message", (data: Buffer) => {
+    try {
+      const parsed = JSON.parse(data.toString());
+
+      if (parsed.type === "async_register") {
+        log(`async agent registered: ${parsed.id} (${parsed.agent})`);
+        agentId = parsed.id;
+        asyncAgents.set(agentId, {
+          id: parsed.id,
+          agent: parsed.agent,
+          task: parsed.task,
+          cwd: parsed.cwd,
+          sessionId: parsed.sessionId,
+        });
+        // Broadcast to all browsers
+        broadcastToBrowsers({
+          type: "async_agent_start",
+          id: parsed.id,
+          agent: parsed.agent,
+          task: parsed.task,
+          cwd: parsed.cwd,
+          sessionId: parsed.sessionId,
+        });
+        return;
+      }
+
+      if (parsed.type === "async_event" && parsed.id) {
+        log(`async event from ${parsed.id}: ${parsed.event?.type}`);
+        broadcastToBrowsers({
+          type: "async_agent_event",
+          id: parsed.id,
+          event: parsed.event,
+          sessionId: asyncAgents.get(parsed.id)?.sessionId,
+        });
+        return;
+      }
+
+      if (parsed.type === "async_complete" && parsed.id) {
+        broadcastToBrowsers({
+          type: "async_agent_complete",
+          id: parsed.id,
+          success: parsed.success,
+          sessionId: asyncAgents.get(parsed.id)?.sessionId,
+        });
+        asyncAgents.delete(parsed.id);
+        return;
+      }
+    } catch {}
+  });
+
+  ws.on("close", () => {
+    if (agentId) asyncAgents.delete(agentId);
+  });
+
+  ws.on("error", () => {
+    if (agentId) asyncAgents.delete(agentId);
+  });
+});
+
 // Route upgrade requests to the correct WS server
 server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
   const url = new URL(req.url || "/", `http://localhost:${port}`);
@@ -342,6 +478,8 @@ server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
     piWss.handleUpgrade(req, socket, head, (ws: any) => piWss.emit("connection", ws, req));
   } else if (url.pathname === "/ws/browser") {
     browserWss.handleUpgrade(req, socket, head, (ws: any) => browserWss.emit("connection", ws, req));
+  } else if (url.pathname === "/ws/async") {
+    asyncWss.handleUpgrade(req, socket, head, (ws: any) => asyncWss.emit("connection", ws, req));
   } else {
     socket.destroy();
   }

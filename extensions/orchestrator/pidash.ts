@@ -161,7 +161,6 @@ export function registerPidash(
   let connecting = false;
   let shuttingDown = false;
   let spawning = false;
-  const MAX_EVENT_BUFFER = 5000;
   let lastCtx: any = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
@@ -238,28 +237,14 @@ export function registerPidash(
         debugLog(`sending register: ${reg}`);
         wsClient.send(reg);
 
-        // Replay buffered events to restore history on daemon reconnect
-        // Send in batches with yields to prevent WebSocket overload
-        if (eventBuffer.length > 0) {
-          debugLog(`replaying ${eventBuffer.length} buffered events`);
-          const BATCH_SIZE = 50;
-          let i = 0;
-          const replayBatch = () => {
-            const end = Math.min(i + BATCH_SIZE, eventBuffer.length);
-            for (; i < end; i++) {
-              try { wsClient.send(eventBuffer[i]); } catch {}
-            }
-            if (i < eventBuffer.length) {
-              setTimeout(replayBatch, 10);
-            } else {
-              debugLog(`replay complete: ${eventBuffer.length} events`);
-            }
-          };
-          replayBatch();
-        }
-
-        // Load existing session history (for --continue / resumed sessions)
-        if (eventBuffer.length === 0) {
+        // Always load history from session file (source of truth)
+        eventBuffer.length = 0;
+        const pushBuffered = (ev: string) => {
+          wsClient.send(ev);
+          eventBuffer.push(ev);
+          while (eventBuffer.length > 10000) eventBuffer.shift();
+        };
+        {
           try {
             const entries = ctx.sessionManager?.getEntries?.() || [];
             let historyCount = 0;
@@ -270,9 +255,7 @@ export function registerPidash(
               const ts = e.timestamp ? new Date(e.timestamp).getTime() : Date.now();
 
               if (msg.role === "user") {
-                const ev = JSON.stringify({ type: "message_start", message: msg, timestamp: ts });
-                wsClient.send(ev);
-                eventBuffer.push(ev);
+                pushBuffered(JSON.stringify({ type: "message_start", message: msg, timestamp: ts }));
               }
 
               if (msg.role === "assistant" && msg.content) {
@@ -284,8 +267,7 @@ export function registerPidash(
                       assistantMessageEvent: { type: "thinking_delta", delta: part.thinking, partial: { model: msg.model, usage: msg.usage } },
                       timestamp: ts,
                     });
-                    wsClient.send(thinkEv);
-                    eventBuffer.push(thinkEv);
+                    pushBuffered(thinkEv);
                   }
                 }
 
@@ -297,8 +279,7 @@ export function registerPidash(
                       assistantMessageEvent: { type: "text_delta", delta: part.text, partial: { model: msg.model, usage: msg.usage } },
                       timestamp: ts,
                     });
-                    wsClient.send(textEv);
-                    eventBuffer.push(textEv);
+                    pushBuffered(textEv);
                   }
                 }
 
@@ -311,15 +292,12 @@ export function registerPidash(
                       args: part.arguments,
                       timestamp: ts,
                     });
-                    wsClient.send(toolEv);
-                    eventBuffer.push(toolEv);
+                    pushBuffered(toolEv);
                   }
                 }
 
                 // Send message_end
-                const endEv = JSON.stringify({ type: "message_end", message: msg, timestamp: ts });
-                wsClient.send(endEv);
-                eventBuffer.push(endEv);
+                pushBuffered(JSON.stringify({ type: "message_end", message: msg, timestamp: ts }));
               }
 
               // Tool results
@@ -331,27 +309,22 @@ export function registerPidash(
                   isError: msg.isError || false,
                   timestamp: ts,
                 });
-                wsClient.send(resultEv);
-                eventBuffer.push(resultEv);
+                pushBuffered(resultEv);
               }
 
               // Custom messages (async agent results, etc.)
               if (msg.role === "custom" && msg.display) {
                 const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || "");
-                const ev = JSON.stringify({
+                pushBuffered(JSON.stringify({
                   type: "message_start",
                   message: { role: "custom", display: true, content, customType: msg.customType },
                   timestamp: ts,
-                });
-                wsClient.send(ev);
-                eventBuffer.push(ev);
+                }));
               }
 
               // Catch-all: any other message role — forward as-is
               if (!["user", "assistant", "toolResult", "custom"].includes(msg.role)) {
-                const ev = JSON.stringify({ type: "message_start", message: msg, timestamp: ts });
-                wsClient.send(ev);
-                eventBuffer.push(ev);
+                pushBuffered(JSON.stringify({ type: "message_start", message: msg, timestamp: ts }));
               }
 
               historyCount++;
@@ -361,6 +334,9 @@ export function registerPidash(
             debugLog(`session history load error: ${e.message}`);
           }
         }
+
+        // Signal replay is complete so the server can stop suppressing notifications
+        try { wsClient.send(JSON.stringify({ type: "replay_complete" })); } catch {}
 
         // Respond to pings (keepalive)
         wsClient.on("ping", () => {
@@ -601,8 +577,8 @@ export function registerPidash(
       const msg = JSON.stringify(payload);
       if (type !== "extension_ui_request") {
         eventBuffer.push(msg);
-        // Prevent unbounded growth — drop oldest events
-        while (eventBuffer.length > MAX_EVENT_BUFFER) eventBuffer.shift();
+        // Cap incremental buffer — session file is the source of truth for full history
+        while (eventBuffer.length > 10000) eventBuffer.shift();
       }
       if (ws && connected) {
         try { ws.send(msg); } catch (e: any) { debugLog(`forward ${type} error: ${e.message}`); }

@@ -11,13 +11,13 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import type { AgentConfig } from "./agents.js";
 import { getPiInvocation } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const ASYNC_DIR = path.join(os.tmpdir(), "pi-async-agents");
-const ASYNC_RESULTS_DIR = path.join(ASYNC_DIR, `results-${process.pid}`);
+const ASYNC_BASE_DIR = path.join(os.tmpdir(), "pi-async-agents");
 const ASYNC_POLL_INTERVAL_MS = 3000;
 
 // ── Interfaces ───────────────────────────────────────────────────────────
@@ -71,6 +71,9 @@ export function registerAsyncAgents(
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
 } {
+  let ASYNC_DIR = ASYNC_BASE_DIR;
+  let ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `results-${process.pid}`);
+
   const asyncState: AsyncState = {
     jobs: new Map(),
     poller: null,
@@ -243,6 +246,7 @@ export function registerAsyncAgents(
       model: agent.model,
       resultPath,
       asyncDir,
+      sessionId: `${process.pid}:${process.cwd()}`,
       piCommand: inv.command,
       piArgs: inv.args,
     }), { mode: 0o600 });
@@ -292,6 +296,9 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
+    const sanitizedCwd = ctx.cwd.replace(/^\//, "").replace(/\//g, "--");
+    ASYNC_DIR = path.join(ASYNC_BASE_DIR, sanitizedCwd);
+    ASYNC_RESULTS_DIR = path.join(ASYNC_DIR, `results-${process.pid}`);
 
     // Clean up orphaned results directories from crashed sessions
     try {
@@ -318,7 +325,7 @@ export function registerAsyncAgents(
 
   // /async-status command
   pi.registerCommand("async-status", {
-    description: "Show status of background async agents",
+    description: "Show status of background async agents — select one to view live output",
     handler: async (_args, ctx) => {
       const jobs = Array.from(asyncState.jobs.values());
       if (jobs.length === 0) {
@@ -326,21 +333,195 @@ export function registerAsyncAgents(
         return;
       }
 
-      const lines: string[] = ["## Async Agents\n"];
-      lines.push("| Name | Agent | Status | Duration | Task |");
-      lines.push("|------|-------|--------|----------|------|");
-      for (const job of jobs) {
-        const duration = job.durationMs
-          ? formatDuration(job.durationMs)
-          : formatDuration(Date.now() - job.startedAt);
-        const statusIcon = job.status === "complete" ? "✅" : job.status === "failed" ? "❌" : job.status === "running" ? "⏳" : "⏸️";
-        const taskPreview = job.task.length > 50 ? job.task.slice(0, 50) + "..." : job.task;
-        lines.push(`| ${job.name || "-"} | ${job.agent} | ${statusIcon} ${job.status} | ${duration} | ${taskPreview} |`);
+      // If only completed agents, show static summary
+      const running = jobs.filter(j => j.status === "running" || j.status === "queued");
+      if (running.length === 0) {
+        const lines: string[] = ["All agents completed:\n"];
+        for (const job of jobs) {
+          const dur = job.durationMs ? formatDuration(job.durationMs) : formatDuration(Date.now() - job.startedAt);
+          const icon = job.status === "complete" ? "✅" : "❌";
+          lines.push(`${icon} ${job.name || job.agent} (${dur}) — ${job.task.slice(0, 60)}`);
+        }
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
       }
 
-      if (ctx.hasUI) {
-        ctx.ui.notify(lines.join("\n"), "info");
-      }
+      // Build selection list
+      const options = running.map((j) => {
+        const duration = formatDuration(Date.now() - j.startedAt);
+        const taskPreview = j.task.length > 60 ? j.task.slice(0, 60) + "..." : j.task;
+        return `${j.name || j.agent} (${duration}) — ${taskPreview}`;
+      });
+
+      const selected = await ctx.ui.select("View async agent output:", options);
+      if (!selected) return;
+
+      const idx = options.indexOf(selected);
+      if (idx < 0) return;
+
+      const job = running[idx];
+      const outputPath = path.join(job.asyncDir, "output.log");
+
+      // Create a live output viewer as an overlay
+      await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
+        const lines: string[] = [];
+        let scrollOffset = 0;
+        let maxScroll = 0;
+        let following = true; // auto-scroll to bottom
+        let closed = false;
+        let cachedWidth: number | undefined;
+        let cachedLines: string[] | undefined;
+
+        // Parse a JSON line from the output log into a display string
+        function parseLine(raw: string): string | null {
+          try {
+            const ev = JSON.parse(raw);
+            if (ev.type === "message_update" && ev.assistantMessageEvent) {
+              const ae = ev.assistantMessageEvent;
+              if (ae.type === "text_delta" && ae.delta) return ae.delta;
+              if (ae.type === "thinking_delta" && ae.delta) return null;
+              if (ae.type === "toolcall_delta" && ae.content) return null;
+              return null;
+            }
+            if (ev.type === "tool_execution_start") {
+              const name = ev.toolName || "tool";
+              const cmd = ev.args?.command ? ` ${ev.args.command.slice(0, 80)}` : "";
+              return `\n🔧 ${name}${cmd}`;
+            }
+            if (ev.type === "tool_execution_end") {
+              const text = ev.result?.content?.[0]?.text || "";
+              const prefix = ev.isError ? "✗" : "✓";
+              return `\n${prefix} ${text.slice(0, 200)}`;
+            }
+            if (ev.type === "agent_end") return "\n--- Agent finished ---";
+            return null;
+          } catch {
+            return null;
+          }
+        }
+
+        // Read existing output and watch for new content
+        let filePos = 0;
+        let textBuffer = "";
+
+        function readNewContent() {
+          if (closed) return;
+          try {
+            const content = fs.readFileSync(outputPath, "utf-8");
+            if (content.length > filePos) {
+              const newContent = content.slice(filePos);
+              filePos = content.length;
+              textBuffer += newContent;
+
+              // Process complete lines
+              const parts = textBuffer.split("\n");
+              textBuffer = parts.pop() || "";
+              for (const part of parts) {
+                if (!part.trim()) continue;
+                const parsed = parseLine(part);
+                if (parsed !== null) {
+                  for (const l of parsed.split("\n")) {
+                    if (l) lines.push(l);
+                    else lines.push("");
+                  }
+                }
+              }
+              cachedWidth = undefined;
+              cachedLines = undefined;
+              tui.requestRender();
+            }
+          } catch {}
+        }
+
+        // Poll for new content every 500ms
+        const poller = setInterval(readNewContent, 500);
+        readNewContent();
+
+        return {
+          handleInput(data: string) {
+            if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+              closed = true;
+              clearInterval(poller);
+              done(undefined);
+              return;
+            }
+            if (matchesKey(data, Key.up)) {
+              if (scrollOffset > 0) { scrollOffset--; following = false; cachedWidth = undefined; tui.requestRender(); }
+              return;
+            }
+            if (matchesKey(data, Key.down)) {
+              if (scrollOffset < maxScroll) { scrollOffset++; cachedWidth = undefined; tui.requestRender(); }
+              if (scrollOffset >= maxScroll) following = true;
+              return;
+            }
+            if (matchesKey(data, Key.pageUp)) {
+              scrollOffset = Math.max(0, scrollOffset - 10); following = false; cachedWidth = undefined; tui.requestRender();
+              return;
+            }
+            if (matchesKey(data, Key.pageDown)) {
+              scrollOffset = Math.min(maxScroll, scrollOffset + 10);
+              if (scrollOffset >= maxScroll) following = true;
+              cachedWidth = undefined; tui.requestRender();
+              return;
+            }
+            if (matchesKey(data, Key.home)) {
+              scrollOffset = 0; following = false; cachedWidth = undefined; tui.requestRender();
+              return;
+            }
+            if (matchesKey(data, Key.end)) {
+              scrollOffset = maxScroll; following = true; cachedWidth = undefined; tui.requestRender();
+              return;
+            }
+          },
+
+          invalidate() { cachedWidth = undefined; cachedLines = undefined; },
+
+          render(width: number): string[] {
+            if (cachedLines && cachedWidth === width) return cachedLines;
+
+            const headerWidth = width - 2;
+            const dur = formatDuration(Date.now() - job.startedAt);
+            const status = readAsyncStatus(job.asyncDir);
+            const state = status?.state || job.status;
+            const stateIcon = state === "complete" ? "✅" : state === "failed" ? "❌" : "⏳";
+            const header = truncateToWidth(`${stateIcon} ${job.name || job.agent} — ${dur} — ${job.task.slice(0, 40)}`, headerWidth);
+            const footer = truncateToWidth("↑↓ scroll  PgUp/PgDn  Home/End  Esc close", headerWidth);
+            const sep = "─".repeat(Math.min(width, headerWidth));
+
+            // Wrap all lines to fit width
+            const wrapped: string[] = [];
+            for (const line of lines) {
+              const w = wrapTextWithAnsi(line, width - 2);
+              for (const wl of w) {
+                wrapped.push(truncateToWidth(wl, width - 2));
+              }
+            }
+
+            // Calculate visible area
+            const viewHeight = Math.max(5, Math.min(30, ((tui as any).height ?? 24) - 8));
+            maxScroll = Math.max(0, wrapped.length - viewHeight);
+
+            // Auto-scroll to bottom
+            if (following) {
+              scrollOffset = maxScroll;
+            }
+
+            const visible = wrapped.slice(scrollOffset, scrollOffset + viewHeight);
+
+            // Pad to viewHeight
+            while (visible.length < viewHeight) visible.push("");
+
+            cachedLines = [header, sep, ...visible, sep, footer];
+            cachedWidth = width;
+            return cachedLines;
+          },
+
+          dispose() {
+            closed = true;
+            clearInterval(poller);
+          },
+        };
+      });
     },
   });
 

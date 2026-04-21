@@ -13,7 +13,7 @@ Single extension that provides:
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
 | **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
-| **`/async-status` command** | Show status of running/completed background agents |
+| **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
 | **Python/pip enforcement** | Blocks `python`/`pip` — requires `uv`/`uvx` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
@@ -312,6 +312,9 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - ask_user tool bridging (answer from browser or TUI)
 - Mobile responsive
 - Event buffering for message replay on refresh
+- Browser push notifications for background events (configurable per event type)
+- Async agent live streaming (real-time tool calls and output inline in chat)
+- Sidebar session working indicator (pulsing green dot when AI is active)
 
 **Access:**
 
