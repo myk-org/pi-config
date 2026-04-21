@@ -28,6 +28,7 @@ _WAIT_TIME_RE = re.compile(r"Please wait \*\*(?:(\d+) minutes? and )?(\d+) secon
 
 _POLL_INTERVAL = 60  # seconds between polls
 _MAX_POLL_ATTEMPTS = 10  # max 10 minutes
+_TRIGGER_REPLY_TEXT = "Review triggered"
 
 
 def _parse_wait_seconds(body: str) -> int | None:
@@ -44,10 +45,10 @@ def _parse_wait_seconds(body: str) -> int | None:
     return minutes * 60 + seconds
 
 
-def _post_review_trigger(owner_repo: str, pr_number: int) -> bool:
-    """Post @coderabbitai review comment on the PR."""
+def _post_review_trigger(owner_repo: str, pr_number: int) -> int | None:
+    """Post @coderabbitai review comment on the PR. Returns comment ID or None."""
     owner, repo = owner_repo.split("/")
-    code, _, stderr = _run_gh(
+    code, stdout, stderr = _run_gh(
         [
             "api",
             f"repos/{owner}/{repo}/issues/{pr_number}/comments",
@@ -56,26 +57,42 @@ def _post_review_trigger(owner_repo: str, pr_number: int) -> bool:
         ],
         timeout=30,
     )
-    if code != 0 and stderr:
-        print(f"Failed to post review trigger: {stderr}")
-    return code == 0
+    if code != 0:
+        if stderr:
+            print(f"Failed to post review trigger: {stderr}")
+        return None
+    try:
+        return json.loads(stdout).get("id")
+    except (json.JSONDecodeError, AttributeError):
+        return None
 
 
-def _is_rate_limited(owner_repo: str, pr_number: int) -> bool | str:
-    """Check if the summary comment still shows rate limited.
+def _find_trigger_reply(owner_repo: str, pr_number: int, trigger_comment_id: int) -> bool | str:
+    """Check if CodeRabbit posted a 'Review triggered' reply after our trigger comment.
 
     Returns:
-        True if rate limited
-        False if not rate limited (review started)
-        "no_comment" if summary comment not found (likely replaced)
-        "error" if API call failed
+        True if reply found
+        False if not found yet
+        str with error details if API call failed
     """
-    _, body, _, error = _find_summary_comment(owner_repo, pr_number)
-    if body is None:
-        if error == "No CodeRabbit summary comment found on this PR":
-            return "no_comment"
-        return "error"
-    return _RATE_LIMITED_MARKER in body
+    owner, repo = owner_repo.split("/")
+    code, output, stderr = _run_gh(
+        [
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
+            "--jq",
+            '[.[] | select(.user.login == "coderabbitai[bot]"'
+            f' and (.body | contains("{_TRIGGER_REPLY_TEXT}"))'
+            f" and .id > {trigger_comment_id})] | length",
+        ],
+        timeout=60,
+    )
+    if code != 0:
+        return stderr or "API request failed"
+    try:
+        return int(output.strip()) > 0
+    except (ValueError, TypeError):
+        return f"Unexpected output: {output}"
 
 
 def run_check(owner_repo: str, pr_number: int) -> int:
@@ -121,31 +138,29 @@ def run_trigger(owner_repo: str, pr_number: int, wait_seconds: int = 0) -> int:
         time.sleep(wait_seconds)
 
     print("Posting @coderabbitai review...")
-    if not _post_review_trigger(owner_repo, pr_number):
+    trigger_id = _post_review_trigger(owner_repo, pr_number)
+    if trigger_id is None:
         print("Error: Failed to post review trigger comment.")
         return 1
-    print("Review trigger posted.")
+    print(f"Review trigger posted (comment ID: {trigger_id}).")
 
-    none_streak = 0
+    consecutive_errors = 0
     for attempt in range(1, _MAX_POLL_ATTEMPTS + 1):
-        print(f"Polling for review start (attempt {attempt}/{_MAX_POLL_ATTEMPTS})...")
-        status = _is_rate_limited(owner_repo, pr_number)
-        if status == "error":
-            print("Warning: API error while checking status. Retrying...")
-            none_streak = 0  # API errors don't count toward comment-gone detection
-        elif status == "no_comment":
-            none_streak += 1
-            if none_streak >= 2:
-                print("Review started (comment replaced).")
-                return 0
-            print("Warning: Could not find comment. Retrying...")
-        elif not status:
-            print("Review started!")
+        print(f"Polling for 'Review triggered' reply (attempt {attempt}/{_MAX_POLL_ATTEMPTS})...")
+        result = _find_trigger_reply(owner_repo, pr_number, trigger_id)
+        if result is True:
+            print("Review triggered confirmed!")
             return 0
+        if isinstance(result, str):
+            consecutive_errors += 1
+            print(f"Warning: API error checking for reply ({consecutive_errors}/3): {result}")
+            if consecutive_errors >= 3:
+                print(f"Error: 3 consecutive API failures. Last error: {result}")
+                return 1
         else:
-            none_streak = 0
+            consecutive_errors = 0
         if attempt < _MAX_POLL_ATTEMPTS:
             time.sleep(_POLL_INTERVAL)
 
-    print("Error: Timeout waiting for review to start (10 minutes).")
+    print("Error: Timeout waiting for 'Review triggered' reply (10 minutes).")
     return 1

@@ -26,13 +26,13 @@ When asked to handle reviews for **multiple PRs**, NEVER switch branches in the 
 Use `git worktree` to create isolated directories for each PR:
 
 ```bash
-# Create a worktree per PR
-git worktree add /tmp/pi-work/pr-42 origin/fix/issue-42
-git worktree add /tmp/pi-work/pr-43 origin/feat/issue-43
+# Create a worktree per PR (under /tmp/pi-work/<repo-name>/)
+git worktree add /tmp/pi-work/<repo-name>/pr-42 origin/fix/issue-42
+git worktree add /tmp/pi-work/<repo-name>/pr-43 origin/feat/issue-43
 
 # Run review-handler in each worktree directory
 # When done, clean up
-git worktree remove /tmp/pi-work/pr-42
+git worktree remove /tmp/pi-work/<repo-name>/pr-42
 ```
 
 Branch switching corrupts parallel agent work — other agents running in the
@@ -341,13 +341,6 @@ async worker and wait for the result.
 - Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
-
-The poll will loop internally:
-
-1. Check approval → return if approved
-2. Check rate limit → wait + trigger if needed
-3. Fetch reviews → return if new comments
-4. No new comments → sleep 5 min, loop back to step 1
 
 **While waiting for the async result**, the session remains interactive — the user
 can continue working. When the result surfaces, process it:
