@@ -89,12 +89,8 @@ RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1
     uv tool install prek && \
     uv tool install mcp-proxy
 
-# Copy and install myk-pi-tools from local source
-COPY --chown=node:node pyproject.toml README.md /tmp/myk-pi-tools/
-COPY --chown=node:node myk_pi_tools/ /tmp/myk-pi-tools/myk_pi_tools/
-RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
-    uv tool install myk-pi-tools --from /tmp/myk-pi-tools && \
-    rm -rf /tmp/myk-pi-tools
+# myk-pi-tools is installed at runtime by entrypoint.sh from the latest
+# pi-config source (pulled via pi update). No need to bake it into the image.
 
 # Install Cursor Agent CLI (after uv tools — cursor changes rarely)
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
