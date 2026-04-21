@@ -32,7 +32,8 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ## Usage
 
-- `/release` - Normal release
+- `/release` - Normal release (auto-detect version bump)
+- `/release 1.17.1` - Release with explicit version (skip approval)
 - `/release --dry-run` - Preview without creating
 - `/release --prerelease` - Create prerelease
 - `/release --draft` - Create draft release
@@ -83,7 +84,7 @@ Store the detect-versions JSON output for use in Phase 4. The key fields are:
 - `version_files[].current_version` -- current version string
 - `count` -- number of detected files (0 means skip version bumping)
 
-### Phase 3: Changelog Analysis
+### Phase 3: Changelog Analysis & Version
 
 Parse commits from Phase 1 output and categorize by conventional commit type:
 
@@ -91,9 +92,17 @@ Parse commits from Phase 1 output and categorize by conventional commit type:
 - Features (MINOR)
 - Bug Fixes, Docs, Maintenance (PATCH)
 
-Determine version bump and generate changelog.
+Generate changelog from the categorized commits.
+
+**Version determination:**
+
+1. If the raw arguments contain an explicit version (e.g., `1.17.1`, `2.0.0`), use it directly.
+   Skip Phase 4 (User Approval) entirely — the user already told you the version.
+2. Otherwise, determine the version bump type from the commit categories and propose a version.
 
 ### Phase 4: User Approval
+
+**Skip this phase entirely if an explicit version was provided in the raw arguments.**
 
 Display the proposed release information. If version files were detected in Phase 2,
 include them in the approval prompt.
