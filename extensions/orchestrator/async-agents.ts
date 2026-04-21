@@ -88,23 +88,26 @@ export function registerAsyncAgents(
     const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
     const names = running.map(j => j.name || j.agent).join(", ");
     const widgetKey = `${running.length}:${names}`;
-    if (widgetKey === lastWidgetKey) return; // Nothing changed, skip re-render
+    const changed = widgetKey !== lastWidgetKey;
     lastWidgetKey = widgetKey;
     if (running.length > 0) {
+      // Always re-set status for running agents (other status updates may have triggered a re-render)
       ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("warning", `⏳ ${running.length} async: ${names}`));
-      pi.events.emit("pidash:async-status", {
-        count: running.length,
-        agents: names,
-        jobs: running.map(j => ({
-          id: j.id,
-          name: j.name || j.agent,
-          agent: j.agent,
-          task: j.task,
-          status: j.status,
-          startedAt: j.startedAt,
-        })),
-      });
-    } else {
+      if (changed) {
+        pi.events.emit("pidash:async-status", {
+          count: running.length,
+          agents: names,
+          jobs: running.map(j => ({
+            id: j.id,
+            name: j.name || j.agent,
+            agent: j.agent,
+            task: j.task,
+            status: j.status,
+            startedAt: j.startedAt,
+          })),
+        });
+      }
+    } else if (changed) {
       ctx.ui.setStatus("async-agents", undefined);
       pi.events.emit("pidash:async-status", { count: 0, agents: "", jobs: [] });
     }
