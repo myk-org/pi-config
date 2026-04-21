@@ -25,6 +25,38 @@ _RATE_LIMIT_BUFFER_SECONDS = 30
 _POLL_SLEEP_SECONDS = 300  # 5 minutes between cycles when no rate limit
 
 
+def _has_actionable_comments(pr_number: str) -> bool:
+    """Check if the fetched reviews JSON has any actionable (non-auto-skipped) comments.
+
+    Reads the JSON file written by fetch_run and checks if any comments
+    have status 'pending' and are NOT auto-skipped.
+    """
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+    json_path = tmp_base / "pi-work" / f"pr-{pr_number}-reviews.json"
+
+    if not json_path.exists():
+        # Can't determine — assume actionable to be safe
+        return True
+
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return True
+
+    for source in ("human", "qodo", "coderabbit"):
+        for comment in data.get(source, []):
+            if not comment.get("is_auto_skipped"):
+                return True
+
+    return False
+
+
 def run(review_url: str = "") -> int:
     """Poll for reviews in a loop until approval or new comments.
 
@@ -108,15 +140,16 @@ def run(review_url: str = "") -> int:
         print_stderr("[poll] Fetching reviews...")
         fetch_result = fetch_run(review_url)
 
-        # If fetch succeeded, check if there are new comments
-        # fetch_run prints JSON to stdout -- we can't easily re-parse it here
-        # But if it returned 0, there might be new comments
-        # The caller (review-handler) will check the JSON output
         if fetch_result == 0:
-            return 0
-
-        # Fetch failed -- log and retry
-        print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
+            # Check if there are actionable (non-auto-skipped) comments
+            # fetch_run saves JSON to a predictable path
+            has_actionable = _has_actionable_comments(pr_number)
+            if has_actionable:
+                return 0
+            print_stderr("[poll] All fetched comments are auto-skipped (previously addressed). No new comments.")
+        else:
+            # Fetch failed -- log and retry
+            print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
 
         # Step 7: No actionable result -- sleep and loop
         print_stderr(f"[poll] No new comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
