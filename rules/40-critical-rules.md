@@ -131,9 +131,9 @@ Provide clear, concise options. Include a 'no' or 'cancel' option when appropria
 
 ## Temp Files
 
-**ALL temp files MUST go to `/tmp/pi-work/`** - NEVER create temp files in project directory.
+**ALL temp files MUST go to `/tmp/pi-work/<repo-name>/`** (e.g., `/tmp/pi-work/pi-config/`).
 
-This keeps the project directory clean and prevents accidental commits of temporary files.
+NEVER create temp files in the project directory.
 
 ---
 
