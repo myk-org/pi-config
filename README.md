@@ -85,6 +85,23 @@ pi install git:github.com/myk-org/pi-config
 uv tool install git+https://github.com/myk-org/pi-config
 ```
 
+#### Recommended tools
+
+```bash
+npm install -g difit          # Git diff viewer in browser (auto-starts with pi)
+npm install -g acpx           # External AI agent proxy (cursor, codex, gemini)
+npm install -g pi-web-access  # Web search/fetch skills (librarian)
+uvx install mcp-launchpad     # MCP server CLI (mcpl)
+```
+
+#### Optional: Vertex AI (Claude via Google Cloud)
+
+If using Claude models through Google Cloud Vertex AI:
+
+```bash
+pi install git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
+```
+
 #### Optional: Browser automation
 
 For browser automation (screenshots, form filling, web testing), install [agent-browser](https://github.com/nicobailon/agent-browser):
