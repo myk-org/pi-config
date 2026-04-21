@@ -13,13 +13,17 @@ export function registerStatusLine(
 ): void {
   // ── Combined status line builder ───────────────────────────────────────
 
+  let lastStatusText = "";
   const buildStatus = (ctx: any, gitPart: string) => {
     const parts: string[] = [];
 
     if (IN_CONTAINER) parts.push(ICON_CONTAINER);
     parts.push(gitPart);
 
-    ctx.ui.setStatus("combined", parts.join(ctx.ui.theme.fg("dim", ICON_SEP)));
+    const text = parts.join(ctx.ui.theme.fg("dim", ICON_SEP));
+    if (text === lastStatusText) return; // Skip redundant re-renders
+    lastStatusText = text;
+    ctx.ui.setStatus("combined", text);
     // Clear individual statuses to avoid duplicates
     ctx.ui.setStatus("container", undefined);
     ctx.ui.setStatus("git", undefined);
