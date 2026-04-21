@@ -16,14 +16,14 @@ function ago(iso: string): string {
 
 interface Props {
   sessions: SessionInfo[];
-  activePid: number | null;
+  activeSessionId: string | null;
   connected: boolean;
   onSelect: (s: SessionInfo) => void;
   collapsed: boolean;
   onToggle: () => void;
 }
 
-export function SessionSidebar({ sessions, activePid, connected, onSelect, collapsed, onToggle }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle }: Props) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [initialized, setInitialized] = useState(false);
 
@@ -68,7 +68,7 @@ export function SessionSidebar({ sessions, activePid, connected, onSelect, colla
   };
 
   // Auto-expand groups that contain the active session
-  const activeGroup = sessions.find(s => s.pid === activePid);
+  const activeGroup = sessions.find(s => s.sessionId === activeSessionId);
   const activeGroupName = activeGroup ? (activeGroup.cwd.split("/").pop() || activeGroup.cwd) : null;
 
   return (
@@ -110,10 +110,10 @@ export function SessionSidebar({ sessions, activePid, connected, onSelect, colla
 
               {/* Sessions in this group */}
               {isExpanded && group.sessions.map((s) => {
-                const isActive = s.pid === activePid;
+                const isActive = s.sessionId === activeSessionId;
                 return (
                   <div
-                    key={s.pid}
+                    key={s.sessionId}
                     className={cn(
                       "pl-7 pr-3 py-2 cursor-pointer transition-colors border-b border-border/50",
                       isActive && "bg-accent border-l-3 border-l-primary",
@@ -133,7 +133,7 @@ export function SessionSidebar({ sessions, activePid, connected, onSelect, colla
                           <span className={s.gitDirty ? "text-red-500" : "text-green-500"}>
                             {s.gitDirty ? "●" : "✓"}
                           </span>
-                          <span className="truncate max-w-[80px]">{s.branch}</span>
+                          <span className="truncate">{s.branch}</span>
                         </span>
                       )}
                       <span>{ago(s.startedAt)}</span>

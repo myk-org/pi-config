@@ -27,6 +27,7 @@ function log(msg: string) {
 // ── Session state ───────────────────────────────────────────────────
 
 interface SessionInfo {
+  sessionId: string;
   pid: number;
   cwd: string;
   branch: string;
@@ -49,9 +50,9 @@ interface PiClient {
   eventBuffer: string[];
 }
 
-const piClients = new Map<number, PiClient>();
+const piClients = new Map<string, PiClient>();
 const browserClients = new Set<any>();
-const browserWatchMap = new WeakMap<any, number | null>();
+const browserWatchMap = new WeakMap<any, string | null>();
 
 // ── HTTP Server ─────────────────────────────────────────────────────
 
@@ -143,7 +144,9 @@ piWss.on("connection", (ws: any) => {
       const parsed = JSON.parse(data.toString());
 
       if (parsed.type === "register") {
+        const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
         const session: SessionInfo = {
+          sessionId,
           pid: parsed.pid,
           cwd: parsed.cwd || "",
           branch: parsed.branch || "",
@@ -160,7 +163,7 @@ piWss.on("connection", (ws: any) => {
           thinkingLevel: parsed.thinkingLevel || "medium",
         };
         // Re-registration: update existing inactive session (keep event buffer)
-        const existing = piClients.get(parsed.pid);
+        const existing = piClients.get(sessionId);
         if (existing) {
           existing.ws = ws;
           existing.session = session;
@@ -169,8 +172,8 @@ piWss.on("connection", (ws: any) => {
         } else {
           piClient = { ws, session, eventBuffer: [] };
         }
-        piClients.set(parsed.pid, piClient);
-        log(`session registered: PID ${parsed.pid}, cwd: ${parsed.cwd}`);
+        piClients.set(sessionId, piClient);
+        log(`session registered: ${sessionId}, cwd: ${parsed.cwd}`);
         broadcastToBrowsers({ type: "session_added", session });
         return;
       }
@@ -184,7 +187,7 @@ piWss.on("connection", (ws: any) => {
         if (parsed.diffPort !== undefined) piClient.session.diffPort = parsed.diffPort;
         if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
         piClient.session.lastActivity = Date.now();
-        broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+        sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
         return;
       }
 
@@ -194,15 +197,16 @@ piWss.on("connection", (ws: any) => {
         if (parsed.branch) piClient.session.branch = parsed.branch;
         if (parsed.sessionFile) piClient.session.sessionFile = parsed.sessionFile;
         piClient.session.lastActivity = Date.now();
-        broadcastToBrowsers({ type: "session_updated", session: piClient.session });
-        log(`session switched: PID ${piClient.session.pid}, cwd: ${parsed.cwd}`);
+        piClient.eventBuffer.length = 0; // Clear buffer to prevent cross-session replay
+        sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
+        log(`session switched: ${piClient.session.sessionId}, cwd: ${parsed.cwd}`);
         return;
       }
 
       // Forward pi event to browsers watching this session + buffer
       if (piClient) {
         piClient.session.lastActivity = Date.now();
-        const pid = piClient.session.pid;
+        const sid = piClient.session.sessionId;
         const raw = data.toString();
 
         // Buffer the event for replay on browser connect
@@ -213,7 +217,7 @@ piWss.on("connection", (ws: any) => {
         }
 
         for (const browser of browserClients) {
-          if (browserWatchMap.get(browser) === pid) {
+          if (browserWatchMap.get(browser) === sid) {
             try { browser.send(raw); } catch {}
           }
         }
@@ -225,11 +229,10 @@ piWss.on("connection", (ws: any) => {
 
   ws.on("close", () => {
     if (piClient) {
-      const pid = piClient.session.pid;
       piClient.session.active = false;
       piClient.ws = null;
-      log(`session disconnected: PID ${pid} (kept as inactive)`);
-      broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+      log(`session disconnected: ${piClient.session.sessionId} (kept as inactive)`);
+      sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
     }
   });
 
@@ -254,50 +257,53 @@ browserWss.on("connection", (ws: any) => {
       const parsed = JSON.parse(data.toString());
 
       if (parsed.type === "watch") {
-        browserWatchMap.set(ws, parsed.pid ?? null);
-        log(`browser watching PID: ${parsed.pid}`);
+        const watchId = parsed.sessionId ?? null;
+        browserWatchMap.set(ws, watchId);
+        log(`browser watching: ${watchId}`);
         // Replay buffered events
-        if (parsed.pid) {
-          const client = piClients.get(parsed.pid);
+        if (watchId) {
+          const client = piClients.get(watchId);
           if (client) {
             for (const event of client.eventBuffer) {
               try { ws.send(event); } catch {}
             }
-            log(`replayed ${client.eventBuffer.length} events for PID ${parsed.pid}`);
+            log(`replayed ${client.eventBuffer.length} events for ${watchId}`);
           }
         }
         return;
       }
 
-      if (parsed.type === "prompt" && parsed.pid && parsed.text) {
-        const piClient = piClients.get(parsed.pid);
-        if (piClient) {
+      if (parsed.type === "prompt" && parsed.text && parsed.sessionId) {
+        const piClient = piClients.get(parsed.sessionId);
+        if (piClient && piClient.ws) {
           piClient.ws.send(JSON.stringify({ type: "prompt", text: parsed.text }));
-          log(`prompt forwarded to PID ${parsed.pid}: ${parsed.text.slice(0, 50)}`);
+          log(`prompt forwarded to ${parsed.sessionId}: ${parsed.text.slice(0, 50)}`);
         }
         return;
       }
 
       // Forward extension UI responses (ask_user answers) to pi session
-      if (parsed.type === "extension_ui_response" && parsed.pid && parsed.id) {
-        const piClient = piClients.get(parsed.pid);
+      if (parsed.type === "extension_ui_response" && parsed.id) {
+        if (!parsed.sessionId) return;
+        const piClient = piClients.get(parsed.sessionId);
         if (piClient && piClient.ws) {
           const response: any = { type: "extension_ui_response", id: parsed.id };
           if (parsed.value !== undefined) response.value = parsed.value;
           if (parsed.confirmed !== undefined) response.confirmed = parsed.confirmed;
           if (parsed.cancelled) response.cancelled = true;
           piClient.ws.send(JSON.stringify(response));
-          log(`UI response forwarded to PID ${parsed.pid}: ${JSON.stringify(response).slice(0, 100)}`);
+          log(`UI response forwarded to ${parsed.sessionId}: ${JSON.stringify(response).slice(0, 100)}`);
         }
         return;
       }
 
       // Forward pidash commands to pi session
-      if (parsed.type === "pidash-command" && parsed.pid) {
-        const piClient = piClients.get(parsed.pid);
+      if (parsed.type === "pidash-command") {
+        if (!parsed.sessionId) return;
+        const piClient = piClients.get(parsed.sessionId);
         if (piClient && piClient.ws) {
           piClient.ws.send(JSON.stringify(parsed));
-          log(`command forwarded to PID ${parsed.pid}: ${parsed.command}`);
+          log(`command forwarded to ${parsed.sessionId}: ${parsed.command}`);
         }
         return;
       }
@@ -319,6 +325,15 @@ function broadcastToBrowsers(event: object) {
   }
 }
 
+function sendToWatchers(sessionId: string, event: object) {
+  const data = JSON.stringify(event);
+  for (const browser of browserClients) {
+    if (browserWatchMap.get(browser) === sessionId) {
+      try { browser.send(data); } catch {}
+    }
+  }
+}
+
 // Route upgrade requests to the correct WS server
 server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
   const url = new URL(req.url || "/", `http://localhost:${port}`);
@@ -335,11 +350,11 @@ server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
 // Clean up stale inactive sessions (disconnected > 5 min ago)
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
-  for (const [pid, client] of piClients.entries()) {
+  for (const [sessionId, client] of piClients.entries()) {
     if (!client.session.active && now - client.session.lastActivity > 5 * 60 * 1000) {
-      piClients.delete(pid);
-      log(`cleaned up stale session: PID ${pid}`);
-      broadcastToBrowsers({ type: "session_removed", pid });
+      piClients.delete(sessionId);
+      log(`cleaned up stale session: ${sessionId}`);
+      broadcastToBrowsers({ type: "session_removed", sessionId });
     }
   }
 }, 60 * 1000); // Check every minute
@@ -347,7 +362,7 @@ if (cleanupInterval.unref) cleanupInterval.unref();
 
 // Ping all pi clients every 30s to keep connections alive
 const pingInterval = setInterval(() => {
-  for (const [pid, client] of piClients) {
+  for (const [, client] of piClients) {
     if (client.ws) {
       try { client.ws.ping(); } catch {}
     }

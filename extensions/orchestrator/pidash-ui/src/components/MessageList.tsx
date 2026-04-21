@@ -33,6 +33,20 @@ function getRoleColor(role: string): string {
   return roleColors[role] || "text-orange-400";
 }
 
+function fk(n: number): string {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m${rem}s` : `${m}m`;
+}
+
 export function MessageList({ messages, searchQuery, searchType, streaming, scrollKey, onAskResponse }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -63,17 +77,44 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
       }}
     >
       <div className="p-4 space-y-2">
-        {messages
-          .filter((msg) => {
-            // Type filter
+        {(() => {
+          const filtered = messages.filter((msg) => {
             if (searchType && searchType !== "all" && msg.role !== searchType) return false;
-            // Text filter
             if (searchQuery && !msg.text.toLowerCase().includes(searchQuery.toLowerCase())) return false;
             return true;
-          })
-          .map((msg) => (
-            <MessageItem key={msg.id} msg={msg} searchQuery={searchQuery} onAskResponse={onAskResponse} />
-          ))}
+          });
+
+          // Group tool-call + tool-result by correlation ID (callId in meta)
+          const resultByCallId = new Map<string, ChatMessage>();
+          for (const msg of filtered) {
+            if (msg.className === "tool-result" && msg.meta?.callId) {
+              resultByCallId.set(msg.meta.callId, msg);
+            }
+          }
+          const usedResults = new Set<string>();
+          const grouped: Array<{ call?: ChatMessage; result?: ChatMessage } | ChatMessage> = [];
+          for (const msg of filtered) {
+            if (msg.className === "tool-call" && msg.meta?.callId) {
+              const result = resultByCallId.get(msg.meta.callId);
+              if (result) {
+                grouped.push({ call: msg, result });
+                usedResults.add(result.id);
+                continue;
+              }
+            }
+            // Skip results that were already grouped with their call
+            if (msg.className === "tool-result" && msg.meta?.callId && usedResults.has(msg.id)) continue;
+            grouped.push(msg);
+          }
+
+          return grouped.map((item, idx) => {
+            if ('call' in item) {
+              return <ToolGroup key={item.call!.id} call={item.call!} result={item.result!} searchQuery={searchQuery} />;
+            }
+            const msg = item as ChatMessage;
+            return <MessageItem key={msg.id} msg={msg} searchQuery={searchQuery} onAskResponse={onAskResponse} />;
+          });
+        })()}
         {streaming && (
           <div className="flex items-center gap-2 py-2 text-muted-foreground text-xs">
             <div className="flex gap-1">
@@ -194,6 +235,75 @@ function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; se
   );
 }
 
+function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: ChatMessage; searchQuery?: string }) {
+  const [open, setOpen] = useState(false);
+  const matchesSearch = searchQuery && (
+    call.text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    result.text.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  const color = getRoleColor(call.role);
+  const isError = result.text.startsWith("✗");
+  const borderColor = isError ? "border-red-500" : "border-green-600";
+
+  const meta = result.meta;
+  const statusIcon = isError ? "✗" : "✓";
+  const statusColor = isError ? "text-red-500" : "text-green-500";
+  const callSummary = call.text.split("\n")[0].slice(0, 120);
+
+  // Build stats string from meta
+  let statsStr = "";
+  if (meta) {
+    const parts: string[] = [];
+    if (meta.turns) parts.push(`${meta.turns} turn${meta.turns > 1 ? "s" : ""}`);
+    if (meta.input) parts.push(`↑${fk(meta.input)}`);
+    if (meta.output) parts.push(`↓${fk(meta.output)}`);
+    if (meta.cacheRead) parts.push(`R${fk(meta.cacheRead)}`);
+    if (meta.contextTokens) parts.push(`ctx:${fk(meta.contextTokens)}`);
+    if (meta.cost) parts.push(`$${meta.cost.toFixed(4)}`);
+    if (meta.model) parts.push(meta.model);
+    if (meta.startTs && meta.endTs) parts.push(formatDuration(meta.endTs - meta.startTs));
+    statsStr = parts.join(" ");
+  }
+
+  return (
+    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen}>
+      <CollapsibleTrigger className={cn(
+        "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 w-full text-left",
+        color,
+      )}>
+        {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+        <span className="flex-shrink-0">{call.role}</span>
+        <span className={cn("flex-shrink-0", statusColor)}>{statusIcon}</span>
+        {!open && statsStr && (
+          <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 text-[10px] truncate">
+            {statsStr}
+          </span>
+        )}
+        {!open && !statsStr && (
+          <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{callSummary}</span>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className={cn(
+          "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words border-l-2 relative group",
+          "border-orange-500",
+        )}>
+          <div className="text-[9px] font-bold uppercase text-muted-foreground mb-1">call</div>
+          <HighlightText text={call.text} query={searchQuery} />
+        </div>
+        <div className={cn(
+          "mt-1 rounded-md bg-card p-2.5 text-[11px] whitespace-pre-wrap break-words border-l-2 relative group",
+          borderColor,
+        )}>
+          <div className="text-[9px] font-bold uppercase text-muted-foreground mb-1">result</div>
+          <HighlightText text={result.text} query={searchQuery} />
+          <CopyBtn text={result.text} />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuery?: string }) {
   const [open, setOpen] = useState(false);
   const matchesSearch = searchQuery && msg.text.toLowerCase().includes(searchQuery.toLowerCase());
@@ -201,6 +311,7 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
   const isResult = msg.className === "tool-result";
   const isError = isResult && msg.text.startsWith("✗");
   const borderColor = msg.role === "thinking" ? "border-purple-500" : isResult ? (isError ? "border-red-500" : "border-green-600") : "border-orange-500";
+
   const summary = msg.text.split("\n")[0].slice(0, 100);
 
   return (
