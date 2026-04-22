@@ -322,6 +322,11 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
       )}>
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         {msg.role}
+        {!open && msg.meta?.startTs && msg.meta?.endTs && (
+          <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 flex-shrink-0">
+            {formatDuration(msg.meta.endTs - msg.meta.startTs)}
+          </span>
+        )}
         {!open && <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 truncate">{summary}</span>}
       </CollapsibleTrigger>
       <CollapsibleContent>

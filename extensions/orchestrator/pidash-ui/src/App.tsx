@@ -65,7 +65,7 @@ export function App() {
     document.addEventListener("mouseup", onUp);
   }, []);
 
-  const thinkRef = useRef({ id: "", text: "" });
+  const thinkRef = useRef({ id: "", text: "", startTs: 0 });
   const assistRef = useRef({ id: "", text: "" });
   const lastUserRef = useRef("");
   const toolRef = useRef({ id: "", name: "", startTs: 0, callId: "" });
@@ -78,9 +78,9 @@ export function App() {
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
-  const addMsg = useCallback((role: ChatMessage["role"], text: string, className?: string): string => {
+  const addMsg = useCallback((role: ChatMessage["role"], text: string, className?: string, meta?: ChatMessage["meta"]): string => {
     const id = nextId();
-    setMessages((p) => [...p, { id, role, text, className }]);
+    setMessages((p) => [...p, { id, role, text, className, meta }]);
     return id;
   }, []);
 
@@ -90,6 +90,10 @@ export function App() {
 
   const updCls = useCallback((id: string, className?: string) => {
     setMessages((p) => p.map((m) => m.id === id ? { ...m, className } : m));
+  }, []);
+
+  const updMeta = useCallback((id: string, meta: ChatMessage["meta"]) => {
+    setMessages((p) => p.map((m) => m.id === id ? { ...m, meta: { ...m.meta, ...meta } } : m));
   }, []);
 
   useEffect(() => {
@@ -111,7 +115,7 @@ export function App() {
         case "agent_start": setStreaming(true); break;
         case "agent_end":
           setStreaming(false);
-          thinkRef.current = { id: "", text: "" };
+          thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           lastUserRef.current = "";
           break;
@@ -124,7 +128,7 @@ export function App() {
             if (t && t !== lastUserRef.current) { lastUserRef.current = t; addMsg("user", t); }
           }
           if (msg.role === "assistant") {
-            thinkRef.current = { id: "", text: "" };
+            thinkRef.current = { id: "", text: "", startTs: 0 };
             assistRef.current = { id: "", text: "" };
           }
           if (msg.role === "custom" && msg.display) {
@@ -139,11 +143,17 @@ export function App() {
           if (!ae) break;
           if (ae.type === "thinking_delta" && ae.delta) {
             thinkRef.current.text += ae.delta;
-            if (!thinkRef.current.id) thinkRef.current.id = addMsg("thinking", thinkRef.current.text);
+            if (!thinkRef.current.id) {
+              thinkRef.current.startTs = Date.now();
+              thinkRef.current.id = addMsg("thinking", thinkRef.current.text);
+            }
             else updMsg(thinkRef.current.id, thinkRef.current.text);
           }
           if ((ae.type === "text_start" || ae.type === "text_delta") && thinkRef.current.id && !assistRef.current.id) {
             updCls(thinkRef.current.id, undefined);
+            if (thinkRef.current.startTs) {
+              updMeta(thinkRef.current.id, { startTs: thinkRef.current.startTs, endTs: Date.now() });
+            }
           }
           if (ae.type === "text_delta" && ae.delta) {
             assistRef.current.text += ae.delta;
@@ -159,8 +169,11 @@ export function App() {
 
         case "message_end":
           if (thinkRef.current.id) updCls(thinkRef.current.id, undefined);
+          if (thinkRef.current.id && thinkRef.current.startTs) {
+            updMeta(thinkRef.current.id, { startTs: thinkRef.current.startTs, endTs: Date.now() });
+          }
           if (assistRef.current.id) updCls(assistRef.current.id, undefined);
-          thinkRef.current = { id: "", text: "" };
+          thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           if (ev.message?.model) setModel(ev.message.model);
           if (ev.message?.usage) setTokens({ ...ev.message.usage });
@@ -400,7 +413,7 @@ export function App() {
           break;
       }
     });
-  }, [onMessage, addMsg, updMsg, updCls]);
+  }, [onMessage, addMsg, updMsg, updCls, updMeta]);
 
   const watchSession = useCallback((s: SessionInfo) => {
     setSession(s);
@@ -411,7 +424,7 @@ export function App() {
     setSearchQuery("");
     setSearchType("all");
     setScrollKey(k => k + 1);
-    thinkRef.current = { id: "", text: "" };
+    thinkRef.current = { id: "", text: "", startTs: 0 };
     assistRef.current = { id: "", text: "" };
     lastUserRef.current = "";
     replayingRef.current = true;
