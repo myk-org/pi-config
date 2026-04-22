@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const KILL_SETTLE_MS = 500;
 const STARTUP_TIMEOUT_MS = 15000;
+const RETRY_DELAY_MS = 3000;
 
 const ICON_DIFF = "";
 
@@ -60,7 +61,65 @@ export function registerDifit(pi: ExtensionAPI): void {
   if (!hasDifit()) return;
 
   let difitProc: ChildProcess | null = null;
+  let difitPort: number | null = null;
   let starting = false;
+
+  /** Try to start difit, returns true on success */
+  async function startDifit(ctx: any): Promise<boolean> {
+    killExistingDifit(ctx.cwd);
+    await new Promise((r) => setTimeout(r, KILL_SETTLE_MS));
+
+    const proc = spawn("difit", [
+      "--no-open",
+      "--keep-alive",
+      "--host", "127.0.0.1",
+    ], {
+      cwd: ctx.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Capture port from difit stdout
+    const port = await new Promise<number | null>((resolve) => {
+      const timeout = setTimeout(() => resolve(null), STARTUP_TIMEOUT_MS);
+      let output = "";
+      proc.stdout?.on("data", (data: Buffer) => {
+        output += data.toString();
+        const m = output.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+        if (m) {
+          clearTimeout(timeout);
+          resolve(parseInt(m[1], 10));
+        }
+      });
+      proc.on("error", () => { clearTimeout(timeout); resolve(null); });
+      proc.on("exit", () => { clearTimeout(timeout); resolve(null); });
+    });
+
+    if (!port) {
+      killProcess(proc);
+      return false;
+    }
+
+    // Stop reading stdout/stderr — let difit run detached
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
+    proc.unref();
+
+    difitProc = proc;
+    difitPort = port;
+
+    const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
+    ctx.ui.setStatus("diff-viewer", statusText);
+    pi.events?.emit("diff-viewer:port", port);
+
+    // Monitor for unexpected exit
+    proc.on("exit", () => {
+      difitProc = null;
+      difitPort = null;
+      ctx.ui.setStatus("diff-viewer", undefined);
+    });
+
+    return true;
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     if (difitProc || starting) return;
@@ -69,57 +128,29 @@ export function registerDifit(pi: ExtensionAPI): void {
     starting = true;
 
     try {
-      killExistingDifit(ctx.cwd);
-      await new Promise((r) => setTimeout(r, KILL_SETTLE_MS));
+      const ok = await startDifit(ctx);
 
-      const proc = spawn("difit", [
-        "--no-open",
-        "--keep-alive",
-        "--host", "127.0.0.1",
-      ], {
-        cwd: ctx.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      // Capture port from difit stdout
-      const port = await new Promise<number | null>((resolve) => {
-        const timeout = setTimeout(() => resolve(null), STARTUP_TIMEOUT_MS);
-        let output = "";
-        proc.stdout?.on("data", (data: Buffer) => {
-          output += data.toString();
-          const m = output.match(/http:\/\/127\.0\.0\.1:(\d+)/);
-          if (m) {
-            clearTimeout(timeout);
-            resolve(parseInt(m[1], 10));
-          }
-        });
-        proc.on("error", () => { clearTimeout(timeout); resolve(null); });
-        proc.on("exit", () => { clearTimeout(timeout); resolve(null); });
-      });
-
-      if (!port) {
-        killProcess(proc);
-        difitProc = null;
-        return;
+      // Retry once after a short delay if first attempt failed
+      if (!ok) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        await startDifit(ctx);
       }
-
-      // Stop reading stdout/stderr — let difit run detached
-      proc.stdout?.destroy();
-      proc.stderr?.destroy();
-      proc.unref();
-
-      difitProc = proc;
-
-      const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
-      ctx.ui.setStatus("diff-viewer", statusText);
-      pi.events?.emit("diff-viewer:port", port);
     } catch {
       if (difitProc) {
         killProcess(difitProc);
       }
       difitProc = null;
+      difitPort = null;
     } finally {
       starting = false;
+    }
+  });
+
+  // Re-set status on agent_end to ensure it survives TUI re-renders
+  pi.on("agent_end", (_event, ctx) => {
+    if (difitProc && difitPort) {
+      const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${difitPort}`);
+      ctx.ui.setStatus("diff-viewer", statusText);
     }
   });
 
@@ -129,5 +160,6 @@ export function registerDifit(pi: ExtensionAPI): void {
       killProcess(difitProc);
       difitProc = null;
     }
+    difitPort = null;
   });
 }
