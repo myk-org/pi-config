@@ -71,7 +71,7 @@ export function registerAsyncAgents(
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
 } {
-  let ASYNC_DIR = ASYNC_BASE_DIR;
+  const ASYNC_DIR = ASYNC_BASE_DIR;
   let ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `results-${process.pid}`);
 
   const asyncState: AsyncState = {
@@ -303,17 +303,15 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
-    const sanitizedCwd = ctx.cwd.replace(/^\//, "").replace(/\//g, "--");
-    ASYNC_DIR = path.join(ASYNC_BASE_DIR, sanitizedCwd);
-    ASYNC_RESULTS_DIR = path.join(ASYNC_DIR, `results-${process.pid}`);
+    ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `results-${process.pid}`);
 
     // Clean up orphaned results directories from crashed sessions
     try {
-      for (const entry of fs.readdirSync(ASYNC_DIR)) {
+      for (const entry of fs.readdirSync(ASYNC_BASE_DIR)) {
         const m = entry.match(/^results-(\d+)$/);
         if (m) {
           try { process.kill(+m[1], 0); } catch {
-            try { fs.rmSync(path.join(ASYNC_DIR, entry), { recursive: true, force: true }); } catch {}
+            try { fs.rmSync(path.join(ASYNC_BASE_DIR, entry), { recursive: true, force: true }); } catch {}
           }
         }
       }
