@@ -139,9 +139,10 @@ export function registerDifit(pi: ExtensionAPI): void {
       return null;
     }
 
-    // Detach — let difit survive beyond this session if others need it
-    proc.stdout?.destroy();
-    proc.stderr?.destroy();
+    // Detach — let difit survive beyond this session if others need it.
+    // Keep consuming stdout/stderr silently to avoid EPIPE killing difit.
+    proc.stdout?.resume();
+    proc.stderr?.resume();
     proc.unref();
 
     trackedPid = proc.pid ?? null;
