@@ -92,6 +92,9 @@ function countOtherPiSessions(cwd: string): number {
 }
 
 export function registerDifit(pi: ExtensionAPI): void {
+  // Skip in async subagent child processes — difit's stdout/stderr streams
+  // keep the event loop alive and prevent the process from ever exiting.
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
   if (!hasDifit()) return;
 
   let trackedPid: number | null = null;
@@ -141,8 +144,11 @@ export function registerDifit(pi: ExtensionAPI): void {
 
     // Detach — let difit survive beyond this session if others need it.
     // Keep consuming stdout/stderr silently to avoid EPIPE killing difit.
+    // Unref streams so they don't keep the event loop alive.
     proc.stdout?.resume();
     proc.stderr?.resume();
+    if (proc.stdout?.unref) proc.stdout.unref();
+    if (proc.stderr?.unref) proc.stderr.unref();
     proc.unref();
 
     trackedPid = proc.pid ?? null;
