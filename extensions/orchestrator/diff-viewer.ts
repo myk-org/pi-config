@@ -1,6 +1,9 @@
 /**
  * Difit auto-start — launches difit diff viewer.
  *
+ * - On session start: reuse existing difit for this cwd, or start a new one.
+ * - On session shutdown: only kill difit if this is the last pi session for this cwd.
+ *
  * Works both in container and native — requires difit to be installed.
  * See: https://github.com/yoshiko-pg/difit
  */
@@ -8,9 +11,7 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-const KILL_SETTLE_MS = 500;
 const STARTUP_TIMEOUT_MS = 15000;
-const RETRY_DELAY_MS = 3000;
 
 const ICON_DIFF = "";
 
@@ -32,43 +33,83 @@ function isGitRepo(cwd: string): boolean {
   }
 }
 
-function killProcess(proc: ChildProcess): void {
-  try { proc.kill("SIGTERM"); } catch {}
+function resolvePath(p: string): string {
+  return execFileSync("readlink", ["-f", p], { encoding: "utf-8" }).trim();
 }
 
-// Linux-only: uses /proc to resolve process working directories
-function killExistingDifit(cwd: string): void {
+/** Find an existing difit --keep-alive process for this cwd and return its PID, or null. */
+function findExistingDifitPid(cwd: string): number | null {
   try {
-    const resolvedCwd = execFileSync("readlink", ["-f", cwd], { encoding: "utf-8" }).trim();
+    const resolvedCwd = resolvePath(cwd);
     const result = execFileSync("ps", ["-eo", "pid,args"], { encoding: "utf-8" });
     for (const line of result.split("\n")) {
       if (!/\bdifit\b/.test(line) || !/--keep-alive/.test(line)) continue;
       const match = line.trim().match(/^(\d+)/);
       if (!match) continue;
       const pid = parseInt(match[1], 10);
-      if (pid === process.pid) continue;
       try {
-        const cwdLink = execFileSync("readlink", ["-f", `/proc/${pid}/cwd`], { encoding: "utf-8" }).trim();
-        if (cwdLink === resolvedCwd) {
-          process.kill(pid, "SIGTERM");
-        }
+        const pidCwd = resolvePath(`/proc/${pid}/cwd`);
+        if (pidCwd === resolvedCwd) return pid;
       } catch {}
     }
   } catch {}
+  return null;
+}
+
+/** Get the listening port of a process via ss. */
+function getListeningPort(pid: number): number | null {
+  try {
+    const result = execFileSync("ss", ["-tlnp"], { encoding: "utf-8" });
+    for (const line of result.split("\n")) {
+      if (!line.includes(`pid=${pid}`)) continue;
+      const m = line.match(/127\.0\.0\.1:(\d+)/);
+      if (m) return parseInt(m[1], 10);
+    }
+  } catch {}
+  return null;
+}
+
+/** Count active pi (node) sessions whose cwd matches. Excludes current process. */
+function countOtherPiSessions(cwd: string): number {
+  try {
+    const resolvedCwd = resolvePath(cwd);
+    const result = execFileSync("ps", ["-eo", "pid,args"], { encoding: "utf-8" });
+    let count = 0;
+    for (const line of result.split("\n")) {
+      if (!/\bpi-coding-agent\b/.test(line) && !/\bpi\b.*\bnode\b/.test(line) && !/\bnode\b.*\bpi\b/.test(line)) continue;
+      const match = line.trim().match(/^(\d+)/);
+      if (!match) continue;
+      const pid = parseInt(match[1], 10);
+      if (pid === process.pid) continue;
+      try {
+        const pidCwd = resolvePath(`/proc/${pid}/cwd`);
+        if (pidCwd === resolvedCwd) count++;
+      } catch {}
+    }
+    return count;
+  } catch {}
+  return 0;
 }
 
 export function registerDifit(pi: ExtensionAPI): void {
   if (!hasDifit()) return;
 
-  let difitProc: ChildProcess | null = null;
+  let trackedPid: number | null = null;
   let difitPort: number | null = null;
-  let starting = false;
+  let weStartedIt = false;
 
-  /** Try to start difit, returns true on success */
-  async function startDifit(ctx: any): Promise<boolean> {
-    killExistingDifit(ctx.cwd);
-    await new Promise((r) => setTimeout(r, KILL_SETTLE_MS));
+  function setDifitStatus(ctx: any, port: number): void {
+    const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
+    ctx.ui.setStatus("diff-viewer", statusText);
+    pi.events?.emit("diff-viewer:port", port);
+  }
 
+  function clearDifitStatus(ctx: any): void {
+    ctx.ui.setStatus("diff-viewer", undefined);
+  }
+
+  /** Start a new difit process. Returns port on success, null on failure. */
+  async function startNewDifit(ctx: any): Promise<number | null> {
     const proc = spawn("difit", [
       "--no-open",
       "--keep-alive",
@@ -78,7 +119,6 @@ export function registerDifit(pi: ExtensionAPI): void {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Capture port from difit stdout
     const port = await new Promise<number | null>((resolve) => {
       const timeout = setTimeout(() => resolve(null), STARTUP_TIMEOUT_MS);
       let output = "";
@@ -95,71 +135,66 @@ export function registerDifit(pi: ExtensionAPI): void {
     });
 
     if (!port) {
-      killProcess(proc);
-      return false;
+      try { proc.kill("SIGTERM"); } catch {}
+      return null;
     }
 
-    // Stop reading stdout/stderr — let difit run detached
+    // Detach — let difit survive beyond this session if others need it
     proc.stdout?.destroy();
     proc.stderr?.destroy();
     proc.unref();
 
-    difitProc = proc;
+    trackedPid = proc.pid ?? null;
     difitPort = port;
-
-    const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
-    ctx.ui.setStatus("diff-viewer", statusText);
-    pi.events?.emit("diff-viewer:port", port);
+    weStartedIt = true;
 
     // Monitor for unexpected exit
     proc.on("exit", () => {
-      difitProc = null;
+      trackedPid = null;
       difitPort = null;
-      ctx.ui.setStatus("diff-viewer", undefined);
+      clearDifitStatus(ctx);
     });
 
-    return true;
+    return port;
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    if (difitProc || starting) return;
+    if (difitPort) return; // Already set up
     if (!isGitRepo(ctx.cwd)) return;
 
-    starting = true;
-
-    try {
-      const ok = await startDifit(ctx);
-
-      // Retry once after a short delay if first attempt failed
-      if (!ok) {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-        await startDifit(ctx);
+    // Try to reuse an existing difit for this cwd
+    const existingPid = findExistingDifitPid(ctx.cwd);
+    if (existingPid) {
+      const port = getListeningPort(existingPid);
+      if (port) {
+        trackedPid = existingPid;
+        difitPort = port;
+        weStartedIt = false;
+        setDifitStatus(ctx, port);
+        return;
       }
-    } catch {
-      if (difitProc) {
-        killProcess(difitProc);
-      }
-      difitProc = null;
-      difitPort = null;
-    } finally {
-      starting = false;
+    }
+
+    // No existing difit — start a new one
+    const port = await startNewDifit(ctx);
+    if (port) {
+      setDifitStatus(ctx, port);
     }
   });
 
   // Re-set status on agent_end to ensure it survives TUI re-renders
   pi.on("agent_end", (_event, ctx) => {
-    if (difitProc && difitPort) {
-      const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${difitPort}`);
-      ctx.ui.setStatus("diff-viewer", statusText);
+    if (difitPort) {
+      setDifitStatus(ctx, difitPort);
     }
   });
 
-  pi.on("session_shutdown", () => {
-    starting = false;
-    if (difitProc) {
-      killProcess(difitProc);
-      difitProc = null;
+  pi.on("session_shutdown", (_event, ctx) => {
+    // Only kill difit if no other pi sessions share this cwd
+    if (trackedPid && countOtherPiSessions(ctx.cwd) === 0) {
+      try { process.kill(trackedPid, "SIGTERM"); } catch {}
     }
+    trackedPid = null;
     difitPort = null;
   });
 }
