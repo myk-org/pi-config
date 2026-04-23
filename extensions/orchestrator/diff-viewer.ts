@@ -100,6 +100,7 @@ export function registerDifit(pi: ExtensionAPI): void {
   let trackedPid: number | null = null;
   let difitPort: number | null = null;
   let weStartedIt = false;
+  let shuttingDown = false;
 
   function setDifitStatus(ctx: any, port: number): void {
     const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
@@ -155,11 +156,12 @@ export function registerDifit(pi: ExtensionAPI): void {
     difitPort = port;
     weStartedIt = true;
 
-    // Monitor for unexpected exit
+    // Monitor for unexpected exit — skip UI updates if extension is shutting down
+    // (ctx.ui throws on stale extension instances after session replacement)
     proc.on("exit", () => {
       trackedPid = null;
       difitPort = null;
-      clearDifitStatus(ctx);
+      if (!shuttingDown) clearDifitStatus(ctx);
     });
 
     return port;
@@ -197,6 +199,7 @@ export function registerDifit(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    shuttingDown = true;
     // Only kill difit if no other pi sessions share this cwd
     if (trackedPid && countOtherPiSessions(ctx.cwd) === 0) {
       try { process.kill(trackedPid, "SIGTERM"); } catch {}

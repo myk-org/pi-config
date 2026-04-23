@@ -87,7 +87,7 @@ export function registerStatusLine(
     if (lastCtx) updateBranch(null, lastCtx);
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event) => {
     clearInterval(gitPoller);
   });
 

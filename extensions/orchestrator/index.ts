@@ -26,6 +26,7 @@ import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
 import { registerStatusLine } from "./status-line.js";
 import { registerSubagentTool } from "./subagent-tool.js";
+import { registerGithubAutocomplete } from "./github-autocomplete.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -55,4 +56,5 @@ export default function (pi: ExtensionAPI) {
   registerDreaming(pi, spawnAsyncAgent);
   registerPidash(pi, killAsyncAgent);
   registerSessionValidation(pi);
+  registerGithubAutocomplete(pi);
 }

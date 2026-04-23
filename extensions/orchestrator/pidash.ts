@@ -476,14 +476,37 @@ export function registerPidash(
               } catch (e: any) { debugLog(`set-thinking error: ${e.message}`); }
             }
 
-            // TODO: switch-session and new-session require switchSession/newSession
-            // which are only on ExtensionCommandContext (not available from extensions).
-            // Waiting for pi to expose these on the extension runtime API.
-            if (parsed.command === "switch-session") {
-              debugLog("switch-session: not available — pi API limitation");
+            if (parsed.command === "switch-session" && parsed.sessionFile && execCtx) {
+              if (!execCtxIsCommand) {
+                debugLog("switch-session: skipped — no command context (run /pidash first)");
+              } else {
+                debugLog(`switch-session: ${parsed.sessionFile}`);
+                try {
+                  await (execCtx as any).switchSession(parsed.sessionFile, {
+                    withSession: async () => {
+                      debugLog("switch-session: completed via withSession");
+                    },
+                  });
+                } catch (e: any) {
+                  debugLog(`switch-session error: ${e.message}`);
+                }
+              }
             }
-            if (parsed.command === "new-session") {
-              debugLog("new-session: not available — pi API limitation");
+            if (parsed.command === "new-session" && execCtx) {
+              if (!execCtxIsCommand) {
+                debugLog("new-session: skipped — no command context (run /pidash first)");
+              } else {
+                debugLog("new-session: creating new session");
+                try {
+                  await (execCtx as any).newSession({
+                    withSession: async () => {
+                      debugLog("new-session: completed via withSession");
+                    },
+                  });
+                } catch (e: any) {
+                  debugLog(`new-session error: ${e.message}`);
+                }
+              }
             }
 
             if (parsed.command === "abort") {
@@ -749,13 +772,16 @@ export function registerPidash(
   }, 10000);
   if (statusInterval.unref) statusInterval.unref();
 
-  // Store command context from the first command invocation
+  // Store command context — only a real ExtensionCommandContext (from a command handler)
+  // has session control methods like switchSession()/newSession().
   let execCtx: any = null;
+  let execCtxIsCommand = false;
 
   pi.on("session_start", (_event, ctx) => {
     if (!execCtx) {
       execCtx = ctx;
-      debugLog("execCtx created from session_start");
+      execCtxIsCommand = false;
+      debugLog("execCtx created from session_start (not command context)");
     }
     if (!connected) {
       connect(ctx);
@@ -795,8 +821,9 @@ export function registerPidash(
   pi.registerCommand("pidash", {
     description: "Manage pidash server — /pidash start|stop|restart|status",
     handler: async (args, ctx) => {
-      // Capture command context (for future use when pi exposes switchSession/newSession)
+      // Capture real ExtensionCommandContext — has switchSession()/newSession()
       execCtx = ctx;
+      execCtxIsCommand = true;
 
       const cmd = (args || "").trim().toLowerCase();
 
@@ -895,7 +922,17 @@ export function registerPidash(
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (event) => {
+    // Forward shutdown reason to pidash dashboard
+    if (ws && connected) {
+      try {
+        ws.send(JSON.stringify({
+          type: "session_shutdown",
+          reason: (event as any).reason,
+          targetSessionFile: (event as any).targetSessionFile,
+        }));
+      } catch {}
+    }
     shuttingDown = true;
     clearInterval(reconnectPoller);
     if (ws) { try { ws.close(); } catch {} ws = null; }
