@@ -61,13 +61,13 @@ Only use sync (default) when the **very next step** depends on this agent's outp
 - ✅ **ALWAYS** use `git worktree` for each PR/branch when handling more than one
 
 ```bash
-# Create a worktree for each PR
-git worktree add /tmp/pi-work/pr-42 origin/fix/issue-42
-git worktree add /tmp/pi-work/pr-43 origin/feat/issue-43
+# Create a worktree for each PR (inside the repo)
+git worktree add .worktrees/pr-42 origin/fix/issue-42
+git worktree add .worktrees/pr-43 origin/feat/issue-43
 
 # Work in each directory independently
 # When done, clean up
-git worktree remove /tmp/pi-work/pr-42
+git worktree remove .worktrees/pr-42
 ```
 
 **Why:** Branch switching in the main worktree corrupts parallel agent work.
