@@ -207,6 +207,18 @@ piWss.on("connection", (ws: any) => {
         return;
       }
 
+      if (parsed.type === "session_shutdown" && piClient) {
+        const reason = parsed.reason || "unknown";
+        log(`session shutdown: ${piClient.session.sessionId}, reason: ${reason}`);
+        sendToWatchers(piClient.session.sessionId, {
+          type: "session_shutdown",
+          sessionId: piClient.session.sessionId,
+          reason,
+          targetSessionFile: parsed.targetSessionFile,
+        });
+        return;
+      }
+
       if (parsed.type === "replay_complete" && piClient) {
         piClient.replaying = false;
         log(`replay complete for ${piClient.session.sessionId}`);

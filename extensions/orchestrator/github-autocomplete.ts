@@ -1,8 +1,8 @@
 /**
- * GitHub issue autocomplete — type # to get issue suggestions from the current repo.
+ * GitHub issue & PR autocomplete — type # to get suggestions from the current repo.
  *
  * Leverages pi 0.69.0's ctx.ui.addAutocompleteProvider() API.
- * Based on pi's github-issue-autocomplete.ts example extension.
+ * Lazy-loads on first # keystroke, caches for 5 minutes, includes both issues and PRs.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -13,14 +13,16 @@ import {
   fuzzyFilter,
 } from "@mariozechner/pi-tui";
 
-type GitHubIssue = {
+type GitHubItem = {
   number: number;
   title: string;
   state: string;
+  kind: "issue" | "pr";
 };
 
-const MAX_ISSUES = 100;
+const MAX_ITEMS = 100;
 const MAX_SUGGESTIONS = 20;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 function extractIssueToken(textBeforeCursor: string): string | undefined {
   const match = textBeforeCursor.match(/(?:^|[ \t])#([^\s#]*)$/);
@@ -41,44 +43,45 @@ function parseGitHubRepo(remoteUrl: string): string | undefined {
   return undefined;
 }
 
-function formatIssueItem(issue: GitHubIssue): AutocompleteItem {
+function formatItem(item: GitHubItem): AutocompleteItem {
+  const tag = item.kind === "pr" ? "pr" : "issue";
   return {
-    value: `#${issue.number}`,
-    label: `#${issue.number}`,
-    description: `[${issue.state.toLowerCase()}] ${issue.title}`,
+    value: `#${item.number}`,
+    label: `#${item.number}`,
+    description: `[${tag}] ${item.title}`,
   };
 }
 
-function filterIssues(
-  issues: GitHubIssue[],
+function filterItems(
+  items: GitHubItem[],
   query: string,
 ): AutocompleteItem[] {
   if (!query.trim()) {
-    return issues.slice(0, MAX_SUGGESTIONS).map(formatIssueItem);
+    return items.slice(0, MAX_SUGGESTIONS).map(formatItem);
   }
 
   // Numeric prefix match first
   if (/^\d+$/.test(query)) {
-    const numericMatches = issues
-      .filter((issue) => String(issue.number).startsWith(query))
+    const numericMatches = items
+      .filter((item) => String(item.number).startsWith(query))
       .slice(0, MAX_SUGGESTIONS)
-      .map(formatIssueItem);
+      .map(formatItem);
     if (numericMatches.length > 0) return numericMatches;
   }
 
   // Fuzzy search on number + title
   return fuzzyFilter(
-    issues,
+    items,
     query,
-    (issue) => `${issue.number} ${issue.title}`,
+    (item) => `${item.number} ${item.title}`,
   )
     .slice(0, MAX_SUGGESTIONS)
-    .map(formatIssueItem);
+    .map(formatItem);
 }
 
-function createIssueAutocompleteProvider(
+function createAutocompleteProvider(
   current: AutocompleteProvider,
-  getIssues: () => Promise<GitHubIssue[] | undefined>,
+  getItems: () => Promise<GitHubItem[] | undefined>,
 ): AutocompleteProvider {
   return {
     async getSuggestions(
@@ -95,12 +98,12 @@ function createIssueAutocompleteProvider(
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       }
 
-      const issues = await getIssues();
-      if (options.signal.aborted || !issues || issues.length === 0) {
+      const items = await getItems();
+      if (options.signal.aborted || !items || items.length === 0) {
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       }
 
-      const suggestions = filterIssues(issues, token);
+      const suggestions = filterItems(items, token);
       if (suggestions.length === 0) {
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       }
@@ -152,44 +155,94 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
     }
     if (!repo) return; // Not a GitHub repo
 
-    // Lazy-load issues (first autocomplete trigger fetches them)
-    let issuesPromise: Promise<GitHubIssue[] | undefined> | undefined;
+    // Cache state — lazy-loaded on first # keystroke, refreshed after TTL
+    let cachedItems: GitHubItem[] | undefined;
+    let cacheTimestamp = 0;
+    let fetchPromise: Promise<GitHubItem[] | undefined> | undefined;
 
-    const getIssues = async (): Promise<GitHubIssue[] | undefined> => {
-      issuesPromise ||= (async () => {
-        const result = await pi.exec(
+    async function fetchItems(): Promise<GitHubItem[] | undefined> {
+      // Fetch issues and PRs in parallel
+      const [issuesResult, prsResult] = await Promise.all([
+        pi.exec(
           "gh",
           [
-            "issue",
-            "list",
-            "--repo",
-            repo!,
-            "--state",
-            "open",
-            "--limit",
-            String(MAX_ISSUES),
-            "--json",
-            "number,title,state",
+            "issue", "list",
+            "--repo", repo!,
+            "--state", "open",
+            "--limit", String(MAX_ITEMS),
+            "--json", "number,title,state",
           ],
           { cwd: ctx.cwd, timeout: 10_000 },
-        );
-        if (result.code !== 0) return undefined;
+        ),
+        pi.exec(
+          "gh",
+          [
+            "pr", "list",
+            "--repo", repo!,
+            "--state", "open",
+            "--limit", String(MAX_ITEMS),
+            "--json", "number,title,state",
+          ],
+          { cwd: ctx.cwd, timeout: 10_000 },
+        ),
+      ]);
 
+      const items: GitHubItem[] = [];
+
+      if (issuesResult.code === 0) {
         try {
-          return JSON.parse(result.stdout) as GitHubIssue[];
-        } catch {
-          return undefined;
-        }
-      })();
-      return issuesPromise;
+          const issues = JSON.parse(issuesResult.stdout) as Array<{ number: number; title: string; state: string }>;
+          for (const issue of issues) {
+            items.push({ ...issue, state: issue.state.toLowerCase(), kind: "issue" });
+          }
+        } catch {}
+      }
+
+      if (prsResult.code === 0) {
+        try {
+          const prs = JSON.parse(prsResult.stdout) as Array<{ number: number; title: string; state: string }>;
+          for (const pr of prs) {
+            items.push({ ...pr, state: pr.state.toLowerCase(), kind: "pr" });
+          }
+        } catch {}
+      }
+
+      if (items.length === 0) return undefined;
+
+      // Sort by number descending (newest first)
+      items.sort((a, b) => b.number - a.number);
+      return items;
+    }
+
+    const getItems = async (): Promise<GitHubItem[] | undefined> => {
+      const now = Date.now();
+
+      // Return cache if fresh
+      if (cachedItems && now - cacheTimestamp < CACHE_TTL_MS) {
+        return cachedItems;
+      }
+
+      // Deduplicate concurrent fetches
+      if (!fetchPromise) {
+        fetchPromise = fetchItems().then((result) => {
+          if (result) {
+            cachedItems = result;
+            cacheTimestamp = Date.now();
+          }
+          fetchPromise = undefined;
+          return cachedItems;
+        }).catch(() => {
+          fetchPromise = undefined;
+          return cachedItems;
+        });
+      }
+
+      return fetchPromise;
     };
 
-    // Pre-fetch issues in background
-    void getIssues();
-
-    // Register autocomplete provider
+    // Register autocomplete provider — fetches lazily on first # keystroke
     ctx.ui.addAutocompleteProvider((current) =>
-      createIssueAutocompleteProvider(current, getIssues),
+      createAutocompleteProvider(current, getItems),
     );
   });
 }
