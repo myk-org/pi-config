@@ -46,7 +46,7 @@ wheels = [
 
 [[package]]
 name = "myk-pi-tools"
-version = "1.17.2"
+version = "1.17.3"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
