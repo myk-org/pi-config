@@ -53,6 +53,9 @@ GITIGNORE_FILE="$(git config --global core.excludesFile 2>/dev/null || echo "$HO
 if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/memory/' "$GITIGNORE_FILE" 2>/dev/null; then
     echo '.pi/memory/' >> "$GITIGNORE_FILE"
 fi
+if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.worktrees/' "$GITIGNORE_FILE" 2>/dev/null; then
+    echo '.worktrees/' >> "$GITIGNORE_FILE"
+fi
 
 
 exec pi "$@"
