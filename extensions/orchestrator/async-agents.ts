@@ -321,7 +321,7 @@ export function registerAsyncAgents(
   });
 
   // Clean up on shutdown
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event) => {
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
     // Clean up PID-scoped results directory

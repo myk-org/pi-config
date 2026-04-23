@@ -25,7 +25,7 @@ import {
   Spacer,
   Text,
 } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 import { getPiInvocation } from "./utils.js";
 

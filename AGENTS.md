@@ -49,6 +49,7 @@ pi-config/
 │   │   │   ├── src/                 # React source (components, hooks, types)
 │   │   │   └── dist/               # Built output (generated, gitignored)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
+│   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)

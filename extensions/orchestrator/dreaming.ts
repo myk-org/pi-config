@@ -119,9 +119,13 @@ export function registerDreaming(
   // Fire-and-forget dream on session shutdown.
   // Uses detached spawn (not async agent) because the session is ending —
   // async agents need the pi process alive to deliver results.
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (event) => {
     stopTimer();
     if (!enabled || !lastCwd || dreamInFlight) return;
+
+    // Only dream on quit — skip for fork/new/resume/reload since the
+    // session continues or transitions, not ending meaningfully.
+    if ((event as any).reason && (event as any).reason !== "quit") return;
 
     // On shutdown, run a lightweight dream via detached async runner
     // (can't use spawnAsyncAgent since the session is ending)

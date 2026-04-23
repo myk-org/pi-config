@@ -12,7 +12,7 @@ import {
   Text,
 } from "@mariozechner/pi-tui";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 export function registerAskUser(
   pi: ExtensionAPI,
@@ -222,7 +222,7 @@ export function registerAskUser(
       unsubscribe();
 
       if (result === null) {
-        return { content: [{ type: "text", text: "User cancelled" }] };
+        return { content: [{ type: "text", text: "User cancelled" }], terminate: true };
       }
       return { content: [{ type: "text", text: result }] };
     },
