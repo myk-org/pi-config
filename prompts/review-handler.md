@@ -26,17 +26,18 @@ When asked to handle reviews for **multiple PRs**, NEVER switch branches in the 
 Use `git worktree` to create isolated directories for each PR:
 
 ```bash
-# Create a worktree per PR (under /tmp/pi-work/<repo-name>/worktrees/)
-git worktree add /tmp/pi-work/<repo-name>/worktrees/pr-42 origin/fix/issue-42
-git worktree add /tmp/pi-work/<repo-name>/worktrees/pr-43 origin/feat/issue-43
+# Create a worktree per PR (inside the repo)
+git worktree add .worktrees/pr-42 origin/fix/issue-42
+git worktree add .worktrees/pr-43 origin/feat/issue-43
 
 # Run review-handler in each worktree directory
 # When done, clean up all worktrees at once
-rm -rf /tmp/pi-work/<repo-name>/worktrees
+git worktree remove .worktrees/pr-42
+git worktree remove .worktrees/pr-43
 ```
 
-All worktrees live under a single `worktrees/` directory — easy to clean up
-in one shot, and easy to remove leftover worktrees from previous sessions.
+All worktrees live under `.worktrees/` in the repo — git tracks them
+automatically via `.git/worktrees/`, no `.gitignore` entry needed.
 Branch switching corrupts parallel agent work — other agents running in the
 main worktree will see the wrong branch.
 
