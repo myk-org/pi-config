@@ -31,17 +31,33 @@ interface Props {
   };
 }
 
-export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, notifications }: Props) {
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
-  const [initialized, setInitialized] = useState(false);
+// Track which groups the user explicitly collapsed.
+// Everything NOT in this set is expanded by default.
+const COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
 
-  // Auto-expand all groups when sessions first load
-  if (!initialized && sessions.length > 0) {
-    setInitialized(true);
-    const all = new Set<string>();
-    for (const s of sessions) all.add(s.cwd.split("/").pop() || s.cwd);
-    setExpandedProjects(all);
-  }
+function loadCollapsedProjects(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
+  return new Set();
+}
+
+function saveCollapsedProjects(projects: Set<string>): void {
+  try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...projects])); } catch {}
+}
+
+export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, notifications }: Props) {
+  const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
+
+  // Wrap setter to persist to localStorage
+  const setCollapsedProjects = (update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    setCollapsedProjectsRaw((prev) => {
+      const next = typeof update === "function" ? update(prev) : update;
+      saveCollapsedProjects(next);
+      return next;
+    });
+  };
 
   if (collapsed) return null;
 
@@ -67,10 +83,10 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
   });
 
   const toggleProject = (name: string) => {
-    setExpandedProjects(prev => {
+    setCollapsedProjects(prev => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(name)) next.delete(name); // was collapsed → expand
+      else next.add(name); // was expanded → collapse
       return next;
     });
   };
@@ -102,7 +118,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
           <p className="p-4 text-center text-xs text-muted-foreground">No sessions</p>
         )}
         {sortedGroups.map(([name, group]) => {
-          const isExpanded = expandedProjects.has(name);
+          const isExpanded = !collapsedProjects.has(name);
           const hasActive = group.sessions.some(s => s.active);
           const count = group.sessions.length;
 
