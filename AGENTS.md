@@ -49,6 +49,7 @@ pi-config/
 │   │   │   ├── src/                 # React source (components, hooks, types)
 │   │   │   └── dist/               # Built output (generated, gitignored)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
+│   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
@@ -160,6 +161,21 @@ pi-config/
    ```
 
 3. Write the prompt body after the blockquote.
+
+4. **If the prompt accepts arguments**, add autocomplete support in
+   `extensions/orchestrator/extended-autocomplete.ts` — add an entry to the
+   `completions` map and include the command name in `promptTemplateCommands`.
+   This gives users Tab-completion for your command's arguments.
+
+### Modifying Slash Command Arguments
+
+When adding, changing, or removing arguments for any slash command (prompt template
+or extension command):
+
+- ✅ Update autocomplete in `extensions/orchestrator/extended-autocomplete.ts`
+- Extension commands: update the entry in the `completions` map
+- Prompt templates: update the entry in `completions` AND ensure the command is in `promptTemplateCommands`
+- If adding a new completable command, follow the existing patterns (static items, cached fetchers, etc.)
 
 ## Docker / Dockerfile
 

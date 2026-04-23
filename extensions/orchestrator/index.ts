@@ -27,6 +27,7 @@ import { registerSessionValidation } from "./session-validation.js";
 import { registerStatusLine } from "./status-line.js";
 import { registerSubagentTool } from "./subagent-tool.js";
 import { registerGithubAutocomplete } from "./github-autocomplete.js";
+import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -44,6 +45,10 @@ export default function (pi: ExtensionAPI) {
     }
     return originalRegisterCommand(name, options);
   };
+
+  // Extended autocomplete must register FIRST — it wraps registerCommand
+  // to inject getArgumentCompletions before other modules register their commands.
+  registerExtendedAutocomplete(pi);
 
   registerAskUser(pi, terminalNotify);
   const { spawnAsyncAgent, killAsyncAgent } = registerAsyncAgents(pi, terminalNotify);
