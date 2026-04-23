@@ -36,8 +36,8 @@ git worktree remove .worktrees/pr-42
 git worktree remove .worktrees/pr-43
 ```
 
-All worktrees live under `.worktrees/` in the repo — git tracks them
-automatically via `.git/worktrees/`, no `.gitignore` entry needed.
+All worktrees live under `.worktrees/` in the repo.
+`.worktrees/` is in the global gitignore (added by entrypoint.sh).
 Branch switching corrupts parallel agent work — other agents running in the
 main worktree will see the wrong branch.
 
