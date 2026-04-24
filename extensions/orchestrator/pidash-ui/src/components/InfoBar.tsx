@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, ExternalLink, Brain, Bot, ChevronDown } from "lucide-react";
+import { GitBranch, ExternalLink, Brain, Bot, ChevronDown, Folder } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
@@ -26,9 +26,19 @@ interface Props {
   onMessage: (handler: (data: any) => void) => () => void;
 }
 
+interface ProjectSession {
+  path: string;
+  id: string;
+  name?: string;
+  cwd?: string;
+  firstMessage?: string;
+  modified?: string;
+}
+
 export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   const inactive = !session.active;
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [projectSessions, setProjectSessions] = useState<ProjectSession[]>([]);
   const [thinkingLevel, setThinkingLevel] = useState(session.thinkingLevel || "medium");
 
   // Sync thinkingLevel from session prop when it changes
@@ -66,6 +76,9 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
       if (ev.type === "update_info") {
         if (ev.thinkingLevel) setThinkingLevel(ev.thinkingLevel);
       }
+      if (ev.type === "sessions-list" && ev.sessions) {
+        setProjectSessions(ev.sessions);
+      }
       if (ev.type === "async-status") {
         const newCount = ev.count || 0;
         const newAgents = ev.agents || "";
@@ -92,6 +105,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
     if (openMenu === name) { setOpenMenu(null); return; }
     setOpenMenu(name);
     if (name === "models") send({ type: "pidash-command", command: "list-models", sessionId: session.sessionId });
+    if (name === "sessions") send({ type: "pidash-command", command: "list-sessions", sessionId: session.sessionId });
   }, [openMenu, send, session.sessionId]);
 
   return (
@@ -283,6 +297,51 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
           )}
         </Popover>
       </div>
+
+      {/* Sessions */}
+      <>
+        <span className="text-border">|</span>
+        <div className="relative">
+          <button
+            className="flex items-center gap-1 hover:text-primary transition-colors"
+            onClick={(e) => toggleMenu("sessions", e)}
+          >
+            <Folder className="h-3.5 w-3.5" /> sessions <ChevronDown className="h-3 w-3" />
+          </button>
+          {openMenu === "sessions" && (
+            <div className="absolute bottom-full right-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 w-[320px] max-h-[300px] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <div className="px-3 py-1 text-xs text-muted-foreground font-medium">Switch session ({projectSessions.length})</div>
+              {projectSessions.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">Loading...</div>}
+              {projectSessions.slice(0, 30).map((s) => {
+                const currentFile = session.sessionFile;
+                const isCurrent = s.path === currentFile;
+                const displayName = s.name || s.firstMessage?.slice(0, 50) || s.id?.slice(0, 12) || "unnamed";
+                return (
+                  <button
+                    key={s.path}
+                    className={cn(
+                      "w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors block",
+                      isCurrent && "bg-accent/50",
+                    )}
+                    onClick={() => {
+                      if (!isCurrent) {
+                        send({ type: "pidash-command", sessionId: session.sessionId, command: "switch-session", sessionFile: s.path });
+                      }
+                      setOpenMenu(null);
+                    }}
+                    disabled={isCurrent}
+                  >
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <span className="truncate font-medium text-foreground flex-1 min-w-0">{displayName}</span>
+                      {isCurrent && <span className="text-[10px] text-primary shrink-0">current</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </>
     </div>
   );
 }

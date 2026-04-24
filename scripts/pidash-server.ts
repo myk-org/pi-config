@@ -225,6 +225,12 @@ piWss.on("connection", (ws: any) => {
         return;
       }
 
+      // Forward sessions-list and models-list directly to watchers (not buffered)
+      if ((parsed.type === "sessions-list" || parsed.type === "models-list") && piClient) {
+        sendToWatchers(piClient.session.sessionId, parsed);
+        return;
+      }
+
       // Forward pi event to browsers watching this session + buffer
       if (piClient) {
         piClient.session.lastActivity = Date.now();

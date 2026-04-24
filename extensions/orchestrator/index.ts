@@ -36,11 +36,23 @@ ensureGitSshTimeout();
 // Shared command handler registry — pidash uses this to execute commands from the browser
 export const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
 
+// Latest ExtensionCommandContext captured from any command handler.
+// Commands provide the full context (switchSession, newSession, etc.)
+// while session_start only provides basic ExtensionContext.
+export let latestCommandCtx: any = null;
+
 export default function (pi: ExtensionAPI) {
-  // Wrap registerCommand to capture all handler functions
+  // Wrap registerCommand to capture all handler functions AND command context.
+  // Any command the user runs upgrades latestCommandCtx to a real ExtensionCommandContext
+  // which has switchSession()/newSession() methods.
   const originalRegisterCommand = pi.registerCommand.bind(pi);
   pi.registerCommand = (name: string, options: any) => {
     if (options?.handler) {
+      const origHandler = options.handler;
+      options.handler = async (args: string, ctx: any) => {
+        latestCommandCtx = ctx;
+        return origHandler(args, ctx);
+      };
       commandHandlerRegistry.set(name, options.handler);
     }
     return originalRegisterCommand(name, options);
