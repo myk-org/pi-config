@@ -15,7 +15,8 @@ import * as http from "node:http";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { commandHandlerRegistry } from "./index.js";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { commandHandlerRegistry, latestCommandCtx } from "./index.js";
 
 const DEFAULT_PORT = 19190;
 const PIDASH_PORT = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
@@ -231,7 +232,7 @@ export function registerPidash(
           model: m?.name || m?.id || "",
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
-          sessionFile: ctx.sessionFile || "",
+          sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
           thinkingLevel: thinking,
         });
         debugLog(`sending register: ${reg}`);
@@ -375,67 +376,9 @@ export function registerPidash(
 
             if (parsed.command === "list-sessions") {
               try {
-                const sessionsDir = path.join(process.env.HOME || "~", ".pi", "agent", "sessions");
-                const cwd = lastCtx?.cwd || "";
-                // Pi encodes paths as --path-parts-- in the sessions directory
-                const dirs = fs.readdirSync(sessionsDir);
-                debugLog(`list-sessions: cwd=${cwd}, sessionsDir=${sessionsDir}, dirs=${dirs.length}`);
-                // Find matching project dir — try exact match on cwd segments
-                const cwdParts = cwd.split("/").filter(Boolean).join("-");
-                const projDir = dirs.find((d: string) => d.includes(cwdParts));
-                debugLog(`list-sessions: cwdParts=${cwdParts}, projDir=${projDir || "NOT FOUND"}`);
-                if (projDir) {
-                  const fullDir = path.join(sessionsDir, projDir);
-                  const files = fs.readdirSync(fullDir)
-                    .filter((f: string) => f.endsWith(".jsonl"))
-                    .sort()
-                    .reverse()
-                    .slice(0, 20)
-                    .map((f: string) => {
-                      const filePath = path.join(fullDir, f);
-                      let sessionName = "";
-                      let firstMsg = "";
-                      let modelId = "";
-                      let date = "";
-                      try {
-                        const content = fs.readFileSync(filePath, "utf-8");
-                        const lines = content.split("\n").slice(0, 30); // Read first 30 lines
-                        for (const line of lines) {
-                          if (!line.trim()) continue;
-                          try {
-                            const entry = JSON.parse(line);
-                            if (entry.type === "session") {
-                              date = entry.timestamp || "";
-                            }
-                            if (entry.type === "session_info" && entry.name) {
-                              sessionName = entry.name;
-                            }
-                            if (entry.type === "model_change" && !modelId) {
-                              modelId = entry.modelId || "";
-                            }
-                            if (entry.type === "message" && entry.message?.role === "user" && !firstMsg) {
-                              const texts = (entry.message.content || [])
-                                .filter((c: any) => c.type === "text")
-                                .map((c: any) => c.text);
-                              firstMsg = texts.join(" ").slice(0, 100);
-                            }
-                          } catch {}
-                        }
-                      } catch {}
-                      return {
-                        file: f,
-                        path: filePath,
-                        name: sessionName || firstMsg || f.replace(/\.jsonl$/, ""),
-                        model: modelId,
-                        date,
-                      };
-                    });
-                  debugLog(`list-sessions: found ${files.length} sessions`);
-                  if (ws && connected) ws.send(JSON.stringify({ type: "sessions-list", sessions: files }));
-                } else {
-                  debugLog("list-sessions: no matching project dir");
-                  if (ws && connected) ws.send(JSON.stringify({ type: "sessions-list", sessions: [] }));
-                }
+                const sessions = await SessionManager.list(lastCtx?.cwd || process.cwd());
+                debugLog(`list-sessions: found ${sessions.length}`);
+                if (ws && connected) ws.send(JSON.stringify({ type: "sessions-list", sessions }));
               } catch (e: any) { debugLog(`list-sessions error: ${e.message}`); }
             }
 
@@ -476,36 +419,21 @@ export function registerPidash(
               } catch (e: any) { debugLog(`set-thinking error: ${e.message}`); }
             }
 
-            if (parsed.command === "switch-session" && parsed.sessionFile && execCtx) {
-              if (!execCtxIsCommand) {
-                debugLog("switch-session: skipped — no command context (run /pidash first)");
-              } else {
-                debugLog(`switch-session: ${parsed.sessionFile}`);
+            if (parsed.command === "switch-session" && parsed.sessionFile) {
+              debugLog(`switch-session: ${parsed.sessionFile}`);
+              const ctx = pidashCommandCtx || latestCommandCtx;
+              if (ctx?.switchSession) {
                 try {
-                  await (execCtx as any).switchSession(parsed.sessionFile, {
+                  await ctx.switchSession(parsed.sessionFile, {
                     withSession: async () => {
-                      debugLog("switch-session: completed via withSession");
+                      debugLog("switch-session: completed");
                     },
                   });
                 } catch (e: any) {
                   debugLog(`switch-session error: ${e.message}`);
                 }
-              }
-            }
-            if (parsed.command === "new-session" && execCtx) {
-              if (!execCtxIsCommand) {
-                debugLog("new-session: skipped — no command context (run /pidash first)");
               } else {
-                debugLog("new-session: creating new session");
-                try {
-                  await (execCtx as any).newSession({
-                    withSession: async () => {
-                      debugLog("new-session: completed via withSession");
-                    },
-                  });
-                } catch (e: any) {
-                  debugLog(`new-session error: ${e.message}`);
-                }
+                debugLog("switch-session: no command context available");
               }
             }
 
@@ -772,17 +700,21 @@ export function registerPidash(
   }, 10000);
   if (statusInterval.unref) statusInterval.unref();
 
-  // Store command context — only a real ExtensionCommandContext (from a command handler)
-  // has session control methods like switchSession()/newSession().
   let execCtx: any = null;
-  let execCtxIsCommand = false;
+  let pidashCommandCtx: any = null;  // Real ExtensionCommandContext from /pidash handler
 
   pi.on("session_start", (_event, ctx) => {
-    if (!execCtx) {
-      execCtx = ctx;
-      execCtxIsCommand = false;
-      debugLog("execCtx created from session_start (not command context)");
-    }
+    execCtx = ctx;
+    pidashCommandCtx = null;
+    debugLog("execCtx created from session_start");
+
+    // Auto-capture command context: silently run /pidash status.
+    // pi.sendUserMessage won't trigger command dispatch (expandPromptTemplates: false),
+    // so we call the handler directly. The context won't have switchSession yet,
+    // but the /pidash handler will be called with a real ExtensionCommandContext
+    // when the user types their first prompt (via before_agent_start triggering
+    // the input pipeline). For now, this at least initializes the connection.
+    // Session switching requires the user to have typed at least one slash command.
     if (!connected) {
       connect(ctx);
     } else if (ws) {
@@ -793,7 +725,7 @@ export function registerPidash(
         sessionId,
         cwd: ctx.cwd,
         branch: getCurrentBranch(ctx.cwd),
-        sessionFile: ctx.sessionFile || "",
+        sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
       }));
       debugLog(`session_switch sent: cwd=${ctx.cwd}`);
     }
@@ -821,9 +753,9 @@ export function registerPidash(
   pi.registerCommand("pidash", {
     description: "Manage pidash server — /pidash start|stop|restart|status",
     handler: async (args, ctx) => {
-      // Capture real ExtensionCommandContext — has switchSession()/newSession()
       execCtx = ctx;
-      execCtxIsCommand = true;
+      pidashCommandCtx = ctx;  // Real ExtensionCommandContext
+      debugLog("pidashCommandCtx captured from /pidash handler");
 
       const cmd = (args || "").trim().toLowerCase();
 

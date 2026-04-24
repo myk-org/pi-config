@@ -52,6 +52,8 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
     }
   }, [commands]);
 
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
   const selectSuggestion = useCallback((cmd: { name: string; description: string }) => {
     if (ref.current) {
       ref.current.value = `/${cmd.name} `;
@@ -60,10 +62,17 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
     setShowSuggestions(false);
   }, []);
 
+  // Scroll selected suggestion into view
+  useEffect(() => {
+    if (!showSuggestions || !suggestionsRef.current) return;
+    const el = suggestionsRef.current.children[selectedIdx] as HTMLElement;
+    if (el) el.scrollIntoView({ block: "nearest" });
+  }, [selectedIdx, showSuggestions]);
+
   return (
     <div className="relative">
       {showSuggestions && suggestions.length > 0 && (
-        <div className="absolute bottom-full left-0 right-0 mx-3 mb-1 bg-card border border-border rounded-lg shadow-xl py-1 max-h-48 overflow-y-auto z-50">
+        <div ref={suggestionsRef} className="absolute bottom-full left-0 right-0 mx-3 mb-1 bg-card border border-border rounded-lg shadow-xl py-1 max-h-48 overflow-y-auto z-50">
           {suggestions.map((cmd, i) => (
             <button
               key={cmd.name}
