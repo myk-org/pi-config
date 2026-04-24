@@ -24,6 +24,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
 
+    // Block timeout on long-running poll commands — these can take 30+ minutes
+    // (rate limit waits). The LLM keeps setting timeouts despite prompt instructions.
+    if (/\bmyk-pi-tools\b.*\breviews\s+poll\b/.test(command) && event.input.timeout) {
+      return {
+        block: true,
+        reason: `⛔ reviews poll must not have a timeout (it can take 30+ min for rate limit waits). Retry without the timeout parameter.`,
+      };
+    }
+
     // Block direct python/pip — check at start or after pipe/semicolon/&& operators
     if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
       if (/(?:^|[|;&]\s*)(?:python3?|pip3?)\b/.test(cmdLower)) {
