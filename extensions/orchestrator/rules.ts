@@ -50,29 +50,34 @@ export function registerRules(pi: ExtensionAPI): void {
       } catch {}
     }
 
-    // Project memories — read memory.md directly (no subprocess needed)
-    const memories = loadMemories(ctx.cwd);
-    if (memories) {
-      extra += memories;
-      if (isSubagent) {
-        extra +=
-          "\n\n **Do NOT write to memory** — only the orchestrator writes memories.\n";
-      }
-    }
+    // Project memories — injected BEFORE rules so the LLM sees them first
+    const memories = loadMemories(ctx.cwd, isSubagent);
 
-    if (!extra) return;
-    return { systemPrompt: event.systemPrompt + extra };
+    if (!extra && !memories) return;
+    return { systemPrompt: memories + event.systemPrompt + extra };
   });
 }
 
-// Reads .pi/memory/memory.md directly — zero dependencies, instant
-function loadMemories(cwd: string): string {
+// Reads .pi/memory/memory.md, wraps with strong framing so the LLM prioritizes it
+function loadMemories(cwd: string, isSubagent: boolean): string {
   try {
     const memPath = path.join(cwd, ".pi", "memory", "memory.md");
     if (!fs.existsSync(memPath)) return "";
-    const content = fs.readFileSync(memPath, "utf-8").trim();
-    if (!content || content === "# Memories") return "";
-    return "\n\n" + content + "\n";
+    const raw = fs.readFileSync(memPath, "utf-8").trim();
+    if (!raw || raw === "# Memories") return "";
+
+    // Replace the plain header with a stronger framing
+    const content = raw.replace(
+      /^# Memories/,
+      "# CRITICAL: Project Memory \u2014 Lessons From Previous Sessions\n\n" +
+      "These memories were saved because they caused real problems. Apply them proactively.",
+    );
+
+    let result = "\n" + content + "\n";
+    if (isSubagent) {
+      result += "\n**Do NOT write to memory** \u2014 only the orchestrator writes memories.\n";
+    }
+    return result + "\n";
   } catch {
     return "";
   }
