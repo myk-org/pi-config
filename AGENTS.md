@@ -97,7 +97,7 @@ pi-config/
 │   └── reviews/
 ├── scripts/                         # Utility scripts
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
-│   └── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions)
+│   └── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README
