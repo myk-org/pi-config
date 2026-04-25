@@ -24,6 +24,9 @@ function log(msg: string) {
   try { fs.appendFileSync(LOG_PATH, line); } catch {}
 }
 
+// Pluggable event hooks — Discord bot registers here to receive pi events
+const piEventHooks: Array<(sessionId: string, event: any) => void> = [];
+
 // ── Session state ───────────────────────────────────────────────────
 
 interface SessionInfo {
@@ -258,6 +261,14 @@ piWss.on("connection", (ws: any) => {
         for (const browser of browserClients) {
           if (browserWatchMap.get(browser) === sid) {
             try { browser.send(raw); } catch {}
+          }
+        }
+
+        // Forward to event hooks (Discord bot, etc.)
+
+        for (const hook of piEventHooks) {
+          try { hook(sid, parsed); } catch (e: any) {
+            log(`[discord] hook error: ${e.message}`);
           }
         }
 
@@ -525,6 +536,494 @@ const pingInterval = setInterval(() => {
   }
 }, 30000);
 if (pingInterval.unref) pingInterval.unref();
+
+// ── Discord bot ─────────────────────────────────────────────────────
+//
+// Optional: bridges Discord DMs to pi sessions. Enable by setting
+// DISCORD_BOT_TOKEN (and optionally DISCORD_ALLOWED_USERS) in ~/.pi/discord.env.
+//
+// Architecture: the bot runs inside this daemon, not as a separate process.
+// It has direct access to piClients/sessions — no WebSocket self-connection.
+
+const DISCORD_ENV_FILE = path.join(process.env.HOME || "~", ".pi", "discord.env");
+try {
+  for (const line of fs.readFileSync(DISCORD_ENV_FILE, "utf-8").split("\n")) {
+    const m = line.match(/^(\w+)=(.*)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  }
+} catch {}
+
+if (process.env.DISCORD_BOT_TOKEN) {
+  const discordToken = process.env.DISCORD_BOT_TOKEN;
+  const discordAllowedUsers = new Set(
+    (process.env.DISCORD_ALLOWED_USERS || "").split(",").map((s: string) => s.trim()).filter(Boolean),
+  );
+
+  const require = createRequire(import.meta.url);
+  let discordAvailable = false;
+  try {
+    require.resolve("discord.js");
+    discordAvailable = true;
+  } catch {
+    log("[discord] discord.js not installed — run: npm install -g discord.js");
+  }
+
+  if (discordAvailable) {
+    const {
+      Client: DiscordClient, GatewayIntentBits, Partials, ChannelType,
+      REST, Routes, SlashCommandBuilder,
+      ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    } = require("discord.js");
+
+    const discord = new DiscordClient({
+      intents: [
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+      ],
+      partials: [Partials.Channel, Partials.Message],
+    });
+
+    // Per-user state — persisted to disk
+    const DISCORD_STATE_FILE = path.join(process.env.HOME || "~", ".pi", "discord-state.json");
+
+    interface DiscordUserState {
+      watchedSessionId: string | null;
+      responseChannelId: string | null;
+      pendingAskUser: { id: string; sessionId: string } | null;
+    }
+    const discordUserStates = new Map<string, DiscordUserState>();
+
+    function loadDiscordState() {
+      try {
+        const data = JSON.parse(fs.readFileSync(DISCORD_STATE_FILE, "utf-8"));
+        for (const [k, v] of Object.entries(data)) discordUserStates.set(k, v as DiscordUserState);
+      } catch {}
+    }
+    function saveDiscordState() {
+      try {
+        const obj: Record<string, DiscordUserState> = {};
+        for (const [k, v] of discordUserStates) obj[k] = v;
+        fs.writeFileSync(DISCORD_STATE_FILE, JSON.stringify(obj));
+      } catch {}
+    }
+    loadDiscordState();
+
+    function getDiscordState(userId: string): DiscordUserState {
+      let state = discordUserStates.get(userId);
+      if (!state) {
+        state = {
+          watchedSessionId: null,
+          responseChannelId: null,
+          pendingAskUser: null,
+        };
+        discordUserStates.set(userId, state);
+      }
+      return state;
+    }
+
+    function getSessionName(sessionId: string | null): string {
+      if (!sessionId) return "none";
+      const client = piClients.get(sessionId);
+      if (!client) return "unknown";
+      return client.session.cwd.split("/").pop() || client.session.cwd;
+    }
+
+    // Discord text chunking (2000 char limit)
+    function chunkDiscordText(text: string): string[] {
+      if (text.length <= 2000) return [text];
+      const chunks: string[] = [];
+      let rest = text;
+      while (rest.length > 2000) {
+        let cut = rest.lastIndexOf("\n", 2000);
+        if (cut < 1000) cut = 2000;
+        chunks.push(rest.slice(0, cut));
+        rest = rest.slice(cut).replace(/^\n+/, "");
+      }
+      if (rest) chunks.push(rest);
+      return chunks;
+    }
+
+    async function sendDiscordDM(channelId: string, text: string) {
+      try {
+        const channel = await discord.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased()) return;
+        for (const chunk of chunkDiscordText(text)) {
+          await channel.send(chunk);
+        }
+      } catch (e: any) {
+        log(`[discord] send error: ${e.message}`);
+      }
+    }
+
+    function formatDiscordSessionList(): string {
+      const allSessions = Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
+      if (allSessions.length === 0) return "No active sessions.";
+
+      // Find watched session for any user
+      const watchedIds = new Set<string>();
+      for (const state of discordUserStates.values()) {
+        if (state.watchedSessionId) watchedIds.add(state.watchedSessionId);
+      }
+
+      const lines = allSessions.map((s, i) => {
+        const status = s.active ? (s.working ? "[active]" : "[idle]") : "[idle]";
+        const watched = watchedIds.has(s.sessionId) ? " ← watching" : "";
+        const name = s.cwd.split("/").pop() || s.cwd;
+        return `**${i + 1}.** ${name} — ${s.model || "—"} ${s.branch ? `(${s.branch})` : ""} ${status}${watched}`;
+      });
+
+      return `**Sessions (${allSessions.length}):**\n${lines.join("\n")}\n\nUse \`/sessions\` to watch one.`;
+    }
+
+    // Forward pi events to Discord users watching that session
+    function forwardToDiscord(sessionId: string, ev: any) {
+      if (discordUserStates.size === 0) return;
+      // Skip replay events — only forward live events
+      const client = piClients.get(sessionId);
+      if (client?.replaying) return;
+
+      for (const [, state] of discordUserStates) {
+        if (state.watchedSessionId !== sessionId || !state.responseChannelId) continue;
+
+        // Show user messages from TUI in Discord
+        if (ev.type === "message_start" && ev.message?.role === "user") {
+          const content = ev.message.content;
+          if (Array.isArray(content)) {
+            const text = content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+            if (text) sendDiscordDM(state.responseChannelId!, `───
+▶ **USER:** ${text}`);
+          }
+        }
+
+        // Typing indicator when AI is working
+        if (ev.type === "agent_start" && state.responseChannelId) {
+          const chId = state.responseChannelId;
+          const sendTyping = async () => {
+            try {
+              const ch = await discord.channels.fetch(chId);
+              if (ch?.sendTyping) await ch.sendTyping();
+            } catch {}
+          };
+          sendTyping();
+          if ((state as any)._typingInterval) clearInterval((state as any)._typingInterval);
+          (state as any)._typingInterval = setInterval(sendTyping, 8000);
+        }
+        if (ev.type === "agent_end") {
+          if ((state as any)._typingInterval) {
+            clearInterval((state as any)._typingInterval);
+            (state as any)._typingInterval = null;
+          }
+        }
+
+        // Capture streaming text deltas from assistant
+        if (ev.type === "message_update") {
+          const ame = ev.assistantMessageEvent;
+          if (ame?.type === "text_delta" && ame.delta) {
+            (state as any)._lastText = ((state as any)._lastText || "") + ame.delta;
+          }
+        }
+
+        // Send captured text when assistant message completes
+        if (ev.type === "message_end" && ev.message?.role === "assistant") {
+          const text = (state as any)._lastText || "";
+          (state as any)._lastText = "";
+          if (text) sendDiscordDM(state.responseChannelId!, text);
+        }
+
+        // Ask user dialogs
+        if (ev.type === "extension_ui_request" && ev.id && ev.title) {
+          state.pendingAskUser = { id: ev.id, sessionId };
+          let msg = `**${ev.title}**\n`;
+          if (ev.options && ev.options.length > 0) {
+            msg += ev.options.map((o: string, i: number) => `${i + 1}. ${o}`).join("\n");
+            msg += "\n\nReply with the number or text.";
+          } else {
+            msg += "Type your response:";
+          }
+          sendDiscordDM(state.responseChannelId, msg);
+        }
+      }
+    }
+
+    // Hook into pi event forwarding
+    piEventHooks.push(forwardToDiscord);
+
+    // Register slash commands (guild-scoped for instant availability)
+    async function registerDiscordCommands(clientId: string) {
+      const commands = [
+        new SlashCommandBuilder()
+          .setName("sessions")
+          .setDescription("List pi sessions — tap a button to watch one"),
+        new SlashCommandBuilder()
+          .setName("status")
+          .setDescription("Show current watched session info"),
+        new SlashCommandBuilder()
+          .setName("abort")
+          .setDescription("Abort the current operation"),
+      ];
+
+      const rest = new REST().setToken(discordToken);
+      for (const guild of discord.guilds.cache.values()) {
+        try {
+          await rest.put(Routes.applicationGuildCommands(clientId, (guild as any).id), {
+            body: commands.map((c: any) => c.toJSON()),
+          });
+          log(`[discord] slash commands registered for guild: ${(guild as any).name}`);
+        } catch (e: any) {
+          log(`[discord] failed to register commands for guild ${(guild as any).name}: ${e.message}`);
+        }
+      }
+    }
+
+    // Handle slash commands
+    discord.on("interactionCreate", async (interaction: any) => {
+      const safeReply = async (data: any) => {
+        try { await interaction.reply(data); } catch (e: any) {
+          log(`[discord] reply failed: ${e.message}`);
+        }
+      };
+
+      // Handle button clicks (session selection)
+      if (interaction.isButton()) {
+        if (discordAllowedUsers.size > 0 && !discordAllowedUsers.has(interaction.user.id)) {
+          await safeReply({ content: "Not authorized.", ephemeral: true }).catch(() => {});
+          return;
+        }
+        if (interaction.customId === "unwatch") {
+          const state = getDiscordState(interaction.user.id);
+          state.watchedSessionId = null;
+          saveDiscordState();
+          try { discord.user.setActivity(""); } catch {}
+          try {
+            await interaction.update({ content: "Disconnected from all sessions.", components: [] });
+          } catch {}
+          return;
+        }
+        const match = interaction.customId.match(/^watch:(.+)$/);
+        if (match) {
+          const targetSessionId = match[1];
+          const client = piClients.get(targetSessionId);
+          if (!client) {
+            await safeReply({ content: "Session no longer available.", ephemeral: true }).catch(() => {});
+            return;
+          }
+          const session = client.session;
+          const state = getDiscordState(interaction.user.id);
+          state.watchedSessionId = session.sessionId;
+          state.responseChannelId = interaction.channelId;
+
+          const name = session.cwd.split("/").pop() || session.cwd;
+
+          // Get the user's DM channel for responses
+          try {
+            const dmChannel = await interaction.user.createDM();
+            state.responseChannelId = dmChannel.id;
+          } catch {}
+
+          try {
+            await interaction.update({
+              content: `Now watching: **${name}** (${session.model || "—"})`,
+              components: [],
+            });
+          } catch (e: any) {
+            log(`[discord] button update failed: ${e.message}`);
+          }
+
+          // Update bot activity to show current session
+          try {
+            discord.user.setActivity(`${name} (${session.model || "—"})`, { type: 3 }); // type 3 = Watching
+          } catch {}
+
+          saveDiscordState();
+          log(`[discord] user ${interaction.user.username} watching: ${session.sessionId}`);
+        }
+        return;
+      }
+
+      if (!interaction.isChatInputCommand()) return;
+      if (discordAllowedUsers.size > 0 && !discordAllowedUsers.has(interaction.user.id)) {
+        await safeReply({ content: "Not authorized.", ephemeral: true });
+        return;
+      }
+
+      const state = getDiscordState(interaction.user.id);
+      const cmd = interaction.commandName;
+
+      if (cmd === "sessions") {
+        try {
+          const allSessions = Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
+          if (allSessions.length === 0) {
+            await safeReply("No active sessions.");
+            return;
+          }
+
+          // Build buttons for each session
+          const rows: any[] = [];
+          let currentRow = new ActionRowBuilder();
+          for (let i = 0; i < Math.min(allSessions.length, 25); i++) {
+            const s = allSessions[i];
+            const name = (s.cwd.split("/").pop() || s.cwd).slice(0, 80);
+            const isWatched = s.sessionId === state.watchedSessionId;
+            currentRow.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`watch:${s.sessionId}`)
+                .setLabel(name)
+                .setStyle(isWatched ? ButtonStyle.Success : (s.active ? ButtonStyle.Primary : ButtonStyle.Secondary))
+            );
+            if ((i + 1) % 5 === 0 || i === Math.min(allSessions.length, 25) - 1) {
+              rows.push(currentRow);
+              currentRow = new ActionRowBuilder();
+            }
+          }
+
+          // Add unwatch button if watching something
+          if (state.watchedSessionId) {
+            const unwatchRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("unwatch")
+                .setLabel("Disconnect")
+                .setStyle(ButtonStyle.Danger)
+            );
+            rows.push(unwatchRow);
+          }
+
+          const lines = allSessions.map((s, i) => {
+            const name = s.cwd.split("/").pop() || s.cwd;
+            const status = s.active ? (s.working ? "[active] " : "[idle] ") : "[idle] ";
+            const watched = s.sessionId === state.watchedSessionId ? " **← watching**" : "";
+            return `${status} **${i + 1}.** ${name} — ${s.model || "—"} ${s.branch ? `(${s.branch})` : ""}${watched}`;
+          });
+
+          await safeReply({
+            content: `**Sessions (${allSessions.length}):**\n${lines.join("\n")}`,
+            components: rows,
+          });
+        } catch (e: any) {
+          log(`[discord] /sessions error: ${e.message}`);
+          try { await safeReply(`Error: ${e.message}`); } catch {}
+        }
+        return;
+      }
+
+      if (cmd === "status") {
+        if (!state.watchedSessionId) {
+          await safeReply("Not watching any session. Use `/sessions` and tap a button.");
+          return;
+        }
+        const client = piClients.get(state.watchedSessionId);
+        if (!client) {
+          await safeReply("Watched session no longer active.");
+          state.watchedSessionId = null;
+          return;
+        }
+        const s = client.session;
+        const name = s.cwd.split("/").pop() || s.cwd;
+        const status = s.active ? (s.working ? "[active]" : "[idle]") : "[idle]";
+        await safeReply([
+          `**Session:** ${name}`,
+          `**Model:** ${s.model || "—"}`,
+          `**Branch:** ${s.branch || "—"}`,
+          `**Status:** ${status}`,
+          `**CWD:** ${s.cwd}`,
+          s.container ? "**Container:** 📦" : "",
+        ].filter(Boolean).join("\n"));
+        return;
+      }
+
+      if (cmd === "abort") {
+        if (!state.watchedSessionId) {
+          await safeReply("Not watching any session.");
+          return;
+        }
+        const client = piClients.get(state.watchedSessionId);
+        if (client?.ws) {
+          client.ws.send(JSON.stringify({ type: "pidash-command", command: "abort" }));
+        }
+        await safeReply("Abort sent.");
+        return;
+      }
+    });
+
+    // Handle DM messages (prompts + ask_user responses)
+    discord.on("raw", async (event: any) => {
+      if (event.t !== "MESSAGE_CREATE") return;
+      const d = event.d;
+      if (d.author?.bot) return;
+      if (discordAllowedUsers.size > 0 && !discordAllowedUsers.has(d.author?.id)) return;
+      if (d.guild_id) return; // Only DMs
+
+      const text = (d.content || "").trim();
+      if (!text) return;
+
+      const userId = d.author.id;
+      const channelId = d.channel_id;
+      const state = getDiscordState(userId);
+      state.responseChannelId = channelId;
+
+      log(`[discord] DM from ${d.author.username}: ${text.slice(0, 80)} (watched=${getSessionName(state.watchedSessionId)})`);
+
+      // Handle pending ask_user response
+      if (state.pendingAskUser) {
+        const ask = state.pendingAskUser;
+        state.pendingAskUser = null;
+        const client = piClients.get(ask.sessionId);
+        if (client?.ws) {
+          client.ws.send(JSON.stringify({
+            type: "extension_ui_response",
+            id: ask.id,
+            value: text,
+          }));
+        }
+        return;
+      }
+
+      // Check if watching a session
+      if (!state.watchedSessionId) {
+        await sendDiscordDM(channelId, "Not watching any session. Use `/sessions` and tap a button.");
+        return;
+      }
+
+      // Forward prompt to pi session
+      const client = piClients.get(state.watchedSessionId);
+      if (!client?.ws) {
+        await sendDiscordDM(channelId, "Watched session is disconnected.");
+        return;
+      }
+
+      client.ws.send(JSON.stringify({ type: "prompt", text }));
+    });
+
+    discord.once("ready", async (c: any) => {
+      log(`[discord] bot connected as ${c.user.tag}`);
+      if (discordAllowedUsers.size > 0) {
+        log(`[discord] allowed users: ${[...discordAllowedUsers].join(", ")}`);
+      } else {
+        log("[discord] WARNING: no DISCORD_ALLOWED_USERS set — all DMs accepted");
+      }
+      await registerDiscordCommands(c.user.id);
+
+      // Restore activity from persisted state
+      for (const [, state] of discordUserStates) {
+        if (state.watchedSessionId) {
+          const name = getSessionName(state.watchedSessionId);
+          if (name !== "unknown" && name !== "none") {
+            try { discord.user.setActivity(name, { type: 3 }); } catch {}
+          }
+        }
+      }
+    });
+
+    discord.on("error", (e: any) => log(`[discord] error: ${e.message}`));
+
+    discord.login(discordToken).catch((e: any) => {
+      log(`[discord] login failed: ${e.message}`);
+    });
+  }
+} else {
+  log("[discord] no DISCORD_BOT_TOKEN — Discord bot disabled");
+}
 
 // ── Start ───────────────────────────────────────────────────────────
 

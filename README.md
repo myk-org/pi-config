@@ -27,6 +27,7 @@ Single extension that provides:
 | **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/dream`, `/remember` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — agent names for `/acpx-prompt`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
+| **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
 
 ### Agents (24)
 
@@ -436,6 +437,63 @@ Then just run `pi-docker` from any project directory.
 > A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
 > If pi misbehaves or the warning persists, verify network connectivity
 > and run `pi install git:github.com/myk-org/pi-config` manually.
+
+## Discord Bot
+
+Control your pi sessions from your phone via Discord DMs.
+
+### Setup
+
+1. **Create a Discord bot:**
+   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
+   - Click "New Application" → name it (e.g., "pi-agent")
+   - Go to "Bot" section → click "Reset Token" → copy the token
+   - Enable "Message Content Intent" under "Privileged Gateway Intents"
+   - Go to "OAuth2 > URL Generator" → select scope `bot` → select permissions:
+     `Send Messages`, `Read Message History`, `Add Reactions`, `View Channels`
+   - Open the generated URL → add bot to your server
+
+2. **Configure:**
+
+   ```bash
+   # Create config file
+   cat > ~/.pi/discord.env << EOF
+   DISCORD_BOT_TOKEN=your-token-here
+   DISCORD_ALLOWED_USERS=your-discord-user-id
+   EOF
+   ```
+
+   Find your Discord user ID: Settings > Advanced > Developer Mode ON, then right-click yourself > Copy User ID.
+
+3. **Restart pidash:**
+   The Discord bot runs inside the pidash server daemon. Restart it to pick up the config:
+
+   ```text
+   /pidash restart
+   ```
+
+### Discord Commands
+
+| Command | Description |
+|---------|-------------|
+| `!sessions` | List active pi sessions |
+| `!watch N` | Watch/switch to session N |
+| `!status` | Show current session info |
+| `!abort` | Abort current operation |
+| `!help` | Show commands |
+| Any text | Send as prompt to watched session |
+| `/command` | Forward slash command to pi session |
+
+### How It Works
+
+The Discord bot runs inside the pidash server daemon (no separate process):
+
+```text
+Discord app (phone) ↔ Discord cloud ↔ pidash server (localhost) ↔ pi sessions
+```
+
+No ports to open — the bot connects outbound to Discord’s API.
+The bot starts automatically with pidash when `DISCORD_BOT_TOKEN` is configured.
 
 ## Development
 
