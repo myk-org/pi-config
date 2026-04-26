@@ -363,9 +363,21 @@ export function registerPidash(
       wsClient.on("message", async (data: Buffer) => {
         try {
           const parsed = JSON.parse(data.toString());
-          if (parsed.type === "prompt" && parsed.text) {
-            debugLog(`received prompt from browser: ${parsed.text.slice(0, 100)}`);
-            pi.sendUserMessage(parsed.text, { deliverAs: "followUp" });
+          if (parsed.type === "prompt" && (parsed.text || parsed.images)) {
+            debugLog(`received prompt from browser: ${(parsed.text || "").slice(0, 100)}${parsed.images ? ` [+${parsed.images.length} images]` : ""}`);
+            if (parsed.images && parsed.images.length > 0) {
+              // Build content array with text + images
+              const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+              if (parsed.text) {
+                content.push({ type: "text", text: parsed.text });
+              }
+              for (const img of parsed.images) {
+                content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+              }
+              pi.sendUserMessage(content, { deliverAs: "followUp" });
+            } else {
+              pi.sendUserMessage(parsed.text, { deliverAs: "followUp" });
+            }
           }
           if (parsed.type === "extension_ui_response" && parsed.id) {
             debugLog(`received UI response from browser: ${JSON.stringify(parsed).slice(0, 100)}`);
