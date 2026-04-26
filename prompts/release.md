@@ -88,11 +88,39 @@ Store the detect-versions JSON output for use in Phase 4. The key fields are:
 
 Parse commits from Phase 1 output and categorize by conventional commit type:
 
-- Breaking Changes (MAJOR)
-- Features (MINOR)
-- Bug Fixes, Docs, Maintenance (PATCH)
+- Breaking Changes → MAJOR
+- Features (`feat:`) → MINOR
+- Bug Fixes (`fix:`), Docs (`docs:`), Maintenance (`chore:`, `refactor:`, `test:`, `ci:`) → PATCH
 
-Generate changelog from the categorized commits.
+**Changelog formatting rules (MANDATORY):**
+
+1. **Use standardized emoji section headers:**
+   - `### ⚠️ Breaking Changes`
+   - `### ✨ Features`
+   - `### 🐛 Bug Fixes`
+   - `### 🏗️ Architecture`
+   - `### 📚 Documentation`
+   - `### 🔧 Maintenance`
+
+2. **Always use PR/issue references, never commit hashes:**
+   - ✅ `- **Feature name** — description (#42)`
+   - ❌ `- Feature name (c958777)`
+   - Extract PR number from merge commit messages or commit body
+   - Only fall back to commit hash if absolutely no PR/issue reference exists
+
+3. **Each entry needs a bold title + description:**
+   - ✅ `- **Date range filter** — Filter dashboard by date range with URL persistence (#141)`
+   - ❌ `- add date range filter to dashboard (#141)`
+
+4. **Semver enforcement:** If ANY `feat:` commit is present, version bump MUST be MINOR minimum, never PATCH.
+
+5. **Always append a compare link at the bottom:**
+
+   ```text
+   **Full Changelog**: https://github.com/{owner}/{repo}/compare/{last_tag}...{new_tag}
+   ```
+
+Generate changelog from the categorized commits following these rules.
 
 **Version determination:**
 
