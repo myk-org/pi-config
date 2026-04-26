@@ -54,6 +54,14 @@ function readAsyncStatus(asyncDir: string): any | null {
   } catch { return null; }
 }
 
+/** Derive a stable directory name from a session file path. */
+function sessionDirName(sessionFile: string): string {
+  if (!sessionFile) return `pid-${process.pid}`;
+  const { createHash } = require("node:crypto");
+  const normalized = path.resolve(sessionFile);
+  return `session-${createHash("sha256").update(normalized).digest("hex").slice(0, 12)}`;
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
@@ -72,7 +80,14 @@ export function registerAsyncAgents(
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
 } {
   const ASYNC_DIR = ASYNC_BASE_DIR;
-  let ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `results-${process.pid}`);
+  let ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `pid-${process.pid}`);
+
+  const ASYNC_DEBUG = !!process.env.PI_ASYNC_DEBUG;
+  const ASYNC_LOG = path.join(os.tmpdir(), "pi-async-debug.log");
+  function asyncLog(msg: string) {
+    if (!ASYNC_DEBUG) return;
+    try { fs.appendFileSync(ASYNC_LOG, `${new Date().toISOString()} ${msg}\n`); } catch {}
+  }
 
   const asyncState: AsyncState = {
     jobs: new Map(),
@@ -163,6 +178,7 @@ export function registerAsyncAgents(
     try {
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
+      asyncLog(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget}`);
       if (!job) return;
       if (job.delivered) return; // Already delivered to user
 
@@ -193,11 +209,17 @@ export function registerAsyncAgents(
 
       // Clean up result file
       try { fs.unlinkSync(resultPath); } catch {}
-    } catch {}
+    } catch (e: any) {
+      asyncLog(`processResultFile ERROR: ${e.message}`);
+    }
   }
 
+  let watchedDir: string | null = null;
   function startResultWatcher() {
-    if (asyncState.watcher) return;
+    // Rebind watcher if results dir changed (session switch)
+    if (asyncState.watcher && watchedDir === ASYNC_RESULTS_DIR) return;
+    if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
+    watchedDir = ASYNC_RESULTS_DIR;
     try {
       fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
       asyncState.watcher = fs.watch(ASYNC_RESULTS_DIR, (ev, file) => {
@@ -227,6 +249,9 @@ export function registerAsyncAgents(
 
     fs.mkdirSync(asyncDir, { recursive: true });
     fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
+
+    // Write session marker so restore can match jobs to sessions
+    fs.writeFileSync(path.join(asyncDir, "session.json"), JSON.stringify({ resultsDir: ASYNC_RESULTS_DIR, fireAndForget: options?.fireAndForget || false }), { mode: 0o600 });
 
     // Build pi args
     const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
@@ -303,29 +328,83 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
-    ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `results-${process.pid}`);
 
-    // Clean up orphaned results directories from crashed sessions
+    // Set results dir based on session file — stable across reload/resume/--continue
+    const sessionFile = ctx.sessionManager?.getSessionFile?.() || (ctx as any).sessionFile || "";
+    ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, sessionDirName(sessionFile));
+    asyncLog(`session_start: sessionFile=${sessionFile.slice(-40)} resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
+
+    // Clean up legacy PID-based results directories only if their process is dead
     try {
       for (const entry of fs.readdirSync(ASYNC_BASE_DIR)) {
-        const m = entry.match(/^results-(\d+)$/);
+        const m = entry.match(/^(?:results|pid)-(\d+)$/);
         if (m) {
-          try { process.kill(+m[1], 0); } catch {
+          const pid = +m[1];
+          try { process.kill(pid, 0); } catch {
+            // Process dead — safe to clean up
             try { fs.rmSync(path.join(ASYNC_BASE_DIR, entry), { recursive: true, force: true }); } catch {}
           }
         }
       }
     } catch {}
 
+    // Restore jobs from status files in ASYNC_DIR that belong to this session
+    try {
+      for (const entry of fs.readdirSync(ASYNC_DIR)) {
+        if (entry.startsWith("session-") || entry.startsWith("pid-")) continue;
+        const jobDir = path.join(ASYNC_DIR, entry);
+        const status = readAsyncStatus(jobDir);
+        if (!status) continue;
+        // Check if this job belongs to our session
+        let marker: any;
+        try {
+          marker = JSON.parse(fs.readFileSync(path.join(jobDir, "session.json"), "utf-8"));
+          if (marker.resultsDir !== ASYNC_RESULTS_DIR) continue;
+        } catch {
+          continue;
+        }
+        const id = status.runId;
+        if (!id || asyncState.jobs.has(id)) continue;
+        const isAlive = status.pid ? (() => { try { process.kill(status.pid, 0); return true; } catch { return false; } })() : false;
+        const isComplete = status.state === "complete" || status.state === "failed";
+        // Always restore — poller's zombie check will mark dead ones as failed
+        if (isAlive || isComplete || status.state === "running") {
+          const job: AsyncJob = {
+            id,
+            agent: status.agent || "unknown",
+            task: (status.task || "").slice(0, 200),
+            status: isComplete ? status.state : "running",
+            asyncDir: path.join(ASYNC_DIR, entry),
+            startedAt: status.startedAt || Date.now(),
+            updatedAt: status.lastUpdate || Date.now(),
+            exitCode: status.exitCode,
+            durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
+            fireAndForget: marker.fireAndForget || false,
+          };
+          asyncState.jobs.set(id, job);
+          asyncLog(`restored job: ${id} state=${job.status}`);
+        }
+      }
+    } catch {}
+
+    // Start poller if we have jobs or unprocessed result files
+    let hasResultFiles = false;
+    try {
+      hasResultFiles = fs.existsSync(ASYNC_RESULTS_DIR) && fs.readdirSync(ASYNC_RESULTS_DIR).some(f => f.endsWith(".json"));
+    } catch {}
+    if (asyncState.jobs.size > 0 || hasResultFiles) {
+      ensureAsyncPoller();
+      updateAsyncWidget();
+    }
+
     startResultWatcher();
   });
 
   // Clean up on shutdown
-  pi.on("session_shutdown", (_event) => {
+  pi.on("session_shutdown", () => {
+    asyncLog(`shutdown: jobs=${asyncState.jobs.size}`);
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
-    // Clean up PID-scoped results directory
-    try { fs.rmSync(ASYNC_RESULTS_DIR, { recursive: true, force: true }); } catch {}
   });
 
   // /async-status command
