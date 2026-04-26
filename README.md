@@ -358,6 +358,7 @@ npm install && npm run build
 | `-v "$HOME/.agents":/home/node/.agents:rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro` | Google Cloud ADC (for Claude via Vertex AI) |
 | `-v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro` | Cursor CLI auth (for acpx cursor models) |
+| `-v "$HOME/.config/glab-cli":/home/node/.config/glab-cli:ro` | GitLab CLI config (auth tokens, host settings) |
 | `-v "$HOME/screenshots":/home/node/screenshots` | Share screenshots/images with the agent |
 | `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
 | `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
@@ -369,6 +370,7 @@ npm install && npm run build
 | `pi` | Coding agent |
 | `git` | Version control |
 | `gh` | GitHub CLI (PRs, issues) |
+| `glab` | GitLab CLI (MRs, issues, pipelines) — install [gitlab-cli-skills](https://github.com/vince-winkintel/gitlab-cli-skills) for full agent support |
 | `uv` / `uvx` | Python execution (enforced by orchestrator) |
 | `go` | Go development and code review |
 | `mcpl` | MCP server access (search, Jenkins, etc.) |
@@ -423,6 +425,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.agents":/home/node/.agents:rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
   -v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro \
+  -v "$HOME/.config/glab-cli":/home/node/.config/glab-cli:ro \
   -v "$HOME/screenshots":/home/node/screenshots \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --group-add $(stat -c '%g' /var/run/docker.sock) \

@@ -31,6 +31,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   apt-get update && apt-get install -y --no-install-recommends gh && \
   rm -rf /var/lib/apt/lists/*
 
+# Install GitLab CLI (latest release .deb from GitLab API)
+RUN GLAB_VERSION=$(curl -fsSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases" | grep -o '"tag_name":"v[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/^v//') && \
+  curl -fsSL -o /tmp/glab.deb "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_amd64.deb" && \
+  dpkg -i /tmp/glab.deb && \
+  rm -f /tmp/glab.deb
+
 # Install Chromium via Playwright (--with-deps installs all system libs)
 RUN mkdir -p /home/node/.cache/ms-playwright && \
   PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
