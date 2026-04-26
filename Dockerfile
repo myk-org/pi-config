@@ -92,6 +92,12 @@ RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1
 # myk-pi-tools is installed at runtime by entrypoint.sh from the latest
 # pi-config source (pulled via pi update). No need to bake it into the image.
 
+# Workaround for buildah bug #6747: cache mount above resets /home/node
+# ownership. Re-chown before CLI installs that need to write there.
+USER root
+RUN chown node:node /home/node
+USER node
+
 # Install Cursor Agent CLI and Claude Code (after uv tools)
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
