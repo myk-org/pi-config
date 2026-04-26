@@ -197,6 +197,26 @@ _VALID_BRANCH_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9._/][A-Za-z0-9._/-]*$")
 _ERR_INVALID_TARGET = "Invalid target branch: {!r}. Must not start with '-' or contain revision syntax."
 _ERR_INVALID_TAG_MATCH = "Invalid tag-match pattern: {!r}. Only alphanumeric, '.', '*', '-', '_' allowed."
 
+# Commit subjects that should be excluded from release changelogs
+_CHANGELOG_NOISE_PATTERNS = [
+    re.compile(r"address.*review", re.IGNORECASE),
+    re.compile(r"coderabbit", re.IGNORECASE),
+    re.compile(r"^chore:.*checkpoint", re.IGNORECASE),
+    re.compile(r"^chore:.*bump version", re.IGNORECASE),
+    re.compile(r"regenerate docs", re.IGNORECASE),
+    re.compile(r"pre-commit autoupdate", re.IGNORECASE),
+    re.compile(r"^Merge pull request"),
+    re.compile(r"^Merge branch"),
+]
+
+
+def _is_changelog_noise(commit: Commit) -> bool:
+    """Check if a commit should be excluded from release changelogs."""
+    for pattern in _CHANGELOG_NOISE_PATTERNS:
+        if pattern.search(commit.subject):
+            return True
+    return False
+
 
 def _detect_version_branch(current_branch: str) -> tuple[str | None, str | None]:
     """Auto-detect version branch and infer tag match pattern.
@@ -327,7 +347,8 @@ def _get_commits(last_tag: str | None, limit: int = 100) -> tuple[list[Commit], 
             )
         )
 
-    return commits, is_first_release
+    filtered = [c for c in commits if not _is_changelog_noise(c)]
+    return filtered, is_first_release
 
 
 def get_release_info(repo: str | None = None, target: str | None = None, tag_match: str | None = None) -> ReleaseInfo:
