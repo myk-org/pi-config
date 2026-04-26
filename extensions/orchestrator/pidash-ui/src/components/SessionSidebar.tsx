@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder } from "lucide-react";
+import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -22,6 +22,7 @@ interface Props {
   onSelect: (s: SessionInfo) => void;
   collapsed: boolean;
   onToggle: () => void;
+  onSettings?: () => void;
   notifications?: {
     permission: NotificationPermission;
     supported: boolean;
@@ -47,7 +48,7 @@ function saveCollapsedProjects(projects: Set<string>): void {
   try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...projects])); } catch {}
 }
 
-export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, notifications }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, onSettings, notifications }: Props) {
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
 
   // Wrap setter to persist to localStorage
@@ -108,6 +109,11 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
             setPreference={notifications.setPreference}
             requestPermission={notifications.requestPermission}
           />}
+          {onSettings && (
+            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground" onClick={onSettings}>
+              <Settings className="h-3.5 w-3.5" />
+            </Button>
+          )}
           <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground" onClick={onToggle}>
             <PanelLeftClose className="h-3.5 w-3.5" />
           </Button>
