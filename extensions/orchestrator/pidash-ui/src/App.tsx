@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeftOpen, Search } from "lucide-react";
 import { SessionSidebar } from "@/components/SessionSidebar";
 import { InfoBar } from "@/components/InfoBar";
@@ -7,6 +7,9 @@ import { InputBar } from "@/components/InputBar";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useSessions } from "@/hooks/useSessions";
 import { useNotifications } from "@/hooks/useNotifications";
+import { useKeybindings, matchesKeybinding } from "@/hooks/useKeybindings";
+import { SessionSwitcher } from "@/components/SessionSwitcher";
+import { KeybindingSettings } from "@/components/KeybindingSettings";
 import type { ChatMessage, PiEvent, SessionInfo, TokenUsage } from "@/types";
 
 const STORAGE_KEY = "pidash-state";
@@ -42,6 +45,10 @@ export function App() {
   const [searchType, setSearchType] = useState("all");
   const [scrollKey, setScrollKey] = useState(0);
   const [availableCommands, setAvailableCommands] = useState<Array<{ name: string; description: string }>>([]);
+  const keybindings = useKeybindings();
+  const [showSwitcher, setShowSwitcher] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
   const asyncMsgRef = useRef<Map<string, { msgId: string; text: string }>>(new Map());
   const messagesRef = useRef(messages);
   const saved = useRef(loadState());
@@ -469,13 +476,78 @@ export function App() {
     if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "abort" });
   }, [session, send]);
 
+  // Flatten sessions matching sidebar order: active groups first, then alphabetical, active sessions first within groups
+  const flatSessions = useMemo(() => {
+    const groups = new Map<string, SessionInfo[]>();
+    for (const s of sessions) {
+      const name = (s.cwd || "").split("/").pop() || s.cwd;
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name)!.push(s);
+    }
+    // Sort within groups: active first
+    for (const g of groups.values()) {
+      g.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+    }
+    // Sort groups: active groups first, then alphabetical
+    const sorted = [...groups.entries()].sort((a, b) => {
+      const aActive = a[1].some(s => s.active);
+      const bActive = b[1].some(s => s.active);
+      if (aActive !== bActive) return bActive ? 1 : -1;
+      return a[0].localeCompare(b[0]);
+    });
+    return sorted.flatMap(([, sessions]) => sessions);
+  }, [sessions]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && streaming && session) handleAbort();
+      // Don't intercept when typing in inputs (except Escape)
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+
+      if (matchesKeybinding(e, keybindings.getKey("abort"))) {
+        if (streaming && session) { e.preventDefault(); handleAbort(); }
+        if (showSwitcher) { e.preventDefault(); setShowSwitcher(false); }
+        if (showSettings) { e.preventDefault(); setShowSettings(false); }
+        return;
+      }
+
+      if (isInput) return;
+
+      if (matchesKeybinding(e, keybindings.getKey("session-switcher"))) {
+        e.preventDefault();
+        setShowSwitcher(prev => !prev);
+        return;
+      }
+
+      if (matchesKeybinding(e, keybindings.getKey("prev-session"))) {
+        e.preventDefault();
+        if (flatSessions.length < 2 || !session) return;
+        const idx = flatSessions.findIndex(s => s.sessionId === session.sessionId);
+        const prev = idx <= 0 ? flatSessions[flatSessions.length - 1] : flatSessions[idx - 1];
+        if (prev) watchSession(prev);
+        return;
+      }
+
+      if (matchesKeybinding(e, keybindings.getKey("next-session"))) {
+        e.preventDefault();
+        if (flatSessions.length < 2 || !session) return;
+        const idx = flatSessions.findIndex(s => s.sessionId === session.sessionId);
+        const next = idx >= flatSessions.length - 1 ? flatSessions[0] : flatSessions[idx + 1];
+        if (next) watchSession(next);
+        return;
+      }
+
+      for (let n = 1; n <= 9; n++) {
+        if (matchesKeybinding(e, keybindings.getKey(`session-${n}`))) {
+          e.preventDefault();
+          if (flatSessions[n - 1]) watchSession(flatSessions[n - 1]);
+          return;
+        }
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [streaming, session, handleAbort]);
+  }, [streaming, session, handleAbort, keybindings.getKey, flatSessions, watchSession, showSwitcher, showSettings]);
 
   const handleSend = useCallback((text: string, images?: Array<{ data: string; mimeType: string; filename: string }>) => {
     if (!session) return;
@@ -506,6 +578,7 @@ export function App() {
             collapsed={false}
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}
+            onSettings={() => setShowSettings(prev => !prev)}
           />
           <div
             className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/30 z-10 max-md:hidden"
@@ -574,6 +647,23 @@ export function App() {
         )}
       </div>
 
+      {showSettings && (
+        <KeybindingSettings
+          bindings={keybindings.bindings}
+          onUpdate={keybindings.updateBinding}
+          onReset={keybindings.resetToDefaults}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showSwitcher && (
+        <SessionSwitcher
+          sessions={flatSessions}
+          activeSessionId={session?.sessionId ?? null}
+          onSelect={watchSession}
+          onClose={() => setShowSwitcher(false)}
+        />
+      )}
     </div>
   );
 }
