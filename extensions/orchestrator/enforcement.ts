@@ -169,7 +169,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         if (protectedBranches.has(branch))
           return {
             block: true,
-            reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.`,
+            reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git commit in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
           };
 
         const pr = getPrMergeStatus(branch, ctx.cwd);
@@ -195,7 +195,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         if (branch && protectedBranches.has(branch))
           return {
             block: true,
-            reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.`,
+            reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
           };
         // Block explicit push to any protected branch (e.g., git push origin v2.10)
         for (const pb of protectedBranches) {
