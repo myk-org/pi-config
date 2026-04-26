@@ -477,11 +477,11 @@ export function App() {
     return () => document.removeEventListener("keydown", onKey);
   }, [streaming, session, handleAbort]);
 
-  const handleSend = useCallback((text: string) => {
+  const handleSend = useCallback((text: string, images?: Array<{ data: string; mimeType: string; filename: string }>) => {
     if (!session) return;
     lastUserRef.current = text;
-    addMsg("user", text);
-    send({ type: "prompt", sessionId: session.sessionId, text });
+    addMsg("user", text + (images ? ` [+${images.length} file(s)]` : ""));
+    send({ type: "prompt", sessionId: session.sessionId, text, images: images || undefined });
   }, [session, send, addMsg]);
 
   return (

@@ -371,11 +371,13 @@ browserWss.on("connection", (ws: any) => {
         return;
       }
 
-      if (parsed.type === "prompt" && parsed.text && parsed.sessionId) {
+      if (parsed.type === "prompt" && (parsed.text || parsed.images) && parsed.sessionId) {
         const piClient = piClients.get(parsed.sessionId);
         if (piClient && piClient.ws) {
-          piClient.ws.send(JSON.stringify({ type: "prompt", text: parsed.text }));
-          log(`prompt forwarded to ${parsed.sessionId}: ${parsed.text.slice(0, 50)}`);
+          const fwd: any = { type: "prompt", text: parsed.text || "" };
+          if (parsed.images && parsed.images.length > 0) fwd.images = parsed.images;
+          piClient.ws.send(JSON.stringify(fwd));
+          log(`prompt forwarded to ${parsed.sessionId}: ${(parsed.text || "").slice(0, 50)}${parsed.images ? ` [+${parsed.images.length} images]` : ""}`);
         }
         return;
       }
@@ -955,6 +957,20 @@ if (process.env.DISCORD_BOT_TOKEN) {
       }
     });
 
+    // Download Discord attachment and convert to base64
+    async function downloadAttachment(url: string): Promise<{ data: string; mimeType: string } | null> {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const contentType = response.headers.get("content-type") || "application/octet-stream";
+        return { data: buffer.toString("base64"), mimeType: contentType };
+      } catch (e: any) {
+        log(`[discord] attachment download error: ${e.message}`);
+        return null;
+      }
+    }
+
     // Handle DM messages (prompts + ask_user responses)
     discord.on("raw", async (event: any) => {
       if (event.t !== "MESSAGE_CREATE") return;
@@ -964,7 +980,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
       if (d.guild_id) return; // Only DMs
 
       const text = (d.content || "").trim();
-      if (!text) return;
+      if (!text && (!d.attachments || d.attachments.length === 0)) return;
 
       const userId = d.author.id;
       const channelId = d.channel_id;
@@ -1017,9 +1033,53 @@ if (process.env.DISCORD_BOT_TOKEN) {
         return;
       }
 
-      discordOriginatedPrompts.add(text);
-      setTimeout(() => discordOriginatedPrompts.delete(text), 30000);
-      client.ws.send(JSON.stringify({ type: "prompt", text }));
+      // Process attachments (images, text files)
+      const attachments = d.attachments || [];
+      const images: Array<{ data: string; mimeType: string; filename: string }> = [];
+      const fileContents: string[] = [];
+
+      if (attachments.length > 0) {
+        for (const att of attachments) {
+          const isImage = att.content_type?.startsWith("image/");
+          const isText = att.content_type?.startsWith("text/") ||
+            /\.(txt|log|md|json|yaml|yml|toml|csv|xml|html|css|js|ts|py|sh|go|java|rs|rb|c|cpp|h|hpp)$/i.test(att.filename || "");
+
+          if (isImage) {
+            const downloaded = await downloadAttachment(att.url);
+            if (downloaded) {
+              images.push({ ...downloaded, filename: att.filename || "image" });
+            }
+          } else if (isText && att.size < 100000) { // <100KB text files
+            try {
+              const response = await fetch(att.url);
+              if (response.ok) {
+                const content = await response.text();
+                fileContents.push(`--- ${att.filename} ---\n${content}`);
+              }
+            } catch (e: any) {
+              log(`[discord] text file download error: ${e.message}`);
+            }
+          } else {
+            // Binary or large file — just mention it
+            fileContents.push(`[Attached file: ${att.filename} (${att.content_type}, ${(att.size / 1024).toFixed(1)}KB) — binary file not included]`);
+          }
+        }
+      }
+
+      // Build the prompt with any text file contents appended
+      const fullText = fileContents.length > 0
+        ? (text ? text + "\n\n" : "") + fileContents.join("\n\n")
+        : text;
+
+      if (!fullText && images.length === 0) return; // Nothing to send
+
+      discordOriginatedPrompts.add(fullText || text);
+      setTimeout(() => discordOriginatedPrompts.delete(fullText || text), 30000);
+      client.ws.send(JSON.stringify({
+        type: "prompt",
+        text: fullText || "",
+        images: images.length > 0 ? images : undefined,
+      }));
     });
 
     discord.once("ready", async (c: any) => {
