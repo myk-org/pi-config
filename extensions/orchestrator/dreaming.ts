@@ -4,8 +4,9 @@
  * Inspired by OpenClaw's dreaming system (v2026.4.5).
  * See: https://docs.openclaw.ai/concepts/dreaming
  *
- * When enabled, runs "uv run myk-pi-tools memory dream" every 3 hours
- * as an async background agent, plus on session shutdown as a detached process.
+ * When enabled, spawns a worker agent every 3 hours (and on session quit)
+ * that reads the session file, extracts memories, and writes memory.md directly.
+ * No CLI calls — the worker reads/writes the file using read/write tools.
  * Users toggle with /dream-auto on|off.
  */
 
