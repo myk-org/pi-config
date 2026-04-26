@@ -585,6 +585,9 @@ if (process.env.DISCORD_BOT_TOKEN) {
       partials: [Partials.Channel, Partials.Message],
     });
 
+    // Track prompts that originated from Discord DMs (to suppress USER echo)
+    const discordOriginatedPrompts = new Set<string>();
+
     // Per-user state — persisted to disk
     const DISCORD_STATE_FILE = path.join(process.env.HOME || "~", ".pi", "discord-state.json");
 
@@ -692,8 +695,14 @@ if (process.env.DISCORD_BOT_TOKEN) {
           const content = ev.message.content;
           if (Array.isArray(content)) {
             const text = content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
-            if (text) sendDiscordDM(state.responseChannelId!, `───
+            // Skip echo if this message originated from Discord
+            if (text && discordOriginatedPrompts.has(text)) {
+              discordOriginatedPrompts.delete(text);
+              // Don't send — user already sees their own message in Discord
+            } else if (text) {
+              sendDiscordDM(state.responseChannelId!, `───
 ▶ **USER:** ${text}`);
+            }
           }
         }
 
@@ -760,8 +769,8 @@ if (process.env.DISCORD_BOT_TOKEN) {
           .setName("status")
           .setDescription("Show current watched session info"),
         new SlashCommandBuilder()
-          .setName("abort")
-          .setDescription("Abort the current operation"),
+          .setName("stop")
+          .setDescription("Stop/interrupt the current agent (like Esc in terminal)"),
       ];
 
       const rest = new REST().setToken(discordToken);
@@ -932,7 +941,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
         return;
       }
 
-      if (cmd === "abort") {
+      if (cmd === "stop") {
         if (!state.watchedSessionId) {
           await safeReply("Not watching any session.");
           return;
@@ -941,7 +950,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
         if (client?.ws) {
           client.ws.send(JSON.stringify({ type: "pidash-command", command: "abort" }));
         }
-        await safeReply("Abort sent.");
+        await safeReply("⏹️ Stop signal sent.");
         return;
       }
     });
@@ -963,6 +972,22 @@ if (process.env.DISCORD_BOT_TOKEN) {
       state.responseChannelId = channelId;
 
       log(`[discord] DM from ${d.author.username}: ${text.slice(0, 80)} (watched=${getSessionName(state.watchedSessionId)})`);
+
+      // Handle /stop in DM text
+      if (text.toLowerCase() === "/stop") {
+        if (state.watchedSessionId) {
+          const client = piClients.get(state.watchedSessionId);
+          if (client?.ws) {
+            client.ws.send(JSON.stringify({ type: "pidash-command", command: "abort" }));
+            await sendDiscordDM(channelId, "⏹️ Stop signal sent.");
+          } else {
+            await sendDiscordDM(channelId, "Watched session is disconnected.");
+          }
+        } else {
+          await sendDiscordDM(channelId, "Not watching any session.");
+        }
+        return;
+      }
 
       // Handle pending ask_user response
       if (state.pendingAskUser) {
@@ -992,6 +1017,8 @@ if (process.env.DISCORD_BOT_TOKEN) {
         return;
       }
 
+      discordOriginatedPrompts.add(text);
+      setTimeout(() => discordOriginatedPrompts.delete(text), 30000);
       client.ws.send(JSON.stringify({ type: "prompt", text }));
     });
 
