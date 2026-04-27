@@ -1,6 +1,6 @@
 ---
-description: "Run a prompt via acpx to any coding agent (cursor, codex, gemini, claude, copilot, droid, kiro, opencode, qwen, etc.). Use for peer review, code review, or any task involving an external AI agent — /acpx-prompt <agent> <prompt>"
-argument-hint: "<agent[:model]> [--fix|--peer] <prompt>"
+description: "Run a prompt via acpx to any coding agent (cursor, codex, gemini, claude, copilot, droid, kiro, opencode, qwen, etc.). Use for peer review, code review, or any task involving an external AI agent — /acpx-prompt [agent] <prompt>"
+argument-hint: "[agent[:model]] [--fix|--peer] <prompt>"
 ---
 
 ## Raw Arguments
@@ -57,6 +57,8 @@ Run a prompt through [acpx](https://github.com/openclaw/acpx) to any ACP-compati
 - `/acpx-prompt cursor:gpt-4o,claude:sonnet --peer review the architecture`
 - `/acpx-prompt cursor,codex review this code`
 - `/acpx-prompt cursor,gemini,codex --peer review the architecture`
+- `/acpx-prompt review this code` — uses last saved agent from `.pi/acpx-config.json`
+- `/acpx-prompt --peer review this` — uses last saved peers from `.pi/acpx-config.json`
 
 ## Workflow
 
@@ -99,24 +101,14 @@ The underlying coding agent must be installed separately. acpx auto-downloads AC
 
 ### Step 2: Parse Arguments
 
-Read the **Raw Arguments** section above. Parse the text to extract the agent name(s) and prompt:
+Read the **Raw Arguments** section above. Tokenize by whitespace and parse as follows:
 
-1. The **first token** is the agent specification (required). Format:
-   `agent[:model]` or comma-separated `agent1[:model1],agent2[:model2],...`
-   Each agent name must be one of the supported agents listed above.
-   The optional `:model` suffix selects a specific model for that agent.
-2. After the agent specification, consume optional flags:
-   - `--fix` — enable fix mode (agent can modify files)
-   - `--peer` — enable peer review loop (AI-to-AI debate)
-3. Everything after flags is the prompt text.
-
-**Agent:model parsing:**
-
-Split the first token by commas to get individual agent specs. For each spec:
-
-- If it contains `:`, split on the FIRST `:` only — left side is agent name,
-  right side is model name (model names may contain colons, e.g., `openai:gpt-4o`)
-- If no `:`, the agent name is the full spec and no model override is used
+1. **Consume leading flags** — strip `--fix` and/or `--peer` from the front of the token stream
+2. **Detect agent spec** — the next token is an agent spec if it matches a known agent name
+   (with optional `:model` suffix) or is a comma-separated list of such specs.
+   Split on commas, then for each segment: split on the FIRST `:` — left side is the
+   agent name, right side (if any) is the model override.
+3. **Remainder is the prompt** — everything after the agent spec (or after flags if no agent)
 
 **Flag validation:**
 
@@ -128,19 +120,71 @@ Split the first token by commas to get individual agent specs. For each spec:
 - If `--fix` appears more than once, abort with: "Duplicate --fix flag."
 - If `--peer` appears more than once, abort with: "Duplicate --peer flag."
 
-If no agent name is provided, abort with:
-"No agent specified. Usage: `/acpx-prompt <agent[:model]>[,agent2[:model2],...] [--fix | --peer] <prompt>`
+**Parsing order:**
 
-Supported agents: pi, openclaw, codex, claude, gemini, cursor, copilot, droid, iflow, kilocode, kimi, kiro, opencode, qwen"
+1. **Consume leading flags first** — strip any `--fix` or `--peer` from the token stream
+2. **Check if the next token is an agent spec** — a token is an agent spec if:
+   - It matches a known agent name exactly (e.g., `cursor`, `codex`)
+   - OR it contains `:` with a known agent name before the colon (e.g., `cursor:gpt-4o`)
+   - OR it's a comma-separated list where ALL parts match known agent names
+3. **If the first non-flag token looks like an agent but contains unknown names**, abort with:
+   "Unknown agent: `<name>`. Supported agents: pi, openclaw, codex, claude, gemini,
+   cursor, copilot, droid, iflow, kilocode, kimi, kiro, opencode, qwen"
+4. **If no agent spec found** (first non-flag token is not a recognized agent), fall through
+   to saved config below
 
-If an agent name is not recognized, abort with:
-"Unknown agent: `<name>`. Each agent in a comma-separated list
-must be recognized. Supported agents: pi, openclaw, codex, claude,
-gemini, cursor, copilot, droid, iflow, kilocode, kimi, kiro,
-opencode, qwen"
+**No agent specified — use saved config:**
 
-If no prompt is provided after the agent name, abort with:
-"No prompt provided. Usage: `/acpx-prompt <agent[:model]>[,agent2[:model2],...] [--fix | --peer] <prompt>`"
+Check for saved configuration:
+
+```bash
+mkdir -p .pi
+cat .pi/acpx-config.json 2>/dev/null
+```
+
+The config file structure:
+
+```json
+{
+  "lastAgents": "cursor:gpt-4o",
+  "lastPeers": "cursor,codex"
+}
+```
+
+If the file doesn't exist, is empty, or contains invalid JSON, treat as no config.
+
+- **If `--peer` was passed** and `lastPeers` exists and is non-empty:
+  Ask via AskUserQuestion: "Last used peers: `<lastPeers>` — use these?"
+  Options: "Yes", "Change"
+  - Yes → use `lastPeers` as the agent spec
+  - Change → ask: "Enter agent(s) for peer review:"
+
+- **If `--peer` was passed** but `lastPeers` is missing/empty:
+  Ask: "Enter agent(s) for peer review (e.g., cursor,codex):"
+
+- **If `--fix` was passed or no flags** and `lastAgents` exists and is non-empty:
+  Ask via AskUserQuestion: "Last used agent: `<lastAgents>` — use this?"
+  Options: "Yes", "Change"
+  - Yes → use `lastAgents` as the agent spec
+  - Change → ask: "Enter agent[:model]:"
+
+- **If `--fix` was passed** and `lastAgents` is missing/empty:
+  Ask: "Enter agent[:model] for fix mode:"
+
+- **If no flags** and `lastAgents` is missing/empty:
+  Abort with: "No agent specified and no saved config found.
+  Usage: `/acpx-prompt [agent[:model]] [--fix | --peer] <prompt>`
+  Supported agents: pi, openclaw, codex, claude, gemini, cursor, copilot, droid,
+  iflow, kilocode, kimi, kiro, opencode, qwen"
+
+**Agent name validation:**
+
+After resolving the agent spec (from args or config), validate ALL agent names.
+If any agent name is not recognized, abort with the unknown agent message.
+
+**Empty prompt check:** After resolving agent spec, if the remaining prompt text is
+empty or whitespace-only, abort with:
+"No prompt provided. Usage: `/acpx-prompt [agent[:model]] [--fix | --peer] <prompt>`"
 
 ### Step 3: Session Management
 
@@ -317,6 +361,8 @@ If in session mode, also show:
 ```text
 Session active. Send follow-up prompts with: /acpx-prompt <agent[:model]> <follow-up>
 ```
+
+**Save config:** See "Persist Config" section after Step 9e.
 
 ### Step 7: Read Diff (--fix mode only)
 
@@ -607,3 +653,30 @@ section showing the group dynamics:
 | Missing null check | cursor | claude, codex | All agreed, fixed |
 | Naming convention | codex | — | Only codex flagged, Claude disagreed, codex conceded |
 ```
+
+**Save config:** See "Persist Config" section below.
+
+### Persist Config (runs once after successful completion)
+
+After successful execution (Step 6 for normal mode, Step 9e for peer mode), persist
+the agent spec to `.pi/acpx-config.json`. Run exactly once per successful completion.
+
+**Skip if any step failed** — do not persist config after errors or aborted runs.
+
+1. Read existing config: `cat .pi/acpx-config.json 2>/dev/null || echo '{}'`
+2. Parse as JSON (if parse fails, start with `{}`)
+3. Update the relevant field:
+   - If `--peer` was used: set `lastPeers` to the normalized agent string (e.g., `cursor,codex`)
+   - Otherwise: set `lastAgents` to the normalized agent string (e.g., `cursor:gpt-4o`)
+4. Preserve the other field (don't overwrite `lastAgents` when saving peers, and vice versa)
+5. Write the merged JSON:
+
+```bash
+mkdir -p .pi
+```
+
+Use a bash heredoc or a single `node -e` / `python3 -c` one-liner to read-merge-write atomically.
+
+**Normalized agent string:** The exact agent spec used for the run, as the user would type it
+(e.g., `cursor`, `cursor:gpt-4o`, `cursor,codex`). For config-resolved runs, save the
+confirmed value (either the saved value if user said "Yes", or the new value if user changed it).
