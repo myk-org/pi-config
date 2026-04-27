@@ -345,12 +345,26 @@ export function registerPidash(
         });
 
         // Send heartbeat every 30s to prevent idle disconnects
+        // Also detect dead connections after suspend/resume
+        let pongReceived = true;
+        wsClient.on("pong", () => { pongReceived = true; });
         const heartbeat = setInterval(() => {
-          if (wsClient.readyState === 1) { // WebSocket.OPEN
-            try { wsClient.ping(); } catch {}
-          } else {
+          if (wsClient.readyState !== 1) { // Not OPEN
             clearInterval(heartbeat);
+            return;
           }
+          if (!pongReceived) {
+            // No pong since last ping — connection is dead
+            debugLog("heartbeat: no pong received — connection dead, forcing reconnect");
+            clearInterval(heartbeat);
+            try { wsClient.terminate(); } catch {}
+            connected = false;
+            ws = null;
+            if (!shuttingDown && lastCtx) setTimeout(() => connect(lastCtx), 1000);
+            return;
+          }
+          pongReceived = false;
+          try { wsClient.ping(); } catch {}
         }, 30000);
         if ((heartbeat as any).unref) (heartbeat as any).unref();
 
