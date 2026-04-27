@@ -460,6 +460,11 @@ export function registerPidash(
               pi.events.emit("pidash:async-kill", parsed.target);
             }
 
+            if (parsed.command === "cron-kill" && parsed.target) {
+              debugLog(`cron-kill from browser: ${parsed.target}`);
+              pi.events.emit("pidash:cron-kill", parsed.target);
+            }
+
             if (parsed.command === "list-commands") {
               try {
                 const cmds = (pi as any).getCommands?.() || [];
@@ -680,6 +685,13 @@ export function registerPidash(
   pi.events.on("pidash:async-status", (data: unknown) => {
     if (ws && connected) {
       try { ws.send(JSON.stringify({ type: "async-status", ...(data as any) })); } catch {}
+    }
+  });
+
+  // Forward cron status to browser
+  pi.events.on("pidash:cron-status", (data: unknown) => {
+    if (ws && connected) {
+      try { ws.send(JSON.stringify({ type: "cron-status", ...(data as any) })); } catch {}
     }
   });
 

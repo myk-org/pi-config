@@ -59,6 +59,7 @@ Single extension that provides:
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain memory.md |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
+| `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 
 ## Installation
 

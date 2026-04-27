@@ -211,6 +211,18 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
         { value: "status", label: "status", description: "Show pidash status" },
       ], prefix);
     },
+
+    "cron": (prefix: string) => {
+      const parts = prefix.split(/\s+/);
+      const lastPart = parts[parts.length - 1] || "";
+      if (parts.length <= 1) {
+        return filter([{ value: "add", label: "add", description: "Add a scheduled task" }, { value: "list", label: "list", description: "List scheduled tasks" }, { value: "remove", label: "remove", description: "Remove a scheduled task" }], lastPart);
+      }
+      if (parts[0] === "add" && parts.length <= 2) {
+        return filter([{ value: "every", label: "every", description: "Interval-based (e.g., every 2h)" }, { value: "at", label: "at", description: "Time-based (e.g., at 12:00)" }], lastPart);
+      }
+      return null;
+    },
   };
 
   // ── Mechanism 1: registerCommand wrapping for extension commands ─
@@ -233,7 +245,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "acpx-prompt", "pr-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler",
+    "review-local", "release", "review-handler", "cron",
   ]);
 
   pi.on("session_start", (_event, ctx) => {
