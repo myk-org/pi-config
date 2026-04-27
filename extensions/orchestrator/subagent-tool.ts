@@ -501,6 +501,22 @@ export function registerSubagentTool(
     parameters: SubagentParams,
 
     async execute(_id, params, signal, onUpdate, ctx) {
+      // Track active subagents for working indicator
+      const activeAgents = new Set<string>();
+      const updateWorking = () => {
+        if (!ctx.hasUI) return;
+        if (activeAgents.size === 0) {
+          ctx.ui.setWorkingMessage();
+          return;
+        }
+        const names = [...activeAgents];
+        if (names.length === 1) {
+          ctx.ui.setWorkingMessage(`🔧 ${names[0]} working...`);
+        } else {
+          ctx.ui.setWorkingMessage(`🔧 ${names.length} agents (${names.join(", ")})...`);
+        }
+      };
+
       const scope: AgentScope = params.agentScope ?? "user";
       const discovery = discoverAgents(ctx.cwd, scope);
       const agents = discovery.agents;
@@ -692,6 +708,9 @@ export function registerSubagentTool(
                   });
               }
             : undefined;
+          activeAgents.clear();
+          activeAgents.add(s.agent);
+          updateWorking();
           const r = await runSingleAgent(
             agents,
             s.agent,
@@ -702,6 +721,8 @@ export function registerSubagentTool(
             chainUpdate,
             mkd("chain"),
           );
+          activeAgents.delete(s.agent);
+          updateWorking();
           results.push(r);
           if (
             r.exitCode !== 0 ||
@@ -796,6 +817,9 @@ export function registerSubagentTool(
           params.tasks,
           MAX_CONCURRENCY,
           async (t, i) => {
+            const label = t.name || t.agent;
+            activeAgents.add(label);
+            updateWorking();
             const r = await runSingleAgent(
               agents,
               t.agent,
@@ -812,6 +836,8 @@ export function registerSubagentTool(
               mkd("parallel"),
             );
             all[i] = r;
+            activeAgents.delete(t.name || t.agent);
+            updateWorking();
             emitAll();
             return r;
           },
@@ -847,6 +873,9 @@ export function registerSubagentTool(
             isError: true,
           };
         }
+        const label = params.name || params.agent;
+        activeAgents.add(label);
+        updateWorking();
         const r = await runSingleAgent(
           agents,
           params.agent,
@@ -857,6 +886,8 @@ export function registerSubagentTool(
           onUpdate,
           mkd("single"),
         );
+        activeAgents.delete(label);
+        updateWorking();
         const err =
           r.exitCode !== 0 ||
           r.stopReason === "error" ||
