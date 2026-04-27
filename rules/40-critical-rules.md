@@ -41,6 +41,12 @@ Only use sync (default) when the **very next step** depends on this agent's outp
 ❌ **WRONG:** `sleep 60 && check status` — blocks the session
 ✅ **RIGHT:** Spawn async agent to poll and notify when done
 
+**Kill async agents when their result is no longer needed.**
+Don't let them run to completion wasting resources. Use `asyncKill` immediately.
+
+❌ **WRONG:** Re-dispatch to correct cwd → old agent keeps running in the background
+✅ **RIGHT:** Kill the old agent → then dispatch the replacement
+
 ### Subagent cwd (MANDATORY)
 
 **ALWAYS pass `cwd`** when delegating to subagents — in ALL modes (single, parallel, chain, async).
