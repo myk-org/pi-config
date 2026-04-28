@@ -52,6 +52,10 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
     agents: string;
     jobs: Array<{ id: string; name: string; agent: string; task: string; status: string; startedAt: number }>;
   }>({ count: 0, agents: "", jobs: [] });
+  const [cronTasks, setCronTasks] = useState<{
+    count: number;
+    tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number }>;
+  }>({ count: 0, tasks: [] });
   const filterRef = useRef<HTMLInputElement>(null);
 
   const ctxWin = session.contextWindow || 1000000;
@@ -62,9 +66,10 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   const pctColor = pct > 80 ? "text-red-500" : pct > 50 ? "text-orange-400" : "";
   const displayModel = model || session.model || "—";
 
-  // Reset async agents when session changes
+  // Reset async agents and cron tasks when session changes
   useEffect(() => {
     setAsyncAgents({ count: 0, agents: "", jobs: [] });
+    setCronTasks({ count: 0, tasks: [] });
   }, [session.sessionId]);
 
   useEffect(() => {
@@ -85,6 +90,13 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         setAsyncAgents(prev => {
           if (prev.count === newCount && prev.agents === newAgents) return prev;
           return { count: newCount, agents: newAgents, jobs: ev.jobs || [] };
+        });
+      }
+      if (ev.type === "cron-status") {
+        const newCount = ev.count || 0;
+        setCronTasks(prev => {
+          if (prev.count === newCount) return prev;
+          return { count: newCount, tasks: ev.tasks || [] };
         });
       }
     });
@@ -231,8 +243,63 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         </>
       )}
 
-      {/* Async agents — always visible, pinned to far right */}
+      {/* Cron tasks — visible when active, pinned to far right alongside async */}
       <div className="relative inline-block ml-auto">
+        <Popover>
+          <PopoverTrigger className={cn(
+            "cursor-pointer text-xs",
+            cronTasks.count > 0 ? "text-blue-400 hover:text-blue-300" : "text-muted-foreground/50"
+          )}>
+            ⏰ {cronTasks.count} cron{cronTasks.count !== 1 ? "s" : ""}
+          </PopoverTrigger>
+          {cronTasks.count > 0 && (
+            <PopoverContent className="w-72 max-h-60 overflow-y-auto">
+              <div className="text-xs space-y-1.5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-foreground">Scheduled Tasks ({cronTasks.count})</span>
+                  {cronTasks.count > 1 && (
+                    <button
+                      onClick={() => {
+                        send({ type: "pidash-command", command: "cron-kill", target: "all", sessionId: session.sessionId });
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
+                    >
+                      Kill All
+                    </button>
+                  )}
+                </div>
+                {cronTasks.tasks.map((task) => {
+                  const lastRunStr = task.lastRun ? new Date(task.lastRun).toLocaleTimeString() : "never";
+                  const nextRunStr = task.nextRun ? new Date(task.nextRun).toLocaleTimeString() : "—";
+                  return (
+                    <div key={task.id} className="flex items-center justify-between gap-2 p-1.5 rounded bg-muted/50">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-foreground truncate">{task.description}</div>
+                        <div className="text-muted-foreground text-[10px]">{task.schedule}</div>
+                        <div className="text-muted-foreground text-[10px]">last: {lastRunStr} · next: {nextRunStr}</div>
+                      </div>
+                      <div className="flex gap-1 shrink-0">
+                        <button
+                          onClick={() => {
+                            send({ type: "pidash-command", command: "cron-kill", target: String(task.id), sessionId: session.sessionId });
+                          }}
+                          className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 hover:bg-red-500/40"
+                          title="Kill this cron task"
+                        >
+                          Kill
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          )}
+        </Popover>
+      </div>
+
+      {/* Async agents — always visible */}
+      <div className="relative inline-block">
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",

@@ -28,6 +28,7 @@ import { registerStatusLine } from "./status-line.js";
 import { registerSubagentTool } from "./subagent-tool.js";
 import { registerGithubAutocomplete } from "./github-autocomplete.js";
 import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
+import { registerCron } from "./cron.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -71,6 +72,7 @@ export default function (pi: ExtensionAPI) {
   registerBtw(pi);
   registerDifit(pi);
   registerDreaming(pi, spawnAsyncAgent);
+  registerCron(pi, spawnAsyncAgent);
   registerPidash(pi, killAsyncAgent);
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);
