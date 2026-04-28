@@ -1,32 +1,19 @@
-# Prompt Template Execution - Strict Rules
-
-🚨 **CRITICAL: Prompt templates (`/command`) have SPECIAL execution rules**
+# Prompt Template Execution Rules
 
 ## When a Prompt Template is Invoked
 
-1. **EXECUTE IT DIRECTLY YOURSELF** - NEVER delegate to any agent
-2. **ALL internal operations run DIRECTLY** - scripts, bash commands, everything
-3. **Prompt template takes FULL CONTROL** - its instructions override general AGENTS.md rules
-4. **General delegation rules are SUSPENDED** for the duration of the prompt template
+1. **The prompt template is the authority** — follow its instructions
+2. **NEVER delegate the prompt template itself** to an agent — the orchestrator executes it
+3. **The prompt decides** when to run directly and when to delegate to agents
+4. If the prompt says "run this bash command" — run it directly
+5. If the prompt says "delegate to X agent" — delegate
+6. If the prompt doesn't specify — follow normal orchestrator rules (delegate to specialists)
 
-## Execution Mode Comparison
+## Key Rules
 
-| Scenario            | Normal Mode                | During Prompt Template |
-|---------------------|----------------------------|------------------------|
-| Run bash script     | Delegate to bash-expert    | Run directly           |
-| Execute git command | Delegate to git-expert     | Run directly           |
-| Any shell command   | Delegate to specialist     | Run directly           |
+- The orchestrator **maintains control** of the prompt workflow
+- The prompt template's instructions **override** general delegation rules when they conflict
+- **NEVER** delegate the `/command` itself to an agent — only delegate sub-tasks when the prompt says to
 
-## Why These Rules Exist
-
-- Prompt templates define their OWN workflow and agent routing
-- The prompt template specifies exactly when/how to use agents
-- Delegating the prompt template itself breaks its internal logic
-- The orchestrator must maintain control to follow the prompt template's phases
-
-## Enforcement
-
-❌ **VIOLATION**: `/mycommand` → delegate to agent → agent runs the prompt
-✅ **CORRECT**: `/mycommand` → orchestrator executes prompt directly → follows its internal rules
-
-**If a prompt template's internal instructions say to use an agent, THEN use an agent. Otherwise, do it directly.**
+❌ **WRONG**: `/mycommand` → delegate entire prompt to an agent
+✅ **RIGHT**: `/mycommand` → orchestrator follows the prompt → delegates sub-tasks as the prompt instructs

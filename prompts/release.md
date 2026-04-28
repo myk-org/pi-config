@@ -173,63 +173,26 @@ Parse the JSON output from bump-version. Only stage the files listed in the
 `updated[]` array. If `skipped[]` is non-empty, inform the user which files were
 skipped and why before proceeding.
 
-Then create a branch, stage files, sync lockfile, commit, and push — **all in one sequence**:
+**Delegate git and GitHub operations to specialist agents:**
 
-```bash
-BUMP_BRANCH="chore/bump-version-<VERSION>-$(date +%s)"
-git checkout -b "$BUMP_BRANCH"
-git add <updated-files>
-# MANDATORY: sync uv.lock when pyproject.toml is bumped
-if [ -f uv.lock ]; then uv lock && git add uv.lock; fi
-git commit -m "chore: bump version to <VERSION>"
-git push -u origin "$BUMP_BRANCH"
-```
+1. **Delegate to `git-expert`:** Create branch, stage files, sync lockfile, commit, push:
+   - Create branch: `chore/bump-version-<VERSION>-$(date +%s)` from current HEAD
+   - Stage the updated version files
+   - If `uv.lock` exists: run `uv lock` then stage `uv.lock`
+   - Commit with message: `chore: bump version to <VERSION>`
+   - Push the branch
+   - **Important:** The branch creation and commit MUST be in separate bash calls
+     (enforcement checks branch before execution)
 
-> **DO NOT split this block.** The `uv lock` step syncs the lockfile after
-> `pyproject.toml` version changes. Skipping it leaves a dirty `uv.lock`
-> after the release merge.
+2. **Delegate to `github-expert`:** Create PR and merge:
+   - Create PR: title `chore: bump version to <VERSION>`, base `<target_branch>`
+   - Merge with `--merge --admin --delete-branch`
+   - If admin merge fails (permission denied): ask user to merge manually,
+     wait for confirmation, verify PR state is MERGED
+   - If other errors: abort the release
 
-Note: The timestamp suffix prevents conflicts with previous bump attempts.
-
-Create a PR and capture its URL:
-
-```bash
-PR_URL=$(gh pr create --title "chore: bump version to <VERSION>" \
-  --body "Bump version to <VERSION>" --base <target_branch>)
-```
-
-Merge the PR using admin privileges:
-
-```bash
-gh pr merge --merge --admin --delete-branch
-```
-
-If the `--admin` merge fails, check the error:
-
-- **Permission denied / not admin** -- Fall back to manual merge:
-  1. Display `PR_URL` to the user
-  2. Tell the user: "Admin merge failed. Please merge the PR manually
-     (or wait for CI checks to pass). Let me know when it's merged."
-  3. Use `AskUserQuestion` to wait for confirmation
-  4. After user confirms, verify the PR is merged:
-
-     ```bash
-     gh pr view "$PR_URL" --json state --jq '.state'
-     ```
-
-     If the state is not `MERGED`, ask the user again.
-- **Other errors** (network, auth, etc.) -- Abort the release and
-  display the error.
-
-After merge (either admin or manual), sync the local target branch:
-
-```bash
-git checkout <target_branch>
-git pull origin <target_branch>
-```
-
-Where `<target_branch>` is the branch from Phase 1 validation
-(default branch or `--target` value).
+3. **Delegate to `git-expert`:** Sync local target branch:
+   - Checkout `<target_branch>` and pull from origin
 
 ### Phase 6: Create Release
 
