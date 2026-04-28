@@ -107,8 +107,10 @@ export function registerCron(
   let lastCwd = "";
   let lastCtx: any = null;
 
+
   function updateCronStatus() {
     const count = tasks.size;
+    saveCrons([...tasks.values()]);
     if (lastCtx?.hasUI) {
       if (count > 0) {
         lastCtx.ui.setStatus("2-crons", lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`));
@@ -231,7 +233,7 @@ export function registerCron(
     name: "cron_manage",
     description: "Manage scheduled cron tasks. Use this tool when the user wants to schedule, list, or remove recurring tasks.",
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("add"), Type.Literal("list"), Type.Literal("remove")], {
+      action: Type.Union([Type.Literal("add"), Type.Literal("list"), Type.Literal("list-all"), Type.Literal("remove")], {
         description: "The action to perform",
       }),
       description: Type.Optional(Type.String({
@@ -282,6 +284,7 @@ export function registerCron(
         startTask(task);
         saveCrons([...tasks.values()]);
 
+
         updateCronStatus();
         return {
           content: [{
@@ -304,6 +307,38 @@ export function registerCron(
         };
       }
 
+      if (action === "list-all") {
+        const sections: string[] = [];
+        try {
+          const dir = os.tmpdir();
+          for (const f of fs.readdirSync(dir)) {
+            const m = f.match(/^pi-cron-(\d+)\.json$/);
+            if (!m) continue;
+            const pid = +m[1];
+            const isMe = pid === process.pid;
+            let alive = isMe;
+            if (!isMe) { try { process.kill(pid, 0); alive = true; } catch {} }
+            if (!alive) continue;
+            const cronTasks: CronTask[] = isMe
+              ? [...tasks.values()]
+              : (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")); } catch { return []; } })();
+            if (cronTasks.length === 0) continue;
+            const label = isMe ? `PID ${pid} (this session)` : `PID ${pid}`;
+            const lines = cronTasks.map(t => {
+              const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
+              return `  #${t.id} | ${formatSchedule(t)} | ${t.description} | last run: ${last}`;
+            });
+            sections.push(`**${label}:**\n${lines.join("\n")}`);
+          }
+        } catch {}
+        if (sections.length === 0) {
+          return { content: [{ type: "text", text: "No scheduled tasks in any session." }] };
+        }
+        return {
+          content: [{ type: "text", text: `All sessions:\n\n${sections.join("\n\n")}` }],
+        };
+      }
+
       if (action === "remove") {
         const id = params.id as number;
         if (!id || !tasks.has(id)) {
@@ -323,23 +358,93 @@ export function registerCron(
     },
   });
 
-  // /cron command — natural language interface, forwarded to the AI
+  // /cron command
   pi.registerCommand("cron", {
-    description: "Schedule recurring tasks — /cron <natural language>",
+    description: "Schedule recurring tasks — /cron list|list-all|remove <id>|<natural language>",
     handler: async (args, ctx) => {
       lastCtx = ctx;
+      lastCwd = ctx.cwd;
       const text = (args || "").trim();
-      if (!text) {
-        pi.sendUserMessage(
-          "The user wants to manage scheduled cron tasks. Show them the current cron tasks using the cron_manage tool with action 'list'. Then explain how they can add or remove tasks using natural language, for example:\n\n- /cron check for new issues every 2 hours\n- /cron run /review-handler daily at noon\n- /cron remind me every 30 minutes to check build status\n- /cron stop task 1\n- /cron show my tasks",
-          { deliverAs: "followUp" },
-        );
+      const parts = text.split(/\s+/);
+      const sub = parts[0]?.toLowerCase();
+
+      // Direct handlers — no AI needed
+      if (sub === "list" && parts.length === 1) {
+        if (tasks.size === 0) {
+          if (ctx.hasUI) ctx.ui.notify("No scheduled tasks.", "info");
+          return;
+        }
+        const lines = [...tasks.values()].map(t => {
+          const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
+          return `#${t.id} | ${formatSchedule(t)} | ${t.description} | last run: ${last}`;
+        });
+        if (ctx.hasUI) ctx.ui.notify(`Scheduled tasks:\n${lines.join("\n")}`, "info");
         return;
       }
 
-      // Forward the user's natural language to the AI
+      if (sub === "list-all") {
+        const sections: string[] = [];
+        try {
+          const dir = os.tmpdir();
+          for (const f of fs.readdirSync(dir)) {
+            const m = f.match(/^pi-cron-(\d+)\.json$/);
+            if (!m) continue;
+            const pid = +m[1];
+            const isMe = pid === process.pid;
+            let alive = isMe;
+            if (!isMe) { try { process.kill(pid, 0); alive = true; } catch {} }
+            if (!alive) continue;
+            const cronTasks: CronTask[] = isMe
+              ? [...tasks.values()]
+              : (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")); } catch { return []; } })();
+            if (cronTasks.length === 0) continue;
+            const label = isMe ? `PID ${pid} (this session)` : `PID ${pid}`;
+            const lines = cronTasks.map(t => {
+              const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
+              return `  #${t.id} | ${formatSchedule(t)} | ${t.description} | last run: ${last}`;
+            });
+            sections.push(`${label}:\n${lines.join("\n")}`);
+          }
+        } catch {}
+        if (ctx.hasUI) ctx.ui.notify(sections.length > 0 ? sections.join("\n\n") : "No crons in any session.", "info");
+        return;
+      }
+
+      if ((sub === "remove" || sub === "rm" || sub === "delete" || sub === "kill") && parts.length > 1) {
+        const ids = parts.slice(1).map(p => parseInt(p, 10)).filter(n => !isNaN(n));
+        if (ids.length === 0) {
+          if (ctx.hasUI) ctx.ui.notify("No valid task IDs. Use /cron list", "warning");
+          return;
+        }
+        const removed: string[] = [];
+        const notFound: string[] = [];
+        for (const id of ids) {
+          if (tasks.has(id)) {
+            const task = tasks.get(id)!;
+            stopTask(id);
+            tasks.delete(id);
+            removed.push(`#${id} (${task.description})`);
+          } else {
+            notFound.push(`#${id}`);
+          }
+        }
+        saveCrons([...tasks.values()]);
+        updateCronStatus();
+        const lines: string[] = [];
+        if (removed.length) lines.push(`Removed: ${removed.join(", ")}`);
+        if (notFound.length) lines.push(`Not found: ${notFound.join(", ")}`);
+        if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), removed.length ? "info" : "warning");
+        return;
+      }
+
+      if (!text) {
+        if (ctx.hasUI) ctx.ui.notify("Usage:\n/cron <natural language task>\n/cron list\n/cron list-all\n/cron remove <id>", "info");
+        return;
+      }
+
+      // Only "add" goes through the AI for natural language parsing
       pi.sendUserMessage(
-        `The user wants to manage a cron/scheduled task. Parse their request and use the cron_manage tool to fulfill it.\n\nUser request: "${text}"\n\nInterpret the schedule and task from the natural language. For interval-based schedules, convert to seconds. For time-based schedules, extract hour and minute. If they want to list or remove tasks, use the appropriate action.`,
+        `The user wants to schedule a cron task. Parse their request and use the cron_manage tool with action "add".\n\nUser request: "${text}"\n\nInterpret the schedule and task from the natural language. For interval-based schedules, convert to seconds. For time-based schedules, extract hour and minute.`,
         { deliverAs: "followUp" },
       );
     },

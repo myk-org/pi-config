@@ -215,11 +215,36 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     "cron": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
-      if (parts.length <= 1) {
-        return filter([{ value: "add", label: "add", description: "Add a scheduled task" }, { value: "list", label: "list", description: "List scheduled tasks" }, { value: "remove", label: "remove", description: "Remove a scheduled task" }], lastPart);
+      const sub = parts[0]?.toLowerCase();
+
+      // First level: subcommands
+      if (parts.length <= 1 && !(["add", "list", "list-all", "remove", "rm", "delete", "kill"].includes(sub))) {
+        return filter([
+          { value: "add ", label: "add", description: "Add a scheduled task" },
+          { value: "list", label: "list", description: "List scheduled tasks" },
+          { value: "list-all", label: "list-all", description: "List crons from all sessions" },
+          { value: "remove ", label: "remove", description: "Remove a scheduled task" },
+        ], lastPart);
       }
-      if (parts[0] === "add" && parts.length <= 2) {
+      // After "add"
+      if (sub === "add" && parts.length <= 2) {
         return filter([{ value: "every", label: "every", description: "Interval-based (e.g., every 2h)" }, { value: "at", label: "at", description: "Time-based (e.g., at 12:00)" }], lastPart);
+      }
+      // After "remove" — show task IDs (supports multi-select)
+      if (sub === "remove" || sub === "rm" || sub === "delete" || sub === "kill") {
+        try {
+          const cronFile = require("node:path").join(require("node:os").tmpdir(), `pi-cron-${process.pid}.json`);
+          const cronTasks = JSON.parse(require("node:fs").readFileSync(cronFile, "utf-8"));
+          if (Array.isArray(cronTasks)) {
+            const alreadySelected = new Set(parts.slice(1).filter(p => p !== lastPart));
+            return filter(cronTasks.filter((t: any) => !alreadySelected.has(String(t.id))).map((t: any) => ({
+              value: String(t.id),
+              label: `#${t.id}`,
+              description: t.description || t.task || "",
+            })), lastPart);
+          }
+        } catch {}
+        return null;
       }
       return null;
     },
