@@ -104,12 +104,12 @@ export function registerDifit(pi: ExtensionAPI): void {
 
   function setDifitStatus(ctx: any, port: number): void {
     const statusText = ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${port}`);
-    ctx.ui.setStatus("diff-viewer", statusText);
+    ctx.ui.setStatus("4-diff", statusText);
     pi.events?.emit("diff-viewer:port", port);
   }
 
   function clearDifitStatus(ctx: any): void {
-    ctx.ui.setStatus("diff-viewer", undefined);
+    ctx.ui.setStatus("4-diff", undefined);
   }
 
   /** Start a new difit process. Returns port on success, null on failure. */

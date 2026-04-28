@@ -370,7 +370,7 @@ export function registerPidash(
 
         // Show status
         if (ctx.hasUI) {
-          ctx.ui.setStatus("pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
+          ctx.ui.setStatus("5-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
         }
       });
 
@@ -805,7 +805,7 @@ export function registerPidash(
           ex("pkill -f pidash-server", { stdio: "ignore" });
         } catch {}
         if (ctx.hasUI) {
-          ctx.ui.setStatus("pidash", undefined);
+          ctx.ui.setStatus("5-pidash", undefined);
           ctx.ui.notify("pidash server stopped", "info");
         }
         return;
