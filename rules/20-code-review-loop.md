@@ -40,7 +40,9 @@ Three agents review code in parallel for comprehensive coverage:
 | `code-reviewer-guidelines` | Project guidelines and style adherence (AGENTS.md) |
 | `code-reviewer-security` | Bugs, logic errors, and security vulnerabilities |
 
-**All 3 MUST be invoked in the same assistant turn as 3 subagent tool parallel tasks (one response containing 3 subagent invocations, not sequential messages).**
+**All 3 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
+Do NOT block waiting for reviews — continue working while they run.
+Results surface automatically when complete.**
 
 **Note:** The overlapping scope between reviewers is intentional. Multiple reviewers examining similar areas
 ensures comprehensive coverage and reduces the chance of missed issues.
