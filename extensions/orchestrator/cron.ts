@@ -111,9 +111,9 @@ export function registerCron(
     const count = tasks.size;
     if (lastCtx?.hasUI) {
       if (count > 0) {
-        lastCtx.ui.setStatus("crons", lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`));
+        lastCtx.ui.setStatus("2-crons", lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`));
       } else {
-        lastCtx.ui.setStatus("crons", lastCtx.ui.theme.fg("muted", `⏰ 0 crons`));
+        lastCtx.ui.setStatus("2-crons", lastCtx.ui.theme.fg("muted", `⏰ 0 crons`));
       }
     }
     pi.events.emit("pidash:cron-status", {

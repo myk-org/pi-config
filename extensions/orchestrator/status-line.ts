@@ -23,7 +23,7 @@ export function registerStatusLine(
     const text = parts.join(ctx.ui.theme.fg("dim", ICON_SEP));
     if (text === lastStatusText) return; // Skip redundant re-renders
     lastStatusText = text;
-    ctx.ui.setStatus("combined", text);
+    ctx.ui.setStatus("3-git", text);
     // Clear individual statuses to avoid duplicates
     ctx.ui.setStatus("container", undefined);
     ctx.ui.setStatus("git", undefined);

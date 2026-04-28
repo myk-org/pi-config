@@ -68,6 +68,7 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerEnforcement(pi, IN_CONTAINER);
   registerRules(pi);
+
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
   registerDifit(pi);

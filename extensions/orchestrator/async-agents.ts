@@ -107,7 +107,7 @@ export function registerAsyncAgents(
     lastWidgetKey = widgetKey;
     if (running.length > 0) {
       // Always re-set status for running agents (other status updates may have triggered a re-render)
-      ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("warning", `⏳ ${running.length} async agent${running.length > 1 ? "s" : ""}`));
+      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("warning", `⏳ ${running.length} async agent${running.length > 1 ? "s" : ""}`));
       if (changed) {
         pi.events.emit("pidash:async-status", {
           count: running.length,
@@ -123,7 +123,7 @@ export function registerAsyncAgents(
         });
       }
     } else if (changed) {
-      ctx.ui.setStatus("async-agents", ctx.ui.theme.fg("muted", `⏳ 0 async agents`));
+      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("muted", `⏳ 0 async agents`));
       pi.events.emit("pidash:async-status", { count: 0, agents: "", jobs: [] });
     }
   }
@@ -394,8 +394,8 @@ export function registerAsyncAgents(
     } catch {}
     if (asyncState.jobs.size > 0 || hasResultFiles) {
       ensureAsyncPoller();
-      updateAsyncWidget();
     }
+    updateAsyncWidget(); // Always set status (shows "0 async agents" when idle)
 
     startResultWatcher();
   });
