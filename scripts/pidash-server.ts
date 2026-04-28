@@ -1127,5 +1127,7 @@ server.on("error", (err: any) => {
   process.exit(1);
 });
 
+// Ignore SIGHUP — survives terminal close and laptop suspend/resume
+process.on("SIGHUP", () => { log("SIGHUP received — ignoring (survive suspend/resume)"); });
 process.on("SIGTERM", () => { log("SIGTERM received"); server.close(); process.exit(0); });
 process.on("SIGINT", () => { log("SIGINT received"); server.close(); process.exit(0); });
