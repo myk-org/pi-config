@@ -1,4 +1,5 @@
 import * as React from "react";
+import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
 
 interface PopoverProps {
@@ -33,19 +34,60 @@ export function PopoverTrigger({ children, className }: { children: React.ReactN
 export function PopoverContent({ children, className, side = "top" }: { children: React.ReactNode; className?: string; align?: string; side?: "top" | "bottom" }) {
   const { open, setOpen, triggerRef } = React.useContext(PopoverContext);
   const ref = React.useRef<HTMLDivElement>(null);
+  const [pos, setPos] = React.useState<{ top: number; left: number } | null>(null);
 
+  const updatePosition = React.useCallback(() => {
+    const trigger = triggerRef.current;
+    const popover = ref.current;
+    if (!trigger || !popover) return;
+
+    const rect = trigger.getBoundingClientRect();
+    const popRect = popover.getBoundingClientRect();
+
+    // Align right edge of popover with right edge of trigger
+    let left = rect.right - popRect.width;
+    // Clamp so it doesn't overflow left or right edge of viewport
+    left = Math.max(4, Math.min(left, window.innerWidth - popRect.width - 4));
+
+    let top: number;
+    if (side === "top") {
+      top = rect.top - popRect.height - 8;
+      // If it would go above viewport, flip to bottom
+      if (top < 4) top = rect.bottom + 8;
+    } else {
+      top = rect.bottom + 8;
+      // If it would go below viewport, flip to top
+      if (top + popRect.height > window.innerHeight - 4) top = rect.top - popRect.height - 8;
+    }
+
+    setPos({ top, left });
+  }, [triggerRef, side]);
+
+  // Position calculation: run after mount and on scroll/resize
+  React.useEffect(() => {
+    if (!open) return;
+    // Initial position after the portal element mounts
+    requestAnimationFrame(updatePosition);
+
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open, updatePosition]);
+
+  // Click-outside-to-close
   React.useEffect(() => {
     if (!open) return;
 
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
-      // Don't close if clicking inside popover or on trigger
       if (ref.current?.contains(target)) return;
       if (triggerRef.current?.contains(target)) return;
       setOpen(false);
     };
 
-    // Delay adding listener to avoid catching the click that opened it
     const timer = setTimeout(() => {
       document.addEventListener("mousedown", handler);
     }, 10);
@@ -57,9 +99,16 @@ export function PopoverContent({ children, className, side = "top" }: { children
   }, [open, setOpen, triggerRef]);
 
   if (!open) return null;
-  return (
-    <div ref={ref} className={cn("absolute right-0 z-50 rounded-md border border-border bg-popover p-2 shadow-lg", side === "top" ? "bottom-full mb-2" : "top-full mt-2", className)}>
+
+  const content = (
+    <div
+      ref={ref}
+      style={pos ? { position: "fixed", top: pos.top, left: pos.left } : { position: "fixed", top: -9999, left: -9999 }}
+      className={cn("z-[9999] rounded-md border border-border bg-popover p-2 shadow-lg", className)}
+    >
       {children}
     </div>
   );
+
+  return ReactDOM.createPortal(content, document.body);
 }
