@@ -35,6 +35,10 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
+const MAX_SYNC_SECONDS = 120;
+const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
+  `Estimated time ${seconds}s exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
+const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
 // ── Schemas ──────────────────────────────────────────────────────────────
 
@@ -43,6 +47,7 @@ const TaskItem = Type.Object({
   task: Type.String({ description: "Task to delegate" }),
   cwd: Type.String({ description: "Working directory" }),
   name: Type.Optional(Type.String({ description: "Display name for async status" })),
+  estimatedSeconds: Type.Optional(Type.Number({ description: "Estimated task duration in seconds. Required for sync parallel tasks." })),
 });
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
@@ -50,6 +55,7 @@ const ChainItem = Type.Object({
     description: "Task with optional {previous} placeholder",
   }),
   cwd: Type.String({ description: "Working directory" }),
+  estimatedSeconds: Type.Number({ description: "Estimated step duration in seconds" }),
 });
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description: 'Agent directories to use. Default: "user".',
@@ -78,6 +84,10 @@ const SubagentParams = Type.Object({
   ),
   cwd: Type.Optional(
     Type.String({ description: "Working directory. Required for single/async mode." }),
+  ),
+  // Optional at schema level because async mode doesn't need it; runtime enforces for sync
+  estimatedSeconds: Type.Optional(
+    Type.Number({ description: "Estimated task duration in seconds. Required for sync agents. If > 120s, must use async: true instead." }),
   ),
   async: Type.Optional(
     Type.Boolean({ description: "Run in background (default: false). Agent runs detached, results surface when complete.", default: false }),
@@ -497,6 +507,7 @@ export function registerSubagentTool(
       "Set async: true when you don't need the result immediately for your next step. The result will surface automatically when complete. Use sync (default) only when the next step depends on this agent's output.",
       "ALWAYS use async: true for independent tasks that can run in parallel — code reviews, opening issues, research, analysis. Only use sync when the very next step depends on this agent's output (e.g., chain where step 2 needs step 1's result).",
       "ALWAYS pass cwd — use the project directory for current repo work, or the target path for external repos (e.g., /tmp/pi-work/...).",
+      "ALWAYS provide estimatedSeconds for sync agents. If estimated time exceeds 120 seconds, you MUST use async: true instead.",
     ],
     parameters: SubagentParams,
 
@@ -694,6 +705,32 @@ export function registerSubagentTool(
             };
           }
         }
+        // defensive: LLMs may omit schema-required fields
+        const missingChainEstimate = params.chain.find(s => s.estimatedSeconds == null);
+        if (missingChainEstimate) {
+          return {
+            content: [{ type: "text", text: `${MISSING_ESTIMATE_ERROR} (chain step, agent: ${missingChainEstimate.agent})` }],
+            details: mkd("chain")([]),
+            isError: true,
+          };
+        }
+        const invalidChainEstimate = params.chain.find(s => s.estimatedSeconds != null && s.estimatedSeconds <= 0);
+        if (invalidChainEstimate) {
+          return {
+            content: [{ type: "text", text: `estimatedSeconds must be a positive number. (chain step, agent: ${invalidChainEstimate.agent})` }],
+            details: mkd("chain")([]),
+            isError: true,
+          };
+        }
+        // chain runs sequentially — sum all steps
+        const totalChainSeconds = params.chain.reduce((sum: number, s) => sum + s.estimatedSeconds, 0);
+        if (totalChainSeconds > MAX_SYNC_SECONDS) {
+          return {
+            content: [{ type: "text", text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
+            details: mkd("chain")([]),
+            isError: true,
+          };
+        }
 
         for (let i = 0; i < params.chain.length; i++) {
           const s = params.chain[i];
@@ -767,6 +804,32 @@ export function registerSubagentTool(
             ],
             details: mkd("parallel")([]),
           };
+        // defensive: LLMs may omit required fields
+        const missingEstimate = params.tasks.find(t => t.estimatedSeconds == null);
+        if (missingEstimate) {
+          return {
+            content: [{ type: "text", text: `${MISSING_ESTIMATE_ERROR} (parallel task, agent: ${missingEstimate.agent})` }],
+            details: mkd("parallel")([]),
+            isError: true,
+          };
+        }
+        const invalidEstimate = params.tasks.find(t => t.estimatedSeconds != null && t.estimatedSeconds <= 0);
+        if (invalidEstimate) {
+          return {
+            content: [{ type: "text", text: `estimatedSeconds must be a positive number. (parallel task, agent: ${invalidEstimate.agent})` }],
+            details: mkd("parallel")([]),
+            isError: true,
+          };
+        }
+        // parallel runs concurrently — use longest task
+        const maxParallelSeconds = Math.max(...params.tasks.map(t => t.estimatedSeconds!));
+        if (maxParallelSeconds > MAX_SYNC_SECONDS) {
+          return {
+            content: [{ type: "text", text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
+            details: mkd("parallel")([]),
+            isError: true,
+          };
+        }
         const all: SingleResult[] = params.tasks.map((t) => ({
           agent: t.agent,
           agentSource: "unknown" as const,
@@ -873,6 +936,27 @@ export function registerSubagentTool(
             isError: true,
           };
         }
+        if (params.estimatedSeconds == null) {
+          return {
+            content: [{ type: "text", text: MISSING_ESTIMATE_ERROR }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        if (params.estimatedSeconds <= 0) {
+          return {
+            content: [{ type: "text", text: "estimatedSeconds must be a positive number." }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        if (params.estimatedSeconds > MAX_SYNC_SECONDS) {
+          return {
+            content: [{ type: "text", text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
         const label = params.name || params.agent;
         activeAgents.add(label);
         updateWorking();
@@ -925,10 +1009,13 @@ export function registerSubagentTool(
     renderCall(args, theme) {
       const scope: AgentScope = args.agentScope ?? "user";
       if (args.chain?.length > 0) {
+        const chainEst = args.chain.every((s: any) => s.estimatedSeconds != null)
+          ? theme.fg("dim", ` ~${args.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0)}s (sum)`)
+          : "";
         let t =
           theme.fg("toolTitle", theme.bold("subagent ")) +
           theme.fg("accent", `chain (${args.chain.length} steps)`) +
-          theme.fg("muted", ` [${scope}]`);
+          theme.fg("muted", ` [${scope}]`) + chainEst;
         for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
           const s = args.chain[i];
           const p = s.task.replace(/\{previous\}/g, "").trim();
@@ -939,10 +1026,13 @@ export function registerSubagentTool(
         return new Text(t, 0, 0);
       }
       if (args.tasks?.length > 0) {
+        const parallelEst = args.tasks.every((tk: any) => tk.estimatedSeconds != null)
+          ? theme.fg("dim", ` ~${Math.max(...args.tasks.map((tk: any) => tk.estimatedSeconds))}s (max)`)
+          : "";
         let t =
           theme.fg("toolTitle", theme.bold("subagent ")) +
           theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
-          theme.fg("muted", ` [${scope}]`);
+          theme.fg("muted", ` [${scope}]`) + parallelEst;
         for (const tk of args.tasks.slice(0, 3))
           t += `\n  ${theme.fg("accent", tk.agent)}${theme.fg("dim", ` ${tk.task.length > 40 ? tk.task.slice(0, 40) + "..." : tk.task}`)}`;
         if (args.tasks.length > 3)
@@ -950,10 +1040,11 @@ export function registerSubagentTool(
         return new Text(t, 0, 0);
       }
       const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
+      const estLabel = args.estimatedSeconds != null && args.async !== true ? theme.fg("dim", ` ~${args.estimatedSeconds}s`) : "";
       let t =
         theme.fg("toolTitle", theme.bold("subagent ")) +
         theme.fg("accent", args.agent || "...") +
-        theme.fg("muted", ` [${scope}]`) + asyncLabel;
+        theme.fg("muted", ` [${scope}]`) + asyncLabel + estLabel;
       t += `\n  ${theme.fg("dim", args.task ? (args.task.length > 60 ? args.task.slice(0, 60) + "..." : args.task) : "...")}`;
       return new Text(t, 0, 0);
     },

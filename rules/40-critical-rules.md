@@ -47,6 +47,18 @@ Don't let them run to completion wasting resources. Use `asyncKill` immediately.
 ❌ **WRONG:** Re-dispatch to correct cwd → old agent keeps running in the background
 ✅ **RIGHT:** Kill the old agent → then dispatch the replacement
 
+### Sync Agent Time Estimates (MANDATORY)
+
+**ALWAYS provide `estimatedSeconds`** when spawning sync subagents (single, parallel, or chain).
+If the estimated time exceeds **120 seconds**, you **MUST use `async: true`** instead.
+
+- **Single sync**: `estimatedSeconds` on the top-level params
+- **Parallel sync**: `estimatedSeconds` on each task — max must be ≤ 120s
+- **Chain sync**: `estimatedSeconds` on each step — sum must be ≤ 120s
+- **Async**: Not required (async agents don't block the session)
+
+The tool enforces this — calls without `estimatedSeconds` or exceeding 120s are rejected.
+
 ### Subagent cwd (MANDATORY)
 
 **ALWAYS pass `cwd`** when delegating to subagents — in ALL modes (single, parallel, chain, async).
