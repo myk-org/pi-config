@@ -111,6 +111,8 @@ def create_release(
     Returns:
         ReleaseResult with status and details.
     """
+    print(f"Creating release {tag} for {owner_repo}...", file=sys.stderr)
+
     # Check dependencies
     missing = _check_dependencies()
     if missing:
@@ -165,6 +167,7 @@ def create_release(
         cmd.append("--draft")
 
     # Execute gh release create (use longer timeout for release creation)
+    print("Running gh release create...", file=sys.stderr)
     exit_code, stdout, stderr = _run_command(cmd, timeout=300)
 
     if exit_code != 0:
@@ -177,6 +180,7 @@ def create_release(
     # Extract URL from output
     combined_output = f"{stdout}\n{stderr}"
     release_url = _extract_release_url(combined_output, owner_repo, tag)
+    print(f"Release created: {release_url}", file=sys.stderr)
 
     return ReleaseResult(
         status="success",

@@ -370,6 +370,8 @@ def get_release_info(repo: str | None = None, target: str | None = None, tag_mat
     if missing:
         raise RuntimeError(f"Missing dependencies: {', '.join(missing)}")
 
+    print("Detecting repository...", file=sys.stderr)
+
     # Detect repository
     full_repo = _detect_repo(repo)
     if not full_repo:
@@ -380,6 +382,7 @@ def get_release_info(repo: str | None = None, target: str | None = None, tag_mat
     if len(parts) != 2:
         raise RuntimeError(f"Invalid repository format: {full_repo}")
     owner, repo_name = parts
+    print(f"Repository: {owner}/{repo_name}", file=sys.stderr)
 
     # Get branch info
     current_branch = _get_current_branch()
@@ -406,7 +409,9 @@ def get_release_info(repo: str | None = None, target: str | None = None, tag_mat
         raise RuntimeError(_ERR_INVALID_TAG_MATCH.format(effective_tag_match))
 
     # Perform validations
+    print("Validating release prerequisites...", file=sys.stderr)
     validations = _perform_validations(default_branch, current_branch, effective_target)
+    print(f"Validations: {'passed' if validations.all_passed else 'FAILED'}", file=sys.stderr)
 
     metadata = Metadata(
         owner=owner,
@@ -431,8 +436,10 @@ def get_release_info(repo: str | None = None, target: str | None = None, tag_mat
 
     # Validations passed - proceed with expensive operations
     last_tag = _get_last_tag(effective_tag_match)
+    print(f"Fetching commits since {last_tag or 'beginning'}...", file=sys.stderr)
     all_tags = _get_all_tags(tag_match=effective_tag_match)
     commits, is_first_release = _get_commits(last_tag)
+    print(f"Found {len(commits)} commit(s)", file=sys.stderr)
 
     return ReleaseInfo(
         metadata=metadata,

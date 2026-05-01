@@ -11,6 +11,7 @@ import configparser
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,6 +187,8 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
     if root is None:
         root = Path.cwd()
 
+    print("Scanning for version files...", file=sys.stderr)
+
     if not root.is_dir():
         return []
 
@@ -199,6 +202,11 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
                 results.append(VersionFile(path=filename, current_version=version, file_type=file_type))
 
     results.extend(_find_python_version_files(root))
+
+    for vf in results:
+        print(f"Found: {vf.path} (v{vf.current_version})", file=sys.stderr)
+    print(f"Detected {len(results)} version file(s)", file=sys.stderr)
+
     return results
 
 

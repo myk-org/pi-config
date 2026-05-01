@@ -211,6 +211,8 @@ def bump_version_files(
     Returns:
         BumpResult with status and details.
     """
+    print(f"Bumping version to {new_version}...", file=sys.stderr)
+
     if root is None:
         root = Path.cwd()
 
@@ -261,6 +263,7 @@ def bump_version_files(
     for vf in detected:
         bumper = _BUMPERS.get(vf.file_type)
         if bumper is None:
+            print(f"Skipped: {vf.path} (Unknown file type: {vf.file_type})", file=sys.stderr)
             skipped.append({"path": vf.path, "reason": f"Unknown file type: {vf.file_type}"})
             continue
 
@@ -269,16 +272,20 @@ def bump_version_files(
         try:
             filepath.resolve().relative_to(root.resolve())
         except ValueError:
+            print(f"Skipped: {vf.path} (Path traversal detected)", file=sys.stderr)
             skipped.append({"path": vf.path, "reason": "Path traversal detected"})
             continue
         try:
             old_version = bumper(filepath, new_version)
         except OSError as e:
+            print(f"Skipped: {vf.path} (I/O error: {e})", file=sys.stderr)
             skipped.append({"path": vf.path, "reason": f"I/O error: {e}"})
             continue
         if old_version is not None:
+            print(f"Updated: {vf.path} ({old_version} → {new_version})", file=sys.stderr)
             updated.append({"path": vf.path, "old_version": old_version, "new_version": new_version})
         else:
+            print(f"Skipped: {vf.path} (Could not find version pattern in file)", file=sys.stderr)
             skipped.append({"path": vf.path, "reason": "Could not find version pattern in file"})
 
     if not updated:
