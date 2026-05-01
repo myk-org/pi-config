@@ -20,7 +20,7 @@ import { discoverAgents } from "./agents.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
-interface CronTask {
+export interface CronTask {
   id: number;
   description: string; // human-readable description
   task: string; // what to execute
@@ -98,8 +98,8 @@ function msUntilNextTime(hour: number, minute: number): number {
 export function registerCron(
   pi: ExtensionAPI,
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
-): void {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+): { getCronTasks: () => CronTask[] } {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [] };
 
   const tasks = new Map<number, CronTask>();
   const timers = new Map<number, ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>();
@@ -449,4 +449,8 @@ export function registerCron(
       );
     },
   });
+
+  return {
+    getCronTasks: () => [...tasks.values()],
+  };
 }
