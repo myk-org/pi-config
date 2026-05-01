@@ -125,6 +125,7 @@ export interface SingleResult {
   usage: UsageStats;
   model?: string;
   stopReason?: string;
+  durationMs?: number;
   errorMessage?: string;
   step?: number;
 }
@@ -158,10 +159,17 @@ export function formatUsageStats(
     cost: number;
     contextTokens?: number;
     turns?: number;
+    durationMs?: number;
   },
   model?: string,
 ): string {
   const parts: string[] = [];
+  if (usage.durationMs != null) {
+    const s = Math.floor(usage.durationMs / 1000);
+    if (s < 60) parts.push(`${s}s`);
+    else if (s < 3600) parts.push(`${Math.floor(s / 60)}m${s % 60}s`);
+    else parts.push(`${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`);
+  }
   if (usage.turns)
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
   if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
@@ -348,6 +356,7 @@ export async function runSingleAgent(
   let tmpDir: string | null = null;
   let tmpFile: string | null = null;
 
+  const startTime = Date.now();
   const cur: SingleResult = {
     agent: agentName,
     agentSource: agent.source,
@@ -464,6 +473,7 @@ export async function runSingleAgent(
     });
 
     cur.exitCode = exitCode;
+    cur.durationMs = Date.now() - startTime;
     if (aborted) throw new Error("Subagent was aborted");
     return cur;
   } finally {
@@ -1082,6 +1092,7 @@ export function registerSubagentTool(
           cacheWrite: 0,
           cost: 0,
           turns: 0,
+          durationMs: 0,
         };
         for (const r of rs) {
           t.input += r.usage.input;
@@ -1090,6 +1101,7 @@ export function registerSubagentTool(
           t.cacheWrite += r.usage.cacheWrite;
           t.cost += r.usage.cost;
           t.turns += r.usage.turns;
+          t.durationMs = Math.max(t.durationMs, r.durationMs || 0);
         }
         return t;
       };
@@ -1137,7 +1149,7 @@ export function registerSubagentTool(
               c.addChild(new Markdown(final.trim(), 0, 0, mdTheme));
             }
           }
-          const u = formatUsageStats(r.usage, r.model);
+          const u = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
           if (u) {
             c.addChild(new Spacer(1));
             c.addChild(new Text(theme.fg("dim", u), 0, 0));
@@ -1156,7 +1168,7 @@ export function registerSubagentTool(
           if (items.length > COLLAPSED_ITEM_COUNT)
             t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
         }
-        const u = formatUsageStats(r.usage, r.model);
+        const u = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
         if (u) t += `\n${theme.fg("dim", u)}`;
         return new Text(t, 0, 0);
       }
@@ -1212,7 +1224,7 @@ export function registerSubagentTool(
               c.addChild(new Spacer(1));
               c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
             }
-            const su = formatUsageStats(r.usage, r.model);
+            const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
             if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
           }
           const tu = formatUsageStats(aggUsage(details.results));
@@ -1299,7 +1311,7 @@ export function registerSubagentTool(
               c.addChild(new Spacer(1));
               c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
             }
-            const su = formatUsageStats(r.usage, r.model);
+            const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
             if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
           }
           const tu = formatUsageStats(aggUsage(details.results));

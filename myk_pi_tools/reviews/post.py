@@ -482,6 +482,7 @@ def run(json_path: str) -> None:
         eprint("Error: Missing metadata in JSON file (owner, repo, or pr_number)")
         sys.exit(1)
 
+    eprint("Posting review comments...")
     eprint(f"Processing reviews for {owner}/{repo}#{pr_number}")
 
     # Categories to process
@@ -711,6 +712,7 @@ def run(json_path: str) -> None:
     # Print summary
     total_resolved = addressed_count + skipped_count
     total_processed = total_resolved + replied_not_resolved_count + outside_diff_count + nitpick_count + duplicate_count
+    eprint(f"Posted {total_processed} comment(s)")
     eprint("")
     eprint("=== Summary ===")
     eprint(f"Processed {total_processed} threads")
