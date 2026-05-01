@@ -55,7 +55,7 @@ pi-config/
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
-│   │   ├── session-validation.ts    # Session start tool checks
+│   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── status.ts                # /status command — unified session status snapshot
 │   │   ├── status-line.ts           # Git status, notifications, container indicator
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent
