@@ -24,6 +24,7 @@ Single extension that provides:
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains memory.md |
+| **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — agent names for `/acpx-prompt`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
