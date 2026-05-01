@@ -22,7 +22,7 @@ const ASYNC_POLL_INTERVAL_MS = 3000;
 
 // ── Interfaces ───────────────────────────────────────────────────────────
 
-interface AsyncJob {
+export interface AsyncJob {
   id: string;
   agent: string;
   name?: string;
@@ -78,6 +78,7 @@ export function registerAsyncAgents(
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
+  getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
   const ASYNC_DIR = ASYNC_BASE_DIR;
   let ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `pid-${process.pid}`);
@@ -738,5 +739,9 @@ export function registerAsyncAgents(
     },
   });
 
-  return { spawnAsyncAgent, killAsyncAgent };
+  return {
+    spawnAsyncAgent,
+    killAsyncAgent,
+    getAsyncJobs: () => Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued"),
+  };
 }

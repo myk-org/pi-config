@@ -29,6 +29,7 @@ import { registerSubagentTool } from "./subagent-tool.js";
 import { registerGithubAutocomplete } from "./github-autocomplete.js";
 import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
+import { registerStatus } from "./status.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -64,7 +65,7 @@ export default function (pi: ExtensionAPI) {
   registerExtendedAutocomplete(pi);
 
   registerAskUser(pi, terminalNotify);
-  const { spawnAsyncAgent, killAsyncAgent } = registerAsyncAgents(pi, terminalNotify);
+  const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerEnforcement(pi, IN_CONTAINER);
   registerRules(pi);
@@ -73,8 +74,9 @@ export default function (pi: ExtensionAPI) {
   registerBtw(pi);
   registerDifit(pi);
   registerDreaming(pi, spawnAsyncAgent);
-  registerCron(pi, spawnAsyncAgent);
+  const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   registerPidash(pi, killAsyncAgent);
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);
+  registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
 }
