@@ -109,7 +109,7 @@ export function registerStatusLine(
   const updateTimestamp = (ctx: any) => {
     if (!lastActivityTime) return;
     const text = ctx.ui.theme.fg("dim", `⏱ ${clockHHMM(lastActivityTime)} (${ago(lastActivityTime)})`);
-    ctx.ui.setStatus("4-time", text);
+    ctx.ui.setStatus("0-time", text);
   };
 
   const touchActivity = (_event: any, ctx: any) => {
