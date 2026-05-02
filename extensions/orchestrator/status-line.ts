@@ -5,6 +5,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getCurrentBranch, runGit } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
+import { clockHHMM } from "./utils.js";
 
 export function registerStatusLine(
   pi: ExtensionAPI,
@@ -87,8 +88,48 @@ export function registerStatusLine(
     if (lastCtx) updateBranch(null, lastCtx);
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
+
+  // ── Last-activity timestamp ────────────────────────────────────────────
+
+  let lastActivityTime: Date | null = null;
+
+
+
+  const ago = (since: Date): string => {
+    const diffMs = Date.now() - since.getTime();
+    if (diffMs < 0) return "now";
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 1) return "now";
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h`;
+    return `${Math.floor(hours / 24)}d`;
+  };
+
+  const updateTimestamp = (ctx: any) => {
+    if (!lastActivityTime) return;
+    const text = ctx.ui.theme.fg("dim", `⏱ ${clockHHMM(lastActivityTime)} (${ago(lastActivityTime)})`);
+    ctx.ui.setStatus("4-time", text);
+  };
+
+  const touchActivity = (_event: any, ctx: any) => {
+    lastActivityTime = new Date();
+    updateTimestamp(ctx);
+  };
+
+  pi.on("session_start", touchActivity);
+  pi.on("turn_end", touchActivity);
+  pi.on("agent_end", touchActivity);
+  pi.on("tool_execution_end", touchActivity);
+
+  const timePoller = setInterval(() => {
+    if (lastCtx && lastActivityTime) updateTimestamp(lastCtx);
+  }, 30_000);
+  if (timePoller.unref) timePoller.unref();
+
   pi.on("session_shutdown", (_event) => {
     clearInterval(gitPoller);
+    clearInterval(timePoller);
   });
 
   // ── Desktop notifications — notify when user attention is needed ─────

@@ -14,6 +14,12 @@ interface Props {
   onAskResponse?: (id: string, value: string) => void;
 }
 
+function formatClock(ts?: number): string {
+  if (ts == null) return "";
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 const roleColors: Record<string, string> = {
   user: "text-green-500",
   assistant: "text-blue-400",
@@ -169,6 +175,7 @@ function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; se
     return (
       <div>
         <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor("ask_user"))}>
+          {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
           action required
         </div>
         <div className="rounded-md bg-card p-3 text-[13px] whitespace-pre-wrap break-words border-l-2 border-cyan-400">
@@ -222,6 +229,7 @@ function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; se
   return (
     <div>
       <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor(msg.role))}>
+        {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
         {msg.role}
       </div>
       <div className={cn(
@@ -272,6 +280,7 @@ function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: C
         color,
       )}>
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+        {call.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground flex-shrink-0">[{formatClock(call.timestamp)}]</span>}
         <span className="flex-shrink-0">{call.role}</span>
         <span className={cn("flex-shrink-0", statusColor)}>{statusIcon}</span>
         {!open && statsStr && (
@@ -321,6 +330,7 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
         color,
       )}>
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        {msg.timestamp && <span className="font-normal normal-case tracking-normal text-muted-foreground">[{formatClock(msg.timestamp)}]</span>}
         {msg.role}
         {!open && msg.meta?.startTs && msg.meta?.endTs && (
           <span className="font-normal normal-case tracking-normal text-muted-foreground ml-1 flex-shrink-0">

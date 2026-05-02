@@ -58,7 +58,7 @@ pi-config/
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command — unified session status snapshot
-│   │   ├── status-line.ts           # Git status, notifications, container indicator
+│   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent
 │   │   └── utils.ts                 # Shared utilities
 │   └── acpx-provider/              # ACPX provider extension

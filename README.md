@@ -19,7 +19,7 @@ Single extension that provides:
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
 | **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
 | **Rule injection** | Injects orchestrator routing rules into system prompt |
-| **Git status** | Live git status in status line with colored icons — updates after every tool call |
+| **Git status** | Live git status in status line with colored icons — updates after every tool call. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
@@ -326,6 +326,7 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Browser push notifications for background events (configurable per event type)
 - Async agent live streaming (real-time tool calls and output inline in chat)
 - Sidebar session working indicator (pulsing green dot when AI is active)
+- `[HH:MM]` timestamps on all messages
 
 **Access:**
 
