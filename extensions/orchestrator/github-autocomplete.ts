@@ -18,9 +18,10 @@ type GitHubItem = {
   title: string;
   state: string;
   kind: "issue" | "pr";
+  url: string;
 };
 
-const MAX_ITEMS = 100;
+const MAX_ITEMS = 200;
 const MAX_SUGGESTIONS = 20;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -45,10 +46,11 @@ function parseGitHubRepo(remoteUrl: string): string | undefined {
 
 function formatItem(item: GitHubItem): AutocompleteItem {
   const tag = item.kind === "pr" ? "pr" : "issue";
+  const stateIcon = item.state === "open" ? "🟢" : item.state === "merged" ? "🟣" : "🔴";
   return {
-    value: `#${item.number}`,
+    value: `#${item.number} (${item.url})`,
     label: `#${item.number}`,
-    description: `[${tag}] ${item.title}`,
+    description: `${stateIcon} [${tag}] ${item.title}`,
   };
 }
 
@@ -168,9 +170,9 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
           [
             "issue", "list",
             "--repo", repo!,
-            "--state", "open",
+            "--state", "all",
             "--limit", String(MAX_ITEMS),
-            "--json", "number,title,state",
+            "--json", "number,title,state,url",
           ],
           { cwd: ctx.cwd, timeout: 10_000 },
         ),
@@ -179,9 +181,9 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
           [
             "pr", "list",
             "--repo", repo!,
-            "--state", "open",
+            "--state", "all",
             "--limit", String(MAX_ITEMS),
-            "--json", "number,title,state",
+            "--json", "number,title,state,url",
           ],
           { cwd: ctx.cwd, timeout: 10_000 },
         ),
@@ -191,18 +193,18 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
 
       if (issuesResult.code === 0) {
         try {
-          const issues = JSON.parse(issuesResult.stdout) as Array<{ number: number; title: string; state: string }>;
+          const issues = JSON.parse(issuesResult.stdout) as Array<{ number: number; title: string; state: string; url: string }>;
           for (const issue of issues) {
-            items.push({ ...issue, state: issue.state.toLowerCase(), kind: "issue" });
+            items.push({ ...issue, state: issue.state.toLowerCase(), kind: "issue", url: issue.url || "" });
           }
         } catch {}
       }
 
       if (prsResult.code === 0) {
         try {
-          const prs = JSON.parse(prsResult.stdout) as Array<{ number: number; title: string; state: string }>;
+          const prs = JSON.parse(prsResult.stdout) as Array<{ number: number; title: string; state: string; url: string }>;
           for (const pr of prs) {
-            items.push({ ...pr, state: pr.state.toLowerCase(), kind: "pr" });
+            items.push({ ...pr, state: pr.state.toLowerCase(), kind: "pr", url: pr.url || "" });
           }
         } catch {}
       }
