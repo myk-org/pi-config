@@ -25,6 +25,7 @@ Single extension that provides:
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains memory.md |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
+| **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — agent names for `/acpx-prompt`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
@@ -62,6 +63,7 @@ Single extension that provides:
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
+| `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 
 ## Installation
 
