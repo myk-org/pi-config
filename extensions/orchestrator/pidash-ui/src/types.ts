@@ -82,6 +82,7 @@ export interface ChatMessage {
   role: MessageRole;
   text: string;
   className?: string;
+  timestamp?: number;
   meta?: {
     turns?: number;
     input?: number;

@@ -27,7 +27,7 @@ import {
 } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
-import { getPiInvocation } from "./utils.js";
+import { clockHHMM, getPiInvocation } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -1016,13 +1016,16 @@ export function registerSubagentTool(
       };
     },
 
-    renderCall(args, theme) {
+    renderCall(args, theme, context) {
+      if (!context.state.startedAt) context.state.startedAt = clockHHMM();
+      const ts = theme.fg("dim", `[${context.state.startedAt}] `);
       const scope: AgentScope = args.agentScope ?? "user";
       if (args.chain?.length > 0) {
         const chainEst = args.chain.every((s: any) => s.estimatedSeconds != null)
           ? theme.fg("dim", ` ~${args.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0)}s (sum)`)
           : "";
         let t =
+          ts +
           theme.fg("toolTitle", theme.bold("subagent ")) +
           theme.fg("accent", `chain (${args.chain.length} steps)`) +
           theme.fg("muted", ` [${scope}]`) + chainEst;
@@ -1040,6 +1043,7 @@ export function registerSubagentTool(
           ? theme.fg("dim", ` ~${Math.max(...args.tasks.map((tk: any) => tk.estimatedSeconds))}s (max)`)
           : "";
         let t =
+          ts +
           theme.fg("toolTitle", theme.bold("subagent ")) +
           theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
           theme.fg("muted", ` [${scope}]`) + parallelEst;
@@ -1052,6 +1056,7 @@ export function registerSubagentTool(
       const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
       const estLabel = args.estimatedSeconds != null && args.async !== true ? theme.fg("dim", ` ~${args.estimatedSeconds}s`) : "";
       let t =
+        ts +
         theme.fg("toolTitle", theme.bold("subagent ")) +
         theme.fg("accent", args.agent || "...") +
         theme.fg("muted", ` [${scope}]`) + asyncLabel + estLabel;
@@ -1059,11 +1064,13 @@ export function registerSubagentTool(
       return new Text(t, 0, 0);
     },
 
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      if (!context.state.completedAt) context.state.completedAt = clockHHMM();
+      const ts = theme.fg("dim", `[${context.state.completedAt}] `);
       const details = result.details as SubagentDetails | undefined;
       if (!details || details.results.length === 0) {
         const t = result.content[0];
-        return new Text(t?.type === "text" ? t.text : "(no output)", 0, 0);
+        return new Text(ts + (t?.type === "text" ? t.text : "(no output)"), 0, 0);
       }
       const mdTheme = getMarkdownTheme();
 
@@ -1118,7 +1125,7 @@ export function registerSubagentTool(
         const final = getFinalOutput(r.messages);
         if (expanded) {
           const c = new Container();
-          let h = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+          let h = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
           if (isErr && r.stopReason)
             h += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
           c.addChild(new Text(h, 0, 0));
@@ -1156,7 +1163,7 @@ export function registerSubagentTool(
           }
           return c;
         }
-        let t = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+        let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
         if (isErr && r.stopReason)
           t += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
         if (isErr && r.errorMessage)
@@ -1184,7 +1191,7 @@ export function registerSubagentTool(
           const c = new Container();
           c.addChild(
             new Text(
-              `${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`,
+              `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`,
               0,
               0,
             ),
@@ -1234,7 +1241,7 @@ export function registerSubagentTool(
           }
           return c;
         }
-        let t = `${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`;
+        let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`;
         for (const r of details.results) {
           const ri =
             r.exitCode === 0
@@ -1271,7 +1278,7 @@ export function registerSubagentTool(
           const c = new Container();
           c.addChild(
             new Text(
-              `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`,
+              `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`,
               0,
               0,
             ),
@@ -1321,7 +1328,7 @@ export function registerSubagentTool(
           }
           return c;
         }
-        let t = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
+        let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
         for (const r of details.results) {
           const ri =
             r.exitCode === -1

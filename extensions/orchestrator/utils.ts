@@ -24,6 +24,10 @@ export function ensureGitSshTimeout(): void {
   }
 }
 
+/** Format a Date as HH:MM (24h clock). */
+export const clockHHMM = (d: Date = new Date()): string =>
+  `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
 export function isRunningInContainer(): boolean {
   try {
     // Check for /.dockerenv (Docker) or /run/.containerenv (Podman)

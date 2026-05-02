@@ -87,7 +87,7 @@ export function App() {
 
   const addMsg = useCallback((role: ChatMessage["role"], text: string, className?: string, meta?: ChatMessage["meta"]): string => {
     const id = nextId();
-    setMessages((p) => [...p, { id, role, text, className, meta }]);
+    setMessages((p) => [...p, { id, role, text, className, meta, timestamp: Date.now() }]);
     return id;
   }, []);
 
@@ -205,7 +205,7 @@ export function App() {
           }
           const cid = ev.toolCallId || nextId();
           const id = nextId();
-          setMessages((p) => [...p, { id, role: name as any, text: detail, className: "tool-call", meta: { callId: cid } }]);
+          setMessages((p) => [...p, { id, role: name as any, text: detail, className: "tool-call", meta: { callId: cid }, timestamp: Date.now() }]);
           toolRef.current = { id, name, startTs: ev.timestamp || Date.now(), callId: cid };
           break;
         }
@@ -250,7 +250,7 @@ export function App() {
               };
             }
             const id = nextId();
-            setMessages((p) => [...p, { id, role: toolName as any, text: `${ev.isError ? "✗ " : "✓ "}${t}`, className: "tool-result", meta }]);
+            setMessages((p) => [...p, { id, role: toolName as any, text: `${ev.isError ? "✗ " : "✓ "}${t}`, className: "tool-result", meta, timestamp: Date.now() }]);
           }
           break;
         }
@@ -424,7 +424,7 @@ export function App() {
 
   const watchSession = useCallback((s: SessionInfo) => {
     setSession(s);
-    setMessages([{ id: nextId(), role: "system", text: `Watching session — ${s.cwd}` }]);
+    setMessages([{ id: nextId(), role: "system", text: `Watching session — ${s.cwd}`, timestamp: Date.now() }]);
     setModel(s.model || "");
     setTokens(null);
     setStreaming(false);
