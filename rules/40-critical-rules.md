@@ -50,14 +50,14 @@ Don't let them run to completion wasting resources. Use `asyncKill` immediately.
 ### Sync Agent Time Estimates (MANDATORY)
 
 **ALWAYS provide `estimatedSeconds`** when spawning sync subagents (single, parallel, or chain).
-If the estimated time exceeds **120 seconds**, you **MUST use `async: true`** instead.
+If the estimated time is **60 seconds or more**, you **MUST use `async: true`** instead.
 
 - **Single sync**: `estimatedSeconds` on the top-level params
-- **Parallel sync**: `estimatedSeconds` on each task — max must be ≤ 120s
-- **Chain sync**: `estimatedSeconds` on each step — sum must be ≤ 120s
+- **Parallel sync**: `estimatedSeconds` on each task — max must be < 60s
+- **Chain sync**: `estimatedSeconds` on each step — sum must be < 60s
 - **Async**: Not required (async agents don't block the session)
 
-The tool enforces this — calls without `estimatedSeconds` or exceeding 120s are rejected.
+The tool enforces this — calls without `estimatedSeconds` or ≥ 60s are rejected.
 
 ### Subagent cwd (MANDATORY)
 
