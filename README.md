@@ -258,6 +258,9 @@ docker run --rm -it \
 Create a `.env` file with container-specific variables:
 
 ```env
+# Timezone (host timezone for correct timestamps)
+TZ=Asia/Jerusalem
+
 # Google Cloud / Vertex AI
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
