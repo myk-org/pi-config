@@ -69,7 +69,7 @@ export default function (pi: ExtensionAPI) {
   const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerEnforcement(pi, IN_CONTAINER);
-  registerRules(pi);
+  registerRules(pi, getAsyncJobs);
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
