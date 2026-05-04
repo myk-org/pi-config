@@ -159,22 +159,15 @@ export function registerAskUser(
           const topBorder = new DynamicBorder((s: string) =>
             theme.fg("accent", s),
           );
-          const question = new Text(
-            theme.fg("accent", theme.bold(params.question)),
-            1,
-            0,
-          );
-          const spacer = new Spacer(1);
           const bottomBorder = new DynamicBorder((s: string) =>
             theme.fg("accent", s),
           );
 
-          // Build container for each mode without recreating components
+          // Build container — question is already in the main chat,
+          // overlay shows only the selectable options / input
           const buildContainer = () => {
             const c = new Container();
             c.addChild(topBorder);
-            c.addChild(question);
-            c.addChild(spacer);
             if (mode === "select" && selectList) {
               c.addChild(selectList);
               c.addChild(selectHelp);
@@ -216,7 +209,7 @@ export function registerAskUser(
             },
           };
         },
-        { overlay: true },
+
       );
 
       unsubscribe();
