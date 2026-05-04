@@ -7,8 +7,12 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { formatDuration } from "./async-agents.js";
 
-export function registerRules(pi: ExtensionAPI): void {
+export function registerRules(
+  pi: ExtensionAPI,
+  getAsyncJobs?: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>,
+): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let migrationChecked = false;
 
@@ -31,6 +35,21 @@ export function registerRules(pi: ExtensionAPI): void {
       } catch {
         extra +=
           "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+      }
+    }
+
+    // Async agent status — always show so the AI knows what's running
+    if (!isSubagent && getAsyncJobs) {
+      const jobs = getAsyncJobs();
+      if (jobs.length === 0) {
+        extra += "\n\n# Async Agents Status\n\nNo async agents running.\n";
+      } else {
+        let status = `\n\n# Async Agents Status\n\n${jobs.length} async agent(s) running — kill any that are no longer needed:\n`;
+        for (const j of jobs) {
+          const elapsed = formatDuration(Date.now() - j.startedAt);
+          status += `- ${j.name || j.agent} (${j.agent}) — ${elapsed}\n`;
+        }
+        extra += status;
       }
     }
 
