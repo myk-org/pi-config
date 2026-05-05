@@ -22,20 +22,42 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       const raw = fs.readFileSync(sessionFile, "utf-8");
       const lines = raw.split("\n").filter((l) => l.trim());
 
-      // Collect all tool call IDs and their metadata
+      // Parse all entries and build index
+      const entries: any[] = [];
+      const byId = new Map<string, any>();
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.id) {
+            entries.push(entry);
+            byId.set(entry.id, entry);
+          }
+        } catch { /* skip malformed lines */ }
+      }
+
+      // Walk active branch (leaf to root) to find orphans on the ACTUAL path
+      // The flat file may have toolResults on dead branches that don't help.
+      const leaf = entries[entries.length - 1];
+      if (!leaf) {
+        ctx.ui.notify("Session file is empty", "warning");
+        return;
+      }
+
+      const branch: any[] = [];
+      let cur = leaf;
+      while (cur) {
+        branch.push(cur);
+        cur = cur.parentId ? byId.get(cur.parentId) : null;
+      }
+      branch.reverse();
+
+      // Collect toolCall IDs and toolResult IDs on the active branch
       const toolCalls = new Map<string, { parentId: string; toolName: string }>();
       const toolResults = new Set<string>();
 
-      for (const line of lines) {
-        let entry: any;
-        try {
-          entry = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        const msg = entry?.message;
+      for (const entry of branch) {
+        const msg = entry.message;
         if (!msg) continue;
-
         if (msg.role === "assistant" && Array.isArray(msg.content)) {
           for (const item of msg.content) {
             if (item.type === "toolCall" && item.id) {
@@ -50,7 +72,7 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
         }
       }
 
-      // Find orphans — tool calls with no matching result
+      // Find orphans on the active branch
       const orphans = new Map<string, { callId: string; parentId: string; toolName: string }[]>();
       for (const [callId, meta] of toolCalls) {
         if (!toolResults.has(callId)) {
@@ -60,11 +82,11 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       }
 
       if (orphans.size === 0) {
-        ctx.ui.notify("Session is clean — no orphaned tool calls found", "info");
+        ctx.ui.notify("Session is clean \u2014 no orphaned tool calls found", "info");
         return;
       }
 
-      // Rewrite session — insert synthetic toolResult right after the parent message.
+      // Rewrite session \u2014 insert synthetic toolResult right after the parent message.
       // The API requires tool_result in the NEXT message after tool_use.
       const repairedLines: string[] = [];
       let totalFixed = 0;
@@ -86,14 +108,14 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
                 role: "toolResult",
                 toolCallId: orphan.callId,
                 toolName: orphan.toolName,
-                content: [{ type: "text", text: "Error: session interrupted — tool call did not complete" }],
+                content: [{ type: "text", text: "Error: session interrupted \u2014 tool call did not complete" }],
                 isError: true,
                 timestamp: Date.now(),
               },
             };
             repairedLines.push(JSON.stringify(synthetic));
             totalFixed++;
-            fixedDetails.push(`  • ${orphan.toolName} (${orphan.callId})`);
+            fixedDetails.push(`  \u2022 ${orphan.toolName} (${orphan.callId})`);
           }
         }
       }
@@ -101,7 +123,7 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       fs.writeFileSync(sessionFile, repairedLines.join("\n") + "\n");
 
       ctx.ui.notify(
-        `🔧 Repaired ${totalFixed} orphaned tool call${totalFixed > 1 ? "s" : ""}:\n${fixedDetails.join("\n")}`,
+        `\ud83d\udd27 Repaired ${totalFixed} orphaned tool call${totalFixed > 1 ? "s" : ""}:\n${fixedDetails.join("\n")}`,
         "info",
       );
     },
