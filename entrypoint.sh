@@ -1,4 +1,6 @@
 #!/bin/bash
+# Main entrypoint — runs as node user (dropped from root by init-entrypoint.sh).
+# HOME is set to /home/$PI_HOST_USER if configured, otherwise /home/node.
 set -e
 
 # Always install/update pi to get the latest version on every container start
@@ -36,10 +38,10 @@ fi
 
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
-cp /home/node/.gitconfig /home/node/.gitconfig-local 2>/dev/null || true
-if [ -f /home/node/.gitconfig-local ]; then
-    export GIT_CONFIG_GLOBAL=/home/node/.gitconfig-local
-    git config --global core.excludesFile /home/node/.gitignore-global
+cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || true
+if [ -f "$HOME/.gitconfig-local" ]; then
+    export GIT_CONFIG_GLOBAL="$HOME/.gitconfig-local"
+    git config --global core.excludesFile "$HOME/.gitignore-global"
 fi
 
 # SSH timeout — detect dead connections during git fetch/push/pull

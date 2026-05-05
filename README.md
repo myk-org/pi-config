@@ -244,11 +244,11 @@ docker run --rm -it \
   --network host \
   --env-file /path/to/.env \
   -v "$PWD":"$PWD":rw \
-  -v "$HOME/.pi":/home/node/.pi:rw \
-  -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
-  -v "$HOME/.gitignore-global":/home/node/.gitignore-global:ro \
-  -v "$HOME/.ssh":/home/node/.ssh:ro \
-  -v "$HOME/.config/gh":/home/node/.gh-config:ro \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
@@ -261,10 +261,13 @@ Create a `.env` file with container-specific variables:
 # Timezone (host timezone for correct timestamps)
 TZ=Asia/Jerusalem
 
+# Host username (creates /home/<user> -> container home symlink so host paths resolve)
+PI_HOST_USER=myakove
+
 # Google Cloud / Vertex AI
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/node/.gcloud-adc.json
+GOOGLE_APPLICATION_CREDENTIALS=/home/myakove/.config/gcloud/application_default_credentials.json
 VERTEX_PROJECT_ID=your-project-id
 VERTEX_REGION=us-east5
 VERTEX_CLAUDE_1M=true
@@ -272,7 +275,7 @@ VERTEX_CLAUDE_1M=true
 # GitHub
 GITHUB_TOKEN=ghp_xxx
 GITHUB_API_TOKEN=ghp_xxx
-GH_CONFIG_DIR=/home/node/.gh-config
+GH_CONFIG_DIR=/home/myakove/.config/gh
 
 # Gemini (optional)
 GEMINI_API_KEY=xxx
@@ -281,7 +284,8 @@ GEMINI_API_KEY=xxx
 # ACPX_AGENTS=cursor
 
 # mcpl (MCP Launchpad) config path inside the container (must match mount target)
-MCPL_CONFIG_FILES=/home/node/.mcpl/mcp.json
+# Use your actual home path — it resolves inside the container via the PI_HOST_USER symlink
+MCPL_CONFIG_FILES=/home/myakove/.config/mcpl/mcp.json
 ```
 
 Pass via `--env-file /path/to/.env` in the docker run command.
@@ -366,12 +370,12 @@ npm install && npm run build
 
 | Mount | Purpose |
 |---|---|
-| `-v "<PATH_TO_MCPL_CONFIG>":/home/node/.mcpl/mcp.json:ro` | MCP server config for `mcpl` |
-| `-v "$HOME/.agents":/home/node/.agents:rw` | User-level skills (install/uninstall from container) |
-| `-v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro` | Google Cloud ADC (for Claude via Vertex AI) |
-| `-v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro` | Cursor CLI auth (for acpx cursor models) |
-| `-v "$HOME/.config/glab-cli":/home/node/.config/glab-cli:ro` | GitLab CLI config (auth tokens, host settings) |
-| `-v "$HOME/screenshots":/home/node/screenshots` | Share screenshots/images with the agent |
+| `-v "<PATH_TO_MCPL_CONFIG>":"$HOME/.config/mcpl/mcp.json":ro` | MCP server config for `mcpl` |
+| `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
+| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
+| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx cursor models) |
+| `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
+| `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
 | `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
 | `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
 
@@ -428,17 +432,17 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   --network host \
   --env-file "$HOME/.pi/.env" \
   -v "$PWD":"$PWD":rw \
-  -v "$HOME/.pi":/home/node/.pi:rw \
-  -v "$HOME/.gitconfig":/home/node/.gitconfig:ro \
-  -v "$HOME/.gitignore-global":/home/node/.gitignore-global:ro \
-  -v "$HOME/.ssh":/home/node/.ssh:ro \
-  -v "$HOME/.config/gh":/home/node/.gh-config:ro \
-  -v "$HOME/.config/mcpl/mcp.json":/home/node/.mcpl/mcp.json:ro \ # adjust host path to your mcpl config location
-  -v "$HOME/.agents":/home/node/.agents:rw \
-  -v "$HOME/.config/gcloud/application_default_credentials.json":/home/node/.gcloud-adc.json:ro \
-  -v "$HOME/.config/cursor/auth.json":/home/node/.cursor/auth.json:ro \
-  -v "$HOME/.config/glab-cli":/home/node/.config/glab-cli:ro \
-  -v "$HOME/screenshots":/home/node/screenshots \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro \ # adjust host path to your mcpl config location
+  -v "$HOME/.agents":"$HOME/.agents":rw \
+  -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
+  -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
+  -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
+  -v "$HOME/screenshots":"$HOME/screenshots":ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --group-add $(stat -c '%g' /var/run/docker.sock) \
   -w "$PWD" \

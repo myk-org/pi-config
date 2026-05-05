@@ -78,10 +78,8 @@ RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-glo
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
-# Cursor auth: symlink from default location to mount-safe path
-# (mounting dirs under ~/.config/ breaks Chrome, so cursor auth mounts to ~/.cursor/)
-RUN mkdir -p /home/node/.config/cursor /home/node/.cursor && \
-  ln -sf /home/node/.cursor/auth.json /home/node/.config/cursor/auth.json
+# Cursor auth: create config dir (auth.json mounted or symlinked at runtime)
+RUN mkdir -p /home/node/.config/cursor
 
 # agent-browser: use Playwright's Chromium with container-safe flags
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
@@ -110,13 +108,21 @@ RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Workaround for buildah bug #6747: RUN --mount=type=cache resets
-# ownership of parent directories. Re-chown /home/node after all
-# mount-cached RUN instructions have completed.
+# Workaround: re-chown /home/node after cache mounts (buildah bug #6747).
 USER root
+# sudo for init-entrypoint (node needs root to chown/symlink host HOME)
+RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/* && \
+    echo 'node ALL=(ALL) NOPASSWD:SETENV: /usr/local/bin/init-entrypoint.sh' >> /etc/sudoers.d/pi-init && \
+    chmod 0440 /etc/sudoers.d/pi-init
+
 RUN chown node:node /home/node
+
+COPY --chmod=755 init-entrypoint.sh /usr/local/bin/init-entrypoint.sh
+
+# USER node so docker exec enters as node.
+# Entrypoint uses sudo for root operations then runs as node.
 USER node
 
 WORKDIR /workspace
 
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["init-entrypoint.sh"]
