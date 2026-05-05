@@ -249,6 +249,7 @@ docker run --rm -it \
   -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
   -v "$HOME/.ssh":"$HOME/.ssh":ro \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
@@ -376,6 +377,7 @@ npm install && npm run build
 | `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx cursor models) |
 | `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
 | `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
+| `-v /tmp/pi-work:/tmp/pi-work:rw` | Persistent temp files (survives container restarts) |
 | `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
 | `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
 
@@ -443,6 +445,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
   -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
   -v "$HOME/screenshots":"$HOME/screenshots":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --group-add $(stat -c '%g' /var/run/docker.sock) \
   -w "$PWD" \
