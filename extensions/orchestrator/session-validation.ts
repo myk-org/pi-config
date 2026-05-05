@@ -51,43 +51,57 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       }
 
       // Find orphans — tool calls with no matching result
-      const orphans: { callId: string; parentId: string; toolName: string }[] = [];
+      const orphans = new Map<string, { callId: string; parentId: string; toolName: string }[]>();
       for (const [callId, meta] of toolCalls) {
         if (!toolResults.has(callId)) {
-          orphans.push({ callId, parentId: meta.parentId, toolName: meta.toolName });
+          if (!orphans.has(meta.parentId)) orphans.set(meta.parentId, []);
+          orphans.get(meta.parentId)!.push({ callId, parentId: meta.parentId, toolName: meta.toolName });
         }
       }
 
-      if (orphans.length === 0) {
+      if (orphans.size === 0) {
         ctx.ui.notify("Session is clean — no orphaned tool calls found", "info");
         return;
       }
 
-      // Append synthetic tool results for each orphan
-      const syntheticLines: string[] = [];
-      for (const orphan of orphans) {
-        const synthetic = {
-          type: "message",
-          id: crypto.randomBytes(4).toString("hex"),
-          parentId: orphan.parentId,
-          timestamp: new Date().toISOString(),
-          message: {
-            role: "toolResult",
-            toolCallId: orphan.callId,
-            toolName: orphan.toolName,
-            content: [{ type: "text", text: "Error: session interrupted — tool call did not complete" }],
-            isError: true,
-            timestamp: Date.now(),
-          },
-        };
-        syntheticLines.push(JSON.stringify(synthetic));
+      // Rewrite session — insert synthetic toolResult right after the parent message.
+      // The API requires tool_result in the NEXT message after tool_use.
+      const repairedLines: string[] = [];
+      let totalFixed = 0;
+      const fixedDetails: string[] = [];
+
+      for (const line of lines) {
+        repairedLines.push(line);
+        let entry: any;
+        try { entry = JSON.parse(line); } catch { continue; }
+        const entryId = entry?.id;
+        if (entryId && orphans.has(entryId)) {
+          for (const orphan of orphans.get(entryId)!) {
+            const synthetic = {
+              type: "message",
+              id: crypto.randomBytes(4).toString("hex"),
+              parentId: orphan.parentId,
+              timestamp: new Date().toISOString(),
+              message: {
+                role: "toolResult",
+                toolCallId: orphan.callId,
+                toolName: orphan.toolName,
+                content: [{ type: "text", text: "Error: session interrupted — tool call did not complete" }],
+                isError: true,
+                timestamp: Date.now(),
+              },
+            };
+            repairedLines.push(JSON.stringify(synthetic));
+            totalFixed++;
+            fixedDetails.push(`  • ${orphan.toolName} (${orphan.callId})`);
+          }
+        }
       }
 
-      fs.appendFileSync(sessionFile, "\n" + syntheticLines.join("\n") + "\n");
+      fs.writeFileSync(sessionFile, repairedLines.join("\n") + "\n");
 
-      const details = orphans.map((o) => `  • ${o.toolName} (${o.callId})`).join("\n");
       ctx.ui.notify(
-        `🔧 Repaired ${orphans.length} orphaned tool call${orphans.length > 1 ? "s" : ""}:\n${details}`,
+        `🔧 Repaired ${totalFixed} orphaned tool call${totalFixed > 1 ? "s" : ""}:\n${fixedDetails.join("\n")}`,
         "info",
       );
     },
