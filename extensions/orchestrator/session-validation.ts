@@ -72,50 +72,91 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
         }
       }
 
-      // Find orphans on the active branch
-      const orphans = new Map<string, { callId: string; parentId: string; toolName: string }[]>();
+      // Find orphans on the active branch, and the next branch entry after each orphan parent
+      // so we can re-parent it through the synthetic toolResult.
+      const orphanGroups = new Map<string, {
+        calls: { callId: string; toolName: string }[];
+        nextBranchEntryId: string | null;
+      }>();
       for (const [callId, meta] of toolCalls) {
         if (!toolResults.has(callId)) {
-          if (!orphans.has(meta.parentId)) orphans.set(meta.parentId, []);
-          orphans.get(meta.parentId)!.push({ callId, parentId: meta.parentId, toolName: meta.toolName });
+          if (!orphanGroups.has(meta.parentId)) {
+            // Find the next entry on the branch after this parent
+            const idx = branch.findIndex((e) => e.id === meta.parentId);
+            const nextEntry = idx >= 0 && idx + 1 < branch.length ? branch[idx + 1] : null;
+            orphanGroups.set(meta.parentId, {
+              calls: [],
+              nextBranchEntryId: nextEntry?.id ?? null,
+            });
+          }
+          orphanGroups.get(meta.parentId)!.calls.push({ callId, toolName: meta.toolName });
         }
       }
 
-      if (orphans.size === 0) {
+      if (orphanGroups.size === 0) {
         ctx.ui.notify("Session is clean \u2014 no orphaned tool calls found", "info");
         return;
       }
 
-      // Rewrite session \u2014 insert synthetic toolResult right after the parent message.
-      // The API requires tool_result in the NEXT message after tool_use.
-      const repairedLines: string[] = [];
+      // Build synthetic IDs and re-parent map.
+      // Chain: assistant(parent) -> synthetic_toolResult(s) -> next_entry
+      // The LAST synthetic toolResult becomes the new parent for the next branch entry.
+      const reparentMap = new Map<string, string>(); // entryId -> newParentId
+      const syntheticsByParent = new Map<string, any[]>();
       let totalFixed = 0;
       const fixedDetails: string[] = [];
 
+      for (const [parentId, group] of orphanGroups) {
+        const synthetics: any[] = [];
+        let prevId = parentId;
+        for (const call of group.calls) {
+          const synId = crypto.randomBytes(4).toString("hex");
+          synthetics.push({
+            type: "message",
+            id: synId,
+            parentId: prevId,
+            timestamp: new Date().toISOString(),
+            message: {
+              role: "toolResult",
+              toolCallId: call.callId,
+              toolName: call.toolName,
+              content: [{ type: "text", text: "Error: session interrupted \u2014 tool call did not complete" }],
+              isError: true,
+              timestamp: Date.now(),
+            },
+          });
+          prevId = synId;
+          totalFixed++;
+          fixedDetails.push(`  \u2022 ${call.toolName} (${call.callId})`);
+        }
+        syntheticsByParent.set(parentId, synthetics);
+        // Re-parent the next branch entry to point to the last synthetic
+        if (group.nextBranchEntryId) {
+          reparentMap.set(group.nextBranchEntryId, prevId);
+        }
+      }
+
+      // Rewrite the session file:
+      // 1. Insert synthetics after their parent
+      // 2. Re-parent entries that need it
+      const repairedLines: string[] = [];
       for (const line of lines) {
-        repairedLines.push(line);
         let entry: any;
-        try { entry = JSON.parse(line); } catch { continue; }
-        const entryId = entry?.id;
-        if (entryId && orphans.has(entryId)) {
-          for (const orphan of orphans.get(entryId)!) {
-            const synthetic = {
-              type: "message",
-              id: crypto.randomBytes(4).toString("hex"),
-              parentId: orphan.parentId,
-              timestamp: new Date().toISOString(),
-              message: {
-                role: "toolResult",
-                toolCallId: orphan.callId,
-                toolName: orphan.toolName,
-                content: [{ type: "text", text: "Error: session interrupted \u2014 tool call did not complete" }],
-                isError: true,
-                timestamp: Date.now(),
-              },
-            };
-            repairedLines.push(JSON.stringify(synthetic));
-            totalFixed++;
-            fixedDetails.push(`  \u2022 ${orphan.toolName} (${orphan.callId})`);
+        try { entry = JSON.parse(line); } catch {
+          repairedLines.push(line);
+          continue;
+        }
+        // Re-parent if needed
+        if (entry.id && reparentMap.has(entry.id)) {
+          entry.parentId = reparentMap.get(entry.id);
+          repairedLines.push(JSON.stringify(entry));
+        } else {
+          repairedLines.push(line);
+        }
+        // Insert synthetics after parent
+        if (entry.id && syntheticsByParent.has(entry.id)) {
+          for (const syn of syntheticsByParent.get(entry.id)!) {
+            repairedLines.push(JSON.stringify(syn));
           }
         }
       }
