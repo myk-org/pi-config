@@ -27,14 +27,32 @@ if [ -d "$NEW_HOME" ]; then
         fi
     done
 
-    # Reverse symlinks: point /home/node/.config items to mounted ones
-    # so tools using the original home path still find config files
-    for item in cursor gh glab-cli mcpl docsfy jji rootcoz gcloud; do
-        if [ -e "$NEW_HOME/.config/$item" ] && [ ! -L "/home/node/.config/$item" ]; then
-            rm -rf "/home/node/.config/$item"
-            ln -sf "$NEW_HOME/.config/$item" "/home/node/.config/$item"
+    # Reverse symlinks: point everything under /home/node to NEW_HOME
+    # so docker exec (HOME=/home/node) and tools find all mounted content.
+    # Scans what docker actually mounted — works for any user's mounts.
+    for item in "$NEW_HOME"/.* "$NEW_HOME"/*; do
+        [ -e "$item" ] || continue
+        name=$(basename "$item")
+        [ "$name" = "." ] || [ "$name" = ".." ] && continue
+        # Skip items already symlinked from /home/node (forward symlinks)
+        [ -L "$NEW_HOME/$name" ] && continue
+        # Replace /home/node version with symlink to mounted version
+        if [ ! -L "/home/node/$name" ]; then
+            rm -rf "/home/node/$name"
+            ln -sf "$NEW_HOME/$name" "/home/node/$name"
         fi
     done
+    # Same for .config subdirectories
+    if [ -d "$NEW_HOME/.config" ]; then
+        for item in "$NEW_HOME/.config"/*; do
+            [ -e "$item" ] || continue
+            name=$(basename "$item")
+            if [ ! -L "/home/node/.config/$name" ]; then
+                rm -rf "/home/node/.config/$name" 2>/dev/null || true
+                ln -sf "$item" "/home/node/.config/$name" 2>/dev/null || true
+            fi
+        done
+    fi
 
     export HOME="$NEW_HOME"
     # Ensure PATH includes new HOME-based paths
