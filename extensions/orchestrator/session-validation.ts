@@ -164,9 +164,12 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       fs.writeFileSync(sessionFile, repairedLines.join("\n") + "\n");
 
       ctx.ui.notify(
-        `\ud83d\udd27 Repaired ${totalFixed} orphaned tool call${totalFixed > 1 ? "s" : ""}:\n${fixedDetails.join("\n")}`,
+        `\ud83d\udd27 Repaired ${totalFixed} orphaned tool call${totalFixed > 1 ? "s" : ""}:\n${fixedDetails.join("\n")}\nReloading session...`,
         "info",
       );
+
+      // Force session re-read — switchSession to the same file rebuilds the tree
+      await ctx.switchSession(sessionFile);
     },
   });
 
