@@ -3,6 +3,9 @@
 # HOME is set to /home/$PI_HOST_USER if configured, otherwise /home/node.
 set -e
 
+# Create temp dir for this project (persists across container restarts when mounted)
+mkdir -p "/tmp/pi-work/$(basename "$PWD")"
+
 # Always install/update pi to get the latest version on every container start
 npm install -g @mariozechner/pi-coding-agent
 

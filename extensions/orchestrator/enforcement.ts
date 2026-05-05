@@ -221,6 +221,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
+    // Enforce temp files go to /tmp/pi-work/ — not bare /tmp/
+    // Catches: mktemp /tmp/foo, > /tmp/foo, tee /tmp/foo, cat > /tmp/foo
+    if (/\bmktemp\b/.test(command) && !/\/tmp\/pi-work/.test(command)) {
+      return {
+        block: true,
+        reason: `⛔ mktemp must use /tmp/pi-work/$(basename $PWD)/ prefix. Use: mktemp /tmp/pi-work/$(basename $PWD)/XXXXXX`,
+      };
+    }
+
     // Dangerous command confirmation
     if (DANGEROUS.some((p) => p.test(command))) {
       if (!ctx.hasUI)

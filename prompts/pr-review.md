@@ -153,13 +153,13 @@ Present findings to user grouped by severity (CRITICAL, WARNING, SUGGESTION). As
 If user selected findings, create temp directory and write JSON to temp file:
 
 ```bash
-mkdir -p /tmp/pi-work
+mkdir -p /tmp/pi-work/$(basename $PWD)
 ```
 
 Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
 
 ```bash
-myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} /tmp/pi-work/pr-review-comments.json
+myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} /tmp/pi-work/$(basename $PWD)/pr-review-comments.json
 ```
 
 ### Phase 5: Summary

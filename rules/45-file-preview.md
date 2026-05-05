@@ -8,10 +8,10 @@ When generating or modifying HTML, frontend, or any browser-viewable files:
    ```bash
    HTTPD=~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
    PORT=$(uv run python3 $HTTPD --find-port)
-   nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve > /tmp/httpd-$PORT.log 2>&1 &
+   nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve > /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log 2>&1 &
    disown
    sleep 0.5
-   if ! kill -0 $! 2>/dev/null; then echo "Server failed to start:"; cat /tmp/httpd-$PORT.log; fi
+   if ! kill -0 $! 2>/dev/null; then echo "Server failed to start:"; cat /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log; fi
    ```
 
    Replace `/path/to/serve` with the directory containing the files.

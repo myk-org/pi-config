@@ -149,7 +149,10 @@ Provide clear, concise options. Include a 'no' or 'cancel' option when appropria
 
 ## Temp Files
 
-**ALL temp files MUST go to `/tmp/pi-work/<repo-name>/`** (e.g., `/tmp/pi-work/pi-config/`).
+**ALL temp files MUST go to `/tmp/pi-work/<cwd-basename>/`** (e.g., `/tmp/pi-work/pi-config/`).
+
+- `<cwd-basename>` is the last segment of the current working directory (not repo name — not all dirs are repos)
+- This path persists across container restarts when `/tmp/pi-work` is mounted from the host
 
 NEVER create temp files in the project directory.
 
