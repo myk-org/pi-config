@@ -3,11 +3,96 @@
  */
 
 import { execSync, execFileSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 export function registerSessionValidation(pi: ExtensionAPI): void {
+  // ── /repair command ─────────────────────────────────────────────────
+  pi.registerCommand("repair", {
+    description: "Repair session — fix orphaned tool calls that break API requests",
+    handler: async (_args, ctx) => {
+      const sessionFile = ctx.sessionManager.getSessionFile();
+      if (!sessionFile || !fs.existsSync(sessionFile)) {
+        ctx.ui.notify("No session file found", "warning");
+        return;
+      }
+
+      const raw = fs.readFileSync(sessionFile, "utf-8");
+      const lines = raw.split("\n").filter((l) => l.trim());
+
+      // Collect all tool call IDs and their metadata
+      const toolCalls = new Map<string, { parentId: string; toolName: string }>();
+      const toolResults = new Set<string>();
+
+      for (const line of lines) {
+        let entry: any;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const msg = entry?.message;
+        if (!msg) continue;
+
+        if (msg.role === "assistant" && Array.isArray(msg.content)) {
+          for (const item of msg.content) {
+            if (item.type === "toolCall" && item.id) {
+              toolCalls.set(item.id, {
+                parentId: entry.id,
+                toolName: item.toolName || item.name || "unknown",
+              });
+            }
+          }
+        } else if (msg.role === "toolResult" && msg.toolCallId) {
+          toolResults.add(msg.toolCallId);
+        }
+      }
+
+      // Find orphans — tool calls with no matching result
+      const orphans: { callId: string; parentId: string; toolName: string }[] = [];
+      for (const [callId, meta] of toolCalls) {
+        if (!toolResults.has(callId)) {
+          orphans.push({ callId, parentId: meta.parentId, toolName: meta.toolName });
+        }
+      }
+
+      if (orphans.length === 0) {
+        ctx.ui.notify("Session is clean — no orphaned tool calls found", "info");
+        return;
+      }
+
+      // Append synthetic tool results for each orphan
+      const syntheticLines: string[] = [];
+      for (const orphan of orphans) {
+        const synthetic = {
+          type: "message",
+          id: crypto.randomBytes(4).toString("hex"),
+          parentId: orphan.parentId,
+          timestamp: new Date().toISOString(),
+          message: {
+            role: "toolResult",
+            toolCallId: orphan.callId,
+            toolName: orphan.toolName,
+            content: [{ type: "text", text: "Error: session interrupted — tool call did not complete" }],
+            isError: true,
+            timestamp: Date.now(),
+          },
+        };
+        syntheticLines.push(JSON.stringify(synthetic));
+      }
+
+      fs.appendFileSync(sessionFile, "\n" + syntheticLines.join("\n") + "\n");
+
+      const details = orphans.map((o) => `  • ${o.toolName} (${o.callId})`).join("\n");
+      ctx.ui.notify(
+        `🔧 Repaired ${orphans.length} orphaned tool call${orphans.length > 1 ? "s" : ""}:\n${details}`,
+        "info",
+      );
+    },
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
 
