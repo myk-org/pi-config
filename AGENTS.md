@@ -43,11 +43,11 @@ pi-config/
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
-│   │   ├── diff-viewer.ts           # Auto-start diff viewer (difit)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon, forwards provider response info)
 │   │   ├── pidash-ui/               # React + shadcn/ui web dashboard
 │   │   │   ├── src/                 # React source (components, hooks, types)
+│   │   │   │   └── components/DiffPanel.tsx  # Built-in diff viewer (@pierre/diffs + @pierre/trees)
 │   │   │   └── dist/               # Built output (generated, gitignored)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)

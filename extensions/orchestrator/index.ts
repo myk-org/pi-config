@@ -18,7 +18,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
-import { registerDifit } from "./diff-viewer.js";
 import { registerDreaming } from "./dreaming.js";
 import { registerPidash } from "./pidash.js";
 import { registerEnforcement } from "./enforcement.js";
@@ -73,7 +72,6 @@ export default function (pi: ExtensionAPI) {
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
-  registerDifit(pi);
   registerDreaming(pi, spawnAsyncAgent);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   registerPidash(pi, killAsyncAgent);

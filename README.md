@@ -96,7 +96,6 @@ uv tool install git+https://github.com/myk-org/pi-config
 #### Recommended tools
 
 ```bash
-npm install -g difit          # Git diff viewer in browser (auto-starts with pi)
 npm install -g acpx           # External AI agent proxy (cursor, codex, gemini)
 npm install -g pi-web-access  # Web search/fetch skills (librarian)
 uvx install mcp-launchpad     # MCP server CLI (mcpl)
@@ -326,7 +325,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Send messages from browser to pi
 - Model and thinking level switching from browser
 - Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
-- Info bar: model, tokens, context %, git status, diff viewer link
+- Info bar: model, tokens, context %, git status, diff viewer toggle
+- Built-in diff viewer (`d` key) — shows staged/unstaged changes with file tree, powered by `@pierre/diffs` + `@pierre/trees`
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - Mobile responsive
@@ -398,7 +398,6 @@ npm install && npm run build
 | `kubectl` / `oc` | Kubernetes and OpenShift CLI |
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
 | `procps` | Process utilities (ps, top, pgrep, pkill) |
-| `difit` | Git diff viewer in the browser with ref switching (auto-starts) |
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
 | `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
 | `jq` | JSON processing |

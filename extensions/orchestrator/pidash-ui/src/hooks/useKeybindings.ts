@@ -23,6 +23,7 @@ const DEFAULT_KEYBINDINGS: Keybinding[] = [
   { id: "session-8", label: "Jump to session 8", defaultKey: "Ctrl+8", key: "Ctrl+8" },
   { id: "session-9", label: "Jump to session 9", defaultKey: "Ctrl+9", key: "Ctrl+9" },
   { id: "abort", label: "Abort / Stop", defaultKey: "Escape", key: "Escape" },
+  { id: "diff-toggle", label: "Toggle diff view", defaultKey: "d", key: "d" },
 ];
 
 function loadKeybindings(): Keybinding[] {

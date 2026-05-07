@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, ExternalLink, Brain, Bot, ChevronDown, Folder } from "lucide-react";
+import { GitBranch, Brain, Bot, ChevronDown, Folder } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
@@ -24,6 +24,7 @@ interface Props {
   tokens: TokenUsage | null;
   send: (data: object) => void;
   onMessage: (handler: (data: any) => void) => () => void;
+  onDiffToggle?: () => void;
 }
 
 interface ProjectSession {
@@ -35,7 +36,7 @@ interface ProjectSession {
   modified?: string;
 }
 
-export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
+export function InfoBar({ session, model, tokens, send, onMessage, onDiffToggle }: Props) {
   const inactive = !session.active;
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [projectSessions, setProjectSessions] = useState<ProjectSession[]>([]);
@@ -226,12 +227,12 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
       )}
 
       {/* Diff viewer */}
-      {session.diffPort && (
+      {onDiffToggle && (
         <>
           <span className="text-border">|</span>
-          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline">
-             diff <ExternalLink className="h-3 w-3" />
-          </a>
+          <button onClick={onDiffToggle} className="flex items-center gap-0.5 text-primary hover:underline">
+             diff
+          </button>
         </>
       )}
 

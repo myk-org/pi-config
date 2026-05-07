@@ -43,7 +43,6 @@ interface SessionInfo {
   gitDirty?: boolean;
   gitChanges?: number;
   container?: boolean;
-  diffPort?: number | null;
   contextWindow?: number;
   thinkingLevel?: string;
   working?: boolean;
@@ -183,7 +182,6 @@ piWss.on("connection", (ws: any) => {
           gitDirty: parsed.gitDirty || false,
           gitChanges: parsed.gitChanges || 0,
           container: parsed.container || false,
-          diffPort: parsed.diffPort || null,
           contextWindow: parsed.contextWindow || 0,
           thinkingLevel: parsed.thinkingLevel || "medium",
         };
@@ -211,7 +209,6 @@ piWss.on("connection", (ws: any) => {
         if (parsed.gitDirty !== undefined) piClient.session.gitDirty = parsed.gitDirty;
         if (parsed.gitChanges !== undefined) piClient.session.gitChanges = parsed.gitChanges;
         if (parsed.contextWindow !== undefined) piClient.session.contextWindow = parsed.contextWindow;
-        if (parsed.diffPort !== undefined) piClient.session.diffPort = parsed.diffPort;
         if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
         piClient.session.lastActivity = Date.now();
         sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
@@ -248,8 +245,8 @@ piWss.on("connection", (ws: any) => {
         return;
       }
 
-      // Forward sessions-list and models-list directly to watchers (not buffered)
-      if ((parsed.type === "sessions-list" || parsed.type === "models-list") && piClient) {
+      // Forward list responses directly to watchers (not buffered)
+      if ((parsed.type === "sessions-list" || parsed.type === "models-list" || parsed.type === "commits-list") && piClient) {
         sendToWatchers(piClient.session.sessionId, parsed);
         return;
       }
@@ -272,8 +269,8 @@ piWss.on("connection", (ws: any) => {
         const raw = data.toString();
 
         // Buffer the event for replay on browser connect
-        // Skip extension_ui_request — these are one-time interactions
-        if (parsed.type !== "extension_ui_request") {
+        // Skip extension_ui_request (one-time interactions) and diff_update (large, ephemeral state)
+        if (parsed.type !== "extension_ui_request" && parsed.type !== "diff_update") {
           piClient.eventBuffer.push(raw);
           while (piClient.eventBuffer.length > 10000) piClient.eventBuffer.shift();
         }
@@ -386,6 +383,10 @@ browserWss.on("connection", (ws: any) => {
               try { ws.send(event); } catch {}
             }
             log(`replayed ${client.eventBuffer.length} events for ${watchId}`);
+            // Request fresh diff data (not buffered, so we need to ask the extension)
+            if (client.ws) {
+              try { client.ws.send(JSON.stringify({ type: "pidash-command", command: "request-diffs" })); } catch {}
+            }
           }
         }
         return;

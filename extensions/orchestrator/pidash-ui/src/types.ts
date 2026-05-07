@@ -11,7 +11,6 @@ export interface SessionInfo {
   gitDirty?: boolean;
   gitChanges?: number;
   container?: boolean;
-  diffPort?: number | null;
   contextWindow?: number;
   thinkingLevel?: string;
   working?: boolean;
@@ -49,6 +48,14 @@ export interface PiEvent {
     };
   };
   isError?: boolean;
+  // diff_update fields
+  staged?: string;
+  unstaged?: string;
+  committed?: string;
+  fromRef?: string;
+  toRef?: string;
+  mode?: string;
+  commits?: Array<{ hash: string; short: string; subject: string; date: string }>;
   // session_notification fields
   sessionId?: string;
   cwd?: string;
