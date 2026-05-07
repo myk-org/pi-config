@@ -45,6 +45,17 @@ function getBranch(cwd: string): string {
 export function registerPidiff(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
+  const pidiffDisabled = ["false", "0", "no", "off"].includes(process.env.PI_PIDIFF_ENABLE?.toLowerCase() ?? "");
+  if (pidiffDisabled) {
+    pi.registerCommand("pidiff", {
+      description: "Manage pidiff server — /pidiff start|stop|restart|status",
+      handler: async (_args, ctx) => {
+        if (ctx.hasUI) ctx.ui.notify("pidiff is disabled (PI_PIDIFF_ENABLE=false). Set PI_PIDIFF_ENABLE=true or unset it to enable.", "info");
+      },
+    });
+    return;
+  }
+
   let ws: any = null;
   let connected = false;
   let connecting = false;
