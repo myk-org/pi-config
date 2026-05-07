@@ -13,6 +13,7 @@ export interface SessionInfo {
   container?: boolean;
   contextWindow?: number;
   thinkingLevel?: string;
+  diffPort?: number | null;
   working?: boolean;
 }
 
@@ -48,14 +49,6 @@ export interface PiEvent {
     };
   };
   isError?: boolean;
-  // diff_update fields
-  staged?: string;
-  unstaged?: string;
-  committed?: string;
-  fromRef?: string;
-  toRef?: string;
-  mode?: string;
-  commits?: Array<{ hash: string; short: string; subject: string; date: string }>;
   // session_notification fields
   sessionId?: string;
   cwd?: string;

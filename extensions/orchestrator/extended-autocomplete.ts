@@ -212,6 +212,15 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       ], prefix);
     },
 
+    "pidiff": (prefix: string) => {
+      return filter([
+        { value: "start", label: "start", description: "Start pidiff server" },
+        { value: "stop", label: "stop", description: "Stop pidiff server" },
+        { value: "restart", label: "restart", description: "Restart pidiff server" },
+        { value: "status", label: "status", description: "Show pidiff status" },
+      ], prefix);
+    },
+
     "cron": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";

@@ -11,112 +11,36 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as http from "node:http";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { commandHandlerRegistry, latestCommandCtx } from "./index.js";
+import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, waitForDaemon, createLogger } from "./daemon-manager.js";
 
 const DEFAULT_PORT = 19190;
 const PIDASH_PORT = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
 const RECONNECT_INTERVAL_MS = 5000;
-const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
-const PIDASH_LOG = path.join(process.env.HOME || "/tmp", ".pi", "pidash-debug.log");
-function debugLog(msg: string) {
-  try { fs.appendFileSync(PIDASH_LOG, `${new Date().toISOString()} [ext] ${msg}\n`); } catch {}
-}
+const debugLog = createLogger(
+  path.join(process.env.HOME || "/tmp", ".pi", "pidash-debug.log"),
+  "ext",
+);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function isDaemonRunning(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const req = http.request(
-      { hostname: "127.0.0.1", port: PIDASH_PORT, path: "/api/health", timeout: HEALTH_CHECK_TIMEOUT_MS },
-      (res) => {
-        let body = "";
-        res.on("data", (d) => { body += d; });
-        res.on("end", () => {
-          try { resolve(JSON.parse(body).status === "ok"); } catch { resolve(false); }
-        });
-      },
-    );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => { req.destroy(); resolve(false); });
-    req.end();
-  });
-}
-
-function ensurePidashUiBuilt(): void {
-  const uiDir = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "pidash-ui",
-  );
-  const distDir = path.join(uiDir, "dist");
-  if (fs.existsSync(distDir)) return;
-  if (!fs.existsSync(path.join(uiDir, "package.json"))) return;
-
-  debugLog("pidash-ui dist/ not found, building...");
-  try {
-    const { execSync: ex } = require("node:child_process");
-    ex("npm install --production=false && npm run build", {
-      cwd: uiDir,
-      stdio: "ignore",
-      timeout: 60000,
-    });
-    debugLog("pidash-ui build complete");
-  } catch (e: any) {
-    debugLog(`pidash-ui build failed: ${e.message}`);
-  }
+  return checkHealth(PIDASH_PORT);
 }
 
 function spawnDaemon(): void {
-  ensurePidashUiBuilt();
-  const serverPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "..", "..", "scripts", "pidash-server.ts",
-  );
-
-  let jitiPath: string | undefined;
-  try {
-    // Walk up from this file to find node_modules/@mariozechner/jiti
-    let dir = path.dirname(new URL(import.meta.url).pathname);
-    for (let i = 0; i < 10; i++) {
-      const candidate = path.join(dir, "node_modules", "@mariozechner", "jiti", "lib", "jiti-cli.mjs");
-      if (fs.existsSync(candidate)) { jitiPath = candidate; break; }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    // Also check pi's global install
-    if (!jitiPath) {
-      const globalCandidate = path.join(
-        path.dirname(process.execPath), "..", "lib", "node_modules",
-        "@mariozechner", "pi-coding-agent", "node_modules",
-        "@mariozechner", "jiti", "lib", "jiti-cli.mjs",
-      );
-      if (fs.existsSync(globalCandidate)) jitiPath = globalCandidate;
-    }
-  } catch {}
-  debugLog(`jiti path: ${jitiPath || "NOT FOUND"}`);
-
-  const nodeCmd = process.execPath;
-  const args = jitiPath ? `"${jitiPath}" "${serverPath}"` : `"${serverPath}"`;
-  const logFile = path.join(process.env.HOME || "/tmp", ".pi", "pidash-server.log");
-  // Use nohup + shell to fully detach from pi's process group
-  const cmd = `nohup "${nodeCmd}" ${args} > "${logFile}" 2>&1 &`;
-  debugLog(`spawning daemon via shell: ${cmd}`);
-
-  try {
-    const { execSync } = require("node:child_process");
-    execSync(cmd, {
-      stdio: "ignore",
-      env: { ...process.env, PI_PIDASH_PORT: String(PIDASH_PORT) },
-    });
-  } catch (e: any) {
-    debugLog(`daemon spawn error: ${e.message}`);
-  }
+  ensureUiBuilt("pidash-ui", debugLog);
+  spawnDaemonGeneric({
+    serverScript: "pidash-server.ts",
+    logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidash-server.log"),
+    env: { PI_PIDASH_PORT: String(PIDASH_PORT) },
+    log: debugLog,
+  });
 }
 
 function getGitStatus(cwd: string): { branch: string; dirty: boolean; changes: number } {
@@ -130,92 +54,6 @@ function getGitStatus(cwd: string): { branch: string; dirty: boolean; changes: n
     const changes = status ? status.split("\n").length : 0;
     return { branch, dirty: changes > 0, changes };
   } catch { return { branch: "", dirty: false, changes: 0 }; }
-}
-
-function getGitDiff(cwd: string): { staged: string; unstaged: string } {
-  try {
-    const staged = execFileSync("git", ["diff", "--staged"], {
-      cwd, encoding: "utf-8", timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 1024 * 1024, // 1MB max
-    }).trim();
-    const unstaged = execFileSync("git", ["diff"], {
-      cwd, encoding: "utf-8", timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 1024 * 1024,
-    }).trim();
-    return { staged, unstaged };
-  } catch (e: any) { debugLog(`getGitDiff error: ${e.message}`); return { staged: "", unstaged: "" }; }
-}
-
-function getDefaultRemoteBranch(cwd: string): string {
-  try {
-    // Use git symbolic-ref to find the default branch of origin
-    const ref = execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
-      cwd, encoding: "utf-8", timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    // ref is like "refs/remotes/origin/main" → extract "origin/main"
-    return ref.replace("refs/remotes/", "");
-  } catch {
-    // Fallback: try common names
-    for (const name of ["origin/main", "origin/master", "origin/develop"]) {
-      try {
-        execFileSync("git", ["rev-parse", "--verify", name], { cwd, stdio: "ignore" });
-        return name;
-      } catch {}
-    }
-    return "";
-  }
-}
-
-function getGitBranchDiff(cwd: string): string {
-  try {
-    const defaultBranch = getDefaultRemoteBranch(cwd);
-    if (!defaultBranch) return "";
-    let base = "";
-    try {
-      base = execFileSync("git", ["merge-base", defaultBranch, "HEAD"], {
-        cwd, encoding: "utf-8", timeout: 3000,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-    } catch { return ""; }
-    if (!base) return "";
-    return execFileSync("git", ["diff", base, "HEAD"], {
-      cwd, encoding: "utf-8", timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 2 * 1024 * 1024, // 2MB for branch diffs
-    }).trim();
-  } catch (e: any) { debugLog(`getGitBranchDiff error: ${e.message}`); return ""; }
-}
-
-function getGitCommitDiff(cwd: string, fromRef: string, toRef: string): string {
-  try {
-    return execFileSync("git", ["diff", fromRef, toRef], {
-      cwd, encoding: "utf-8", timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 2 * 1024 * 1024,
-    }).trim();
-  } catch (e: any) { debugLog(`getGitCommitDiff error: ${e.message}`); return ""; }
-}
-
-function getGitLog(cwd: string, count: number = 20): Array<{ hash: string; short: string; subject: string; date: string }> {
-  try {
-    // Show recent commits on current branch — no filtering.
-    // Users pick any two commits to compare; branch vs base is handled by Branch mode.
-    const args = ["log", `--format=%H%n%h%n%s%n%ai`, `-${count}`];
-    const raw = execFileSync("git", args, {
-      cwd, encoding: "utf-8", timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (!raw) return [];
-    const lines = raw.split("\n");
-    const commits: Array<{ hash: string; short: string; subject: string; date: string }> = [];
-    for (let i = 0; i + 3 < lines.length; i += 4) {
-      commits.push({ hash: lines[i], short: lines[i + 1], subject: lines[i + 2], date: lines[i + 3] });
-    }
-    return commits;
-  } catch (e: any) { debugLog(`getGitLog error: ${e.message}`); return []; }
 }
 
 function isContainer(): boolean {
@@ -232,6 +70,8 @@ function getCurrentBranch(cwd: string): string {
     }).trim();
   } catch { return ""; }
 }
+
+let diffPort: number | null = null;
 
 // ── Registration ─────────────────────────────────────────────────────
 
@@ -317,6 +157,7 @@ export function registerPidash(
           startedAt: new Date().toISOString(),
           sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
           thinkingLevel: thinking,
+          diffPort,
         });
         debugLog(`sending register: ${reg}`);
         wsClient.send(reg);
@@ -570,25 +411,6 @@ export function registerPidash(
               } catch {}
             }
 
-            if (parsed.command === "request-diffs") {
-              debugLog(`request-diffs: mode=${parsed.mode} fromRef=${parsed.fromRef} toRef=${parsed.toRef}`);
-              if (parsed.mode) {
-                currentDiffMode = parsed.mode;
-                if (parsed.mode === "commits" && parsed.fromRef && parsed.toRef) {
-                  currentDiffRefs = { from: parsed.fromRef, to: parsed.toRef };
-                }
-                lastDiffHash = ""; // Force resend on mode change
-              }
-              sendDiffUpdate();
-            }
-
-            if (parsed.command === "request-commits") {
-              if (lastCtx) {
-                const commits = getGitLog(lastCtx.cwd, 30);
-                debugLog(`request-commits: found ${commits.length} commits`);
-                ws.send(JSON.stringify({ type: "commits-list", commits }));
-              }
-            }
           }
         } catch {}
       });
@@ -764,6 +586,16 @@ export function registerPidash(
     } catch {}
   });
 
+  // Track diff viewer port
+  pi.events.on("diff-viewer:port", (port: unknown) => {
+    if (typeof port === "number") {
+      diffPort = port;
+      if (ws && connected) {
+        ws.send(JSON.stringify({ type: "update_info", diffPort: port }));
+      }
+    }
+  });
+
   // Forward ask_user requests to the daemon for browser display
   pi.events.on("pidash:ui-request", (data: unknown) => {
     if (ws && connected) {
@@ -818,76 +650,6 @@ export function registerPidash(
     } catch {}
   });
 
-  // ── Diff data channel ─────────────────────────────────────────────
-  let lastDiffHash = "";
-  let currentDiffMode: "working" | "branch" | "commits" = "working";
-  let currentDiffRefs: { from: string; to: string } | null = null;
-
-  function sendDiffUpdate(forceMode?: string) {
-    if (!ws || !connected || !lastCtx) return;
-    const git = getGitStatus(lastCtx.cwd);
-    const mode = forceMode || currentDiffMode;
-    debugLog(`sendDiffUpdate: mode=${mode} cwd=${lastCtx.cwd} dirty=${git.dirty}`);
-
-    if (mode === "working") {
-      if (!git.dirty) {
-        if (lastDiffHash) {
-          lastDiffHash = "";
-          ws.send(JSON.stringify({
-            type: "diff_update", mode: "working",
-            staged: "", unstaged: "", branch: git.branch,
-          }));
-        }
-        return;
-      }
-      const diff = getGitDiff(lastCtx.cwd);
-      const hash = `w:${diff.staged.length}:${diff.unstaged.length}:${diff.staged.slice(0, 100)}:${diff.unstaged.slice(0, 100)}`;
-      if (hash === lastDiffHash) return;
-      lastDiffHash = hash;
-      ws.send(JSON.stringify({
-        type: "diff_update", mode: "working",
-        staged: diff.staged, unstaged: diff.unstaged, branch: git.branch,
-      }));
-    } else if (mode === "branch") {
-      const branchDiff = getGitBranchDiff(lastCtx.cwd);
-      // Also include working changes
-      const working = git.dirty ? getGitDiff(lastCtx.cwd) : { staged: "", unstaged: "" };
-      const hash = `b:${branchDiff.length}:${branchDiff.slice(0, 100)}:${working.staged.length}:${working.unstaged.length}`;
-      if (hash === lastDiffHash) return;
-      lastDiffHash = hash;
-      ws.send(JSON.stringify({
-        type: "diff_update", mode: "branch",
-        committed: branchDiff,
-        staged: working.staged, unstaged: working.unstaged,
-        branch: git.branch,
-      }));
-    } else if (mode === "commits" && currentDiffRefs) {
-      const commitDiff = getGitCommitDiff(lastCtx.cwd, currentDiffRefs.from, currentDiffRefs.to);
-      const hash = `c:${currentDiffRefs.from}:${currentDiffRefs.to}:${commitDiff.length}`;
-      if (hash === lastDiffHash) return;
-      lastDiffHash = hash;
-      ws.send(JSON.stringify({
-        type: "diff_update", mode: "commits",
-        committed: commitDiff,
-        staged: "", unstaged: "",
-        branch: git.branch,
-        fromRef: currentDiffRefs.from,
-        toRef: currentDiffRefs.to,
-      }));
-    }
-  }
-
-  // Send fresh diffs after AI finishes working (likely changed files)
-  // Only auto-update in working mode — branch/commits are on-demand only
-  pi.on("agent_end", () => {
-    if (currentDiffMode === "working") setTimeout(sendDiffUpdate, 500);
-  });
-
-  // Send diffs on tool_result (catch intermediate changes during agent work)
-  pi.on("tool_result", () => {
-    if (currentDiffMode === "working") setTimeout(sendDiffUpdate, 300);
-  });
-
   // Periodically update git status
   const statusInterval = setInterval(() => {
     if (!ws || !connected || !lastCtx) return;
@@ -898,8 +660,6 @@ export function registerPidash(
       gitDirty: git.dirty,
       gitChanges: git.changes,
     }));
-    // Also update diffs — only in working mode (branch/commits are on-demand)
-    if (currentDiffMode === "working") sendDiffUpdate();
   }, 10000);
   if (statusInterval.unref) statusInterval.unref();
 
@@ -965,10 +725,7 @@ export function registerPidash(
       if (cmd === "stop") {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
-        try {
-          const { execSync: ex } = require("node:child_process");
-          ex("pkill -f pidash-server", { stdio: "ignore" });
-        } catch {}
+        killDaemon("pidash-server", debugLog);
         if (ctx.hasUI) {
           ctx.ui.setStatus("5-pidash", undefined);
           ctx.ui.notify("pidash server stopped", "info");
@@ -1000,10 +757,7 @@ export function registerPidash(
       if (cmd === "restart") {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
-        try {
-          const { execSync: ex } = require("node:child_process");
-          ex("pkill -f pidash-server", { stdio: "ignore" });
-        } catch {}
+        killDaemon("pidash-server", debugLog);
         await new Promise(r => setTimeout(r, 1000));
         spawnDaemon();
         if (ctx.hasUI) ctx.ui.notify("Restarting pidash server...", "info");

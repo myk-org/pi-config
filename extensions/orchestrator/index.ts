@@ -30,6 +30,7 @@ import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
 import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
+import { registerPidiff } from "./pidiff.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -79,4 +80,5 @@ export default function (pi: ExtensionAPI) {
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
   registerNvim(pi);
+  registerPidiff(pi);
 }

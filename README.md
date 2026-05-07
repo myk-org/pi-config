@@ -23,6 +23,7 @@ Single extension that provides:
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
+| **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains memory.md |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
@@ -64,6 +65,7 @@ Single extension that provides:
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
+| `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer daemon |
 
 ## Installation
 
@@ -326,7 +328,7 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Model and thinking level switching from browser
 - Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
 - Info bar: model, tokens, context %, git status, diff viewer toggle
-- Built-in diff viewer (`d` key) — shows staged/unstaged changes with file tree, powered by `@pierre/diffs` + `@pierre/trees`
+- Standalone diff viewer (pidiff) — opens in browser via link in info bar, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - Mobile responsive
@@ -366,6 +368,44 @@ npm install && npm run build
 ```
 
 > **Note:** Session switching (`/resume`) and new sessions (`/new`) from the browser are not yet supported due to a pi API limitation. Use the TUI for these operations.
+
+### Pidiff — standalone diff viewer
+
+Pidiff is a standalone diff viewer that opens in your browser, providing rich branch diffs with inline review comments.
+
+**How it works:**
+
+- A daemon (`pidiff-server.ts`) runs on port `19290` and aggregates diff sessions from all pi instances
+- Each pi session's extension (`pidiff.ts`) connects to the daemon and registers its repo
+- The React UI uses `@pierre/diffs` and `@pierre/trees` for a full-featured diff experience
+
+**Features:**
+
+- Branch diff and commit comparison
+- File tree with search and filtering
+- Inline review comments on specific lines
+- Publish review comments back to the pi session
+- Multi-session support — each repo gets its own diff view
+- Accessible via link in pidash info bar
+
+**Access:**
+
+```bash
+# Open in browser:
+http://localhost:19290
+
+# Custom port:
+PI_PIDIFF_PORT=9999 pi
+```
+
+**Management:**
+
+```bash
+/pidiff status    # Check server status
+/pidiff stop      # Stop the daemon
+/pidiff start     # Start the daemon
+/pidiff restart   # Restart the daemon
+```
 
 ### Optional mounts
 

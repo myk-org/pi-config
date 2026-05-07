@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, PanelLeftOpen, Search } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { PanelLeftOpen, Search } from "lucide-react";
 import { SessionSidebar } from "@/components/SessionSidebar";
 import { InfoBar } from "@/components/InfoBar";
 import { MessageList } from "@/components/MessageList";
@@ -11,8 +10,6 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { useKeybindings, matchesKeybinding } from "@/hooks/useKeybindings";
 import { SessionSwitcher } from "@/components/SessionSwitcher";
 import { KeybindingSettings } from "@/components/KeybindingSettings";
-import { DiffPanel } from "@/components/DiffPanel";
-import { useDiffData } from "@/hooks/useDiffData";
 import type { ChatMessage, PiEvent, SessionInfo, TokenUsage } from "@/types";
 
 const STORAGE_KEY = "pidash-state";
@@ -38,8 +35,6 @@ export function App() {
   const { connected, send, onMessage } = useWebSocket("/ws/browser");
   const sessions = useSessions(connected, onMessage);
   const notifications = useNotifications();
-  const diffData = useDiffData(onMessage);
-
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [model, setModel] = useState("");
@@ -52,10 +47,6 @@ export function App() {
   const keybindings = useKeybindings();
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showDiff, setShowDiff] = useState(false);
-  const [commits, setCommits] = useState<Array<{ hash: string; short: string; subject: string; date: string }> | null>(null);
-  const [diffMode, setDiffMode] = useState<"working" | "branch" | "commits">("branch");
-
   const asyncMsgRef = useRef<Map<string, { msgId: string; text: string }>>(new Map());
   const messagesRef = useRef(messages);
   const saved = useRef(loadState());
@@ -416,10 +407,6 @@ export function App() {
           if (ev.commands) setAvailableCommands(ev.commands);
           break;
 
-        case "commits-list":
-          if (ev.commits) setCommits(ev.commits);
-          break;
-
         case "ui-dismiss":
           // Mark the inline ask message as answered
           setMessages((prev) => prev.map((m) => {
@@ -441,10 +428,6 @@ export function App() {
     setStreaming(false);
     setSearchQuery("");
     setSearchType("all");
-    setShowDiff(false);
-    setDiffMode("branch");
-    setCommits(null);
-    diffData.resetDiff();
     setScrollKey(k => k + 1);
     thinkRef.current = { id: "", text: "", startTs: 0 };
     assistRef.current = { id: "", text: "" };
@@ -457,7 +440,7 @@ export function App() {
     // Session persisted via localStorage — no URL hash needed
     // Auto-collapse sidebar on mobile
     if (typeof window !== 'undefined' && window.innerWidth <= 768) setSidebarCollapsed(true);
-  }, [send, diffData.resetDiff]);
+  }, [send]);
 
   // Persist UI state to localStorage
   useEffect(() => {
@@ -527,23 +510,6 @@ export function App() {
       }
 
       if (isInput) return;
-
-      if (matchesKeybinding(e, keybindings.getKey("diff-toggle")) && session) {
-        e.preventDefault();
-        setShowDiff(prev => {
-          const next = !prev;
-          if (next) {
-            send({
-              type: "pidash-command",
-              sessionId: session.sessionId,
-              command: "request-diffs",
-              mode: diffMode,
-            });
-          }
-          return next;
-        });
-        return;
-      }
 
       if (matchesKeybinding(e, keybindings.getKey("session-switcher"))) {
         e.preventDefault();
@@ -656,121 +622,25 @@ export function App() {
               {(searchQuery || searchType !== "all") && (
                 <button className="text-muted-foreground hover:text-foreground text-xs" onClick={() => { setSearchQuery(""); setSearchType("all"); }}>✕</button>
               )}
-              <button
-                className={cn(
-                  "ml-auto flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors",
-                  showDiff
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted",
-                  !diffData.files.length && !showDiff && "opacity-50"
-                )}
-                onClick={() => {
-                  const next = !showDiff;
-                  setShowDiff(next);
-                  if (next && session) {
-                    send({
-                      type: "pidash-command",
-                      sessionId: session.sessionId,
-                      command: "request-diffs",
-                      mode: diffMode,
-                    });
-                  }
-                }}
-                title={showDiff ? "Hide diff view" : "Show diff view"}
-              >
-                <GitBranch className="h-3 w-3" />
-                Diff
-                {diffData.files.length > 0 && (
-                  <span className="inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-muted px-0.5 text-[9px] font-medium text-muted-foreground">
-                    {diffData.files.length}
-                  </span>
-                )}
-              </button>
             </div>
-            {showDiff ? (
-              <div className="flex-1 overflow-hidden">
-                <DiffPanel
-                  staged={diffData.staged}
-                  unstaged={diffData.unstaged}
-                  committed={diffData.committed}
-                  branch={diffData.branch || session.branch}
-                  files={diffData.files}
-                  mode={diffMode}
-                  fromRef={diffData.fromRef}
-                  toRef={diffData.toRef}
-                  onClose={() => {
-                    setShowDiff(false);
-                    // Reset backend to working mode so periodic updates don't run expensive git commands
-                    if (session && diffMode !== "working") {
-                      send({
-                        type: "pidash-command",
-                        sessionId: session.sessionId,
-                        command: "request-diffs",
-                        mode: "working",
-                      });
-                    }
-                  }}
-                  onModeChange={(mode, opts) => {
-                    setDiffMode(mode);
-                    if (mode === "commits" && !opts?.fromRef) {
-                      // Just switch to commits mode — don't clear/load until user picks commits
-                    } else {
-                      diffData.clearDiff();
-                      if (session) {
-                        send({
-                          type: "pidash-command",
-                          sessionId: session.sessionId,
-                          command: "request-diffs",
-                          mode,
-                          ...(opts || {}),
-                        });
-                      }
-                    }
-                  }}
-                  loading={diffData.loading}
-                  commits={commits}
-                  onRequestCommits={() => {
-                    if (session) {
-                      send({
-                        type: "pidash-command",
-                        sessionId: session.sessionId,
-                        command: "request-commits",
-                      });
-                    }
-                  }}
-                />
-              </div>
-            ) : (
-              <MessageList
-                messages={messages}
-                searchQuery={searchQuery}
-                searchType={searchType}
-                streaming={streaming}
-                scrollKey={scrollKey}
-                onAskResponse={(id, value) => {
-                  if (value === "__confirmed__") {
-                    send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: true });
-                  } else if (value === "__denied__") {
-                    send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: false });
-                  } else {
-                    send({ type: "extension_ui_response", sessionId: session!.sessionId, id, value });
-                  }
-                }}
-              />
-            )}
+            <MessageList
+              messages={messages}
+              searchQuery={searchQuery}
+              searchType={searchType}
+              streaming={streaming}
+              scrollKey={scrollKey}
+              onAskResponse={(id, value) => {
+                if (value === "__confirmed__") {
+                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: true });
+                } else if (value === "__denied__") {
+                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: false });
+                } else {
+                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, value });
+                }
+              }}
+            />
             <InputBar disabled={!session.active} streaming={streaming} onSend={handleSend} onAbort={handleAbort} commands={availableCommands} />
-            <InfoBar session={session} model={model} tokens={tokens} send={send} onMessage={onMessage} onDiffToggle={() => {
-                  const next = !showDiff;
-                  setShowDiff(next);
-                  if (next && session) {
-                    send({
-                      type: "pidash-command",
-                      sessionId: session.sessionId,
-                      command: "request-diffs",
-                      mode: diffMode,
-                    });
-                  }
-                }} />
+            <InfoBar session={session} model={model} tokens={tokens} send={send} onMessage={onMessage} />
           </>
         )}
       </div>
