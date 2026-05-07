@@ -104,7 +104,8 @@ pi-config/
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
-│   └── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
+│   ├── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
+│   └── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README

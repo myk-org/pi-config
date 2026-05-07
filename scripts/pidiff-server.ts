@@ -17,6 +17,7 @@ const execFileAsync = promisify(execFile);
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
+import { serveUi } from "./serve-ui.ts";
 
 const DEFAULT_PORT = 19290;
 const port = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
@@ -60,7 +61,30 @@ function getStatus(cwd: string): { dirty: boolean; changes: number } {
 function getDiff(cwd: string): { staged: string; unstaged: string } {
   try {
     const staged = gitExec(["diff", "--staged"], cwd);
-    const unstaged = gitExec(["diff"], cwd);
+    let unstaged = gitExec(["diff"], cwd);
+
+    // Include untracked files in the unstaged diff
+    try {
+      const untrackedRaw = gitExec(["ls-files", "--others", "--exclude-standard"], cwd);
+      if (untrackedRaw) {
+        const untrackedFiles = untrackedRaw.split("\n").filter(Boolean);
+        for (const file of untrackedFiles) {
+          try {
+            const content = execFileSync("git", ["diff", "--no-index", "--", "/dev/null", file], {
+              cwd, encoding: "utf-8", timeout: 3000,
+              stdio: ["ignore", "pipe", "ignore"], maxBuffer: 2 * 1024 * 1024,
+            }).trim();
+            if (content) unstaged += (unstaged ? "\n" : "") + content;
+          } catch (e: any) {
+            // git diff --no-index exits with code 1 when files differ (expected)
+            if (e.stdout) unstaged += (unstaged ? "\n" : "") + e.stdout.toString().trim();
+          }
+        }
+      }
+    } catch (e: any) {
+      log(`untracked files diff error: ${e.message}`);
+    }
+
     return { staged, unstaged };
   } catch (e: any) { log(`getDiff error: ${e.message}`); return { staged: "", unstaged: "" }; }
 }
@@ -173,13 +197,6 @@ const browserWatchMap = new WeakMap<any, string | null>(); // sessionId being wa
 
 const UI_DIR = path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "orchestrator", "pidiff-ui", "dist");
 
-const MIME: Record<string, string> = {
-  ".html": "text/html", ".js": "application/javascript",
-  ".css": "text/css", ".json": "application/json",
-  ".woff2": "font/woff2", ".woff": "font/woff",
-  ".svg": "image/svg+xml", ".png": "image/png",
-};
-
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost`);
 
@@ -200,32 +217,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     return;
   }
 
-  // Serve static files
-  let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-  const absPath = path.resolve(path.join(UI_DIR, filePath));
-  if (!absPath.startsWith(path.resolve(UI_DIR))) { res.writeHead(403); res.end(); return; }
-
-  try {
-    const data = fs.readFileSync(absPath);
-    const ext = path.extname(absPath).toLowerCase();
-    const headers: Record<string, string> = { "Content-Type": MIME[ext] || "application/octet-stream" };
-    if (ext === ".html") {
-      headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-    } else if (filePath.includes("/assets/")) {
-      headers["Cache-Control"] = "public, max-age=31536000, immutable";
-    }
-    res.writeHead(200, headers);
-    res.end(data);
-  } catch {
-    try {
-      const html = fs.readFileSync(path.join(UI_DIR, "index.html"));
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(html);
-    } catch {
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end("<h1>pidiff</h1><p>UI not built. Run npm run build in pidiff-ui/</p>");
-    }
-  }
+  serveUi(url.pathname, res, { uiDir: UI_DIR, name: "pidiff-ui", log });
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────
