@@ -43,12 +43,14 @@ pi-config/
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
-│   │   ├── diff-viewer.ts           # Auto-start diff viewer (difit)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon, forwards provider response info)
 │   │   ├── pidash-ui/               # React + shadcn/ui web dashboard
 │   │   │   ├── src/                 # React source (components, hooks, types)
 │   │   │   └── dist/               # Built output (generated, gitignored)
+│   │   ├── pidiff.ts                # Standalone diff viewer extension (spawns/connects to pidiff daemon)
+│   │   ├── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
+│   │   ├── daemon-manager.ts        # Shared daemon infrastructure (pidash + pidiff)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
@@ -101,7 +103,8 @@ pi-config/
 ├── scripts/                         # Utility scripts
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
-│   └── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
+│   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
+│   └── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README
@@ -146,6 +149,26 @@ pi-config/
 - Edit files in the `rules/` directory.
 - Rules auto-load in **alphabetical order** (hence the numeric prefixes).
 - Changes take effect on the **next pi session** — no restart of running sessions.
+
+### Adding an Extension Command
+
+Extension commands (like `/pidash`, `/pidiff`, `/btw`, `/status`) are registered in
+the extension source files under `extensions/orchestrator/`. Each command uses
+`context.registerCommand()` with a name, description, and handler.
+
+Known extension commands:
+
+| Command | Source | Description |
+|---------|--------|-------------|
+| `/btw` | `btw.ts` | Quick side questions |
+| `/pidash` | `pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
+| `/pidiff` | `pidiff.ts` | Manage pidiff daemon (start/stop/restart/status) |
+| `/status` | `status.ts` | Unified session status snapshot |
+| `/async-status` | `async-agents.ts` | Background agent status |
+| `/dream` | `dreaming.ts` | Memory consolidation |
+| `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
+| `/cron` | `cron.ts` | Schedule recurring tasks |
+| `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
 
 ### Adding a Prompt Template
 

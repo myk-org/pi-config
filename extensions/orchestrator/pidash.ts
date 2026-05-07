@@ -11,112 +11,36 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as http from "node:http";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { commandHandlerRegistry, latestCommandCtx } from "./index.js";
+import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, waitForDaemon, createLogger } from "./daemon-manager.js";
 
 const DEFAULT_PORT = 19190;
 const PIDASH_PORT = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
 const RECONNECT_INTERVAL_MS = 5000;
-const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
-const PIDASH_LOG = path.join(process.env.HOME || "/tmp", ".pi", "pidash-debug.log");
-function debugLog(msg: string) {
-  try { fs.appendFileSync(PIDASH_LOG, `${new Date().toISOString()} [ext] ${msg}\n`); } catch {}
-}
+const debugLog = createLogger(
+  path.join(process.env.HOME || "/tmp", ".pi", "pidash-debug.log"),
+  "ext",
+);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function isDaemonRunning(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const req = http.request(
-      { hostname: "127.0.0.1", port: PIDASH_PORT, path: "/api/health", timeout: HEALTH_CHECK_TIMEOUT_MS },
-      (res) => {
-        let body = "";
-        res.on("data", (d) => { body += d; });
-        res.on("end", () => {
-          try { resolve(JSON.parse(body).status === "ok"); } catch { resolve(false); }
-        });
-      },
-    );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => { req.destroy(); resolve(false); });
-    req.end();
-  });
-}
-
-function ensurePidashUiBuilt(): void {
-  const uiDir = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "pidash-ui",
-  );
-  const distDir = path.join(uiDir, "dist");
-  if (fs.existsSync(distDir)) return;
-  if (!fs.existsSync(path.join(uiDir, "package.json"))) return;
-
-  debugLog("pidash-ui dist/ not found, building...");
-  try {
-    const { execSync: ex } = require("node:child_process");
-    ex("npm install --production=false && npm run build", {
-      cwd: uiDir,
-      stdio: "ignore",
-      timeout: 60000,
-    });
-    debugLog("pidash-ui build complete");
-  } catch (e: any) {
-    debugLog(`pidash-ui build failed: ${e.message}`);
-  }
+  return checkHealth(PIDASH_PORT);
 }
 
 function spawnDaemon(): void {
-  ensurePidashUiBuilt();
-  const serverPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
-    "..", "..", "scripts", "pidash-server.ts",
-  );
-
-  let jitiPath: string | undefined;
-  try {
-    // Walk up from this file to find node_modules/@mariozechner/jiti
-    let dir = path.dirname(new URL(import.meta.url).pathname);
-    for (let i = 0; i < 10; i++) {
-      const candidate = path.join(dir, "node_modules", "@mariozechner", "jiti", "lib", "jiti-cli.mjs");
-      if (fs.existsSync(candidate)) { jitiPath = candidate; break; }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    // Also check pi's global install
-    if (!jitiPath) {
-      const globalCandidate = path.join(
-        path.dirname(process.execPath), "..", "lib", "node_modules",
-        "@mariozechner", "pi-coding-agent", "node_modules",
-        "@mariozechner", "jiti", "lib", "jiti-cli.mjs",
-      );
-      if (fs.existsSync(globalCandidate)) jitiPath = globalCandidate;
-    }
-  } catch {}
-  debugLog(`jiti path: ${jitiPath || "NOT FOUND"}`);
-
-  const nodeCmd = process.execPath;
-  const args = jitiPath ? `"${jitiPath}" "${serverPath}"` : `"${serverPath}"`;
-  const logFile = path.join(process.env.HOME || "/tmp", ".pi", "pidash-server.log");
-  // Use nohup + shell to fully detach from pi's process group
-  const cmd = `nohup "${nodeCmd}" ${args} > "${logFile}" 2>&1 &`;
-  debugLog(`spawning daemon via shell: ${cmd}`);
-
-  try {
-    const { execSync } = require("node:child_process");
-    execSync(cmd, {
-      stdio: "ignore",
-      env: { ...process.env, PI_PIDASH_PORT: String(PIDASH_PORT) },
-    });
-  } catch (e: any) {
-    debugLog(`daemon spawn error: ${e.message}`);
-  }
+  ensureUiBuilt("pidash-ui", debugLog);
+  spawnDaemonGeneric({
+    serverScript: "pidash-server.ts",
+    logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidash-server.log"),
+    env: { PI_PIDASH_PORT: String(PIDASH_PORT) },
+    log: debugLog,
+  });
 }
 
 function getGitStatus(cwd: string): { branch: string; dirty: boolean; changes: number } {
@@ -138,8 +62,6 @@ function isContainer(): boolean {
   } catch { return false; }
 }
 
-let diffPort: number | null = null;
-
 function getCurrentBranch(cwd: string): string {
   try {
     return execFileSync("git", ["branch", "--show-current"], {
@@ -148,6 +70,8 @@ function getCurrentBranch(cwd: string): string {
     }).trim();
   } catch { return ""; }
 }
+
+let diffPort: number | null = null;
 
 // ── Registration ─────────────────────────────────────────────────────
 
@@ -228,12 +152,12 @@ export function registerPidash(
           gitDirty: git.dirty,
           gitChanges: git.changes,
           container: isContainer(),
-          diffPort,
           model: m?.name || m?.id || "",
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
           sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
           thinkingLevel: thinking,
+          diffPort,
         });
         debugLog(`sending register: ${reg}`);
         wsClient.send(reg);
@@ -486,6 +410,7 @@ export function registerPidash(
                 if (ws && connected) ws.send(JSON.stringify({ type: "commands-list", commands: list }));
               } catch {}
             }
+
           }
         } catch {}
       });
@@ -800,10 +725,7 @@ export function registerPidash(
       if (cmd === "stop") {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
-        try {
-          const { execSync: ex } = require("node:child_process");
-          ex("pkill -f pidash-server", { stdio: "ignore" });
-        } catch {}
+        killDaemon("pidash-server", debugLog);
         if (ctx.hasUI) {
           ctx.ui.setStatus("5-pidash", undefined);
           ctx.ui.notify("pidash server stopped", "info");
@@ -835,10 +757,7 @@ export function registerPidash(
       if (cmd === "restart") {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
-        try {
-          const { execSync: ex } = require("node:child_process");
-          ex("pkill -f pidash-server", { stdio: "ignore" });
-        } catch {}
+        killDaemon("pidash-server", debugLog);
         await new Promise(r => setTimeout(r, 1000));
         spawnDaemon();
         if (ctx.hasUI) ctx.ui.notify("Restarting pidash server...", "info");

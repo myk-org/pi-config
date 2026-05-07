@@ -43,8 +43,8 @@ interface SessionInfo {
   gitDirty?: boolean;
   gitChanges?: number;
   container?: boolean;
-  diffPort?: number | null;
   contextWindow?: number;
+  diffPort?: number | null;
   thinkingLevel?: string;
   working?: boolean;
 }
@@ -183,9 +183,9 @@ piWss.on("connection", (ws: any) => {
           gitDirty: parsed.gitDirty || false,
           gitChanges: parsed.gitChanges || 0,
           container: parsed.container || false,
-          diffPort: parsed.diffPort || null,
           contextWindow: parsed.contextWindow || 0,
-          thinkingLevel: parsed.thinkingLevel || "medium",
+          diffPort: parsed.diffPort || null,
+        thinkingLevel: parsed.thinkingLevel || "medium",
         };
         // Re-registration: update existing inactive session (keep event buffer)
         const existing = piClients.get(sessionId);
@@ -248,7 +248,7 @@ piWss.on("connection", (ws: any) => {
         return;
       }
 
-      // Forward sessions-list and models-list directly to watchers (not buffered)
+      // Forward list responses directly to watchers (not buffered)
       if ((parsed.type === "sessions-list" || parsed.type === "models-list") && piClient) {
         sendToWatchers(piClient.session.sessionId, parsed);
         return;
@@ -272,7 +272,7 @@ piWss.on("connection", (ws: any) => {
         const raw = data.toString();
 
         // Buffer the event for replay on browser connect
-        // Skip extension_ui_request — these are one-time interactions
+        // Skip extension_ui_request (one-time interactions)
         if (parsed.type !== "extension_ui_request") {
           piClient.eventBuffer.push(raw);
           while (piClient.eventBuffer.length > 10000) piClient.eventBuffer.shift();

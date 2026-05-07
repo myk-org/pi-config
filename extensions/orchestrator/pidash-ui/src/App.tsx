@@ -35,7 +35,6 @@ export function App() {
   const { connected, send, onMessage } = useWebSocket("/ws/browser");
   const sessions = useSessions(connected, onMessage);
   const notifications = useNotifications();
-
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [model, setModel] = useState("");
@@ -48,7 +47,6 @@ export function App() {
   const keybindings = useKeybindings();
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-
   const asyncMsgRef = useRef<Map<string, { msgId: string; text: string }>>(new Map());
   const messagesRef = useRef(messages);
   const saved = useRef(loadState());

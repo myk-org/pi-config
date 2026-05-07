@@ -18,7 +18,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
-import { registerDifit } from "./diff-viewer.js";
 import { registerDreaming } from "./dreaming.js";
 import { registerPidash } from "./pidash.js";
 import { registerEnforcement } from "./enforcement.js";
@@ -31,6 +30,7 @@ import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
 import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
+import { registerPidiff } from "./pidiff.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -73,7 +73,6 @@ export default function (pi: ExtensionAPI) {
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerBtw(pi);
-  registerDifit(pi);
   registerDreaming(pi, spawnAsyncAgent);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   registerPidash(pi, killAsyncAgent);
@@ -81,4 +80,5 @@ export default function (pi: ExtensionAPI) {
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
   registerNvim(pi);
+  registerPidiff(pi);
 }

@@ -21,3 +21,4 @@ Thumbs.db
 # Pi local
 .pi/
 .env
+.dev/

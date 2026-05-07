@@ -11,9 +11,9 @@ export interface SessionInfo {
   gitDirty?: boolean;
   gitChanges?: number;
   container?: boolean;
-  diffPort?: number | null;
   contextWindow?: number;
   thinkingLevel?: string;
+  diffPort?: number | null;
   working?: boolean;
 }
 

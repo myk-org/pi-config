@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, ExternalLink, Brain, Bot, ChevronDown, Folder } from "lucide-react";
+import { ExternalLink, GitBranch, Brain, Bot, ChevronDown, Folder } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
