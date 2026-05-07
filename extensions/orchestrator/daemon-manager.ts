@@ -72,7 +72,7 @@ export function findJitiPath(): string | undefined {
   try {
     let dir = path.dirname(new URL(import.meta.url).pathname);
     for (let i = 0; i < 10; i++) {
-      const candidate = path.join(dir, "node_modules", "@mariozechner", "jiti", "lib", "jiti-cli.mjs");
+      const candidate = path.join(dir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
       if (fs.existsSync(candidate)) { jitiPath = candidate; break; }
       const parent = path.dirname(dir);
       if (parent === dir) break;
@@ -81,8 +81,8 @@ export function findJitiPath(): string | undefined {
     if (!jitiPath) {
       const globalCandidate = path.join(
         path.dirname(process.execPath), "..", "lib", "node_modules",
-        "@mariozechner", "pi-coding-agent", "node_modules",
-        "@mariozechner", "jiti", "lib", "jiti-cli.mjs",
+        "@earendil-works", "pi-coding-agent", "node_modules",
+        "jiti", "lib", "jiti-cli.mjs",
       );
       if (fs.existsSync(globalCandidate)) jitiPath = globalCandidate;
     }

@@ -3,7 +3,7 @@
  * Direct handler (no AI roundtrip).
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AsyncJob } from "./async-agents.js";
 import type { CronTask } from "./cron.js";
 import { getCurrentBranch, runGit } from "./git-helpers.js";

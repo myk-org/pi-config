@@ -10,8 +10,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
 import { getPiInvocation } from "./utils.js";
 
@@ -287,8 +287,8 @@ export function registerAsyncAgents(
     // Find jiti for TypeScript execution
     let jitiCliPath: string | undefined;
     try {
-      const piPkgDir = path.dirname(require.resolve("@mariozechner/pi-coding-agent/package.json"));
-      const candidate = path.join(piPkgDir, "node_modules/@mariozechner/jiti/lib/jiti-cli.mjs");
+      const piPkgDir = path.dirname(require.resolve("@earendil-works/pi-coding-agent/package.json"));
+      const candidate = path.join(piPkgDir, "node_modules/jiti/lib/jiti-cli.mjs");
       if (fs.existsSync(candidate)) jitiCliPath = candidate;
     } catch {}
 
