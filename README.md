@@ -349,6 +349,9 @@ http://<your-ip>:19190
 
 # Custom port:
 PI_PIDASH_PORT=9999 pi
+
+# Disable pidash entirely:
+PI_PIDASH_ENABLE=false pi
 ```
 
 **Management:**
@@ -396,6 +399,9 @@ http://localhost:19290
 
 # Custom port:
 PI_PIDIFF_PORT=9999 pi
+
+# Disable pidiff entirely:
+PI_PIDIFF_ENABLE=false pi
 ```
 
 **Management:**

@@ -81,6 +81,17 @@ export function registerPidash(
 ): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
+  const pidashDisabled = ["false", "0", "no", "off"].includes(process.env.PI_PIDASH_ENABLE?.toLowerCase() ?? "");
+  if (pidashDisabled) {
+    pi.registerCommand("pidash", {
+      description: "Manage pidash server — /pidash start|stop|restart|status",
+      handler: async (_args, ctx) => {
+        if (ctx.hasUI) ctx.ui.notify("pidash is disabled (PI_PIDASH_ENABLE=false). Set PI_PIDASH_ENABLE=true or unset it to enable.", "info");
+      },
+    });
+    return;
+  }
+
   let ws: any = null;
   let connected = false;
   let connecting = false;
