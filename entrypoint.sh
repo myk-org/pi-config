@@ -7,7 +7,7 @@ set -e
 mkdir -p "/tmp/pi-work/$(basename "$PWD")"
 
 # Always install/update pi to get the latest version on every container start
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @earendil-works/pi-coding-agent
 
 # Install or update packages
 PI_PKG_DIR="$HOME/.pi/agent/git/github.com"

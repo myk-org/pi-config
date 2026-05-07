@@ -5,13 +5,13 @@
  * Lazy-loads on first # keystroke, caches for 5 minutes, includes both issues and PRs.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   type AutocompleteItem,
   type AutocompleteProvider,
   type AutocompleteSuggestions,
   fuzzyFilter,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 type GitHubItem = {
   number: number;

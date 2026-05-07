@@ -2,7 +2,7 @@
  * ask_user tool — presents questions to the user with selectable options.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Input,
@@ -10,8 +10,8 @@ import {
   SelectList,
   Spacer,
   Text,
-} from "@mariozechner/pi-tui";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-tui";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export function registerAskUser(
