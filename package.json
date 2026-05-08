@@ -1,6 +1,6 @@
 {
   "name": "pi-orchestrator-config",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "Orchestrator pattern for pi: specialist subagents, enforcement, code review loop, workflow commands",
   "keywords": ["pi-package"],
   "license": "MIT",
