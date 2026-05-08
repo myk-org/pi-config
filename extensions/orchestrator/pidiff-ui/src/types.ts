@@ -23,11 +23,19 @@ export interface DiffData {
   toRef?: string;
 }
 
+export interface Worktree {
+  path: string;
+  branch: string;
+  head: string;
+  isMain: boolean;
+}
+
 export interface PiSession {
   sessionId: string;
   cwd: string;
   branch: string;
   repo: string;
+  worktrees: Worktree[];
 }
 
 export interface ReviewCommentReply {
@@ -41,6 +49,8 @@ export interface ReviewComment {
   line: number;
   side: "old" | "new";
   body: string;
+  branch?: string;
+  worktreePath?: string;
   replies?: ReviewCommentReply[];
   resolved?: boolean;
 }
