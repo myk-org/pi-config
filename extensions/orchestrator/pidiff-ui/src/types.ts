@@ -1,8 +1,10 @@
-export type DiffMode = "working" | "branch" | "commits";
+export type DiffMode = "branch" | "commits";
 
-export interface FileChange {
-  path: string;
-  status: "added" | "modified" | "deleted" | "renamed" | "untracked";
+export interface FileDiffData {
+  name: string;
+  oldContents: string;
+  newContents: string;
+  status: "added" | "modified" | "deleted" | "renamed";
   area: "staged" | "unstaged" | "committed";
 }
 
@@ -15,11 +17,8 @@ export interface GitCommit {
 
 export interface DiffData {
   mode: DiffMode;
-  staged: string;
-  unstaged: string;
-  committed: string;
+  files: FileDiffData[];
   branch: string;
-  files: FileChange[];
   fromRef?: string;
   toRef?: string;
 }
@@ -31,9 +30,17 @@ export interface PiSession {
   repo: string;
 }
 
+export interface ReviewCommentReply {
+  author: string;
+  body: string;
+  timestamp?: string;
+}
+
 export interface ReviewComment {
   file: string;
   line: number;
   side: "old" | "new";
   body: string;
+  replies?: ReviewCommentReply[];
+  resolved?: boolean;
 }

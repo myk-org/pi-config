@@ -30,8 +30,20 @@ function log(msg: string) {
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 3000, stdio: ["ignore", "pipe", "ignore"] as const, maxBuffer: 10 * 1024 * 1024 };
 
+// Resolve git binary — PATH may be stripped when spawned as a daemon
+const GIT_BIN = (() => {
+  // Try PATH first
+  try { execFileSync("git", ["--version"], { stdio: "ignore" }); return "git"; } catch {}
+  // Common locations
+  for (const p of ["/home/linuxbrew/.linuxbrew/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"]) {
+    try { execFileSync(p, ["--version"], { stdio: "ignore" }); return p; } catch {}
+  }
+  log("WARNING: git binary not found — diffs will fail");
+  return "git";
+})();
+
 function gitExec(args: string[], cwd: string): string {
-  return execFileSync("git", args, { ...GIT_OPTS, cwd }).trim();
+  return execFileSync(GIT_BIN, args, { ...GIT_OPTS, cwd }).trim();
 }
 
 function getDefaultRemoteBranch(cwd: string): string {
@@ -58,64 +70,7 @@ function getStatus(cwd: string): { dirty: boolean; changes: number } {
   } catch { return { dirty: false, changes: 0 }; }
 }
 
-function getDiff(cwd: string): { staged: string; unstaged: string } {
-  try {
-    const staged = gitExec(["diff", "--staged"], cwd);
-    let unstaged = gitExec(["diff"], cwd);
 
-    // Include untracked files in the unstaged diff
-    try {
-      const untrackedRaw = gitExec(["ls-files", "--others", "--exclude-standard"], cwd);
-      if (untrackedRaw) {
-        const untrackedFiles = untrackedRaw.split("\n").filter(Boolean);
-        for (const file of untrackedFiles) {
-          try {
-            const content = execFileSync("git", ["diff", "--no-index", "--", "/dev/null", file], {
-              cwd, encoding: "utf-8", timeout: 3000,
-              stdio: ["ignore", "pipe", "ignore"], maxBuffer: 2 * 1024 * 1024,
-            }).trim();
-            if (content) unstaged += (unstaged ? "\n" : "") + content;
-          } catch (e: any) {
-            // git diff --no-index exits with code 1 when files differ (expected)
-            if (e.stdout) unstaged += (unstaged ? "\n" : "") + e.stdout.toString().trim();
-          }
-        }
-      }
-    } catch (e: any) {
-      log(`untracked files diff error: ${e.message}`);
-    }
-
-    return { staged, unstaged };
-  } catch (e: any) { log(`getDiff error: ${e.message}`); return { staged: "", unstaged: "" }; }
-}
-
-function getBranchDiff(cwd: string): string {
-  try {
-    const defaultBranch = getDefaultRemoteBranch(cwd);
-    if (!defaultBranch) return "";
-    const base = gitExec(["merge-base", defaultBranch, "HEAD"], cwd);
-    if (!base) return "";
-    return execFileSync("git", ["diff", base, "HEAD"], {
-      cwd, encoding: "utf-8", timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"], maxBuffer: 2 * 1024 * 1024,
-    }).trim();
-  } catch (e: any) { log(`getBranchDiff error: ${e.message}`); return ""; }
-}
-
-function getCommitDiff(cwd: string, fromRef: string, toRef: string): string {
-  try {
-    // Validate refs are hex hashes to prevent flag injection
-    const hexRef = /^[a-fA-F0-9]{4,40}$/;
-    if (!hexRef.test(fromRef) || !hexRef.test(toRef)) {
-      log(`getCommitDiff: invalid ref format: ${fromRef} / ${toRef}`);
-      return "";
-    }
-    return execFileSync("git", ["diff", "--", fromRef, toRef], {
-      cwd, encoding: "utf-8", timeout: 5000,
-      stdio: ["ignore", "pipe", "ignore"], maxBuffer: 2 * 1024 * 1024,
-    }).trim();
-  } catch (e: any) { log(`getCommitDiff error: ${e.message}`); return ""; }
-}
 
 function getLog(cwd: string, count: number = 30): Array<{ hash: string; short: string; subject: string; date: string }> {
   count = Math.min(count, 100); // Clamp to prevent DoS
@@ -136,43 +91,118 @@ function getLog(cwd: string, count: number = 30): Array<{ hash: string; short: s
   } catch (e: any) { log(`getLog error: ${e.message}`); return []; }
 }
 
+// ── File-contents diff helpers ───────────────────────────────────────
+
+interface FileContentsData {
+  name: string;
+  oldContents: string;
+  newContents: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+}
+
+function getChangedFiles(cwd: string, baseRef: string, headRef: string = "HEAD"): FileContentsData[] {
+  try {
+    const raw = gitExec(["diff", "--name-status", baseRef, headRef], cwd);
+    if (!raw) return [];
+    const results: FileContentsData[] = [];
+    for (const line of raw.split("\n").filter(Boolean)) {
+      const parts = line.split("\t");
+      const statusChar = parts[0][0];
+      const fileName = parts.length > 2 ? parts[2] : parts[1];
+      const oldName = parts.length > 2 ? parts[1] : fileName;
+      let status: FileContentsData["status"] = "modified";
+      if (statusChar === "A") status = "added";
+      else if (statusChar === "D") status = "deleted";
+      else if (statusChar === "R") status = "renamed";
+      let oldContents = "";
+      let newContents = "";
+      try { if (status !== "added") oldContents = execFileSync(GIT_BIN, ["show", `${baseRef}:${oldName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
+      try {
+        if (status !== "deleted") {
+          newContents = execFileSync(GIT_BIN, ["show", `${headRef}:${fileName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 });
+        }
+      } catch {}
+      results.push({ name: fileName, oldContents, newContents, status });
+    }
+    return results;
+  } catch (e: any) { log(`getChangedFiles error: ${e.message}`); return []; }
+}
+
+function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstaged: FileContentsData[] } {
+  const staged: FileContentsData[] = [];
+  const unstaged: FileContentsData[] = [];
+  try {
+    const stagedRaw = gitExec(["diff", "--name-status", "--staged"], cwd);
+    if (stagedRaw) {
+      for (const line of stagedRaw.split("\n").filter(Boolean)) {
+        const parts = line.split("\t");
+        const statusChar = parts[0][0];
+        const fileName = parts.length > 2 ? parts[2] : parts[1];
+        const oldName = parts.length > 2 ? parts[1] : fileName;
+        let status: FileContentsData["status"] = "modified";
+        if (statusChar === "A") status = "added";
+        else if (statusChar === "D") status = "deleted";
+        else if (statusChar === "R") status = "renamed";
+        let oldContents = "";
+        let newContents = "";
+        try { if (status !== "added") oldContents = execFileSync(GIT_BIN, ["show", `HEAD:${oldName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
+        try { if (status !== "deleted") newContents = execFileSync(GIT_BIN, ["show", `:${fileName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
+        staged.push({ name: fileName, oldContents, newContents, status });
+      }
+    }
+  } catch {}
+  try {
+    const unstagedRaw = gitExec(["diff", "--name-status"], cwd);
+    if (unstagedRaw) {
+      for (const line of unstagedRaw.split("\n").filter(Boolean)) {
+        const parts = line.split("\t");
+        const statusChar = parts[0][0];
+        const fileName = parts[1];
+        let status: FileContentsData["status"] = "modified";
+        if (statusChar === "D") status = "deleted";
+        let oldContents = "";
+        let newContents = "";
+        try { oldContents = execFileSync(GIT_BIN, ["show", `:${fileName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
+        try { if (status !== "deleted") newContents = fs.readFileSync(path.join(cwd, fileName), "utf-8"); } catch {}
+        unstaged.push({ name: fileName, oldContents, newContents, status });
+      }
+    }
+    const untrackedRaw = gitExec(["ls-files", "--others", "--exclude-standard"], cwd);
+    if (untrackedRaw) {
+      for (const file of untrackedRaw.split("\n").filter(Boolean)) {
+        try {
+          const newContents = fs.readFileSync(path.join(cwd, file), "utf-8");
+          unstaged.push({ name: file, oldContents: "", newContents, status: "added" });
+        } catch {}
+      }
+    }
+  } catch {}
+  return { staged, unstaged };
+}
+
 // ── Diff modes ──────────────────────────────────────────────────────
 
-type DiffMode = "working" | "branch" | "commits";
-
-// Cache per-cwd
-const branchDiffCache = new Map<string, { data: string; ts: number }>();
-const CACHE_TTL = 5000;
-
-function getCachedBranchDiff(cwd: string): string {
-  const cached = branchDiffCache.get(cwd);
-  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
-  const data = getBranchDiff(cwd);
-  branchDiffCache.set(cwd, { data, ts: Date.now() });
-  return data;
-}
+type DiffMode = "branch" | "commits";
 
 function buildDiffPayload(cwd: string, mode: DiffMode, refs?: { from: string; to: string }): object {
   const branch = getBranch(cwd);
   const status = getStatus(cwd);
 
-  if (mode === "working") {
-    const diff = status.dirty ? getDiff(cwd) : { staged: "", unstaged: "" };
-    return { type: "diff_update", mode: "working", staged: diff.staged, unstaged: diff.unstaged, committed: "", branch };
-  }
-
   if (mode === "branch") {
-    const committed = getCachedBranchDiff(cwd);
-    const working = status.dirty ? getDiff(cwd) : { staged: "", unstaged: "" };
+    const defaultBranch = getDefaultRemoteBranch(cwd);
+    const base = defaultBranch ? gitExec(["merge-base", defaultBranch, "HEAD"], cwd) : "";
+    const committed = base ? getChangedFiles(cwd, base, "HEAD") : [];
+    const working = status.dirty ? getWorkingTreeFiles(cwd) : { staged: [], unstaged: [] };
+    log(`buildDiffPayload: branch mode, committed=${committed.length} staged=${working.staged.length} unstaged=${working.unstaged.length}`);
     return { type: "diff_update", mode: "branch", committed, staged: working.staged, unstaged: working.unstaged, branch };
   }
 
   if (mode === "commits" && refs) {
-    const committed = getCommitDiff(cwd, refs.from, refs.to);
-    return { type: "diff_update", mode: "commits", committed, staged: "", unstaged: "", branch, fromRef: refs.from, toRef: refs.to };
+    const committed = getChangedFiles(cwd, refs.from, refs.to);
+    return { type: "diff_update", mode: "commits", committed, staged: [], unstaged: [], branch, fromRef: refs.from, toRef: refs.to };
   }
 
-  return { type: "diff_update", mode, staged: "", unstaged: "", committed: "", branch };
+  return { type: "diff_update", mode, committed: [], staged: [], unstaged: [], branch };
 }
 
 // ── Session state ───────────────────────────────────────────────────
@@ -261,7 +291,6 @@ piWss.on("connection", (ws: any) => {
     if (piClient) {
       piClients.delete(piClient.session.sessionId);
       statusCache.delete(piClient.session.sessionId);
-      branchDiffCache.delete(piClient.session.cwd);
       log(`session disconnected: ${piClient.session.sessionId}`);
       broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
     }
