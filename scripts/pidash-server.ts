@@ -13,7 +13,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import { serveUi } from "./serve-ui.ts";
 
 const DEFAULT_PORT = 19190;
 const port = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
@@ -94,64 +94,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     return;
   }
 
-  // Serve static files from dist/
-  const MIME: Record<string, string> = {
-    ".html": "text/html", ".js": "application/javascript",
-    ".css": "text/css", ".json": "application/json",
-    ".woff2": "font/woff2", ".woff": "font/woff",
-    ".svg": "image/svg+xml", ".png": "image/png",
-  };
-
-  let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-  const absPath = path.join(UI_DIR, filePath);
-
-  // Security: prevent directory traversal
-  if (!absPath.startsWith(UI_DIR)) {
-    res.writeHead(403); res.end("Forbidden"); return;
-  }
-
-  try {
-    const data = fs.readFileSync(absPath);
-    const ext = path.extname(absPath).toLowerCase();
-    const headers: Record<string, string> = { "Content-Type": MIME[ext] || "application/octet-stream" };
-    // No cache for HTML, long cache for hashed assets
-    if (ext === ".html") {
-      headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-    } else if (filePath.includes("/assets/")) {
-      headers["Cache-Control"] = "public, max-age=31536000, immutable";
-    }
-    res.writeHead(200, headers);
-    res.end(data);
-  } catch {
-    // SPA fallback — serve index.html for unknown routes
-    try {
-      const html = fs.readFileSync(path.join(UI_DIR, "index.html"));
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(html);
-    } catch {
-      // dist/ missing — try to build it
-      const uiSrcDir = path.join(UI_DIR, "..");
-      if (fs.existsSync(path.join(uiSrcDir, "package.json"))) {
-        try {
-          log("dist/ missing, building pidash-ui...");
-          execSync("npm install --production=false && npm run build", {
-            cwd: uiSrcDir,
-            stdio: "ignore",
-            timeout: 60000,
-          });
-          log("pidash-ui build complete");
-          const html = fs.readFileSync(path.join(UI_DIR, "index.html"));
-          res.writeHead(200, { "Content-Type": "text/html" });
-          res.end(html);
-          return;
-        } catch (buildErr: any) {
-          log(`pidash-ui build failed: ${buildErr.message}`);
-        }
-      }
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end("<h1>pidash</h1><p>UI build failed. Run <code>/pidash restart</code> from the pi TUI, then refresh this page.</p>");
-    }
-  }
+  serveUi(url.pathname, res, { uiDir: UI_DIR, name: "pidash-ui", log });
 });
 
 // ── WebSocket Server ────────────────────────────────────────────────
