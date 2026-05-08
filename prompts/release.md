@@ -137,25 +137,25 @@ include them in the approval prompt.
 
 **With version files:**
 
-Present using AskUserQuestion. Show:
+1. **Display the changelog as regular text first** (NOT inside ask_user):
+   - Proposed version and bump type
+   - Version files to update (numbered list with current → new version)
+   - Full changelog preview
 
-- Proposed version (e.g., v1.2.0, minor bump)
-- List of version files to update with current to new version
-- Changelog preview
+2. **Then call ask_user with a SHORT question only:**
+   - Question: `Release vX.Y.Z?` (one line — no changelog, no file list)
+   - Options: `yes`, `major`, `minor`, `patch`, `exclude 1`, `exclude 2`, ..., `no`
 
-User options:
-
-- 'yes' -- Proceed with proposed version and all listed files
-- 'major/minor/patch' -- Override the version bump type
-- 'exclude N' -- Exclude file by number from the version bump (e.g., 'exclude 2')
-- 'no' -- Cancel the release
+**IMPORTANT:** The ask_user question MUST be short (one line). All detailed
+information (changelog, file list) goes in the text BEFORE the ask_user call.
+The user reads the details in the chat, then sees a clean prompt to confirm.
 
 To exclude files, remove them from the list. Pass remaining file paths as
 `--files <path>` arguments to `bump-version` in Phase 5.
 
 **Without version files:**
 
-Same as before -- show proposed version and changelog, ask for confirmation.
+Same pattern -- display changelog as text, then short ask_user question.
 
 ### Phase 5: Bump Version (if version files detected)
 
