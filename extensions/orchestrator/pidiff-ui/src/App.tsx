@@ -185,6 +185,10 @@ export function App() {
         if (activeSessionRef.current?.sessionId === ev.sessionId) {
           setActiveSession(null);
           activeSessionRef.current = null;
+          setActiveWorktree(null);
+          activeWorktreeRef.current = null;
+          setStale(false);
+          setStaleWorktrees(new Set());
           setDiffData({ mode: "branch", files: [], branch: "" });
         }
       }

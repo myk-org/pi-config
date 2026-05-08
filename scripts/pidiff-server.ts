@@ -387,7 +387,18 @@ browserWss.on("connection", (ws: any) => {
         const client = piClients.get(watchInfo.sessionId);
         if (!client) return;
 
-        const worktreePath = parsed.worktreePath || client.session.cwd;
+        const requestedPath = parsed.worktreePath || client.session.cwd;
+        // Validate: only allow known worktree paths or session cwd
+        const allowedPaths = new Set([
+          path.resolve(client.session.cwd),
+          ...client.session.worktrees.map(w => path.resolve(w.path)),
+        ]);
+        const resolvedPath = path.resolve(requestedPath);
+        if (!allowedPaths.has(resolvedPath)) {
+          log(`watch-worktree rejected: ${requestedPath} not in allowed paths for session ${watchInfo.sessionId}`);
+          return;
+        }
+        const worktreePath = resolvedPath;
         browserWatchMap.set(ws, { ...watchInfo, worktreePath });
         log(`browser watching worktree: ${worktreePath}`);
 
@@ -482,8 +493,19 @@ let _chokidar: any = null;
 import("chokidar").then(m => { _chokidar = m; log("chokidar loaded"); }).catch(e => log(`chokidar load failed: ${e.message}`));
 const activeWatchers = new Map<string, { watcher: any; debounceTimer: ReturnType<typeof setTimeout> | null }>();
 
+const chokidarRetries = new Map<string, number>();
+const MAX_CHOKIDAR_RETRIES = 10;
+
 function startWatching(sessionId: string, worktreePath: string) {
-  if (!_chokidar) { log(`chokidar not loaded yet, retrying in 1s for ${worktreePath}`); setTimeout(() => startWatching(sessionId, worktreePath), 1000); return; }
+  const retryKey = `${sessionId}:${worktreePath}`;
+  if (!_chokidar) {
+    const retries = chokidarRetries.get(retryKey) || 0;
+    if (retries >= MAX_CHOKIDAR_RETRIES) { log(`chokidar failed to load after ${MAX_CHOKIDAR_RETRIES} retries, giving up on ${worktreePath}`); return; }
+    chokidarRetries.set(retryKey, retries + 1);
+    setTimeout(() => startWatching(sessionId, worktreePath), 1000 * Math.min(retries + 1, 5));
+    return;
+  }
+  chokidarRetries.delete(retryKey);
   const key = `${sessionId}:${worktreePath}`;
   if (activeWatchers.has(key)) return;
 
@@ -492,13 +514,11 @@ function startWatching(sessionId: string, worktreePath: string) {
     ignoreInitial: true,
     persistent: true,
     ignored: (filePath: string) => {
-      // Ignore .git internals and common heavy directories
-      const rel = filePath.slice(worktreePath.length + 1);
-      if (!rel) return false;
-      return rel.startsWith(".git/") || rel.startsWith(".git\\") ||
-             rel === ".git" ||
-             rel.startsWith("node_modules/") || rel.startsWith("node_modules\\") ||
-             rel.startsWith(".worktrees/") || rel.startsWith(".worktrees\\");
+      const rel = path.relative(worktreePath, filePath);
+      if (rel === "") return false; // watch root itself — don't ignore
+      if (rel.startsWith("..")) return true; // outside watch root — ignore
+      const first = rel.split(path.sep)[0];
+      return first === ".git" || first === "node_modules" || first === ".worktrees" || first === ".venv" || first === "dist" || first === "__pycache__";
     },
     depth: 20,
   });
@@ -554,7 +574,9 @@ const worktreeRefreshInterval = setInterval(() => {
   for (const [sessionId, client] of piClients) {
     try {
       const freshWorktrees = getWorktrees(client.session.cwd);
-      if (freshWorktrees.length !== client.session.worktrees.length) {
+      const oldFingerprint = client.session.worktrees.map(w => `${w.path}:${w.branch}`).sort().join("|");
+      const newFingerprint = freshWorktrees.map(w => `${w.path}:${w.branch}`).sort().join("|");
+      if (oldFingerprint !== newFingerprint) {
         // Start/stop watchers for new/removed worktrees
         const oldPaths = new Set(client.session.worktrees.map(w => w.path));
         const newPaths = new Set(freshWorktrees.map(w => w.path));
