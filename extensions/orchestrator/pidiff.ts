@@ -147,22 +147,21 @@ export function registerPidiff(pi: ExtensionAPI): void {
           const parsed = JSON.parse(data.toString());
           if (parsed.type === "publish-review" && parsed.comments?.length > 0) {
             log(`review received: ${parsed.comments.length} comments`);
-            const lines: string[] = ["## Code Review Comments", ""];
-            const byFile = new Map<string, Array<{ line: number; body: string }>>();
-            for (const c of parsed.comments) {
-              if (!byFile.has(c.file)) byFile.set(c.file, []);
-              byFile.get(c.file)!.push(c);
-            }
-            for (const [file, comments] of byFile) {
-              lines.push(`### ${file}`);
-              for (const c of comments) {
-                lines.push(c.line > 0 ? `**Line ${c.line}:** ${c.body}` : `**File comment:** ${c.body}`);
-              }
-              lines.push("");
-            }
-            if (parsed.summary) lines.push(`### Summary`, parsed.summary, "");
-            lines.push("Please address these review comments.");
-            pi.sendUserMessage(lines.join("\n"), { deliverAs: "followUp" });
+            const review = {
+              source: "pidiff",
+              type: "code-review",
+              comments: parsed.comments.map((c: any) => ({
+                file: c.file,
+                line: c.line,
+                side: c.side,
+                body: c.body,
+                ...(c.replies?.length ? { replies: c.replies } : {}),
+                ...(c.resolved ? { resolved: true } : {}),
+              })),
+              ...(parsed.summary ? { summary: parsed.summary } : {}),
+            };
+            const message = `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review, null, 2)}\n\`\`\`\n\nPlease address these review comments.`;
+            pi.sendUserMessage(message, { deliverAs: "followUp" });
           }
         } catch {}
       });
