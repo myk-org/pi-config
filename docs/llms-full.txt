@@ -1,0 +1,5343 @@
+# pi-config
+
+> Orchestrate specialist AI agents to automatically review, implement, and release your code
+
+---
+
+Source: quickstart.md
+
+# Quickstart
+
+Get pi-config running on your machine and delegate your first task to a specialist agent in under 5 minutes. pi-config turns pi into an orchestrator that automatically routes your work to 24 domain-specific agents — Python, Docker, Kubernetes, Git, and more.
+
+## Prerequisites
+
+- [pi](https://github.com/badlogic/pi-mono) installed (or Docker if using the container method)
+- A GitHub token (`GITHUB_TOKEN`) if you plan to work with PRs and issues
+- An API key for your LLM provider (e.g., Anthropic, Google Cloud Vertex AI)
+
+## Quick Example
+
+```bash
+# Install the pi-config package
+pi install git:github.com/myk-org/pi-config
+
+# Start a session in your project directory
+cd /path/to/your/project
+pi
+```
+
+Then type a task — pi-config automatically delegates it to the right specialist:
+
+```text
+Add retry logic to the HTTP client in src/api.py
+```
+
+The orchestrator detects this involves Python and routes it to the `python-expert` agent, which writes the code, then sends it through three code reviewers in parallel before running tests.
+
+## Step 1: Install pi-config
+
+Choose one method: Docker (recommended) or native.
+
+### Option A: Docker (Recommended)
+
+Docker gives you filesystem isolation, consistent tooling, and all dependencies pre-installed in a single image.
+
+```bash
+docker pull ghcr.io/myk-org/pi-config:latest
+```
+
+> **Note:** The image is built for **linux/amd64** only. On ARM hosts (e.g., Apple Silicon), Docker will emulate automatically, but you can also build with `--platform linux/amd64`.
+
+### Option B: Native
+
+```bash
+# Core package (orchestrator extension + 24 agents + prompt templates)
+pi install git:github.com/myk-org/pi-config
+
+# CLI tools for PR review, releases, and memory management
+uv tool install git+https://github.com/myk-org/pi-config
+
+# Recommended companion tools
+npm install -g acpx           # External AI agent proxy
+npm install -g pi-web-access  # Web search/fetch skills
+```
+
+## Step 2: Configure Your Environment
+
+### Native Setup
+
+No configuration file is required for basic usage. Just start pi from any project directory.
+
+For GitHub integration, ensure your `gh` CLI is authenticated:
+
+```bash
+gh auth login
+```
+
+### Docker Setup
+
+Create a `.env` file (e.g., at `~/.pi/.env`):
+
+```env
+# Your timezone
+TZ=America/New_York
+
+# Your host username (maps container paths to your host HOME)
+PI_HOST_USER=youruser
+
+# GitHub authentication
+GITHUB_TOKEN=ghp_your_token_here
+GH_CONFIG_DIR=/home/youruser/.config/gh
+```
+
+> **Tip:** The `PI_HOST_USER` variable creates a symlink inside the container so that mounted host paths (like `$HOME/.ssh`) resolve correctly.
+
+Run the container from your project directory:
+
+```bash
+docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  --env-file "$HOME/.pi/.env" \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest
+```
+
+The container installs/updates pi and pi-config automatically on each start, then drops you into a pi session.
+
+## Step 3: Delegate Your First Task
+
+Once inside a pi session, describe what you want done in plain language:
+
+```text
+Fix the type errors in src/models.py
+```
+
+The orchestrator reads your request and routes it to the appropriate specialist agent based on a built-in routing table:
+
+| Domain | Agent |
+|--------|-------|
+| Python (.py) | `python-expert` |
+| Go (.go) | `go-expert` |
+| Frontend (JS/TS/React) | `frontend-expert` |
+| Docker | `docker-expert` |
+| Kubernetes/OpenShift | `kubernetes-expert` |
+| Git (local operations) | `git-expert` |
+| GitHub (PRs, issues) | `github-expert` |
+| Tests | `test-automator` |
+| Shell scripts | `bash-expert` |
+
+You can also name the agent explicitly:
+
+```text
+Use docker-expert to optimize the multi-stage build in the Dockerfile
+```
+
+## Step 4: Use Workflow Commands
+
+For multi-step tasks, use slash commands that chain agents together:
+
+```text
+/implement add Redis caching to the session store
+```
+
+This runs a three-stage pipeline: **scout** (analyzes the codebase) → **planner** (designs the approach) → **worker** (implements it).
+
+Other workflow commands:
+
+| Command | What It Does |
+|---------|-------------|
+| `/implement <task>` | Scout → planner → worker pipeline |
+| `/scout-and-plan <task>` | Scout → planner (plan only, no code changes) |
+| `/implement-and-review <task>` | Worker → 3 reviewers → worker (with review loop) |
+| `/pr-review 42` | Review PR #42 and post comments |
+| `/release` | Create a GitHub release with changelog |
+| `/review-local main` | Review uncommitted changes against a branch |
+
+## What Happens After Code Changes
+
+Every code change automatically goes through a review loop:
+
+1. The specialist agent writes or modifies code
+2. Three reviewers run **in parallel**: code quality, project guidelines, and security
+3. If reviewers find issues, the agent fixes them and reviewers run again
+4. Once all reviewers approve, tests run via `test-automator`
+5. Task completes only when tests pass
+
+You don't need to trigger this — it happens automatically.
+
+## Advanced Usage
+
+### Shell Alias for Docker
+
+Add this to your `~/.bashrc` or `~/.zshrc` to start pi-config with a single command from any project directory:
+
+```bash
+alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
+  docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  --env-file "$HOME/.pi/.env" \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest'
+```
+
+Then run `pi-docker` from any project directory.
+
+### Background Agents
+
+Spawn agents in the background for long-running tasks. Results surface automatically when complete:
+
+```text
+Run security-auditor in the background to audit the auth module
+```
+
+Check on background agents anytime:
+
+```text
+/async-status
+```
+
+### Agent Chaining and Parallel Execution
+
+You can request multiple agents work simultaneously:
+
+```text
+Run python-expert on src/api.py and frontend-expert on src/components/ in parallel
+```
+
+Or chain agents so each builds on the previous result:
+
+```text
+Run scout and planner in a chain to analyze the auth module
+```
+
+### Project Memory
+
+pi-config stores per-repo lessons in `.pi/memory/memory.md`. Save something for future sessions:
+
+```text
+/remember this project uses SQLAlchemy 2.0 async sessions exclusively
+```
+
+Run memory consolidation to organize and deduplicate stored knowledge:
+
+```text
+/dream
+```
+
+For native (non-Docker) installs, add the memory directory to your global gitignore:
+
+```bash
+echo '.pi/memory/' >> ~/.gitignore-global
+git config --global core.excludesFile ~/.gitignore-global
+```
+
+> **Note:** The Docker container handles this automatically.
+
+### Pidash — Live Web Dashboard
+
+Pi-config includes a web dashboard that runs alongside your terminal session:
+
+```bash
+# Opens automatically — visit in your browser:
+http://localhost:19190
+```
+
+The dashboard shows live conversations across all pi sessions, lets you send messages from the browser, and supports model switching. See Pidash Dashboard for details.
+
+### Google Cloud Vertex AI
+
+To use Claude models through Google Cloud instead of the Anthropic API:
+
+```bash
+pi install git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
+```
+
+Add these to your `.env`:
+
+```env
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/youruser/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_REGION=us-east5
+```
+
+### Custom Agents
+
+Override any bundled agent or add your own. Place a `.md` file in `~/.pi/agent/agents/` (user-level) or `.pi/agents/` (project-level):
+
+```markdown
+---
+name: my-custom-agent
+description: Handles our internal deployment tooling
+tools: read, write, edit, bash
+---
+
+You are an expert in our internal deployment system. Always check
+the deploy-config.yaml before making changes.
+```
+
+Project-level agents take priority over user-level, which take priority over bundled agents. See Agent Configuration for the full format.
+
+### Scheduled Tasks
+
+Schedule recurring work within your pi session:
+
+```text
+/cron add every 2h check for new issues assigned to me
+/cron list
+/cron remove
+```
+
+Cron tasks run while pi is active, survive `/reload`, and stop on exit.
+
+## Updating
+
+### Docker
+
+```bash
+docker pull ghcr.io/myk-org/pi-config:latest
+```
+
+The container also runs `pi update` automatically on each start.
+
+### Native
+
+```bash
+pi update                          # Update the pi-config package
+uv tool upgrade myk-pi-tools      # Update the CLI tools
+```
+
+After updating, run `/reload` inside pi or restart the session.
+
+## Troubleshooting
+
+- **Container start shows `WARNING` about cached packages** — This is normal. The entrypoint checks for existing packages before installing. If pi misbehaves, verify network connectivity and run `pi install git:github.com/myk-org/pi-config` manually inside the container.
+
+- **Host paths don't resolve inside Docker** — Make sure `PI_HOST_USER` in your `.env` matches your host username. This creates the symlinks needed for mounted paths to work.
+
+- **Agent not found errors** — Run `/reload` to re-discover agents. For custom agents, verify the file has valid YAML frontmatter with `name`, `description`, and `tools` fields.
+
+- **Permission denied on mounted volumes** — The container runs as user `node` (UID 1000). If your host UID differs, the mounted files may not be writable. Ensure your project directory is owned by UID 1000 or adjust permissions.
+
+---
+
+Source: delegating-tasks.md
+
+# Delegating Tasks to Specialist Agents
+
+Route your work to the right specialist agent so each task is handled by an expert with the right tools and knowledge. Delegation keeps the orchestrator focused on planning and coordination while agents handle implementation, review, testing, and debugging in parallel.
+
+## Prerequisites
+
+- pi is installed and configured
+- The orchestrator extension is active (enabled by default)
+
+## Quick Example
+
+Delegate a single task to a Python specialist:
+
+```
+subagent(
+  agent: "python-expert",
+  task: "Add type hints to all public functions in src/models.py",
+  cwd: "/path/to/repo",
+  estimatedSeconds: 30
+)
+```
+
+The orchestrator sends the task, waits for the result, and returns the agent's output.
+
+## Choosing the Right Agent
+
+The orchestrator routes by **intent**, not by tool. Pick the agent that matches what you're trying to accomplish.
+
+| Domain | Agent | Use When |
+|--------|-------|----------|
+| Python (.py) | `python-expert` | Writing, fixing, or refactoring Python code — including running Python tests |
+| Go (.go) | `go-expert` | Go code changes |
+| Frontend (JS/TS/React/Vue) | `frontend-expert` | JavaScript, TypeScript, or frontend framework code |
+| Java (.java) | `java-expert` | Java code changes |
+| Shell scripts (.sh) | `bash-expert` | Writing or editing shell scripts |
+| Docker | `docker-expert` | Dockerfiles and container configuration |
+| Kubernetes/OpenShift | `kubernetes-expert` | Cluster manifests and deployments |
+| Jenkins/CI | `jenkins-expert` | CI pipeline and Groovy scripts |
+| Git (local) | `git-expert` | Commits, branches, merges — local git operations |
+| GitHub | `github-expert` | PRs, issues, releases, GitHub workflows |
+| Tests | `test-automator` | Writing and running tests |
+| Debugging | `debugger` | Investigating failures and tracing bugs |
+| Docs (project) | `technical-documentation-writer` | Project markdown documentation |
+| Docs (API) | `api-documenter` | API reference documentation |
+| Docs (external) | `docs-fetcher` | Fetching external library/framework docs (React, FastAPI, etc.) |
+| Security | `security-auditor` | Security audits of external repos |
+| Code review | `code-reviewer-quality` | Code quality and maintainability review |
+| Code review | `code-reviewer-guidelines` | Project guideline adherence review |
+| Code review | `code-reviewer-security` | Bug, logic error, and security review |
+| Exploration | `scout` | Fast codebase reconnaissance |
+| Planning | `planner` | Detailed implementation plans |
+| General | `worker` | Anything that doesn't match a specialist |
+
+> **Tip:** Route by what you want done, not the file type. Running Python tests? Use `python-expert`, not `bash-expert`. Creating a PR? Use `github-expert`, not `git-expert`.
+
+## Delegation Modes
+
+pi supports four delegation modes. Pick the one that matches your task structure.
+
+| Mode | When to Use | Time Limit |
+|------|-------------|------------|
+| **Single** | One agent, one task | < 60 seconds |
+| **Parallel** | Multiple independent tasks at once | < 60 seconds per task |
+| **Chain** | Sequential steps where each depends on the previous | Sum of all steps < 60 seconds |
+| **Async** | Long-running or fire-and-forget tasks | No limit |
+
+### Single Delegation
+
+Send one task to one agent. The orchestrator waits for the result before continuing.
+
+```
+subagent(
+  agent: "go-expert",
+  task: "Fix the nil pointer dereference in handler.go",
+  cwd: "/path/to/repo",
+  estimatedSeconds: 25
+)
+```
+
+Required parameters:
+- `agent` — the specialist to use
+- `task` — what to do
+- `cwd` — the working directory
+- `estimatedSeconds` — how long you expect it to take (must be under 60)
+
+### Parallel Delegation
+
+Run multiple independent tasks at the same time. Up to 8 tasks can be submitted, with 4 running concurrently.
+
+```
+subagent(
+  tasks: [
+    {
+      agent: "code-reviewer-quality",
+      task: "Review the changes in src/ for code quality",
+      cwd: "/path/to/repo",
+      estimatedSeconds: 20,
+      name: "Quality Review"
+    },
+    {
+      agent: "code-reviewer-security",
+      task: "Review the changes in src/ for security issues",
+      cwd: "/path/to/repo",
+      estimatedSeconds: 25,
+      name: "Security Review"
+    },
+    {
+      agent: "code-reviewer-guidelines",
+      task: "Review the changes in src/ for guideline adherence",
+      cwd: "/path/to/repo",
+      estimatedSeconds: 20,
+      name: "Guidelines Review"
+    }
+  ]
+)
+```
+
+The time estimate uses the **longest single task** (not the sum), since tasks run concurrently.
+
+> **Note:** Each parallel task still needs its own `cwd` and `estimatedSeconds`. The maximum of all `estimatedSeconds` values must be under 60.
+
+### Chain Delegation
+
+Run tasks sequentially, passing each result to the next step with the `{previous}` placeholder.
+
+```
+subagent(
+  chain: [
+    {
+      agent: "scout",
+      task: "Find all authentication-related code in this repo",
+      cwd: "/path/to/repo",
+      estimatedSeconds: 15
+    },
+    {
+      agent: "planner",
+      task: "Create an implementation plan for OAuth support based on: {previous}",
+      cwd: "/path/to/repo",
+      estimatedSeconds: 20
+    },
+    {
+      agent: "worker",
+      task: "Implement the OAuth changes described in: {previous}",
+      cwd: "/path/to/repo",
+      estimatedSeconds: 20
+    }
+  ]
+)
+```
+
+Key details:
+- `{previous}` is replaced with the output from the prior step
+- Time estimates are **summed** across all steps (15 + 20 + 20 = 55 seconds total)
+- The total sum must be under 60 seconds — use async for longer chains
+- If any step fails, the entire chain stops
+
+### Async Delegation
+
+For tasks that take longer than 60 seconds, or when you don't need to wait for the result, use async mode. The agent runs in the background and results surface automatically when complete.
+
+**Single async task:**
+
+```
+subagent(
+  agent: "security-auditor",
+  task: "Perform a full security audit of this repository",
+  cwd: "/path/to/repo",
+  async: true,
+  name: "Security Audit"
+)
+```
+
+**Multiple async tasks in parallel:**
+
+```
+subagent(
+  tasks: [
+    {
+      agent: "code-reviewer-quality",
+      task: "Review all changes on this branch",
+      cwd: "/path/to/repo",
+      name: "Quality Review"
+    },
+    {
+      agent: "code-reviewer-security",
+      task: "Review all changes on this branch",
+      cwd: "/path/to/repo",
+      name: "Security Review"
+    }
+  ],
+  async: true
+)
+```
+
+Required for async:
+- `async: true`
+- `name` — a display label for the status line (e.g., `"Security Audit"`, `"PR #42"`)
+- No `estimatedSeconds` needed
+
+> **Note:** Async mode does not support chains. Use single or parallel tasks only.
+
+Use `/async-status` to check progress on running background agents.
+
+#### Fire-and-Forget Tasks
+
+For maintenance tasks where you don't need the result delivered back (like memory consolidation), add `fireAndForget: true`:
+
+```
+subagent(
+  agent: "worker",
+  task: "Consolidate and clean up memory files",
+  cwd: "/path/to/repo",
+  async: true,
+  fireAndForget: true,
+  name: "Memory Cleanup"
+)
+```
+
+The agent runs silently in the background. You get a terminal notification on completion, but no result is injected into the conversation.
+
+#### Killing Async Agents
+
+Stop a running background agent by name, ID prefix, or all at once:
+
+```
+subagent(asyncKill: "Security Audit")
+subagent(asyncKill: "all")
+```
+
+## Built-in Workflows
+
+pi includes slash commands that combine delegation modes into common workflows. These are ready to use out of the box.
+
+### `/implement` — Scout, Plan, Build
+
+A three-step chain: `scout` explores the codebase, `planner` creates a plan, `worker` implements it.
+
+```
+/implement Add rate limiting to the /api/upload endpoint
+```
+
+### `/implement-and-review` — Build, Review, Fix
+
+Implements a task, runs three code reviewers in parallel, then fixes any issues found.
+
+```
+/implement-and-review Refactor the user auth module to use JWT tokens
+```
+
+### `/scout-and-plan` — Explore and Plan (No Implementation)
+
+A two-step chain: `scout` explores the codebase, `planner` creates a detailed plan — without making any changes.
+
+```
+/scout-and-plan Migrate the database layer from SQLAlchemy to asyncpg
+```
+
+## The Code Review Loop
+
+After any code change, the orchestrator runs a mandatory review cycle using three reviewers in parallel:
+
+1. A specialist writes or fixes code
+2. Three reviewers run **in parallel** (as async subagents):
+   - `code-reviewer-quality` — code quality and maintainability
+   - `code-reviewer-guidelines` — project guideline adherence
+   - `code-reviewer-security` — bugs, logic errors, and security
+3. Findings are merged and deduplicated
+4. If any reviewer has comments, the code is fixed and reviewers run again (back to step 2)
+5. Once all reviewers approve, `test-automator` runs tests
+6. If tests pass, the task is done. If they fail, the code is fixed and the loop continues
+
+When reviewers produce conflicting suggestions, priority order is: **security > correctness > performance > style**.
+
+> **Warning:** Never skip the review loop. It runs until all three reviewers approve AND tests pass.
+
+## Advanced Usage
+
+### Agent Scopes
+
+By default, agents are loaded from the bundled package and your user directory (`~/.pi/agent/agents/`). You can change the scope to include project-local agents:
+
+| Scope | Sources |
+|-------|---------|
+| `"user"` (default) | Bundled + user agents |
+| `"project"` | Bundled + project agents (from `.pi/agents/` in the repo) |
+| `"both"` | Bundled + user + project agents |
+
+```
+subagent(
+  agent: "my-custom-agent",
+  task: "Run the custom linter",
+  cwd: "/path/to/repo",
+  estimatedSeconds: 15,
+  agentScope: "project"
+)
+```
+
+When project agents are used, the orchestrator prompts for confirmation before running them. Disable this with `confirmProjectAgents: false`.
+
+> **Note:** If a user agent and a project agent share the same name, the project agent takes priority (when in scope).
+
+### Creating Custom Agents
+
+Define a custom agent as a Markdown file with YAML frontmatter:
+
+```markdown
+---
+name: my-linter
+description: Runs project-specific linting rules
+tools: read, bash
+model: claude-haiku-4-5
+---
+
+You are a linting specialist. Run the project linter and report findings.
+
+Always use the project's configured lint command from package.json.
+```
+
+Place the file in:
+- `~/.pi/agent/agents/` for personal agents (available in all projects)
+- `.pi/agents/` in your repository root for project-specific agents
+
+The `tools` field controls which tools the agent can use (`read`, `write`, `edit`, `bash`). The `model` field optionally overrides the default model.
+
+### Sync vs. Async Decision Guide
+
+| Scenario | Mode | Why |
+|----------|------|-----|
+| Fix a single bug | Single (sync) | Quick, need result immediately |
+| Three code reviewers | Parallel (async) | Independent, don't block on results |
+| Scout → plan → implement | Chain (sync) | Each step needs the previous result |
+| Full security audit | Single (async) | Takes too long for sync |
+| Open a GitHub issue | Single (sync) | Fast, need confirmation it was created |
+| Memory consolidation | Single (async, fire-and-forget) | Background maintenance, no result needed |
+
+> **Tip:** Default to `async: true` for independent tasks. Only use sync when the very next step depends on this agent's output.
+
+## Troubleshooting
+
+**"Estimated time exceeds 60s sync limit"**
+Your `estimatedSeconds` is 60 or more. Add `async: true` to run the task in the background, or break it into smaller steps.
+
+**"Unknown agent" error**
+The agent name doesn't match any available agent. Check the agent scope — project agents need `agentScope: "project"` or `"both"`.
+
+**"Missing required parameter: cwd"**
+Every delegation call needs a `cwd`. Always specify the working directory for the target repo.
+
+**"Async agents require a name"**
+All async tasks must include a `name` field for the status line. Add a short descriptive label like `"Code Review"` or `"PR #42"`.
+
+**Chain stops at an intermediate step**
+If any chain step fails (non-zero exit or error), the entire chain halts. Check the error output for that step. The `{previous}` placeholder only works if the prior step succeeded.
+
+**Too many parallel tasks**
+The maximum is 8 tasks per parallel call, with 4 running concurrently. Split larger batches into multiple calls.
+
+---
+
+Source: reviewing-code.md
+
+# Reviewing Code with Parallel Agents
+
+Catch bugs, security issues, and guideline violations before they reach production by running three specialized review agents simultaneously. Whether you're reviewing a GitHub pull request or checking local changes before pushing, parallel reviews give you comprehensive coverage in a single pass.
+
+## Prerequisites
+
+- **uv** installed ([installation guide](https://docs.astral.sh/uv/getting-started/installation/))
+- **myk-pi-tools** installed: `uv tool install myk-pi-tools`
+- **gh** CLI authenticated (for PR reviews): `gh auth login`
+
+## Quick Example
+
+Review your uncommitted changes with three parallel agents:
+
+```
+/review-local
+```
+
+That's it. Three reviewers analyze your code simultaneously and return merged, deduplicated findings grouped by severity.
+
+## How Parallel Review Works
+
+Every review triggers three specialized agents that run concurrently:
+
+| Agent | Focus Area |
+|-------|------------|
+| **Quality reviewer** | Readability, abstractions, DRY violations, error handling, dead code, observability |
+| **Guidelines reviewer** | Project conventions, naming, file structure, documentation completeness |
+| **Security reviewer** | Logic errors, injection vulnerabilities, race conditions, resource leaks, edge cases |
+
+The overlapping scope is intentional — multiple reviewers examining similar areas reduces the chance of missed issues. Findings are automatically deduplicated before you see them.
+
+When findings conflict, they follow a priority order: **security > correctness > performance > style**.
+
+## Reviewing Local Changes
+
+Use `/review-local` to review changes before committing or pushing.
+
+### Review uncommitted changes
+
+```
+/review-local
+```
+
+Reviews all staged and unstaged changes against `HEAD`.
+
+### Compare against a branch
+
+```
+/review-local main
+```
+
+Reviews all changes on your current branch compared to `main`. Use any branch name:
+
+```
+/review-local develop
+/review-local feature/auth-rewrite
+```
+
+### Reading the results
+
+Findings are grouped into three severity levels:
+
+- **Critical** — Must fix. Security vulnerabilities, data loss risks, logic errors.
+- **Warning** — Should fix. Missing error handling, code smells, poor observability.
+- **Suggestion** — Nice to have. Style improvements, minor refactors.
+
+## Reviewing GitHub Pull Requests
+
+Use `/pr-review` to fetch a PR diff from GitHub, run parallel reviews, and post inline comments directly on the PR.
+
+### Review the current branch's PR
+
+```
+/pr-review
+```
+
+Auto-detects the PR associated with your current branch.
+
+### Review by PR number
+
+```
+/pr-review 123
+```
+
+### Review by URL
+
+```
+/pr-review https://github.com/owner/repo/pull/123
+```
+
+### What happens during a PR review
+
+1. The PR diff and project guidelines are fetched from GitHub
+2. All three review agents analyze the diff in parallel
+3. Findings are merged, deduplicated, and presented by severity
+4. You choose which findings to post: `all`, `none`, or specific numbers (e.g., `1,3,5`)
+5. Selected findings are posted as inline comments on the PR
+
+> **Tip:** You can review any PR you have read access to, including PRs from forks.
+
+## Implementing with Built-in Review
+
+Use `/implement-and-review` to write code and review it in a single workflow:
+
+```
+/implement-and-review Add retry logic to the API client
+```
+
+This runs a three-step chain:
+
+1. A worker agent implements your task
+2. All three review agents analyze the changes in parallel
+3. The worker agent fixes every issue the reviewers found
+
+The result is reviewed, corrected code — ready to commit.
+
+## Advanced Usage
+
+### Handling incoming review comments
+
+Use `/review-handler` to process review comments that others have left on your PR:
+
+```
+/review-handler
+```
+
+This fetches all unresolved review threads (from humans, Qodo, and CodeRabbit), presents them in a table sorted by priority, and lets you decide which to address. For each approved comment, a specialist agent implements the fix. After all fixes pass tests, replies are posted and threads are resolved.
+
+You can target a specific review:
+
+```
+/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456
+```
+
+### Autorabbit mode
+
+For PRs with CodeRabbit reviews, autorabbit mode creates a fully automated fix-and-poll loop:
+
+```
+/review-handler --autorabbit
+```
+
+In this mode:
+
+- All CodeRabbit comments are auto-approved and fixed without prompting
+- Human and Qodo comments still require your decision
+- After fixes are pushed, it polls for new CodeRabbit comments automatically
+- The loop continues until CodeRabbit approves or you type `stop`
+
+> **Note:** The polling loop runs silently in the background. You can continue working in the same session while it watches for new comments.
+
+### Handling multiple PRs
+
+When processing reviews for multiple PRs, the system uses git worktrees to avoid branch-switching conflicts:
+
+```
+/review-handler https://github.com/owner/repo/pull/42
+/review-handler https://github.com/owner/repo/pull/43
+```
+
+Each PR gets its own isolated worktree. This prevents parallel agents from seeing the wrong branch.
+
+### Refining your own review comments
+
+Use `/refine-review` to polish pending review comments you've drafted on GitHub before submitting:
+
+```
+/refine-review https://github.com/owner/repo/pull/123
+```
+
+This fetches your pending (unsubmitted) review, shows original vs. refined versions side-by-side, and lets you accept, reject, or customize each refinement. You then choose the review action (comment, approve, or request changes) and submit.
+
+### Checking async agent status
+
+When reviews are running in the background, check their progress:
+
+```
+/async-status
+```
+
+## The Review Loop
+
+When agents implement code changes (not just review), pi-config enforces a mandatory review loop:
+
+1. Agent writes or modifies code
+2. All three review agents run in parallel
+3. Findings are merged and deduplicated
+4. If any reviewer has comments — fix and go back to step 2
+5. Run the test suite
+6. If tests fail — fix and re-review if the fix is substantive
+7. Done only when all reviewers approve **and** tests pass
+
+This loop runs automatically during `/implement-and-review` and when fixing review comments via `/review-handler`. You don't need to trigger it manually.
+
+## Troubleshooting
+
+**"myk-pi-tools not found"**
+Install with `uv tool install myk-pi-tools`. The commands check for this automatically and prompt you to install if missing.
+
+**PR not detected from current branch**
+Make sure your branch has an open PR on GitHub. Run `gh pr view` to verify. You can always pass a PR number or URL explicitly.
+
+**Reviews seem to hang**
+Long reviews run asynchronously. Use `/async-status` to check progress. Background agents have no timeout — large diffs may take several minutes.
+
+**Duplicate findings across reviewers**
+This is expected and handled automatically. Findings on the same file and line with the same root cause are deduplicated, keeping the most actionable version.
+
+**Autorabbit loop won't stop**
+Type `stop`, `exit`, `done`, or `quit` to end the polling loop. The loop only exits automatically when CodeRabbit posts an approval.
+
+---
+
+Source: managing-releases.md
+
+# Managing Releases and Versioning
+
+Create a GitHub release with an auto-generated changelog, bump version numbers across all your project files, and publish — all from a single `/release` command.
+
+## Prerequisites
+
+- **myk-pi-tools** CLI installed (`uv tool install myk-pi-tools` or `uv tool install git+https://github.com/myk-org/pi-config`)
+- **gh** CLI installed and authenticated with GitHub
+- **git** installed and configured
+- Your repository uses [conventional commits](https://www.conventionalcommits.org/) (e.g., `feat:`, `fix:`, `chore:`)
+- Working tree is clean and synced with the remote
+
+## Quick Example
+
+```text
+/release
+```
+
+That's it. The command will:
+
+1. Validate your branch and working tree
+2. Detect version files in your project
+3. Analyze commits since the last tag and generate a changelog
+4. Propose a version bump and ask for approval
+5. Update all version files, create a PR, and merge it
+6. Create a GitHub release with the changelog
+
+## Step-by-Step: Creating a Release
+
+### 1. Run the release command
+
+From your default branch with a clean working tree:
+
+```text
+/release
+```
+
+### 2. Review the proposed release
+
+The command analyzes your commits since the last tag and proposes a version bump based on conventional commit types:
+
+| Commit type | Bump | Example |
+|---|---|---|
+| `feat:` | **Minor** (1.2.0 → 1.3.0) | `feat: add retry logic` |
+| `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:` | **Patch** (1.2.0 → 1.2.1) | `fix: handle null response` |
+| Any commit with `!:` or `BREAKING CHANGE` in body | **Major** (1.2.0 → 2.0.0) | `feat!: redesign auth API` |
+
+> **Note:** If any `feat:` commit is present, the minimum bump is always **minor**, even if other commits are only fixes.
+
+You'll see:
+
+- The proposed version (e.g., `v1.3.0, minor bump`)
+- Which version files will be updated and their current versions
+- A preview of the generated changelog
+
+### 3. Approve or adjust
+
+Respond to the approval prompt:
+
+| Response | Action |
+|---|---|
+| `yes` | Proceed with proposed version and all files |
+| `major`, `minor`, or `patch` | Override the bump type |
+| `exclude N` | Remove file N from the version bump |
+| `no` | Cancel the release |
+
+### 4. Automatic version bump
+
+If version files are detected, the command:
+
+- Creates a branch (`chore/bump-version-<VERSION>-<timestamp>`)
+- Updates all version files with the new version
+- Syncs the lockfile if `uv.lock` exists
+- Opens a PR, merges it, and syncs your local branch
+
+### 5. GitHub release is created
+
+A GitHub release is published with:
+
+- A semantic version tag (e.g., `v1.3.0`)
+- The auto-generated changelog as release notes
+- A compare link showing all changes since the last release
+
+## Supported Version Files
+
+The command automatically detects and updates version strings in these files:
+
+| File | Ecosystem |
+|---|---|
+| `pyproject.toml` | Python |
+| `package.json` | Node.js |
+| `setup.cfg` | Python (legacy) |
+| `Cargo.toml` | Rust |
+| `build.gradle` / `build.gradle.kts` | Java / Kotlin |
+| `__init__.py` / `version.py` (with `__version__`) | Python |
+
+No configuration needed — files are found by scanning the repository root and Python packages automatically.
+
+## Changelog Format
+
+The generated changelog groups commits into sections with emoji headers:
+
+```markdown
+### ✨ Features
+- **Retry logic** — Add configurable retry with exponential backoff (#42)
+
+### 🐛 Bug Fixes
+- **Null response** — Handle null API response in parser (#38)
+
+### 🔧 Maintenance
+- **Dependencies** — Update ruff to 0.5.0 (#40)
+
+**Full Changelog**: https://github.com/owner/repo/compare/v1.2.0...v1.3.0
+```
+
+Entries always reference PR numbers (not commit hashes) and follow the format: `- **Title** — description (#PR)`.
+
+Noise commits are filtered out automatically — merge commits, version bumps, pre-commit autoupdates, review-response commits, and doc regeneration won't clutter your changelog.
+
+## Common Options
+
+```text
+/release 2.0.0          # Set an explicit version (skips approval)
+/release --dry-run       # Preview the release without creating anything
+/release --prerelease    # Mark the release as a pre-release
+/release --draft         # Create a draft release (not published)
+/release --target v2.10  # Release from a specific branch
+```
+
+You can combine flags:
+
+```text
+/release --draft --prerelease
+```
+
+## Advanced Usage
+
+### Releasing from version branches
+
+If your project maintains version branches (e.g., `v2.10`), the release command auto-detects this when you run `/release` from that branch. It will:
+
+- Scope tag discovery to `v2.10.*` tags only
+- Target the version branch instead of the default branch
+
+You can also be explicit:
+
+```text
+/release --target v2.10 --tag-match "v2.10.*"
+```
+
+### Explicit version with no approval
+
+When you already know the version, pass it directly to skip the approval prompt:
+
+```text
+/release 1.17.1
+```
+
+### Excluding files from the version bump
+
+During the approval step, you can exclude specific version files:
+
+```text
+exclude 2
+```
+
+This removes file number 2 from the list. The remaining files are still updated.
+
+### Using the CLI directly
+
+The `/release` command orchestrates several subcommands under the hood. You can use them individually if needed:
+
+```bash
+# Check release prerequisites and list commits since last tag
+myk-pi-tools release info
+
+# Check prerequisites for a specific branch
+myk-pi-tools release info --target v2.10 --tag-match "v2.10.*"
+
+# Detect version files in the current repo
+myk-pi-tools release detect-versions
+
+# Bump version in specific files
+myk-pi-tools release bump-version 1.3.0 --files pyproject.toml --files package.json
+
+# Create a GitHub release from a changelog file
+myk-pi-tools release create owner/repo v1.3.0 /path/to/changelog.md
+myk-pi-tools release create owner/repo v1.3.0 /path/to/changelog.md --prerelease
+myk-pi-tools release create owner/repo v1.3.0 /path/to/changelog.md --draft --target main
+```
+
+> **Tip:** The `bump-version` command requires the version number **without** a `v` prefix. Use `1.3.0`, not `v1.3.0`.
+
+## Troubleshooting
+
+**"Must be on default branch"**
+You're on a feature branch. Switch to your default branch (usually `main`) and pull latest changes before releasing.
+
+**"Working tree must be clean"**
+You have uncommitted changes. Commit or stash them before running `/release`.
+
+**"Must be synced with remote"**
+Your local branch is ahead or behind the remote. Run `git pull` and `git push` to sync.
+
+**"myk-pi-tools: command not found"**
+Install the CLI tool:
+
+```bash
+uv tool install myk-pi-tools
+```
+
+**Admin merge fails during version bump**
+If you don't have admin permissions to merge the version bump PR, the command will ask you to merge it manually. Merge the PR in GitHub, confirm in the prompt, and the release continues.
+
+---
+
+Source: using-dashboard.md
+
+# Monitoring Sessions with the Web Dashboard
+
+Monitor multiple pi sessions from your browser, stream conversations in real time, and respond to agent questions — all without switching terminal windows.
+
+## Prerequisites
+
+- A running pi session (Pidash starts automatically with your first session)
+- A modern browser (Chrome, Firefox, Safari, or Edge)
+
+## Quick Start
+
+Open your browser and navigate to:
+
+```
+http://localhost:19190
+```
+
+That's it. The Pidash dashboard launches automatically when your first pi session starts. Every session you open registers itself with the dashboard in real time.
+
+## Viewing Sessions
+
+The sidebar on the left lists all active sessions, grouped by project name. Each entry shows:
+
+- **Model name** currently in use
+- **Git branch** and working tree status (clean or dirty with change count)
+- **Activity indicator** — a pulsing green dot means the agent is actively working
+- **Container badge** — shows when a session runs inside Docker
+
+Click any session to watch it. The message list loads the full conversation history, including user messages, assistant responses, thinking blocks, and tool executions.
+
+> **Tip:** Sessions remain visible in the sidebar for 5 minutes after disconnecting, so you won't lose track of recently closed terminals.
+
+## Streaming Conversations
+
+When you select a session, the dashboard streams its conversation in real time:
+
+- **User messages** appear as they're sent from the terminal
+- **Assistant text** streams token by token, just like in the terminal
+- **Thinking blocks** are displayed when the model uses extended thinking
+- **Tool calls** show inline with execution status (checkmark for success, X for failure)
+- **Async agent output** streams inline as sub-messages
+
+Use the search bar at the top to filter messages by role (user, assistant, tool results) or search for specific text.
+
+## Sending Messages from the Browser
+
+Type a message in the input bar at the bottom and press **Enter** to send it to the active session. The agent processes it exactly as if you typed it in the terminal.
+
+The input bar supports:
+
+- **Multi-line input** — press **Shift+Enter** for a new line
+- **Slash commands** — type `/` to see a filtered list of available commands, then press **Tab** or **Enter** to autocomplete
+- **Image attachments** — click the paperclip icon or drag and drop image files into the input area
+- **Text file attachments** — attach code files, logs, or config files (`.py`, `.ts`, `.json`, `.yaml`, `.md`, and many more)
+- **Input history** — press the **Up/Down** arrow keys to cycle through your last 50 messages
+
+> **Note:** Attached images are sent as base64-encoded data. Text files are inserted into the message body with filename headers.
+
+## Responding to Agent Questions
+
+When an agent needs input — a confirmation, a selection from options, or a free-form answer — the question appears inline in the message list with interactive controls.
+
+You can answer from either the browser or the terminal. Whichever responds first wins; the other side dismisses automatically.
+
+The dashboard sends a browser notification when input is needed, so you'll know even if you're in another tab.
+
+## Controlling the Model and Thinking Level
+
+The info bar at the top of the message area shows the current model, token usage, and context window consumption.
+
+**Switch models:**
+
+1. Click the model name in the info bar
+2. Search or scroll through available models
+3. Click to switch — the change takes effect immediately
+
+**Adjust thinking level:**
+
+1. Click the thinking level indicator in the info bar
+2. Choose from: off, minimal, low, medium, or high
+
+## Keyboard Shortcuts
+
+Navigate sessions quickly without touching the mouse:
+
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+K** | Open session switcher |
+| **Ctrl+Up** | Previous session |
+| **Ctrl+Down** | Next session |
+| **Ctrl+1** through **Ctrl+9** | Jump to session by number |
+| **Escape** | Stop the current operation or close modals |
+
+All shortcuts are customizable. Click the gear icon in the sidebar header to open keybinding settings, where you can reassign any shortcut.
+
+## Notifications
+
+The dashboard sends browser push notifications for important events so you can work in other tabs or windows. Click the gear icon in the sidebar to toggle individual notification types:
+
+| Notification | Default | Description |
+|-------------|---------|-------------|
+| Turn complete | On | Agent finished processing |
+| Agent complete | On | Subagent finished |
+| Test results | On | Test pass/fail with status |
+| Session error | On | Error in the session |
+| Input needed | On | Agent is waiting for your response |
+| Tool complete | Off | Individual tool call finished |
+
+Notifications only fire when the dashboard tab is not focused or you're watching a different session, so they never interrupt your active work.
+
+> **Note:** Your browser will ask for notification permission the first time. Grant it once and the preference persists.
+
+## Monitoring Context and Token Usage
+
+The info bar displays real-time token counters:
+
+- **Input tokens** (up arrow) — tokens sent to the model
+- **Output tokens** (down arrow) — tokens generated by the model
+- **Cache tokens** (box icon) — tokens served from cache, shown only when caching is active
+- **Context usage** — percentage of the model's context window consumed, color-coded green (under 50%), orange (50–80%), or red (over 80%)
+
+## Monitoring Async Agents and Cron Tasks
+
+When background agents or scheduled tasks are running, counters appear in the info bar:
+
+- **Async agents** — click to see agent names, task descriptions, elapsed time, and a kill button for each
+- **Cron tasks** — click to see schedules, last/next run times, and a kill button for each
+
+You can stop any background agent or cron task directly from the dashboard.
+
+## Advanced Usage
+
+### Custom Port
+
+Set the `PI_PIDASH_PORT` environment variable before starting your first session:
+
+```bash
+export PI_PIDASH_PORT=9999
+```
+
+The dashboard will be available at `http://localhost:9999` instead of the default port 19190.
+
+### Managing the Server
+
+Use the `/pidash` command inside any pi session to manage the dashboard server:
+
+```
+/pidash status     # Check if the server is running
+/pidash start      # Start the server
+/pidash stop       # Stop the server
+/pidash restart    # Restart the server
+```
+
+### Disabling Pidash
+
+To prevent the dashboard from starting automatically:
+
+```bash
+export PI_PIDASH_ENABLE=false
+```
+
+### Accessing from Other Devices
+
+The dashboard binds to `0.0.0.0`, so you can access it from any device on your local network using your machine's IP address:
+
+```
+http://192.168.1.x:19190
+```
+
+This is especially useful for monitoring sessions from a phone or tablet.
+
+### Discord Bot Integration
+
+You can bridge your dashboard to Discord for mobile monitoring and remote interaction. Create a file at `~/.pi/discord.env`:
+
+```bash
+DISCORD_BOT_TOKEN=your-bot-token-here
+DISCORD_ALLOWED_USERS=123456789,987654321
+```
+
+Once configured, restart the dashboard server. The bot provides:
+
+- `/sessions` — list active sessions and tap a button to watch one
+- `/status` — show info about the watched session
+- `/stop` — interrupt the current agent operation
+- **DM prompts** — send messages (including images and text files) directly to the watched session
+- **Ask-user responses** — answer agent questions via Discord DM
+
+> **Warning:** If you omit `DISCORD_ALLOWED_USERS`, the bot accepts DMs from anyone. Always set this in shared environments.
+
+### Diff Viewer
+
+When the diff viewer (Pidiff) is running, a "diff" link appears in the info bar. Click it to open the diff viewer in a new tab, showing git changes for the active session.
+
+## Troubleshooting
+
+**Dashboard shows "disconnected" (red dot in sidebar)**
+
+The WebSocket connection to the server was lost. The dashboard reconnects automatically — wait a few seconds. If it persists, restart the server with `/pidash restart`.
+
+**Session appears but shows no messages**
+
+The session may have started before the dashboard. Send any message in that session's terminal to trigger event forwarding, or restart the session to replay its history.
+
+**Dashboard won't start**
+
+Check the server log for errors:
+
+```bash
+cat ~/.pi/pidash-server.log
+```
+
+Common issues include port conflicts (another process using port 19190) and missing dependencies on first run (the UI builds automatically, which can take up to 60 seconds).
+
+**Notifications not appearing**
+
+- Verify browser notification permission is granted (check browser settings)
+- Ensure notifications are enabled in the dashboard sidebar settings (gear icon)
+- Notifications are suppressed while the dashboard tab is focused and you're watching the active session
+
+**Port already in use**
+
+If another service uses port 19190, set a custom port:
+
+```bash
+export PI_PIDASH_PORT=9999
+```
+
+Then restart the server with `/pidash restart`.
+
+---
+
+Source: working-with-memory.md
+
+# Saving and Recalling Project Knowledge
+
+Build a persistent knowledge base for your repository so your agents avoid past mistakes, remember your preferences, and apply lessons from previous sessions — automatically.
+
+## Prerequisites
+
+- Pi is installed and running with the orchestrator config
+- Your project is inside a git repository
+
+## Quick Example
+
+Tell pi to remember something important:
+
+```
+/remember Always use uv run, never python directly
+```
+
+Pi saves this as a **pinned** memory. Next time you start a session in this repo, every agent sees it and follows it — no reminding needed.
+
+## How Memory Works
+
+Memories live in a plain markdown file at `.pi/memory/memory.md` inside your repo. Pi loads them automatically at the start of every session, before any other instructions. Agents treat memories as high-priority guidance.
+
+The file has two sections:
+
+| Section | Who creates it | Can dreaming remove it? | Use case |
+|---------|---------------|------------------------|----------|
+| **Pinned** | You, via `/remember` | Never | Preferences, critical lessons, key decisions |
+| **Learned** | Automatic (dreaming) | Yes — deduplicates and cleans up | Session observations, extracted patterns |
+
+## Saving Memories
+
+### The `/remember` Command
+
+Use `/remember` followed by what you want to store:
+
+```
+/remember buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid
+/remember Always run tests before closing a PR
+/remember We chose SQLite for local state, not in-memory dicts
+```
+
+Each memory is saved to the **Pinned** section and categorized automatically into one of six types:
+
+| Category | When to use |
+|----------|-------------|
+| `lesson` | Something learned — gotchas, tips, how things work |
+| `preference` | How you want things done |
+| `decision` | An architectural or design choice |
+| `mistake` | Something that went wrong and should be avoided |
+| `pattern` | A recurring approach or convention |
+| `done` | A completed task or milestone |
+
+> **Tip:** Write memories as short, actionable statements. "Always do X" or "Never do Y" works best. Avoid vague observations.
+
+### Memory Quality
+
+Good memories are specific and fit on one line (~100 characters max):
+
+| Bad | Good |
+|-----|------|
+| "We had issues with buildah and Docker caching and tried several approaches" | "buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid" |
+| "The integration was incomplete" | "Never close issues with unchecked deliverables in Done section" |
+| "User prefers a certain approach to handling processes" | "Attach child processes to pi (no detached:true) — kills on exit" |
+
+## Recalling Memories
+
+You don't need to do anything — memories are loaded automatically at session start. Every agent in the session sees them and applies them proactively.
+
+- **Pinned memories** are always present, session after session
+- **Learned memories** persist until dreaming cleans them up (if stale or duplicated)
+- Subagents can read memories but cannot write new ones — only the orchestrator manages the memory file
+
+## Memory Dreaming (Automatic Consolidation)
+
+Dreaming is a background process that reviews your session, extracts new learnings, and keeps the memory file clean. It runs without interrupting your work.
+
+### What dreaming does
+
+1. Reads the current session to find things worth remembering
+2. Adds new entries to the **Learned** section (user corrections become lessons, stated preferences become preferences, repeated mistakes get flagged)
+3. Deduplicates and removes stale entries from Learned
+4. Keeps the file under 50 entries
+5. **Never** touches your Pinned entries
+
+### Triggering a dream manually
+
+```
+/dream
+```
+
+This runs consolidation as a background task. You'll see "Running memory consolidation in background..." and can keep working.
+
+### Automatic dreaming
+
+Toggle automatic dreaming on or off:
+
+```
+/dream-auto on
+/dream-auto off
+```
+
+When enabled, dreaming runs:
+- **Every 3 hours** while pi is active
+- **On session shutdown** (a lightweight pass)
+
+> **Tip:** Change the interval by setting the `PI_DREAM_INTERVAL_HOURS` environment variable (range: 0.5–24 hours, default: 3).
+
+## Advanced Usage
+
+### CLI Commands
+
+You can manage memories directly from the command line:
+
+```bash
+# Add a learned memory
+uv run myk-pi-tools memory add -c lesson -s "buildah chown -R skips target dir"
+
+# Add a pinned memory
+uv run myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
+
+# View all memories
+uv run myk-pi-tools memory show
+
+# Print the memory file path
+uv run myk-pi-tools memory path
+```
+
+### Editing the Memory File Directly
+
+The memory file is plain markdown. You can open `.pi/memory/memory.md` in any editor to add, remove, or reorganize entries. Keep the two-section format:
+
+```markdown
+# Memories
+
+## Pinned (user requested — never auto-remove)
+- [preference] Always use uv run, never python directly
+- [lesson] Never merge PRs without asking first
+
+## Learned (auto-extracted — dream may reorganize/remove)
+- [lesson] buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid
+- [mistake] Closed issue with incomplete deliverables — check Done section before closing
+```
+
+> **Warning:** Do not change the section headers — the system uses them to distinguish pinned from learned entries.
+
+### Migrating from the Old Database
+
+If your project used the older SQLite-based memory system, migration happens automatically on first session start. You can also trigger it manually:
+
+```bash
+uv run myk-pi-tools memory migrate
+```
+
+This reads all memories from `memories.db`, writes them to `memory.md`, then cleans up the old database files.
+
+## Troubleshooting
+
+**Memories aren't showing up in new sessions**
+- Check that `.pi/memory/memory.md` exists and has entries. Run `uv run myk-pi-tools memory show` to verify.
+- Make sure the file is inside a git repository — the memory path is relative to the git root.
+
+**Dreaming removed a memory I wanted to keep**
+- Use `/remember` to save it as a Pinned entry. Pinned entries are protected from automatic cleanup.
+
+**Too many memories cluttering the file**
+- Run `/dream` to trigger consolidation, which deduplicates and removes stale entries.
+- Edit `.pi/memory/memory.md` directly to remove entries you no longer need.
+
+---
+
+Source: running-in-docker.md
+
+# Running pi-config in Docker
+
+Run pi inside an isolated Docker container so the agent can only access your project directory and pi settings — nothing else on your host. This guide walks you through pulling the image, configuring mounts and environment variables, and customizing tool access for your workflow.
+
+## Prerequisites
+
+- Docker installed and running on your host
+- A project directory you want pi to work in
+- API credentials for your LLM provider (Vertex AI, Gemini, etc.)
+
+## Quick start
+
+```bash
+docker pull ghcr.io/myk-org/pi-config:latest
+
+docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest
+```
+
+This starts an interactive pi session in your current project directory. The container is destroyed when you exit (`--rm`).
+
+## Setting up the environment file
+
+Create a `.env` file (e.g., `~/.pi/.env`) with your credentials and preferences:
+
+```env
+# Timezone (for correct timestamps in logs and sessions)
+TZ=America/New_York
+
+# Host username — maps /home/<user> paths between host and container
+PI_HOST_USER=youruser
+
+# Google Cloud / Vertex AI
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/youruser/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_REGION=us-east5
+VERTEX_CLAUDE_1M=true
+
+# GitHub
+GITHUB_TOKEN=ghp_xxx
+GITHUB_API_TOKEN=ghp_xxx
+GH_CONFIG_DIR=/home/youruser/.config/gh
+
+# Gemini (optional)
+GEMINI_API_KEY=xxx
+
+# MCP Launchpad config (must match mount target path)
+MCPL_CONFIG_FILES=/home/youruser/.config/mcpl/mcp.json
+```
+
+> **Warning:** Paths in the environment file (like `GOOGLE_APPLICATION_CREDENTIALS` and `GH_CONFIG_DIR`) must use your **container home path** (`/home/<PI_HOST_USER>/...`), not the host path. The `PI_HOST_USER` symlink mechanism makes this work.
+
+Pass the file when starting the container:
+
+```bash
+docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  --env-file "$HOME/.pi/.env" \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest
+```
+
+## Understanding the volume mounts
+
+Every mount serves a specific purpose. Here's what each one does:
+
+| Mount | Mode | Purpose |
+|---|---|---|
+| `$PWD:$PWD` | rw | Your project directory — the only writable workspace |
+| `$HOME/.pi:$HOME/.pi` | rw | Pi settings, sessions, memory, and installed packages |
+| `$HOME/.gitconfig:$HOME/.gitconfig` | ro | Git configuration (user name, email, aliases) |
+| `$HOME/.gitignore-global:$HOME/.gitignore-global` | ro | Global gitignore patterns |
+| `$HOME/.ssh:$HOME/.ssh` | ro | SSH keys for git operations |
+| `$HOME/.config/gh:$HOME/.config/gh` | ro | GitHub CLI authentication |
+| `/tmp/pi-work:/tmp/pi-work` | rw | Temp files that persist across container restarts |
+
+> **Note:** Read-only (`:ro`) mounts prevent the agent from modifying your host configuration. The container automatically copies `.gitconfig` to a writable location internally so git operations still work.
+
+## How PI_HOST_USER works
+
+When your host username isn't `node` (the container's default user), mounted paths like `$HOME/.ssh` resolve to `/home/youruser/.ssh` — but the container's home is `/home/node`. Setting `PI_HOST_USER` fixes this by creating symlinks between `/home/youruser` and `/home/node` so all paths resolve correctly.
+
+Set it to your host username:
+
+```env
+PI_HOST_USER=youruser
+```
+
+If you skip this variable, mounts that use `$HOME` expansion may not resolve inside the container.
+
+## Creating a shell alias
+
+Add this to your `~/.bashrc` or `~/.zshrc` to start pi from any project directory with a single command:
+
+```bash
+alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
+  docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  --env-file "$HOME/.pi/.env" \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest'
+```
+
+Then run from any project:
+
+```bash
+cd ~/projects/my-app
+pi-docker
+```
+
+> **Tip:** The alias pulls the latest image on every run. If you prefer faster startup, remove the `docker pull` line and update manually with `docker pull ghcr.io/myk-org/pi-config:latest`.
+
+## Filesystem isolation
+
+The container enforces strict filesystem boundaries:
+
+- **Accessible (read-write):** Your project directory (`$PWD`) and pi settings (`~/.pi`)
+- **Accessible (read-only):** Git, GitHub, and SSH configuration
+- **Blocked:** All other host directories, other git repos, system files
+
+This means the agent cannot accidentally modify files outside your project or access sensitive data on your host.
+
+## Network mode
+
+The `--network host` flag shares your host's network stack with the container. This is required for:
+
+- Local MCP servers
+- LiteLLM proxy
+- File preview (agents serve generated HTML via HTTP)
+- Pidash and Pidiff dashboards
+
+If you only use cloud-based LLM providers and don't need any of the above, you can omit `--network host`.
+
+## Advanced Usage
+
+### Optional mounts
+
+Add these mounts to enable additional features:
+
+| Mount | Mode | Purpose |
+|---|---|---|
+| `$HOME/.config/gcloud/application_default_credentials.json:$HOME/.config/gcloud/application_default_credentials.json` | ro | Google Cloud ADC for Claude via Vertex AI |
+| `$HOME/.config/mcpl/mcp.json:$HOME/.config/mcpl/mcp.json` | ro | MCP server configuration for `mcpl` |
+| `$HOME/.agents:$HOME/.agents` | rw | User-level skills |
+| `$HOME/.config/cursor/auth.json:$HOME/.config/cursor/auth.json` | ro | Cursor CLI auth for acpx cursor models |
+| `$HOME/.config/glab-cli:$HOME/.config/glab-cli` | ro | GitLab CLI config |
+| `$HOME/screenshots:$HOME/screenshots` | ro | Share screenshots with the agent |
+| `/var/run/docker.sock:/var/run/docker.sock` | ro | Docker container inspection via `docker-safe` |
+| `/var/run/podman/podman.sock:/var/run/podman/podman.sock` | ro | Podman container inspection via `docker-safe` |
+
+### Docker socket access
+
+To let the agent inspect running containers (read-only), mount the Docker socket and add the Docker group:
+
+```bash
+-v /var/run/docker.sock:/var/run/docker.sock:ro \
+--group-add $(stat -c '%g' /var/run/docker.sock)
+```
+
+The agent uses a restricted `docker-safe` wrapper that only allows read-only commands: `ps`, `logs`, `inspect`, `top`, `stats`, `port`, `diff`, `images`, `version`, and `info`. All state-modifying commands (`exec`, `run`, `rm`, `build`, etc.) are blocked.
+
+For Podman, mount the Podman socket instead:
+
+```bash
+-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro
+```
+
+### External agent providers (acpx)
+
+To route prompts through external AI agents like Cursor or Gemini, set the `ACPX_AGENTS` variable in your `.env` file:
+
+```env
+ACPX_AGENTS=cursor
+```
+
+You'll also need to mount the corresponding auth file. For Cursor:
+
+```bash
+-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro
+```
+
+### Dashboard ports
+
+Two web dashboards run alongside your pi session:
+
+| Dashboard | Default Port | Environment Variable | URL |
+|---|---|---|---|
+| Pidash | 19190 | `PI_PIDASH_PORT` | `http://localhost:19190` |
+| Pidiff | 19290 | `PI_PIDIFF_PORT` | `http://localhost:19290` |
+
+To use custom ports, add to your `.env` file:
+
+```env
+PI_PIDASH_PORT=9999
+PI_PIDIFF_PORT=9998
+```
+
+To disable either dashboard:
+
+```env
+PI_PIDASH_ENABLE=false
+PI_PIDIFF_ENABLE=false
+```
+
+### Passing arguments to pi
+
+Any arguments after the image name are forwarded to `pi`:
+
+```bash
+# Run a specific task non-interactively
+docker run --rm -it ... ghcr.io/myk-org/pi-config:latest /implement add retry logic
+
+# Start with a specific prompt
+docker run --rm -it ... ghcr.io/myk-org/pi-config:latest "fix the failing tests"
+```
+
+### Building from source
+
+> **Note:** The image is built for **linux/amd64** only. On ARM hosts, build with `--platform linux/amd64`.
+
+```bash
+git clone https://github.com/myk-org/pi-config.git
+cd pi-config
+docker build -t ghcr.io/myk-org/pi-config:latest .
+```
+
+### Complete alias with all optional mounts
+
+Here's a full alias including all optional mounts for a complete setup:
+
+```bash
+alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
+  docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  --env-file "$HOME/.pi/.env" \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro \
+  -v "$HOME/.agents":"$HOME/.agents":rw \
+  -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
+  -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
+  -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
+  -v "$HOME/screenshots":"$HOME/screenshots":ro \
+  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  --group-add $(stat -c '%g' /var/run/docker.sock) \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest'
+```
+
+## Pre-installed tools
+
+The container image comes with all tools pre-installed:
+
+| Tool | Purpose |
+|---|---|
+| `git`, `gh`, `glab` | Version control, GitHub CLI, GitLab CLI |
+| `uv` / `uvx` | Python package management and execution |
+| `go` | Go development |
+| `node` / `npm` | JavaScript runtime |
+| `kubectl` / `oc` | Kubernetes and OpenShift CLI |
+| `mcpl` | MCP server access |
+| `acpx` | Agent proxy for external AI models |
+| `agent-browser` | Browser automation (Chromium pre-installed) |
+| `docker-safe` | Read-only Docker/Podman inspection wrapper |
+| `prek` | Pre-commit hook runner |
+| `jq`, `curl` | JSON processing, HTTP requests |
+
+## Troubleshooting
+
+### Startup warning about cached packages
+
+A `WARNING` on stderr during startup is normal when pi-config is already cached in `~/.pi`. The container runs `pi install` and `pi update` on every start to stay current. If the warning persists or pi misbehaves, check your network connectivity.
+
+### Mounted paths don't resolve inside the container
+
+Make sure `PI_HOST_USER` in your `.env` file matches your host username exactly. Without it, paths like `/home/youruser/.ssh` won't resolve because the container's default home is `/home/node`.
+
+### Permission denied on mounted files
+
+The container runs as user `node` (UID 1000). If your host files are owned by a different UID, you may see permission errors. Ensure your host user's UID is 1000, or adjust file permissions accordingly.
+
+### Container can't reach local services
+
+Make sure you included `--network host` in your `docker run` command. Without it, the container has its own network namespace and can't reach services on `localhost`.
+
+### Git push/pull hangs
+
+The container sets SSH keepalive and connection timeouts automatically (15-second keepalive interval, 10-second connection timeout). If git operations still hang, check that your SSH keys are correctly mounted at `$HOME/.ssh` with `:ro` mode.
+
+---
+
+Source: querying-reviews.md
+
+# Querying the Review Database
+
+```markdown
+# Querying the Review Database
+
+Analyze your accumulated code review history to spot recurring feedback, understand which review sources deliver the most value, and track how your team handles suggestions over time. These queries help you tune auto-skip rules and focus reviewer effort where it matters.
+
+## Prerequisites
+
+- `myk-pi-tools` installed (`uv tool install myk-pi-tools`)
+- A review database at `<project-root>/.pi/data/reviews.db` (created automatically when you store completed reviews with `myk-pi-tools reviews store`)
+
+## Quick Example
+
+See how often comments from each review source get addressed:
+
+```bash
+myk-pi-tools db stats
+```
+
+```
+source    | total | addressed | not_addressed | skipped | addressed_rate
+----------+-------+-----------+---------------+---------+---------------
+coderabbit| 48    | 32        | 10            | 6       | 66.7%
+human     | 25    | 22        | 2             | 1       | 88.0%
+qodo      | 15    | 9         | 4             | 2       | 60.0%
+```
+
+This tells you at a glance which sources produce the most actionable feedback.
+
+## Viewing Statistics
+
+### Stats by source
+
+The default view groups comments by their origin — `human`, `qodo`, or `coderabbit`:
+
+```bash
+myk-pi-tools db stats
+```
+
+This is equivalent to `myk-pi-tools db stats --by-source`.
+
+### Stats by reviewer
+
+Switch to per-author breakdown to see which individual reviewers provide the most feedback:
+
+```bash
+myk-pi-tools db stats --by-reviewer
+```
+
+```
+author          | total | addressed | not_addressed | skipped
+----------------+-------+-----------+---------------+--------
+coderabbitai    | 48    | 32        | 10            | 6
+alice           | 15    | 14        | 1             | 0
+bob             | 10    | 8         | 1             | 1
+```
+
+### JSON output
+
+Add `--json` to any command for machine-readable output:
+
+```bash
+myk-pi-tools db stats --by-source --json
+```
+
+## Finding Recurring Patterns
+
+Identify comments that keep appearing with similar wording — these are good candidates for auto-skip rules:
+
+```bash
+myk-pi-tools db patterns
+```
+
+```
+path            | occurrences | reason                    | body_sample
+----------------+-------------+---------------------------+-----------------------------
+src/api/auth.py | 4           | Style preference, ignored | Consider adding type hints...
+src/utils.py    | 3           | Not applicable to project | Add error handling for ed...
+```
+
+Raise the threshold to focus on the most persistent patterns:
+
+```bash
+myk-pi-tools db patterns --min 3
+```
+
+> **Tip:** Patterns with high occurrence counts are strong signals that an auto-skip rule should be configured. The tool uses Jaccard word similarity (60% overlap) to cluster related comments, so minor wording variations still get grouped together.
+
+## Viewing Dismissed Comments
+
+List all comments that were marked as `not_addressed` or `skipped` for a specific repository:
+
+```bash
+myk-pi-tools db dismissed --owner myk-org --repo my-project
+```
+
+```
+path            | line | status        | reply                     | author
+----------------+------+---------------+---------------------------+-----------
+src/config.py   | 42   | not_addressed | Style preference, ignored | coderabbitai
+src/api/main.py | 15   | skipped       | Auto-skipped: duplicate   | qodo-code-review
+```
+
+This shows the dismissal reason alongside each comment, helping you understand why feedback was set aside.
+
+> **Note:** Comments with status `addressed` only appear here if they have a special type (`outside_diff_comment`, `nitpick_comment`, or `duplicate_comment`). Normal addressed comments are tracked by GitHub's thread resolution instead.
+
+## Finding Similar Comments
+
+Check whether a new review comment matches something previously dismissed. This is the same similarity check that powers the auto-skip feature during review fetching.
+
+Pipe a JSON object with `path` and `body` fields via stdin:
+
+```bash
+echo '{"path": "src/utils.py", "body": "Add error handling for edge cases"}' | \
+    myk-pi-tools db find-similar --owner myk-org --repo my-project
+```
+
+```
+Found similar comment (similarity: 0.85):
+  Path: src/utils.py:23
+  Status: not_addressed
+  Reason: Not applicable — error cases handled upstream
+  Original body: Consider adding error handling for edge case...
+```
+
+Adjust the similarity threshold (default 0.6) to be more or less strict:
+
+```bash
+echo '{"path": "src/utils.py", "body": "Add error handling"}' | \
+    myk-pi-tools db find-similar --owner myk-org --repo my-project --threshold 0.8
+```
+
+## Running Custom Queries
+
+For ad-hoc exploration, run raw SQL against the database:
+
+```bash
+myk-pi-tools db query "SELECT path, COUNT(*) as cnt FROM comments WHERE status = 'skipped' GROUP BY path ORDER BY cnt DESC"
+```
+
+### Useful queries
+
+**Top files by total comments:**
+
+```bash
+myk-pi-tools db query "SELECT path, COUNT(*) as total FROM comments GROUP BY path ORDER BY total DESC LIMIT 10"
+```
+
+**Comments by status breakdown:**
+
+```bash
+myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
+```
+
+**Recent reviews with comment counts:**
+
+```bash
+myk-pi-tools db query "SELECT r.owner, r.repo, r.pr_number, r.created_at, COUNT(c.id) as comments FROM reviews r JOIN comments c ON c.review_id = r.id GROUP BY r.id ORDER BY r.created_at DESC LIMIT 10"
+```
+
+**High-priority unaddressed comments:**
+
+```bash
+myk-pi-tools db query "SELECT c.path, c.line, c.body, c.author FROM comments c WHERE c.priority = 'HIGH' AND c.status = 'not_addressed'"
+```
+
+**Common Table Expressions (CTEs) are supported:**
+
+```bash
+myk-pi-tools db query "WITH skipped AS (SELECT path, body, skip_reason FROM comments WHERE status = 'skipped') SELECT path, COUNT(*) as cnt FROM skipped GROUP BY path"
+```
+
+> **Warning:** Only `SELECT` and `WITH` (CTE) statements are allowed. The database is opened in read-only mode, and modifying keywords (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `PRAGMA`) are blocked.
+
+## Advanced Usage
+
+### Using a custom database path
+
+All `db` subcommands accept `--db-path` to point at a specific database file instead of the auto-detected one:
+
+```bash
+myk-pi-tools db stats --db-path /path/to/other/reviews.db
+```
+
+By default, the tool auto-detects the database at `<git-root>/.pi/data/reviews.db` based on the current working directory.
+
+### Database schema reference
+
+The database has two tables:
+
+**reviews** — one row per review session:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Primary key |
+| pr_number | INTEGER | Pull request number |
+| owner | TEXT | GitHub org or user |
+| repo | TEXT | Repository name |
+| commit_sha | TEXT | Git commit at review time |
+| created_at | TEXT | ISO 8601 timestamp |
+
+**comments** — one row per review comment:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Primary key |
+| review_id | INTEGER | Foreign key to reviews |
+| source | TEXT | `human`, `qodo`, or `coderabbit` |
+| author | TEXT | Reviewer username |
+| path | TEXT | File path |
+| line | INTEGER | Line number |
+| body | TEXT | Comment text |
+| priority | TEXT | `HIGH`, `MEDIUM`, or `LOW` |
+| status | TEXT | `pending`, `addressed`, `not_addressed`, or `skipped` |
+| reply | TEXT | Human response or dismissal reason |
+| skip_reason | TEXT | Raw dismissal reason |
+| type | TEXT | `outside_diff_comment`, `nitpick_comment`, `duplicate_comment`, or null |
+| posted_at | TEXT | ISO 8601 timestamp |
+| resolved_at | TEXT | ISO 8601 timestamp |
+
+### How auto-skip uses this data
+
+When new reviews are fetched, the system automatically queries dismissed comments from the database and compares them against incoming feedback. If a new comment has 60% or greater word overlap with a previously dismissed comment on the same file path, it is auto-skipped with the original dismissal reason. This prevents the same low-value suggestions from resurfacing across PRs.
+
+The `find-similar` command lets you test this matching logic manually before relying on it.
+
+### Querying from the orchestrator
+
+Inside a pi session, use the `/query-db` slash command to run database queries conversationally:
+
+```text
+/query-db stats --by-source
+/query-db patterns --min 3
+/query-db dismissed --owner myk-org --repo my-project
+```
+
+You can also ask natural language questions, and the orchestrator will compose the appropriate query.
+
+## Troubleshooting
+
+- **"Database not found"** — No reviews have been stored yet. Run a full review cycle (`myk-pi-tools reviews fetch`, then `myk-pi-tools reviews store`) to populate the database.
+- **"Only SELECT/CTE queries are allowed"** — The `query` command blocks write operations. Use built-in subcommands (`stats`, `patterns`, `dismissed`) for standard analysis, or write a `SELECT` statement for custom queries.
+- **"Multiple SQL statements are not allowed"** — The `query` command only accepts a single statement. Remove any semicolons separating multiple queries and run them one at a time.
+- **Stats show no data for a source** — That review source hasn't produced any comments in stored reviews. Verify that reviews from that source exist by running `myk-pi-tools db query "SELECT DISTINCT source FROM comments"`.
+
+---
+
+Source: workflow-recipes.md
+
+# Common Workflow Recipes
+
+Copy-paste patterns for everyday tasks. Each recipe is self-contained — paste it into your pi session and go.
+
+For full workflow explanations, see Orchestrator Workflows. For agent details, see Specialist Agents Reference.
+
+---
+
+## Implement a Feature End-to-End
+
+Scouts the codebase, plans, and implements — all in one command.
+
+```text
+/implement add retry logic with exponential backoff to the HTTP client in src/api.py
+```
+
+The orchestrator chains three agents: **scout** explores the codebase for relevant files, **planner** creates a step-by-step implementation plan, and **worker** makes all the code changes. The code review loop runs automatically after implementation.
+
+- For planning without implementing, use `/scout-and-plan <task>` instead
+- For implementation without the scout/plan phase, use `/implement-and-review <task>`
+
+---
+
+## Implement and Review in a Loop
+
+Writes code and runs three parallel reviewers until all approve, then runs tests.
+
+```text
+/implement-and-review add input validation to the /users API endpoint
+```
+
+The **worker** implements the task, then three review agents run in parallel: **code-reviewer-quality** (readability, DRY), **code-reviewer-guidelines** (project style), and **code-reviewer-security** (bugs, vulnerabilities). If any reviewer has comments, the worker fixes and re-reviews. The loop ends only when all three approve and tests pass.
+
+> **Tip:** This is the fastest path when you already know what needs to change. Skip the scout/plan overhead.
+
+---
+
+## Review a GitHub PR
+
+Fetches a PR diff, runs three parallel reviewers, and posts inline comments.
+
+```text
+/pr-review 42
+```
+
+Or auto-detect from the current branch:
+
+```text
+/pr-review
+```
+
+Or use a full URL:
+
+```text
+/pr-review https://github.com/your-org/your-repo/pull/42
+```
+
+Three review agents analyze the diff in parallel. Findings are merged, deduplicated, and grouped by severity (CRITICAL, WARNING, SUGGESTION). You choose which to post as inline PR comments.
+
+> **Note:** Requires `myk-pi-tools`. Install with `uv tool install myk-pi-tools` if not available.
+
+---
+
+## Fix All Review Comments on a PR
+
+Processes review comments from all sources — human reviewers, Qodo, and CodeRabbit — and fixes them.
+
+```text
+/review-handler
+```
+
+Or with a specific review URL:
+
+```text
+/review-handler https://github.com/your-org/your-repo/pull/42#pullrequestreview-456
+```
+
+Fetches all review threads, presents them grouped by source and priority, then lets you approve or skip each one. Approved items are delegated to specialist agents for fixing. After fixes, tests run, changes are committed, and replies are posted to GitHub.
+
+---
+
+## Auto-Fix CodeRabbit Comments in a Loop
+
+Automatically addresses CodeRabbit review comments and polls until CodeRabbit approves.
+
+```text
+/review-handler --autorabbit
+```
+
+All CodeRabbit comments are auto-approved and fixed without prompting. Human and Qodo comments still require your input. After fixing, the loop polls for new CodeRabbit comments every 5 minutes and processes them automatically. The loop exits only when CodeRabbit approves or you explicitly stop it.
+
+> **Tip:** This runs as a background polling loop — you can continue working in the same session while it waits.
+
+---
+
+## Review Local Changes Before Pushing
+
+Reviews uncommitted changes or a branch diff without creating a PR.
+
+Review uncommitted changes (staged + unstaged):
+
+```text
+/review-local
+```
+
+Review all changes compared to a branch:
+
+```text
+/review-local main
+```
+
+Three review agents analyze the diff in parallel, just like `/pr-review`, but against local changes. Findings are grouped by severity: critical, warnings, and suggestions.
+
+---
+
+## Handle Multiple PRs Simultaneously
+
+Uses git worktrees to work on multiple PRs without branch conflicts.
+
+```bash
+# Create isolated worktrees for each PR
+git worktree add .worktrees/pr-42 origin/fix/issue-42
+git worktree add .worktrees/pr-43 origin/feat/issue-43
+
+# Run review-handler in each worktree
+# (delegate as subagents with cwd set to each worktree)
+
+# Clean up when done
+git worktree remove .worktrees/pr-42
+git worktree remove .worktrees/pr-43
+```
+
+Never switch branches in the main worktree when working on multiple PRs — it corrupts parallel agent work. Each worktree gets its own isolated directory. The `.worktrees/` directory is gitignored by default.
+
+> **Warning:** Branch switching in the main worktree while agents are running causes agents to see the wrong branch, producing wrong diffs and wrong commits.
+
+---
+
+## Save a Memory for Future Sessions
+
+Persists a fact, preference, or lesson that pi will remember across sessions.
+
+```text
+/remember always use uv run, never python directly
+```
+
+This saves a **pinned** memory that dreaming will never auto-remove. Pinned memories are user-controlled and permanent. Available categories: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`.
+
+For programmatic use:
+
+```bash
+uv run myk-pi-tools memory add -c preference -s "always use uv run, never python directly" --pinned
+```
+
+---
+
+## Run Memory Consolidation Manually
+
+Triggers background memory dreaming — extracts lessons from the current session and cleans up stale entries.
+
+```text
+/dream
+```
+
+Dreaming runs as a fire-and-forget background agent. It reads the session, extracts lessons, preferences, mistakes, and patterns, deduplicates entries, removes stale items, and keeps the memory file under 50 entries. Pinned memories are never touched.
+
+- Dreaming also runs automatically every 3 hours (configurable via `PI_DREAM_INTERVAL_HOURS`)
+- Toggle auto-dreaming with `/dream-auto on` or `/dream-auto off`
+
+> **Tip:** Run `/dream` before ending a long session to capture what you learned.
+
+---
+
+## Create a GitHub Release
+
+Generates a changelog from conventional commits and creates a release.
+
+Preview without creating:
+
+```text
+/release --dry-run
+```
+
+Create a release (auto-detects version bump from commits):
+
+```text
+/release
+```
+
+Create with an explicit version:
+
+```text
+/release 2.1.0
+```
+
+Create a prerelease or draft:
+
+```text
+/release --prerelease
+/release --draft
+```
+
+The command validates branch state, detects version files, categorizes commits into a changelog, bumps version files, creates a PR for the version bump, and publishes the release.
+
+---
+
+## Schedule a Recurring Task
+
+Sets up a cron-like scheduled task that runs within the pi session.
+
+```text
+/cron add "every 30m" /review-handler --autorabbit
+```
+
+```text
+/cron add "daily at 09:00" /dream
+```
+
+Manage scheduled tasks:
+
+```text
+/cron list
+/cron remove <id>
+```
+
+Cron tasks run as async agents within the current pi process. They survive `/reload` but stop when pi exits. Tasks can be slash commands or free-text prompts.
+
+---
+
+## Run a Prompt via an External AI Agent
+
+Delegates a prompt to Codex, Cursor, Gemini, or other ACP-compatible agents via acpx.
+
+```text
+/acpx-prompt codex review the error handling in src/api.py
+```
+
+With a specific model:
+
+```text
+/acpx-prompt codex:o3-pro review the architecture
+```
+
+Send to multiple agents in parallel:
+
+```text
+/acpx-prompt cursor,gemini analyze the test coverage gaps
+```
+
+The external agent runs in read-only mode by default. Use `--fix` to allow file modifications, or `--peer` for an AI-to-AI debate loop.
+
+> **Note:** Requires `acpx` (`npm install -g acpx@latest`) and the underlying agent CLI to be installed.
+
+---
+
+## Fix Code with an External Agent
+
+Lets an external AI agent modify files directly, then shows you the diff.
+
+```text
+/acpx-prompt codex --fix fix the failing tests in tests/test_api.py
+```
+
+The agent runs with full write permissions. After it completes, pi shows a diff summary of all changes and suggests verification steps. A checkpoint commit is recommended before running fix mode.
+
+---
+
+## Peer Review with External AI Agents
+
+Runs an AI-to-AI debate loop where external agents review and Claude fixes until convergence.
+
+```text
+/acpx-prompt gemini --peer review the authentication middleware
+```
+
+Multi-agent peer review:
+
+```text
+/acpx-prompt cursor,codex --peer review the database migration safety
+```
+
+Claude and the external agent(s) go back and forth: the agent reviews, Claude fixes or pushes back with technical reasoning, the agent re-reviews. The loop exits only when all peer agents confirm no remaining issues. A summary table shows addressed findings, agreements reached after debate, and any unresolved disagreements.
+
+---
+
+## Check Background Agent Status
+
+Shows the status of all running async agents.
+
+```text
+/async-status
+```
+
+Lists all background agents with their current state: running, completed, or failed. Results from completed agents are delivered to the session automatically.
+
+---
+
+## Handle CodeRabbit Rate Limits
+
+Waits for the rate limit to expire and re-triggers the CodeRabbit review automatically.
+
+```text
+/coderabbit-rate-limit
+```
+
+Or for a specific PR:
+
+```text
+/coderabbit-rate-limit 42
+```
+
+Checks whether the PR is rate-limited, waits for the cooldown (plus a 30-second buffer), posts `@coderabbitai review` to re-trigger, and polls until the review starts.
+
+---
+
+## View Session Status
+
+Gets a unified snapshot of the current session.
+
+```text
+/status
+```
+
+Shows git status, active async agents, cron tasks, and session metadata in one view.
+
+---
+
+## Quick Reference: Workflow Cheat Sheet
+
+| Task | Command |
+|------|---------|
+| Full feature (scout + plan + implement) | `/implement <task>` |
+| Implement with review loop | `/implement-and-review <task>` |
+| Plan without implementing | `/scout-and-plan <task>` |
+| Review a GitHub PR | `/pr-review [number\|url]` |
+| Review local changes | `/review-local [branch]` |
+| Fix all review comments | `/review-handler` |
+| Auto-fix CodeRabbit loop | `/review-handler --autorabbit` |
+| Create a release | `/release [version]` |
+| Save a memory | `/remember <what>` |
+| Run memory consolidation | `/dream` |
+| Schedule a task | `/cron add "<schedule>" <command>` |
+| External agent prompt | `/acpx-prompt <agent> <prompt>` |
+| External agent fix | `/acpx-prompt <agent> --fix <prompt>` |
+| External agent peer review | `/acpx-prompt <agent> --peer <prompt>` |
+| Check async agents | `/async-status` |
+| Session overview | `/status` |
+
+For configuration and environment variables, see Configuration Reference. For the dashboard and diff viewer, see Dashboard and Monitoring.
+
+---
+
+Source: cli-reference.md
+
+# CLI Command Reference
+
+The `myk-pi-tools` CLI provides subcommands for PR review management, GitHub releases, project memory, CodeRabbit integration, and review database analytics.
+
+```
+myk-pi-tools [OPTIONS] COMMAND [SUBCOMMAND] [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--version` | Show the CLI version and exit |
+| `--help` | Show help message and exit |
+
+> **Note:** Most commands that interact with GitHub require the GitHub CLI (`gh`) to be installed and authenticated. See Installation & Setup for prerequisites.
+
+---
+
+## db
+
+Review database query commands. All subcommands read from a SQLite database stored at `<git-root>/.pi/data/reviews.db`.
+
+### db stats
+
+Get review statistics grouped by source or reviewer.
+
+```
+myk-pi-tools db stats [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--by-source` | flag | `false` | Group statistics by source (human/qodo/coderabbit) |
+| `--by-reviewer` | flag | `false` | Group statistics by reviewer author |
+| `--json` | flag | `false` | Output as JSON instead of formatted table |
+| `--db-path` | string | auto-detect | Path to database file |
+
+> **Note:** If neither `--by-source` nor `--by-reviewer` is specified, defaults to `--by-source`. Specifying both is an error.
+
+```bash
+# Stats by source (default)
+myk-pi-tools db stats
+
+# Stats by reviewer
+myk-pi-tools db stats --by-reviewer
+
+# JSON output
+myk-pi-tools db stats --by-source --json
+```
+
+### db patterns
+
+Find recurring dismissed patterns in review comments. Identifies comments that appear multiple times with similar content, suggesting candidates for auto-skip rules.
+
+```
+myk-pi-tools db patterns [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--min` | integer | `2` | Minimum occurrences to report |
+| `--json` | flag | `false` | Output as JSON |
+| `--db-path` | string | auto-detect | Path to database file |
+
+```bash
+# Find patterns with at least 2 occurrences (default)
+myk-pi-tools db patterns
+
+# Find patterns with at least 3 occurrences
+myk-pi-tools db patterns --min 3
+
+# JSON output
+myk-pi-tools db patterns --json
+```
+
+### db dismissed
+
+Get all dismissed (not_addressed or skipped) comments for a specific repository.
+
+```
+myk-pi-tools db dismissed --owner OWNER --repo REPO [OPTIONS]
+```
+
+| Option | Type | Default | Required | Description |
+|--------|------|---------|----------|-------------|
+| `--owner` | string | — | yes | Repository owner (org or user) |
+| `--repo` | string | — | yes | Repository name |
+| `--json` | flag | `false` | no | Output as JSON |
+| `--db-path` | string | auto-detect | no | Path to database file |
+
+```bash
+# Get dismissed comments
+myk-pi-tools db dismissed --owner myk-org --repo pi-config
+
+# JSON output
+myk-pi-tools db dismissed --owner myk-org --repo pi-config --json
+```
+
+### db query
+
+Run a raw SQL query on the review database. Only `SELECT` statements are allowed.
+
+```
+myk-pi-tools db query SQL [OPTIONS]
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `SQL` | string | yes | SQL query string (SELECT only) |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--json` | flag | `false` | Output as JSON |
+| `--db-path` | string | auto-detect | Path to database file |
+
+```bash
+# Get all skipped comments
+myk-pi-tools db query "SELECT * FROM comments WHERE status = 'skipped'"
+
+# Count by status
+myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
+
+# JSON output
+myk-pi-tools db query "SELECT * FROM comments LIMIT 5" --json
+```
+
+### db find-similar
+
+Find a previously dismissed comment matching path and body similarity. Reads JSON input from stdin.
+
+```
+myk-pi-tools db find-similar --owner OWNER --repo REPO [OPTIONS] < input.json
+```
+
+| Option | Type | Default | Required | Description |
+|--------|------|---------|----------|-------------|
+| `--owner` | string | — | yes | Repository owner (org or user) |
+| `--repo` | string | — | yes | Repository name |
+| `--threshold` | float | `0.6` | no | Minimum similarity threshold (0.0–1.0) |
+| `--json` | flag | `false` | no | Output as JSON |
+| `--db-path` | string | auto-detect | no | Path to database file |
+
+**Stdin input format:**
+
+```json
+{"path": "foo.py", "body": "Add error handling..."}
+```
+
+```bash
+echo '{"path": "foo.py", "body": "Add error handling..."}' | \
+    myk-pi-tools db find-similar --owner myk-org --repo pi-config --json
+```
+
+---
+
+## memory
+
+Project memory commands for persistent per-repo learning. The memory file is a Markdown file stored at `<git-root>/.pi/memory/memory.md` by default.
+
+```
+myk-pi-tools memory [OPTIONS] SUBCOMMAND
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--file-path` | string | auto-detect | Path to memory file |
+
+### memory add
+
+Add a memory entry to the Learned or Pinned section.
+
+```
+myk-pi-tools memory add -c CATEGORY -s SUMMARY [OPTIONS]
+```
+
+| Option | Type | Default | Required | Description |
+|--------|------|---------|----------|-------------|
+| `-c`, `--category` | choice | — | yes | Memory category: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference` |
+| `-s`, `--summary` | string | — | yes | Short one-line description |
+| `--pinned` | flag | `false` | no | Add to Pinned section (protected from auto-removal) |
+
+```bash
+# Add a learned memory
+myk-pi-tools memory add -c lesson -s "buildah chown -R skips target dir"
+
+# Add a pinned memory (never auto-removed)
+myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
+```
+
+### memory show
+
+Display the memory file contents.
+
+```
+myk-pi-tools memory show
+```
+
+### memory migrate
+
+One-time migration from SQLite database to memory.md. Reads all memories from `memories.db`, writes them to `memory.md`, then deletes the database.
+
+```
+myk-pi-tools memory migrate
+```
+
+### memory path
+
+Print the resolved memory file path.
+
+```
+myk-pi-tools memory path
+```
+
+---
+
+## pr
+
+PR review and management commands.
+
+### pr diff
+
+Fetch PR diff and metadata as JSON.
+
+```
+myk-pi-tools pr diff [ARGS]
+```
+
+Accepts three input forms:
+
+| Form | Example |
+|------|---------|
+| Owner/repo + PR number | `pr diff myk-org/pi-config 42` |
+| GitHub URL | `pr diff https://github.com/myk-org/pi-config/pull/42` |
+| PR number (from git context) | `pr diff 42` |
+
+**Output:** JSON object with `metadata`, `diff`, and `files` fields.
+
+```json
+{
+  "metadata": {
+    "owner": "myk-org",
+    "repo": "pi-config",
+    "pr_number": "42",
+    "head_sha": "abc123...",
+    "base_ref": "main",
+    "title": "Add feature X",
+    "state": "open"
+  },
+  "diff": "...",
+  "files": [
+    {
+      "path": "src/main.py",
+      "status": "modified",
+      "additions": 10,
+      "deletions": 3,
+      "patch": "..."
+    }
+  ]
+}
+```
+
+```bash
+myk-pi-tools pr diff myk-org/pi-config 42
+```
+
+### pr claude-md
+
+Fetch CLAUDE.md and AGENTS.md content from a PR's repository. Checks both root and config directories (`.claude/`, `.agents/`) locally and via the GitHub API.
+
+```
+myk-pi-tools pr claude-md [ARGS]
+```
+
+Accepts the same input forms as `pr diff`.
+
+**Searched locations (in order):**
+1. `./CLAUDE.md`
+2. `./.claude/CLAUDE.md`
+3. `./AGENTS.md`
+4. `./.agents/AGENTS.md`
+5. Remote equivalents via GitHub API
+
+```bash
+myk-pi-tools pr claude-md myk-org/pi-config 42
+```
+
+### pr post-comment
+
+Post inline comments to a PR as a single GitHub review with a summary table.
+
+```
+myk-pi-tools pr post-comment OWNER_REPO PR_NUMBER COMMIT_SHA JSON_FILE
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
+| `PR_NUMBER` | string | yes | Pull request number |
+| `COMMIT_SHA` | string | yes | Full 40-character SHA of the commit to comment on |
+| `JSON_FILE` | string | yes | Path to JSON file, or `-` for stdin |
+
+**JSON input format:**
+
+```json
+[
+  {
+    "path": "src/main.py",
+    "line": 42,
+    "body": "### [CRITICAL] SQL Injection\n\nDescription..."
+  },
+  {
+    "path": "src/utils.py",
+    "line": 15,
+    "body": "### [WARNING] Missing error handling\n\nDescription..."
+  }
+]
+```
+
+**Severity markers** (parsed from comment body):
+
+| Marker | Meaning |
+|--------|---------|
+| `### [CRITICAL] Title` | Critical security or functionality issues |
+| `### [WARNING] Title` | Important but non-critical issues |
+| `### [SUGGESTION] Title` | Code improvements (default if no marker) |
+
+**Output:** JSON with `status`, `comment_count`, `posted`, `failed`, and optionally `error`.
+
+```bash
+myk-pi-tools pr post-comment myk-org/pi-config 42 abc123def456... comments.json
+
+# From stdin
+cat comments.json | myk-pi-tools pr post-comment myk-org/pi-config 42 abc123def456... -
+```
+
+> **Warning:** Only lines that were modified or added in the PR diff can receive inline comments. The commit SHA must be the HEAD of the PR.
+
+---
+
+## release
+
+GitHub release commands for version management and release creation.
+
+### release info
+
+Fetch release validation info and commits since the last tag. Auto-detects repository from git context.
+
+```
+myk-pi-tools release info [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--repo` | string | auto-detect | Repository in `owner/repo` format |
+| `--target` | string | auto-detect | Target branch for release |
+| `--tag-match` | string | auto-detect | Glob pattern to filter tags (e.g., `v2.10.*`) |
+
+**Validations performed:**
+- On target branch
+- Clean working tree
+- Synced with remote (no unpushed or behind commits)
+
+**Output:** JSON with `metadata`, `validations`, `last_tag`, `all_tags`, `commits`, `commit_count`, `is_first_release`, `target_branch`, and `tag_match`.
+
+> **Tip:** On a version branch like `v2.10`, the command auto-detects `--target v2.10` and `--tag-match v2.10.*`.
+
+**Commit filtering:** The following are excluded from the commit list:
+- Merge commits
+- CodeRabbit-related commits
+- Checkpoint and version bump chores
+- Doc regeneration and pre-commit autoupdates
+
+```bash
+# Auto-detect everything from git context
+myk-pi-tools release info
+
+# Explicit repository and target
+myk-pi-tools release info --repo myk-org/pi-config --target main
+
+# Filter tags for a specific version line
+myk-pi-tools release info --tag-match "v2.10.*"
+```
+
+### release create
+
+Create a GitHub release.
+
+```
+myk-pi-tools release create OWNER_REPO TAG CHANGELOG_FILE [OPTIONS]
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
+| `TAG` | string | yes | Release tag (e.g., `v1.3.0`) |
+| `CHANGELOG_FILE` | string | yes | Path to file containing release notes |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--prerelease` | flag | `false` | Mark as pre-release |
+| `--draft` | flag | `false` | Create as draft release |
+| `--target` | string | — | Target branch for the release |
+| `--title` | string | tag name | Release title |
+
+**Output:** JSON with `status`, `tag`, `url`, `prerelease`, and `draft` on success; `status` and `error` on failure.
+
+> **Note:** A warning is emitted to stderr if the tag does not follow semantic versioning format (`vX.Y.Z`).
+
+```bash
+myk-pi-tools release create myk-org/pi-config v1.3.0 changelog.md
+
+myk-pi-tools release create myk-org/pi-config v2.0.0-rc1 notes.md \
+    --prerelease --target release/v2
+```
+
+### release detect-versions
+
+Detect version files in the current repository across multiple ecosystems.
+
+```
+myk-pi-tools release detect-versions
+```
+
+**Detected file types:**
+
+| File | Ecosystem | Type key |
+|------|-----------|----------|
+| `pyproject.toml` | Python | `pyproject` |
+| `package.json` | Node.js | `package_json` |
+| `setup.cfg` | Python | `setup_cfg` |
+| `Cargo.toml` | Rust | `cargo` |
+| `build.gradle` / `build.gradle.kts` | JVM | `gradle` |
+| `__init__.py` / `version.py` with `__version__` | Python | `python_version` |
+
+**Output:**
+
+```json
+{
+  "version_files": [
+    {"path": "pyproject.toml", "current_version": "2.2.0", "type": "pyproject"}
+  ],
+  "count": 1
+}
+```
+
+```bash
+myk-pi-tools release detect-versions
+```
+
+### release bump-version
+
+Update version strings in detected version files. Uses atomic writes to prevent file corruption.
+
+```
+myk-pi-tools release bump-version VERSION [OPTIONS]
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `VERSION` | string | yes | New version string (e.g., `1.2.0`) |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--files` | string (multiple) | all detected | Specific files to update (can be repeated) |
+
+> **Warning:** The version must not start with `v`. Use `1.2.0`, not `v1.2.0`.
+
+**Output:** JSON with `status`, `version`, `updated` (list of `{path, old_version, new_version}`), and `skipped` (list of `{path, reason}`).
+
+```bash
+# Update all detected version files
+myk-pi-tools release bump-version 1.3.0
+
+# Update specific files only
+myk-pi-tools release bump-version 1.3.0 --files pyproject.toml --files package.json
+```
+
+---
+
+## reviews
+
+Review handling commands for fetching, responding to, and storing PR review threads.
+
+### reviews fetch
+
+Fetch all unresolved review threads from the current branch's PR. Categorizes comments by source (human, qodo, coderabbit) and classifies priority.
+
+```
+myk-pi-tools reviews fetch [REVIEW_URL]
+```
+
+| Argument | Type | Default | Required | Description |
+|----------|------|---------|----------|-------------|
+| `REVIEW_URL` | string | `""` | no | Specific review URL for context (e.g., `#pullrequestreview-XXX` or `#discussion_rXXX`) |
+
+**Output:** Saved to `/tmp/pi-work/pr-<number>-reviews.json`.
+
+```bash
+# Fetch all unresolved reviews
+myk-pi-tools reviews fetch
+
+# Fetch with a specific review URL context
+myk-pi-tools reviews fetch "#pullrequestreview-12345"
+```
+
+### reviews poll
+
+Poll for reviews with automatic CodeRabbit rate limit handling. Combines rate limit check, trigger, and fetch into a single atomic operation. Loops internally until actionable comments are found.
+
+```
+myk-pi-tools reviews poll [REVIEW_URL]
+```
+
+| Argument | Type | Default | Required | Description |
+|----------|------|---------|----------|-------------|
+| `REVIEW_URL` | string | `""` | no | Specific review URL for context |
+
+**Output:** Same format as `reviews fetch` (saved to `/tmp/pi-work/pr-<number>-reviews.json`).
+
+```bash
+myk-pi-tools reviews poll
+```
+
+### reviews post
+
+Post replies to review threads and resolve them based on status.
+
+```
+myk-pi-tools reviews post JSON_PATH
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `JSON_PATH` | string | yes | Path to JSON file created by `reviews fetch` (processed by AI handler) |
+
+Updates the JSON file with `posted_at` timestamps after posting.
+
+```bash
+myk-pi-tools reviews post /tmp/pi-work/pr-42-reviews.json
+```
+
+### reviews pending-fetch
+
+Fetch the authenticated user's pending (unpublished) review comments from a PR.
+
+```
+myk-pi-tools reviews pending-fetch PR_URL
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `PR_URL` | string | yes | GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
+
+**Output:** Saved to `/tmp/pi-work/pr-<number>-pending-review.json`.
+
+```bash
+myk-pi-tools reviews pending-fetch https://github.com/myk-org/pi-config/pull/42
+```
+
+### reviews pending-update
+
+Update pending review comment bodies and optionally submit the review.
+
+```
+myk-pi-tools reviews pending-update JSON_PATH [OPTIONS]
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `JSON_PATH` | string | yes | Path to JSON file created by `reviews pending-fetch` |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--submit` | flag | `false` | Submit the review after updating comments |
+
+```bash
+# Update comments only
+myk-pi-tools reviews pending-update /tmp/pi-work/pr-42-pending-review.json
+
+# Update and submit
+myk-pi-tools reviews pending-update /tmp/pi-work/pr-42-pending-review.json --submit
+```
+
+### reviews store
+
+Store a completed review to the SQLite database for analytics. Deletes the JSON file after successful storage.
+
+```
+myk-pi-tools reviews store JSON_PATH
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `JSON_PATH` | string | yes | Path to the completed review JSON file |
+
+**Database location:** `<git-root>/.pi/data/reviews.db`
+
+```bash
+myk-pi-tools reviews store /tmp/pi-work/pr-42-reviews.json
+```
+
+> **Tip:** Use `db stats` and `db patterns` to analyze data stored by this command. See Review Database & Analytics for details.
+
+---
+
+## coderabbit
+
+Commands for managing CodeRabbit automated reviews.
+
+### coderabbit check
+
+Check if CodeRabbit is rate limited on a PR.
+
+```
+myk-pi-tools coderabbit check OWNER_REPO PR_NUMBER
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
+| `PR_NUMBER` | integer | yes | Pull request number |
+
+**Output:** JSON with rate limit status.
+
+```json
+{"rate_limited": false}
+```
+
+```json
+{"rate_limited": true, "wait_seconds": 90, "comment_id": 12345}
+```
+
+```bash
+myk-pi-tools coderabbit check myk-org/pi-config 42
+```
+
+### coderabbit trigger
+
+Wait an optional duration, then trigger a CodeRabbit review on a PR by posting `@coderabbitai review`. Polls until the review starts (max 10 minutes, 60-second intervals).
+
+```
+myk-pi-tools coderabbit trigger OWNER_REPO PR_NUMBER [OPTIONS]
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
+| `PR_NUMBER` | integer | yes | Pull request number |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--wait` | integer | `0` | Seconds to wait before posting the review trigger |
+
+```bash
+# Trigger immediately
+myk-pi-tools coderabbit trigger myk-org/pi-config 42
+
+# Wait 90 seconds then trigger
+myk-pi-tools coderabbit trigger myk-org/pi-config 42 --wait 90
+```
+
+---
+
+## Exit Codes
+
+All commands use the following exit code conventions:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Error (invalid input, API failure, missing dependencies) |
+
+Error details are printed to stderr. JSON output goes to stdout.
+
+---
+
+## Environment and Dependencies
+
+| Dependency | Required for |
+|------------|-------------|
+| `gh` (GitHub CLI) | All commands that interact with GitHub (pr, release, reviews, coderabbit) |
+| `git` | Repository detection, branch info, commit history, release validation |
+
+See Installation & Setup for installation instructions.
+
+---
+
+Source: slash-commands.md
+
+# Slash Commands Reference
+
+## Overview
+
+Pi provides two types of slash commands:
+
+- **Prompt template commands** — defined in the `prompts/` directory, executed by the orchestrator, and may delegate to specialist agents.
+- **Extension commands** — defined in TypeScript under `extensions/orchestrator/`, executed directly without an AI roundtrip (unless noted).
+
+All commands support Tab completion for arguments. Completions are cached for 5 minutes.
+
+---
+
+## Implementation Commands
+
+### `/implement`
+
+Runs a scout, planner, and worker agent chain to explore the codebase, plan changes, and implement them.
+
+```
+/implement <task>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task` | string | Yes | Description of the task to implement |
+
+The command executes three agents in sequence:
+
+1. **scout** — explores the codebase and returns a summary of file locations, key functions, and dependencies.
+2. **planner** — creates a detailed implementation plan: files to modify, step-by-step changes, edge cases, testing approach.
+3. **worker** — implements the plan, making all code changes following project conventions.
+
+```
+/implement add pagination to the /users API endpoint
+```
+
+---
+
+### `/scout-and-plan`
+
+Runs the scout and planner agents without implementing. Useful for reviewing a plan before committing to changes.
+
+```
+/scout-and-plan <task>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task` | string | Yes | Description of the task to plan |
+
+The command executes two agents in sequence:
+
+1. **scout** — explores the codebase and returns a summary of relevant code.
+2. **planner** — creates a detailed implementation plan with files, steps, edge cases, and testing approach.
+
+```
+/scout-and-plan migrate the auth middleware to use JWT tokens
+```
+
+---
+
+### `/implement-and-review`
+
+Implements a task, runs three parallel code reviewers, then fixes all issues found.
+
+```
+/implement-and-review <task>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task` | string | Yes | Description of the task to implement and review |
+
+The command executes agents in this sequence:
+
+1. **worker** — implements the task.
+2. Three review agents run **in parallel**:
+   - **code-reviewer-quality** — code quality review
+   - **code-reviewer-guidelines** — guideline adherence review
+   - **code-reviewer-security** — bugs and security review
+3. **worker** — fixes all issues found by reviewers and reports what was fixed.
+
+```
+/implement-and-review add rate limiting to the API gateway
+```
+
+---
+
+## Code Review Commands
+
+### `/pr-review`
+
+Reviews a GitHub PR using three parallel review agents and posts inline comments.
+
+```
+/pr-review [PR number or URL]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `PR number or URL` | string | No | Auto-detect from current branch | PR number, full URL, or omit for auto-detection |
+
+**Tab completion:** Open PR numbers from the current repository.
+
+**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
+
+**Workflow phases:**
+
+1. **PR Detection** — resolves the PR from the argument or current branch via `gh pr view`.
+2. **Data Fetching** — fetches the PR diff and project AGENTS.md using `myk-pi-tools pr diff` and `myk-pi-tools pr claude-md`.
+3. **Code Analysis** — delegates to three review agents in parallel (quality, guidelines, security).
+4. **User Selection** — presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION). The user selects which to post.
+5. **Post Comments** — posts selected findings as inline PR comments via `myk-pi-tools pr post-comment`.
+6. **Summary** — displays final counts and links.
+
+```
+/pr-review
+/pr-review 123
+/pr-review https://github.com/owner/repo/pull/123
+```
+
+---
+
+### `/review-local`
+
+Reviews uncommitted changes or branch differences using three parallel review agents.
+
+```
+/review-local [base branch]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `base branch` | string | No | `HEAD` (uncommitted changes) | Branch name to compare against |
+
+**Tab completion:** Git branch names (local and remote).
+
+When no argument is provided, reviews all uncommitted changes (staged + unstaged) via `git diff HEAD`. When a branch is specified, compares the current branch against it via `git diff <branch>...HEAD`.
+
+Three review agents run in parallel, analyzing for code quality, guidelines adherence, and security. Results are merged, deduplicated, and presented grouped by severity.
+
+```
+/review-local
+/review-local main
+/review-local feature/auth-refactor
+```
+
+---
+
+### `/review-handler`
+
+Processes all review sources (human, Qodo, CodeRabbit) from the current branch's PR and applies fixes.
+
+```
+/review-handler [--autorabbit] [URL]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `--autorabbit` | flag | No | Off | Auto-approve and fix CodeRabbit comments in a polling loop |
+| `URL` | string | No | Auto-detect from current branch | Specific review URL |
+
+**Tab completion:** `--autorabbit` flag.
+
+**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
+
+> **Warning:** `--autorabbit` is a command-level flag. It is never passed to `myk-pi-tools` CLI commands.
+
+**Standard workflow:**
+
+1. Fetches reviews from all sources via `myk-pi-tools reviews fetch`.
+2. Presents items in a table grouped by source, with global numbering and priority sorting.
+3. Collects user decisions (yes/no/all/skip per source).
+4. Delegates fixes to appropriate specialist agents.
+5. Runs tests (all must pass before proceeding).
+6. Commits and pushes changes.
+7. Posts replies to GitHub and stores results in the database.
+
+**Autorabbit mode (`--autorabbit`):**
+
+Skips the initial fetch/review cycle and enters a polling loop. CodeRabbit comments are auto-approved without user interaction. The loop runs until CodeRabbit approves the PR or the user explicitly stops it.
+
+```
+/review-handler
+/review-handler --autorabbit
+/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456
+```
+
+---
+
+### `/refine-review`
+
+Refines pending GitHub PR review comments with AI before submitting.
+
+```
+/refine-review <PR URL>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `PR URL` | string | Yes | Full GitHub PR URL |
+
+**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
+
+**Workflow:**
+
+1. Fetches pending review comments via `myk-pi-tools reviews pending-fetch`.
+2. Refines each comment for clarity, conciseness, and actionability.
+3. Presents original and refined versions side-by-side.
+4. User selects which refinements to accept (all, specific numbers, keep originals, or custom text).
+5. User chooses a review action: Comment, Approve, Request Changes, or keep pending.
+6. Submits updates via `myk-pi-tools reviews pending-update`.
+
+```
+/refine-review https://github.com/owner/repo/pull/123
+```
+
+---
+
+## Release & Integration Commands
+
+### `/release`
+
+Creates a GitHub release with automatic changelog generation and optional version file bumping.
+
+```
+/release [version] [flags]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `version` | string | No | Auto-detected from commits | Explicit version number (e.g., `1.17.1`) |
+| `--dry-run` | flag | No | Off | Preview the release without creating it |
+| `--prerelease` | flag | No | Off | Mark as prerelease |
+| `--draft` | flag | No | Off | Create as draft release |
+| `--target <branch>` | flag | No | Current branch | Target branch for the release |
+| `--tag-match <pattern>` | flag | No | None | Filter tags to a specific pattern |
+
+**Tab completion:** Recent git tags sorted by version.
+
+**Prerequisites:** `myk-pi-tools` must be installed.
+
+**Workflow:**
+
+1. **Validation** — checks branch status, clean working tree, and remote sync via `myk-pi-tools release info`.
+2. **Version Detection** — scans for version files via `myk-pi-tools release detect-versions`.
+3. **Changelog** — categorizes commits by conventional commit type and generates formatted changelog with emoji section headers.
+4. **User Approval** — presents proposed version, version files to update, and changelog preview. Skipped when an explicit version is provided.
+5. **Version Bump** — updates version files via `myk-pi-tools release bump-version`, creates a PR, and merges it.
+6. **Create Release** — creates the GitHub release via `myk-pi-tools release create`.
+
+**Version bump logic:**
+
+| Commit Type | Bump |
+|-------------|------|
+| Breaking changes | MAJOR |
+| `feat:` | MINOR |
+| `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:` | PATCH |
+
+```
+/release
+/release 2.0.0
+/release --dry-run
+/release --prerelease --draft
+```
+
+---
+
+### `/coderabbit-rate-limit`
+
+Handles CodeRabbit rate limits by waiting for the cooldown period and re-triggering the review.
+
+```
+/coderabbit-rate-limit [PR number or URL]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `PR number or URL` | string | No | Auto-detect from current branch | PR number or full URL |
+
+**Tab completion:** Open PR numbers from the current repository.
+
+**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
+
+**Workflow:**
+
+1. Detects the PR from arguments or current branch.
+2. Checks rate limit status via `myk-pi-tools coderabbit check`.
+3. If rate-limited, waits for the cooldown (plus 30-second buffer) and triggers `@coderabbitai review`.
+4. Polls until the review starts (max 10 minutes).
+
+```
+/coderabbit-rate-limit
+/coderabbit-rate-limit 123
+/coderabbit-rate-limit https://github.com/owner/repo/pull/123
+```
+
+---
+
+### `/query-db`
+
+Queries the reviews database for analytics and insights about PR review history.
+
+```
+/query-db <command>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | string | Yes | Query subcommand or raw SQL SELECT |
+
+**Prerequisites:** `myk-pi-tools` must be installed.
+
+**Available subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `stats --by-source` | Addressed rate by source (human vs AI) |
+| `stats --by-reviewer` | Statistics by individual reviewer |
+| `patterns --min <N>` | Find recurring dismissed suggestions (minimum N occurrences) |
+| `dismissed --owner <X> --repo <Y>` | All dismissed comments for a specific repo |
+| `query "<SQL>"` | Custom SELECT query against the database |
+| `find-similar` | Find comments similar to previously dismissed ones (JSON via stdin) |
+
+> **Note:** Only SELECT statements and CTEs are allowed. Modifying queries (INSERT, UPDATE, DELETE, DROP) are blocked.
+
+The database is located at `<project-root>/.claude/data/reviews.db`.
+
+```
+/query-db stats --by-source
+/query-db stats --by-reviewer
+/query-db patterns --min 2
+/query-db dismissed --owner myorg --repo myrepo
+/query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
+```
+
+---
+
+## External Agent Commands
+
+### `/acpx-prompt`
+
+Runs a prompt through [acpx](https://github.com/openclaw/acpx) to any ACP-compatible coding agent.
+
+```
+/acpx-prompt [agent[:model]] [--fix|--peer] <prompt>
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `agent` | string | No | Last saved agent from `.pi/acpx-config.json` | Target agent name |
+| `:model` | string | No | Agent default | Model override (e.g., `codex:o3-pro`) |
+| `--fix` | flag | No | Off | Grant the agent file write permissions |
+| `--peer` | flag | No | Off | Run an AI-to-AI peer review loop |
+| `prompt` | string | Yes | — | The prompt to send to the agent |
+
+**Tab completion:** Agent names (`pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `iflow`, `kilocode`, `kimi`, `kiro`, `opencode`, `qwen`) and flags (`--fix`, `--peer`).
+
+**Prerequisites:** `acpx` must be installed (`npm install -g acpx@latest`). The underlying agent CLI must also be installed separately.
+
+**Supported agents:**
+
+| Agent | Wraps |
+|-------|-------|
+| `pi` | Pi Coding Agent |
+| `openclaw` | OpenClaw ACP bridge |
+| `codex` | Codex CLI (OpenAI) |
+| `claude` | Claude Code |
+| `gemini` | Gemini CLI |
+| `cursor` | Cursor CLI |
+| `copilot` | GitHub Copilot CLI |
+| `droid` | Factory Droid |
+| `iflow` | iFlow CLI |
+| `kilocode` | Kilocode |
+| `kimi` | Kimi CLI |
+| `kiro` | Kiro CLI |
+| `opencode` | OpenCode |
+| `qwen` | Qwen Code |
+
+**Modes:**
+
+| Mode | Flag | Permissions |
+|------|------|-------------|
+| Default (read-only) | none | Agent can read files only |
+| Fix | `--fix` | Agent can read and write files |
+| Peer review | `--peer` | AI-to-AI debate loop until convergence |
+
+> **Note:** `--fix` and `--peer` are mutually exclusive. Multiple agents with `--fix` is not supported.
+
+**Peer review mode** runs a multi-round debate loop between Claude and the peer agent(s). Claude fixes code based on findings and sends changes back for re-review. The loop continues until all peer agents confirm no remaining issues. With multiple peers, all must agree independently.
+
+**Configuration persistence:** The last-used agent spec is saved to `.pi/acpx-config.json` after successful runs. Subsequent invocations without an agent name use the saved value.
+
+```
+/acpx-prompt codex review this function
+/acpx-prompt cursor:gpt-4o --fix fix the failing tests
+/acpx-prompt cursor,codex --peer review the architecture
+/acpx-prompt --peer review this code
+```
+
+---
+
+## Memory Commands
+
+### `/dream`
+
+Runs memory consolidation as a background async agent. Analyzes the current session and maintains the `memory.md` file.
+
+```
+/dream
+```
+
+This command takes no arguments. It runs as a fire-and-forget background agent and does not block the session.
+
+**Operations performed:**
+
+1. Reads the memory file at `<project>/.pi/memory/memory.md`.
+2. Extracts learnable items from the current session (lessons, preferences, mistakes, completed work, patterns).
+3. Deduplicates and removes stale entries from the Learned section.
+4. Keeps the file under 50 entries.
+5. Never modifies entries in the Pinned section.
+
+```
+/dream
+```
+
+---
+
+### `/remember`
+
+Saves a pinned project memory for future sessions.
+
+```
+/remember <what to remember>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `what` | string | Yes | The information to save as a pinned memory |
+
+Automatically categorizes the memory as one of: `lesson`, `decision`, `mistake`, `pattern`, `done`, or `preference`. Saved via `myk-pi-tools memory add --pinned`.
+
+Pinned memories are never auto-removed by the `/dream` consolidation process.
+
+```
+/remember always run uv lock after changing pyproject.toml
+/remember the billing API requires OAuth2 client credentials flow
+```
+
+---
+
+## Session Utility Commands
+
+### `/btw`
+
+Asks a quick side question without polluting the conversation history.
+
+```
+/btw <question>
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `question` | string | Yes | The side question to ask |
+
+Opens an ephemeral overlay that shows the answer. The question and answer are not added to the conversation history. The AI answers based only on existing conversation context with no tool access.
+
+**Overlay controls:**
+
+| Key | Action |
+|-----|--------|
+| `Esc`, `Space`, `q` | Dismiss |
+| `Up` / `k` | Scroll up |
+| `Down` / `j` | Scroll down |
+| `PgUp` | Scroll up 10 lines |
+| `PgDn` | Scroll down 10 lines |
+
+```
+/btw what branch am I on?
+/btw what was the name of that function we discussed?
+```
+
+---
+
+### `/status`
+
+Shows a unified session status snapshot. Executes directly without an AI roundtrip.
+
+```
+/status
+```
+
+This command takes no arguments.
+
+**Displays:**
+
+- **Async agents** — count and list of running background agents with duration and task preview.
+- **Cron tasks** — count and list of active scheduled tasks with schedule and last run time.
+- **Git** — current branch, clean/dirty state, number of changed files, and repository name.
+- **Container** — whether the session is running inside a container.
+
+```
+/status
+```
+
+---
+
+### `/async-status`
+
+Shows the status of background async agents. If running agents exist, presents an interactive selector to view live streaming output.
+
+```
+/async-status
+```
+
+This command takes no arguments.
+
+If all agents are completed, shows a static summary with completion status and duration. If running agents exist, lets you select one to view live output in a scrollable overlay.
+
+**Live output viewer controls:**
+
+| Key | Action |
+|-----|--------|
+| `Esc`, `Ctrl+C` | Close viewer |
+| `Up` / `Down` | Scroll |
+| `PgUp` / `PgDn` | Scroll 10 lines |
+| `Home` / `End` | Jump to top/bottom |
+
+```
+/async-status
+```
+
+---
+
+### `/async-kill`
+
+Kills running async agent(s) by name, ID prefix, or all at once. Without an argument, presents an interactive selection menu.
+
+```
+/async-kill [name|id|all]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `target` | string | No | Interactive selection | Agent name, ID prefix, or `all` |
+
+```
+/async-kill all
+/async-kill Dream
+/async-kill worker-1716000000
+```
+
+---
+
+### `/dream-auto`
+
+Toggles automatic memory dreaming. When enabled, spawns a worker agent every 3 hours and on session quit to consolidate memories.
+
+```
+/dream-auto [on|off]
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `state` | string | No | Shows current status | `on` to enable, `off` to disable |
+
+**Tab completion:** `on`, `off`.
+
+**Environment variable:** `PI_DREAM_INTERVAL_HOURS` — override the dreaming interval (default: `3`, range: `0.5`–`24`).
+
+Auto-dreaming is enabled by default. On session quit, a final dream runs as a detached process.
+
+```
+/dream-auto
+/dream-auto on
+/dream-auto off
+```
+
+---
+
+### `/cron`
+
+Schedules recurring tasks within the pi session. Tasks survive `/reload` and `/new` but are terminated on pi exit.
+
+```
+/cron <subcommand|natural language>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List scheduled tasks in the current session |
+| `list-all` | List cron tasks from all active pi sessions |
+| `remove <id> [id...]` | Remove tasks by ID (aliases: `rm`, `delete`, `kill`) |
+| `<natural language>` | Add a task using natural language (parsed by AI) |
+
+**Tab completion:** Subcommands (`add`, `list`, `list-all`, `remove`), schedule hints (`every`, `at`), and task IDs for removal.
+
+**Schedule types:**
+
+| Type | Format | Example |
+|------|--------|---------|
+| Interval-based | `every <duration>` | `every 2h`, `every 30m` |
+| Time-based | `at <HH:MM>` | `at 12:00`, `at 09:30` |
+
+**Task types:**
+
+| Type | Prefix | Execution |
+|------|--------|-----------|
+| Slash command | `/` | Executed as a command in the session |
+| Prompt | (any text) | Run as an async background agent |
+
+> **Note:** Minimum interval is 10 seconds. Tasks are persisted to a PID-scoped file and restored after `/reload`.
+
+```
+/cron list
+/cron list-all
+/cron remove 1 3
+/cron every 2h run /pr-review
+/cron at 09:00 check for new issues
+```
+
+The `cron_manage` tool is also available for the AI to manage cron tasks programmatically with structured parameters.
+
+**`cron_manage` tool parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | `"add"` \| `"list"` \| `"list-all"` \| `"remove"` | Yes | Action to perform |
+| `description` | string | For `add` | Human-readable task description |
+| `task` | string | For `add` | What to execute (prompt or `/command`) |
+| `interval_seconds` | number | For interval `add` | Run every N seconds (minimum 10) |
+| `at_hour` | number (0–23) | For time-based `add` | Hour for daily schedule |
+| `at_minute` | number (0–59) | For time-based `add` | Minute for daily schedule |
+| `id` | number | For `remove` | Task ID to remove |
+
+---
+
+### `/pidash`
+
+Manages the pidash web dashboard daemon. Pidash provides a browser-based UI for monitoring pi sessions, viewing conversation history, managing async agents and cron tasks, and switching models.
+
+```
+/pidash [subcommand]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `start` | Start the pidash server |
+| `stop` | Stop the pidash server and disconnect |
+| `restart` | Stop and restart the pidash server |
+| `status` | Show server status, port, and connection state (default) |
+
+**Tab completion:** `start`, `stop`, `restart`, `status`.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PI_PIDASH_PORT` | `19190` | Port for the pidash server |
+| `PI_PIDASH_ENABLE` | `true` | Set to `false` to disable pidash |
+
+The dashboard is accessible at `http://localhost:19190` (or the configured port). It connects to pi via WebSocket and supports sending prompts from the browser, switching models, aborting operations, and viewing live streaming output.
+
+```
+/pidash
+/pidash start
+/pidash stop
+/pidash restart
+/pidash status
+```
+
+---
+
+### `/pidiff`
+
+Manages the pidiff diff viewer daemon. Pidiff provides a browser-based UI for viewing branch diffs, file trees, and inline review comments.
+
+```
+/pidiff [subcommand]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `start` | Start the pidiff server |
+| `stop` | Stop the pidiff server and disconnect |
+| `restart` | Stop and restart the pidiff server |
+| `status` | Show server status, port, and connection state (default) |
+
+**Tab completion:** `start`, `stop`, `restart`, `status`.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PI_PIDIFF_PORT` | `19290` | Port for the pidiff server |
+| `PI_PIDIFF_ENABLE` | `true` | Set to `false` to disable pidiff |
+
+Review comments published from the pidiff browser UI are automatically injected into the pi session as follow-up messages.
+
+```
+/pidiff
+/pidiff start
+/pidiff stop
+/pidiff restart
+```
+
+---
+
+### `/nvim-changed-files`
+
+Sends git changed files to Neovim's quickfix list. Only available when pi is running inside a Neovim terminal (the `NVIM` environment variable is set).
+
+```
+/nvim-changed-files
+```
+
+This command takes no arguments.
+
+Collects all changed files (committed on the branch vs. `origin/main` plus uncommitted changes) and sends them to the parent Neovim instance's quickfix list via RPC. Opens the quickfix window automatically.
+
+> **Note:** This command is only registered when the `NVIM` environment variable points to a valid Neovim socket.
+
+```
+/nvim-changed-files
+```
+
+---
+
+## Quick Reference
+
+| Command | Type | Arguments | Description |
+|---------|------|-----------|-------------|
+| `/implement` | Prompt | `<task>` | Scout, plan, and implement |
+| `/scout-and-plan` | Prompt | `<task>` | Scout and plan without implementing |
+| `/implement-and-review` | Prompt | `<task>` | Implement with review and fix cycle |
+| `/pr-review` | Prompt | `[#\|URL]` | Review a GitHub PR |
+| `/review-local` | Prompt | `[branch]` | Review local changes |
+| `/review-handler` | Prompt | `[--autorabbit] [URL]` | Process and fix PR review comments |
+| `/refine-review` | Prompt | `<URL>` | Refine pending review comments |
+| `/release` | Prompt | `[version] [flags]` | Create a GitHub release |
+| `/coderabbit-rate-limit` | Prompt | `[#\|URL]` | Handle CodeRabbit rate limits |
+| `/query-db` | Prompt | `<command>` | Query the reviews database |
+| `/acpx-prompt` | Prompt | `[agent] [flags] <prompt>` | Run prompt via external agent |
+| `/dream` | Prompt | — | Run memory consolidation |
+| `/remember` | Prompt | `<what>` | Save a pinned memory |
+| `/btw` | Extension | `<question>` | Quick side question (ephemeral) |
+| `/status` | Extension | — | Session status snapshot |
+| `/async-status` | Extension | — | Background agent status |
+| `/async-kill` | Extension | `[target]` | Kill background agent(s) |
+| `/dream-auto` | Extension | `[on\|off]` | Toggle automatic dreaming |
+| `/cron` | Extension | `<subcommand\|text>` | Schedule recurring tasks |
+| `/pidash` | Extension | `[subcommand]` | Manage web dashboard |
+| `/pidiff` | Extension | `[subcommand]` | Manage diff viewer |
+| `/nvim-changed-files` | Extension | — | Send changed files to Neovim |
+
+---
+
+Source: specialist-agents.md
+
+# Specialist Agent Catalog
+
+The orchestrator delegates tasks to 24 specialist agents via the `subagent` tool. Each agent runs in an isolated context with its own tool permissions, system prompt, and optional model override. See [Orchestrator Architecture](architecture.html) for how the orchestrator discovers, routes, and manages agents.
+
+> **Note:** Agents are defined as Markdown files with YAML frontmatter in the `agents/` directory. Users can override or extend agents from `~/.pi/agent/agents/` (user scope) or `.pi/agents/` (project scope). See Custom Agent Development for details on creating your own agents.
+
+## Quick Reference
+
+| Agent | Domain | Tools | Model |
+|-------|--------|-------|-------|
+| `api-documenter` | API documentation and specs | read, write, edit, bash | default |
+| `bash-expert` | Shell scripting and automation | read, write, edit, bash | default |
+| `code-reviewer-guidelines` | Project standards compliance | read, bash | default |
+| `code-reviewer-quality` | Code quality and maintainability | read, bash | default |
+| `code-reviewer-security` | Bugs, logic errors, security | read, bash | default |
+| `debugger` | Error diagnosis and root cause analysis | read, bash | default |
+| `docker-expert` | Containers and Docker workflows | read, write, edit, bash | default |
+| `docs-fetcher` | External documentation retrieval | read, bash | default |
+| `frontend-expert` | Frontend development (JS/TS/CSS) | read, write, edit, bash | default |
+| `git-expert` | Local git operations | read, bash | default |
+| `github-expert` | GitHub platform operations | read, bash | default |
+| `go-expert` | Go programming | read, write, edit, bash | default |
+| `java-expert` | Java programming | read, write, edit, bash | default |
+| `jenkins-expert` | Jenkins CI/CD pipelines | read, write, edit, bash | default |
+| `kubernetes-expert` | Kubernetes and cloud-native | read, write, edit, bash | default |
+| `planner` | Implementation planning | read, bash | default |
+| `python-expert` | Python programming | read, write, edit, bash | default |
+| `reviewer` | General code review | read, bash | default |
+| `scout` | Fast codebase reconnaissance | read, bash | `claude-haiku-4-5` |
+| `security-auditor` | External repo security audit | read, bash | default |
+| `technical-documentation-writer` | Technical documentation | read, write, edit, bash | default |
+| `test-automator` | Test suite creation and CI setup | read, write, edit, bash | default |
+| `test-runner` | Test execution and failure analysis | bash, read | default |
+| `worker` | General-purpose fallback | read, write, edit, bash | default |
+
+## Routing Table
+
+The orchestrator routes tasks by **intent**, not by the tool being used. See [Orchestrator Architecture](architecture.html) for the full routing logic.
+
+| Domain | Routed To | Examples |
+|--------|-----------|---------|
+| Python (.py) | `python-expert` | Writing, testing, or refactoring Python code |
+| Go (.go) | `go-expert` | Writing or modifying Go code |
+| Frontend (JS/TS/React/Vue/Angular) | `frontend-expert` | Component creation, CSS, frontend testing |
+| Java (.java) | `java-expert` | Spring Boot, Maven, Gradle, JUnit |
+| Shell scripts (.sh) | `bash-expert` | Script creation, system automation |
+| Markdown (.md) | `technical-documentation-writer` | Documentation authoring |
+| Docker | `docker-expert` | Dockerfile, Compose, image optimization |
+| Kubernetes/OpenShift | `kubernetes-expert` | Manifests, Helm charts, GitOps |
+| Jenkins/CI/Groovy | `jenkins-expert` | Jenkinsfile, pipeline configuration |
+| Git operations (local) | `git-expert` | Commits, branches, merges, rebasing |
+| GitHub (PRs, issues, releases, workflows) | `github-expert` | `gh` CLI operations |
+| Tests | `test-automator` | Creating test suites and CI pipelines |
+| Debugging | `debugger` | Error diagnosis and root cause analysis |
+| API docs | `api-documenter` | OpenAPI specs, SDK generation |
+| External repo security audit | `security-auditor` | Pre-adoption security review |
+| External library/framework docs | `docs-fetcher` | Fetching React, FastAPI, Django docs |
+| No specialist match | `worker` | General-purpose fallback |
+
+> **Tip:** Running Python tests routes to `python-expert`, not `bash-expert`. Creating a PR routes to `github-expert`, not `git-expert`. Always think about the *intent* of the task.
+
+---
+
+## Language Specialists
+
+### api-documenter
+
+Create OpenAPI/Swagger specs, generate SDKs, and write developer documentation. Handles versioning, examples, and interactive docs.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `api-documenter` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- OpenAPI/Swagger specification generation
+- SDK generation
+- Interactive documentation (Postman, Insomnia)
+- API versioning
+- Multi-language code examples
+- Authentication and error documentation
+
+**Invocation example:**
+
+```
+subagent(agent="api-documenter", task="Generate OpenAPI 3.0 spec for the user API in src/api/users.py", cwd="/path/to/project", estimatedSeconds=30)
+```
+
+---
+
+### bash-expert
+
+Bash and shell scripting creation, modification, refactoring, and fixes. Specializes in Bash, Zsh, POSIX shell, automation scripts, and system administration.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `bash-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Bash, Zsh, POSIX sh scripting
+- Text processing with grep, sed, awk, jq, yq
+- systemd and cron configuration
+- Deployment automation
+
+**Enforced patterns:**
+- Defensive scripting with `set -euo pipefail`
+- Proper variable quoting (`"$var"`)
+- POSIX compatibility when possible
+- Shellcheck compliance
+- Proper shebangs and cleanup traps
+
+**Invocation example:**
+
+```
+subagent(agent="bash-expert", task="Create a deployment script that builds the Docker image, runs migrations, and restarts the service", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+### frontend-expert
+
+Frontend development (JS/TS/React/Vue/Angular/CSS). UI design, component creation, and modern web technologies.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `frontend-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- JavaScript and TypeScript
+- Component frameworks: React, Vue, Angular
+- CSS, Tailwind, styled-components
+- Frontend testing: Jest, Vitest, Cypress, Playwright
+- Build tools: Vite, Webpack, esbuild
+- UI/UX patterns
+
+**Invocation example:**
+
+```
+subagent(agent="frontend-expert", task="Add dark mode toggle to the header component using Tailwind CSS", cwd="/path/to/project", estimatedSeconds=25)
+```
+
+---
+
+### go-expert
+
+Go code creation, modification, refactoring, and fixes. Specializes in goroutines, channels, modules, testing, and high-performance Go.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `go-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Idiomatic Go with goroutines and channels
+- Web frameworks: Gin, Echo, Fiber, Chi, net/http
+- CLI tools: Cobra, Viper
+- Testing: table-driven tests, testify, gomock
+- Tooling: golangci-lint, delve, pprof
+
+**Quality checklist applied:**
+- `golangci-lint` passes
+- Tests pass with `-race` flag
+- Context propagated through call chains
+- Errors wrapped with `fmt.Errorf`
+- Code formatted with gofmt/goimports
+
+**Invocation example:**
+
+```
+subagent(agent="go-expert", task="Implement the UserService with CRUD operations and table-driven tests", cwd="/path/to/project", estimatedSeconds=30)
+```
+
+---
+
+### java-expert
+
+Java code creation, modification, refactoring, and fixes. Specializes in Spring Boot, Maven, Gradle, JUnit testing, and enterprise applications.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `java-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Modern Java 17+ (records, sealed classes, pattern matching)
+- Spring Boot, Spring MVC, Spring Data, Spring Security, WebFlux
+- Build tools: Maven, Gradle
+- Testing: JUnit 5, Mockito, TestContainers
+- Reactive programming: Project Reactor, WebFlux
+
+**Quality checklist applied:**
+- Java 17+ target version
+- Tests pass (unit + integration)
+- Proper exception handling
+- SLF4J logging
+- JavaDoc on public APIs
+
+**Invocation example:**
+
+```
+subagent(agent="java-expert", task="Add pagination support to the OrderRepository using Spring Data JPA", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+### python-expert
+
+Python code creation, modification, refactoring, and fixes. Specializes in idiomatic Python, async/await, testing, and modern Python development.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `python-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Modern Python: type hints, dataclasses, async/await
+- Web frameworks: FastAPI, Django, Flask
+- Testing: pytest, mocking, fixtures
+- Tooling: ruff, mypy, black
+- Async: asyncio, aiohttp, anyio
+
+> **Warning:** This agent **never** uses `python`, `python3`, `pip`, or `pip3` directly. All Python execution uses `uv`:
+> - `uv run <script.py>` instead of `python script.py`
+> - `uv run pytest` instead of `pytest`
+> - `uvx <tool>` instead of `pip install <tool> && <tool>`
+> - `uv add <package>` instead of `pip install <package>`
+
+**Quality checklist applied:**
+- Type hints on public functions
+- Tests with pytest (>90% coverage target)
+- Formatted with ruff/black
+- Linted with ruff
+- Docstrings on public APIs
+
+**Invocation example:**
+
+```
+subagent(agent="python-expert", task="Add rate limiting middleware to the FastAPI app using slowapi", cwd="/path/to/project", estimatedSeconds=25)
+```
+
+---
+
+## Infrastructure Specialists
+
+### docker-expert
+
+Docker and container-related tasks including Dockerfile creation, container orchestration, image optimization, and containerization workflows.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `docker-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Docker Engine, BuildKit, Buildx
+- Multi-stage builds
+- Docker Compose and Docker Swarm
+- Podman compatibility
+- Registries: Docker Hub, Harbor, ECR, GCR, ACR
+- Image scanning: Trivy
+- Rootless containers
+
+**Enforced patterns:**
+- Security first: non-root users, minimal base images
+- Layer optimization with multi-stage builds and cache mounts
+- Small images: Alpine, distroless, scratch when possible
+- Reproducibility: pinned versions, locked dependencies
+- `.dockerignore`, health checks, vulnerability scanning
+
+**Invocation example:**
+
+```
+subagent(agent="docker-expert", task="Optimize the Dockerfile for production with multi-stage build and non-root user", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+### jenkins-expert
+
+Jenkins-related code including CI/CD pipelines, Jenkinsfiles, Groovy scripts, and build automation.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `jenkins-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Declarative and scripted pipelines
+- Groovy shared libraries
+- Gradle and Maven integration
+- Plugins: Pipeline, Docker, Kubernetes, Credentials
+- Jenkins Configuration as Code (JCasC)
+
+> **Warning:** This agent enforces strict credential handling:
+> - **NEVER** hardcodes credentials — uses `withCredentials` exclusively
+> - **NEVER** skips validation with workarounds
+> - Uses `@NonCPS` for non-serializable code
+> - Cleans workspace after builds
+
+**Quality checklist applied:**
+- Validated pipeline syntax
+- Secured credentials via `withCredentials`
+- Configured timeouts
+- Post actions defined
+- Parallel stages where applicable
+- Shared libraries used for reuse
+
+**Invocation example:**
+
+```
+subagent(agent="jenkins-expert", task="Create a declarative pipeline with parallel test stages and Docker build", cwd="/path/to/project", estimatedSeconds=25)
+```
+
+---
+
+### kubernetes-expert
+
+Kubernetes-related tasks including cluster management, workload deployment, service mesh, and cloud-native orchestration. Specializes in K8s, OpenShift, Helm, and GitOps.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `kubernetes-expert` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Core K8s: Pods, Deployments, Services, ConfigMaps, Secrets, Ingress
+- Workloads: StatefulSets, DaemonSets, Jobs, CronJobs
+- Package management: Helm, Kustomize
+- GitOps: ArgoCD, Flux
+- Service mesh: Istio, Linkerd
+- Platforms: OpenShift, EKS, GKE, AKS, k3s
+
+**Enforced patterns:**
+- Declarative/GitOps over imperative commands
+- RBAC and Network Policies
+- Observable: Prometheus, Grafana, proper logging
+- Resilient: health checks, PDBs, resource limits
+
+**Quality checklist applied:**
+- Resource requests and limits set
+- Liveness and readiness probes defined
+- Security context configured
+- Network policies in place
+- RBAC configured
+- No hardcoded secrets
+- Manifests validated
+
+**Invocation example:**
+
+```
+subagent(agent="kubernetes-expert", task="Create Helm chart for the microservice with HPA, PDB, and network policies", cwd="/path/to/project", estimatedSeconds=30)
+```
+
+---
+
+## Version Control Specialists
+
+### git-expert
+
+Local git operations including commits, branching, merging, rebasing, stash, and resolving git issues. For GitHub platform operations (PRs, issues, releases), use `github-expert` instead.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `git-expert` |
+| **Tools** | read, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Commits, branching, merging, rebasing
+- Stash, cherry-pick, log, diff, status, config
+- Conflict resolution
+- Commit message formatting via `-F -` (stdin)
+
+**Protection rules:**
+
+| Rule | Description |
+|------|-------------|
+| No main/master commits | NEVER commits or pushes to `main` or `master` |
+| No merged-branch commits | NEVER commits to already-merged branches |
+| No `--no-verify` | NEVER uses the `--no-verify` flag |
+| Branch prefixes | Uses `feature/`, `fix/`, `hotfix/`, `refactor/` |
+| No AI attribution | No Claude/AI signatures in commit messages |
+| No code fixes | Reports pre-commit hook failures; does not fix code |
+| No test execution | Asks orchestrator to verify tests before pushing |
+
+**Invocation example:**
+
+```
+subagent(agent="git-expert", task="Create a feature branch from main and commit the staged changes with message 'Add user authentication'", cwd="/path/to/project", estimatedSeconds=10)
+```
+
+---
+
+### github-expert
+
+GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the `gh` CLI for all GitHub API interactions.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `github-expert` |
+| **Tools** | read, bash |
+| **Model** | default |
+
+**Operations:**
+
+| Category | Commands |
+|----------|----------|
+| Pull Requests | `gh pr create`, `gh pr view`, `gh pr list`, `gh pr merge`, `gh pr close`, `gh pr checkout`, `gh pr diff`, `gh pr checks` |
+| Issues | `gh issue create`, `gh issue view`, `gh issue list`, `gh issue close`, `gh issue comment`, `gh issue edit` |
+| Releases | `gh release create`, `gh release view`, `gh release list` |
+| Workflows | `gh workflow list`, `gh workflow run`, `gh run list`, `gh run view` |
+
+**Constraints:**
+- NEVER uses `ask_user` — specialist agents do not interact with users directly
+- NEVER pushes to `main`/`master`
+- NEVER commits to merged branches
+- Does NOT run tests; asks orchestrator to verify before creating PRs
+- Issue title format: `<type>: <brief description>`
+
+**Invocation example:**
+
+```
+subagent(agent="github-expert", task="Create a PR from feature/auth to main with title 'Add OAuth2 login' and a summary of changes", cwd="/path/to/project", estimatedSeconds=15)
+```
+
+---
+
+## Code Review Specialists
+
+Four agents handle code review, each covering a different dimension. See [Orchestrator Architecture](architecture.html) for how they are typically combined in parallel review tasks.
+
+### code-reviewer-guidelines
+
+Code review focused on project guidelines and style adherence. Reviews for AGENTS.md compliance, naming conventions, and project patterns.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `code-reviewer-guidelines` |
+| **Tools** | read, bash (read-only — no modifications) |
+| **Model** | default |
+
+**Review focus:**
+- AGENTS.md compliance (reads AGENTS.md first)
+- Documentation updates — missing doc updates are flagged as `[CRITICAL]`
+- Naming conventions
+- File and folder structure
+- Commit messages and branch naming
+- Import ordering
+- Consistency with existing codebase patterns
+
+**Output format:** `[SEVERITY] file:line` — severities: `CRITICAL`, `WARNING`, `SUGGESTION`
+
+**Invocation example:**
+
+```
+subagent(agent="code-reviewer-guidelines", task="Review the changes on the current branch for project guideline compliance", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+### code-reviewer-quality
+
+Code review focused on general code quality and maintainability. Reviews for clean code, proper abstractions, DRY, and readability.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `code-reviewer-quality` |
+| **Tools** | read, bash (read-only — no modifications) |
+| **Model** | default |
+
+**Review focus:**
+- Readability and naming
+- Abstractions and DRY violations
+- Complexity
+- Error handling and observability
+
+**Critical anti-patterns detected:**
+- Silent error swallowing (empty catch blocks)
+- Missing operation logging
+- Poor error context
+- Opaque async/background code without logging
+
+**Output format:** `[SEVERITY] file:line`
+
+**Invocation example:**
+
+```
+subagent(agent="code-reviewer-quality", task="Review src/services/ for code quality issues", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+### code-reviewer-security
+
+Code review focused on bugs, logic errors, and security vulnerabilities. Reviews for correctness, edge cases, and potential exploits.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `code-reviewer-security` |
+| **Tools** | read, bash (read-only — no modifications) |
+| **Model** | default |
+
+**Review focus:**
+
+| Category | Checks |
+|----------|--------|
+| Logic | Off-by-one errors, null/undefined risks, race conditions |
+| Input | SQL injection, XSS, CSRF, input validation |
+| Secrets | Hardcoded credentials, insecure cryptography |
+| Filesystem | Path traversal, resource leaks |
+| General | Error handling gaps, edge cases, implicit assumptions |
+
+**Approach:** Traces data flow, identifies trust boundaries, checks error paths, verifies input validation.
+
+**Output format:** `[SEVERITY] file:line` with Risk and Suggestion
+
+**Invocation example:**
+
+```
+subagent(agent="code-reviewer-security", task="Security review of the authentication module in src/auth/", cwd="/path/to/project", estimatedSeconds=25)
+```
+
+---
+
+### reviewer
+
+General code review agent. Reviews code changes for quality, correctness, and style.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `reviewer` |
+| **Tools** | read, bash (read-only — no modifications) |
+| **Model** | default |
+
+**Review areas:**
+- **Correctness** — logic errors, edge cases, off-by-one bugs
+- **Security** — input validation, injection, secrets exposure
+- **Quality** — readability, naming, DRY, proper abstractions
+- **Performance** — unnecessary allocations, N+1 queries, blocking calls
+- **Style** — project conventions, consistent formatting
+
+**Output format:** `[SEVERITY] file:line` — outputs `"No issues found. Code approved. ✅"` when clean.
+
+**Invocation example:**
+
+```
+subagent(agent="reviewer", task="Review the diff on the current branch", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+## Analysis and Planning Specialists
+
+### debugger
+
+Debugging specialist for errors, test failures, and unexpected behavior. Diagnoses only — does not modify files.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `debugger` |
+| **Tools** | read, bash (read-only — no modifications) |
+| **Model** | default |
+
+**Capabilities:**
+- Error analysis and stack trace interpretation
+- Test failure investigation
+- Performance issue identification
+- Root cause analysis
+
+> **Note:** The debugger **diagnoses only**. It does not modify files. The orchestrator delegates the actual fix to the appropriate language specialist based on the debugger's report.
+
+**Deliverables per issue:**
+- Root cause explanation
+- Evidence supporting the diagnosis
+- Recommended fix description
+- File paths and line numbers to modify
+- Testing approach to verify the fix
+
+**Invocation example:**
+
+```
+subagent(agent="debugger", task="Investigate why test_user_creation is failing with 'IntegrityError: duplicate key'", cwd="/path/to/project", estimatedSeconds=20)
+```
+
+---
+
+### planner
+
+Creates detailed implementation plans from codebase context. Does not write code.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `planner` |
+| **Tools** | read, bash (analysis only) |
+| **Model** | default |
+
+**Output structure:**
+- Overview of the change
+- Per-file changes with What, Why, Details, and Lines
+- Edge cases to handle
+- Testing strategy
+- Risks and mitigations
+
+> **Note:** Plans must be detailed enough for worker agents to implement without ambiguity. Includes specific file paths, function names, and line numbers.
+
+**Invocation example:**
+
+```
+subagent(agent="planner", task="Plan the implementation of role-based access control for the API", cwd="/path/to/project", estimatedSeconds=30)
+```
+
+---
+
+### scout
+
+Fast codebase reconnaissance. Finds relevant files, functions, and dependencies for a given task.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `scout` |
+| **Tools** | read, bash (exploration only) |
+| **Model** | `claude-haiku-4-5` |
+
+> **Note:** This is the only agent that uses a non-default model. It runs on `claude-haiku-4-5` for cost optimization, since reconnaissance tasks are high-volume and don't require the most capable model.
+
+**Output format:**
+
+```text
+## Relevant Files
+- path/to/file.py — Description of what it contains
+
+## Key Functions/Classes
+- ClassName.method() in file.py:42 — What it does
+
+## Dependencies
+- file.py imports from other.py
+- external: requests, fastapi
+
+## Tests
+- tests/test_file.py — Covers ClassName
+
+## Notes
+- Important observations about the codebase structure
+```
+
+**Invocation example:**
+
+```
+subagent(agent="scout", task="Find all files related to payment processing and map their dependencies", cwd="/path/to/project", estimatedSeconds=15)
+```
+
+---
+
+## Testing Specialists
+
+### test-automator
+
+Create comprehensive test suites with unit, integration, and e2e tests. Sets up CI pipelines, mocking strategies, and test data.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `test-automator` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Unit test design with mocking and fixtures
+- Integration tests with test containers
+- E2E tests with Playwright and Cypress
+- CI/CD pipeline configuration
+- Test data factories
+- Coverage analysis
+
+**Enforced patterns:**
+- Test pyramid: many unit, fewer integration, minimal E2E
+- Arrange-Act-Assert pattern
+- Behavior-focused tests (not implementation-focused)
+- Deterministic tests — no flakiness
+- Parallel execution where possible
+
+**Invocation example:**
+
+```
+subagent(agent="test-automator", task="Create unit and integration tests for the OrderService with >90% coverage", cwd="/path/to/project", estimatedSeconds=30)
+```
+
+---
+
+### test-runner
+
+Run tests and analyze failures. Returns detailed failure analysis without making fixes.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `test-runner` |
+| **Tools** | bash, read (read-only — no modifications) |
+| **Model** | default |
+
+**Workflow:** Run → Parse → Analyze failures → Report
+
+> **Note:** This agent **never modifies files**. It runs exactly the test command specified, analyzes failures, and returns control promptly.
+
+**Output per failure:**
+- Test name and location
+- Expected vs. actual result
+- Most likely fix location
+- One-line fix suggestion
+
+**Invocation example:**
+
+```
+subagent(agent="test-runner", task="Run 'uv run pytest tests/test_orders.py -v' and analyze any failures", cwd="/path/to/project", estimatedSeconds=15)
+```
+
+---
+
+## Documentation Specialists
+
+### docs-fetcher
+
+Fetches current documentation for external libraries and frameworks. Prioritizes `llms.txt` when available, falls back to web parsing.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `docs-fetcher` |
+| **Tools** | read, bash |
+| **Model** | default |
+
+**Retrieval strategy (in order):**
+1. Try `llms-full.txt` at the library's domain
+2. Try `llms.txt`
+3. Fall back to HTML parsing
+
+**Output includes:**
+- Source URL
+- Type: `llms-full`, `llms`, or `web-parsed`
+- Extracted sections relevant to the query
+- Key points
+- Related links
+
+> **Warning:** The orchestrator **must never** fetch external documentation directly using `fetch_content`. All external doc requests **must** be delegated to `docs-fetcher`, which optimizes for LLM-friendly formats and token efficiency.
+
+**When to use:**
+- Fetching library/framework documentation (React, FastAPI, Django, etc.)
+- Looking up configuration guides for external tools
+- Getting API references for third-party services
+
+**When to skip:**
+- Standard library only (no external dependencies)
+- User explicitly says "skip docs" or "I know the API"
+- Simple operations with obvious patterns
+- Docs already fetched in current conversation
+
+**Invocation example:**
+
+```
+subagent(agent="docs-fetcher", task="Fetch FastAPI dependency injection documentation", cwd="/path/to/project", estimatedSeconds=15)
+```
+
+---
+
+### technical-documentation-writer
+
+Comprehensive, user-focused technical documentation for projects, features, or systems.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `technical-documentation-writer` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Markdown, MkDocs, Docusaurus, Sphinx
+- Diagrams: Mermaid, PlantUML
+- WCAG accessibility
+- SEO structure
+
+**Enforced patterns:**
+- User-first writing (write for the reader, not the developer)
+- Progressive disclosure (overview → details)
+- Actionable step-by-step with expected outcomes
+- Tested: all code examples verified
+
+**Quality checklist applied:**
+- Target audience identified
+- Prerequisites stated
+- Examples verified
+- Links verified
+- Consistent terminology
+- Scannable structure
+
+**Invocation example:**
+
+```
+subagent(agent="technical-documentation-writer", task="Write setup and usage docs for the authentication module", cwd="/path/to/project", estimatedSeconds=30)
+```
+
+---
+
+## Security Specialist
+
+### security-auditor
+
+Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `security-auditor` |
+| **Tools** | read, bash |
+| **Model** | default |
+
+**Audit categories:**
+
+| Category | What It Checks |
+|----------|---------------|
+| Malicious Code | `eval`/`exec`, obfuscation, time bombs, hidden functionality |
+| Data Exfiltration | Network calls, env vars, credentials, DNS exfiltration |
+| Supply Chain Risk | Dependency count, CVEs, suspicious packages, install hooks, pinning, freshness |
+| Filesystem & System | Read/write scope, sensitive paths, self-updating code, subprocess usage |
+| Network & Permissions | Listening ports, TLS bypass, proxying |
+| Trust Signals | Contributors, stars, forks, maintenance activity |
+| License Compatibility | Permissive vs. copyleft, compatibility checks |
+| Build & Release Integrity | Source/binary matching, signing, CI transparency |
+
+**Approach:**
+- Clones repos to `/tmp/pi-work/` with `--depth 1`
+- Reads **every** source file (not just entry points)
+- Lists **all** network endpoints contacted
+- Never redacts findings — shows exact file paths and line numbers
+
+**Output:** Structured report with findings tables, risk levels, and a final verdict of `SAFE`, `CAUTION`, or `UNSAFE`.
+
+**Invocation example:**
+
+```
+subagent(agent="security-auditor", task="Audit the repository at https://github.com/example/lib for security risks", cwd="/tmp/pi-work", estimatedSeconds=45)
+```
+
+---
+
+## General-Purpose Agent
+
+### worker
+
+General-purpose agent for tasks that don't match any specialist. Full capabilities.
+
+| Property | Value |
+|----------|-------|
+| **Name** | `worker` |
+| **Tools** | read, write, edit, bash |
+| **Model** | default |
+
+**Capabilities:**
+- Read, analyze, and modify any file type
+- Run shell commands
+- General code writing and refactoring
+- File system operations
+- Research and analysis
+
+> **Note:** If the worker identifies that a task would be better handled by a specialist, it reports this and hands off. The worker is the orchestrator's fallback when no specialist matches the task domain.
+
+**Invocation example:**
+
+```
+subagent(agent="worker", task="Rename all occurrences of 'oldConfig' to 'appConfig' across the project", cwd="/path/to/project", estimatedSeconds=15)
+```
+
+---
+
+## Agent Configuration Reference
+
+Each agent is defined as a Markdown file with YAML frontmatter. See Custom Agent Development for how to create and override agents.
+
+### Frontmatter Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | yes | — | Unique agent identifier used in routing and `subagent` calls |
+| `description` | string | yes | — | One-line capability summary shown in agent listings |
+| `tools` | string | no | all tools | Comma-separated list of allowed tools (e.g., `read, write, edit, bash`) |
+| `model` | string | no | inherits from parent | Model override (e.g., `claude-haiku-4-5`) |
+
+### Agent Scopes
+
+| Scope | Source Directories | Priority |
+|-------|-------------------|----------|
+| `package` | Bundled `agents/` directory | Lowest (base) |
+| `user` | `~/.pi/agent/agents/` | Overrides package |
+| `project` | `.pi/agents/` in project root | Highest (overrides user and package) |
+
+Later sources override earlier ones by agent name. See Custom Agent Development for details on the override mechanism.
+
+### Agent Capabilities by Tool Access
+
+| Tool Combination | Can Modify Files | Can Execute Commands | Agents |
+|-----------------|------------------|---------------------|--------|
+| read, bash | No | Yes (read-only intent) | code-reviewer-guidelines, code-reviewer-quality, code-reviewer-security, debugger, docs-fetcher, git-expert, github-expert, planner, reviewer, scout, security-auditor |
+| bash, read | No | Yes (read-only intent) | test-runner |
+| read, write, edit, bash | Yes | Yes | api-documenter, bash-expert, docker-expert, frontend-expert, go-expert, java-expert, jenkins-expert, kubernetes-expert, python-expert, technical-documentation-writer, test-automator, worker |
+
+> **Note:** Agents with `read, bash` tools are analysis-only — they can read code and run commands for inspection but cannot modify files. This is a safety constraint for review, debugging, and audit agents.
+
+---
+
+Source: environment-variables.md
+
+# Environment Variables
+
+All environment variables used by pi-config. Pass them via `--env-file` in Docker or export them in your shell for native usage. See Docker Setup for container configuration details.
+
+> **Tip:** None of these variables are strictly required. pi-config runs with sensible defaults; configure only what you need.
+
+## GitHub Authentication
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `GITHUB_TOKEN` | string | — | GitHub personal access token for API operations (PRs, issues, reviews) |
+| `GITHUB_API_TOKEN` | string | — | Alternative GitHub token variable (same purpose as `GITHUB_TOKEN`) |
+| `GH_CONFIG_DIR` | string | `~/.config/gh` | Path to GitHub CLI configuration directory |
+
+```env
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_API_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GH_CONFIG_DIR=/home/myuser/.config/gh
+```
+
+> **Note:** `GITHUB_TOKEN` and `GITHUB_API_TOKEN` serve the same purpose. Set whichever your tooling expects. The `gh` CLI uses its own auth from `GH_CONFIG_DIR`.
+
+## Google Cloud / Vertex AI
+
+Variables for running Claude via Vertex AI and accessing Google Cloud services.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `GOOGLE_CLOUD_PROJECT` | string | — | Google Cloud project ID |
+| `GOOGLE_CLOUD_LOCATION` | string | — | Google Cloud region (e.g., `us-east5`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | string | — | Path to Google Cloud ADC credentials JSON file |
+| `VERTEX_PROJECT_ID` | string | — | Vertex AI project ID (can differ from `GOOGLE_CLOUD_PROJECT`) |
+| `VERTEX_REGION` | string | — | Vertex AI region |
+| `VERTEX_CLAUDE_1M` | string | — | Set to `true` to enable Claude 1M context window via Vertex AI |
+
+```env
+GOOGLE_CLOUD_PROJECT=my-gcp-project
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/myuser/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=my-gcp-project
+VERTEX_REGION=us-east5
+VERTEX_CLAUDE_1M=true
+```
+
+> **Note:** In Docker, the credentials file path must match the mount target inside the container. If you use `PI_HOST_USER`, paths like `/home/<user>/.config/...` resolve correctly via the home symlink.
+
+## Gemini
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `GEMINI_API_KEY` | string | — | Google Gemini API key for external AI agent access via acpx |
+
+```env
+GEMINI_API_KEY=AIzaSy...
+```
+
+## Pidash (Web Dashboard)
+
+Pidash is the live web dashboard that aggregates all pi sessions. See Pidash Dashboard for usage details.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PI_PIDASH_PORT` | integer | `19190` | Port for the pidash HTTP/WebSocket server |
+| `PI_PIDASH_ENABLE` | string | enabled | Disable pidash by setting to `false`, `0`, `no`, or `off` |
+
+```bash
+# Custom port
+PI_PIDASH_PORT=9999 pi
+
+# Disable pidash entirely
+PI_PIDASH_ENABLE=false pi
+```
+
+```env
+PI_PIDASH_PORT=9999
+PI_PIDASH_ENABLE=false
+```
+
+> **Note:** Pidash is enabled by default. Setting `PI_PIDASH_ENABLE` to any value other than `false`, `0`, `no`, or `off` (case-insensitive) keeps it enabled.
+
+## Pidiff (Diff Viewer)
+
+Pidiff is the standalone diff viewer for branch comparisons and inline review comments. See Pidiff Viewer for usage details.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PI_PIDIFF_PORT` | integer | `19290` | Port for the pidiff HTTP/WebSocket server |
+| `PI_PIDIFF_ENABLE` | string | enabled | Disable pidiff by setting to `false`, `0`, `no`, or `off` |
+
+```bash
+# Custom port
+PI_PIDIFF_PORT=9999 pi
+
+# Disable pidiff entirely
+PI_PIDIFF_ENABLE=false pi
+```
+
+```env
+PI_PIDIFF_PORT=9999
+PI_PIDIFF_ENABLE=false
+```
+
+## Discord Bot
+
+The Discord bot runs inside the pidash daemon for remote session control via DMs. See Discord Bot Integration for setup instructions.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `DISCORD_BOT_TOKEN` | string | — | Discord bot authentication token |
+| `DISCORD_ALLOWED_USERS` | string | — | Comma-separated Discord user IDs allowed to control pi |
+
+```env
+DISCORD_BOT_TOKEN=MTIz...your-bot-token
+DISCORD_ALLOWED_USERS=123456789012345678,987654321098765432
+```
+
+These variables can be set either in your main `.env` file or in a dedicated `~/.pi/discord.env` file. The pidash server reads `~/.pi/discord.env` at startup and loads any variables not already set in the environment.
+
+```bash
+# Dedicated Discord config file
+cat > ~/.pi/discord.env << 'EOF'
+DISCORD_BOT_TOKEN=your-token-here
+DISCORD_ALLOWED_USERS=your-discord-user-id
+EOF
+```
+
+> **Warning:** Without `DISCORD_ALLOWED_USERS`, no Discord users can interact with pi, even if the bot token is set.
+
+## Container Configuration
+
+Variables specific to Docker container operation. See Docker Setup for full container usage.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PI_HOST_USER` | string | `node` | Host username. Creates `/home/<user>` inside the container with symlinks so host-mounted paths resolve correctly |
+| `TZ` | string | — | Container timezone for timestamps (e.g., `Asia/Jerusalem`, `America/New_York`) |
+
+```env
+PI_HOST_USER=myakove
+TZ=Asia/Jerusalem
+```
+
+When `PI_HOST_USER` is set to a value other than `node`, the init entrypoint:
+
+1. Creates `/home/<PI_HOST_USER>` with correct ownership
+2. Symlinks container tool directories (`.npm-global`, `.pi`, `.local`, etc.) into the new home
+3. Reverse-symlinks mounted host content back to `/home/node` for compatibility
+4. Updates `HOME` and `PATH` to use the new home directory
+
+## External AI Agents (acpx)
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ACPX_AGENTS` | string | `""` (empty) | Comma-separated list of external AI agent providers to register as pi model providers |
+
+```env
+ACPX_AGENTS=cursor,gemini
+```
+
+Supported agents include `cursor`, `codex`, and `gemini`. Each agent is registered as a pi model provider, allowing model switching via the pi interface.
+
+## MCP Launchpad
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MCPL_CONFIG_FILES` | string | — | Path to the MCP Launchpad configuration JSON file |
+
+```env
+MCPL_CONFIG_FILES=/home/myuser/.config/mcpl/mcp.json
+```
+
+> **Note:** In Docker, this path must match the mount target inside the container.
+
+## Memory and Dreaming
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PI_DREAM_INTERVAL_HOURS` | float | `3` | Interval in hours between automatic memory consolidation runs. Valid range: `0.5` to `24` |
+
+```env
+PI_DREAM_INTERVAL_HOURS=6
+```
+
+Values outside the `0.5`–`24` range are ignored and the default of `3` hours is used.
+
+## Git Configuration
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `GIT_SSH_COMMAND` | string | `ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10` | SSH command with keepalive/timeout settings for git operations |
+| `GIT_CONFIG_GLOBAL` | string | — | Path to global git config file. Set automatically in the container when `.gitconfig` is mounted read-only |
+
+```env
+GIT_SSH_COMMAND=ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10
+```
+
+> **Note:** Both variables are set automatically by the container entrypoint. Override them only if you need custom SSH or git config behavior.
+
+## Docker-Safe Wrapper
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `DOCKER_SAFE_RUNTIME` | string | `docker` | Container runtime for the `docker-safe` read-only CLI wrapper. Set to `podman` for Podman environments |
+
+```bash
+DOCKER_SAFE_RUNTIME=podman docker-safe ps
+```
+
+The `docker-safe` command also accepts `--runtime docker|podman` as a CLI flag, which takes precedence over this variable.
+
+## Debugging
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PI_ASYNC_DEBUG` | string | — | Enable debug logging for async (background) agents. Set to any non-empty value to enable |
+| `TMPDIR` | string | system default | Temporary directory for Python CLI tools (review fetching, polling). Falls back to the system temp directory |
+
+```env
+PI_ASYNC_DEBUG=1
+TMPDIR=/tmp/pi-work
+```
+
+Debug logs for async agents are written to `$TMPDIR/pi-async-debug.log`.
+
+## Neovim Integration
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `NVIM` | string | — | Neovim RPC socket path. Automatically set by Neovim when pi runs inside a Neovim terminal |
+
+This variable is not user-configured. When present, pi-config registers Neovim-specific features (opening files in the editor, syncing state).
+
+## Dockerfile Build Variables
+
+These variables are baked into the Docker image and do not need user configuration.
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `DEBIAN_FRONTEND` | `noninteractive` | Suppresses interactive prompts during `apt-get` |
+| `PLAYWRIGHT_BROWSERS_PATH` | `/home/node/.cache/ms-playwright` | Playwright browser cache location |
+| `AGENT_BROWSER_ARGS` | `--no-sandbox,--disable-dev-shm-usage` | Chromium flags for container-safe browser automation |
+
+## Internal Variables
+
+These variables are managed internally by pi-config. Do not set them manually.
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `PI_SUBAGENT_CHILD` | `"1"` | Set automatically in subagent child processes to prevent infinite recursion. Gates registration of orchestrator-level features (pidash, pidiff, dreaming, cron, subagent tool) so they only run in the top-level pi process |
+
+## Quick Reference
+
+Minimal `.env` file for a Docker setup with Vertex AI:
+
+```env
+TZ=America/New_York
+PI_HOST_USER=myuser
+GOOGLE_CLOUD_PROJECT=my-project
+GOOGLE_APPLICATION_CREDENTIALS=/home/myuser/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=my-project
+VERTEX_REGION=us-east5
+VERTEX_CLAUDE_1M=true
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Extended `.env` with all optional features:
+
+```env
+TZ=America/New_York
+PI_HOST_USER=myuser
+
+# Vertex AI
+GOOGLE_CLOUD_PROJECT=my-project
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/myuser/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=my-project
+VERTEX_REGION=us-east5
+VERTEX_CLAUDE_1M=true
+
+# GitHub
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GH_CONFIG_DIR=/home/myuser/.config/gh
+
+# Gemini
+GEMINI_API_KEY=AIzaSy...
+
+# External agents
+ACPX_AGENTS=cursor,gemini
+
+# MCP
+MCPL_CONFIG_FILES=/home/myuser/.config/mcpl/mcp.json
+
+# Dashboard ports
+PI_PIDASH_PORT=19190
+PI_PIDIFF_PORT=19290
+
+# Dreaming
+PI_DREAM_INTERVAL_HOURS=3
+```
+
+---
+
+Source: architecture.md
+
+# Orchestrator Architecture
+
+When you ask pi-config to fix a bug, write a feature, or review code, your request doesn't go straight to a code-editing agent. Instead, it flows through an **orchestrator** — a coordination layer that decides *who* should do the work, *how* the work should be done safely, and *what rules* apply. Understanding this architecture helps you predict how pi-config behaves, why certain commands are blocked, and how to get the most out of the multi-agent system.
+
+The orchestrator coordinates three subsystems working together: **rule injection** loads governance into the session, the **enforcement layer** blocks dangerous commands in real time, and **subagent delegation** routes tasks to the right specialist. This page explains how these three systems interact.
+
+## The Big Picture
+
+When you start a pi session with the orchestrator extension loaded, the following happens:
+
+1. **Session starts** — the extension registers all subsystems (rules, enforcement, subagent tool, async infrastructure, commands)
+2. **Rule injection** fires (`before_agent_start` hook) — orchestrator rules and project memories are loaded into the system prompt
+3. **You send a message** — the orchestrator reads your request and decides which specialist agent should handle it
+4. **Enforcement checks** run on every tool call — blocking forbidden commands before they execute
+5. **Subagent delegation** spawns a specialist (e.g., `python-expert`) as an isolated child process
+6. **Results surface** — sync results return inline; async results appear automatically when the agent finishes
+
+| Subsystem | When it runs | What it does | User-visible effect |
+|---|---|---|---|
+| Rule injection | Session start | Loads rules and memories into the system prompt | Orchestrator knows its role and project history |
+| Enforcement | Every tool call | Blocks forbidden or dangerous commands | Dangerous commands are rejected with explanations |
+| Subagent delegation | When the orchestrator routes work | Spawns specialist agents in isolated processes | Work is done by the right expert for the job |
+
+## Rule Injection
+
+Rule injection is the mechanism that turns a generic AI session into a governed orchestrator. At session start, the `before_agent_start` hook loads two types of content into the system prompt:
+
+### What Gets Injected
+
+**Project memories** are loaded first, from `.pi/memory/memory.md` in your project directory. These are lessons learned from previous sessions — things like "always use `uv run`, never `python` directly" or "never merge PRs without asking first." Memories appear before everything else in the prompt so the orchestrator treats them as high priority.
+
+**Orchestrator rules** are loaded next, from the `rules/` directory in the pi-config package. These are Markdown files that define what the orchestrator can and cannot do. They load in alphabetical order by filename:
+
+| Rule file | Purpose |
+|---|---|
+| `00-orchestrator-core.md` | Defines forbidden and allowed actions for the orchestrator |
+| `05-issue-first-workflow.md` | Pre-implementation checklist (issue creation, branch naming) |
+| `10-agent-routing.md` | Maps domains and languages to specialist agents |
+| `15-mcp-launchpad.md` | MCP server integration rules |
+| `20-code-review-loop.md` | Mandatory code review workflow with three parallel reviewers |
+| `25-documentation-updates.md` | When to trigger documentation generation |
+| `30-prompt-templates.md` | How slash commands should be executed |
+| `35-memory.md` | Memory system rules (writing, dreaming, quality) |
+| `40-critical-rules.md` | Parallelism, async agents, time estimates, safety |
+| `45-file-preview.md` | HTML file serving for browser preview |
+| `50-agent-bug-reporting.md` | Workflow when agent logic bugs are discovered |
+
+### How Injection Differs for Subagents
+
+Specialist subagents do **not** receive orchestrator rules. When a child process starts with the `PI_SUBAGENT_CHILD=1` environment variable, rule injection is skipped entirely. Subagents receive only their own agent-specific system prompt and, optionally, a read-only view of project memories.
+
+This separation is deliberate: the orchestrator needs governance rules about routing and delegation, while specialists just need to do their job (write Python, commit code, run tests).
+
+> **Tip:** If your project has specific memories that should influence all agents, add them to `.pi/memory/memory.md`. Memories are the one piece of injected context that both the orchestrator and subagents can see.
+
+## The Enforcement Layer
+
+While rule injection tells the orchestrator what it *should* do, the enforcement layer ensures certain things *cannot* happen. It's a `tool_call` hook that inspects every bash command before execution and blocks those that violate safety policies.
+
+### What Gets Enforced
+
+| Category | Blocked | Required instead |
+|---|---|---|
+| **Python/pip** | `python script.py`, `pip install pkg` | `uv run script.py`, `uv add pkg` |
+| **Pre-commit** | `pre-commit run` | `prek run --all-files` |
+| **Git staging** | `git add .`, `git add -A` | `git add <specific-files>` |
+| **Hook bypass** | `git commit --no-verify`, `core.hooksPath=/dev/null` | Run hooks normally |
+| **Protected branches** | Commits or pushes to `main`/`master` | Create a feature branch |
+| **Merged branches** | Commits to already-merged branches | Create a new branch |
+| **Remote execution** | `curl ... \| bash`, `eval $(curl ...)` | Download, audit with `security-auditor`, then run |
+| **Polling loops** | `while ... sleep 60 ...` | Use an async subagent instead |
+| **Long sleeps** | `sleep` longer than 30 seconds | Use an async subagent instead |
+| **Memory writes (subagents)** | Specialist agents writing memories | Only the orchestrator writes memories |
+| **Docker/Podman (in container)** | Direct `docker`/`podman` commands | Use the `docker-safe` read-only wrapper |
+| **Gitignored files** | Staging files matched by `.gitignore` | Don't stage ignored files |
+| **Temp files** | `mktemp` outside `/tmp/pi-work/` | Use `/tmp/pi-work/<project>/` prefix |
+
+### How Enforcement Differs From Rules
+
+Rules are *advisory* — they tell the orchestrator what to do, but the orchestrator could theoretically ignore them. Enforcement is *mandatory* — it intercepts tool calls at the system level and blocks them before execution. The orchestrator cannot bypass enforcement.
+
+> **Note:** Dangerous commands like `rm -rf` and `sudo` are not outright blocked. Instead, enforcement prompts you for confirmation before allowing them to run. If there's no UI available (e.g., in a headless session), dangerous commands are blocked entirely.
+
+### Enforcement and Subagents
+
+Enforcement applies to **all** agents, not just the orchestrator. When a specialist agent tries to run `git add .` or `python script.py`, the enforcement layer blocks it with the same error message. This means safety guarantees hold regardless of which agent is doing the work.
+
+The one enforcement rule specific to subagents is **memory write restriction**: specialist agents cannot add or delete memories. This prevents race conditions when multiple agents run in parallel.
+
+## Subagent Delegation
+
+The subagent tool is how the orchestrator gets work done. Instead of editing files or running commands directly, the orchestrator delegates to specialist agents that run as isolated child processes.
+
+### How Agents Are Discovered
+
+Agents come from three sources, loaded in priority order (later sources override earlier ones by name):
+
+| Priority | Source | Location |
+|---|---|---|
+| 1 (base) | Package agents | Bundled in pi-config (`agents/` directory) |
+| 2 | User agents | `~/.pi/agent/agents/` |
+| 3 (highest) | Project agents | `.pi/agents/` in your repo |
+
+Each agent is a Markdown file with YAML frontmatter defining its name, description, available tools, and optional model override. The body of the file becomes the agent's system prompt.
+
+pi-config ships with 24 specialist agents covering languages (Python, Go, Java, frontend), infrastructure (Docker, Kubernetes, Jenkins), development workflows (git, GitHub, testing, debugging), and specialized roles (security auditing, documentation, code review).
+
+### Delegation Modes
+
+The subagent tool supports four execution modes:
+
+**Single mode** — one agent, one task, blocks until complete. Use when the next step depends on the result.
+
+**Parallel mode** — up to 8 agents run simultaneously (4 concurrent), all must complete before returning. Use for tasks like sending code to three reviewers at once.
+
+**Chain mode** — agents run sequentially, with each step able to reference the previous step's output via a `{previous}` placeholder. Use for multi-step workflows like scout-then-plan.
+
+**Async mode** — the agent runs in the background as a detached process. The orchestrator continues immediately, and results surface automatically as a follow-up message when the agent finishes. Use for independent tasks like code reviews, research, or monitoring.
+
+| Mode | Blocks session? | `estimatedSeconds` required? | Max time |
+|---|---|---|---|
+| Single | Yes | Yes | Under 60 seconds |
+| Parallel | Yes | Yes (per task) | Longest task under 60 seconds |
+| Chain | Yes | Yes (per step) | Sum of all steps under 60 seconds |
+| Async | No | No | No limit |
+
+> **Warning:** If a sync task's estimated time is 60 seconds or more, the tool rejects the call and requires `async: true` instead. This prevents the session from blocking on long-running work.
+
+### Agent Isolation
+
+When a subagent is spawned, it runs as a separate child process with specific isolation properties:
+
+- **Environment**: `PI_SUBAGENT_CHILD=1` is set, which skips orchestrator rule injection and prevents memory writes
+- **Session**: agents run with `--no-session` (no persistent session file)
+- **Tools**: each agent only has access to the tools listed in its definition (e.g., `read, write, edit, bash`)
+- **System prompt**: the agent's own prompt is appended via a temporary file, which is cleaned up after execution
+
+Subagents **cannot** spawn their own subagents — the `PI_SUBAGENT_CHILD=1` check prevents the subagent tool from registering in child processes, avoiding infinite recursion.
+
+## How the Three Systems Work Together
+
+The three subsystems form a layered architecture:
+
+1. **Rule injection** provides the orchestrator's "knowledge" — what agents exist, how to route tasks, what workflows to follow, and what the project has learned from previous sessions
+2. **The orchestrator** uses that knowledge to make decisions — choosing the right agent, structuring parallel workflows, following the code review loop
+3. **Enforcement** acts as a safety net beneath both the orchestrator and its subagents — catching mistakes that rules alone can't prevent
+
+Here is what a typical workflow looks like when all three systems are active:
+
+1. You ask: "Fix the type error in `models.py`"
+2. The orchestrator (guided by **routing rules**) selects `python-expert`
+3. The orchestrator delegates via the `subagent` tool with `estimatedSeconds: 30`
+4. `python-expert` spawns as a child process (no orchestrator rules, has project memories)
+5. The expert reads the file, edits it, and runs `uv run pytest` (**enforcement** allows `uv run`, would block `python`)
+6. The expert tries `git add .` — **enforcement** blocks it, requiring specific file staging
+7. The expert stages the specific file and returns
+8. The orchestrator receives the result and (guided by **code review rules**) spawns three async review agents in parallel
+9. Review results surface automatically when complete
+10. If reviewers find issues, the orchestrator sends fixes back through the loop
+
+### Async Agent Lifecycle
+
+For background tasks (code reviews, memory dreaming, monitoring), the async agent infrastructure manages the full lifecycle:
+
+1. **Spawn** — a detached child process starts, tracked in an in-memory job map
+2. **Monitor** — a 3-second poller checks status files and a file watcher detects results
+3. **Surface** — when the agent completes, its output is injected into the conversation as a follow-up message (unless `fireAndForget` is set)
+4. **Notify** — a terminal notification fires so you know work finished
+5. **Cleanup** — completed jobs are removed after 30 seconds
+
+Async jobs survive session restarts. When you resume a session, the system restores jobs that belong to it using a session file hash, so background agents aren't lost.
+
+> **Tip:** Use `/async-status` to see what's running in the background. Use `/async-kill` to stop agents you no longer need — don't let unneeded agents waste resources.
+
+## How This Affects You
+
+Understanding the orchestrator architecture explains several behaviors you'll encounter:
+
+- **The orchestrator never edits files directly.** It always delegates to a specialist. If you want a quick edit, the orchestrator still routes it through an agent — this is by design, not a limitation.
+- **Certain commands are always blocked.** If you see a message like "Direct python/pip forbidden," that's the enforcement layer. Use the suggested alternative (e.g., `uv run`).
+- **Code reviews happen automatically.** After any code change, three review agents run in parallel. This is a mandatory workflow defined in the rules, not optional behavior.
+- **Background tasks surface on their own.** When you see a "Async Agent Result" message appear, that's a background agent reporting back. You didn't need to wait for it.
+- **Project memories carry forward.** Lessons learned in one session (mistakes, preferences, decisions) are loaded into every future session via rule injection. Over time, the orchestrator gets smarter about your project.
+- **You can customize agent behavior** by adding agents to `.pi/agents/` in your repo (project-scoped) or `~/.pi/agent/agents/` (user-scoped). Project agents override package agents with the same name.
+
+## Related Pages
+
+- See Agent Routing for the full domain-to-agent mapping and how to control which specialist handles your task
+- See Code Review Loop for details on the mandatory three-reviewer workflow
+- See Memory System for how project memories are stored, written, and consolidated through dreaming
+- See Async Agents for managing background tasks, monitoring status, and understanding the async lifecycle
+- See Enforcement Rules for the complete list of blocked commands and their required alternatives
+- See Subagent Tool Reference for the full parameter schema and usage examples of all delegation modes
+- See Agent Definitions for how to write custom agents with frontmatter configuration
+- See [Slash Commands](slash-commands.html) for the prompt templates that orchestrate multi-step workflows like `/implement` and `/pr-review`
+
+---

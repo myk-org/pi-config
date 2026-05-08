@@ -1,0 +1,1661 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slash Commands Reference - pi-config</title>
+    <meta name="description" content="Orchestrate specialist AI agents to automatically review, implement, and release your code">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Orchestrate specialist AI agents to automatically review, implement, and release your code</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Quickstart
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="delegating-tasks.html"
+                           class="nav-link">
+                            Delegating Tasks to Specialist Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="reviewing-code.html"
+                           class="nav-link">
+                            Reviewing Code with Parallel Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-releases.html"
+                           class="nav-link">
+                            Managing Releases and Versioning
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-dashboard.html"
+                           class="nav-link">
+                            Monitoring Sessions with the Web Dashboard
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="working-with-memory.html"
+                           class="nav-link">
+                            Saving and Recalling Project Knowledge
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="running-in-docker.html"
+                           class="nav-link">
+                            Running pi-config in Docker
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="querying-reviews.html"
+                           class="nav-link">
+                            Querying the Review Database
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            CLI Command Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link active" aria-current="page">
+                            Slash Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="specialist-agents.html"
+                           class="nav-link">
+                            Specialist Agent Catalog
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="environment-variables.html"
+                           class="nav-link">
+                            Environment Variables
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="architecture.html"
+                           class="nav-link">
+                            Orchestrator Architecture
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="slash-commands-reference">Slash Commands Reference</h1>
+<h2 id="overview">Overview</h2>
+<p>Pi provides two types of slash commands:</p>
+<ul>
+<li><strong>Prompt template commands</strong> — defined in the <code>prompts/</code> directory, executed by the orchestrator, and may delegate to specialist agents.</li>
+<li><strong>Extension commands</strong> — defined in TypeScript under <code>extensions/orchestrator/</code>, executed directly without an AI roundtrip (unless noted).</li>
+</ul>
+<p>All commands support Tab completion for arguments. Completions are cached for 5 minutes.</p>
+<hr />
+<h2 id="implementation-commands">Implementation Commands</h2>
+<h3 id="implement"><code>/implement</code></h3>
+<p>Runs a scout, planner, and worker agent chain to explore the codebase, plan changes, and implement them.</p>
+<div class="highlight"><pre><span></span><code>/implement &lt;task&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Description of the task to implement</td>
+</tr>
+</tbody>
+</table>
+<p>The command executes three agents in sequence:</p>
+<ol>
+<li><strong>scout</strong> — explores the codebase and returns a summary of file locations, key functions, and dependencies.</li>
+<li><strong>planner</strong> — creates a detailed implementation plan: files to modify, step-by-step changes, edge cases, testing approach.</li>
+<li><strong>worker</strong> — implements the plan, making all code changes following project conventions.</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/implement add pagination to the /users API endpoint
+</code></pre></div>
+
+<hr />
+<h3 id="scout-and-plan"><code>/scout-and-plan</code></h3>
+<p>Runs the scout and planner agents without implementing. Useful for reviewing a plan before committing to changes.</p>
+<div class="highlight"><pre><span></span><code>/scout-and-plan &lt;task&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Description of the task to plan</td>
+</tr>
+</tbody>
+</table>
+<p>The command executes two agents in sequence:</p>
+<ol>
+<li><strong>scout</strong> — explores the codebase and returns a summary of relevant code.</li>
+<li><strong>planner</strong> — creates a detailed implementation plan with files, steps, edge cases, and testing approach.</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/scout-and-plan migrate the auth middleware to use JWT tokens
+</code></pre></div>
+
+<hr />
+<h3 id="implement-and-review"><code>/implement-and-review</code></h3>
+<p>Implements a task, runs three parallel code reviewers, then fixes all issues found.</p>
+<div class="highlight"><pre><span></span><code>/implement-and-review &lt;task&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Description of the task to implement and review</td>
+</tr>
+</tbody>
+</table>
+<p>The command executes agents in this sequence:</p>
+<ol>
+<li><strong>worker</strong> — implements the task.</li>
+<li>Three review agents run <strong>in parallel</strong>:</li>
+<li><strong>code-reviewer-quality</strong> — code quality review</li>
+<li><strong>code-reviewer-guidelines</strong> — guideline adherence review</li>
+<li>
+<p><strong>code-reviewer-security</strong> — bugs and security review</p>
+</li>
+<li>
+<p><strong>worker</strong> — fixes all issues found by reviewers and reports what was fixed.</p>
+</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/implement-and-review add rate limiting to the API gateway
+</code></pre></div>
+
+<hr />
+<h2 id="code-review-commands">Code Review Commands</h2>
+<h3 id="pr-review"><code>/pr-review</code></h3>
+<p>Reviews a GitHub PR using three parallel review agents and posts inline comments.</p>
+<div class="highlight"><pre><span></span><code>/pr-review [PR number or URL]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PR number or URL</code></td>
+<td>string</td>
+<td>No</td>
+<td>Auto-detect from current branch</td>
+<td>PR number, full URL, or omit for auto-detection</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> Open PR numbers from the current repository.</p>
+<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
+<p><strong>Workflow phases:</strong></p>
+<ol>
+<li><strong>PR Detection</strong> — resolves the PR from the argument or current branch via <code>gh pr view</code>.</li>
+<li><strong>Data Fetching</strong> — fetches the PR diff and project AGENTS.md using <code>myk-pi-tools pr diff</code> and <code>myk-pi-tools pr claude-md</code>.</li>
+<li><strong>Code Analysis</strong> — delegates to three review agents in parallel (quality, guidelines, security).</li>
+<li><strong>User Selection</strong> — presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION). The user selects which to post.</li>
+<li><strong>Post Comments</strong> — posts selected findings as inline PR comments via <code>myk-pi-tools pr post-comment</code>.</li>
+<li><strong>Summary</strong> — displays final counts and links.</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/pr-review
+/pr-review 123
+/pr-review https://github.com/owner/repo/pull/123
+</code></pre></div>
+
+<hr />
+<h3 id="review-local"><code>/review-local</code></h3>
+<p>Reviews uncommitted changes or branch differences using three parallel review agents.</p>
+<div class="highlight"><pre><span></span><code>/review-local [base branch]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base branch</code></td>
+<td>string</td>
+<td>No</td>
+<td><code>HEAD</code> (uncommitted changes)</td>
+<td>Branch name to compare against</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> Git branch names (local and remote).</p>
+<p>When no argument is provided, reviews all uncommitted changes (staged + unstaged) via <code>git diff HEAD</code>. When a branch is specified, compares the current branch against it via <code>git diff &lt;branch&gt;...HEAD</code>.</p>
+<p>Three review agents run in parallel, analyzing for code quality, guidelines adherence, and security. Results are merged, deduplicated, and presented grouped by severity.</p>
+<div class="highlight"><pre><span></span><code>/review-local
+/review-local main
+/review-local feature/auth-refactor
+</code></pre></div>
+
+<hr />
+<h3 id="review-handler"><code>/review-handler</code></h3>
+<p>Processes all review sources (human, Qodo, CodeRabbit) from the current branch's PR and applies fixes.</p>
+<div class="highlight"><pre><span></span><code>/review-handler [--autorabbit] [URL]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--autorabbit</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Off</td>
+<td>Auto-approve and fix CodeRabbit comments in a polling loop</td>
+</tr>
+<tr>
+<td><code>URL</code></td>
+<td>string</td>
+<td>No</td>
+<td>Auto-detect from current branch</td>
+<td>Specific review URL</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> <code>--autorabbit</code> flag.</p>
+<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
+<blockquote>
+<p><strong>Warning:</strong> <code>--autorabbit</code> is a command-level flag. It is never passed to <code>myk-pi-tools</code> CLI commands.</p>
+</blockquote>
+<p><strong>Standard workflow:</strong></p>
+<ol>
+<li>Fetches reviews from all sources via <code>myk-pi-tools reviews fetch</code>.</li>
+<li>Presents items in a table grouped by source, with global numbering and priority sorting.</li>
+<li>Collects user decisions (yes/no/all/skip per source).</li>
+<li>Delegates fixes to appropriate specialist agents.</li>
+<li>Runs tests (all must pass before proceeding).</li>
+<li>Commits and pushes changes.</li>
+<li>Posts replies to GitHub and stores results in the database.</li>
+</ol>
+<p><strong>Autorabbit mode (<code>--autorabbit</code>):</strong></p>
+<p>Skips the initial fetch/review cycle and enters a polling loop. CodeRabbit comments are auto-approved without user interaction. The loop runs until CodeRabbit approves the PR or the user explicitly stops it.</p>
+<div class="highlight"><pre><span></span><code>/review-handler
+/review-handler --autorabbit
+/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456
+</code></pre></div>
+
+<hr />
+<h3 id="refine-review"><code>/refine-review</code></h3>
+<p>Refines pending GitHub PR review comments with AI before submitting.</p>
+<div class="highlight"><pre><span></span><code>/refine-review &lt;PR URL&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PR URL</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Full GitHub PR URL</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
+<p><strong>Workflow:</strong></p>
+<ol>
+<li>Fetches pending review comments via <code>myk-pi-tools reviews pending-fetch</code>.</li>
+<li>Refines each comment for clarity, conciseness, and actionability.</li>
+<li>Presents original and refined versions side-by-side.</li>
+<li>User selects which refinements to accept (all, specific numbers, keep originals, or custom text).</li>
+<li>User chooses a review action: Comment, Approve, Request Changes, or keep pending.</li>
+<li>Submits updates via <code>myk-pi-tools reviews pending-update</code>.</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/refine-review https://github.com/owner/repo/pull/123
+</code></pre></div>
+
+<hr />
+<h2 id="release-integration-commands">Release &amp; Integration Commands</h2>
+<h3 id="release"><code>/release</code></h3>
+<p>Creates a GitHub release with automatic changelog generation and optional version file bumping.</p>
+<div class="highlight"><pre><span></span><code>/release [version] [flags]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td>string</td>
+<td>No</td>
+<td>Auto-detected from commits</td>
+<td>Explicit version number (e.g., <code>1.17.1</code>)</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Off</td>
+<td>Preview the release without creating it</td>
+</tr>
+<tr>
+<td><code>--prerelease</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Off</td>
+<td>Mark as prerelease</td>
+</tr>
+<tr>
+<td><code>--draft</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Off</td>
+<td>Create as draft release</td>
+</tr>
+<tr>
+<td><code>--target &lt;branch&gt;</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Current branch</td>
+<td>Target branch for the release</td>
+</tr>
+<tr>
+<td><code>--tag-match &lt;pattern&gt;</code></td>
+<td>flag</td>
+<td>No</td>
+<td>None</td>
+<td>Filter tags to a specific pattern</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> Recent git tags sorted by version.</p>
+<p><strong>Prerequisites:</strong> <code>myk-pi-tools</code> must be installed.</p>
+<p><strong>Workflow:</strong></p>
+<ol>
+<li><strong>Validation</strong> — checks branch status, clean working tree, and remote sync via <code>myk-pi-tools release info</code>.</li>
+<li><strong>Version Detection</strong> — scans for version files via <code>myk-pi-tools release detect-versions</code>.</li>
+<li><strong>Changelog</strong> — categorizes commits by conventional commit type and generates formatted changelog with emoji section headers.</li>
+<li><strong>User Approval</strong> — presents proposed version, version files to update, and changelog preview. Skipped when an explicit version is provided.</li>
+<li><strong>Version Bump</strong> — updates version files via <code>myk-pi-tools release bump-version</code>, creates a PR, and merges it.</li>
+<li><strong>Create Release</strong> — creates the GitHub release via <code>myk-pi-tools release create</code>.</li>
+</ol>
+<p><strong>Version bump logic:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Commit Type</th>
+<th>Bump</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Breaking changes</td>
+<td>MAJOR</td>
+</tr>
+<tr>
+<td><code>feat:</code></td>
+<td>MINOR</td>
+</tr>
+<tr>
+<td><code>fix:</code>, <code>docs:</code>, <code>chore:</code>, <code>refactor:</code>, <code>test:</code>, <code>ci:</code></td>
+<td>PATCH</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>/release
+/release 2.0.0
+/release --dry-run
+/release --prerelease --draft
+</code></pre></div>
+
+<hr />
+<h3 id="coderabbit-rate-limit"><code>/coderabbit-rate-limit</code></h3>
+<p>Handles CodeRabbit rate limits by waiting for the cooldown period and re-triggering the review.</p>
+<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit [PR number or URL]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PR number or URL</code></td>
+<td>string</td>
+<td>No</td>
+<td>Auto-detect from current branch</td>
+<td>PR number or full URL</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> Open PR numbers from the current repository.</p>
+<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
+<p><strong>Workflow:</strong></p>
+<ol>
+<li>Detects the PR from arguments or current branch.</li>
+<li>Checks rate limit status via <code>myk-pi-tools coderabbit check</code>.</li>
+<li>If rate-limited, waits for the cooldown (plus 30-second buffer) and triggers <code>@coderabbitai review</code>.</li>
+<li>Polls until the review starts (max 10 minutes).</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit
+/coderabbit-rate-limit 123
+/coderabbit-rate-limit https://github.com/owner/repo/pull/123
+</code></pre></div>
+
+<hr />
+<h3 id="query-db"><code>/query-db</code></h3>
+<p>Queries the reviews database for analytics and insights about PR review history.</p>
+<div class="highlight"><pre><span></span><code>/query-db &lt;command&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Query subcommand or raw SQL SELECT</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Prerequisites:</strong> <code>myk-pi-tools</code> must be installed.</p>
+<p><strong>Available subcommands:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stats --by-source</code></td>
+<td>Addressed rate by source (human vs AI)</td>
+</tr>
+<tr>
+<td><code>stats --by-reviewer</code></td>
+<td>Statistics by individual reviewer</td>
+</tr>
+<tr>
+<td><code>patterns --min &lt;N&gt;</code></td>
+<td>Find recurring dismissed suggestions (minimum N occurrences)</td>
+</tr>
+<tr>
+<td><code>dismissed --owner &lt;X&gt; --repo &lt;Y&gt;</code></td>
+<td>All dismissed comments for a specific repo</td>
+</tr>
+<tr>
+<td><code>query "&lt;SQL&gt;"</code></td>
+<td>Custom SELECT query against the database</td>
+</tr>
+<tr>
+<td><code>find-similar</code></td>
+<td>Find comments similar to previously dismissed ones (JSON via stdin)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Only SELECT statements and CTEs are allowed. Modifying queries (INSERT, UPDATE, DELETE, DROP) are blocked.</p>
+</blockquote>
+<p>The database is located at <code>&lt;project-root&gt;/.claude/data/reviews.db</code>.</p>
+<div class="highlight"><pre><span></span><code>/query-db stats --by-source
+/query-db stats --by-reviewer
+/query-db patterns --min 2
+/query-db dismissed --owner myorg --repo myrepo
+/query-db query &quot;SELECT * FROM comments WHERE status=&#39;skipped&#39; LIMIT 10&quot;
+</code></pre></div>
+
+<hr />
+<h2 id="external-agent-commands">External Agent Commands</h2>
+<h3 id="acpx-prompt"><code>/acpx-prompt</code></h3>
+<p>Runs a prompt through <a href="https://github.com/openclaw/acpx">acpx</a> to any ACP-compatible coding agent.</p>
+<div class="highlight"><pre><span></span><code>/acpx-prompt [agent[:model]] [--fix|--peer] &lt;prompt&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td>string</td>
+<td>No</td>
+<td>Last saved agent from <code>.pi/acpx-config.json</code></td>
+<td>Target agent name</td>
+</tr>
+<tr>
+<td><code>:model</code></td>
+<td>string</td>
+<td>No</td>
+<td>Agent default</td>
+<td>Model override (e.g., <code>codex:o3-pro</code>)</td>
+</tr>
+<tr>
+<td><code>--fix</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Off</td>
+<td>Grant the agent file write permissions</td>
+</tr>
+<tr>
+<td><code>--peer</code></td>
+<td>flag</td>
+<td>No</td>
+<td>Off</td>
+<td>Run an AI-to-AI peer review loop</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>—</td>
+<td>The prompt to send to the agent</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> Agent names (<code>pi</code>, <code>openclaw</code>, <code>codex</code>, <code>claude</code>, <code>gemini</code>, <code>cursor</code>, <code>copilot</code>, <code>droid</code>, <code>iflow</code>, <code>kilocode</code>, <code>kimi</code>, <code>kiro</code>, <code>opencode</code>, <code>qwen</code>) and flags (<code>--fix</code>, <code>--peer</code>).</p>
+<p><strong>Prerequisites:</strong> <code>acpx</code> must be installed (<code>npm install -g acpx@latest</code>). The underlying agent CLI must also be installed separately.</p>
+<p><strong>Supported agents:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Wraps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pi</code></td>
+<td>Pi Coding Agent</td>
+</tr>
+<tr>
+<td><code>openclaw</code></td>
+<td>OpenClaw ACP bridge</td>
+</tr>
+<tr>
+<td><code>codex</code></td>
+<td>Codex CLI (OpenAI)</td>
+</tr>
+<tr>
+<td><code>claude</code></td>
+<td>Claude Code</td>
+</tr>
+<tr>
+<td><code>gemini</code></td>
+<td>Gemini CLI</td>
+</tr>
+<tr>
+<td><code>cursor</code></td>
+<td>Cursor CLI</td>
+</tr>
+<tr>
+<td><code>copilot</code></td>
+<td>GitHub Copilot CLI</td>
+</tr>
+<tr>
+<td><code>droid</code></td>
+<td>Factory Droid</td>
+</tr>
+<tr>
+<td><code>iflow</code></td>
+<td>iFlow CLI</td>
+</tr>
+<tr>
+<td><code>kilocode</code></td>
+<td>Kilocode</td>
+</tr>
+<tr>
+<td><code>kimi</code></td>
+<td>Kimi CLI</td>
+</tr>
+<tr>
+<td><code>kiro</code></td>
+<td>Kiro CLI</td>
+</tr>
+<tr>
+<td><code>opencode</code></td>
+<td>OpenCode</td>
+</tr>
+<tr>
+<td><code>qwen</code></td>
+<td>Qwen Code</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Modes:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Flag</th>
+<th>Permissions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default (read-only)</td>
+<td>none</td>
+<td>Agent can read files only</td>
+</tr>
+<tr>
+<td>Fix</td>
+<td><code>--fix</code></td>
+<td>Agent can read and write files</td>
+</tr>
+<tr>
+<td>Peer review</td>
+<td><code>--peer</code></td>
+<td>AI-to-AI debate loop until convergence</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> <code>--fix</code> and <code>--peer</code> are mutually exclusive. Multiple agents with <code>--fix</code> is not supported.</p>
+</blockquote>
+<p><strong>Peer review mode</strong> runs a multi-round debate loop between Claude and the peer agent(s). Claude fixes code based on findings and sends changes back for re-review. The loop continues until all peer agents confirm no remaining issues. With multiple peers, all must agree independently.</p>
+<p><strong>Configuration persistence:</strong> The last-used agent spec is saved to <code>.pi/acpx-config.json</code> after successful runs. Subsequent invocations without an agent name use the saved value.</p>
+<div class="highlight"><pre><span></span><code>/acpx-prompt codex review this function
+/acpx-prompt cursor:gpt-4o --fix fix the failing tests
+/acpx-prompt cursor,codex --peer review the architecture
+/acpx-prompt --peer review this code
+</code></pre></div>
+
+<hr />
+<h2 id="memory-commands">Memory Commands</h2>
+<h3 id="dream"><code>/dream</code></h3>
+<p>Runs memory consolidation as a background async agent. Analyzes the current session and maintains the <code>memory.md</code> file.</p>
+<div class="highlight"><pre><span></span><code>/dream
+</code></pre></div>
+
+<p>This command takes no arguments. It runs as a fire-and-forget background agent and does not block the session.</p>
+<p><strong>Operations performed:</strong></p>
+<ol>
+<li>Reads the memory file at <code>&lt;project&gt;/.pi/memory/memory.md</code>.</li>
+<li>Extracts learnable items from the current session (lessons, preferences, mistakes, completed work, patterns).</li>
+<li>Deduplicates and removes stale entries from the Learned section.</li>
+<li>Keeps the file under 50 entries.</li>
+<li>Never modifies entries in the Pinned section.</li>
+</ol>
+<div class="highlight"><pre><span></span><code>/dream
+</code></pre></div>
+
+<hr />
+<h3 id="remember"><code>/remember</code></h3>
+<p>Saves a pinned project memory for future sessions.</p>
+<div class="highlight"><pre><span></span><code>/remember &lt;what to remember&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>what</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>The information to save as a pinned memory</td>
+</tr>
+</tbody>
+</table>
+<p>Automatically categorizes the memory as one of: <code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, or <code>preference</code>. Saved via <code>myk-pi-tools memory add --pinned</code>.</p>
+<p>Pinned memories are never auto-removed by the <code>/dream</code> consolidation process.</p>
+<div class="highlight"><pre><span></span><code>/remember always run uv lock after changing pyproject.toml
+/remember the billing API requires OAuth2 client credentials flow
+</code></pre></div>
+
+<hr />
+<h2 id="session-utility-commands">Session Utility Commands</h2>
+<h3 id="btw"><code>/btw</code></h3>
+<p>Asks a quick side question without polluting the conversation history.</p>
+<div class="highlight"><pre><span></span><code>/btw &lt;question&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>question</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>The side question to ask</td>
+</tr>
+</tbody>
+</table>
+<p>Opens an ephemeral overlay that shows the answer. The question and answer are not added to the conversation history. The AI answers based only on existing conversation context with no tool access.</p>
+<p><strong>Overlay controls:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Esc</code>, <code>Space</code>, <code>q</code></td>
+<td>Dismiss</td>
+</tr>
+<tr>
+<td><code>Up</code> / <code>k</code></td>
+<td>Scroll up</td>
+</tr>
+<tr>
+<td><code>Down</code> / <code>j</code></td>
+<td>Scroll down</td>
+</tr>
+<tr>
+<td><code>PgUp</code></td>
+<td>Scroll up 10 lines</td>
+</tr>
+<tr>
+<td><code>PgDn</code></td>
+<td>Scroll down 10 lines</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>/btw what branch am I on?
+/btw what was the name of that function we discussed?
+</code></pre></div>
+
+<hr />
+<h3 id="status"><code>/status</code></h3>
+<p>Shows a unified session status snapshot. Executes directly without an AI roundtrip.</p>
+<div class="highlight"><pre><span></span><code>/status
+</code></pre></div>
+
+<p>This command takes no arguments.</p>
+<p><strong>Displays:</strong></p>
+<ul>
+<li><strong>Async agents</strong> — count and list of running background agents with duration and task preview.</li>
+<li><strong>Cron tasks</strong> — count and list of active scheduled tasks with schedule and last run time.</li>
+<li><strong>Git</strong> — current branch, clean/dirty state, number of changed files, and repository name.</li>
+<li><strong>Container</strong> — whether the session is running inside a container.</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/status
+</code></pre></div>
+
+<hr />
+<h3 id="async-status"><code>/async-status</code></h3>
+<p>Shows the status of background async agents. If running agents exist, presents an interactive selector to view live streaming output.</p>
+<div class="highlight"><pre><span></span><code>/async-status
+</code></pre></div>
+
+<p>This command takes no arguments.</p>
+<p>If all agents are completed, shows a static summary with completion status and duration. If running agents exist, lets you select one to view live output in a scrollable overlay.</p>
+<p><strong>Live output viewer controls:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Esc</code>, <code>Ctrl+C</code></td>
+<td>Close viewer</td>
+</tr>
+<tr>
+<td><code>Up</code> / <code>Down</code></td>
+<td>Scroll</td>
+</tr>
+<tr>
+<td><code>PgUp</code> / <code>PgDn</code></td>
+<td>Scroll 10 lines</td>
+</tr>
+<tr>
+<td><code>Home</code> / <code>End</code></td>
+<td>Jump to top/bottom</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>/async-status
+</code></pre></div>
+
+<hr />
+<h3 id="async-kill"><code>/async-kill</code></h3>
+<p>Kills running async agent(s) by name, ID prefix, or all at once. Without an argument, presents an interactive selection menu.</p>
+<div class="highlight"><pre><span></span><code>/async-kill [name|id|all]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>target</code></td>
+<td>string</td>
+<td>No</td>
+<td>Interactive selection</td>
+<td>Agent name, ID prefix, or <code>all</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>/async-kill all
+/async-kill Dream
+/async-kill worker-1716000000
+</code></pre></div>
+
+<hr />
+<h3 id="dream-auto"><code>/dream-auto</code></h3>
+<p>Toggles automatic memory dreaming. When enabled, spawns a worker agent every 3 hours and on session quit to consolidate memories.</p>
+<div class="highlight"><pre><span></span><code>/dream-auto [on|off]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>state</code></td>
+<td>string</td>
+<td>No</td>
+<td>Shows current status</td>
+<td><code>on</code> to enable, <code>off</code> to disable</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> <code>on</code>, <code>off</code>.</p>
+<p><strong>Environment variable:</strong> <code>PI_DREAM_INTERVAL_HOURS</code> — override the dreaming interval (default: <code>3</code>, range: <code>0.5</code>–<code>24</code>).</p>
+<p>Auto-dreaming is enabled by default. On session quit, a final dream runs as a detached process.</p>
+<div class="highlight"><pre><span></span><code>/dream-auto
+/dream-auto on
+/dream-auto off
+</code></pre></div>
+
+<hr />
+<h3 id="cron"><code>/cron</code></h3>
+<p>Schedules recurring tasks within the pi session. Tasks survive <code>/reload</code> and <code>/new</code> but are terminated on pi exit.</p>
+<div class="highlight"><pre><span></span><code>/cron &lt;subcommand|natural language&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list</code></td>
+<td>List scheduled tasks in the current session</td>
+</tr>
+<tr>
+<td><code>list-all</code></td>
+<td>List cron tasks from all active pi sessions</td>
+</tr>
+<tr>
+<td><code>remove &lt;id&gt; [id...]</code></td>
+<td>Remove tasks by ID (aliases: <code>rm</code>, <code>delete</code>, <code>kill</code>)</td>
+</tr>
+<tr>
+<td><code>&lt;natural language&gt;</code></td>
+<td>Add a task using natural language (parsed by AI)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> Subcommands (<code>add</code>, <code>list</code>, <code>list-all</code>, <code>remove</code>), schedule hints (<code>every</code>, <code>at</code>), and task IDs for removal.</p>
+<p><strong>Schedule types:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Format</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Interval-based</td>
+<td><code>every &lt;duration&gt;</code></td>
+<td><code>every 2h</code>, <code>every 30m</code></td>
+</tr>
+<tr>
+<td>Time-based</td>
+<td><code>at &lt;HH:MM&gt;</code></td>
+<td><code>at 12:00</code>, <code>at 09:30</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Task types:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Prefix</th>
+<th>Execution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Slash command</td>
+<td><code>/</code></td>
+<td>Executed as a command in the session</td>
+</tr>
+<tr>
+<td>Prompt</td>
+<td>(any text)</td>
+<td>Run as an async background agent</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Minimum interval is 10 seconds. Tasks are persisted to a PID-scoped file and restored after <code>/reload</code>.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code>/cron list
+/cron list-all
+/cron remove 1 3
+/cron every 2h run /pr-review
+/cron at 09:00 check for new issues
+</code></pre></div>
+
+<p>The <code>cron_manage</code> tool is also available for the AI to manage cron tasks programmatically with structured parameters.</p>
+<p><strong><code>cron_manage</code> tool parameters:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>action</code></td>
+<td><code>"add"</code> | <code>"list"</code> | <code>"list-all"</code> | <code>"remove"</code></td>
+<td>Yes</td>
+<td>Action to perform</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>string</td>
+<td>For <code>add</code></td>
+<td>Human-readable task description</td>
+</tr>
+<tr>
+<td><code>task</code></td>
+<td>string</td>
+<td>For <code>add</code></td>
+<td>What to execute (prompt or <code>/command</code>)</td>
+</tr>
+<tr>
+<td><code>interval_seconds</code></td>
+<td>number</td>
+<td>For interval <code>add</code></td>
+<td>Run every N seconds (minimum 10)</td>
+</tr>
+<tr>
+<td><code>at_hour</code></td>
+<td>number (0–23)</td>
+<td>For time-based <code>add</code></td>
+<td>Hour for daily schedule</td>
+</tr>
+<tr>
+<td><code>at_minute</code></td>
+<td>number (0–59)</td>
+<td>For time-based <code>add</code></td>
+<td>Minute for daily schedule</td>
+</tr>
+<tr>
+<td><code>id</code></td>
+<td>number</td>
+<td>For <code>remove</code></td>
+<td>Task ID to remove</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="pidash"><code>/pidash</code></h3>
+<p>Manages the pidash web dashboard daemon. Pidash provides a browser-based UI for monitoring pi sessions, viewing conversation history, managing async agents and cron tasks, and switching models.</p>
+<div class="highlight"><pre><span></span><code>/pidash [subcommand]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>start</code></td>
+<td>Start the pidash server</td>
+</tr>
+<tr>
+<td><code>stop</code></td>
+<td>Stop the pidash server and disconnect</td>
+</tr>
+<tr>
+<td><code>restart</code></td>
+<td>Stop and restart the pidash server</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>Show server status, port, and connection state (default)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>.</p>
+<p><strong>Environment variables:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_PIDASH_PORT</code></td>
+<td><code>19190</code></td>
+<td>Port for the pidash server</td>
+</tr>
+<tr>
+<td><code>PI_PIDASH_ENABLE</code></td>
+<td><code>true</code></td>
+<td>Set to <code>false</code> to disable pidash</td>
+</tr>
+</tbody>
+</table>
+<p>The dashboard is accessible at <code>http://localhost:19190</code> (or the configured port). It connects to pi via WebSocket and supports sending prompts from the browser, switching models, aborting operations, and viewing live streaming output.</p>
+<div class="highlight"><pre><span></span><code>/pidash
+/pidash start
+/pidash stop
+/pidash restart
+/pidash status
+</code></pre></div>
+
+<hr />
+<h3 id="pidiff"><code>/pidiff</code></h3>
+<p>Manages the pidiff diff viewer daemon. Pidiff provides a browser-based UI for viewing branch diffs, file trees, and inline review comments.</p>
+<div class="highlight"><pre><span></span><code>/pidiff [subcommand]
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>start</code></td>
+<td>Start the pidiff server</td>
+</tr>
+<tr>
+<td><code>stop</code></td>
+<td>Stop the pidiff server and disconnect</td>
+</tr>
+<tr>
+<td><code>restart</code></td>
+<td>Stop and restart the pidiff server</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>Show server status, port, and connection state (default)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tab completion:</strong> <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>.</p>
+<p><strong>Environment variables:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_PIDIFF_PORT</code></td>
+<td><code>19290</code></td>
+<td>Port for the pidiff server</td>
+</tr>
+<tr>
+<td><code>PI_PIDIFF_ENABLE</code></td>
+<td><code>true</code></td>
+<td>Set to <code>false</code> to disable pidiff</td>
+</tr>
+</tbody>
+</table>
+<p>Review comments published from the pidiff browser UI are automatically injected into the pi session as follow-up messages.</p>
+<div class="highlight"><pre><span></span><code>/pidiff
+/pidiff start
+/pidiff stop
+/pidiff restart
+</code></pre></div>
+
+<hr />
+<h3 id="nvim-changed-files"><code>/nvim-changed-files</code></h3>
+<p>Sends git changed files to Neovim's quickfix list. Only available when pi is running inside a Neovim terminal (the <code>NVIM</code> environment variable is set).</p>
+<div class="highlight"><pre><span></span><code>/nvim-changed-files
+</code></pre></div>
+
+<p>This command takes no arguments.</p>
+<p>Collects all changed files (committed on the branch vs. <code>origin/main</code> plus uncommitted changes) and sends them to the parent Neovim instance's quickfix list via RPC. Opens the quickfix window automatically.</p>
+<blockquote>
+<p><strong>Note:</strong> This command is only registered when the <code>NVIM</code> environment variable points to a valid Neovim socket.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code>/nvim-changed-files
+</code></pre></div>
+
+<hr />
+<h2 id="quick-reference">Quick Reference</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Type</th>
+<th>Arguments</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/implement</code></td>
+<td>Prompt</td>
+<td><code>&lt;task&gt;</code></td>
+<td>Scout, plan, and implement</td>
+</tr>
+<tr>
+<td><code>/scout-and-plan</code></td>
+<td>Prompt</td>
+<td><code>&lt;task&gt;</code></td>
+<td>Scout and plan without implementing</td>
+</tr>
+<tr>
+<td><code>/implement-and-review</code></td>
+<td>Prompt</td>
+<td><code>&lt;task&gt;</code></td>
+<td>Implement with review and fix cycle</td>
+</tr>
+<tr>
+<td><code>/pr-review</code></td>
+<td>Prompt</td>
+<td><code>[#\|URL]</code></td>
+<td>Review a GitHub PR</td>
+</tr>
+<tr>
+<td><code>/review-local</code></td>
+<td>Prompt</td>
+<td><code>[branch]</code></td>
+<td>Review local changes</td>
+</tr>
+<tr>
+<td><code>/review-handler</code></td>
+<td>Prompt</td>
+<td><code>[--autorabbit] [URL]</code></td>
+<td>Process and fix PR review comments</td>
+</tr>
+<tr>
+<td><code>/refine-review</code></td>
+<td>Prompt</td>
+<td><code>&lt;URL&gt;</code></td>
+<td>Refine pending review comments</td>
+</tr>
+<tr>
+<td><code>/release</code></td>
+<td>Prompt</td>
+<td><code>[version] [flags]</code></td>
+<td>Create a GitHub release</td>
+</tr>
+<tr>
+<td><code>/coderabbit-rate-limit</code></td>
+<td>Prompt</td>
+<td><code>[#\|URL]</code></td>
+<td>Handle CodeRabbit rate limits</td>
+</tr>
+<tr>
+<td><code>/query-db</code></td>
+<td>Prompt</td>
+<td><code>&lt;command&gt;</code></td>
+<td>Query the reviews database</td>
+</tr>
+<tr>
+<td><code>/acpx-prompt</code></td>
+<td>Prompt</td>
+<td><code>[agent] [flags] &lt;prompt&gt;</code></td>
+<td>Run prompt via external agent</td>
+</tr>
+<tr>
+<td><code>/dream</code></td>
+<td>Prompt</td>
+<td>—</td>
+<td>Run memory consolidation</td>
+</tr>
+<tr>
+<td><code>/remember</code></td>
+<td>Prompt</td>
+<td><code>&lt;what&gt;</code></td>
+<td>Save a pinned memory</td>
+</tr>
+<tr>
+<td><code>/btw</code></td>
+<td>Extension</td>
+<td><code>&lt;question&gt;</code></td>
+<td>Quick side question (ephemeral)</td>
+</tr>
+<tr>
+<td><code>/status</code></td>
+<td>Extension</td>
+<td>—</td>
+<td>Session status snapshot</td>
+</tr>
+<tr>
+<td><code>/async-status</code></td>
+<td>Extension</td>
+<td>—</td>
+<td>Background agent status</td>
+</tr>
+<tr>
+<td><code>/async-kill</code></td>
+<td>Extension</td>
+<td><code>[target]</code></td>
+<td>Kill background agent(s)</td>
+</tr>
+<tr>
+<td><code>/dream-auto</code></td>
+<td>Extension</td>
+<td><code>[on\|off]</code></td>
+<td>Toggle automatic dreaming</td>
+</tr>
+<tr>
+<td><code>/cron</code></td>
+<td>Extension</td>
+<td><code>&lt;subcommand\|text&gt;</code></td>
+<td>Schedule recurring tasks</td>
+</tr>
+<tr>
+<td><code>/pidash</code></td>
+<td>Extension</td>
+<td><code>[subcommand]</code></td>
+<td>Manage web dashboard</td>
+</tr>
+<tr>
+<td><code>/pidiff</code></td>
+<td>Extension</td>
+<td><code>[subcommand]</code></td>
+<td>Manage diff viewer</td>
+</tr>
+<tr>
+<td><code>/nvim-changed-files</code></td>
+<td>Extension</td>
+<td>—</td>
+<td>Send changed files to Neovim</td>
+</tr>
+</tbody>
+</table>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="cli-reference.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">CLI Command Reference</span>
+                </a>
+
+
+                <a href="specialist-agents.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Specialist Agent Catalog</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#overview">Overview</a></li>
+<li><a href="#implementation-commands">Implementation Commands</a><ul>
+<li><a href="#implement">/implement</a></li>
+<li><a href="#scout-and-plan">/scout-and-plan</a></li>
+<li><a href="#implement-and-review">/implement-and-review</a></li>
+</ul>
+</li>
+<li><a href="#code-review-commands">Code Review Commands</a><ul>
+<li><a href="#pr-review">/pr-review</a></li>
+<li><a href="#review-local">/review-local</a></li>
+<li><a href="#review-handler">/review-handler</a></li>
+<li><a href="#refine-review">/refine-review</a></li>
+</ul>
+</li>
+<li><a href="#release-integration-commands">Release &amp; Integration Commands</a><ul>
+<li><a href="#release">/release</a></li>
+<li><a href="#coderabbit-rate-limit">/coderabbit-rate-limit</a></li>
+<li><a href="#query-db">/query-db</a></li>
+</ul>
+</li>
+<li><a href="#external-agent-commands">External Agent Commands</a><ul>
+<li><a href="#acpx-prompt">/acpx-prompt</a></li>
+</ul>
+</li>
+<li><a href="#memory-commands">Memory Commands</a><ul>
+<li><a href="#dream">/dream</a></li>
+<li><a href="#remember">/remember</a></li>
+</ul>
+</li>
+<li><a href="#session-utility-commands">Session Utility Commands</a><ul>
+<li><a href="#btw">/btw</a></li>
+<li><a href="#status">/status</a></li>
+<li><a href="#async-status">/async-status</a></li>
+<li><a href="#async-kill">/async-kill</a></li>
+<li><a href="#dream-auto">/dream-auto</a></li>
+<li><a href="#cron">/cron</a></li>
+<li><a href="#pidash">/pidash</a></li>
+<li><a href="#pidiff">/pidiff</a></li>
+<li><a href="#nvim-changed-files">/nvim-changed-files</a></li>
+</ul>
+</li>
+<li><a href="#quick-reference">Quick Reference</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 2.2.0</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

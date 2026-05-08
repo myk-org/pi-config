@@ -1,0 +1,32 @@
+# pi-config
+
+> Orchestrate specialist AI agents to automatically review, implement, and release your code
+
+## Getting Started
+
+- [Quickstart](quickstart.md): Install pi-config via Docker or natively, configure your environment, and delegate your first task to a specialist agent
+
+## User Guides
+
+- [Delegating Tasks to Specialist Agents](delegating-tasks.md): Learn how to route work to the right specialist agent using single, parallel, chain, and async delegation modes
+- [Reviewing Code with Parallel Agents](reviewing-code.md): Run automated code reviews using three parallel reviewers, review pull requests from GitHub, and review local changes before pushing
+- [Managing Releases and Versioning](managing-releases.md): Generate changelogs, bump versions across multiple files, and create GitHub releases with a single command
+- [Monitoring Sessions with the Web Dashboard](using-dashboard.md): Set up Pidash to monitor multiple agent sessions in real time, stream conversations, and respond to agent questions from your browser
+- [Saving and Recalling Project Knowledge](working-with-memory.md): Store lessons, decisions, and patterns in the per-repo memory system so your agents learn from past sessions
+- [Running pi-config in Docker](running-in-docker.md): Configure the Docker container with the right mounts, environment variables, and tool access for your development workflow
+- [Querying the Review Database](querying-reviews.md): Analyze past code review comments to find recurring patterns, track dismissed feedback, and identify similar issues across repositories
+
+## Recipes
+
+- [Common Workflow Recipes](workflow-recipes.md): Copy-paste patterns for everyday tasks: implement-and-review loops, PR review-and-fix cycles, background agents, and memory consolidation
+
+## Reference
+
+- [CLI Command Reference](cli-reference.md): Complete reference for all myk-pi-tools subcommands including db, memory, pr, release, reviews, and coderabbit
+- [Slash Commands Reference](slash-commands.md): Reference for all interactive slash commands: /implement, /pr-review, /release, /review-local, /dream, /btw, /cron, and more
+- [Specialist Agent Catalog](specialist-agents.md): Lookup table of all 24 specialist agents with their capabilities, domains, and when the orchestrator routes tasks to each one
+- [Environment Variables](environment-variables.md): Complete list of environment variables for GitHub auth, Vertex AI, Gemini, dashboard ports, Discord bot, and container configuration
+
+## Internals
+
+- [Orchestrator Architecture](architecture.md): Understand how the rule injection system, enforcement layer, and subagent delegation work together to coordinate specialist agents

@@ -1,0 +1,1936 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Specialist Agent Catalog - pi-config</title>
+    <meta name="description" content="Orchestrate specialist AI agents to automatically review, implement, and release your code">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Orchestrate specialist AI agents to automatically review, implement, and release your code</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Quickstart
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="delegating-tasks.html"
+                           class="nav-link">
+                            Delegating Tasks to Specialist Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="reviewing-code.html"
+                           class="nav-link">
+                            Reviewing Code with Parallel Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-releases.html"
+                           class="nav-link">
+                            Managing Releases and Versioning
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-dashboard.html"
+                           class="nav-link">
+                            Monitoring Sessions with the Web Dashboard
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="working-with-memory.html"
+                           class="nav-link">
+                            Saving and Recalling Project Knowledge
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="running-in-docker.html"
+                           class="nav-link">
+                            Running pi-config in Docker
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="querying-reviews.html"
+                           class="nav-link">
+                            Querying the Review Database
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            CLI Command Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link">
+                            Slash Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="specialist-agents.html"
+                           class="nav-link active" aria-current="page">
+                            Specialist Agent Catalog
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="environment-variables.html"
+                           class="nav-link">
+                            Environment Variables
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="architecture.html"
+                           class="nav-link">
+                            Orchestrator Architecture
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="specialist-agent-catalog">Specialist Agent Catalog</h1>
+<p>The orchestrator delegates tasks to 24 specialist agents via the <code>subagent</code> tool. Each agent runs in an isolated context with its own tool permissions, system prompt, and optional model override. See <a href="architecture.html">Orchestrator Architecture</a> for how the orchestrator discovers, routes, and manages agents.</p>
+<blockquote>
+<p><strong>Note:</strong> Agents are defined as Markdown files with YAML frontmatter in the <code>agents/</code> directory. Users can override or extend agents from <code>~/.pi/agent/agents/</code> (user scope) or <code>.pi/agents/</code> (project scope). See Custom Agent Development for details on creating your own agents.</p>
+</blockquote>
+<h2 id="quick-reference">Quick Reference</h2>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Domain</th>
+<th>Tools</th>
+<th>Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api-documenter</code></td>
+<td>API documentation and specs</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>bash-expert</code></td>
+<td>Shell scripting and automation</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>code-reviewer-guidelines</code></td>
+<td>Project standards compliance</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>code-reviewer-quality</code></td>
+<td>Code quality and maintainability</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>code-reviewer-security</code></td>
+<td>Bugs, logic errors, security</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>debugger</code></td>
+<td>Error diagnosis and root cause analysis</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>docker-expert</code></td>
+<td>Containers and Docker workflows</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>docs-fetcher</code></td>
+<td>External documentation retrieval</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>frontend-expert</code></td>
+<td>Frontend development (JS/TS/CSS)</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>git-expert</code></td>
+<td>Local git operations</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>github-expert</code></td>
+<td>GitHub platform operations</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>go-expert</code></td>
+<td>Go programming</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>java-expert</code></td>
+<td>Java programming</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>jenkins-expert</code></td>
+<td>Jenkins CI/CD pipelines</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>kubernetes-expert</code></td>
+<td>Kubernetes and cloud-native</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>planner</code></td>
+<td>Implementation planning</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>python-expert</code></td>
+<td>Python programming</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>reviewer</code></td>
+<td>General code review</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>scout</code></td>
+<td>Fast codebase reconnaissance</td>
+<td>read, bash</td>
+<td><code>claude-haiku-4-5</code></td>
+</tr>
+<tr>
+<td><code>security-auditor</code></td>
+<td>External repo security audit</td>
+<td>read, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>technical-documentation-writer</code></td>
+<td>Technical documentation</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>test-automator</code></td>
+<td>Test suite creation and CI setup</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>test-runner</code></td>
+<td>Test execution and failure analysis</td>
+<td>bash, read</td>
+<td>default</td>
+</tr>
+<tr>
+<td><code>worker</code></td>
+<td>General-purpose fallback</td>
+<td>read, write, edit, bash</td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<h2 id="routing-table">Routing Table</h2>
+<p>The orchestrator routes tasks by <strong>intent</strong>, not by the tool being used. See <a href="architecture.html">Orchestrator Architecture</a> for the full routing logic.</p>
+<table>
+<thead>
+<tr>
+<th>Domain</th>
+<th>Routed To</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python (.py)</td>
+<td><code>python-expert</code></td>
+<td>Writing, testing, or refactoring Python code</td>
+</tr>
+<tr>
+<td>Go (.go)</td>
+<td><code>go-expert</code></td>
+<td>Writing or modifying Go code</td>
+</tr>
+<tr>
+<td>Frontend (JS/TS/React/Vue/Angular)</td>
+<td><code>frontend-expert</code></td>
+<td>Component creation, CSS, frontend testing</td>
+</tr>
+<tr>
+<td>Java (.java)</td>
+<td><code>java-expert</code></td>
+<td>Spring Boot, Maven, Gradle, JUnit</td>
+</tr>
+<tr>
+<td>Shell scripts (.sh)</td>
+<td><code>bash-expert</code></td>
+<td>Script creation, system automation</td>
+</tr>
+<tr>
+<td>Markdown (.md)</td>
+<td><code>technical-documentation-writer</code></td>
+<td>Documentation authoring</td>
+</tr>
+<tr>
+<td>Docker</td>
+<td><code>docker-expert</code></td>
+<td>Dockerfile, Compose, image optimization</td>
+</tr>
+<tr>
+<td>Kubernetes/OpenShift</td>
+<td><code>kubernetes-expert</code></td>
+<td>Manifests, Helm charts, GitOps</td>
+</tr>
+<tr>
+<td>Jenkins/CI/Groovy</td>
+<td><code>jenkins-expert</code></td>
+<td>Jenkinsfile, pipeline configuration</td>
+</tr>
+<tr>
+<td>Git operations (local)</td>
+<td><code>git-expert</code></td>
+<td>Commits, branches, merges, rebasing</td>
+</tr>
+<tr>
+<td>GitHub (PRs, issues, releases, workflows)</td>
+<td><code>github-expert</code></td>
+<td><code>gh</code> CLI operations</td>
+</tr>
+<tr>
+<td>Tests</td>
+<td><code>test-automator</code></td>
+<td>Creating test suites and CI pipelines</td>
+</tr>
+<tr>
+<td>Debugging</td>
+<td><code>debugger</code></td>
+<td>Error diagnosis and root cause analysis</td>
+</tr>
+<tr>
+<td>API docs</td>
+<td><code>api-documenter</code></td>
+<td>OpenAPI specs, SDK generation</td>
+</tr>
+<tr>
+<td>External repo security audit</td>
+<td><code>security-auditor</code></td>
+<td>Pre-adoption security review</td>
+</tr>
+<tr>
+<td>External library/framework docs</td>
+<td><code>docs-fetcher</code></td>
+<td>Fetching React, FastAPI, Django docs</td>
+</tr>
+<tr>
+<td>No specialist match</td>
+<td><code>worker</code></td>
+<td>General-purpose fallback</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Tip:</strong> Running Python tests routes to <code>python-expert</code>, not <code>bash-expert</code>. Creating a PR routes to <code>github-expert</code>, not <code>git-expert</code>. Always think about the <em>intent</em> of the task.</p>
+</blockquote>
+<hr />
+<h2 id="language-specialists">Language Specialists</h2>
+<h3 id="api-documenter">api-documenter</h3>
+<p>Create OpenAPI/Swagger specs, generate SDKs, and write developer documentation. Handles versioning, examples, and interactive docs.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>api-documenter</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>OpenAPI/Swagger specification generation</li>
+<li>SDK generation</li>
+<li>Interactive documentation (Postman, Insomnia)</li>
+<li>API versioning</li>
+<li>Multi-language code examples</li>
+<li>Authentication and error documentation</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;api-documenter&quot;, task=&quot;Generate OpenAPI 3.0 spec for the user API in src/api/users.py&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=30)
+</code></pre></div>
+
+<hr />
+<h3 id="bash-expert">bash-expert</h3>
+<p>Bash and shell scripting creation, modification, refactoring, and fixes. Specializes in Bash, Zsh, POSIX shell, automation scripts, and system administration.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>bash-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Bash, Zsh, POSIX sh scripting</li>
+<li>Text processing with grep, sed, awk, jq, yq</li>
+<li>systemd and cron configuration</li>
+<li>Deployment automation</li>
+</ul>
+<p><strong>Enforced patterns:</strong></p>
+<ul>
+<li>Defensive scripting with <code>set -euo pipefail</code></li>
+<li>Proper variable quoting (<code>"$var"</code>)</li>
+<li>POSIX compatibility when possible</li>
+<li>Shellcheck compliance</li>
+<li>Proper shebangs and cleanup traps</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;bash-expert&quot;, task=&quot;Create a deployment script that builds the Docker image, runs migrations, and restarts the service&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h3 id="frontend-expert">frontend-expert</h3>
+<p>Frontend development (JS/TS/React/Vue/Angular/CSS). UI design, component creation, and modern web technologies.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>frontend-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>JavaScript and TypeScript</li>
+<li>Component frameworks: React, Vue, Angular</li>
+<li>CSS, Tailwind, styled-components</li>
+<li>Frontend testing: Jest, Vitest, Cypress, Playwright</li>
+<li>Build tools: Vite, Webpack, esbuild</li>
+<li>UI/UX patterns</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;frontend-expert&quot;, task=&quot;Add dark mode toggle to the header component using Tailwind CSS&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=25)
+</code></pre></div>
+
+<hr />
+<h3 id="go-expert">go-expert</h3>
+<p>Go code creation, modification, refactoring, and fixes. Specializes in goroutines, channels, modules, testing, and high-performance Go.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>go-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Idiomatic Go with goroutines and channels</li>
+<li>Web frameworks: Gin, Echo, Fiber, Chi, net/http</li>
+<li>CLI tools: Cobra, Viper</li>
+<li>Testing: table-driven tests, testify, gomock</li>
+<li>Tooling: golangci-lint, delve, pprof</li>
+</ul>
+<p><strong>Quality checklist applied:</strong></p>
+<ul>
+<li><code>golangci-lint</code> passes</li>
+<li>Tests pass with <code>-race</code> flag</li>
+<li>Context propagated through call chains</li>
+<li>Errors wrapped with <code>fmt.Errorf</code></li>
+<li>Code formatted with gofmt/goimports</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;go-expert&quot;, task=&quot;Implement the UserService with CRUD operations and table-driven tests&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=30)
+</code></pre></div>
+
+<hr />
+<h3 id="java-expert">java-expert</h3>
+<p>Java code creation, modification, refactoring, and fixes. Specializes in Spring Boot, Maven, Gradle, JUnit testing, and enterprise applications.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>java-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Modern Java 17+ (records, sealed classes, pattern matching)</li>
+<li>Spring Boot, Spring MVC, Spring Data, Spring Security, WebFlux</li>
+<li>Build tools: Maven, Gradle</li>
+<li>Testing: JUnit 5, Mockito, TestContainers</li>
+<li>Reactive programming: Project Reactor, WebFlux</li>
+</ul>
+<p><strong>Quality checklist applied:</strong></p>
+<ul>
+<li>Java 17+ target version</li>
+<li>Tests pass (unit + integration)</li>
+<li>Proper exception handling</li>
+<li>SLF4J logging</li>
+<li>JavaDoc on public APIs</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;java-expert&quot;, task=&quot;Add pagination support to the OrderRepository using Spring Data JPA&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h3 id="python-expert">python-expert</h3>
+<p>Python code creation, modification, refactoring, and fixes. Specializes in idiomatic Python, async/await, testing, and modern Python development.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>python-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Modern Python: type hints, dataclasses, async/await</li>
+<li>Web frameworks: FastAPI, Django, Flask</li>
+<li>Testing: pytest, mocking, fixtures</li>
+<li>Tooling: ruff, mypy, black</li>
+<li>Async: asyncio, aiohttp, anyio</li>
+</ul>
+<blockquote>
+<p><strong>Warning:</strong> This agent <strong>never</strong> uses <code>python</code>, <code>python3</code>, <code>pip</code>, or <code>pip3</code> directly. All Python execution uses <code>uv</code>:
+- <code>uv run &lt;script.py&gt;</code> instead of <code>python script.py</code>
+- <code>uv run pytest</code> instead of <code>pytest</code>
+- <code>uvx &lt;tool&gt;</code> instead of <code>pip install &lt;tool&gt; &amp;&amp; &lt;tool&gt;</code>
+- <code>uv add &lt;package&gt;</code> instead of <code>pip install &lt;package&gt;</code></p>
+</blockquote>
+<p><strong>Quality checklist applied:</strong></p>
+<ul>
+<li>Type hints on public functions</li>
+<li>Tests with pytest (&gt;90% coverage target)</li>
+<li>Formatted with ruff/black</li>
+<li>Linted with ruff</li>
+<li>Docstrings on public APIs</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;python-expert&quot;, task=&quot;Add rate limiting middleware to the FastAPI app using slowapi&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=25)
+</code></pre></div>
+
+<hr />
+<h2 id="infrastructure-specialists">Infrastructure Specialists</h2>
+<h3 id="docker-expert">docker-expert</h3>
+<p>Docker and container-related tasks including Dockerfile creation, container orchestration, image optimization, and containerization workflows.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>docker-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Docker Engine, BuildKit, Buildx</li>
+<li>Multi-stage builds</li>
+<li>Docker Compose and Docker Swarm</li>
+<li>Podman compatibility</li>
+<li>Registries: Docker Hub, Harbor, ECR, GCR, ACR</li>
+<li>Image scanning: Trivy</li>
+<li>Rootless containers</li>
+</ul>
+<p><strong>Enforced patterns:</strong></p>
+<ul>
+<li>Security first: non-root users, minimal base images</li>
+<li>Layer optimization with multi-stage builds and cache mounts</li>
+<li>Small images: Alpine, distroless, scratch when possible</li>
+<li>Reproducibility: pinned versions, locked dependencies</li>
+<li><code>.dockerignore</code>, health checks, vulnerability scanning</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;docker-expert&quot;, task=&quot;Optimize the Dockerfile for production with multi-stage build and non-root user&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h3 id="jenkins-expert">jenkins-expert</h3>
+<p>Jenkins-related code including CI/CD pipelines, Jenkinsfiles, Groovy scripts, and build automation.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>jenkins-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Declarative and scripted pipelines</li>
+<li>Groovy shared libraries</li>
+<li>Gradle and Maven integration</li>
+<li>Plugins: Pipeline, Docker, Kubernetes, Credentials</li>
+<li>Jenkins Configuration as Code (JCasC)</li>
+</ul>
+<blockquote>
+<p><strong>Warning:</strong> This agent enforces strict credential handling:
+- <strong>NEVER</strong> hardcodes credentials — uses <code>withCredentials</code> exclusively
+- <strong>NEVER</strong> skips validation with workarounds
+- Uses <code>@NonCPS</code> for non-serializable code
+- Cleans workspace after builds</p>
+</blockquote>
+<p><strong>Quality checklist applied:</strong></p>
+<ul>
+<li>Validated pipeline syntax</li>
+<li>Secured credentials via <code>withCredentials</code></li>
+<li>Configured timeouts</li>
+<li>Post actions defined</li>
+<li>Parallel stages where applicable</li>
+<li>Shared libraries used for reuse</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;jenkins-expert&quot;, task=&quot;Create a declarative pipeline with parallel test stages and Docker build&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=25)
+</code></pre></div>
+
+<hr />
+<h3 id="kubernetes-expert">kubernetes-expert</h3>
+<p>Kubernetes-related tasks including cluster management, workload deployment, service mesh, and cloud-native orchestration. Specializes in K8s, OpenShift, Helm, and GitOps.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>kubernetes-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Core K8s: Pods, Deployments, Services, ConfigMaps, Secrets, Ingress</li>
+<li>Workloads: StatefulSets, DaemonSets, Jobs, CronJobs</li>
+<li>Package management: Helm, Kustomize</li>
+<li>GitOps: ArgoCD, Flux</li>
+<li>Service mesh: Istio, Linkerd</li>
+<li>Platforms: OpenShift, EKS, GKE, AKS, k3s</li>
+</ul>
+<p><strong>Enforced patterns:</strong></p>
+<ul>
+<li>Declarative/GitOps over imperative commands</li>
+<li>RBAC and Network Policies</li>
+<li>Observable: Prometheus, Grafana, proper logging</li>
+<li>Resilient: health checks, PDBs, resource limits</li>
+</ul>
+<p><strong>Quality checklist applied:</strong></p>
+<ul>
+<li>Resource requests and limits set</li>
+<li>Liveness and readiness probes defined</li>
+<li>Security context configured</li>
+<li>Network policies in place</li>
+<li>RBAC configured</li>
+<li>No hardcoded secrets</li>
+<li>Manifests validated</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;kubernetes-expert&quot;, task=&quot;Create Helm chart for the microservice with HPA, PDB, and network policies&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=30)
+</code></pre></div>
+
+<hr />
+<h2 id="version-control-specialists">Version Control Specialists</h2>
+<h3 id="git-expert">git-expert</h3>
+<p>Local git operations including commits, branching, merging, rebasing, stash, and resolving git issues. For GitHub platform operations (PRs, issues, releases), use <code>github-expert</code> instead.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>git-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Commits, branching, merging, rebasing</li>
+<li>Stash, cherry-pick, log, diff, status, config</li>
+<li>Conflict resolution</li>
+<li>Commit message formatting via <code>-F -</code> (stdin)</li>
+</ul>
+<p><strong>Protection rules:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No main/master commits</td>
+<td>NEVER commits or pushes to <code>main</code> or <code>master</code></td>
+</tr>
+<tr>
+<td>No merged-branch commits</td>
+<td>NEVER commits to already-merged branches</td>
+</tr>
+<tr>
+<td>No <code>--no-verify</code></td>
+<td>NEVER uses the <code>--no-verify</code> flag</td>
+</tr>
+<tr>
+<td>Branch prefixes</td>
+<td>Uses <code>feature/</code>, <code>fix/</code>, <code>hotfix/</code>, <code>refactor/</code></td>
+</tr>
+<tr>
+<td>No AI attribution</td>
+<td>No Claude/AI signatures in commit messages</td>
+</tr>
+<tr>
+<td>No code fixes</td>
+<td>Reports pre-commit hook failures; does not fix code</td>
+</tr>
+<tr>
+<td>No test execution</td>
+<td>Asks orchestrator to verify tests before pushing</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;git-expert&quot;, task=&quot;Create a feature branch from main and commit the staged changes with message &#39;Add user authentication&#39;&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=10)
+</code></pre></div>
+
+<hr />
+<h3 id="github-expert">github-expert</h3>
+<p>GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the <code>gh</code> CLI for all GitHub API interactions.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>github-expert</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Operations:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Commands</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pull Requests</td>
+<td><code>gh pr create</code>, <code>gh pr view</code>, <code>gh pr list</code>, <code>gh pr merge</code>, <code>gh pr close</code>, <code>gh pr checkout</code>, <code>gh pr diff</code>, <code>gh pr checks</code></td>
+</tr>
+<tr>
+<td>Issues</td>
+<td><code>gh issue create</code>, <code>gh issue view</code>, <code>gh issue list</code>, <code>gh issue close</code>, <code>gh issue comment</code>, <code>gh issue edit</code></td>
+</tr>
+<tr>
+<td>Releases</td>
+<td><code>gh release create</code>, <code>gh release view</code>, <code>gh release list</code></td>
+</tr>
+<tr>
+<td>Workflows</td>
+<td><code>gh workflow list</code>, <code>gh workflow run</code>, <code>gh run list</code>, <code>gh run view</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Constraints:</strong></p>
+<ul>
+<li>NEVER uses <code>ask_user</code> — specialist agents do not interact with users directly</li>
+<li>NEVER pushes to <code>main</code>/<code>master</code></li>
+<li>NEVER commits to merged branches</li>
+<li>Does NOT run tests; asks orchestrator to verify before creating PRs</li>
+<li>Issue title format: <code>&lt;type&gt;: &lt;brief description&gt;</code></li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;github-expert&quot;, task=&quot;Create a PR from feature/auth to main with title &#39;Add OAuth2 login&#39; and a summary of changes&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=15)
+</code></pre></div>
+
+<hr />
+<h2 id="code-review-specialists">Code Review Specialists</h2>
+<p>Four agents handle code review, each covering a different dimension. See <a href="architecture.html">Orchestrator Architecture</a> for how they are typically combined in parallel review tasks.</p>
+<h3 id="code-reviewer-guidelines">code-reviewer-guidelines</h3>
+<p>Code review focused on project guidelines and style adherence. Reviews for AGENTS.md compliance, naming conventions, and project patterns.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>code-reviewer-guidelines</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (read-only — no modifications)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Review focus:</strong></p>
+<ul>
+<li>AGENTS.md compliance (reads AGENTS.md first)</li>
+<li>Documentation updates — missing doc updates are flagged as <code>[CRITICAL]</code></li>
+<li>Naming conventions</li>
+<li>File and folder structure</li>
+<li>Commit messages and branch naming</li>
+<li>Import ordering</li>
+<li>Consistency with existing codebase patterns</li>
+</ul>
+<p><strong>Output format:</strong> <code>[SEVERITY] file:line</code> — severities: <code>CRITICAL</code>, <code>WARNING</code>, <code>SUGGESTION</code></p>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;code-reviewer-guidelines&quot;, task=&quot;Review the changes on the current branch for project guideline compliance&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h3 id="code-reviewer-quality">code-reviewer-quality</h3>
+<p>Code review focused on general code quality and maintainability. Reviews for clean code, proper abstractions, DRY, and readability.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>code-reviewer-quality</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (read-only — no modifications)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Review focus:</strong></p>
+<ul>
+<li>Readability and naming</li>
+<li>Abstractions and DRY violations</li>
+<li>Complexity</li>
+<li>Error handling and observability</li>
+</ul>
+<p><strong>Critical anti-patterns detected:</strong></p>
+<ul>
+<li>Silent error swallowing (empty catch blocks)</li>
+<li>Missing operation logging</li>
+<li>Poor error context</li>
+<li>Opaque async/background code without logging</li>
+</ul>
+<p><strong>Output format:</strong> <code>[SEVERITY] file:line</code></p>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;code-reviewer-quality&quot;, task=&quot;Review src/services/ for code quality issues&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h3 id="code-reviewer-security">code-reviewer-security</h3>
+<p>Code review focused on bugs, logic errors, and security vulnerabilities. Reviews for correctness, edge cases, and potential exploits.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>code-reviewer-security</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (read-only — no modifications)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Review focus:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Checks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Logic</td>
+<td>Off-by-one errors, null/undefined risks, race conditions</td>
+</tr>
+<tr>
+<td>Input</td>
+<td>SQL injection, XSS, CSRF, input validation</td>
+</tr>
+<tr>
+<td>Secrets</td>
+<td>Hardcoded credentials, insecure cryptography</td>
+</tr>
+<tr>
+<td>Filesystem</td>
+<td>Path traversal, resource leaks</td>
+</tr>
+<tr>
+<td>General</td>
+<td>Error handling gaps, edge cases, implicit assumptions</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Approach:</strong> Traces data flow, identifies trust boundaries, checks error paths, verifies input validation.</p>
+<p><strong>Output format:</strong> <code>[SEVERITY] file:line</code> with Risk and Suggestion</p>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;code-reviewer-security&quot;, task=&quot;Security review of the authentication module in src/auth/&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=25)
+</code></pre></div>
+
+<hr />
+<h3 id="reviewer">reviewer</h3>
+<p>General code review agent. Reviews code changes for quality, correctness, and style.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>reviewer</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (read-only — no modifications)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Review areas:</strong></p>
+<ul>
+<li><strong>Correctness</strong> — logic errors, edge cases, off-by-one bugs</li>
+<li><strong>Security</strong> — input validation, injection, secrets exposure</li>
+<li><strong>Quality</strong> — readability, naming, DRY, proper abstractions</li>
+<li><strong>Performance</strong> — unnecessary allocations, N+1 queries, blocking calls</li>
+<li><strong>Style</strong> — project conventions, consistent formatting</li>
+</ul>
+<p><strong>Output format:</strong> <code>[SEVERITY] file:line</code> — outputs <code>"No issues found. Code approved. ✅"</code> when clean.</p>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;reviewer&quot;, task=&quot;Review the diff on the current branch&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h2 id="analysis-and-planning-specialists">Analysis and Planning Specialists</h2>
+<h3 id="debugger">debugger</h3>
+<p>Debugging specialist for errors, test failures, and unexpected behavior. Diagnoses only — does not modify files.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>debugger</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (read-only — no modifications)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Error analysis and stack trace interpretation</li>
+<li>Test failure investigation</li>
+<li>Performance issue identification</li>
+<li>Root cause analysis</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> The debugger <strong>diagnoses only</strong>. It does not modify files. The orchestrator delegates the actual fix to the appropriate language specialist based on the debugger's report.</p>
+</blockquote>
+<p><strong>Deliverables per issue:</strong></p>
+<ul>
+<li>Root cause explanation</li>
+<li>Evidence supporting the diagnosis</li>
+<li>Recommended fix description</li>
+<li>File paths and line numbers to modify</li>
+<li>Testing approach to verify the fix</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;debugger&quot;, task=&quot;Investigate why test_user_creation is failing with &#39;IntegrityError: duplicate key&#39;&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=20)
+</code></pre></div>
+
+<hr />
+<h3 id="planner">planner</h3>
+<p>Creates detailed implementation plans from codebase context. Does not write code.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>planner</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (analysis only)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output structure:</strong></p>
+<ul>
+<li>Overview of the change</li>
+<li>Per-file changes with What, Why, Details, and Lines</li>
+<li>Edge cases to handle</li>
+<li>Testing strategy</li>
+<li>Risks and mitigations</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> Plans must be detailed enough for worker agents to implement without ambiguity. Includes specific file paths, function names, and line numbers.</p>
+</blockquote>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;planner&quot;, task=&quot;Plan the implementation of role-based access control for the API&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=30)
+</code></pre></div>
+
+<hr />
+<h3 id="scout">scout</h3>
+<p>Fast codebase reconnaissance. Finds relevant files, functions, and dependencies for a given task.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>scout</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash (exploration only)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td><code>claude-haiku-4-5</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> This is the only agent that uses a non-default model. It runs on <code>claude-haiku-4-5</code> for cost optimization, since reconnaissance tasks are high-volume and don't require the most capable model.</p>
+</blockquote>
+<p><strong>Output format:</strong></p>
+<div class="highlight"><pre><span></span><code>## Relevant Files
+- path/to/file.py — Description of what it contains
+
+## Key Functions/Classes
+- ClassName.method() in file.py:42 — What it does
+
+## Dependencies
+- file.py imports from other.py
+- external: requests, fastapi
+
+## Tests
+- tests/test_file.py — Covers ClassName
+
+## Notes
+- Important observations about the codebase structure
+</code></pre></div>
+
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;scout&quot;, task=&quot;Find all files related to payment processing and map their dependencies&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=15)
+</code></pre></div>
+
+<hr />
+<h2 id="testing-specialists">Testing Specialists</h2>
+<h3 id="test-automator">test-automator</h3>
+<p>Create comprehensive test suites with unit, integration, and e2e tests. Sets up CI pipelines, mocking strategies, and test data.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>test-automator</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Unit test design with mocking and fixtures</li>
+<li>Integration tests with test containers</li>
+<li>E2E tests with Playwright and Cypress</li>
+<li>CI/CD pipeline configuration</li>
+<li>Test data factories</li>
+<li>Coverage analysis</li>
+</ul>
+<p><strong>Enforced patterns:</strong></p>
+<ul>
+<li>Test pyramid: many unit, fewer integration, minimal E2E</li>
+<li>Arrange-Act-Assert pattern</li>
+<li>Behavior-focused tests (not implementation-focused)</li>
+<li>Deterministic tests — no flakiness</li>
+<li>Parallel execution where possible</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;test-automator&quot;, task=&quot;Create unit and integration tests for the OrderService with &gt;90% coverage&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=30)
+</code></pre></div>
+
+<hr />
+<h3 id="test-runner">test-runner</h3>
+<p>Run tests and analyze failures. Returns detailed failure analysis without making fixes.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>test-runner</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>bash, read (read-only — no modifications)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Workflow:</strong> Run → Parse → Analyze failures → Report</p>
+<blockquote>
+<p><strong>Note:</strong> This agent <strong>never modifies files</strong>. It runs exactly the test command specified, analyzes failures, and returns control promptly.</p>
+</blockquote>
+<p><strong>Output per failure:</strong></p>
+<ul>
+<li>Test name and location</li>
+<li>Expected vs. actual result</li>
+<li>Most likely fix location</li>
+<li>One-line fix suggestion</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;test-runner&quot;, task=&quot;Run &#39;uv run pytest tests/test_orders.py -v&#39; and analyze any failures&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=15)
+</code></pre></div>
+
+<hr />
+<h2 id="documentation-specialists">Documentation Specialists</h2>
+<h3 id="docs-fetcher">docs-fetcher</h3>
+<p>Fetches current documentation for external libraries and frameworks. Prioritizes <code>llms.txt</code> when available, falls back to web parsing.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>docs-fetcher</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Retrieval strategy (in order):</strong></p>
+<ol>
+<li>Try <code>llms-full.txt</code> at the library's domain</li>
+<li>Try <code>llms.txt</code></li>
+<li>Fall back to HTML parsing</li>
+</ol>
+<p><strong>Output includes:</strong></p>
+<ul>
+<li>Source URL</li>
+<li>Type: <code>llms-full</code>, <code>llms</code>, or <code>web-parsed</code></li>
+<li>Extracted sections relevant to the query</li>
+<li>Key points</li>
+<li>Related links</li>
+</ul>
+<blockquote>
+<p><strong>Warning:</strong> The orchestrator <strong>must never</strong> fetch external documentation directly using <code>fetch_content</code>. All external doc requests <strong>must</strong> be delegated to <code>docs-fetcher</code>, which optimizes for LLM-friendly formats and token efficiency.</p>
+</blockquote>
+<p><strong>When to use:</strong></p>
+<ul>
+<li>Fetching library/framework documentation (React, FastAPI, Django, etc.)</li>
+<li>Looking up configuration guides for external tools</li>
+<li>Getting API references for third-party services</li>
+</ul>
+<p><strong>When to skip:</strong></p>
+<ul>
+<li>Standard library only (no external dependencies)</li>
+<li>User explicitly says "skip docs" or "I know the API"</li>
+<li>Simple operations with obvious patterns</li>
+<li>Docs already fetched in current conversation</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;docs-fetcher&quot;, task=&quot;Fetch FastAPI dependency injection documentation&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=15)
+</code></pre></div>
+
+<hr />
+<h3 id="technical-documentation-writer">technical-documentation-writer</h3>
+<p>Comprehensive, user-focused technical documentation for projects, features, or systems.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>technical-documentation-writer</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Markdown, MkDocs, Docusaurus, Sphinx</li>
+<li>Diagrams: Mermaid, PlantUML</li>
+<li>WCAG accessibility</li>
+<li>SEO structure</li>
+</ul>
+<p><strong>Enforced patterns:</strong></p>
+<ul>
+<li>User-first writing (write for the reader, not the developer)</li>
+<li>Progressive disclosure (overview → details)</li>
+<li>Actionable step-by-step with expected outcomes</li>
+<li>Tested: all code examples verified</li>
+</ul>
+<p><strong>Quality checklist applied:</strong></p>
+<ul>
+<li>Target audience identified</li>
+<li>Prerequisites stated</li>
+<li>Examples verified</li>
+<li>Links verified</li>
+<li>Consistent terminology</li>
+<li>Scannable structure</li>
+</ul>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;technical-documentation-writer&quot;, task=&quot;Write setup and usage docs for the authentication module&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=30)
+</code></pre></div>
+
+<hr />
+<h2 id="security-specialist">Security Specialist</h2>
+<h3 id="security-auditor">security-auditor</h3>
+<p>Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>security-auditor</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Audit categories:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>What It Checks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Malicious Code</td>
+<td><code>eval</code>/<code>exec</code>, obfuscation, time bombs, hidden functionality</td>
+</tr>
+<tr>
+<td>Data Exfiltration</td>
+<td>Network calls, env vars, credentials, DNS exfiltration</td>
+</tr>
+<tr>
+<td>Supply Chain Risk</td>
+<td>Dependency count, CVEs, suspicious packages, install hooks, pinning, freshness</td>
+</tr>
+<tr>
+<td>Filesystem &amp; System</td>
+<td>Read/write scope, sensitive paths, self-updating code, subprocess usage</td>
+</tr>
+<tr>
+<td>Network &amp; Permissions</td>
+<td>Listening ports, TLS bypass, proxying</td>
+</tr>
+<tr>
+<td>Trust Signals</td>
+<td>Contributors, stars, forks, maintenance activity</td>
+</tr>
+<tr>
+<td>License Compatibility</td>
+<td>Permissive vs. copyleft, compatibility checks</td>
+</tr>
+<tr>
+<td>Build &amp; Release Integrity</td>
+<td>Source/binary matching, signing, CI transparency</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Approach:</strong></p>
+<ul>
+<li>Clones repos to <code>/tmp/pi-work/</code> with <code>--depth 1</code></li>
+<li>Reads <strong>every</strong> source file (not just entry points)</li>
+<li>Lists <strong>all</strong> network endpoints contacted</li>
+<li>Never redacts findings — shows exact file paths and line numbers</li>
+</ul>
+<p><strong>Output:</strong> Structured report with findings tables, risk levels, and a final verdict of <code>SAFE</code>, <code>CAUTION</code>, or <code>UNSAFE</code>.</p>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;security-auditor&quot;, task=&quot;Audit the repository at https://github.com/example/lib for security risks&quot;, cwd=&quot;/tmp/pi-work&quot;, estimatedSeconds=45)
+</code></pre></div>
+
+<hr />
+<h2 id="general-purpose-agent">General-Purpose Agent</h2>
+<h3 id="worker">worker</h3>
+<p>General-purpose agent for tasks that don't match any specialist. Full capabilities.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Name</strong></td>
+<td><code>worker</code></td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>read, write, edit, bash</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>default</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Capabilities:</strong></p>
+<ul>
+<li>Read, analyze, and modify any file type</li>
+<li>Run shell commands</li>
+<li>General code writing and refactoring</li>
+<li>File system operations</li>
+<li>Research and analysis</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> If the worker identifies that a task would be better handled by a specialist, it reports this and hands off. The worker is the orchestrator's fallback when no specialist matches the task domain.</p>
+</blockquote>
+<p><strong>Invocation example:</strong></p>
+<div class="highlight"><pre><span></span><code>subagent(agent=&quot;worker&quot;, task=&quot;Rename all occurrences of &#39;oldConfig&#39; to &#39;appConfig&#39; across the project&quot;, cwd=&quot;/path/to/project&quot;, estimatedSeconds=15)
+</code></pre></div>
+
+<hr />
+<h2 id="agent-configuration-reference">Agent Configuration Reference</h2>
+<p>Each agent is defined as a Markdown file with YAML frontmatter. See Custom Agent Development for how to create and override agents.</p>
+<h3 id="frontmatter-fields">Frontmatter Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>Unique agent identifier used in routing and <code>subagent</code> calls</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>One-line capability summary shown in agent listings</td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td>string</td>
+<td>no</td>
+<td>all tools</td>
+<td>Comma-separated list of allowed tools (e.g., <code>read, write, edit, bash</code>)</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>string</td>
+<td>no</td>
+<td>inherits from parent</td>
+<td>Model override (e.g., <code>claude-haiku-4-5</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent-scopes">Agent Scopes</h3>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Source Directories</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>package</code></td>
+<td>Bundled <code>agents/</code> directory</td>
+<td>Lowest (base)</td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td><code>~/.pi/agent/agents/</code></td>
+<td>Overrides package</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td><code>.pi/agents/</code> in project root</td>
+<td>Highest (overrides user and package)</td>
+</tr>
+</tbody>
+</table>
+<p>Later sources override earlier ones by agent name. See Custom Agent Development for details on the override mechanism.</p>
+<h3 id="agent-capabilities-by-tool-access">Agent Capabilities by Tool Access</h3>
+<table>
+<thead>
+<tr>
+<th>Tool Combination</th>
+<th>Can Modify Files</th>
+<th>Can Execute Commands</th>
+<th>Agents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>read, bash</td>
+<td>No</td>
+<td>Yes (read-only intent)</td>
+<td>code-reviewer-guidelines, code-reviewer-quality, code-reviewer-security, debugger, docs-fetcher, git-expert, github-expert, planner, reviewer, scout, security-auditor</td>
+</tr>
+<tr>
+<td>bash, read</td>
+<td>No</td>
+<td>Yes (read-only intent)</td>
+<td>test-runner</td>
+</tr>
+<tr>
+<td>read, write, edit, bash</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>api-documenter, bash-expert, docker-expert, frontend-expert, go-expert, java-expert, jenkins-expert, kubernetes-expert, python-expert, technical-documentation-writer, test-automator, worker</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Agents with <code>read, bash</code> tools are analysis-only — they can read code and run commands for inspection but cannot modify files. This is a safety constraint for review, debugging, and audit agents.</p>
+</blockquote>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="slash-commands.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Slash Commands Reference</span>
+                </a>
+
+
+                <a href="environment-variables.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Environment Variables</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#quick-reference">Quick Reference</a></li>
+<li><a href="#routing-table">Routing Table</a></li>
+<li><a href="#language-specialists">Language Specialists</a><ul>
+<li><a href="#api-documenter">api-documenter</a></li>
+<li><a href="#bash-expert">bash-expert</a></li>
+<li><a href="#frontend-expert">frontend-expert</a></li>
+<li><a href="#go-expert">go-expert</a></li>
+<li><a href="#java-expert">java-expert</a></li>
+<li><a href="#python-expert">python-expert</a></li>
+</ul>
+</li>
+<li><a href="#infrastructure-specialists">Infrastructure Specialists</a><ul>
+<li><a href="#docker-expert">docker-expert</a></li>
+<li><a href="#jenkins-expert">jenkins-expert</a></li>
+<li><a href="#kubernetes-expert">kubernetes-expert</a></li>
+</ul>
+</li>
+<li><a href="#version-control-specialists">Version Control Specialists</a><ul>
+<li><a href="#git-expert">git-expert</a></li>
+<li><a href="#github-expert">github-expert</a></li>
+</ul>
+</li>
+<li><a href="#code-review-specialists">Code Review Specialists</a><ul>
+<li><a href="#code-reviewer-guidelines">code-reviewer-guidelines</a></li>
+<li><a href="#code-reviewer-quality">code-reviewer-quality</a></li>
+<li><a href="#code-reviewer-security">code-reviewer-security</a></li>
+<li><a href="#reviewer">reviewer</a></li>
+</ul>
+</li>
+<li><a href="#analysis-and-planning-specialists">Analysis and Planning Specialists</a><ul>
+<li><a href="#debugger">debugger</a></li>
+<li><a href="#planner">planner</a></li>
+<li><a href="#scout">scout</a></li>
+</ul>
+</li>
+<li><a href="#testing-specialists">Testing Specialists</a><ul>
+<li><a href="#test-automator">test-automator</a></li>
+<li><a href="#test-runner">test-runner</a></li>
+</ul>
+</li>
+<li><a href="#documentation-specialists">Documentation Specialists</a><ul>
+<li><a href="#docs-fetcher">docs-fetcher</a></li>
+<li><a href="#technical-documentation-writer">technical-documentation-writer</a></li>
+</ul>
+</li>
+<li><a href="#security-specialist">Security Specialist</a><ul>
+<li><a href="#security-auditor">security-auditor</a></li>
+</ul>
+</li>
+<li><a href="#general-purpose-agent">General-Purpose Agent</a><ul>
+<li><a href="#worker">worker</a></li>
+</ul>
+</li>
+<li><a href="#agent-configuration-reference">Agent Configuration Reference</a><ul>
+<li><a href="#frontmatter-fields">Frontmatter Fields</a></li>
+<li><a href="#agent-scopes">Agent Scopes</a></li>
+<li><a href="#agent-capabilities-by-tool-access">Agent Capabilities by Tool Access</a></li>
+</ul>
+</li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 2.2.0</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>
