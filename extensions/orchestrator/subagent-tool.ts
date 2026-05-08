@@ -35,7 +35,7 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
-const MAX_SYNC_SECONDS = 60;
+const MAX_SYNC_SECONDS = 30;
 const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
   `Estimated time ${seconds}s meets or exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
@@ -87,7 +87,7 @@ const SubagentParams = Type.Object({
   ),
   // Optional at schema level because async mode doesn't need it; runtime enforces for sync
   estimatedSeconds: Type.Optional(
-    Type.Number({ description: "Estimated task duration in seconds. Required for sync agents. If >= 60s, must use async: true instead." }),
+    Type.Number({ description: "Estimated task duration in seconds. Required for sync agents. If >= 30s, must use async: true instead." }),
   ),
   async: Type.Optional(
     Type.Boolean({ description: "Run in background (default: false). Agent runs detached, results surface when complete.", default: false }),
@@ -517,7 +517,7 @@ export function registerSubagentTool(
       "Set async: true when you don't need the result immediately for your next step. The result will surface automatically when complete. Use sync (default) only when the next step depends on this agent's output.",
       "ALWAYS use async: true for independent tasks that can run in parallel — code reviews, opening issues, research, analysis. Only use sync when the very next step depends on this agent's output (e.g., chain where step 2 needs step 1's result).",
       "ALWAYS pass cwd — use the project directory for current repo work, or the target path for external repos (e.g., /tmp/pi-work/...).",
-      "ALWAYS provide estimatedSeconds for sync agents. If estimated time is 60 seconds or more, you MUST use async: true instead.",
+      "ALWAYS provide estimatedSeconds for sync agents. If estimated time is 30 seconds or more, you MUST use async: true instead.",
     ],
     parameters: SubagentParams,
 
