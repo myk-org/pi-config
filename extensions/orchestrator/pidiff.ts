@@ -155,6 +155,8 @@ export function registerPidiff(pi: ExtensionAPI): void {
                 line: c.line,
                 side: c.side,
                 body: c.body,
+                ...(c.branch ? { branch: c.branch } : {}),
+                ...(c.worktreePath ? { worktreePath: c.worktreePath } : {}),
                 ...(c.replies?.length ? { replies: c.replies } : {}),
                 ...(c.resolved ? { resolved: true } : {}),
               })),

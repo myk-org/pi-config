@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession } from "@/types";
+import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "@/types";
 
 // ── WorkerPool (offloads diff computation to web workers) ───────────
 const WORKER_POOL_OPTIONS: WorkerPoolOptions = {
@@ -61,6 +61,8 @@ export function App() {
   const [activeSession, setActiveSession] = useState<PiSession | null>(() => {
     try { const s = localStorage.getItem("pidiff-session"); return s ? JSON.parse(s) : null; } catch { return null; }
   });
+  const [activeWorktree, setActiveWorktree] = useState<Worktree | null>(null);
+  const activeWorktreeRef = useRef<Worktree | null>(null);
 
   const [diffData, setDiffData] = useState<DiffData>({
     mode: "branch", files: [], branch: "",
@@ -82,6 +84,7 @@ export function App() {
   const [fontSize, setFontSize] = useState(13);
   const [theme, setTheme] = useState<string>("pierre-dark");
   const [stale, setStale] = useState(false);
+  const [staleWorktrees, setStaleWorktrees] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   // Review comments — persist in localStorage
@@ -128,14 +131,27 @@ export function App() {
         for (const f of committed) { if (!seen.has(f.name)) allFiles.push(f); }
         setDiffData({ mode: ev.mode || "branch", files: allFiles, branch: ev.branch || "", fromRef: ev.fromRef, toRef: ev.toRef });
         setLoading(false);
-        setStale(false);
+        // Don't clear stale here — only Refresh button clears it
         if (loadingTimeout.current) clearTimeout(loadingTimeout.current);
       }
       if (ev.type === "commits-list" && ev.commits) {
         setCommits(ev.commits);
       }
       if (ev.type === "status_changed") {
-        setStale(true);
+        if (ev.changedWorktrees && Array.isArray(ev.changedWorktrees)) {
+          setStaleWorktrees(prev => {
+            const next = new Set(prev);
+            for (const p of ev.changedWorktrees) next.add(p);
+            return next;
+          });
+          // Show banner ONLY if the currently active tab is stale
+          const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
+          if (activePath && ev.changedWorktrees.includes(activePath)) {
+            setStale(true);
+          }
+        } else {
+          setStale(true);
+        }
       }
       if (ev.type === "sessions-list" && ev.sessions) {
         setSessions(ev.sessions);
@@ -169,6 +185,10 @@ export function App() {
         if (activeSessionRef.current?.sessionId === ev.sessionId) {
           setActiveSession(null);
           activeSessionRef.current = null;
+          setActiveWorktree(null);
+          activeWorktreeRef.current = null;
+          setStale(false);
+          setStaleWorktrees(new Set());
           setDiffData({ mode: "branch", files: [], branch: "" });
         }
       }
@@ -192,6 +212,8 @@ export function App() {
 
   const switchSession = useCallback((s: PiSession) => {
     setActiveSession(s);
+    setActiveWorktree(null);
+    activeWorktreeRef.current = null;
     activeSessionRef.current = s;
     setMode("branch");
     modeRef.current = "branch";
@@ -202,6 +224,21 @@ export function App() {
     setLoading(true);
     send({ type: "watch", sessionId: s.sessionId });
   }, [send]);
+
+  const switchWorktree = useCallback((wt: Worktree) => {
+    setActiveWorktree(wt);
+    activeWorktreeRef.current = wt;
+    setMode("branch");
+    modeRef.current = "branch";
+    setCommits(null);
+    commitsRequested.current = false;
+    // Show stale banner if this tab has pending changes
+    setStale(staleWorktrees.has(wt.path));
+    // Always load data for the tab (no per-tab caching yet)
+    setDiffData({ mode: "branch", files: [], branch: wt.branch });
+    setLoading(true);
+    send({ type: "watch-worktree", worktreePath: wt.path });
+  }, [send, staleWorktrees]);
 
   const switchMode = useCallback((m: DiffMode) => {
     setMode(m);
@@ -325,9 +362,11 @@ export function App() {
 
   const submitComment = useCallback((file: string, side: "deletions" | "additions", lineNumber: number, body: string) => {
     if (!body.trim()) return;
-    setComments(prev => [...prev, { file, line: lineNumber, side: side === "deletions" ? "old" : "new", body: body.trim() }]);
+    const branch = activeWorktree?.branch || diffData.branch;
+    const worktreePath = activeWorktree?.path;
+    setComments(prev => [...prev, { file, line: lineNumber, side: side === "deletions" ? "old" : "new", body: body.trim(), branch, worktreePath }]);
     setOpenForms(prev => prev.filter(f => !(f.file === file && f.side === side && f.lineNumber === lineNumber)));
-  }, []);
+  }, [activeWorktree, diffData.branch]);
 
   const cancelCommentForm = useCallback((file: string, side: "deletions" | "additions", lineNumber: number) => {
     setOpenForms(prev => prev.filter(f => !(f.file === file && f.side === side && f.lineNumber === lineNumber)));
@@ -350,7 +389,7 @@ export function App() {
     send({ type: "publish-review", comments });
     setComments([]);
     try { localStorage.removeItem("pidiff-comments"); } catch {}
-  }, [comments, send]);
+  }, [comments, send, activeWorktree, diffData.branch]);
 
   // ── Render ────────────────────────────────────────────────────────
 
@@ -381,7 +420,7 @@ export function App() {
             {activeSession && (
               <div className="flex items-center gap-1.5">
                 <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">{diffData.branch}</span>
+                <span className="text-xs text-muted-foreground">{activeWorktree?.branch || diffData.branch}</span>
               </div>
             )}
             <Separator orientation="vertical" className="h-5" />
@@ -539,6 +578,32 @@ export function App() {
             </>)}
           </div>
         )}
+        {/* Workspace tabs — always shown. Each branch/worktree is a tab. */}
+        {activeSession && (() => {
+          const tabs = activeSession.worktrees && activeSession.worktrees.length > 0
+            ? activeSession.worktrees
+            : [{ path: activeSession.cwd, branch: diffData.branch || activeSession.branch, head: "", isMain: true }];
+          return (
+            <div className="flex items-center gap-1 px-4 py-1 bg-card border-t border-border overflow-x-auto">
+              {tabs.map(wt => {
+                const isActive = activeWorktree ? activeWorktree.path === wt.path : wt.isMain;
+                const isStale = staleWorktrees.has(wt.path);
+                return (
+                  <button key={wt.path} onClick={() => switchWorktree(wt)}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs whitespace-nowrap transition-colors",
+                      isActive ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+                    )}>
+                    <GitBranch className="h-3 w-3" />
+                    {wt.branch}
+                    {wt.isMain && tabs.length > 1 && <span className="text-[9px] text-muted-foreground">(root)</span>}
+                    {isStale && !isActive && <span className="h-2 w-2 rounded-full bg-amber-400 flex-shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
       </header>
 
       {/* Stale banner */}
@@ -548,6 +613,8 @@ export function App() {
           <Button size="sm" variant="outline" className="h-6 text-[11px] border-amber-500/30 text-amber-400 hover:bg-amber-500/20"
             onClick={() => {
               setStale(false);
+              const activePath = activeWorktree?.path || activeSession?.cwd;
+              if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
               setLoading(true);
               send({ type: "request-diffs", mode: modeRef.current });
             }}>

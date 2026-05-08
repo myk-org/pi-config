@@ -62,6 +62,41 @@ function getBranch(cwd: string): string {
   try { return gitExec(["branch", "--show-current"], cwd); } catch { return ""; }
 }
 
+interface WorktreeInfo {
+  path: string;
+  branch: string;
+  head: string;
+  isMain: boolean;
+}
+
+function getWorktrees(cwd: string): WorktreeInfo[] {
+  try {
+    const raw = execFileSync(GIT_BIN, ["worktree", "list", "--porcelain"], {
+      cwd, encoding: "utf-8", timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024 * 1024,
+    });
+    const worktrees: WorktreeInfo[] = [];
+    let current: Partial<WorktreeInfo> = {};
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        if (current.path) worktrees.push(current as WorktreeInfo);
+        current = { path: line.slice(9), isMain: worktrees.length === 0 };
+      } else if (line.startsWith("HEAD ")) {
+        current.head = line.slice(5);
+      } else if (line.startsWith("branch ")) {
+        // "branch refs/heads/main" → "main"
+        current.branch = line.slice(7).replace("refs/heads/", "");
+      } else if (line === "detached") {
+        current.branch = `(detached)`;
+      } else if (line === "") {
+        if (current.path) { worktrees.push(current as WorktreeInfo); current = {}; }
+      }
+    }
+    if (current.path) worktrees.push(current as WorktreeInfo);
+    return worktrees;
+  } catch (e: any) { log(`getWorktrees error: ${e.message}`); return []; }
+}
+
 function getStatus(cwd: string): { dirty: boolean; changes: number } {
   try {
     const s = gitExec(["status", "--porcelain"], cwd);
@@ -212,6 +247,7 @@ interface SessionInfo {
   cwd: string;
   branch: string;
   repo: string; // basename of cwd
+  worktrees: WorktreeInfo[];
 }
 
 interface PiClient {
@@ -221,7 +257,7 @@ interface PiClient {
 
 const piClients = new Map<string, PiClient>();
 const browserClients = new Set<any>();
-const browserWatchMap = new WeakMap<any, string | null>(); // sessionId being watched
+const browserWatchMap = new WeakMap<any, { sessionId: string | null; worktreePath: string | null }>();
 
 // ── HTTP Server ─────────────────────────────────────────────────────
 
@@ -266,16 +302,22 @@ piWss.on("connection", (ws: any) => {
 
       if (parsed.type === "register") {
         const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
+        const cwd = parsed.cwd || "";
+        const worktrees = getWorktrees(cwd);
         const session: SessionInfo = {
           sessionId,
-          cwd: parsed.cwd || "",
+          cwd,
           branch: parsed.branch || "",
-          repo: (parsed.cwd || "").split("/").pop() || "",
+          repo: cwd.split("/").pop() || "",
+          worktrees,
         };
         piClient = { ws, session };
         piClients.set(sessionId, piClient);
         log(`session registered: ${sessionId} (${session.repo})`);
         broadcastToBrowsers({ type: "session_added", session });
+        // Start file watchers for all worktrees
+        for (const wt of session.worktrees) startWatching(sessionId, wt.path);
+        if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
         return;
       }
 
@@ -289,8 +331,8 @@ piWss.on("connection", (ws: any) => {
 
   ws.on("close", () => {
     if (piClient) {
+      stopAllWatchers(piClient.session.sessionId);
       piClients.delete(piClient.session.sessionId);
-      statusCache.delete(piClient.session.sessionId);
       log(`session disconnected: ${piClient.session.sessionId}`);
       broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
     }
@@ -298,6 +340,7 @@ piWss.on("connection", (ws: any) => {
 
   ws.on("error", () => {
     if (piClient) {
+      stopAllWatchers(piClient.session.sessionId);
       piClients.delete(piClient.session.sessionId);
       broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
     }
@@ -308,7 +351,7 @@ piWss.on("connection", (ws: any) => {
 const browserWss = new WebSocket.Server({ noServer: true });
 browserWss.on("connection", (ws: any) => {
   browserClients.add(ws);
-  browserWatchMap.set(ws, null);
+  browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
   log(`browser connected (total: ${browserClients.size})`);
 
   // Send session list
@@ -322,16 +365,14 @@ browserWss.on("connection", (ws: any) => {
       // Watch a session
       if (parsed.type === "watch") {
         const watchId = parsed.sessionId ?? null;
-        browserWatchMap.set(ws, watchId);
+        browserWatchMap.set(ws, { sessionId: watchId, worktreePath: null });
         log(`browser watching: ${watchId}`);
 
         if (watchId) {
           const client = piClients.get(watchId);
           if (client) {
-            // Send initial branch diff
             const payload = buildDiffPayload(client.session.cwd, "branch");
             try { ws.send(JSON.stringify(payload)); } catch {}
-            // Send commits
             const commits = getLog(client.session.cwd, 30);
             try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
           }
@@ -339,39 +380,70 @@ browserWss.on("connection", (ws: any) => {
         return;
       }
 
-      // Request diffs for watched session
-      if (parsed.type === "request-diffs") {
-        const watchId = browserWatchMap.get(ws);
-        if (!watchId) return;
-        const client = piClients.get(watchId);
+      // Watch a specific worktree within a session
+      if (parsed.type === "watch-worktree") {
+        const watchInfo = browserWatchMap.get(ws);
+        if (!watchInfo?.sessionId) return;
+        const client = piClients.get(watchInfo.sessionId);
         if (!client) return;
 
+        const requestedPath = parsed.worktreePath || client.session.cwd;
+        // Validate: only allow known worktree paths or session cwd
+        const allowedPaths = new Set([
+          path.resolve(client.session.cwd),
+          ...client.session.worktrees.map(w => path.resolve(w.path)),
+        ]);
+        const resolvedPath = path.resolve(requestedPath);
+        if (!allowedPaths.has(resolvedPath)) {
+          log(`watch-worktree rejected: ${requestedPath} not in allowed paths for session ${watchInfo.sessionId}`);
+          return;
+        }
+        const worktreePath = resolvedPath;
+        browserWatchMap.set(ws, { ...watchInfo, worktreePath });
+        log(`browser watching worktree: ${worktreePath}`);
+
+        const payload = buildDiffPayload(worktreePath, "branch");
+        try { ws.send(JSON.stringify(payload)); } catch {}
+        const commits = getLog(worktreePath, 30);
+        try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+        return;
+      }
+
+      // Request diffs for watched session
+      if (parsed.type === "request-diffs") {
+        const watchInfo = browserWatchMap.get(ws);
+        if (!watchInfo?.sessionId) return;
+        const client = piClients.get(watchInfo.sessionId);
+        if (!client) return;
+
+        const cwd = watchInfo.worktreePath || client.session.cwd;
         const mode: DiffMode = parsed.mode || "branch";
         const refs = parsed.fromRef && parsed.toRef ? { from: parsed.fromRef, to: parsed.toRef } : undefined;
-        const payload = buildDiffPayload(client.session.cwd, mode, refs);
+        const payload = buildDiffPayload(cwd, mode, refs);
         try { ws.send(JSON.stringify(payload)); } catch {}
         return;
       }
 
       // Request commits
       if (parsed.type === "request-commits") {
-        const watchId = browserWatchMap.get(ws);
-        if (!watchId) return;
-        const client = piClients.get(watchId);
+        const watchInfo = browserWatchMap.get(ws);
+        if (!watchInfo?.sessionId) return;
+        const client = piClients.get(watchInfo.sessionId);
         if (!client) return;
 
-        const commits = getLog(client.session.cwd, 30);
+        const cwd = watchInfo.worktreePath || client.session.cwd;
+        const commits = getLog(cwd, 30);
         try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
         return;
       }
 
       // Publish review comments → forward to the watched pi session
       if (parsed.type === "publish-review") {
-        const watchId = browserWatchMap.get(ws);
-        if (!watchId) return;
-        const client = piClients.get(watchId);
+        const watchInfo = browserWatchMap.get(ws);
+        if (!watchInfo?.sessionId) return;
+        const client = piClients.get(watchInfo.sessionId);
         if (client?.ws) {
-          log(`review published for ${watchId}: ${parsed.comments?.length || 0} comments`);
+          log(`review published for ${watchInfo.sessionId}: ${parsed.comments?.length || 0} comments`);
           try { client.ws.send(JSON.stringify(parsed)); } catch {}
         }
         return;
@@ -415,46 +487,112 @@ server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
 
 // ── Change detection — notify browsers ──────────────────────────────
 
-const statusCache = new Map<string, string>();
-let changeDetectorRunning = false;
+// ── File watcher (chokidar) ─ real-time change detection ───────────────
 
-async function checkForChanges() {
-  if (browserClients.size === 0 || changeDetectorRunning) return;
-  changeDetectorRunning = true;
-  try {
-    for (const [sessionId, client] of piClients) {
-      const cwd = client.session.cwd;
-      try {
-        const [statusResult, branchResult] = await Promise.all([
-          execFileAsync("git", ["status", "--porcelain"], { cwd, timeout: 3000, maxBuffer: 2 * 1024 * 1024 }).catch(() => ({ stdout: "" })),
-          execFileAsync("git", ["branch", "--show-current"], { cwd, timeout: 3000 }).catch(() => ({ stdout: "" })),
-        ]);
-        const statusOut = (statusResult.stdout || "").trim();
-        const changes = statusOut ? statusOut.split("\n").length : 0;
-        const dirty = changes > 0;
-        const branch = (branchResult.stdout || "").trim();
-        const hash = `${branch}:${dirty}:${changes}`;
-        const prev = statusCache.get(sessionId);
-        if (hash === prev) continue;
-        statusCache.set(sessionId, hash);
+let _chokidar: any = null;
+import("chokidar").then(m => { _chokidar = m; log("chokidar loaded"); }).catch(e => log(`chokidar load failed: ${e.message}`));
+const activeWatchers = new Map<string, { watcher: any; debounceTimer: ReturnType<typeof setTimeout> | null }>();
 
-        client.session.branch = branch;
+const chokidarRetries = new Map<string, number>();
+const MAX_CHOKIDAR_RETRIES = 10;
 
-        const msg = JSON.stringify({ type: "status_changed", sessionId, dirty, changes, branch });
-        for (const browser of browserClients) {
-          if (browserWatchMap.get(browser) === sessionId) {
-            try { browser.send(msg); } catch {}
-          }
+function startWatching(sessionId: string, worktreePath: string) {
+  const retryKey = `${sessionId}:${worktreePath}`;
+  if (!_chokidar) {
+    const retries = chokidarRetries.get(retryKey) || 0;
+    if (retries >= MAX_CHOKIDAR_RETRIES) { log(`chokidar failed to load after ${MAX_CHOKIDAR_RETRIES} retries, giving up on ${worktreePath}`); return; }
+    chokidarRetries.set(retryKey, retries + 1);
+    setTimeout(() => startWatching(sessionId, worktreePath), 1000 * Math.min(retries + 1, 5));
+    return;
+  }
+  chokidarRetries.delete(retryKey);
+  const key = `${sessionId}:${worktreePath}`;
+  if (activeWatchers.has(key)) return;
+
+  log(`starting chokidar watch: ${worktreePath}`);
+  const watcher = _chokidar.watch(worktreePath, {
+    ignoreInitial: true,
+    persistent: true,
+    ignored: (filePath: string) => {
+      const rel = path.relative(worktreePath, filePath);
+      if (rel === "") return false; // watch root itself — don't ignore
+      if (rel.startsWith("..")) return true; // outside watch root — ignore
+      const first = rel.split(path.sep)[0];
+      return first === ".git" || first === "node_modules" || first === ".worktrees" || first === ".venv" || first === "dist" || first === "__pycache__";
+    },
+    depth: 20,
+  });
+
+  const state = { watcher, debounceTimer: null as ReturnType<typeof setTimeout> | null };
+  activeWatchers.set(key, state);
+
+  const onChange = () => {
+    if (state.debounceTimer) clearTimeout(state.debounceTimer);
+    state.debounceTimer = setTimeout(() => {
+      state.debounceTimer = null;
+      // Notify all browsers watching this session
+      const msg = JSON.stringify({ type: "status_changed", sessionId, changedWorktrees: [worktreePath] });
+      for (const browser of browserClients) {
+        const watchInfo = browserWatchMap.get(browser);
+        if (watchInfo?.sessionId === sessionId) {
+          try { browser.send(msg); } catch {}
         }
-      } catch {}
-    }
-  } finally {
-    changeDetectorRunning = false;
+      }
+    }, 500);
+  };
+
+  watcher.on("add", onChange);
+  watcher.on("change", onChange);
+  watcher.on("unlink", onChange);
+  watcher.on("addDir", onChange);
+  watcher.on("unlinkDir", onChange);
+}
+
+function stopWatching(sessionId: string, worktreePath: string) {
+  const key = `${sessionId}:${worktreePath}`;
+  const state = activeWatchers.get(key);
+  if (state) {
+    log(`stopping chokidar watch: ${worktreePath}`);
+    if (state.debounceTimer) clearTimeout(state.debounceTimer);
+    state.watcher.close();
+    activeWatchers.delete(key);
   }
 }
 
-const changeDetector = setInterval(checkForChanges, 5000);
-if (changeDetector.unref) changeDetector.unref();
+function stopAllWatchers(sessionId: string) {
+  for (const [key, state] of activeWatchers) {
+    if (key.startsWith(`${sessionId}:`)) {
+      if (state.debounceTimer) clearTimeout(state.debounceTimer);
+      state.watcher.close();
+      activeWatchers.delete(key);
+    }
+  }
+}
+
+// Periodically refresh worktree list (worktrees may be added/removed)
+const worktreeRefreshInterval = setInterval(() => {
+  for (const [sessionId, client] of piClients) {
+    try {
+      const freshWorktrees = getWorktrees(client.session.cwd);
+      const oldFingerprint = client.session.worktrees.map(w => `${w.path}:${w.branch}`).sort().join("|");
+      const newFingerprint = freshWorktrees.map(w => `${w.path}:${w.branch}`).sort().join("|");
+      if (oldFingerprint !== newFingerprint) {
+        // Start/stop watchers for new/removed worktrees
+        const oldPaths = new Set(client.session.worktrees.map(w => w.path));
+        const newPaths = new Set(freshWorktrees.map(w => w.path));
+        for (const wt of freshWorktrees) {
+          if (!oldPaths.has(wt.path)) startWatching(sessionId, wt.path);
+        }
+        for (const wt of client.session.worktrees) {
+          if (!newPaths.has(wt.path)) stopWatching(sessionId, wt.path);
+        }
+        client.session.worktrees = freshWorktrees;
+        broadcastToBrowsers({ type: "session_updated", session: client.session });
+      }
+    } catch {}
+  }
+}, 10000);
+if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
 
 // Ping pi clients
 const pingInterval = setInterval(() => {

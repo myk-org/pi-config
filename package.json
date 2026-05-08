@@ -2,14 +2,21 @@
   "name": "pi-orchestrator-config",
   "version": "2.2.0",
   "description": "Orchestrator pattern for pi: specialist subagents, enforcement, code review loop, workflow commands",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "dependencies": {
+    "chokidar": "^5.0.0",
     "discord.js": "^14.0.0",
     "ws": "^8.0.0"
   },
   "pi": {
-    "extensions": ["./extensions"],
-    "prompts": ["./prompts"]
+    "extensions": [
+      "./extensions"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   }
 }
