@@ -98,8 +98,13 @@ async function run(config: RunConfig): Promise<void> {
     fs.appendFileSync(pidashLog, `CATCH: ${e.message}\n${e.stack}\n`);
   }
 
-  let stdout = "";
   let lineCount = 0;
+  let finalOutput = "";
+  // Keep a small tail for fallback when no message_end is found
+  const MAX_TAIL = 4000;
+  let stdoutTail = "";
+  // Buffer for incomplete lines across chunk boundaries
+  let lineBuf = "";
 
   const exitCode = await new Promise<number | null>((resolve) => {
     const proc = spawn(config.piCommand, config.piArgs, {
@@ -115,19 +120,40 @@ async function run(config: RunConfig): Promise<void> {
 
     proc.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      stdout += text;
       outputStream.write(text);
-      lineCount += text.split("\n").length - 1;
 
-      // Forward events to pidash
-      if (pidashWs?.readyState === 1) {
-        for (const line of text.split("\n")) {
-          if (!line.trim()) continue;
-          try {
-            const ev = JSON.parse(line);
+      // Keep only the last MAX_TAIL chars for fallback
+      stdoutTail += text;
+      if (stdoutTail.length > MAX_TAIL * 2) {
+        stdoutTail = stdoutTail.slice(-MAX_TAIL);
+      }
+
+      // Buffer partial lines across chunk boundaries
+      lineBuf += text;
+      const lines = lineBuf.split("\n");
+      // Last element is incomplete (no trailing newline) — keep in buffer
+      lineBuf = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        lineCount++;
+
+        try {
+          const ev = JSON.parse(trimmed);
+
+          // Extract final output from message_end events inline
+          if (ev.type === "message_end" && ev.message?.role === "assistant") {
+            for (const p of ev.message.content || []) {
+              if (p.type === "text") finalOutput = p.text;
+            }
+          }
+
+          // Forward events to pidash
+          if (pidashWs?.readyState === 1) {
             pidashWs.send(JSON.stringify({ type: "async_event", id: config.id, event: ev }));
-          } catch {}
-        }
+          }
+        } catch {}
       }
 
       // Update status periodically (every ~10 lines)
@@ -156,12 +182,10 @@ async function run(config: RunConfig): Promise<void> {
 
   const endedAt = Date.now();
 
-  // Extract final output from JSON mode messages
-  let finalOutput = "";
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
+  // Process any remaining buffered line
+  if (lineBuf.trim()) {
     try {
-      const ev = JSON.parse(line);
+      const ev = JSON.parse(lineBuf.trim());
       if (ev.type === "message_end" && ev.message?.role === "assistant") {
         for (const p of ev.message.content || []) {
           if (p.type === "text") finalOutput = p.text;
@@ -190,7 +214,7 @@ async function run(config: RunConfig): Promise<void> {
     agent: config.agent,
     task: config.task,
     success: exitCode === 0,
-    output: finalOutput || stdout.slice(-2000),
+    output: finalOutput || stdoutTail.slice(-2000),
     exitCode,
     startedAt,
     endedAt,
