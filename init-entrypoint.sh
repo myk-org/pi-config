@@ -6,16 +6,16 @@ set -e
 
 # If running as node, re-exec as root for the setup phase
 if [ "$(id -u)" != "0" ]; then
-    if [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ]; then
+    if { [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ]; } || [ -S /var/run/docker.sock ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
-    # No PI_HOST_USER — skip root setup, run entrypoint directly as node
+    # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
     exec entrypoint.sh "$@"
 fi
 
 # Running as root — do the HOME setup
-NEW_HOME="/home/$PI_HOST_USER"
-if [ -d "$NEW_HOME" ]; then
+if [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ] && [ -d "/home/$PI_HOST_USER" ]; then
+    NEW_HOME="/home/$PI_HOST_USER"
     chown node:node "$NEW_HOME"
     [ -d "$NEW_HOME/.config" ] && chown node:node "$NEW_HOME/.config"
 
@@ -42,8 +42,10 @@ if [ -d "$NEW_HOME" ]; then
             ln -sf "$NEW_HOME/$name" "/home/node/$name"
         fi
     done
-    # Same for .config subdirectories
-    if [ -d "$NEW_HOME/.config" ]; then
+    # Same for .config subdirectories (skip if .config is already a symlink
+    # to NEW_HOME — the main loop above handled it, and writing through the
+    # symlink would create self-referential links)
+    if [ ! -L "/home/node/.config" ] && [ -d "$NEW_HOME/.config" ]; then
         for item in "$NEW_HOME/.config"/*; do
             [ -e "$item" ] || continue
             name=$(basename "$item")
@@ -57,6 +59,28 @@ if [ -d "$NEW_HOME" ]; then
     export HOME="$NEW_HOME"
     # Ensure PATH includes new HOME-based paths
     export PATH="$NEW_HOME/.npm-global/bin:$NEW_HOME/.pi/agent/bin:$NEW_HOME/.local/bin:$PATH"
+fi
+
+# Ensure HOME is set for node (skipped above when PI_HOST_USER is unset)
+export HOME="${HOME:-/home/node}"
+[ "$HOME" = "/root" ] && export HOME="/home/node"
+
+# Docker socket access — add node to the socket's group if mounted
+DOCKER_SOCK="/var/run/docker.sock"
+if [ -S "$DOCKER_SOCK" ]; then
+    SOCK_GID=$(stat -c '%g' "$DOCKER_SOCK")
+    if [ "$SOCK_GID" = "0" ]; then
+        # Socket owned by root group — use ACL instead of adding node to root
+        setfacl -m u:node:rw "$DOCKER_SOCK" 2>/dev/null || chmod 666 "$DOCKER_SOCK"
+    elif ! id -G node | tr ' ' '\n' | grep -qx "$SOCK_GID"; then
+        # Find or create a group with this GID, then add node to it
+        SOCK_GROUP=$(getent group "$SOCK_GID" | cut -d: -f1)
+        if [ -z "$SOCK_GROUP" ]; then
+            SOCK_GROUP="docker-host"
+            groupadd -g "$SOCK_GID" "$SOCK_GROUP"
+        fi
+        usermod -aG "$SOCK_GROUP" node
+    fi
 fi
 
 # Drop to node permanently — runuser replaces the process

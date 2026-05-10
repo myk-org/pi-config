@@ -66,6 +66,11 @@ fi
 
 CMD="$1"
 
+# Handle help flags
+if [ "$CMD" = "--help" ] || [ "$CMD" = "-h" ]; then
+    usage
+fi
+
 # Check if command is allowed
 if ! echo "$CMD" | grep -qwE "^($ALLOWED_COMMANDS)$"; then
     echo "⛔ docker-safe: '$CMD' is not allowed. Only read-only commands permitted." >&2
