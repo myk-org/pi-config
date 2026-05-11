@@ -14,6 +14,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   curl \
   gnupg \
   jq \
+  fd-find \
+  ripgrep \
   ca-certificates \
   git \
   openssh-client \
@@ -23,6 +25,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   parallel \
   acl \
   && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fL https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64.tar.gz \
+    | tar --wildcards --transform 's|^./yq_linux_amd64|yq|' -C /usr/local/bin -zxvf - '*/yq_linux_amd64'
 
 # Install GitHub CLI (signed repo, uses curl+gpg from above)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
