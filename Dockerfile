@@ -1,5 +1,3 @@
-FROM ghcr.io/astral-sh/uv:latest AS uv
-
 FROM node:22-slim
 
 LABEL maintainer="myk-org" \
@@ -21,6 +19,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   openssh-client \
   procps \
   psmisc \
+  unzip \
+  parallel \
   acl \
   && rm -rf /var/lib/apt/lists/*
 
@@ -45,8 +45,7 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
   chown -R node:node /home/node/.cache
 
 # Copy uv and uvx from official image
-COPY --from=uv /uv /usr/local/bin/uv
-COPY --from=uv /uvx /usr/local/bin/uvx
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # Install Go
 RUN curl -fsSL https://go.dev/dl/go1.24.4.linux-amd64.tar.gz | tar -C /usr/local -xzf -
@@ -57,6 +56,24 @@ RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL
   chmod +x /usr/local/bin/kubectl && \
   curl -fsSL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
   | tar -C /usr/local/bin -xzf - oc
+
+  # Add AWS CLI
+  RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip" && \
+    cd /tmp && unzip awscliv2.zip \
+    && ./aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws \
+    && aws --version
+
+    # Add IBM CLI
+RUN curl -fsSL "https://download.clis.cloud.ibm.com/ibm-cloud-cli/2.41.0/IBM_Cloud_CLI_2.41.0_amd64.tar.gz" \
+  | tar -C /tmp -xzf - && \
+  /tmp/Bluemix_CLI/install --quiet \
+  && rm -rf /tmp/Bluemix_CLI
+
+# Add gcloud CLI
+RUN curl https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -C /tmp -xzf - \
+  && /tmp/google-cloud-sdk/install.sh --quiet \
+  && rm -rf /tmp/google-cloud-sdk
 
 # Install Docker and Podman CLIs (for docker-safe wrapper — read-only container inspection)
 RUN DOCKER_VERSION=$(curl -fsSL https://download.docker.com/linux/static/stable/x86_64/ | grep -oP 'docker-\K[0-9.]+(?=\.tgz)' | sort -V | tail -1) && \
