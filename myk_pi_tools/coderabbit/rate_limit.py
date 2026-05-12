@@ -1,8 +1,9 @@
-"""CodeRabbit rate limit handler.
+"""CodeRabbit rate limit and reviews-paused handler.
 
-Provides two composable operations:
+Provides composable operations:
 - run_check: detect rate limiting and return JSON status
 - run_trigger: wait, post review trigger, and poll until review starts
+- _post_resume_trigger: post resume trigger when reviews are paused
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ from myk_pi_tools.coderabbit.utils import (
 )
 
 _RATE_LIMITED_MARKER = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->"
+_REVIEWS_PAUSED_MARKER = "<!-- This is an auto-generated comment: reviews paused by coderabbit.ai -->"
+# Fallback: match body text when HTML marker is absent — requires both strings
+_REVIEWS_PAUSED_FALLBACK_HEADING = "Reviews paused"
+_REVIEWS_PAUSED_FALLBACK_SETTING = "auto_pause_after_reviewed_commits"
 
 # Regex to parse wait time from rate limit message
 _WAIT_TIME_RE = re.compile(r"Please wait \*\*(?:(\d+) minutes? and )?(\d+) seconds?\*\*")
@@ -45,26 +50,36 @@ def _parse_wait_seconds(body: str) -> int | None:
     return minutes * 60 + seconds
 
 
-def _post_review_trigger(owner_repo: str, pr_number: int) -> int | None:
-    """Post @coderabbitai review comment on the PR. Returns comment ID or None."""
+def _post_coderabbit_comment(owner_repo: str, pr_number: int, command: str) -> int | None:
+    """Post @coderabbitai <command> comment on the PR. Returns comment ID or None."""
     owner, repo = owner_repo.split("/")
     code, stdout, stderr = _run_gh(
         [
             "api",
             f"repos/{owner}/{repo}/issues/{pr_number}/comments",
             "-f",
-            "body=@coderabbitai review",
+            f"body=@coderabbitai {command}",
         ],
         timeout=30,
     )
     if code != 0:
         if stderr:
-            print(f"Failed to post review trigger: {stderr}")
+            print(f"Failed to post {command} trigger: {stderr}")
         return None
     try:
         return json.loads(stdout).get("id")
     except (json.JSONDecodeError, AttributeError):
         return None
+
+
+def _post_review_trigger(owner_repo: str, pr_number: int) -> int | None:
+    """Post @coderabbitai review comment on the PR. Returns comment ID or None."""
+    return _post_coderabbit_comment(owner_repo, pr_number, "review")
+
+
+def _post_resume_trigger(owner_repo: str, pr_number: int) -> int | None:
+    """Post @coderabbitai resume comment on the PR. Returns comment ID or None."""
+    return _post_coderabbit_comment(owner_repo, pr_number, "resume")
 
 
 def _find_trigger_reply(owner_repo: str, pr_number: int, trigger_comment_id: int) -> bool | str:
