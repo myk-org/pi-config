@@ -143,6 +143,8 @@ export function registerAskUser(
             selectList.onSelect = (item: SelectItem) => {
               if (item.value === "__free_input__") {
                 mode = "input";
+                searchInput.setValue("");
+                selectList?.setFilter("");
                 tui.requestRender();
               } else {
                 resolve(item.value);
@@ -151,8 +153,28 @@ export function registerAskUser(
             selectList.onCancel = () => resolve(null);
           }
 
+          // Search input for filtering the select list
+          const searchInput = new Input();
+          searchInput.onSubmit = () => {
+            // Enter on search = select the highlighted item
+            if (selectList) {
+              const selected = selectList.getSelectedItem();
+              if (selected) {
+                if (selected.value === "__free_input__") {
+                  mode = "input";
+                  searchInput.setValue("");
+                  selectList.setFilter("");
+                } else {
+                  resolve(selected.value);
+                }
+              }
+            }
+          };
+          searchInput.onEscape = () => resolve(null);
+          // No onChange on Input — we check value after each handleInput instead
+
           const selectHelp = new Text(
-            theme.fg("dim", "↑↓ navigate • enter select • esc cancel"),
+            theme.fg("dim", "type to filter • ↑↓ navigate • enter select • esc cancel"),
             1,
             0,
           );
@@ -169,6 +191,7 @@ export function registerAskUser(
             const c = new Container();
             c.addChild(topBorder);
             if (mode === "select" && selectList) {
+              c.addChild(searchInput);
               c.addChild(selectList);
               c.addChild(selectHelp);
             } else {
@@ -184,10 +207,11 @@ export function registerAskUser(
           let _focused = false;
 
           return {
-            // Focusable interface — propagate to Input for IME cursor positioning
+            // Focusable interface — propagate to active Input for IME cursor positioning
             set focused(value: boolean) {
               _focused = value;
               input.focused = value;
+              searchInput.focused = value;
             },
             get focused(): boolean {
               return _focused;
@@ -201,7 +225,18 @@ export function registerAskUser(
             handleInput: (data: string) => {
               if (resolved) return;
               if (mode === "select" && selectList) {
-                selectList.handleInput(data);
+                // Arrow keys and enter/escape go to selectList
+                // Printable chars go to searchInput for filtering
+                const isNavKey = data === "\x1b[A" || data === "\x1b[B" // up/down
+                  || data === "\r" || data === "\n" // enter
+                  || data === "\x1b" // escape
+                  || data === "\x1b[5~" || data === "\x1b[6~"; // page up/down
+                if (isNavKey) {
+                  selectList.handleInput(data);
+                } else {
+                  searchInput.handleInput(data);
+                  selectList.setFilter(searchInput.getValue());
+                }
               } else {
                 input.handleInput(data);
               }
