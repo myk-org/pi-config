@@ -312,13 +312,19 @@ If the command exits with a non-zero code:
 
 Display the output to the user.
 
-After successful execution, display:
+After successful execution, parse the `[ai-cli] Usage:` JSON line from stderr
+and display a summary including cost and token usage:
 
 ```text
 Provider: <provider>
 Model: <model>
 Mode: [read-only | fix]
+Tokens: in=<input_tokens> out=<output_tokens> cache_read=<cache_read_tokens>
+Cost: $<cost_usd>
+Duration: <duration_ms>ms
 ```
+
+Omit fields that are missing or zero.
 
 **Save config:** See "Persist Config" section after Step 9e.
 
