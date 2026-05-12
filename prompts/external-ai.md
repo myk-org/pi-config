@@ -121,23 +121,36 @@ The config file structure:
 ```json
 {
   "lastAgents": "cursor --model gpt-5.4-high",
-  "lastPeers": "cursor,claude"
+  "lastPeers": "cursor --model gpt-5.4-high,claude --model claude-sonnet-4-6"
 }
 ```
+
+**Format:** Each entry in `lastPeers` is `provider --model model` separated by commas.
+If no model was specified for a provider, omit `--model` (default will be used).
 
 If the file doesn't exist, is empty, or contains invalid JSON, treat as no config.
 
 **If `--peer` was passed** and `lastPeers` exists and is non-empty:
 Ask via AskUserQuestion: `Last used peers: LAST_PEERS. Use these?`
-Options: `Yes, use LAST_PEERS`, `Change providers`, `Cancel`.
-Yes = use `lastPeers` as the agent spec.
-Change = ask: `Enter provider(s) for peer review:`.
+Options: `Yes, use LAST_PEERS`, `Change`, `Cancel`.
+Yes = use `lastPeers` as the agent spec (providers AND models).
+Change = go to peer provider selection below.
 Cancel = abort.
 
 **If `--peer` was passed** but `lastPeers` is missing/empty:
+Go to peer provider selection below.
+
+**Peer provider selection:**
 Ask via AskUserQuestion: `Select providers for peer review:`
 Options: `cursor,claude`, `cursor,gemini`, `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
 Cancel = abort.
+
+After selecting providers, ask model for EACH provider:
+For each provider in the selection, ask: `Select model for PROVIDER (or use default):`
+Fetch models via `myk-pi-tools ai-cli models PROVIDER` and present them.
+Options: list of model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
+Cancel = abort.
+`default` = use the provider's default model from the table below.
 
 **If `--fix` was passed or no flags** and `lastAgents` exists and is non-empty:
 Ask via AskUserQuestion: `Last used: LAST_AGENTS. Use this?`
@@ -160,6 +173,15 @@ Fetch models via `myk-pi-tools ai-cli models PROVIDER` and present them.
 Options: list of model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
 Cancel = abort.
 `default` = use the provider's default model from the table below.
+
+**Model resolution (MANDATORY for ALL modes):** After resolving provider(s) — whether
+from arguments, saved config, or interactive selection — if ANY provider does not have
+a model specified (no `--model` flag was passed for it), ask the user to select a model
+for that provider. Use the same model selection flow: fetch models via
+`myk-pi-tools ai-cli models PROVIDER`, present options + `default (DEFAULT_MODEL)` + `Cancel`.
+
+This applies to normal, fix, AND peer modes. The user must always know which model
+will be used before execution.
 
 **Empty prompt check:** After resolving agent spec, if the remaining prompt text is
 empty or whitespace-only, abort with:
@@ -685,8 +707,8 @@ the agent spec using the CLI. Run exactly once per successful completion.
 # After normal/fix mode:
 myk-pi-tools ai-cli save-config --agents "<normalized agent string>"
 
-# After peer mode:
-myk-pi-tools ai-cli save-config --peers "<normalized agent string>"
+# After peer mode (include models for each provider):
+myk-pi-tools ai-cli save-config --peers "<provider1 --model model1,provider2 --model model2>"
 ```
 
 **Normalized agent string:** The exact agent spec used for the run, as the user would type it
