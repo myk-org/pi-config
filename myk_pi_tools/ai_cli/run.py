@@ -72,15 +72,19 @@ def run(
 
     click.echo(f"[ai-cli] {provider.upper()} ({effective_model})", err=True)
 
-    result = asyncio.run(
-        _run_async(
-            prompt=prompt,
-            provider=provider,
-            model=effective_model,
-            cwd=effective_cwd,
-            cli_flags=cli_flags,
+    try:
+        result = asyncio.run(
+            _run_async(
+                prompt=prompt,
+                provider=provider,
+                model=effective_model,
+                cwd=effective_cwd,
+                cli_flags=cli_flags,
+            )
         )
-    )
+    except Exception as e:
+        print(json.dumps({"success": False, "provider": provider, "model": effective_model, "error": str(e)}, indent=2))
+        return 1
 
     output: dict[str, object] = {
         "success": result.success,

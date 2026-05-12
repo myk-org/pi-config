@@ -31,7 +31,7 @@ Single extension that provides:
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
-| **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/ai-cli-prompt`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
+| **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
 
 ### Agents (24)
@@ -60,7 +60,7 @@ Single extension that provides:
 | `/refine-review <url>` | Refine and improve existing PR review comments |
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/query-db <command>` | Query the review comments database |
-| `/ai-cli-prompt <agent> [--model <model>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
+| `/external-ai <agent> [--model <model>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain memory.md |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |

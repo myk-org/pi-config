@@ -8,7 +8,7 @@
  *    — stacked provider that intercepts /command <arg> patterns
  *
  * Completions:
- *   /ai-cli-prompt <Tab>         → ai-cli provider names + --fix, --peer
+ *   /external-ai <Tab>         → ai-cli provider names + --fix, --peer
  *   /pr-review <Tab>             → open PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
@@ -196,7 +196,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 
   const completions: Record<string, CompletionFn> = {
-    "ai-cli-prompt": (prefix: string) => {
+    "external-ai": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
       const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
@@ -361,12 +361,12 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
-    "ai-cli-prompt", "pr-review", "coderabbit-rate-limit",
+    "external-ai", "pr-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "cron",
   ]);
 
-  // /ai-cli-models-refresh command — clears cache and re-fetches
-  pi.registerCommand("ai-cli-models-refresh", {
+  // /external-ai-models-refresh command — clears cache and re-fetches
+  pi.registerCommand("external-ai-models-refresh", {
     description: "Refresh AI CLI model cache (cursor, claude, gemini)",
     async handler(_args, ctx) {
       modelCaches.clear();

@@ -30,9 +30,9 @@ def run_cmd(prompt: str, provider: str, model: str, resume: bool, cwd: str | Non
 @click.option("--agents", default=None, help="Save lastAgents value (e.g., 'cursor --model gpt-5.4-high')")
 @click.option("--peers", default=None, help="Save lastPeers value (e.g., 'cursor,claude')")
 def save_config_cmd(agents: str | None, peers: str | None) -> None:
-    """Save agent/peer config for /ai-cli-prompt.
+    """Save agent/peer config for /external-ai.
 
-    Persists to .pi/ai-cli-config.json. Each option updates only its
+    Persists to .pi/external-ai-config.json. Each option updates only its
     field — the other field is preserved.
     """
     import json
@@ -42,7 +42,7 @@ def save_config_cmd(agents: str | None, peers: str | None) -> None:
         click.echo("Error: Pass --agents and/or --peers", err=True)
         sys.exit(1)
 
-    config_path = Path(".pi/ai-cli-config.json")
+    config_path = Path(".pi/external-ai-config.json")
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     cfg: dict[str, str] = {}

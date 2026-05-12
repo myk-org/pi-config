@@ -1,5 +1,5 @@
 ---
-description: "Run a prompt via ai-cli-runner to any AI CLI (cursor, claude, gemini). Full model access including all variants. Use for peer review, code review, or any task — /ai-cli-prompt <agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
+description: "Run a prompt via ai-cli-runner to any AI CLI (cursor, claude, gemini). Full model access including all variants. Use for peer review, code review, or any task — /external-ai <agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
 argument-hint: "<agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
 ---
 
@@ -39,20 +39,20 @@ For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` inst
 
 ## Usage
 
-- `/ai-cli-prompt cursor fix the tests`
-- `/ai-cli-prompt claude review this code`
-- `/ai-cli-prompt gemini explain this function`
-- `/ai-cli-prompt cursor --model gpt-5.4-high review the architecture`
-- `/ai-cli-prompt cursor --model claude-4.6-opus-max-thinking --fix fix the code`
-- `/ai-cli-prompt cursor --fix fix the code quality issues`
-- `/ai-cli-prompt cursor --peer review this code`
-- `/ai-cli-prompt cursor --model gpt-5.4-xhigh --peer review the architecture`
-- `/ai-cli-prompt cursor,claude review this code`
-- `/ai-cli-prompt cursor --resume explain the last change`
-- `/ai-cli-prompt cursor --model gpt-5.4-high --resume continue reviewing`
-- `/ai-cli-prompt claude --resume what about the edge cases?`
-- `/ai-cli-prompt review this code` — uses last saved agent from `.pi/ai-cli-config.json`
-- `/ai-cli-prompt --peer review this` — uses last saved peers from `.pi/ai-cli-config.json`
+- `/external-ai cursor fix the tests`
+- `/external-ai claude review this code`
+- `/external-ai gemini explain this function`
+- `/external-ai cursor --model gpt-5.4-high review the architecture`
+- `/external-ai cursor --model claude-4.6-opus-max-thinking --fix fix the code`
+- `/external-ai cursor --fix fix the code quality issues`
+- `/external-ai cursor --peer review this code`
+- `/external-ai cursor --model gpt-5.4-xhigh --peer review the architecture`
+- `/external-ai cursor,claude review this code`
+- `/external-ai cursor --resume explain the last change`
+- `/external-ai cursor --model gpt-5.4-high --resume continue reviewing`
+- `/external-ai claude --resume what about the edge cases?`
+- `/external-ai review this code` — uses last saved agent from `.pi/external-ai-config.json`
+- `/external-ai --peer review this` — uses last saved peers from `.pi/external-ai-config.json`
 
 ## Workflow
 
@@ -71,9 +71,7 @@ Read the **Raw Arguments** section above. Tokenize by whitespace and parse as fo
 1. **Consume flags** — strip `--fix`, `--peer`, `--resume`, and `--model <value>` from the token stream.
    `--model` consumes the NEXT token as the model value.
 2. **Detect agent spec** — the next non-flag token is an agent spec if it matches a known provider name
-   or is a comma-separated list of provider names. (The `:model` colon syntax is also supported
-   for backward compatibility — split on FIRST `:`, left is provider, right is model override.
-   If both `--model` and `:model` are given, `--model` wins.)
+   or is a comma-separated list of provider names.
 3. **Remainder is the prompt** — everything after the agent spec (or after flags if no agent)
 
 **Known providers:** `cursor`, `claude`, `gemini`
@@ -103,7 +101,6 @@ For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead
 1. **Consume leading flags first** — strip any `--fix` or `--peer` from the token stream
 2. **Check if the next token is an agent spec** — a token is an agent spec if:
    - It matches a known provider name exactly (e.g., `cursor`, `claude`)
-   - OR it contains `:` with a known provider name before the colon (e.g., `cursor:gpt-5.4-high`)
    - OR it's a comma-separated list where ALL parts match known provider names
 3. **If the first non-flag token looks like an agent but contains unknown names**, abort with
    the unknown provider message above
@@ -116,7 +113,7 @@ Check for saved configuration:
 
 ```bash
 mkdir -p .pi
-cat .pi/ai-cli-config.json 2>/dev/null
+cat .pi/external-ai-config.json 2>/dev/null
 ```
 
 The config file structure:
@@ -130,34 +127,45 @@ The config file structure:
 
 If the file doesn't exist, is empty, or contains invalid JSON, treat as no config.
 
-- **If `--peer` was passed** and `lastPeers` exists and is non-empty:
-  Ask via AskUserQuestion: "Last used peers: `<lastPeers>` — use these?"
-  Options: "Yes", "Change"
-  - Yes → use `lastPeers` as the agent spec
-  - Change → ask: "Enter provider(s) for peer review:"
+**If `--peer` was passed** and `lastPeers` exists and is non-empty:
+Ask via AskUserQuestion: `Last used peers: LAST_PEERS. Use these?`
+Options: `Yes, use LAST_PEERS`, `Change providers`, `Cancel`.
+Yes = use `lastPeers` as the agent spec.
+Change = ask: `Enter provider(s) for peer review:`.
+Cancel = abort.
 
-- **If `--peer` was passed** but `lastPeers` is missing/empty:
-  Ask: "Enter provider(s) for peer review (e.g., cursor,claude):"
+**If `--peer` was passed** but `lastPeers` is missing/empty:
+Ask via AskUserQuestion: `Select providers for peer review:`
+Options: `cursor,claude`, `cursor,gemini`, `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
+Cancel = abort.
 
-- **If `--fix` was passed or no flags** and `lastAgents` exists and is non-empty:
-  Ask via AskUserQuestion: "Last used agent: `<lastAgents>` — use this?"
-  Options: "Yes", "Change"
-  - Yes → use `lastAgents` as the agent spec
-  - Change → ask: "Enter provider[:model]:"
+**If `--fix` was passed or no flags** and `lastAgents` exists and is non-empty:
+Ask via AskUserQuestion: `Last used: LAST_AGENTS. Use this?`
+Options: `Yes, use LAST_AGENTS`, `Change provider/model`, `Cancel`.
+Yes = use `lastAgents` as the agent spec.
+Change = show provider selection (see below).
+Cancel = abort.
 
-- **If `--fix` was passed** and `lastAgents` is missing/empty:
-  Ask: "Enter provider[:model] for fix mode:"
+**If `--fix` was passed or no flags** and `lastAgents` is missing/empty:
+Show provider selection (see below).
 
-- **If no flags** and `lastAgents` is missing/empty:
-  Abort with: "No agent specified and no saved config found.
-  Usage: `/ai-cli-prompt [provider[:model]] [--fix | --peer] <prompt>`
-  Supported providers: cursor, claude, gemini"
+**Provider selection (when no provider resolved yet):**
+
+Ask via AskUserQuestion: `Select provider:`
+Options: `cursor`, `claude`, `gemini`, `Cancel`.
+Cancel = abort.
+
+After selecting a provider, ask: `Select model (or use default):`
+Fetch models via `myk-pi-tools ai-cli models PROVIDER` and present them.
+Options: list of model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
+Cancel = abort.
+`default` = use the provider's default model from the table below.
 
 **Empty prompt check:** After resolving agent spec, if the remaining prompt text is
 empty or whitespace-only, abort with:
-"No prompt provided. Usage: `/ai-cli-prompt [provider[:model]] [--fix | --peer] <prompt>`"
+"No prompt provided. Usage: `/external-ai <provider> [--model <model>] [--fix | --peer] <prompt>`"
 
-**Default model handling:** If no `:model` suffix was specified for a provider,
+**Default model handling:** If no `--model` was specified for a provider,
 you must still pass a model to `ai-cli-runner`. Use these defaults:
 
 | Provider | Default model |
@@ -169,8 +177,34 @@ you must still pass a model to `ai-cli-runner`. Use these defaults:
 These match each CLI's default behavior. When generating the Python script (Step 5),
 use the default model if none was specified by the user.
 
-When `--model` is specified, use that model. When `:model` colon syntax is used, use that.
-When neither is specified, use the default from the table above.
+When `--model` is specified, use that model.
+When not specified, use the default from the table above.
+
+### Step 2b: Confirm Before Execution (MANDATORY)
+
+Before proceeding, display a summary of what will be executed and ask for confirmation.
+**No black magic — the user must always know exactly what is about to be sent.**
+
+Display as text:
+
+```text
+Provider: <provider>
+Model: <model> (or "default: <default_model>" if using default)
+Mode: <read-only | fix | peer>
+Resume: <yes | no>
+Prompt: <first 200 chars of prompt>...
+```
+
+Then ask via AskUserQuestion: "Proceed?"
+Options: "Yes", "Change provider/model", "Cancel"
+
+- Yes → continue to Step 3
+- Change → go back to provider selection flow
+- Cancel → abort
+
+**Skip this confirmation if the user explicitly provided both provider and model
+in the command arguments** (e.g., `/external-ai cursor --model gpt-5.4-high say hi`).
+Only confirm when any part was auto-resolved (default model, saved config, provider selection).
 
 ### Step 3: Session Management
 
@@ -529,7 +563,7 @@ GROUP CONTEXT — What other peers said in Round {N}:
   {summary of that peer's findings and positions}
   "}
 
-Always include the model when the provider was invoked with a `:model` override.
+Always include the model when the provider was invoked with `--model`.
 If no model was specified, omit the model parenthetical (e.g., `## cursor findings:`).
 ```
 

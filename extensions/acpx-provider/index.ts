@@ -89,7 +89,8 @@ function createSession(agent: string, cwd?: string): void {
 			timeout: 15000,
 			cwd: effectiveCwd,
 		});
-	} catch {
+	} catch (err) {
+		console.debug(`[acpx] session ensure failed for ${agent}, trying new:`, err);
 		try {
 			execFileSync("acpx", [agent, "sessions", "new", "--name", name], {
 				stdio: ["pipe", "pipe", "pipe"],
@@ -198,8 +199,13 @@ function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 			resolve(models);
 		});
 
-		proc.on("error", () => {
-			if (!resolved) { resolved = true; clearTimeout(timeout); resolve(models); }
+		proc.on("error", (err) => {
+			if (!resolved) {
+				console.debug("[acpx] discoverModels spawn error:", err);
+				resolved = true;
+				clearTimeout(timeout);
+				resolve(models);
+			}
 		});
 	});
 }

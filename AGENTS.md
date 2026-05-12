@@ -66,7 +66,7 @@ pi-config/
 │   └── acpx-provider/              # ACPX provider extension
 │       └── index.ts
 ├── prompts/                         # Prompt templates (slash commands)
-│   ├── ai-cli-prompt.md
+│   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
 │   ├── implement-and-review.md
