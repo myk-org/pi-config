@@ -58,13 +58,11 @@ For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` inst
 
 ### Step 1: Prerequisites Check
 
-#### 1a: Check ai-cli-runner
-
 ```bash
-uv run --with ai-cli-runner python -c "import ai_cli_runner; print('ok')"
+myk-pi-tools --version
 ```
 
-If it fails, the package will be auto-installed on first use via `uv run --with ai-cli-runner`.
+If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ### Step 2: Parse Arguments
 
@@ -196,9 +194,8 @@ Sessions allow the AI CLI to maintain conversation context across prompts.
 | `claude` | `-c` | `claude` |
 | `gemini` | `--resume latest` | `gemini` |
 
-When `--resume` is active or in peer mode follow-up rounds, pass the resume flag
-via `cli_flags` in the `call_ai_cli` call. For Gemini, pass both `"--resume"` and
-`"latest"` as separate entries in `cli_flags`.
+When `--resume` is active or in peer mode follow-up rounds, pass `--resume`
+to the `myk-pi-tools ai-cli run` command.
 
 ### Step 4: Workspace Safety Check (--fix and --peer modes)
 
@@ -245,61 +242,31 @@ Follow this decision process:
 
 **If `--peer` was passed, skip Steps 5-8 and jump to Step 9 (Peer Review Loop).**
 
-Build and execute the AI CLI call using a Python script run via
-`uv run --with ai-cli-runner`.
+**MANDATORY:** Always use `myk-pi-tools ai-cli run` — never generate inline Python scripts.
 
-**MANDATORY:** Always pass `output_format="json"` to `call_ai_cli`. This ensures
-structured output with token usage and cost tracking. Never omit it — not in
-normal mode, not in fix mode, not in peer review rounds.
+**Single provider:**
 
-**Script template:**
-
-```python
-import asyncio
-from pathlib import Path
-from ai_cli_runner import call_ai_cli
-
-async def main():
-    prompt = Path("<PROMPT_FILE>").read_text()
-    result = await call_ai_cli(
-        prompt=prompt,
-        cwd=Path("<CWD>"),
-        ai_provider="<PROVIDER>",
-        ai_model="<MODEL>",
-        cli_flags=[<CLI_FLAGS>],
-        output_format="json",
-    )
-    if result.success:
-        print(result.text)
-        if result.usage:
-            print(f"\n---\nTokens: in={result.usage.input_tokens} out={result.usage.output_tokens}", end="")
-            if result.usage.cost_usd is not None:
-                print(f" cost=${result.usage.cost_usd:.6f}", end="")
-            print()
-    else:
-        import sys
-        print(result.text, file=sys.stderr)
-        sys.exit(1)
-
-asyncio.run(main())
+```bash
+myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> "<PROMPT>"
 ```
 
-**CLI flags by mode:**
+With resume:
 
-| Mode | Provider | cli_flags |
-|------|----------|-----------|
-| Default (read-only) | cursor | `[]` (--print is added by ai-cli-runner) |
-| Default (read-only) | claude | `[]` (-p is added by ai-cli-runner) |
-| Default (read-only) | gemini | `[]` |
-| `--resume` | cursor | `["--continue"]` |
-| `--resume` | claude | `["-c"]` |
-| `--resume` | gemini | `["--resume", "latest"]` |
-| Fix (`--fix`) | cursor | `[]` |
-| Fix (`--fix`) | claude | `["--allowedTools", "Edit,Write,Bash"]` |
-| Fix (`--fix`) | gemini | `[]` |
-| Fix + resume | cursor | `["--continue"]` |
-| Fix + resume | claude | `["--allowedTools", "Edit,Write,Bash", "-c"]` |
-| Fix + resume | gemini | `["--resume", "latest"]` |
+```bash
+myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> --resume "<PROMPT>"
+```
+
+**Multi-agent execution:**
+
+When multiple providers are specified (without `--peer`), run all agents **in parallel**
+by delegating each to a separate subagent or running sequential CLI calls:
+
+```bash
+myk-pi-tools ai-cli run --provider <P1> --model <M1> "<PROMPT>"
+myk-pi-tools ai-cli run --provider <P2> --model <M2> "<PROMPT>"
+```
+
+Collect results from all providers and display grouped by provider.
 
 **Read-only prompt guard (non-fix mode):**
 
@@ -317,61 +284,12 @@ You have full permission to modify, create, and delete files as needed.
 Make all necessary changes directly.
 ```
 
-**Multi-agent execution:**
-
-When multiple providers are specified (without `--peer`), run all agents **in parallel**
-by generating a script that uses `run_parallel_with_limit`:
-
-```python
-import asyncio
-from pathlib import Path
-from ai_cli_runner import call_ai_cli, run_parallel_with_limit
-
-async def main():
-    prompt = Path("<PROMPT_FILE>").read_text()
-    results = await run_parallel_with_limit([
-        call_ai_cli(prompt=prompt, cwd=Path("<CWD>"), ai_provider="<P1>", ai_model="<M1>", output_format="json"),
-        call_ai_cli(prompt=prompt, cwd=Path("<CWD>"), ai_provider="<P2>", ai_model="<M2>", output_format="json"),
-    ])
-    for provider, result in zip(["<P1>", "<P2>"], results):
-        if isinstance(result, Exception):
-            print(f"\n## {provider}: ERROR\n{result}")
-        elif result.success:
-            print(f"\n## {provider}:\n{result.text}")
-        else:
-            print(f"\n## {provider}: FAILED\n{result.text}")
-
-asyncio.run(main())
-```
-
-**Script execution:**
-
-Write the script to a temp file and run:
-
-```bash
-WORK_DIR="/tmp/pi-work/$(basename "$PWD")"
-mkdir -p "$WORK_DIR"
-PROMPT_FILE=$(mktemp "$WORK_DIR/ai-cli-prompt-XXXXXX.txt")
-SCRIPT=$(mktemp "$WORK_DIR/ai-cli-XXXXXX.py")
-trap 'rm -f "$SCRIPT" "$PROMPT_FILE"' EXIT
-
-cat > "$PROMPT_FILE" << 'PROMPTEOF'
-<prompt text>
-PROMPTEOF
-
-cat > "$SCRIPT" << 'PYEOF'
-<script content with PROMPT_FILE path>
-PYEOF
-
-uv run --with ai-cli-runner python "$SCRIPT"
-```
-
-**No timeout:** NEVER pass a timeout parameter to bash when running the script.
+**No timeout:** NEVER pass a timeout parameter to bash when running ai-cli commands.
 Agents need time to read files, think, and execute multi-step tool calls.
 
 **Error handling:**
 
-If the script exits with a non-zero code:
+If the command exits with a non-zero code:
 
 - If the error indicates a **permission failure** (write denied, permission
   rejected, or similar), this means the agent attempted to modify files
@@ -504,8 +422,8 @@ provide a concrete fix or suggestion.
 Original prompt: <user's prompt>
 ```
 
-Execute via the Python script template from Step 5 (read-only mode).
-This first round is a **fresh session** — do NOT pass session resume flags.
+Execute via `myk-pi-tools ai-cli run` (read-only mode — append the read-only guard to the prompt).
+This first round is a **fresh session** — do NOT pass `--resume`.
 Do NOT display intermediate results to the user.
 If the command fails, abort the peer loop and report the error.
 
@@ -596,13 +514,11 @@ build on other peers' findings.
 When sending to peer A, include findings from peers B, C, etc.
 When sending to peer B, include findings from peers A, C, etc.
 
-Execute via the Python script. Do NOT display intermediate results.
-**Use session resume flags** for this and all subsequent rounds — pass `cli_flags`
-with the provider's resume flag (see Step 3 table) so the peer agent has full
+Execute via `myk-pi-tools ai-cli run --resume`. Do NOT display intermediate results.
+**Use `--resume`** for this and all subsequent rounds so the peer agent has full
 conversation context from previous rounds.
 
-**Multi-agent:** Send the response to ALL agents in parallel. Each agent uses its
-own resume flag.
+**Multi-agent:** Send the response to ALL agents in parallel. Each agent uses `--resume`.
 
 #### 9d: Loop Until Convergence
 

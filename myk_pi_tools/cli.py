@@ -2,6 +2,7 @@
 
 import click
 
+from myk_pi_tools.ai_cli import commands as ai_cli_commands
 from myk_pi_tools.coderabbit import commands as coderabbit_commands
 from myk_pi_tools.db import commands as db_commands
 from myk_pi_tools.memory import commands as memory_commands
@@ -16,6 +17,7 @@ def cli() -> None:
     """CLI utilities for pi orchestrator plugins."""
 
 
+cli.add_command(ai_cli_commands.ai_cli, name="ai-cli")
 cli.add_command(coderabbit_commands.coderabbit, name="coderabbit")
 cli.add_command(db_commands.db, name="db")
 cli.add_command(memory_commands.memory, name="memory")
