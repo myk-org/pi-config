@@ -65,14 +65,6 @@ uv run --with ai-cli-runner python -c "import ai_cli_runner; print('ok')"
 
 If it fails, the package will be auto-installed on first use via `uv run --with ai-cli-runner`.
 
-#### 1b: Verify Agent Prerequisite
-
-The underlying CLI tool must be installed:
-
-- Cursor: `agent --version`
-- Claude: `claude --version`
-- Gemini: `gemini --version`
-
 ### Step 2: Parse Arguments
 
 Read the **Raw Arguments** section above. Tokenize by whitespace and parse as follows:
