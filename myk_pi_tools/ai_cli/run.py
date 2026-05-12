@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import click
+
+if TYPE_CHECKING:
+    from ai_cli_runner import AIResult
 
 # Default models per provider — matches each CLI's default behavior
 _DEFAULT_MODELS: dict[str, str] = {
@@ -22,8 +27,25 @@ _RESUME_FLAGS: dict[str, list[str]] = {
 }
 
 
-def _print_stderr(msg: str) -> None:
-    print(msg, file=sys.stderr)
+async def _run_async(
+    prompt: str,
+    provider: str,
+    model: str,
+    cwd: Path,
+    cli_flags: list[str],
+) -> AIResult:
+    """Load pricing and run the AI CLI call in a single event loop."""
+    from ai_cli_runner import call_ai_cli, pricing_cache
+
+    await pricing_cache.load()
+    return await call_ai_cli(
+        prompt=prompt,
+        cwd=cwd,
+        ai_provider=provider,
+        ai_model=model,
+        cli_flags=cli_flags,
+        output_format="json",
+    )
 
 
 def run(
@@ -37,14 +59,9 @@ def run(
 
     Returns exit code (0 = success, 1 = error).
     """
-    from ai_cli_runner import call_ai_cli, pricing_cache
-
-    # Load LiteLLM pricing data for cost calculation (Cursor/Gemini don't report cost natively)
-    asyncio.run(pricing_cache.load())
-
     effective_model = model or _DEFAULT_MODELS.get(provider, "")
     if not effective_model:
-        _print_stderr(f"Error: No default model for provider '{provider}' and no --model specified.")
+        click.echo(f"Error: No default model for provider '{provider}' and no --model specified.", err=True)
         return 1
 
     effective_cwd = Path(cwd) if cwd else Path.cwd()
@@ -53,41 +70,39 @@ def run(
     if resume:
         cli_flags.extend(_RESUME_FLAGS.get(provider, []))
 
-    _print_stderr(f"[ai-cli] {provider.upper()} ({effective_model})")
+    click.echo(f"[ai-cli] {provider.upper()} ({effective_model})", err=True)
 
     result = asyncio.run(
-        call_ai_cli(
+        _run_async(
             prompt=prompt,
+            provider=provider,
+            model=effective_model,
             cwd=effective_cwd,
-            ai_provider=provider,
-            ai_model=effective_model,
             cli_flags=cli_flags,
-            output_format="json",
         )
     )
 
     output: dict[str, object] = {
         "success": result.success,
+        "provider": provider,
+        "model": effective_model,
     }
 
     if result.success:
         output["text"] = result.text
         if result.usage:
-            usage: dict[str, object] = {
+            output["usage"] = {
                 "provider": result.usage.provider,
                 "model": result.usage.model,
                 "input_tokens": result.usage.input_tokens,
                 "output_tokens": result.usage.output_tokens,
                 "cache_read_tokens": result.usage.cache_read_tokens,
                 "cache_write_tokens": result.usage.cache_write_tokens,
+                "cost_usd": result.usage.cost_usd,
+                "duration_ms": result.usage.duration_ms,
             }
-            if result.usage.cost_usd is not None:
-                usage["cost_usd"] = result.usage.cost_usd
-            if result.usage.duration_ms is not None:
-                usage["duration_ms"] = result.usage.duration_ms
-            output["usage"] = usage
     else:
-        output["error"] = result.text
+        output["error"] = result.text or "Unknown error (no details from provider)"
 
     print(json.dumps(output, indent=2))
     return 0 if result.success else 1

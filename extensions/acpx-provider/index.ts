@@ -123,14 +123,17 @@ function closeSession(agent: string, cwd?: string): void {
 // Model Discovery
 // =============================================================================
 
-function discoverModels(_agent: string): Promise<AcpxModelInfo[]> {
+function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 	return new Promise((resolve) => {
 		const models: AcpxModelInfo[] = [];
-		let stdout = "";
+		let output = "";
 		let resolved = false;
 
-		const proc = spawn("agent", ["models"], {
+		// Use an invalid model name to trigger acpx's error message
+		// which lists all ACP-advertised models
+		const proc = spawn("acpx", ["--model", "__list__", agent, "exec", "x"], {
 			stdio: ["pipe", "pipe", "pipe"],
+			cwd: projectCwd,
 		});
 
 		const timeout = setTimeout(() => {
@@ -141,8 +144,12 @@ function discoverModels(_agent: string): Promise<AcpxModelInfo[]> {
 			}
 		}, 30000);
 
+		// acpx writes the model list to stderr
+		proc.stderr.on("data", (chunk: Buffer) => {
+			output += chunk.toString();
+		});
 		proc.stdout.on("data", (chunk: Buffer) => {
-			stdout += chunk.toString();
+			output += chunk.toString();
 		});
 
 		proc.on("close", () => {
@@ -150,22 +157,23 @@ function discoverModels(_agent: string): Promise<AcpxModelInfo[]> {
 			resolved = true;
 			clearTimeout(timeout);
 
-			// Parse lines matching "<id> - <name>" pattern
-			const lines = stdout.split("\n");
-			for (const line of lines) {
-				const trimmed = line.trim();
-				// Skip empty lines, header lines, and tip lines
-				if (!trimmed) continue;
-				if (trimmed.startsWith("Loading")) continue;
-				if (trimmed === "Available models") continue;
-				if (trimmed.startsWith("Tip:")) continue;
-
-				const match = trimmed.match(/^(\S+)\s+-\s+(.+)$/);
-				if (match) {
-					const modelId = match[1];
-					// Strip (default), (current), or similar markers from the name
-					const name = match[2].replace(/\s*\((?:default|current)\)\s*$/i, "").trim();
-					models.push({ modelId, name });
+			// Parse "Available models: modelId[opts], modelId2[opts], ..."
+			const match = output.match(/Available models:\s*(.+)/);
+			if (match) {
+				const modelList = match[1].trim().replace(/\.$/, "");
+				for (const entry of modelList.split(/,\s*/)) {
+					const trimmed = entry.trim();
+					if (!trimmed) continue;
+					// Parse "modelId[key=val,key=val]" or "modelId[]"
+					const bracketIdx = trimmed.indexOf("[");
+					const modelId = bracketIdx >= 0 ? trimmed.substring(0, bracketIdx) : trimmed;
+					if (modelId) {
+						// Generate a readable name from the model ID
+						const name = modelId
+							.replace(/-/g, " ")
+							.replace(/\b\w/g, (c) => c.toUpperCase());
+						models.push({ modelId, name });
+					}
 				}
 			}
 

@@ -66,7 +66,6 @@ pi-config/
 │   └── acpx-provider/              # ACPX provider extension
 │       └── index.ts
 ├── prompts/                         # Prompt templates (slash commands)
-│   ├── acpx-prompt.md
 │   ├── ai-cli-prompt.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
@@ -94,6 +93,7 @@ pi-config/
 │   └── 50-agent-bug-reporting.md
 ├── myk_pi_tools/                    # Python CLI tooling package
 │   ├── __init__.py
+│   ├── ai_cli/
 │   ├── cli.py
 │   ├── coderabbit/
 │   ├── db/

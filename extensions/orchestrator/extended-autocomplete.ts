@@ -8,7 +8,6 @@
  *    — stacked provider that intercepts /command <arg> patterns
  *
  * Completions:
- *   /acpx-prompt <Tab>           → acpx agent names + --fix, --peer
  *   /ai-cli-prompt <Tab>         → ai-cli provider names + --fix, --peer
  *   /pr-review <Tab>             → open PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
@@ -43,19 +42,9 @@ function isFresh<T>(cache: Cache<T>): boolean {
 
 // ── Static completions ──────────────────────────────────────────────
 
-const ACPX_AGENTS: AutocompleteItem[] = [
-  "pi", "openclaw", "codex", "claude", "gemini", "cursor",
-  "copilot", "droid", "iflow", "kilocode", "kimi", "kiro", "opencode", "qwen",
-].map((a) => ({ value: a, label: a, description: "acpx agent" }));
-
 const AI_CLI_PROVIDERS: AutocompleteItem[] = [
   "cursor", "claude", "gemini",
 ].map((a) => ({ value: a, label: a, description: "ai-cli provider" }));
-
-const ACPX_FLAGS: AutocompleteItem[] = [
-  { value: "--fix", label: "--fix", description: "Agent can modify files" },
-  { value: "--peer", label: "--peer", description: "AI-to-AI peer review loop" },
-];
 
 const AI_CLI_FLAGS: AutocompleteItem[] = [
   { value: "--fix", label: "--fix", description: "Agent can modify files" },
@@ -154,25 +143,26 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     if (isFresh(cache) || cache.loading) return;
     cache.loading = true;
     try {
-      const script = `import asyncio; from ai_cli_runner import model_cache; models = asyncio.run(model_cache.list_models("${provider}")); [print(f"{m['id']}|{m['name']}") for m in models]`;
       const result = await pi.exec(
-        "uv", ["run", "--with", "ai-cli-runner", "python", "-c", script],
+        "myk-pi-tools", ["ai-cli", "models", provider],
         { cwd, timeout: 30_000 },
       );
       if (result.code === 0) {
         const items: AutocompleteItem[] = [];
-        for (const line of result.stdout.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const [id, name] = trimmed.split("|", 2);
-          if (id) {
-            items.push({
-              value: id,
-              label: id,
-              description: name || id,
-            });
+        try {
+          const parsed = JSON.parse(result.stdout);
+          if (Array.isArray(parsed)) {
+            for (const m of parsed) {
+              if (m.id) {
+                items.push({
+                  value: m.id,
+                  label: m.id,
+                  description: m.name || m.id,
+                });
+              }
+            }
           }
-        }
+        } catch {}
         cache.data = items;
         cache.timestamp = Date.now();
       }
@@ -206,18 +196,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 
   const completions: Record<string, CompletionFn> = {
-    "acpx-prompt": (prefix: string) => {
-      const parts = prefix.split(/\s+/);
-      const lastPart = parts[parts.length - 1] || "";
-      if (parts.length <= 1) return filter(ACPX_AGENTS, lastPart);
-      if (lastPart.startsWith("-") || lastPart === "") {
-        const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
-        const available = ACPX_FLAGS.filter((f) => !usedFlags.has(f.value));
-        return filter(available, lastPart);
-      }
-      return null;
-    },
-
     "ai-cli-prompt": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
@@ -383,7 +361,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
-    "acpx-prompt", "ai-cli-prompt", "pr-review", "coderabbit-rate-limit",
+    "ai-cli-prompt", "pr-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "cron",
   ]);
 

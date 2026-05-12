@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 
-
-def _print_stderr(msg: str) -> None:
-    print(msg, file=sys.stderr)
+import click
 
 
 def list_models(provider: str) -> int:
@@ -18,19 +15,19 @@ def list_models(provider: str) -> int:
     """
     from ai_cli_runner import model_cache
 
-    _print_stderr(f"[ai-cli] Fetching models for {provider}...")
+    click.echo(f"[ai-cli] Fetching models for {provider}...", err=True)
 
     try:
         models = asyncio.run(model_cache.list_models(provider))
-    except Exception as e:
-        _print_stderr(f"[ai-cli] Error fetching models: {e}")
+    except (OSError, TimeoutError) as e:
+        click.echo(f"[ai-cli] Error fetching models: {e}", err=True)
         return 1
 
     if not models:
-        _print_stderr(f"[ai-cli] No models found for {provider}")
+        click.echo(f"[ai-cli] No models found for {provider}", err=True)
         print("[]")
         return 0
 
-    _print_stderr(f"[ai-cli] Found {len(models)} model(s)")
+    click.echo(f"[ai-cli] Found {len(models)} model(s)", err=True)
     print(json.dumps(models, indent=2))
     return 0
