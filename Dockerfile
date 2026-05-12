@@ -52,6 +52,9 @@ RUN mkdir -p /home/node/.cache/ms-playwright && \
 # Copy uv and uvx from official image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
+COPY --from=docker.io/amazon/aws-cli:latest /usr/local/aws-cli/ /usr/local/aws-cli/
+RUN ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws
+
 # Install Go
 RUN curl -fsSL https://go.dev/dl/go1.24.4.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 ENV PATH="/usr/local/go/bin:$PATH"
@@ -62,23 +65,17 @@ RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL
   curl -fsSL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
   | tar -C /usr/local/bin -xzf - oc
 
-  # Add AWS CLI
-  RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip" && \
-    cd /tmp && unzip awscliv2.zip \
-    && ./aws/install \
-    && rm -rf /tmp/awscliv2.zip /tmp/aws \
-    && aws --version
-
-    # Add IBM CLI
-RUN curl -fsSL "https://download.clis.cloud.ibm.com/ibm-cloud-cli/2.41.0/IBM_Cloud_CLI_2.41.0_amd64.tar.gz" \
+# Add IBM CLI
+RUN curl -fsSL "https://download.clis.cloud.ibm.com/ibm-cloud-cli/2.43.0/IBM_Cloud_CLI_2.43.0_amd64.tar.gz" \
   | tar -C /tmp -xzf - && \
   /tmp/Bluemix_CLI/install --quiet \
   && rm -rf /tmp/Bluemix_CLI
 
-# Add gcloud CLI
-RUN curl https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -C /tmp -xzf - \
-  && /tmp/google-cloud-sdk/install.sh --quiet \
-  && rm -rf /tmp/google-cloud-sdk
+# # Add gcloud CLI
+# RUN curl https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -C /opt -xzf - \
+#   && /opt/google-cloud-sdk/install.sh --quiet
+
+COPY --from=gcr.io/google.com/cloudsdktool/google-cloud-cli:stable /usr/lib/google-cloud-sdk/ /usr/lib/google-cloud-sdk/
 
 # Install Docker and Podman CLIs (for docker-safe wrapper — read-only container inspection)
 RUN DOCKER_VERSION=$(curl -fsSL https://download.docker.com/linux/static/stable/x86_64/ | grep -oP 'docker-\K[0-9.]+(?=\.tgz)' | sort -V | tail -1) && \
@@ -98,7 +95,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 RUN chown -R node:node /home/node
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
-ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
+ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:/usr/lib/google-cloud-sdk/bin:$PATH"
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
 # Cursor auth: create config dir (auth.json mounted or symlinked at runtime)
