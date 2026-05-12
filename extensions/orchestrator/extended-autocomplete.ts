@@ -367,6 +367,12 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
+
+    // Pre-fetch AI CLI models at session start so autocomplete is instant
+    for (const provider of ["cursor", "claude", "gemini"]) {
+      void fetchModels(provider, ctx.cwd);
+    }
+
     if (!ctx.hasUI) return;
 
     ctx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({
