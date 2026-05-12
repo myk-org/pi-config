@@ -654,13 +654,23 @@ Items where the agent initially flagged but later agreed no change was needed.
 | Missing null check | cursor | claude, gemini | All agreed, fixed |
 ```
 
-### Peer Review Usage (summed across all rounds)
+### Peer Review Usage
+
+**Per round:**
+
+| Round | Provider | Model | Input tokens | Output tokens | Cache read | Cost | Duration |
+|-------|----------|-------|-------------|--------------|------------|------|----------|
+| 1 | cursor | gpt-5.4-high | 27,668 | 1,423 | 24,064 | $0.0182 | 12s |
+| 2 | cursor | gpt-5.4-high | 29,104 | 892 | 26,200 | $0.0171 | 9s |
+| 3 | cursor | gpt-5.4-high | 30,332 | 416 | 28,100 | $0.0170 | 8s |
+
+**Totals:**
 
 | Provider | Model | Rounds | Input tokens | Output tokens | Cache read | Cost | Duration |
 |----------|-------|--------|-------------|--------------|------------|------|----------|
-| cursor | gpt-5.4-high | 3 | 82,104 | 4,231 | 61,200 | $0.0523 | 42s |
+| cursor | gpt-5.4-high | 3 | 87,104 | 2,731 | 78,364 | $0.0523 | 29s |
 
-Totals: tokens=X in / X out / X cache, cost=$X.XXXX, duration=Xs
+Total: tokens=87,104 in / 2,731 out / 78,364 cache, cost=$0.0523, duration=29s
 
 **Save config:** See "Persist Config" section below.
 
