@@ -598,7 +598,12 @@ Parse each agent's response:
 
 #### 9e: Summary to User
 
-After the loop exits, present a comprehensive summary:
+After the loop exits, present a comprehensive summary.
+
+**Usage tracking (MANDATORY):** Parse the JSON output from EVERY `myk-pi-tools ai-cli run`
+call during the peer review (all rounds). **Sum** `input_tokens`, `output_tokens`,
+`cache_read_tokens`, and `cost_usd` across ALL rounds per provider to get totals.
+Since peer review runs in the same session, the totals represent the full session cost.
 
 ```text
 ## Peer Review Complete — {N} round(s)
@@ -648,6 +653,14 @@ Items where the agent initially flagged but later agreed no change was needed.
 |---------|-----------|-----------|------------|
 | Missing null check | cursor | claude, gemini | All agreed, fixed |
 ```
+
+### Peer Review Usage (summed across all rounds)
+
+| Provider | Model | Rounds | Input tokens | Output tokens | Cache read | Cost | Duration |
+|----------|-------|--------|-------------|--------------|------------|------|----------|
+| cursor | gpt-5.4-high | 3 | 82,104 | 4,231 | 61,200 | $0.0523 | 42s |
+
+Totals: cost=$X.XXXX, duration=Xs
 
 **Save config:** See "Persist Config" section below.
 
