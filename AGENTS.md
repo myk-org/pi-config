@@ -67,6 +67,7 @@ pi-config/
 │       └── index.ts
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── acpx-prompt.md
+│   ├── ai-cli-prompt.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
 │   ├── implement-and-review.md
