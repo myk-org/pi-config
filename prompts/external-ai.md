@@ -107,85 +107,24 @@ For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead
 4. **If no agent spec found** (first non-flag token is not a recognized provider), fall through
    to saved config below
 
-**No agent specified — use saved config:**
+**Resolve provider and model (global rule — ALL modes):**
 
-Check for saved configuration:
+Saved config: `.pi/external-ai-config.json` with `lastAgents` and `lastPeers` fields.
+Read it: `cat .pi/external-ai-config.json 2>/dev/null`.
 
-```bash
-mkdir -p .pi
-cat .pi/external-ai-config.json 2>/dev/null
-```
+For any missing piece (provider or model), fill from saved config and confirm:
 
-The config file structure:
+1. **Provider missing?** Check saved config (`lastAgents` or `lastPeers` depending on mode).
+   If saved config exists, ask: `Last used: SAVED_VALUE. Use this?` (Yes/Change/Cancel).
+   If no saved config, ask: `Select provider:` with options `cursor`, `claude`, `gemini`, `Cancel`.
+   For `--peer` without providers: `Select providers:` with `cursor,claude`, `cursor,gemini`,
+   `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
+2. **Model missing?** For EACH provider without a `--model`, ask:
+   `Select model for PROVIDER:` — fetch via `myk-pi-tools ai-cli models PROVIDER`,
+   show model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
+3. **Prompt missing?** Abort: `No prompt provided.`
 
-```json
-{
-  "lastAgents": "cursor --model gpt-5.4-high",
-  "lastPeers": "cursor --model gpt-5.4-high,claude --model claude-sonnet-4-6"
-}
-```
-
-**Format:** Each entry in `lastPeers` is `provider --model model` separated by commas.
-If no model was specified for a provider, omit `--model` (default will be used).
-
-If the file doesn't exist, is empty, or contains invalid JSON, treat as no config.
-
-**If `--peer` was passed** and `lastPeers` exists and is non-empty:
-Ask via AskUserQuestion: `Last used peers: LAST_PEERS. Use these?`
-Options: `Yes, use LAST_PEERS`, `Change`, `Cancel`.
-Yes = use `lastPeers` as the agent spec (providers AND models).
-Change = go to peer provider selection below.
-Cancel = abort.
-
-**If `--peer` was passed** but `lastPeers` is missing/empty:
-Go to peer provider selection below.
-
-**Peer provider selection:**
-Ask via AskUserQuestion: `Select providers for peer review:`
-Options: `cursor,claude`, `cursor,gemini`, `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
-Cancel = abort.
-
-After selecting providers, ask model for EACH provider:
-For each provider in the selection, ask: `Select model for PROVIDER (or use default):`
-Fetch models via `myk-pi-tools ai-cli models PROVIDER` and present them.
-Options: list of model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
-Cancel = abort.
-`default` = use the provider's default model from the table below.
-
-**If `--fix` was passed or no flags** and `lastAgents` exists and is non-empty:
-Ask via AskUserQuestion: `Last used: LAST_AGENTS. Use this?`
-Options: `Yes, use LAST_AGENTS`, `Change provider/model`, `Cancel`.
-Yes = use `lastAgents` as the agent spec.
-Change = show provider selection (see below).
-Cancel = abort.
-
-**If `--fix` was passed or no flags** and `lastAgents` is missing/empty:
-Show provider selection (see below).
-
-**Provider selection (when no provider resolved yet):**
-
-Ask via AskUserQuestion: `Select provider:`
-Options: `cursor`, `claude`, `gemini`, `Cancel`.
-Cancel = abort.
-
-After selecting a provider, ask: `Select model (or use default):`
-Fetch models via `myk-pi-tools ai-cli models PROVIDER` and present them.
-Options: list of model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
-Cancel = abort.
-`default` = use the provider's default model from the table below.
-
-**Model resolution (MANDATORY for ALL modes):** After resolving provider(s) — whether
-from arguments, saved config, or interactive selection — if ANY provider does not have
-a model specified (no `--model` flag was passed for it), ask the user to select a model
-for that provider. Use the same model selection flow: fetch models via
-`myk-pi-tools ai-cli models PROVIDER`, present options + `default (DEFAULT_MODEL)` + `Cancel`.
-
-This applies to normal, fix, AND peer modes. The user must always know which model
-will be used before execution.
-
-**Empty prompt check:** After resolving agent spec, if the remaining prompt text is
-empty or whitespace-only, abort with:
-"No prompt provided. Usage: `/external-ai <provider> [--model <model>] [--fix | --peer] <prompt>`"
+The user must always know exactly which provider+model will be used before execution.
 
 **Default model handling:** If no `--model` was specified for a provider,
 you must still pass a model to `ai-cli-runner`. Use these defaults:
