@@ -16,7 +16,15 @@ import time
 from datetime import datetime, timezone
 
 from myk_pi_tools.coderabbit.approved import is_approved
-from myk_pi_tools.coderabbit.rate_limit import _RATE_LIMITED_MARKER, _parse_wait_seconds, run_trigger
+from myk_pi_tools.coderabbit.rate_limit import (
+    _RATE_LIMITED_MARKER,
+    _REVIEWS_PAUSED_FALLBACK_HEADING,
+    _REVIEWS_PAUSED_FALLBACK_SETTING,
+    _REVIEWS_PAUSED_MARKER,
+    _parse_wait_seconds,
+    _post_resume_trigger,
+    run_trigger,
+)
 from myk_pi_tools.coderabbit.utils import find_summary_comment
 from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr
 from myk_pi_tools.reviews.fetch import run as fetch_run
@@ -73,6 +81,7 @@ def run(review_url: str = "") -> int:
     owner, repo, pr_number = get_pr_info(review_url)
     owner_repo = f"{owner}/{repo}"
     cycle = 0
+    resume_attempts = 0
 
     while True:
         cycle += 1
@@ -140,6 +149,45 @@ def run(review_url: str = "") -> int:
                 print_stderr("[poll] CodeRabbit approved \u2014 no actionable comments.")
                 print('{"approved": true}')
                 return 0
+
+        elif (
+            comment_id is not None
+            and body is not None
+            and (
+                _REVIEWS_PAUSED_MARKER in body
+                or (_REVIEWS_PAUSED_FALLBACK_HEADING in body and _REVIEWS_PAUSED_FALLBACK_SETTING in body)
+            )
+        ):
+            # Reviews paused — auto-resume (max 3 attempts per poll session)
+            resume_attempts += 1
+
+            if resume_attempts > 3:
+                print_stderr(
+                    "[poll] ⚠️  CodeRabbit still paused after 3 resume attempts. "
+                    "Continuing poll without resuming — manual intervention may be needed."
+                )
+            else:
+                print_stderr(
+                    f"[poll] ⚠️  CodeRabbit paused reviews (too many commits). "
+                    f"Auto-resuming (attempt {resume_attempts}/3)..."
+                )
+                print_stderr("[poll] 💡 To prevent this, add to .coderabbit.yaml:")
+                print_stderr("[poll]     reviews:")
+                print_stderr("[poll]       auto_review:")
+                print_stderr("[poll]         auto_pause_after_reviewed_commits: 0")
+
+                resume_id = _post_resume_trigger(owner_repo, int(pr_number))
+                if resume_id is not None:
+                    print_stderr(f"[poll] Posted @coderabbitai resume (comment ID: {resume_id})")
+
+                    # Re-check approval after resume (CodeRabbit may immediately approve)
+                    print_stderr("[poll] Re-checking approval after resume trigger...")
+                    if is_approved(owner_repo, int(pr_number)):
+                        print_stderr("[poll] CodeRabbit approved — no actionable comments.")
+                        print('{"approved": true}')
+                        return 0
+                else:
+                    print_stderr("[poll] Warning: Failed to post resume trigger. Will retry next cycle.")
 
         elif comment_id is None:
             if error and "No CodeRabbit summary comment found" in error:
