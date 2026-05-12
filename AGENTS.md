@@ -171,6 +171,7 @@ Known extension commands:
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
 | `/cron` | `cron.ts` | Schedule recurring tasks |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
+| `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ### Adding a Prompt Template
 

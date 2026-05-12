@@ -180,31 +180,20 @@ use the default model if none was specified by the user.
 When `--model` is specified, use that model.
 When not specified, use the default from the table above.
 
-### Step 2b: Confirm Before Execution (MANDATORY)
+### Step 2b: Display Execution Summary
 
-Before proceeding, display a summary of what will be executed and ask for confirmation.
-**No black magic — the user must always know exactly what is about to be sent.**
-
-Display as text:
+Before proceeding, display a summary of what will be executed so the user knows
+exactly what is about to be sent. **No black magic.**
 
 ```text
 Provider: <provider>
 Model: <model> (or "default: <default_model>" if using default)
 Mode: <read-only | fix | peer>
 Resume: <yes | no>
-Prompt: <first 200 chars of prompt>...
 ```
 
-Then ask via AskUserQuestion: "Proceed?"
-Options: "Yes", "Change provider/model", "Cancel"
-
-- Yes → continue to Step 3
-- Change → go back to provider selection flow
-- Cancel → abort
-
-**Skip this confirmation if the user explicitly provided both provider and model
-in the command arguments** (e.g., `/external-ai cursor --model gpt-5.4-high say hi`).
-Only confirm when any part was auto-resolved (default model, saved config, provider selection).
+No confirmation prompt needed — the user already confirmed by providing arguments
+or selecting from the interactive prompts above.
 
 ### Step 3: Session Management
 

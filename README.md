@@ -61,6 +61,7 @@ Single extension that provides:
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/query-db <command>` | Query the review comments database |
 | `/external-ai <agent> [--model <model>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
+| `/external-ai-models-refresh` | Refresh cached AI CLI models for autocomplete |
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain memory.md |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |

@@ -4,7 +4,7 @@
  * Two mechanisms:
  * 1. getArgumentCompletions on extension commands (dream-auto, pidash, etc.)
  *    — injected via registerCommand wrapping
- * 2. addAutocompleteProvider for prompt templates (acpx-prompt, review-local, etc.)
+ * 2. addAutocompleteProvider for prompt templates (external-ai, review-local, etc.)
  *    — stacked provider that intercepts /command <arg> patterns
  *
  * Completions:
