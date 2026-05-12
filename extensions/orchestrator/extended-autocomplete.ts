@@ -61,6 +61,7 @@ const AI_CLI_FLAGS: AutocompleteItem[] = [
   { value: "--fix", label: "--fix", description: "Agent can modify files" },
   { value: "--peer", label: "--peer", description: "AI-to-AI peer review loop" },
   { value: "--resume", label: "--resume", description: "Continue last session" },
+  { value: "--model ", label: "--model", description: "Set model (e.g., gpt-5.4-high)" },
 ];
 
 // ── Filter helper ───────────────────────────────────────────────────
@@ -220,6 +221,26 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     "ai-cli-prompt": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
+      const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
+
+      // After --model: show model completions for the detected provider
+      if (prevPart === "--model") {
+        // Find the provider from earlier tokens
+        const knownProviders = ["cursor", "claude", "gemini"];
+        let provider = "";
+        for (const p of parts) {
+          const base = p.includes(":") ? p.split(":")[0] : p;
+          if (knownProviders.includes(base)) { provider = base; break; }
+        }
+        if (provider) {
+          void fetchModels(provider, lastCwd);
+          const cache = modelCaches.get(provider);
+          if (cache?.data) {
+            return filter(cache.data, lastPart);
+          }
+        }
+        return null;
+      }
 
       // First token: provider or provider:model
       if (parts.length <= 1) {
@@ -233,7 +254,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
             void fetchModels(provider, lastCwd);
             const cache = modelCaches.get(provider);
             if (cache?.data) {
-              // Prepend provider: to each value so applyCompletion inserts the full spec
               const items = cache.data.map((m) => ({
                 ...m,
                 value: `${provider}:${m.value}`,
@@ -246,10 +266,10 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
         return filter(AI_CLI_PROVIDERS, lastPart);
       }
 
-      // Subsequent tokens: flags or provider:model in comma-separated list
+      // Subsequent tokens: flags
       if (lastPart.startsWith("-") || lastPart === "") {
         const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
-        const available = AI_CLI_FLAGS.filter((f) => !usedFlags.has(f.value));
+        const available = AI_CLI_FLAGS.filter((f) => !usedFlags.has(f.value.trim()));
         return filter(available, lastPart);
       }
       return null;

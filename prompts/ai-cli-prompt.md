@@ -1,6 +1,6 @@
 ---
-description: "Run a prompt via ai-cli-runner to any AI CLI (cursor, claude, gemini). Full model access including all variants. Use for peer review, code review, or any task — /ai-cli-prompt [agent[:model]] [--fix|--peer|--resume] <prompt>"
-argument-hint: "[agent[:model]] [--fix|--peer|--resume] <prompt>"
+description: "Run a prompt via ai-cli-runner to any AI CLI (cursor, claude, gemini). Full model access including all variants. Use for peer review, code review, or any task — /ai-cli-prompt <agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
+argument-hint: "<agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
 ---
 
 ## Raw Arguments
@@ -42,13 +42,14 @@ For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` inst
 - `/ai-cli-prompt cursor fix the tests`
 - `/ai-cli-prompt claude review this code`
 - `/ai-cli-prompt gemini explain this function`
-- `/ai-cli-prompt cursor:gpt-5.4-high review the architecture`
-- `/ai-cli-prompt cursor:claude-4.6-opus-max-thinking --fix fix the code`
+- `/ai-cli-prompt cursor --model gpt-5.4-high review the architecture`
+- `/ai-cli-prompt cursor --model claude-4.6-opus-max-thinking --fix fix the code`
 - `/ai-cli-prompt cursor --fix fix the code quality issues`
 - `/ai-cli-prompt cursor --peer review this code`
-- `/ai-cli-prompt cursor:gpt-5.4-xhigh,claude:claude-sonnet-4-6 --peer review the architecture`
+- `/ai-cli-prompt cursor --model gpt-5.4-xhigh --peer review the architecture`
 - `/ai-cli-prompt cursor,claude review this code`
 - `/ai-cli-prompt cursor --resume explain the last change`
+- `/ai-cli-prompt cursor --model gpt-5.4-high --resume continue reviewing`
 - `/ai-cli-prompt claude --resume what about the edge cases?`
 - `/ai-cli-prompt review this code` — uses last saved agent from `.pi/ai-cli-config.json`
 - `/ai-cli-prompt --peer review this` — uses last saved peers from `.pi/ai-cli-config.json`
@@ -69,11 +70,12 @@ If it fails, the package will be auto-installed on first use via `uv run --with 
 
 Read the **Raw Arguments** section above. Tokenize by whitespace and parse as follows:
 
-1. **Consume leading flags** — strip `--fix` and/or `--peer` from the front of the token stream
-2. **Detect agent spec** — the next token is an agent spec if it matches a known provider name
-   (with optional `:model` suffix) or is a comma-separated list of such specs.
-   Split on commas, then for each segment: split on the FIRST `:` — left side is the
-   provider name, right side (if any) is the model override.
+1. **Consume flags** — strip `--fix`, `--peer`, `--resume`, and `--model <value>` from the token stream.
+   `--model` consumes the NEXT token as the model value.
+2. **Detect agent spec** — the next non-flag token is an agent spec if it matches a known provider name
+   or is a comma-separated list of provider names. (The `:model` colon syntax is also supported
+   for backward compatibility — split on FIRST `:`, left is provider, right is model override.
+   If both `--model` and `:model` are given, `--model` wins.)
 3. **Remainder is the prompt** — everything after the agent spec (or after flags if no agent)
 
 **Known providers:** `cursor`, `claude`, `gemini`
@@ -84,6 +86,9 @@ For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead
 
 **Flag validation:**
 
+- `--model` takes the next token as its value. If `--model` appears without a value,
+  abort with: "`--model` requires a model name (e.g., `--model gpt-5.4-high`)."
+- `--model` can be combined with any other flag (`--fix`, `--peer`, `--resume`).
 - `--resume` can be combined with `--fix` but NOT with `--peer` (peer mode manages sessions automatically).
   If `--resume` and `--peer` are both passed, abort with: "`--resume` and `--peer` cannot be used together — peer mode manages sessions automatically."
 - `--fix` and `--peer` are **mutually exclusive**. If both are passed,
@@ -120,7 +125,7 @@ The config file structure:
 
 ```json
 {
-  "lastAgents": "cursor:gpt-5.4-high",
+  "lastAgents": "cursor --model gpt-5.4-high",
   "lastPeers": "cursor,claude"
 }
 ```
@@ -165,6 +170,9 @@ you must still pass a model to `ai-cli-runner`. Use these defaults:
 
 These match each CLI's default behavior. When generating the Python script (Step 5),
 use the default model if none was specified by the user.
+
+When `--model` is specified, use that model. When `:model` colon syntax is used, use that.
+When neither is specified, use the default from the table above.
 
 ### Step 3: Session Management
 
