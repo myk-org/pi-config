@@ -365,12 +365,33 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     "review-local", "release", "review-handler", "cron",
   ]);
 
+  // /ai-cli-models-refresh command — clears cache and re-fetches
+  pi.registerCommand("ai-cli-models-refresh", {
+    description: "Refresh AI CLI model cache (cursor, claude, gemini)",
+    async handler(_args, ctx) {
+      modelCaches.clear();
+      ctx.ui.notify("Refreshing AI CLI models...", "info");
+      await Promise.allSettled(
+        ["cursor", "claude", "gemini"].map((p) => fetchModels(p, ctx.cwd)),
+      );
+      const counts = ["cursor", "claude", "gemini"]
+        .map((p) => `${p}: ${modelCaches.get(p)?.data?.length ?? 0}`)
+        .join(", ");
+      ctx.ui.notify(`AI CLI models refreshed (${counts})`, "info");
+    },
+  });
+
+  let modelsPrefetched = false;
+
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
 
-    // Pre-fetch AI CLI models at session start so autocomplete is instant
-    for (const provider of ["cursor", "claude", "gemini"]) {
-      void fetchModels(provider, ctx.cwd);
+    // Pre-fetch AI CLI models once on first start (not on /new)
+    if (!modelsPrefetched) {
+      modelsPrefetched = true;
+      for (const provider of ["cursor", "claude", "gemini"]) {
+        void fetchModels(provider, ctx.cwd);
+      }
     }
 
     if (!ctx.hasUI) return;

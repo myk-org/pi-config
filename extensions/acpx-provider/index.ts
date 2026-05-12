@@ -28,7 +28,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn, execSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
 
 // =============================================================================
 // Types
@@ -84,20 +84,21 @@ function createSession(agent: string, cwd?: string): void {
 	const effectiveCwd = cwd || process.cwd();
 	// Try ensure first (idempotent), then new as fallback
 	try {
-		execSync(`acpx ${agent} sessions ensure --name "${name}"`, {
+		execFileSync("acpx", [agent, "sessions", "ensure", "--name", name], {
 			stdio: ["pipe", "pipe", "pipe"],
 			timeout: 15000,
 			cwd: effectiveCwd,
 		});
 	} catch {
 		try {
-			execSync(`acpx ${agent} sessions new --name "${name}"`, {
+			execFileSync("acpx", [agent, "sessions", "new", "--name", name], {
 				stdio: ["pipe", "pipe", "pipe"],
 				timeout: 15000,
 				cwd: effectiveCwd,
 			});
-		} catch {
+		} catch (err) {
 			// Fall back to no named session
+			console.debug(`[acpx] session create failed for ${agent}:`, err);
 			sessions.set(agent, { name: "", agent, systemPromptSent: false });
 			return;
 		}
@@ -110,13 +111,13 @@ function closeSession(agent: string, cwd?: string): void {
 	const session = sessions.get(agent);
 	if (!session || !session.name) return;
 	try {
-		execSync(`acpx ${agent} sessions close "${session.name}"`, {
+		execFileSync("acpx", [agent, "sessions", "close", session.name], {
 			stdio: ["pipe", "pipe", "pipe"],
 			timeout: 10000,
 			cwd,
 		});
-	} catch {
-		// Best effort cleanup
+	} catch (err) {
+		console.debug(`[acpx] session close failed for ${agent}:`, err);
 	}
 	sessions.delete(agent);
 }
@@ -170,7 +171,7 @@ function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 				let depth = 0;
 				for (const ch of modelList) {
 					if (ch === "[") depth++;
-					else if (ch === "]") depth--;
+					else if (ch === "]") depth = Math.max(0, depth - 1);
 					if (ch === "," && depth === 0) {
 						entries.push(current.trim());
 						current = "";
@@ -290,6 +291,9 @@ function streamAcpx(
 			// Parse agent and acpx model from pi model id: "agent:modelId[opts]"
 			const colonIdx = model.id.indexOf(":");
 			const agent = colonIdx >= 0 ? model.id.substring(0, colonIdx) : model.id;
+			if (!registeredAgents.includes(agent)) {
+				throw new Error(`Unknown acpx agent: ${agent}`);
+			}
 			const acpxModelId = colonIdx >= 0 ? model.id.substring(colonIdx + 1) : undefined;
 
 			// Ensure session exists — retry with cwd fallback
@@ -326,6 +330,7 @@ function streamAcpx(
 			let textContentIndex = -1;
 			let thinkingContentIndex = -1;
 			let killed = false;
+			let stderrOutput = "";
 
 			// Handle abort
 			if (options?.signal) {
@@ -447,7 +452,6 @@ function streamAcpx(
 				}
 			});
 
-			let stderrOutput = "";
 			proc.stderr.on("data", (chunk: Buffer) => {
 				stderrOutput += chunk.toString();
 			});
@@ -523,7 +527,7 @@ export default function (pi: ExtensionAPI) {
 	const agentList = (process.env.ACPX_AGENTS || "")
 		.split(",")
 		.map((a) => a.trim())
-		.filter(Boolean);
+		.filter((a) => /^[a-z0-9_-]+$/i.test(a));
 
 	registeredAgents = agentList;
 
@@ -549,49 +553,49 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Discover real models and create acpx sessions on pi session start
-	pi.on("session_start", async (_event, ctx) => {
-		// Discover models for ALL agents in parallel to avoid one slow agent delaying others
-		const discoveryResults = await Promise.allSettled(
-			agentList.map(async (agent) => {
-				const discoveredModels = await discoverModels(agent);
-				return { agent, discoveredModels };
-			}),
-		);
+	// Non-blocking: fire-and-forget so pi startup isn't delayed
+	pi.on("session_start", (_event, ctx) => {
+		void (async () => {
+			const discoveryResults = await Promise.allSettled(
+				agentList.map(async (agent) => {
+					const discoveredModels = await discoverModels(agent);
+					return { agent, discoveredModels };
+				}),
+			);
 
-		// Register providers and create sessions based on discovery results
-		for (const result of discoveryResults) {
-			if (result.status === "rejected") continue;
+			for (const result of discoveryResults) {
+				if (result.status === "rejected") continue;
 
-			const { agent, discoveredModels } = result.value;
-			try {
-				if (discoveredModels.length > 0) {
-					const models = discoveredModels.map((m) => ({
-						id: `${agent}:${m.modelId}`,
-						name: `${m.name} (${agent})`,
-						reasoning: false,
-						input: ["text" as const, "image" as const],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 200000,
-						maxTokens: 32768,
-					}));
-					pi.registerProvider(`acpx-${agent}`, {
-						baseUrl: "https://localhost",
-						apiKey: "acpx", // pragma: allowlist secret
-						api: "acpx",
-						models,
-						streamSimple: streamAcpx,
-					});
-					ctx.ui.notify(`acpx-${agent}: ${discoveredModels.length} models discovered and registered`, "info");
-				} else {
-					ctx.ui.notify(`acpx-${agent}: no models discovered (timeout?), using default only`, "warning");
+				const { agent, discoveredModels } = result.value;
+				try {
+					if (discoveredModels.length > 0) {
+						const models = discoveredModels.map((m) => ({
+							id: `${agent}:${m.modelId}`,
+							name: `${m.name} (${agent})`,
+							reasoning: false,
+							input: ["text" as const, "image" as const],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 32768,
+						}));
+						pi.registerProvider(`acpx-${agent}`, {
+							baseUrl: "https://localhost",
+							apiKey: "acpx", // pragma: allowlist secret
+							api: "acpx",
+							models,
+							streamSimple: streamAcpx,
+						});
+						ctx.ui.notify(`acpx-${agent}: ${discoveredModels.length} models discovered`, "info");
+					} else {
+						ctx.ui.notify(`acpx-${agent}: no models discovered (timeout?)`, "warning");
+					}
+
+					createSession(agent, projectCwd);
+				} catch (err) {
+					ctx.ui.notify(`acpx-${agent}: setup failed: ${err}`, "error");
 				}
-
-				// Create a persistent acpx session
-				createSession(agent, projectCwd);
-			} catch {
-				// Keep placeholder models
 			}
-		}
+		})();
 	});
 
 	// Clean up acpx sessions on pi shutdown
