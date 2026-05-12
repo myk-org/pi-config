@@ -188,7 +188,7 @@ function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 						const name = baseName
 							.replace(/-/g, " ")
 							.replace(/\b\w/g, (c) => c.toUpperCase());
-						// Use full ID with brackets everywhere — user sees it, acpx receives it
+						// modelId = exact acpx string (with brackets, even empty)
 						models.push({ modelId: entry, name });
 					}
 				}
