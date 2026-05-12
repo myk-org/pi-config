@@ -120,8 +120,10 @@ For any missing piece (provider or model), fill from saved config and confirm:
    For `--peer` without providers: `Select providers:` with `cursor,claude`, `cursor,gemini`,
    `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
 2. **Model missing?** For EACH provider without a `--model`, ask:
-   `Select model for PROVIDER:` — fetch via `myk-pi-tools ai-cli models PROVIDER`,
-   show model IDs + `default (DEFAULT_MODEL)` + `Cancel`.
+   `Select model for PROVIDER:` — run `myk-pi-tools ai-cli models PROVIDER`,
+   parse the JSON output, and present ALL model IDs as options.
+   Do NOT filter, subset, or cherry-pick models — show every single one.
+   Add `default (DEFAULT_MODEL)` and `Cancel` at the end.
 3. **Prompt missing?** Abort: `No prompt provided.`
 
 The user must always know exactly which provider+model will be used before execution.
