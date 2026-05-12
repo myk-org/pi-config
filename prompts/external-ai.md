@@ -660,7 +660,7 @@ Items where the agent initially flagged but later agreed no change was needed.
 |----------|-------|--------|-------------|--------------|------------|------|----------|
 | cursor | gpt-5.4-high | 3 | 82,104 | 4,231 | 61,200 | $0.0523 | 42s |
 
-Totals: cost=$X.XXXX, duration=Xs
+Totals: tokens=X in / X out / X cache, cost=$X.XXXX, duration=Xs
 
 **Save config:** See "Persist Config" section below.
 
