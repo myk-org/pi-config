@@ -161,18 +161,32 @@ function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 			const match = output.match(/Available models:\s*(.+)/);
 			if (match) {
 				const modelList = match[1].trim().replace(/\.$/, "");
-				for (const entry of modelList.split(/,\s*/)) {
-					const trimmed = entry.trim();
-					if (!trimmed) continue;
-					// Parse "modelId[key=val,key=val]" or "modelId[]"
-					const bracketIdx = trimmed.indexOf("[");
-					const modelId = bracketIdx >= 0 ? trimmed.substring(0, bracketIdx) : trimmed;
-					if (modelId) {
-						// Generate a readable name from the model ID
-						const name = modelId
+				// Bracket-aware split: commas inside [] are part of the model ID
+				// e.g., gpt-5.4[context=272k,reasoning=medium,fast=false]
+				const entries: string[] = [];
+				let current = "";
+				let depth = 0;
+				for (const ch of modelList) {
+					if (ch === "[") depth++;
+					else if (ch === "]") depth--;
+					if (ch === "," && depth === 0) {
+						entries.push(current.trim());
+						current = "";
+					} else {
+						current += ch;
+					}
+				}
+				if (current.trim()) entries.push(current.trim());
+
+				for (const entry of entries) {
+					if (!entry) continue;
+					const bracketIdx = entry.indexOf("[");
+					const baseName = bracketIdx >= 0 ? entry.substring(0, bracketIdx) : entry;
+					if (baseName) {
+						const name = baseName
 							.replace(/-/g, " ")
 							.replace(/\b\w/g, (c) => c.toUpperCase());
-						models.push({ modelId, name });
+						models.push({ modelId: entry, name });
 					}
 				}
 			}
