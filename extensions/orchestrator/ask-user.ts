@@ -134,7 +134,9 @@ export function registerAskUser(
           const makeSelectList = (items: SelectItem[]) => {
             const sl = new SelectList(items, Math.min(items.length + 1, 15), selectTheme);
             sl.onSelect = (item: SelectItem) => {
-              if (item.value === "__free_input__") {
+              if (item.value === "__no_match__") {
+                // Ignore — not a real option
+              } else if (item.value === "__free_input__") {
                 mode = "input";
                 searchInput.setValue("");
                 tui.requestRender();
@@ -167,7 +169,9 @@ export function registerAskUser(
             if (selectList) {
               const selected = selectList.getSelectedItem();
               if (selected) {
-                if (selected.value === "__free_input__") {
+                if (selected.value === "__no_match__") {
+                  // Ignore
+                } else if (selected.value === "__free_input__") {
                   mode = "input";
                   searchInput.setValue("");
                 } else {
@@ -243,7 +247,7 @@ export function registerAskUser(
                   const query = searchInput.getValue();
                   if (query) {
                     const filtered = fuzzyFilter(allItems, query, (item) => `${item.label} ${item.description || ""}`);
-                    selectList = makeSelectList(filtered.length > 0 ? filtered : [{ value: "", label: "No matches", description: "" }]);
+                    selectList = makeSelectList(filtered.length > 0 ? filtered : [{ value: "__no_match__", label: "No matches", description: "clear search to see all" }]);
                   } else {
                     selectList = makeSelectList(allItems);
                   }

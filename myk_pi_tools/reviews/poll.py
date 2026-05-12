@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from myk_pi_tools.coderabbit.approved import is_approved
 from myk_pi_tools.coderabbit.rate_limit import (
@@ -125,7 +125,7 @@ def run(review_url: str = "") -> int:
             if updated_at:
                 try:
                     comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                    elapsed = (datetime.now(timezone.utc) - comment_time).total_seconds()
+                    elapsed = (datetime.now(UTC) - comment_time).total_seconds()
                     remaining = max(0, wait_seconds - int(elapsed))
                     print_stderr(
                         f"[poll] Rate limit posted {int(elapsed)}s ago."

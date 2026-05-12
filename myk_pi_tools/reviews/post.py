@@ -43,7 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -188,7 +188,7 @@ def lookup_thread_id_from_node_id(node_id: str) -> str | None:
 
 def get_utc_timestamp() -> str:
     """Get current UTC timestamp in ISO format."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def apply_updates_to_json(json_path: Path, updates: list[dict[str, Any]]) -> None:

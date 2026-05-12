@@ -10,7 +10,7 @@ import json
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -134,7 +134,7 @@ def get_current_commit_sha(cwd: Path | None = None) -> str:
 def insert_review(conn: sqlite3.Connection, owner: str, repo: str, pr_number: int, commit_sha: str) -> int:
     """Insert a new review record. Always appends, never updates."""
     cursor = conn.cursor()
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = datetime.now(UTC).isoformat()
 
     cursor.execute(
         "INSERT INTO reviews (owner, repo, pr_number, commit_sha, created_at) VALUES (?, ?, ?, ?, ?)",
