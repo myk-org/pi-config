@@ -26,6 +26,41 @@ def run_cmd(prompt: str, provider: str, model: str, resume: bool, cwd: str | Non
     sys.exit(run(prompt=prompt, provider=provider, model=model, resume=resume, cwd=cwd))
 
 
+@ai_cli.command("save-config")
+@click.option("--agents", default=None, help="Save lastAgents value (e.g., 'cursor --model gpt-5.4-high')")
+@click.option("--peers", default=None, help="Save lastPeers value (e.g., 'cursor,claude')")
+def save_config_cmd(agents: str | None, peers: str | None) -> None:
+    """Save agent/peer config for /ai-cli-prompt.
+
+    Persists to .pi/ai-cli-config.json. Each option updates only its
+    field — the other field is preserved.
+    """
+    import json
+    from pathlib import Path
+
+    if agents is None and peers is None:
+        click.echo("Error: Pass --agents and/or --peers", err=True)
+        sys.exit(1)
+
+    config_path = Path(".pi/ai-cli-config.json")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cfg: dict[str, str] = {}
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+
+    if agents is not None:
+        cfg["lastAgents"] = agents
+    if peers is not None:
+        cfg["lastPeers"] = peers
+
+    config_path.write_text(json.dumps(cfg, indent=2) + "\n")
+    click.echo(json.dumps(cfg, indent=2))
+
+
 @ai_cli.command("models")
 @click.argument("provider", type=click.Choice(["cursor", "claude", "gemini"]))
 def models_cmd(provider: str) -> None:

@@ -66,23 +66,28 @@ def run(
         )
     )
 
+    output: dict[str, object] = {
+        "success": result.success,
+    }
+
     if result.success:
-        print(result.text)
+        output["text"] = result.text
         if result.usage:
-            usage_info: dict[str, object] = {
+            usage: dict[str, object] = {
+                "provider": result.usage.provider,
+                "model": result.usage.model,
                 "input_tokens": result.usage.input_tokens,
                 "output_tokens": result.usage.output_tokens,
+                "cache_read_tokens": result.usage.cache_read_tokens,
+                "cache_write_tokens": result.usage.cache_write_tokens,
             }
-            if result.usage.cache_read_tokens:
-                usage_info["cache_read_tokens"] = result.usage.cache_read_tokens
-            if result.usage.cache_write_tokens:
-                usage_info["cache_write_tokens"] = result.usage.cache_write_tokens
             if result.usage.cost_usd is not None:
-                usage_info["cost_usd"] = result.usage.cost_usd
+                usage["cost_usd"] = result.usage.cost_usd
             if result.usage.duration_ms is not None:
-                usage_info["duration_ms"] = result.usage.duration_ms
-            _print_stderr(f"[ai-cli] Usage: {json.dumps(usage_info)}")
-        return 0
+                usage["duration_ms"] = result.usage.duration_ms
+            output["usage"] = usage
+    else:
+        output["error"] = result.text
 
-    _print_stderr(f"[ai-cli] Error: {result.text}")
-    return 1
+    print(json.dumps(output, indent=2))
+    return 0 if result.success else 1

@@ -312,8 +312,28 @@ If the command exits with a non-zero code:
 
 Display the output to the user.
 
-After successful execution, parse the `[ai-cli] Usage:` JSON line from stderr
-and display a summary including cost and token usage:
+The CLI outputs structured JSON to stdout:
+
+```json
+{
+  "success": true,
+  "text": "<response>",
+  "provider": "cursor",
+  "model": "gpt-5.4-high",
+  "usage": {
+    "input_tokens": 1234,
+    "output_tokens": 567,
+    "cache_read_tokens": 890,
+    "cost_usd": 0.0123,
+    "duration_ms": 5000
+  }
+}
+```
+
+Parse the JSON and display:
+
+1. The agent's response text
+2. A usage summary:
 
 ```text
 Provider: <provider>
@@ -324,7 +344,7 @@ Cost: $<cost_usd>
 Duration: <duration_ms>ms
 ```
 
-Omit fields that are missing or zero.
+Omit fields that are missing or zero. On error (`"success": false`), display the `error` field.
 
 **Save config:** See "Persist Config" section after Step 9e.
 
@@ -611,22 +631,17 @@ Items where the agent initially flagged but later agreed no change was needed.
 ### Persist Config (runs once after successful completion)
 
 After successful execution (Step 6 for normal mode, Step 9e for peer mode), persist
-the agent spec to `.pi/ai-cli-config.json`. Run exactly once per successful completion.
+the agent spec using the CLI. Run exactly once per successful completion.
 
 **Skip if any step failed** — do not persist config after errors or aborted runs.
 
-1. Read existing config: `cat .pi/ai-cli-config.json 2>/dev/null || echo '{}'`
-2. Parse as JSON (if parse fails, start with `{}`)
-3. Update the relevant field:
-   - If `--peer` was used: set `lastPeers` to the normalized agent string (e.g., `cursor,claude`)
-   - Otherwise: set `lastAgents` to the normalized agent string (e.g., `cursor:gpt-5.4-high`)
-4. Preserve the other field (don't overwrite `lastAgents` when saving peers, and vice versa)
-5. Write the merged JSON:
-
 ```bash
-mkdir -p .pi
+# After normal/fix mode:
+myk-pi-tools ai-cli save-config --agents "<normalized agent string>"
+
+# After peer mode:
+myk-pi-tools ai-cli save-config --peers "<normalized agent string>"
 ```
 
-Use a bash heredoc or a single `python3 -c` one-liner to read-merge-write atomically.
-
-**Normalized agent string:** The exact agent spec used for the run, as the user would type it.
+**Normalized agent string:** The exact agent spec used for the run, as the user would type it
+(e.g., `cursor --model gpt-5.4-high`, `cursor,claude`).
