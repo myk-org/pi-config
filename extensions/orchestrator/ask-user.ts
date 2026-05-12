@@ -10,6 +10,7 @@ import {
   SelectList,
   Spacer,
   Text,
+  fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -121,8 +122,34 @@ export function registerAskUser(
 
           // SelectList (only if options provided)
           let selectList: SelectList | null = null;
+          let allItems: SelectItem[] = [];
+          const selectTheme = {
+            selectedPrefix: (t: string) => theme.fg("accent", t),
+            selectedText: (t: string) => theme.fg("accent", t),
+            description: (t: string) => theme.fg("muted", t),
+            scrollInfo: (t: string) => theme.fg("dim", t),
+            noMatch: (t: string) => theme.fg("warning", t),
+          };
+
+          const makeSelectList = (items: SelectItem[]) => {
+            const sl = new SelectList(items, Math.min(items.length + 1, 15), selectTheme);
+            sl.onSelect = (item: SelectItem) => {
+              if (item.value === "__no_match__") {
+                // Ignore — not a real option
+              } else if (item.value === "__free_input__") {
+                mode = "input";
+                searchInput.setValue("");
+                tui.requestRender();
+              } else {
+                resolve(item.value);
+              }
+            };
+            sl.onCancel = () => resolve(null);
+            return sl;
+          };
+
           if (params.options && params.options.length > 0) {
-            const items: SelectItem[] = [
+            allItems = [
               ...params.options.map((opt: string) => ({
                 value: opt,
                 label: opt,
@@ -133,26 +160,30 @@ export function registerAskUser(
                 description: "free-text",
               },
             ];
-            selectList = new SelectList(items, Math.min(items.length + 1, 15), {
-              selectedPrefix: (t: string) => theme.fg("accent", t),
-              selectedText: (t: string) => theme.fg("accent", t),
-              description: (t: string) => theme.fg("muted", t),
-              scrollInfo: (t: string) => theme.fg("dim", t),
-              noMatch: (t: string) => theme.fg("warning", t),
-            });
-            selectList.onSelect = (item: SelectItem) => {
-              if (item.value === "__free_input__") {
-                mode = "input";
-                tui.requestRender();
-              } else {
-                resolve(item.value);
-              }
-            };
-            selectList.onCancel = () => resolve(null);
+            selectList = makeSelectList(allItems);
           }
 
+          // Search input for fuzzy filtering the select list
+          const searchInput = new Input();
+          searchInput.onSubmit = () => {
+            if (selectList) {
+              const selected = selectList.getSelectedItem();
+              if (selected) {
+                if (selected.value === "__no_match__") {
+                  // Ignore
+                } else if (selected.value === "__free_input__") {
+                  mode = "input";
+                  searchInput.setValue("");
+                } else {
+                  resolve(selected.value);
+                }
+              }
+            }
+          };
+          searchInput.onEscape = () => resolve(null);
+
           const selectHelp = new Text(
-            theme.fg("dim", "↑↓ navigate • enter select • esc cancel"),
+            theme.fg("dim", "type to filter • ↑↓ navigate • enter select • esc cancel"),
             1,
             0,
           );
@@ -169,6 +200,7 @@ export function registerAskUser(
             const c = new Container();
             c.addChild(topBorder);
             if (mode === "select" && selectList) {
+              c.addChild(searchInput);
               c.addChild(selectList);
               c.addChild(selectHelp);
             } else {
@@ -184,10 +216,11 @@ export function registerAskUser(
           let _focused = false;
 
           return {
-            // Focusable interface — propagate to Input for IME cursor positioning
+            // Focusable interface — propagate to active Input for IME cursor positioning
             set focused(value: boolean) {
               _focused = value;
               input.focused = value;
+              searchInput.focused = value;
             },
             get focused(): boolean {
               return _focused;
@@ -201,7 +234,24 @@ export function registerAskUser(
             handleInput: (data: string) => {
               if (resolved) return;
               if (mode === "select" && selectList) {
-                selectList.handleInput(data);
+                // Arrow keys and enter/escape go to selectList
+                // Printable chars go to searchInput for filtering
+                const isNavKey = data === "\x1b[A" || data === "\x1b[B" // up/down
+                  || data === "\r" || data === "\n" // enter
+                  || data === "\x1b" // escape
+                  || data === "\x1b[5~" || data === "\x1b[6~"; // page up/down
+                if (isNavKey) {
+                  selectList.handleInput(data);
+                } else {
+                  searchInput.handleInput(data);
+                  const query = searchInput.getValue();
+                  if (query) {
+                    const filtered = fuzzyFilter(allItems, query, (item) => `${item.label} ${item.description || ""}`);
+                    selectList = makeSelectList(filtered.length > 0 ? filtered : [{ value: "__no_match__", label: "No matches", description: "clear search to see all" }]);
+                  } else {
+                    selectList = makeSelectList(allItems);
+                  }
+                }
               } else {
                 input.handleInput(data);
               }

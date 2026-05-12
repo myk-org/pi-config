@@ -4,7 +4,7 @@ version = "2.3.0"
 description = "CLI utilities for pi orchestrator plugins"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [{ name = "myk-org" }]
 keywords = ["pi", "cli", "github", "code-review"]
 classifiers = [
@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-dependencies = ["click>=8.0.0", "tomli>=2.0.0; python_version < '3.11'"]
+dependencies = ["click>=8.0.0", "tomli>=2.0.0; python_version < '3.11'", "ai-cli-runner"]
 
 [project.scripts]
 myk-pi-tools = "myk_pi_tools.cli:main"

@@ -4,11 +4,11 @@
  * Two mechanisms:
  * 1. getArgumentCompletions on extension commands (dream-auto, pidash, etc.)
  *    — injected via registerCommand wrapping
- * 2. addAutocompleteProvider for prompt templates (acpx-prompt, review-local, etc.)
+ * 2. addAutocompleteProvider for prompt templates (external-ai, review-local, etc.)
  *    — stacked provider that intercepts /command <arg> patterns
  *
  * Completions:
- *   /acpx-prompt <Tab>           → acpx agent names + --fix, --peer
+ *   /external-ai <Tab>         → ai-cli provider names + --fix, --peer
  *   /pr-review <Tab>             → open PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
@@ -42,14 +42,15 @@ function isFresh<T>(cache: Cache<T>): boolean {
 
 // ── Static completions ──────────────────────────────────────────────
 
-const ACPX_AGENTS: AutocompleteItem[] = [
-  "pi", "openclaw", "codex", "claude", "gemini", "cursor",
-  "copilot", "droid", "iflow", "kilocode", "kimi", "kiro", "opencode", "qwen",
-].map((a) => ({ value: a, label: a, description: "acpx agent" }));
+const AI_CLI_PROVIDERS: AutocompleteItem[] = [
+  "cursor", "claude", "gemini",
+].map((a) => ({ value: a, label: a, description: "ai-cli provider" }));
 
-const ACPX_FLAGS: AutocompleteItem[] = [
+const AI_CLI_FLAGS: AutocompleteItem[] = [
   { value: "--fix", label: "--fix", description: "Agent can modify files" },
   { value: "--peer", label: "--peer", description: "AI-to-AI peer review loop" },
+  { value: "--resume", label: "--resume", description: "Continue last session" },
+  { value: "--model ", label: "--model", description: "Set model (e.g., gpt-5.4-high)" },
 ];
 
 // ── Filter helper ───────────────────────────────────────────────────
@@ -75,6 +76,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   const prCache = createCache<AutocompleteItem[]>();
   const branchCache = createCache<AutocompleteItem[]>();
   const tagCache = createCache<AutocompleteItem[]>();
+  const modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   let lastCwd = "";
 
   // ── Fetchers ────────────────────────────────────────────────────
@@ -132,6 +134,42 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     branchCache.loading = false;
   }
 
+  async function fetchModels(provider: string, cwd: string): Promise<void> {
+    let cache = modelCaches.get(provider);
+    if (!cache) {
+      cache = createCache<AutocompleteItem[]>();
+      modelCaches.set(provider, cache);
+    }
+    if (isFresh(cache) || cache.loading) return;
+    cache.loading = true;
+    try {
+      const result = await pi.exec(
+        "myk-pi-tools", ["ai-cli", "models", provider],
+        { cwd, timeout: 30_000 },
+      );
+      if (result.code === 0) {
+        const items: AutocompleteItem[] = [];
+        try {
+          const parsed = JSON.parse(result.stdout);
+          if (Array.isArray(parsed)) {
+            for (const m of parsed) {
+              if (m.id) {
+                items.push({
+                  value: m.id,
+                  label: m.id,
+                  description: m.name || m.id,
+                });
+              }
+            }
+          }
+        } catch {}
+        cache.data = items;
+        cache.timestamp = Date.now();
+      }
+    } catch {}
+    cache.loading = false;
+  }
+
   async function fetchTags(cwd: string): Promise<void> {
     if (isFresh(tagCache) || tagCache.loading) return;
     tagCache.loading = true;
@@ -158,13 +196,58 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 
   const completions: Record<string, CompletionFn> = {
-    "acpx-prompt": (prefix: string) => {
+    "external-ai": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
-      if (parts.length <= 1) return filter(ACPX_AGENTS, lastPart);
+      const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
+
+      // After --model: show model completions for the detected provider
+      if (prevPart === "--model") {
+        // Find the provider from earlier tokens
+        const knownProviders = ["cursor", "claude", "gemini"];
+        let provider = "";
+        for (const p of parts) {
+          const base = p.includes(":") ? p.split(":")[0] : p;
+          if (knownProviders.includes(base)) { provider = base; break; }
+        }
+        if (provider) {
+          void fetchModels(provider, lastCwd);
+          const cache = modelCaches.get(provider);
+          if (cache?.data) {
+            return filter(cache.data, lastPart);
+          }
+        }
+        return null;
+      }
+
+      // First token: provider or provider:model
+      if (parts.length <= 1) {
+        // Check if user typed "provider:" — show models for that provider
+        const colonIdx = lastPart.indexOf(":");
+        if (colonIdx >= 0) {
+          const provider = lastPart.substring(0, colonIdx);
+          const modelPrefix = lastPart.substring(colonIdx + 1);
+          const knownProviders = ["cursor", "claude", "gemini"];
+          if (knownProviders.includes(provider)) {
+            void fetchModels(provider, lastCwd);
+            const cache = modelCaches.get(provider);
+            if (cache?.data) {
+              const items = cache.data.map((m) => ({
+                ...m,
+                value: `${provider}:${m.value}`,
+              }));
+              return filter(items, modelPrefix ? `${provider}:${modelPrefix}` : "");
+            }
+            return null;
+          }
+        }
+        return filter(AI_CLI_PROVIDERS, lastPart);
+      }
+
+      // Subsequent tokens: flags
       if (lastPart.startsWith("-") || lastPart === "") {
         const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
-        const available = ACPX_FLAGS.filter((f) => !usedFlags.has(f.value));
+        const available = AI_CLI_FLAGS.filter((f) => !usedFlags.has(f.value.trim()));
         return filter(available, lastPart);
       }
       return null;
@@ -278,12 +361,39 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
-    "acpx-prompt", "pr-review", "coderabbit-rate-limit",
+    "external-ai", "pr-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "cron",
   ]);
 
+  // /external-ai-models-refresh command — clears cache and re-fetches
+  pi.registerCommand("external-ai-models-refresh", {
+    description: "Refresh AI CLI model cache (cursor, claude, gemini)",
+    async handler(_args, ctx) {
+      modelCaches.clear();
+      ctx.ui.notify("Refreshing AI CLI models...", "info");
+      await Promise.allSettled(
+        ["cursor", "claude", "gemini"].map((p) => fetchModels(p, ctx.cwd)),
+      );
+      const counts = ["cursor", "claude", "gemini"]
+        .map((p) => `${p}: ${modelCaches.get(p)?.data?.length ?? 0}`)
+        .join(", ");
+      ctx.ui.notify(`AI CLI models refreshed (${counts})`, "info");
+    },
+  });
+
+  let modelsPrefetched = false;
+
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
+
+    // Pre-fetch AI CLI models once on first start (not on /new)
+    if (!modelsPrefetched) {
+      modelsPrefetched = true;
+      for (const provider of ["cursor", "claude", "gemini"]) {
+        void fetchModels(provider, ctx.cwd);
+      }
+    }
+
     if (!ctx.hasUI) return;
 
     ctx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({

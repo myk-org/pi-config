@@ -66,7 +66,7 @@ pi-config/
 │   └── acpx-provider/              # ACPX provider extension
 │       └── index.ts
 ├── prompts/                         # Prompt templates (slash commands)
-│   ├── acpx-prompt.md
+│   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
 │   ├── implement-and-review.md
@@ -93,6 +93,7 @@ pi-config/
 │   └── 50-agent-bug-reporting.md
 ├── myk_pi_tools/                    # Python CLI tooling package
 │   ├── __init__.py
+│   ├── ai_cli/
 │   ├── cli.py
 │   ├── coderabbit/
 │   ├── db/
@@ -170,6 +171,7 @@ Known extension commands:
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
 | `/cron` | `cron.ts` | Schedule recurring tasks |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
+| `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ### Adding a Prompt Template
 

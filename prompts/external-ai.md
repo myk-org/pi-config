@@ -1,6 +1,6 @@
 ---
-description: "Run a prompt via acpx to any coding agent (cursor, codex, gemini, claude, copilot, droid, kiro, opencode, qwen, etc.). Use for peer review, code review, or any task involving an external AI agent — /acpx-prompt [agent] <prompt>"
-argument-hint: "[agent[:model]] [--fix|--peer] <prompt>"
+description: "Run a prompt via ai-cli-runner to any AI CLI (cursor, claude, gemini). Full model access including all variants. Use for peer review, code review, or any task — /external-ai <agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
+argument-hint: "<agent> [--model <model>] [--fix|--peer|--resume] <prompt>"
 ---
 
 ## Raw Arguments
@@ -9,109 +9,84 @@ argument-hint: "[agent[:model]] [--fix|--peer] <prompt>"
 $ARGUMENTS
 ```
 
-# acpx Multi-Agent Prompt Command
+# ai-cli-runner Multi-Agent Prompt Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
 > while executing this command — DO NOT work around it silently. Ask the user:
 > "Should I create a GitHub issue for this?" Route to:
 > `myk-org/pi-config` for plugin/command spec issues,
-> `openclaw/acpx` for acpx CLI issues.
+> `myk-org/ai-cli-runner` for ai-cli-runner package issues.
 > Do not silently skip steps or apply manual fixes that hide the root cause.
 
-🚨 **CRITICAL: NEVER set a timeout on acpx agent execution commands** (Step 5 and Step 9).
+🚨 **CRITICAL: NEVER set a timeout on AI CLI execution commands** (Step 5 and Step 9).
 External agents can take minutes to complete (reading files, thinking, multi-step tool calls).
-Any bash call running an acpx prompt MUST NOT include a timeout parameter. Let it run
-until it finishes. Quick probes (`acpx --version`, `sessions ensure/new`) may use
-bounded timeouts (e.g., 30s).
+Any bash call running an AI CLI prompt MUST NOT include a timeout parameter. Let it run
+until it finishes. Quick probes (`--version`, model listing) may use bounded timeouts (e.g., 30s).
 
-Run a prompt through [acpx](https://github.com/openclaw/acpx) to any ACP-compatible coding agent.
+Run a prompt through [ai-cli-runner](https://github.com/myk-org/ai-cli-runner) which calls
+AI CLI tools directly via subprocess — giving full model access including all variants
+(reasoning levels, fast mode, context sizes).
 
-## Supported Agents
+## Supported Providers
 
-| Agent | Wraps |
-|-------|-------|
-| `pi` | Pi Coding Agent |
-| `openclaw` | OpenClaw ACP bridge |
-| `codex` | Codex CLI (OpenAI) |
-| `claude` | Claude Code |
-| `gemini` | Gemini CLI |
-| `cursor` | Cursor CLI |
-| `copilot` | GitHub Copilot CLI |
-| `droid` | Factory Droid |
-| `iflow` | iFlow CLI |
-| `kilocode` | Kilocode |
-| `kimi` | Kimi CLI |
-| `kiro` | Kiro CLI |
-| `opencode` | OpenCode |
-| `qwen` | Qwen Code |
+| Provider | Binary | Notes |
+|----------|--------|-------|
+| `cursor` | `agent` | `--print` for non-interactive, `--workspace` for cwd |
+| `claude` | `claude` | `-p` for non-interactive print mode |
+| `gemini` | `gemini` | Stdin prompt |
+
+For other providers (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead.
 
 ## Usage
 
-- `/acpx-prompt codex fix the tests`
-- `/acpx-prompt cursor review this code`
-- `/acpx-prompt gemini explain this function`
-- `/acpx-prompt codex:o3-pro review the architecture`
-- `/acpx-prompt codex --fix fix the code quality issues`
-- `/acpx-prompt codex:gpt-4o --fix fix the code quality issues`
-- `/acpx-prompt gemini --peer review this code`
-- `/acpx-prompt cursor:gpt-4o,claude:sonnet --peer review the architecture`
-- `/acpx-prompt cursor,codex review this code`
-- `/acpx-prompt cursor,gemini,codex --peer review the architecture`
-- `/acpx-prompt review this code` — uses last saved agent from `.pi/acpx-config.json`
-- `/acpx-prompt --peer review this` — uses last saved peers from `.pi/acpx-config.json`
+- `/external-ai cursor fix the tests`
+- `/external-ai claude review this code`
+- `/external-ai gemini explain this function`
+- `/external-ai cursor --model gpt-5.4-high review the architecture`
+- `/external-ai cursor --model claude-4.6-opus-max-thinking --fix fix the code`
+- `/external-ai cursor --fix fix the code quality issues`
+- `/external-ai cursor --peer review this code`
+- `/external-ai cursor --model gpt-5.4-xhigh --peer review the architecture`
+- `/external-ai cursor,claude review this code`
+- `/external-ai cursor --resume explain the last change`
+- `/external-ai cursor --model gpt-5.4-high --resume continue reviewing`
+- `/external-ai claude --resume what about the edge cases?`
+- `/external-ai review this code` — uses last saved agent from `.pi/external-ai-config.json`
+- `/external-ai --peer review this` — uses last saved peers from `.pi/external-ai-config.json`
 
 ## Workflow
 
 ### Step 1: Prerequisites Check
 
-#### 1a: Check acpx
-
 ```bash
-acpx --version
+myk-pi-tools --version
 ```
 
-If not found, ask the user via AskUserQuestion:
-
-"acpx is not installed. It provides structured access to multiple coding agents (Codex, Cursor, Gemini, etc.) via the Agent Client Protocol.
-
-Install it now?"
-
-Options:
-
-- **Yes (Recommended)** — Install globally with `npm install -g acpx@latest`
-- **No** — Abort
-
-If user selects Yes, run:
-
-```bash
-npm install -g acpx@latest
-```
-
-Verify installation:
-
-```bash
-acpx --version
-```
-
-If installation fails, display the error and abort.
-
-#### 1b: Verify Agent Prerequisite
-
-The underlying coding agent must be installed separately. acpx auto-downloads ACP adapters, but the agent itself (e.g., Codex CLI, Cursor CLI) must be available.
+If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ### Step 2: Parse Arguments
 
 Read the **Raw Arguments** section above. Tokenize by whitespace and parse as follows:
 
-1. **Consume leading flags** — strip `--fix` and/or `--peer` from the front of the token stream
-2. **Detect agent spec** — the next token is an agent spec if it matches a known agent name
-   (with optional `:model` suffix) or is a comma-separated list of such specs.
-   Split on commas, then for each segment: split on the FIRST `:` — left side is the
-   agent name, right side (if any) is the model override.
+1. **Consume flags** — strip `--fix`, `--peer`, `--resume`, and `--model <value>` from the token stream.
+   `--model` consumes the NEXT token as the model value.
+2. **Detect agent spec** — the next non-flag token is an agent spec if it matches a known provider name
+   or is a comma-separated list of provider names.
 3. **Remainder is the prompt** — everything after the agent spec (or after flags if no agent)
+
+**Known providers:** `cursor`, `claude`, `gemini`
+
+**Unknown provider handling:** If any agent name is not one of the 3 known providers,
+abort with: "Unknown provider: `<name>`. Supported: cursor, claude, gemini.
+For other agents (codex, copilot, droid, kiro, etc.), use `/acpx-prompt` instead."
 
 **Flag validation:**
 
+- `--model` takes the next token as its value. If `--model` appears without a value,
+  abort with: "`--model` requires a model name (e.g., `--model gpt-5.4-high`)."
+- `--model` can be combined with any other flag (`--fix`, `--peer`, `--resume`).
+- `--resume` can be combined with `--fix` but NOT with `--peer` (peer mode manages sessions automatically).
+  If `--resume` and `--peer` are both passed, abort with: "`--resume` and `--peer` cannot be used together — peer mode manages sessions automatically."
 - `--fix` and `--peer` are **mutually exclusive**. If both are passed,
   abort with: "`--fix` and `--peer` cannot be used together."
 - Multiple agents and `--fix` are **mutually exclusive**. If more than one
@@ -119,100 +94,96 @@ Read the **Raw Arguments** section above. Tokenize by whitespace and parse as fo
   "`--fix` can only be used with a single agent."
 - If `--fix` appears more than once, abort with: "Duplicate --fix flag."
 - If `--peer` appears more than once, abort with: "Duplicate --peer flag."
+- If `--resume` appears more than once, abort with: "Duplicate --resume flag."
 
 **Parsing order:**
 
 1. **Consume leading flags first** — strip any `--fix` or `--peer` from the token stream
 2. **Check if the next token is an agent spec** — a token is an agent spec if:
-   - It matches a known agent name exactly (e.g., `cursor`, `codex`)
-   - OR it contains `:` with a known agent name before the colon (e.g., `cursor:gpt-4o`)
-   - OR it's a comma-separated list where ALL parts match known agent names
-3. **If the first non-flag token looks like an agent but contains unknown names**, abort with:
-   "Unknown agent: `<name>`. Supported agents: pi, openclaw, codex, claude, gemini,
-   cursor, copilot, droid, iflow, kilocode, kimi, kiro, opencode, qwen"
-4. **If no agent spec found** (first non-flag token is not a recognized agent), fall through
+   - It matches a known provider name exactly (e.g., `cursor`, `claude`)
+   - OR it's a comma-separated list where ALL parts match known provider names
+3. **If the first non-flag token looks like an agent but contains unknown names**, abort with
+   the unknown provider message above
+4. **If no agent spec found** (first non-flag token is not a recognized provider), fall through
    to saved config below
 
-**No agent specified — use saved config:**
+**Resolve provider and model (global rule — ALL modes):**
 
-Check for saved configuration:
+Saved config: `.pi/external-ai-config.json` with `lastAgents` and `lastPeers` fields.
+Read it: `cat .pi/external-ai-config.json 2>/dev/null`.
 
-```bash
-mkdir -p .pi
-cat .pi/acpx-config.json 2>/dev/null
+For any missing piece (provider or model), fill from saved config and confirm:
+
+1. **Provider missing?** Check saved config (`lastAgents` or `lastPeers` depending on mode).
+   If saved config exists, ask: `Last used: SAVED_VALUE. Use this?` (Yes/Change/Cancel).
+   If no saved config, ask: `Select provider:` with options `cursor`, `claude`, `gemini`, `Cancel`.
+   For `--peer` without providers: `Select providers:` with `cursor,claude`, `cursor,gemini`,
+   `claude,gemini`, `cursor,claude,gemini`, `Cancel`.
+2. **Model missing?** For EACH provider without a `--model`, ask:
+   `Select model for PROVIDER:` — run:
+   `myk-pi-tools ai-cli models PROVIDER 2>/dev/null`
+   The command outputs a JSON array to stdout. Parse it directly — do NOT
+   pipe through python or any other tool. Present ALL model IDs from the
+   `id` field as ask_user options. Do NOT filter, subset, or cherry-pick.
+   Add `default (DEFAULT_MODEL)` and `Cancel` at the end.
+3. **Prompt missing?** Abort: `No prompt provided.`
+
+The user must always know exactly which provider+model will be used before execution.
+
+**Default model handling:** If no `--model` was specified for a provider,
+you must still pass a model to `ai-cli-runner`. Use these defaults:
+
+| Provider | Default model |
+|----------|---------------|
+| `cursor` | `composer-2-fast` |
+| `claude` | `claude-sonnet-4-6` |
+| `gemini` | `gemini-2.5-flash` |
+
+These match each CLI's default behavior. When generating the Python script (Step 5),
+use the default model if none was specified by the user.
+
+When `--model` is specified, use that model.
+When not specified, use the default from the table above.
+
+### Step 2b: Display Execution Summary
+
+Before proceeding, display a summary of what will be executed so the user knows
+exactly what is about to be sent. **No black magic.**
+
+```text
+Provider: <provider>
+Model: <model> (or "default: <default_model>" if using default)
+Mode: <read-only | fix | peer>
+Resume: <yes | no>
 ```
 
-The config file structure:
-
-```json
-{
-  "lastAgents": "cursor:gpt-4o",
-  "lastPeers": "cursor,codex"
-}
-```
-
-If the file doesn't exist, is empty, or contains invalid JSON, treat as no config.
-
-- **If `--peer` was passed** and `lastPeers` exists and is non-empty:
-  Ask via AskUserQuestion: "Last used peers: `<lastPeers>` — use these?"
-  Options: "Yes", "Change"
-  - Yes → use `lastPeers` as the agent spec
-  - Change → ask: "Enter agent(s) for peer review:"
-
-- **If `--peer` was passed** but `lastPeers` is missing/empty:
-  Ask: "Enter agent(s) for peer review (e.g., cursor,codex):"
-
-- **If `--fix` was passed or no flags** and `lastAgents` exists and is non-empty:
-  Ask via AskUserQuestion: "Last used agent: `<lastAgents>` — use this?"
-  Options: "Yes", "Change"
-  - Yes → use `lastAgents` as the agent spec
-  - Change → ask: "Enter agent[:model]:"
-
-- **If `--fix` was passed** and `lastAgents` is missing/empty:
-  Ask: "Enter agent[:model] for fix mode:"
-
-- **If no flags** and `lastAgents` is missing/empty:
-  Abort with: "No agent specified and no saved config found.
-  Usage: `/acpx-prompt [agent[:model]] [--fix | --peer] <prompt>`
-  Supported agents: pi, openclaw, codex, claude, gemini, cursor, copilot, droid,
-  iflow, kilocode, kimi, kiro, opencode, qwen"
-
-**Agent name validation:**
-
-After resolving the agent spec (from args or config), validate ALL agent names.
-If any agent name is not recognized, abort with the unknown agent message.
-
-**Empty prompt check:** After resolving agent spec, if the remaining prompt text is
-empty or whitespace-only, abort with:
-"No prompt provided. Usage: `/acpx-prompt [agent[:model]] [--fix | --peer] <prompt>`"
+No confirmation prompt needed — the user already confirmed by providing arguments
+or selecting from the interactive prompts above.
 
 ### Step 3: Session Management
 
-Ensure a session exists for the current directory:
+Sessions allow the AI CLI to maintain conversation context across prompts.
 
-**Multi-agent:** Run `sessions ensure` for each agent in the list.
+**Session behavior by mode:**
 
-```bash
-acpx <agent> sessions ensure
-```
+| Mode | Session behavior |
+|------|------------------|
+| **Normal** (no flags) | Stateless — fresh session each call |
+| **`--resume`** | Continue the last session — adds session resume flag to CLI |
+| **`--fix`** | Stateless by default. Combine with `--resume` to continue a session |
+| **`--fix --resume`** | Continue the last session in fix mode |
+| **`--peer`** | Automatic sessions — first round is fresh, all subsequent rounds use `--continue`/`-c`/`--resume latest` to maintain conversation context. Do NOT combine with `--resume` |
 
-If this fails, try creating a new session:
+**Session resume flags per provider:**
 
-```bash
-acpx <agent> sessions new
-```
+| Provider | Resume flag | Binary |
+|----------|------------|--------|
+| `cursor` | `--continue` | `agent` |
+| `claude` | `-c` | `claude` |
+| `gemini` | `--resume latest` | `gemini` |
 
-If session creation also fails, check the error output:
-
-- If the error contains "Invalid params" or "session" and "not found", display:
-
-  "acpx session management failed for `<agent>`. This is a known issue — see:
-  - <https://github.com/openclaw/acpx/issues/152>
-  - <https://github.com/openclaw/acpx/issues/161>"
-
-  Display the error and abort.
-
-- For any other error, display the error and abort.
+When `--resume` is active or in peer mode follow-up rounds, pass `--resume`
+to the `myk-pi-tools ai-cli run` command.
 
 ### Step 4: Workspace Safety Check (--fix and --peer modes)
 
@@ -243,7 +214,7 @@ Follow this decision process:
 3. Handle the response:
    - **Commit first**: Stage only tracked modified files with `git add -u`
      and create a checkpoint commit with the message
-     `chore: checkpoint before acpx changes`. This avoids staging
+     `chore: checkpoint before ai-cli changes`. This avoids staging
      untracked files (e.g., `.envrc`, `.claude/`) that may contain
      secrets or local config. After the commit, proceed. If untracked
      files remain, that is expected — do not treat them as dirty.
@@ -259,17 +230,31 @@ Follow this decision process:
 
 **If `--peer` was passed, skip Steps 5-8 and jump to Step 9 (Peer Review Loop).**
 
-Build and execute the acpx command.
+**MANDATORY:** Always use `myk-pi-tools ai-cli run` — never generate inline Python scripts.
 
-**Model handling:** If the agent spec includes a `:model` suffix (e.g., `codex:gpt-4o`),
-pass it to acpx with `--model <model>`. Otherwise, omit the `--model` flag.
-
-**Fix mode:**
+**Single provider:**
 
 ```bash
-acpx --approve-all <agent> '<prompt>'
-acpx --approve-all <agent> --model <model> '<prompt>'
+myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> "<PROMPT>"
 ```
+
+With resume:
+
+```bash
+myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> --resume "<PROMPT>"
+```
+
+**Multi-agent execution:**
+
+When multiple providers are specified (without `--peer`), run all agents **in parallel**
+by delegating each to a separate subagent or running sequential CLI calls:
+
+```bash
+myk-pi-tools ai-cli run --provider <P1> --model <M1> "<PROMPT>"
+myk-pi-tools ai-cli run --provider <P2> --model <M2> "<PROMPT>"
+```
+
+Collect results from all providers and display grouped by provider.
 
 **Read-only prompt guard (non-fix mode):**
 
@@ -287,42 +272,8 @@ You have full permission to modify, create, and delete files as needed.
 Make all necessary changes directly.
 ```
 
-**Session mode (persistent, default):**
-
-```bash
-acpx --approve-reads --non-interactive-permissions fail <agent> '<prompt>'
-acpx --approve-reads --non-interactive-permissions fail <agent> --model <model> '<prompt>'
-```
-
-**Permissions summary:**
-
-| Mode | Flag | Description |
-|------|------|-------------|
-| Default | `--approve-reads --non-interactive-permissions fail` | Agent can read files only, writes blocked |
-| Fix (`--fix`) | `--approve-all` | Agent can read and write files |
-
-**Multi-agent execution:**
-
-When multiple agents are specified (without `--peer`), run all agents **in parallel**:
-
-- Send the same prompt to each agent simultaneously
-- Each agent uses its own model override if specified via `:model`
-- Collect results from all agents
-- Display results grouped by agent:
-
-```text
-## Results from <agent1>:
-<agent1 output>
-
-## Results from <agent2>:
-<agent2 output>
-```
-
-**Shell safety:** Single-quote the prompt to prevent shell expansion. Replace any single quotes in the prompt with `'\''` before interpolation.
-
-**No timeout:** NEVER pass a timeout parameter to bash when running acpx agent
-execution commands (this step and Step 9). Agents need time to read files, think,
-and execute multi-step tool calls. Let the command run until completion.
+**No timeout:** NEVER pass a timeout parameter to bash when running ai-cli commands.
+Agents need time to read files, think, and execute multi-step tool calls.
 
 **Error handling:**
 
@@ -347,20 +298,41 @@ If the command exits with a non-zero code:
 
 ### Step 6: Display Result
 
-Display the output from acpx to the user. acpx formats output as a readable stream with tool updates by default.
+Display the output to the user.
 
-After successful execution, display:
+The CLI outputs structured JSON to stdout:
 
-```text
-Agent: <agent>
-Mode: [session | fix]
+```json
+{
+  "success": true,
+  "text": "<response>",
+  "provider": "cursor",
+  "model": "gpt-5.4-high",
+  "usage": {
+    "input_tokens": 1234,
+    "output_tokens": 567,
+    "cache_read_tokens": 890,
+    "cost_usd": 0.0123,
+    "duration_ms": 5000
+  }
+}
 ```
 
-If in session mode, also show:
+Parse the JSON and display:
+
+1. The agent's response text
+2. A usage summary:
 
 ```text
-Session active. Send follow-up prompts with: /acpx-prompt <agent[:model]> <follow-up>
+Provider: <provider>
+Model: <model>
+Mode: [read-only | fix]
+Tokens: in=<input_tokens> out=<output_tokens> cache_read=<cache_read_tokens>
+Cost: $<cost_usd>
+Duration: <duration_ms>ms
 ```
+
+Omit fields that are missing or zero. On error (`"success": false`), display the `error` field.
 
 **Save config:** See "Persist Config" section after Step 9e.
 
@@ -464,19 +436,14 @@ provide a concrete fix or suggestion.
 Original prompt: <user's prompt>
 ```
 
-Execute via acpx:
-
-```bash
-acpx --approve-reads --non-interactive-permissions fail <agent> '<peer_framing_prompt>'
-acpx --approve-reads --non-interactive-permissions fail <agent> --model <model> '<peer_framing_prompt>'
-```
-
+Execute via `myk-pi-tools ai-cli run` (read-only mode — append the read-only guard to the prompt).
+This first round is a **fresh session** — do NOT pass `--resume`.
 Do NOT display intermediate results to the user.
 If the command fails, abort the peer loop and report the error.
 
-**Multi-agent:** Send the peer framing prompt to ALL agents in parallel.
-Collect and merge findings from all agents, deduplicating where the same
-issue is raised by multiple agents.
+**Multi-agent:** Send the peer framing prompt to ALL agents in parallel
+using `run_parallel_with_limit`. Collect and merge findings from all agents,
+deduplicating where the same issue is raised by multiple agents.
 
 **Multi-agent group context:** In the first round, each agent reviews
 independently (no group context yet). Their individual responses are
@@ -484,8 +451,7 @@ collected for use in subsequent rounds.
 
 If ALL agents report no findings, skip to Step 9e.
 If only SOME agents report no findings, continue to Step 9b with the findings
-from agents that did report issues. Agents that reported no findings still
-participate in subsequent rounds via GROUP CONTEXT.
+from agents that did report issues.
 
 #### 9b: Claude Acts on Findings
 
@@ -507,9 +473,7 @@ For each finding from the agent(s):
 - Claude should be open to changing its mind if the agent makes a good
   point in the next round
 
-**Multi-agent:** Merge and deduplicate findings from all agents. When the
-same issue is raised by multiple agents, keep the most actionable version
-and note which agents flagged it.
+**Multi-agent:** Merge and deduplicate findings from all agents.
 
 **After completing all fixes and counter-arguments, proceed to Step 9c.
 This is MANDATORY — do NOT skip to the summary.**
@@ -553,7 +517,7 @@ GROUP CONTEXT — What other peers said in Round {N}:
   {summary of that peer's findings and positions}
   "}
 
-Always include the model when the agent was invoked with a `:model` override.
+Always include the model when the provider was invoked with `--model`.
 If no model was specified, omit the model parenthetical (e.g., `## cursor findings:`).
 ```
 
@@ -564,10 +528,11 @@ build on other peers' findings.
 When sending to peer A, include findings from peers B, C, etc.
 When sending to peer B, include findings from peers A, C, etc.
 
-Execute via acpx (same command pattern). Do NOT display intermediate results.
+Execute via `myk-pi-tools ai-cli run --resume`. Do NOT display intermediate results.
+**Use `--resume`** for this and all subsequent rounds so the peer agent has full
+conversation context from previous rounds.
 
-**Multi-agent:** Send the response to ALL agents in parallel. Each agent
-re-reviews independently.
+**Multi-agent:** Send the response to ALL agents in parallel. Each agent uses `--resume`.
 
 #### 9d: Loop Until Convergence
 
@@ -587,10 +552,7 @@ Parse each agent's response:
 - Claude agreeing with all findings (the agent must confirm the fixes are correct)
 - A single round completing (minimum: agent reviews → Claude fixes → agent re-reviews)
 
-**Multi-agent convergence:** When multiple peers are involved, convergence
-requires ALL peers to independently confirm no remaining issues. If peer A
-agrees but peer B still has findings, the loop continues. A single peer
-cannot end the loop for the group.
+**Multi-agent convergence:** ALL peers must independently confirm no remaining issues.
 
 **Claude's behavior across rounds:**
 
@@ -601,12 +563,17 @@ cannot end the loop for the group.
 
 #### 9e: Summary to User
 
-After the loop exits, present a comprehensive summary:
+After the loop exits, present a comprehensive summary.
+
+**Usage tracking (MANDATORY):** Parse the JSON output from EVERY `myk-pi-tools ai-cli run`
+call during the peer review (all rounds). **Sum** `input_tokens`, `output_tokens`,
+`cache_read_tokens`, and `cost_usd` across ALL rounds per provider to get totals.
+Since peer review runs in the same session, the totals represent the full session cost.
 
 ```text
 ## Peer Review Complete — {N} round(s)
 
-Agent(s): <agent>[, <agent2>, ...]
+Provider(s): <provider>[, <provider2>, ...]
 
 ### Findings Addressed ({count})
 
@@ -642,41 +609,50 @@ Items where the agent initially flagged but later agreed no change was needed.
   the peer review, note: "Workspace had pre-existing changes; resulting
   diffs may include edits not made during this peer review."
 
-**Multi-agent group summary:** When multiple peers participated, add a
-section showing the group dynamics:
+**Multi-agent group summary:** When multiple peers participated, add:
 
 ```text
 ### Group Dynamics
 
 | Finding | Raised By | Agreed By | Resolution |
 |---------|-----------|-----------|------------|
-| Missing null check | cursor | claude, codex | All agreed, fixed |
-| Naming convention | codex | — | Only codex flagged, Claude disagreed, codex conceded |
+| Missing null check | cursor | claude, gemini | All agreed, fixed |
 ```
+
+### Peer Review Usage
+
+**Per round:**
+
+| Round | Provider | Model | Input tokens | Output tokens | Cache read | Cost | Duration |
+|-------|----------|-------|-------------|--------------|------------|------|----------|
+| 1 | cursor | gpt-5.4-high | 27,668 | 1,423 | 24,064 | $0.0182 | 12s |
+| 2 | cursor | gpt-5.4-high | 29,104 | 892 | 26,200 | $0.0171 | 9s |
+| 3 | cursor | gpt-5.4-high | 30,332 | 416 | 28,100 | $0.0170 | 8s |
+
+**Totals:**
+
+| Provider | Model | Rounds | Input tokens | Output tokens | Cache read | Cost | Duration |
+|----------|-------|--------|-------------|--------------|------------|------|----------|
+| cursor | gpt-5.4-high | 3 | 87,104 | 2,731 | 78,364 | $0.0523 | 29s |
+
+Total: tokens=87,104 in / 2,731 out / 78,364 cache, cost=$0.0523, duration=29s
 
 **Save config:** See "Persist Config" section below.
 
 ### Persist Config (runs once after successful completion)
 
 After successful execution (Step 6 for normal mode, Step 9e for peer mode), persist
-the agent spec to `.pi/acpx-config.json`. Run exactly once per successful completion.
+the agent spec using the CLI. Run exactly once per successful completion.
 
 **Skip if any step failed** — do not persist config after errors or aborted runs.
 
-1. Read existing config: `cat .pi/acpx-config.json 2>/dev/null || echo '{}'`
-2. Parse as JSON (if parse fails, start with `{}`)
-3. Update the relevant field:
-   - If `--peer` was used: set `lastPeers` to the normalized agent string (e.g., `cursor,codex`)
-   - Otherwise: set `lastAgents` to the normalized agent string (e.g., `cursor:gpt-4o`)
-4. Preserve the other field (don't overwrite `lastAgents` when saving peers, and vice versa)
-5. Write the merged JSON:
-
 ```bash
-mkdir -p .pi
+# After normal/fix mode:
+myk-pi-tools ai-cli save-config --agents "<normalized agent string>"
+
+# After peer mode (include models for each provider):
+myk-pi-tools ai-cli save-config --peers "<provider1 --model model1,provider2 --model model2>"
 ```
 
-Use a bash heredoc or a single `node -e` / `python3 -c` one-liner to read-merge-write atomically.
-
 **Normalized agent string:** The exact agent spec used for the run, as the user would type it
-(e.g., `cursor`, `cursor:gpt-4o`, `cursor,codex`). For config-resolved runs, save the
-confirmed value (either the saved value if user said "Yes", or the new value if user changed it).
+(e.g., `cursor --model gpt-5.4-high`, `cursor,claude`).

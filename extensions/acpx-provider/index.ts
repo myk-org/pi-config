@@ -28,7 +28,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn, execSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
 
 // =============================================================================
 // Types
@@ -62,6 +62,8 @@ interface AgentSession {
 /** Active acpx sessions keyed by agent name */
 const sessions = new Map<string, AgentSession>();
 
+
+
 /**
  * The working directory captured at extension initialization time.
  * acpx searches for session markers starting from cwd, but pi's process
@@ -82,20 +84,22 @@ function createSession(agent: string, cwd?: string): void {
 	const effectiveCwd = cwd || process.cwd();
 	// Try ensure first (idempotent), then new as fallback
 	try {
-		execSync(`acpx ${agent} sessions ensure --name "${name}"`, {
+		execFileSync("acpx", [agent, "sessions", "ensure", "--name", name], {
 			stdio: ["pipe", "pipe", "pipe"],
 			timeout: 15000,
 			cwd: effectiveCwd,
 		});
-	} catch {
+	} catch (err) {
+		console.debug(`[acpx] session ensure failed for ${agent}, trying new:`, err);
 		try {
-			execSync(`acpx ${agent} sessions new --name "${name}"`, {
+			execFileSync("acpx", [agent, "sessions", "new", "--name", name], {
 				stdio: ["pipe", "pipe", "pipe"],
 				timeout: 15000,
 				cwd: effectiveCwd,
 			});
-		} catch {
+		} catch (err) {
 			// Fall back to no named session
+			console.debug(`[acpx] session create failed for ${agent}:`, err);
 			sessions.set(agent, { name: "", agent, systemPromptSent: false });
 			return;
 		}
@@ -108,13 +112,13 @@ function closeSession(agent: string, cwd?: string): void {
 	const session = sessions.get(agent);
 	if (!session || !session.name) return;
 	try {
-		execSync(`acpx ${agent} sessions close "${session.name}"`, {
+		execFileSync("acpx", [agent, "sessions", "close", session.name], {
 			stdio: ["pipe", "pipe", "pipe"],
 			timeout: 10000,
 			cwd,
 		});
-	} catch {
-		// Best effort cleanup
+	} catch (err) {
+		console.debug(`[acpx] session close failed for ${agent}:`, err);
 	}
 	sessions.delete(agent);
 }
@@ -123,14 +127,17 @@ function closeSession(agent: string, cwd?: string): void {
 // Model Discovery
 // =============================================================================
 
-function discoverModels(_agent: string): Promise<AcpxModelInfo[]> {
+function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 	return new Promise((resolve) => {
 		const models: AcpxModelInfo[] = [];
-		let stdout = "";
+		let output = "";
 		let resolved = false;
 
-		const proc = spawn("agent", ["models"], {
+		// Use an invalid model name to trigger acpx's error message
+		// which lists all ACP-advertised models
+		const proc = spawn("acpx", ["--model", "__list__", agent, "exec", "x"], {
 			stdio: ["pipe", "pipe", "pipe"],
+			cwd: projectCwd,
 		});
 
 		const timeout = setTimeout(() => {
@@ -141,8 +148,12 @@ function discoverModels(_agent: string): Promise<AcpxModelInfo[]> {
 			}
 		}, 30000);
 
+		// acpx writes the model list to stderr
+		proc.stderr.on("data", (chunk: Buffer) => {
+			output += chunk.toString();
+		});
 		proc.stdout.on("data", (chunk: Buffer) => {
-			stdout += chunk.toString();
+			output += chunk.toString();
 		});
 
 		proc.on("close", () => {
@@ -150,30 +161,51 @@ function discoverModels(_agent: string): Promise<AcpxModelInfo[]> {
 			resolved = true;
 			clearTimeout(timeout);
 
-			// Parse lines matching "<id> - <name>" pattern
-			const lines = stdout.split("\n");
-			for (const line of lines) {
-				const trimmed = line.trim();
-				// Skip empty lines, header lines, and tip lines
-				if (!trimmed) continue;
-				if (trimmed.startsWith("Loading")) continue;
-				if (trimmed === "Available models") continue;
-				if (trimmed.startsWith("Tip:")) continue;
+			// Parse "Available models: modelId[opts], modelId2[opts], ..."
+			const match = output.match(/Available models:\s*(.+)/);
+			if (match) {
+				const modelList = match[1].trim().replace(/\.$/, "");
+				// Bracket-aware split: commas inside [] are part of the model ID
+				// e.g., gpt-5.4[context=272k,reasoning=medium,fast=false]
+				const entries: string[] = [];
+				let current = "";
+				let depth = 0;
+				for (const ch of modelList) {
+					if (ch === "[") depth++;
+					else if (ch === "]") depth = Math.max(0, depth - 1);
+					if (ch === "," && depth === 0) {
+						entries.push(current.trim());
+						current = "";
+					} else {
+						current += ch;
+					}
+				}
+				if (current.trim()) entries.push(current.trim());
 
-				const match = trimmed.match(/^(\S+)\s+-\s+(.+)$/);
-				if (match) {
-					const modelId = match[1];
-					// Strip (default), (current), or similar markers from the name
-					const name = match[2].replace(/\s*\((?:default|current)\)\s*$/i, "").trim();
-					models.push({ modelId, name });
+				for (const entry of entries) {
+					if (!entry) continue;
+					const bracketIdx = entry.indexOf("[");
+					const baseName = bracketIdx >= 0 ? entry.substring(0, bracketIdx) : entry;
+					if (baseName) {
+						const name = baseName
+							.replace(/-/g, " ")
+							.replace(/\b\w/g, (c) => c.toUpperCase());
+						// modelId = exact acpx string (with brackets, even empty)
+						models.push({ modelId: entry, name });
+					}
 				}
 			}
 
 			resolve(models);
 		});
 
-		proc.on("error", () => {
-			if (!resolved) { resolved = true; clearTimeout(timeout); resolve(models); }
+		proc.on("error", (err) => {
+			if (!resolved) {
+				console.debug("[acpx] discoverModels spawn error:", err);
+				resolved = true;
+				clearTimeout(timeout);
+				resolve(models);
+			}
 		});
 	});
 }
@@ -262,9 +294,12 @@ function streamAcpx(
 		try {
 			stream.push({ type: "start", partial: output });
 
-			// Parse agent and acpx model from pi model id: "agent:modelId"
+			// Parse agent and acpx model from pi model id: "agent:modelId[opts]"
 			const colonIdx = model.id.indexOf(":");
 			const agent = colonIdx >= 0 ? model.id.substring(0, colonIdx) : model.id;
+			if (!registeredAgents.includes(agent)) {
+				throw new Error(`Unknown acpx agent: ${agent}`);
+			}
 			const acpxModelId = colonIdx >= 0 ? model.id.substring(colonIdx + 1) : undefined;
 
 			// Ensure session exists — retry with cwd fallback
@@ -301,6 +336,7 @@ function streamAcpx(
 			let textContentIndex = -1;
 			let thinkingContentIndex = -1;
 			let killed = false;
+			let stderrOutput = "";
 
 			// Handle abort
 			if (options?.signal) {
@@ -422,7 +458,6 @@ function streamAcpx(
 				}
 			});
 
-			let stderrOutput = "";
 			proc.stderr.on("data", (chunk: Buffer) => {
 				stderrOutput += chunk.toString();
 			});
@@ -498,7 +533,7 @@ export default function (pi: ExtensionAPI) {
 	const agentList = (process.env.ACPX_AGENTS || "")
 		.split(",")
 		.map((a) => a.trim())
-		.filter(Boolean);
+		.filter((a) => /^[a-z0-9_-]+$/i.test(a));
 
 	registeredAgents = agentList;
 
@@ -524,49 +559,49 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Discover real models and create acpx sessions on pi session start
-	pi.on("session_start", async (_event, ctx) => {
-		// Discover models for ALL agents in parallel to avoid one slow agent delaying others
-		const discoveryResults = await Promise.allSettled(
-			agentList.map(async (agent) => {
-				const discoveredModels = await discoverModels(agent);
-				return { agent, discoveredModels };
-			}),
-		);
+	// Non-blocking: fire-and-forget so pi startup isn't delayed
+	pi.on("session_start", (_event, ctx) => {
+		void (async () => {
+			const discoveryResults = await Promise.allSettled(
+				agentList.map(async (agent) => {
+					const discoveredModels = await discoverModels(agent);
+					return { agent, discoveredModels };
+				}),
+			);
 
-		// Register providers and create sessions based on discovery results
-		for (const result of discoveryResults) {
-			if (result.status === "rejected") continue;
+			for (const result of discoveryResults) {
+				if (result.status === "rejected") continue;
 
-			const { agent, discoveredModels } = result.value;
-			try {
-				if (discoveredModels.length > 0) {
-					const models = discoveredModels.map((m) => ({
-						id: `${agent}:${m.modelId}`,
-						name: `${m.name} (${agent})`,
-						reasoning: false,
-						input: ["text" as const, "image" as const],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 200000,
-						maxTokens: 32768,
-					}));
-					pi.registerProvider(`acpx-${agent}`, {
-						baseUrl: "https://localhost",
-						apiKey: "acpx", // pragma: allowlist secret
-						api: "acpx",
-						models,
-						streamSimple: streamAcpx,
-					});
-					ctx.ui.notify(`acpx-${agent}: ${discoveredModels.length} models discovered and registered`, "info");
-				} else {
-					ctx.ui.notify(`acpx-${agent}: no models discovered (timeout?), using default only`, "warning");
+				const { agent, discoveredModels } = result.value;
+				try {
+					if (discoveredModels.length > 0) {
+						const models = discoveredModels.map((m) => ({
+							id: `${agent}:${m.modelId}`,
+							name: `${m.name} (${agent})`,
+							reasoning: false,
+							input: ["text" as const, "image" as const],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 32768,
+						}));
+						pi.registerProvider(`acpx-${agent}`, {
+							baseUrl: "https://localhost",
+							apiKey: "acpx", // pragma: allowlist secret
+							api: "acpx",
+							models,
+							streamSimple: streamAcpx,
+						});
+						ctx.ui.notify(`acpx-${agent}: ${discoveredModels.length} models discovered`, "info");
+					} else {
+						ctx.ui.notify(`acpx-${agent}: no models discovered (timeout?)`, "warning");
+					}
+
+					createSession(agent, projectCwd);
+				} catch (err) {
+					ctx.ui.notify(`acpx-${agent}: setup failed: ${err}`, "error");
 				}
-
-				// Create a persistent acpx session
-				createSession(agent, projectCwd);
-			} catch {
-				// Keep placeholder models
 			}
-		}
+		})();
 	});
 
 	// Clean up acpx sessions on pi shutdown
