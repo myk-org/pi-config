@@ -10,6 +10,7 @@ import {
   SelectList,
   Spacer,
   Text,
+  fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -121,8 +122,32 @@ export function registerAskUser(
 
           // SelectList (only if options provided)
           let selectList: SelectList | null = null;
+          let allItems: SelectItem[] = [];
+          const selectTheme = {
+            selectedPrefix: (t: string) => theme.fg("accent", t),
+            selectedText: (t: string) => theme.fg("accent", t),
+            description: (t: string) => theme.fg("muted", t),
+            scrollInfo: (t: string) => theme.fg("dim", t),
+            noMatch: (t: string) => theme.fg("warning", t),
+          };
+
+          const makeSelectList = (items: SelectItem[]) => {
+            const sl = new SelectList(items, Math.min(items.length + 1, 15), selectTheme);
+            sl.onSelect = (item: SelectItem) => {
+              if (item.value === "__free_input__") {
+                mode = "input";
+                searchInput.setValue("");
+                tui.requestRender();
+              } else {
+                resolve(item.value);
+              }
+            };
+            sl.onCancel = () => resolve(null);
+            return sl;
+          };
+
           if (params.options && params.options.length > 0) {
-            const items: SelectItem[] = [
+            allItems = [
               ...params.options.map((opt: string) => ({
                 value: opt,
                 label: opt,
@@ -133,37 +158,18 @@ export function registerAskUser(
                 description: "free-text",
               },
             ];
-            selectList = new SelectList(items, Math.min(items.length + 1, 15), {
-              selectedPrefix: (t: string) => theme.fg("accent", t),
-              selectedText: (t: string) => theme.fg("accent", t),
-              description: (t: string) => theme.fg("muted", t),
-              scrollInfo: (t: string) => theme.fg("dim", t),
-              noMatch: (t: string) => theme.fg("warning", t),
-            });
-            selectList.onSelect = (item: SelectItem) => {
-              if (item.value === "__free_input__") {
-                mode = "input";
-                searchInput.setValue("");
-                selectList?.setFilter("");
-                tui.requestRender();
-              } else {
-                resolve(item.value);
-              }
-            };
-            selectList.onCancel = () => resolve(null);
+            selectList = makeSelectList(allItems);
           }
 
-          // Search input for filtering the select list
+          // Search input for fuzzy filtering the select list
           const searchInput = new Input();
           searchInput.onSubmit = () => {
-            // Enter on search = select the highlighted item
             if (selectList) {
               const selected = selectList.getSelectedItem();
               if (selected) {
                 if (selected.value === "__free_input__") {
                   mode = "input";
                   searchInput.setValue("");
-                  selectList.setFilter("");
                 } else {
                   resolve(selected.value);
                 }
@@ -171,7 +177,6 @@ export function registerAskUser(
             }
           };
           searchInput.onEscape = () => resolve(null);
-          // No onChange on Input — we check value after each handleInput instead
 
           const selectHelp = new Text(
             theme.fg("dim", "type to filter • ↑↓ navigate • enter select • esc cancel"),
@@ -235,7 +240,13 @@ export function registerAskUser(
                   selectList.handleInput(data);
                 } else {
                   searchInput.handleInput(data);
-                  selectList.setFilter(searchInput.getValue());
+                  const query = searchInput.getValue();
+                  if (query) {
+                    const filtered = fuzzyFilter(allItems, query, (item) => `${item.label} ${item.description || ""}`);
+                    selectList = makeSelectList(filtered.length > 0 ? filtered : [{ value: "", label: "No matches", description: "" }]);
+                  } else {
+                    selectList = makeSelectList(allItems);
+                  }
                 }
               } else {
                 input.handleInput(data);
