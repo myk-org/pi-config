@@ -62,6 +62,8 @@ interface AgentSession {
 /** Active acpx sessions keyed by agent name */
 const sessions = new Map<string, AgentSession>();
 
+
+
 /**
  * The working directory captured at extension initialization time.
  * acpx searches for session markers starting from cwd, but pi's process
@@ -186,6 +188,7 @@ function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 						const name = baseName
 							.replace(/-/g, " ")
 							.replace(/\b\w/g, (c) => c.toUpperCase());
+						// Use full ID with brackets everywhere — user sees it, acpx receives it
 						models.push({ modelId: entry, name });
 					}
 				}
@@ -284,7 +287,7 @@ function streamAcpx(
 		try {
 			stream.push({ type: "start", partial: output });
 
-			// Parse agent and acpx model from pi model id: "agent:modelId"
+			// Parse agent and acpx model from pi model id: "agent:modelId[opts]"
 			const colonIdx = model.id.indexOf(":");
 			const agent = colonIdx >= 0 ? model.id.substring(0, colonIdx) : model.id;
 			const acpxModelId = colonIdx >= 0 ? model.id.substring(colonIdx + 1) : undefined;
