@@ -124,6 +124,8 @@ def run(
                 "cost_usd": result.usage.cost_usd,
                 "duration_ms": result.usage.duration_ms,
             }
+        if session_id:
+            output["session_id"] = session_id
     else:
         output["error"] = result.text or "Unknown error (no details from provider)"
         if session_id:
