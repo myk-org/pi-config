@@ -22,11 +22,15 @@ def run_cmd(prompt: str, provider: str, model: str, resume: bool, session_id: st
 
     PROMPT: The prompt text to send to the AI CLI.
     """
-    from myk_pi_tools.ai_cli.run import run
-
     if session_id and resume:
         click.echo("Error: --session-id and --resume are mutually exclusive.", err=True)
         sys.exit(1)
+
+    if session_id and session_id.startswith("-"):
+        click.echo("Error: --session-id value must not start with '-'", err=True)
+        sys.exit(1)
+
+    from myk_pi_tools.ai_cli.run import run
 
     sys.exit(run(prompt=prompt, provider=provider, model=model, resume=resume, session_id=session_id, cwd=cwd))
 
