@@ -10,10 +10,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { execFileSync, execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
@@ -31,29 +28,55 @@ function log(msg: string) {
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 3000, stdio: ["ignore", "pipe", "ignore"] as const, maxBuffer: 10 * 1024 * 1024 };
 
 // Resolve git binary — PATH may be stripped when spawned as a daemon
-const GIT_BIN = (() => {
+let GIT_BIN = "git";
+let gitBinResolved = false;
+
+function resolveGitBin(): string {
   // Try PATH first
-  try { execFileSync("git", ["--version"], { stdio: "ignore" }); return "git"; } catch {}
+  try { execFileSync("git", ["--version"], { stdio: "ignore" }); GIT_BIN = "git"; gitBinResolved = true; return GIT_BIN; } catch {}
   // Common locations
   for (const p of ["/home/linuxbrew/.linuxbrew/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"]) {
-    try { execFileSync(p, ["--version"], { stdio: "ignore" }); return p; } catch {}
+    try { execFileSync(p, ["--version"], { stdio: "ignore" }); GIT_BIN = p; gitBinResolved = true; log(`git binary resolved: ${p}`); return GIT_BIN; } catch {}
   }
   log("WARNING: git binary not found — diffs will fail");
-  return "git";
-})();
+  GIT_BIN = "git";
+  gitBinResolved = false;
+  return GIT_BIN;
+}
+
+// Initial resolution
+resolveGitBin();
+
+// Re-resolve periodically in case PATH/environment changes (container vs host)
+const gitBinRefresh = setInterval(() => { resolveGitBin(); }, 60000);
+if (gitBinRefresh.unref) gitBinRefresh.unref();
 
 function gitExec(args: string[], cwd: string): string {
-  return execFileSync(GIT_BIN, args, { ...GIT_OPTS, cwd }).trim();
+  try {
+    return execFileSync(GIT_BIN, args, { ...GIT_OPTS, cwd }).trim();
+  } catch (e: any) {
+    if (e.code === "ENOENT") {
+      log(`gitExec ENOENT: binary=${GIT_BIN} args=${args.join(" ")} cwd=${cwd} — re-resolving git binary`);
+      resolveGitBin();
+      if (gitBinResolved) {
+        return execFileSync(GIT_BIN, args, { ...GIT_OPTS, cwd }).trim();
+      }
+    }
+    throw e;
+  }
 }
 
 function getDefaultRemoteBranch(cwd: string): string {
   try {
     const ref = gitExec(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd);
-    return ref.replace("refs/remotes/", "");
+    const branch = ref.replace("refs/remotes/", "");
+    log(`getDefaultRemoteBranch(${cwd}): ${branch}`);
+    return branch;
   } catch {
     for (const name of ["origin/main", "origin/master", "origin/develop"]) {
-      try { gitExec(["rev-parse", "--verify", name], cwd); return name; } catch {}
+      try { gitExec(["rev-parse", "--verify", name], cwd); log(`getDefaultRemoteBranch(${cwd}): ${name} (fallback)`); return name; } catch {}
     }
+    log(`getDefaultRemoteBranch(${cwd}): (none found)`);
     return "";
   }
 }
@@ -77,9 +100,19 @@ function getWorktrees(cwd: string): WorktreeInfo[] {
     });
     const worktrees: WorktreeInfo[] = [];
     let current: Partial<WorktreeInfo> = {};
+    const pushIfValid = () => {
+      if (current.path) {
+        worktrees.push({
+          path: current.path,
+          branch: current.branch || "(unknown)",
+          head: current.head || "",
+          isMain: current.isMain || false,
+        });
+      }
+    };
     for (const line of raw.split("\n")) {
       if (line.startsWith("worktree ")) {
-        if (current.path) worktrees.push(current as WorktreeInfo);
+        pushIfValid();
         current = { path: line.slice(9), isMain: worktrees.length === 0 };
       } else if (line.startsWith("HEAD ")) {
         current.head = line.slice(5);
@@ -89,10 +122,11 @@ function getWorktrees(cwd: string): WorktreeInfo[] {
       } else if (line === "detached") {
         current.branch = `(detached)`;
       } else if (line === "") {
-        if (current.path) { worktrees.push(current as WorktreeInfo); current = {}; }
+        pushIfValid();
+        current = {};
       }
     }
-    if (current.path) worktrees.push(current as WorktreeInfo);
+    pushIfValid();
     return worktrees;
   } catch (e: any) { log(`getWorktrees error: ${e.message}`); return []; }
 }
@@ -111,16 +145,20 @@ function getLog(cwd: string, count: number = 30): Array<{ hash: string; short: s
   count = Math.min(count, 100); // Clamp to prevent DoS
   try {
     const defaultBranch = getDefaultRemoteBranch(cwd);
-    let args = ["log", `--format=%H%n%h%n%s%n%ai`, `-${count}`];
+    // Use %x00 (NUL) as record separator and %x01 as field separator to handle newlines in subjects
+    const fmt = "%H%x01%h%x01%s%x01%ai%x00";
+    let args = ["log", `--format=${fmt}`, `-${count}`];
     if (defaultBranch) {
-      args = ["log", `--format=%H%n%h%n%s%n%ai`, `-${count}`, `${defaultBranch}..HEAD`];
+      args = ["log", `--format=${fmt}`, `-${count}`, `${defaultBranch}..HEAD`];
     }
     const raw = gitExec(args, cwd);
     if (!raw) return [];
-    const lines = raw.split("\n");
     const commits: Array<{ hash: string; short: string; subject: string; date: string }> = [];
-    for (let i = 0; i + 3 < lines.length; i += 4) {
-      commits.push({ hash: lines[i], short: lines[i + 1], subject: lines[i + 2], date: lines[i + 3] });
+    for (const record of raw.split("\0").filter(Boolean)) {
+      const fields = record.split("\x01");
+      if (fields.length >= 4) {
+        commits.push({ hash: fields[0], short: fields[1], subject: fields[2], date: fields[3] });
+      }
     }
     return commits;
   } catch (e: any) { log(`getLog error: ${e.message}`); return []; }
@@ -160,7 +198,7 @@ function getChangedFiles(cwd: string, baseRef: string, headRef: string = "HEAD")
       results.push({ name: fileName, oldContents, newContents, status });
     }
     return results;
-  } catch (e: any) { log(`getChangedFiles error: ${e.message}`); return []; }
+  } catch (e: any) { log(`getChangedFiles error (base=${baseRef} head=${headRef}): ${e.message}`); return []; }
 }
 
 function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstaged: FileContentsData[] } {
@@ -185,19 +223,22 @@ function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstage
         staged.push({ name: fileName, oldContents, newContents, status });
       }
     }
-  } catch {}
+  } catch (e: any) { log(`getWorkingTreeFiles staged error: ${e.message}`); }
   try {
     const unstagedRaw = gitExec(["diff", "--name-status"], cwd);
     if (unstagedRaw) {
       for (const line of unstagedRaw.split("\n").filter(Boolean)) {
         const parts = line.split("\t");
         const statusChar = parts[0][0];
-        const fileName = parts[1];
+        const fileName = parts.length > 2 ? parts[2] : parts[1];
+        const oldName = parts.length > 2 ? parts[1] : fileName;
         let status: FileContentsData["status"] = "modified";
-        if (statusChar === "D") status = "deleted";
+        if (statusChar === "A") status = "added";
+        else if (statusChar === "D") status = "deleted";
+        else if (statusChar === "R") status = "renamed";
         let oldContents = "";
         let newContents = "";
-        try { oldContents = execFileSync(GIT_BIN, ["show", `:${fileName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
+        try { if (status !== "added") oldContents = execFileSync(GIT_BIN, ["show", `:${oldName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
         try { if (status !== "deleted") newContents = fs.readFileSync(path.join(cwd, fileName), "utf-8"); } catch {}
         unstaged.push({ name: fileName, oldContents, newContents, status });
       }
@@ -211,7 +252,7 @@ function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstage
         } catch {}
       }
     }
-  } catch {}
+  } catch (e: any) { log(`getWorkingTreeFiles unstaged error: ${e.message}`); }
   return { staged, unstaged };
 }
 
@@ -225,10 +266,15 @@ function buildDiffPayload(cwd: string, mode: DiffMode, refs?: { from: string; to
 
   if (mode === "branch") {
     const defaultBranch = getDefaultRemoteBranch(cwd);
-    const base = defaultBranch ? gitExec(["merge-base", defaultBranch, "HEAD"], cwd) : "";
+    let base = "";
+    try {
+      base = defaultBranch ? gitExec(["merge-base", defaultBranch, "HEAD"], cwd) : "";
+    } catch (e: any) {
+      log(`buildDiffPayload: merge-base failed (defaultBranch=${defaultBranch}): ${e.message}`);
+    }
     const committed = base ? getChangedFiles(cwd, base, "HEAD") : [];
     const working = status.dirty ? getWorkingTreeFiles(cwd) : { staged: [], unstaged: [] };
-    log(`buildDiffPayload: branch mode, committed=${committed.length} staged=${working.staged.length} unstaged=${working.unstaged.length}`);
+    log(`buildDiffPayload: branch mode, cwd=${cwd} defaultBranch=${defaultBranch} base=${base.slice(0, 8) || "(empty)"} branch=${branch} committed=${committed.length} staged=${working.staged.length} unstaged=${working.unstaged.length}`);
     return { type: "diff_update", mode: "branch", committed, staged: working.staged, unstaged: working.unstaged, branch };
   }
 
@@ -303,6 +349,10 @@ piWss.on("connection", (ws: any) => {
       if (parsed.type === "register") {
         const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
         const cwd = parsed.cwd || "";
+        if (!cwd) {
+          log(`register rejected: empty cwd from ${sessionId}`);
+          return;
+        }
         const worktrees = getWorktrees(cwd);
         const session: SessionInfo = {
           sessionId,
@@ -322,8 +372,14 @@ piWss.on("connection", (ws: any) => {
       }
 
       if (parsed.type === "update_info" && piClient) {
+        const branchChanged = parsed.branch !== undefined && parsed.branch !== piClient.session.branch;
         if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;
         broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+        // Trigger diff refresh for browsers watching this session when branch changes
+        if (branchChanged) {
+          log(`branch changed for ${piClient.session.sessionId}: ${parsed.branch}`);
+          notifyWatchingBrowsers(piClient.session.sessionId, [piClient.session.cwd]);
+        }
         return;
       }
     } catch (e: any) { log(`pi message error: ${e.message}`); }
@@ -489,6 +545,16 @@ server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
 
 // ── File watcher (chokidar) ─ real-time change detection ───────────────
 
+function notifyWatchingBrowsers(sessionId: string, changedWorktrees: string[]): void {
+  const msg = JSON.stringify({ type: "status_changed", sessionId, changedWorktrees });
+  for (const browser of browserClients) {
+    const watchInfo = browserWatchMap.get(browser);
+    if (watchInfo?.sessionId === sessionId) {
+      try { browser.send(msg); } catch {}
+    }
+  }
+}
+
 let _chokidar: any = null;
 import("chokidar").then(m => { _chokidar = m; log("chokidar loaded"); }).catch(e => log(`chokidar load failed: ${e.message}`));
 const activeWatchers = new Map<string, { watcher: any; debounceTimer: ReturnType<typeof setTimeout> | null }>();
@@ -530,14 +596,7 @@ function startWatching(sessionId: string, worktreePath: string) {
     if (state.debounceTimer) clearTimeout(state.debounceTimer);
     state.debounceTimer = setTimeout(() => {
       state.debounceTimer = null;
-      // Notify all browsers watching this session
-      const msg = JSON.stringify({ type: "status_changed", sessionId, changedWorktrees: [worktreePath] });
-      for (const browser of browserClients) {
-        const watchInfo = browserWatchMap.get(browser);
-        if (watchInfo?.sessionId === sessionId) {
-          try { browser.send(msg); } catch {}
-        }
-      }
+      notifyWatchingBrowsers(sessionId, [worktreePath]);
     }, 500);
   };
 
@@ -589,7 +648,7 @@ const worktreeRefreshInterval = setInterval(() => {
         client.session.worktrees = freshWorktrees;
         broadcastToBrowsers({ type: "session_updated", session: client.session });
       }
-    } catch {}
+    } catch (e: any) { log(`worktreeRefresh error for ${sessionId}: ${e.message}`); }
   }
 }, 10000);
 if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
