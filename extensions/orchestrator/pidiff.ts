@@ -70,12 +70,20 @@ export function registerPidiff(pi: ExtensionAPI): void {
     pi.events?.emit("diff-viewer:port", PIDIFF_PORT);
   }
 
+  function findGitBin(): string {
+    try {
+      return execFileSync("which", ["git"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "git";
+    } catch { return "git"; }
+  }
+
   function doSpawn(): void {
     ensureUiBuilt("pidiff-ui", log);
+    const gitBin = findGitBin();
+    log(`resolved git for daemon: ${gitBin}`);
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
-      env: { PI_PIDIFF_PORT: String(PIDIFF_PORT) },
+      env: { PI_PIDIFF_PORT: String(PIDIFF_PORT), PI_GIT_BIN: gitBin },
       log,
     });
   }

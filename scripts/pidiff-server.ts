@@ -27,29 +27,24 @@ function log(msg: string) {
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 3000, stdio: ["ignore", "pipe", "ignore"] as const, maxBuffer: 10 * 1024 * 1024 };
 
-// Resolve git binary — PATH may be stripped when spawned as a daemon
-let GIT_BIN = "git";
+// Resolve git binary — prefer PI_GIT_BIN env var (set by the spawning extension which has the correct PATH)
+let GIT_BIN = process.env.PI_GIT_BIN || "git";
 let gitBinResolved = false;
 
 function resolveGitBin(): string {
-  // Try PATH first
-  try { execFileSync("git", ["--version"], { stdio: "ignore" }); GIT_BIN = "git"; gitBinResolved = true; return GIT_BIN; } catch {}
-  // Common locations
-  for (const p of ["/home/linuxbrew/.linuxbrew/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"]) {
-    try { execFileSync(p, ["--version"], { stdio: "ignore" }); GIT_BIN = p; gitBinResolved = true; log(`git binary resolved: ${p}`); return GIT_BIN; } catch {}
+  // 1. PI_GIT_BIN from env (set by extension with correct PATH)
+  if (process.env.PI_GIT_BIN) {
+    try { execFileSync(process.env.PI_GIT_BIN, ["--version"], { stdio: "ignore" }); GIT_BIN = process.env.PI_GIT_BIN; gitBinResolved = true; return GIT_BIN; } catch {}
   }
-  log("WARNING: git binary not found — diffs will fail");
-  GIT_BIN = "git";
+  // 2. Try "git" on PATH
+  try { execFileSync("git", ["--version"], { stdio: "ignore" }); GIT_BIN = "git"; gitBinResolved = true; return GIT_BIN; } catch {}
+  log("WARNING: git binary not found — set PI_GIT_BIN or ensure git is in PATH");
   gitBinResolved = false;
   return GIT_BIN;
 }
 
 // Initial resolution
 resolveGitBin();
-
-// Re-resolve periodically in case PATH/environment changes (container vs host)
-const gitBinRefresh = setInterval(() => { resolveGitBin(); }, 60000);
-if (gitBinRefresh.unref) gitBinRefresh.unref();
 
 function gitExec(args: string[], cwd: string): string {
   try {
