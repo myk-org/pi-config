@@ -17,7 +17,20 @@ def ai_cli() -> None:
 @click.option("--resume", is_flag=True, help="Continue the most recent session")
 @click.option("--session-id", default=None, help="Resume a specific session by ID")
 @click.option("--cwd", default=None, help="Working directory (default: current)")
-def run_cmd(prompt: str, provider: str, model: str, resume: bool, session_id: str | None, cwd: str | None) -> None:
+@click.option(
+    "--cli-flags",
+    multiple=True,
+    help="Extra CLI flags (repeatable, e.g. --cli-flags=--trust)",
+)
+def run_cmd(
+    prompt: str,
+    provider: str,
+    model: str,
+    resume: bool,
+    session_id: str | None,
+    cwd: str | None,
+    cli_flags: tuple[str, ...],
+) -> None:
     """Run a prompt via AI CLI.
 
     PROMPT: The prompt text to send to the AI CLI.
@@ -32,7 +45,17 @@ def run_cmd(prompt: str, provider: str, model: str, resume: bool, session_id: st
 
     from myk_pi_tools.ai_cli.run import run
 
-    sys.exit(run(prompt=prompt, provider=provider, model=model, resume=resume, session_id=session_id, cwd=cwd))
+    sys.exit(
+        run(
+            prompt=prompt,
+            provider=provider,
+            model=model,
+            resume=resume,
+            session_id=session_id,
+            cwd=cwd,
+            cli_flags=list(cli_flags),
+        )
+    )
 
 
 @ai_cli.command("save-config")
