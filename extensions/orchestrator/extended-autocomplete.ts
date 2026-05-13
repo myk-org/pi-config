@@ -50,6 +50,7 @@ const AI_CLI_FLAGS: AutocompleteItem[] = [
   { value: "--fix", label: "--fix", description: "Agent can modify files" },
   { value: "--peer", label: "--peer", description: "AI-to-AI peer review loop" },
   { value: "--resume", label: "--resume", description: "Continue most recent session" },
+  { value: "--session-id ", label: "--session-id", description: "Resume a specific session by ID" },
   { value: "--model ", label: "--model", description: "Set model (e.g., gpt-5.4-high)" },
 ];
 

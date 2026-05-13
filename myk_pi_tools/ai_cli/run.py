@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -57,7 +58,7 @@ def run(
 
     Returns exit code (0 = success, 1 = error).
     """
-    session_id = session_id or None
+    session_id = session_id or None  # Normalize "" to None for programmatic callers
 
     # Defense-in-depth: also validated in commands.py CLI layer
     if resume and session_id:
@@ -94,6 +95,7 @@ def run(
             )
         )
     except Exception as e:
+        click.echo(traceback.format_exc(), err=True)
         error_out: dict[str, object] = {
             "success": False,
             "provider": provider,
@@ -115,6 +117,8 @@ def run(
         output["text"] = result.text
         if result.session_id:
             output["session_id"] = result.session_id
+        elif session_id:
+            output["session_id"] = session_id
         if result.usage:
             output["usage"] = {
                 "provider": result.usage.provider,
@@ -126,8 +130,6 @@ def run(
                 "cost_usd": result.usage.cost_usd,
                 "duration_ms": result.usage.duration_ms,
             }
-        if session_id:
-            output["session_id"] = session_id
     else:
         output["error"] = result.text or "Unknown error (no details from provider)"
         if session_id:
