@@ -163,27 +163,25 @@ or selecting from the interactive prompts above.
 ### Step 3: Session Management
 
 Sessions allow the AI CLI to maintain conversation context across prompts.
+`ai-cli-runner` exposes `session_id` and `continue_session` params, and returns
+`session_id` in the result. The `myk-pi-tools ai-cli run` command supports:
+
+- `--resume` — continue the most recent session (`continue_session=True`)
+- `--session-id <id>` — resume a specific session by ID (exact targeting)
 
 **Session behavior by mode:**
 
 | Mode | Session behavior |
 |------|------------------|
 | **Normal** (no flags) | Stateless — fresh session each call |
-| **`--resume`** | Continue the last session — adds session resume flag to CLI |
-| **`--fix`** | Stateless by default. Combine with `--resume` to continue a session |
-| **`--fix --resume`** | Continue the last session in fix mode |
-| **`--peer`** | Automatic sessions — first round is fresh, all subsequent rounds use `--continue`/`-c`/`--resume latest` to maintain conversation context. Do NOT combine with `--resume` |
+| **`--resume`** | Continue the most recent session |
+| **`--session-id <id>`** | Resume a specific session by ID |
+| **`--fix`** | Stateless by default. Combine with `--resume` or `--session-id` to continue a session |
+| **`--peer`** | Automatic sessions — first round is fresh, subsequent rounds use `--session-id <id>` captured from the first round's output to maintain exact conversation context. Do NOT combine with `--resume` |
 
-**Session resume flags per provider:**
-
-| Provider | Resume flag | Binary |
-|----------|------------|--------|
-| `cursor` | `--continue` | `agent` |
-| `claude` | `-c` | `claude` |
-| `gemini` | `--resume latest` | `gemini` |
-
-When `--resume` is active or in peer mode follow-up rounds, pass `--resume`
-to the `myk-pi-tools ai-cli run` command.
+When `--resume` is active, pass `--resume` to the `myk-pi-tools ai-cli run` command.
+In peer mode follow-up rounds, pass `--session-id <id>` instead of `--resume`
+for exact session targeting (see Step 9).
 
 ### Step 4: Workspace Safety Check (--fix and --peer modes)
 
@@ -437,9 +435,14 @@ Original prompt: <user's prompt>
 ```
 
 Execute via `myk-pi-tools ai-cli run` (read-only mode — append the read-only guard to the prompt).
-This first round is a **fresh session** — do NOT pass `--resume`.
+This first round is a **fresh session** — do NOT pass `--resume` or `--session-id`.
 Do NOT display intermediate results to the user.
 If the command fails, abort the peer loop and report the error.
+
+**Capture session_id:** Parse the JSON output from the first round. Extract
+`session_id` from the response. Store it per-provider for use in subsequent
+rounds (Step 9c). The `session_id` enables exact session targeting instead
+of generic `--resume`.
 
 **Multi-agent:** Send the peer framing prompt to ALL agents in parallel
 using `run_parallel_with_limit`. Collect and merge findings from all agents,
@@ -447,7 +450,7 @@ deduplicating where the same issue is raised by multiple agents.
 
 **Multi-agent group context:** In the first round, each agent reviews
 independently (no group context yet). Their individual responses are
-collected for use in subsequent rounds.
+collected for use in subsequent rounds. Store each provider's `session_id`.
 
 If ALL agents report no findings, skip to Step 9e.
 If only SOME agents report no findings, continue to Step 9b with the findings
@@ -528,11 +531,14 @@ build on other peers' findings.
 When sending to peer A, include findings from peers B, C, etc.
 When sending to peer B, include findings from peers A, C, etc.
 
-Execute via `myk-pi-tools ai-cli run --resume`. Do NOT display intermediate results.
-**Use `--resume`** for this and all subsequent rounds so the peer agent has full
-conversation context from previous rounds.
+Execute via `myk-pi-tools ai-cli run --session-id <id>` using the `session_id`
+captured in Step 9a. Do NOT display intermediate results.
+**Use `--session-id <id>`** for this and all subsequent rounds so the peer agent
+resumes the exact conversation session from previous rounds. If `session_id` was
+not captured (provider didn't return one), fall back to `--resume`.
 
-**Multi-agent:** Send the response to ALL agents in parallel. Each agent uses `--resume`.
+**Multi-agent:** Send the response to ALL agents in parallel. Each agent uses
+its own `--session-id <id>` captured from its first-round output.
 
 #### 9d: Loop Until Convergence
 

@@ -19,13 +19,6 @@ _DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-2.5-flash",
 }
 
-# Session resume flags per provider
-_RESUME_FLAGS: dict[str, list[str]] = {
-    "cursor": ["--continue"],
-    "claude": ["-c"],
-    "gemini": ["--resume", "latest"],
-}
-
 
 async def _run_async(
     prompt: str,
@@ -33,6 +26,8 @@ async def _run_async(
     model: str,
     cwd: Path,
     cli_flags: list[str],
+    session_id: str | None = None,
+    continue_session: bool = False,
 ) -> AIResult:
     """Load pricing and run the AI CLI call in a single event loop."""
     from ai_cli_runner import call_ai_cli, pricing_cache
@@ -45,6 +40,8 @@ async def _run_async(
         ai_model=model,
         cli_flags=cli_flags,
         output_format="json",
+        session_id=session_id,
+        continue_session=continue_session,
     )
 
 
@@ -53,6 +50,7 @@ def run(
     provider: str,
     model: str = "",
     resume: bool = False,
+    session_id: str | None = None,
     cwd: str | None = None,
 ) -> int:
     """Run a prompt via ai-cli-runner.
@@ -67,8 +65,10 @@ def run(
     effective_cwd = Path(cwd) if cwd else Path.cwd()
 
     cli_flags: list[str] = []
-    if resume:
-        cli_flags.extend(_RESUME_FLAGS.get(provider, []))
+    # --session-id and --resume are mutually exclusive (validated in commands.py)
+    # --session-id: resume a specific session by ID
+    # --resume: continue the most recent session (continue_session=True)
+    continue_session = resume and not session_id
 
     click.echo(f"[ai-cli] {provider.upper()} ({effective_model})", err=True)
 
@@ -80,6 +80,8 @@ def run(
                 model=effective_model,
                 cwd=effective_cwd,
                 cli_flags=cli_flags,
+                session_id=session_id,
+                continue_session=continue_session,
             )
         )
     except Exception as e:
@@ -94,6 +96,8 @@ def run(
 
     if result.success:
         output["text"] = result.text
+        if result.session_id:
+            output["session_id"] = result.session_id
         if result.usage:
             output["usage"] = {
                 "provider": result.usage.provider,
