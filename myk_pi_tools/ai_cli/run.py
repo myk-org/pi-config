@@ -57,6 +57,12 @@ def run(
 
     Returns exit code (0 = success, 1 = error).
     """
+    session_id = session_id or None
+
+    if resume and session_id:
+        click.echo("Error: --session-id and --resume are mutually exclusive.", err=True)
+        return 1
+
     effective_model = model or _DEFAULT_MODELS.get(provider, "")
     if not effective_model:
         click.echo(f"Error: No default model for provider '{provider}' and no --model specified.", err=True)
@@ -70,7 +76,8 @@ def run(
     # --resume: continue the most recent session (continue_session=True)
     continue_session = resume and not session_id
 
-    click.echo(f"[ai-cli] {provider.upper()} ({effective_model})", err=True)
+    suffix = f", session={session_id}" if session_id else ", resume" if continue_session else ""
+    click.echo(f"[ai-cli] {provider.upper()} ({effective_model}{suffix})", err=True)
 
     try:
         result = asyncio.run(
@@ -85,7 +92,15 @@ def run(
             )
         )
     except Exception as e:
-        print(json.dumps({"success": False, "provider": provider, "model": effective_model, "error": str(e)}, indent=2))
+        error_out: dict[str, object] = {
+            "success": False,
+            "provider": provider,
+            "model": effective_model,
+            "error": str(e),
+        }
+        if session_id:
+            error_out["session_id"] = session_id
+        print(json.dumps(error_out, indent=2))
         return 1
 
     output: dict[str, object] = {
@@ -111,6 +126,8 @@ def run(
             }
     else:
         output["error"] = result.text or "Unknown error (no details from provider)"
+        if session_id:
+            output["session_id"] = session_id
 
     print(json.dumps(output, indent=2))
     return 0 if result.success else 1
