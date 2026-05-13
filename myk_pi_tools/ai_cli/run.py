@@ -59,8 +59,13 @@ def run(
     """
     session_id = session_id or None
 
+    # Defense-in-depth: also validated in commands.py CLI layer
     if resume and session_id:
         click.echo("Error: --session-id and --resume are mutually exclusive.", err=True)
+        return 1
+
+    if session_id and session_id.startswith("-"):
+        click.echo("Error: --session-id value must not start with '-'", err=True)
         return 1
 
     effective_model = model or _DEFAULT_MODELS.get(provider, "")
@@ -71,10 +76,7 @@ def run(
     effective_cwd = Path(cwd) if cwd else Path.cwd()
 
     cli_flags: list[str] = []
-    # --session-id and --resume are mutually exclusive (validated in commands.py)
-    # --session-id: resume a specific session by ID
-    # --resume: continue the most recent session (continue_session=True)
-    continue_session = resume and not session_id
+    continue_session = resume  # session_id mutual exclusivity already guarded above
 
     suffix = f", session={session_id}" if session_id else ", resume" if continue_session else ""
     click.echo(f"[ai-cli] {provider.upper()} ({effective_model}{suffix})", err=True)
