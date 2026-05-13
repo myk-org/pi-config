@@ -53,6 +53,7 @@ def run(
     resume: bool = False,
     session_id: str | None = None,
     cwd: str | None = None,
+    cli_flags: list[str] | None = None,
 ) -> int:
     """Run a prompt via ai-cli-runner.
 
@@ -74,9 +75,10 @@ def run(
         click.echo(f"Error: No default model for provider '{provider}' and no --model specified.", err=True)
         return 1
 
-    effective_cwd = Path(cwd) if cwd else Path.cwd()
+    effective_cwd = Path(cwd).resolve() if cwd else Path.cwd()
 
-    cli_flags: list[str] = []
+    effective_flags: list[str] = list(cli_flags or [])
+
     continue_session = resume  # session_id mutual exclusivity already guarded above
 
     suffix = f", session={session_id}" if session_id else ", resume" if continue_session else ""
@@ -89,7 +91,7 @@ def run(
                 provider=provider,
                 model=effective_model,
                 cwd=effective_cwd,
-                cli_flags=cli_flags,
+                cli_flags=effective_flags,
                 session_id=session_id,
                 continue_session=continue_session,
             )

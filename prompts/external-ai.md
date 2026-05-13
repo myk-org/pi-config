@@ -168,6 +168,7 @@ Sessions allow the AI CLI to maintain conversation context across prompts.
 
 - `--resume` — continue the most recent session (`continue_session=True`)
 - `--session-id <id>` — resume a specific session by ID (exact targeting)
+- `--cli-flags <flag>` — extra flags passed to the AI CLI binary (repeatable)
 
 **Session behavior by mode:**
 
@@ -233,7 +234,7 @@ Follow this decision process:
 **Single provider:**
 
 ```bash
-myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> "<PROMPT>"
+myk-pi-tools ai-cli run --provider <PROVIDER> --model <MODEL> [--cli-flags=<FLAG>...] "<PROMPT>"
 ```
 
 With resume:
