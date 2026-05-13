@@ -14,16 +14,21 @@ def ai_cli() -> None:
 @click.argument("prompt")
 @click.option("--provider", "-p", required=True, type=click.Choice(["cursor", "claude", "gemini"]), help="AI provider")
 @click.option("--model", "-m", default="", help="Model name (e.g., gpt-5.4-high). Empty = provider default")
-@click.option("--resume", is_flag=True, help="Continue the last session")
+@click.option("--resume", is_flag=True, help="Continue the most recent session")
+@click.option("--session-id", default=None, help="Resume a specific session by ID")
 @click.option("--cwd", default=None, help="Working directory (default: current)")
-def run_cmd(prompt: str, provider: str, model: str, resume: bool, cwd: str | None) -> None:
+def run_cmd(prompt: str, provider: str, model: str, resume: bool, session_id: str | None, cwd: str | None) -> None:
     """Run a prompt via AI CLI.
 
     PROMPT: The prompt text to send to the AI CLI.
     """
     from myk_pi_tools.ai_cli.run import run
 
-    sys.exit(run(prompt=prompt, provider=provider, model=model, resume=resume, cwd=cwd))
+    if session_id and resume:
+        click.echo("Error: --session-id and --resume are mutually exclusive.", err=True)
+        sys.exit(1)
+
+    sys.exit(run(prompt=prompt, provider=provider, model=model, resume=resume, session_id=session_id, cwd=cwd))
 
 
 @ai_cli.command("save-config")
