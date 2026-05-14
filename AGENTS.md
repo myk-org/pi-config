@@ -61,7 +61,7 @@ pi-config/
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command — unified session status snapshot
 │   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
-│   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent
+│   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities
 │   └── acpx-provider/              # ACPX provider extension
 │       └── index.ts
@@ -151,6 +151,23 @@ pi-config/
 - Edit files in the `rules/` directory.
 - Rules auto-load in **alphabetical order** (hence the numeric prefixes).
 - Changes take effect on the **next pi session** — no restart of running sessions.
+
+### Async-Only Agents
+
+Some agents are enforced to only run with `async: true` — sync calls are rejected
+by `subagent-tool.ts` with an error. This prevents the LLM from blocking the session
+waiting for long-running agents.
+
+**Currently enforced:**
+
+- `code-reviewer-quality`
+- `code-reviewer-guidelines`
+- `code-reviewer-security`
+
+**To add/remove agents from the async-only list:**
+
+1. Edit the `ASYNC_ONLY_AGENTS` set in `extensions/orchestrator/subagent-tool.ts`
+2. Update this section in `AGENTS.md`
 
 ### Adding an Extension Command
 

@@ -40,7 +40,8 @@ const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
   `Estimated time ${seconds}s meets or exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
-/** Agents that MUST be dispatched with async: true. Sync calls are rejected. */
+/** Agents that MUST be dispatched with async: true. Sync calls are rejected.
+ *  Keep in sync with rules/20-code-review-loop.md when changing this list. */
 const ASYNC_ONLY_AGENTS = new Set([
   "code-reviewer-quality",
   "code-reviewer-guidelines",
