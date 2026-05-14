@@ -589,14 +589,20 @@ export function registerSubagentTool(
         const violators = [...new Set(requested.filter(n => ASYNC_ONLY_AGENTS.has(n)))];
         if (violators.length > 0) {
           const inChain = params.chain?.some(s => ASYNC_ONLY_AGENTS.has(s.agent));
-          const msg = inChain
-            ? `These agents cannot be used in chain mode: ${violators.join(", ")}. Dispatch them as separate async tasks instead.`
-            : ASYNC_ONLY_ERROR(violators);
-          return {
-            content: [{ type: "text", text: msg }],
-            details: mkd("single")([]),
-            isError: true,
-          };
+          if (inChain) {
+            return {
+              content: [{ type: "text", text: `These agents cannot be used in chain mode: ${violators.join(", ")}. Dispatch them as separate async tasks instead.` }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
+          if (params.async !== true) {
+            return {
+              content: [{ type: "text", text: ASYNC_ONLY_ERROR(violators) }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
         }
       }
 
