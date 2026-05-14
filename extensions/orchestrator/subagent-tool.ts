@@ -580,16 +580,20 @@ export function registerSubagentTool(
         };
       }
 
-      // Enforce async-only agents — reject sync calls for reviewers etc.
-      if (params.async !== true) {
+      // Enforce async-only agents — reject sync/chain calls for reviewers etc.
+      {
         const requested: string[] = [];
         if (params.agent) requested.push(params.agent);
         if (params.tasks) for (const t of params.tasks) requested.push(t.agent);
         if (params.chain) for (const s of params.chain) requested.push(s.agent);
         const violators = [...new Set(requested.filter(n => ASYNC_ONLY_AGENTS.has(n)))];
         if (violators.length > 0) {
+          const inChain = params.chain?.some(s => ASYNC_ONLY_AGENTS.has(s.agent));
+          const msg = inChain
+            ? `These agents cannot be used in chain mode: ${violators.join(", ")}. Dispatch them as separate async tasks instead.`
+            : ASYNC_ONLY_ERROR(violators);
           return {
-            content: [{ type: "text", text: ASYNC_ONLY_ERROR(violators) }],
+            content: [{ type: "text", text: msg }],
             details: mkd("single")([]),
             isError: true,
           };
