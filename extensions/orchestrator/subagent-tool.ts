@@ -40,6 +40,15 @@ const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
   `Estimated time ${seconds}s meets or exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
+/** Agents that MUST be dispatched with async: true. Sync calls are rejected. */
+const ASYNC_ONLY_AGENTS = new Set([
+  "code-reviewer-quality",
+  "code-reviewer-guidelines",
+  "code-reviewer-security",
+]);
+const ASYNC_ONLY_ERROR = (names: string[]) =>
+  `These agents MUST use async: true: ${names.join(", ")}. Review agents run in the background — never block the session waiting for them.`;
+
 // ── Schemas ──────────────────────────────────────────────────────────────
 
 const TaskItem = Type.Object({
@@ -568,6 +577,22 @@ export function registerSubagentTool(
           details: mkd("single")([]),
           isError: errors.length > 0 && killed.length === 0,
         };
+      }
+
+      // Enforce async-only agents — reject sync calls for reviewers etc.
+      if (params.async !== true) {
+        const requested: string[] = [];
+        if (params.agent) requested.push(params.agent);
+        if (params.tasks) for (const t of params.tasks) requested.push(t.agent);
+        if (params.chain) for (const s of params.chain) requested.push(s.agent);
+        const violators = [...new Set(requested.filter(n => ASYNC_ONLY_AGENTS.has(n)))];
+        if (violators.length > 0) {
+          return {
+            content: [{ type: "text", text: ASYNC_ONLY_ERROR(violators) }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
       }
 
       if (modes !== 1) {
