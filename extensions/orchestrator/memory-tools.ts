@@ -11,16 +11,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   loadScores,
-  parseMemoryFile,
   entryHash,
   reinforce,
   getActiveEntries,
 } from "./memory-scoring.js";
-import { listTopics, type TopicInfo } from "./memory-tree.js";
+import { listTopics, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
@@ -45,17 +42,25 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
-      const memPath = join(cwd, ".pi", "memory", "memory.md");
-      if (!existsSync(memPath)) {
-        return { content: [{ type: "text", text: "No memory file found." }] };
-      }
 
-      const content = readFileSync(memPath, "utf-8");
-      const parsed = parseMemoryFile(content);
+      // Read from topics (source of truth)
+      const topicEntries = readAllTopicEntries(cwd);
       const scores = loadScores(cwd);
       const queryLower = params.query.toLowerCase();
 
-      const results = parsed
+      // Build searchable entries from topics
+      const searchEntries = topicEntries.map((te) => ({
+        text: te.text,
+        category: te.category,
+        pinned: te.pinned,
+        fullLine: `- [${te.category}] ${te.text}`,
+      }));
+
+      if (searchEntries.length === 0) {
+        return { content: [{ type: "text", text: "No memories found." }] };
+      }
+
+      const results = searchEntries
         .filter((entry) => {
           if (params.category && entry.category !== params.category) return false;
           return entry.text.toLowerCase().includes(queryLower) ||
@@ -67,7 +72,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           return {
             text: entry.text,
             category: entry.category,
-            section: entry.section,
+            pinned: entry.pinned,
             score: scored?.score ?? 0,
             lifecycle: scored?.lifecycle ?? "unknown",
             evidenceCount: scored?.evidenceCount ?? 0,
@@ -84,7 +89,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       }
 
       const lines = results.map((r) => {
-        const pin = r.section === "pinned" ? " (pinned)" : "";
+        const pin = r.pinned ? " (pinned)" : "";
         return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}, lifecycle: ${r.lifecycle}`;
       });
 

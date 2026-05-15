@@ -14,10 +14,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlink
 import { join } from "node:path";
 import {
   type MemoryCategory,
-  type ScoredEntry,
   loadScores,
-  saveScores,
-  parseMemoryFile,
   entryHash,
 } from "./memory-scoring.js";
 
@@ -88,8 +85,10 @@ function readTopicFile(path: string): TopicFile {
     for (const line of content.split("\n")) {
       const match = line.match(/^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+)$/);
       if (match) {
+        // Strip *(pinned)* tags from text (may have duplicates from legacy data)
+        const rawText = match[2]!.replace(/\s*\*\(pinned\)\*/g, "").trim();
         entries.push({
-          text: match[2]!,
+          text: rawText,
           category: match[1] as MemoryCategory,
           pinned: line.includes("*(pinned)*"),
         });
@@ -123,90 +122,6 @@ function writeTopicFile(
   }
 }
 
-// ── Organize Entries into Topics ───────────────────────────────────────────
-
-/**
- * Organize memory entries from memory.md into topic files.
- *
- * Reads the flat memory.md, groups entries by category → topic,
- * writes each topic to its own file under .pi/memory/topics/.
- *
- * Returns list of topic info.
- */
-export function organizeIntoTopics(cwd: string): TopicInfo[] {
-  const memPath = join(cwd, ".pi", "memory", "memory.md");
-  if (!existsSync(memPath)) return [];
-
-  const content = readFileSync(memPath, "utf-8");
-  const parsed = parseMemoryFile(content);
-  const scores = loadScores(cwd);
-  const topicsDir = ensureTopicsDir(cwd);
-  const now = Date.now();
-
-  // Group entries by topic
-  const byTopic: Record<string, TopicFile["entries"]> = {};
-
-  for (const entry of parsed) {
-    const topic = CATEGORY_TO_TOPIC[entry.category];
-    if (!byTopic[topic]) byTopic[topic] = [];
-
-    const hash = entryHash(entry.fullLine);
-    const scored = scores.entries[hash];
-    const isPinned = entry.section === "pinned" || scored?.userState === "pinned";
-
-    // Skip dropped entries (unless pinned)
-    if (scored?.lifecycle === "dropped" && !isPinned) continue;
-
-    byTopic[topic]!.push({
-      text: entry.text,
-      category: entry.category,
-      pinned: isPinned,
-    });
-  }
-
-  // Write topic files and collect info
-  const topicInfos: TopicInfo[] = [];
-
-  for (const [topicName, entries] of Object.entries(byTopic)) {
-    if (entries.length === 0) continue;
-
-    const topicPath = join(topicsDir, `${topicName}.md`);
-
-    // Sort: pinned first, then by entry order
-    entries.sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1));
-
-    writeTopicFile(topicPath, topicName, entries);
-
-    // Calculate hotness: sum of scores of entries in this topic
-    let hotness = 0;
-    let newestDate = 0;
-    for (const entry of entries) {
-      const line = `- [${entry.category}] ${entry.text}`;
-      const hash = entryHash(line);
-      const scored = scores.entries[hash];
-      if (scored) {
-        hotness += scored.score;
-        const reinforced = new Date(scored.lastReinforced).getTime();
-        if (reinforced > newestDate) newestDate = reinforced;
-      }
-    }
-
-    topicInfos.push({
-      name: topicName,
-      path: topicPath,
-      entryCount: entries.length,
-      hotness,
-      newestEntry: newestDate ? new Date(newestDate).toISOString() : new Date(now).toISOString(),
-      chars: readFileSync(topicPath, "utf-8").length,
-    });
-  }
-
-  // Archive cold topics (no reinforcement for 2× half-life)
-  archiveColdTopics(topicsDir, topicInfos, now);
-
-  return topicInfos.sort((a, b) => b.hotness - a.hotness);
-}
-
 // ── Archival ───────────────────────────────────────────────────────────────
 
 function archiveColdTopics(topicsDir: string, topics: TopicInfo[], now: number): void {
@@ -227,55 +142,6 @@ function archiveColdTopics(topicsDir: string, topics: TopicInfo[], now: number):
       }
     }
   }
-}
-
-// ── Generate memory.md from topics ─────────────────────────────────────────
-
-/**
- * Regenerate memory.md from topic files.
- *
- * Reads all topic files, merges entries back into the standard
- * memory.md format with Pinned and Learned sections.
- */
-export function regenerateMemoryMd(cwd: string): void {
-  const topicsDir = getTopicsDir(cwd);
-  if (!existsSync(topicsDir)) return;
-
-  const pinned: string[] = [];
-  const learned: string[] = [];
-
-  try {
-    const files = readdirSync(topicsDir).filter((f) => f.endsWith(".md"));
-    for (const file of files) {
-      const topicFile = readTopicFile(join(topicsDir, file));
-      for (const entry of topicFile.entries) {
-        const line = `- [${entry.category}] ${entry.text}`;
-        if (entry.pinned) {
-          pinned.push(line);
-        } else {
-          learned.push(line);
-        }
-      }
-    }
-  } catch {
-    return;
-  }
-
-  if (pinned.length === 0 && learned.length === 0) return;
-
-  const content = [
-    "# Memories",
-    "",
-    "## Pinned (user requested — never auto-remove)",
-    ...pinned,
-    "",
-    "## Learned (auto-extracted — dream may reorganize/remove)",
-    ...learned,
-    "",
-  ].join("\n");
-
-  const memPath = join(cwd, ".pi", "memory", "memory.md");
-  writeFileSync(memPath, content, "utf-8");
 }
 
 // ── Read All Topic Entries ──────────────────────────────────────────────────

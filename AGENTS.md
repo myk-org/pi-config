@@ -241,7 +241,7 @@ compresses bash tool output using pattern-based JSON rules. Pre-installed in the
 
 ### Memory Evolution — Scored Learning, Situation Reports, Memory Tree
 
-Three-layer memory system that replaces the flat `memory.md` dump with scored,
+Three-layer memory system with scored,
 prioritized, topic-organized context injection.
 
 Architecture inspired by [OpenHuman](https://github.com/tinyhumansai/openhuman).

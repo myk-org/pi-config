@@ -5,8 +5,8 @@
  * See: https://docs.openclaw.ai/concepts/dreaming
  *
  * When enabled, spawns a worker agent every 3 hours (and on session quit)
- * that reads the session file, extracts memories, and writes memory.md directly.
- * No CLI calls — the worker reads/writes the file using read/write tools.
+ * that reads the session file, extracts memories, and writes topic files directly.
+ * No CLI calls — the worker reads/writes files using read/write tools.
  * Users toggle with /dream-auto on|off.
  */
 

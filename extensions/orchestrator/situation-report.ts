@@ -1,7 +1,7 @@
 /**
  * Situation Report — token-budgeted memory context for system prompts.
  *
- * Replaces raw memory.md dump with a structured, prioritized report
+ * Replaces raw memory dump with a structured, prioritized report
  * that fits within a token budget. Higher-priority sections are always
  * included; lower-priority sections are truncated or dropped.
  *
@@ -9,18 +9,16 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   type ScoredEntry,
   type MemoryCategory,
   loadScores,
-  parseMemoryFile,
   entryHash,
   rebuild,
-  rebuildFromEntries,
 } from "./memory-scoring.js";
-import { organizeIntoTopics, listTopics, regenerateMemoryMd, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
+import { listTopics, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -101,27 +99,14 @@ interface MemoryEntryWithText {
 /**
  * Run a full rebuild cycle: rescore all entries from topics (source of truth).
  * Called on session_start, every 30 min, and after dreaming.
- *
- * If topics don't exist yet but memory.md does (migration), populates topics first.
  */
 export function rebuildAndOrganize(cwd: string): void {
-  const memoryPath = join(cwd, ".pi", "memory", "memory.md");
   const topicsDir = join(cwd, ".pi", "memory", "topics");
+  if (!existsSync(topicsDir)) return;
 
-  // Need at least one source to work with
-  if (!existsSync(memoryPath) && !existsSync(topicsDir)) return;
-
-  // Migration: if topics don't exist yet, populate from memory.md
-  if (!existsSync(topicsDir) && existsSync(memoryPath)) {
-    rebuild(cwd);
-    organizeIntoTopics(cwd);
-    return;
-  }
-
-  // Normal path: rebuild scores from topic files (source of truth)
   const topicEntries = readAllTopicEntries(cwd);
   if (topicEntries.length > 0) {
-    rebuildFromEntries(cwd, topicEntries);
+    rebuild(cwd, topicEntries);
   }
 }
 
@@ -136,8 +121,7 @@ export function buildSituationReport(
   tokenBudget: number = DEFAULT_TOKEN_BUDGET,
 ): string {
   const topicsDir = join(cwd, ".pi", "memory", "topics");
-  const memoryPath = join(cwd, ".pi", "memory", "memory.md");
-  if (!existsSync(topicsDir) && !existsSync(memoryPath)) return "";
+  if (!existsSync(topicsDir)) return "";
 
   // Read scores (rebuilt on session start + dreaming, not every turn)
   const scores = loadScores(cwd);
@@ -167,24 +151,6 @@ export function buildSituationReport(
       scored,
       isPinned: te.pinned || scored.userState === "pinned",
     });
-  }
-
-  // Fallback: if no topic entries, try memory.md directly (migration path)
-  if (entries.length === 0 && existsSync(memoryPath)) {
-    const content = readFileSync(memoryPath, "utf-8");
-    const parsed = parseMemoryFile(content);
-    for (const p of parsed) {
-      const hash = entryHash(p.fullLine);
-      const scored = scores.entries[hash];
-      if (!scored) continue;
-      if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
-      entries.push({
-        text: p.text,
-        category: p.category,
-        scored,
-        isPinned: p.section === "pinned" || scored.userState === "pinned",
-      });
-    }
   }
 
   if (entries.length === 0) return "";

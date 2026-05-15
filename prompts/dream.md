@@ -16,31 +16,28 @@ Run memory consolidation as a **background async agent** — never block the ses
 Delegate to a `worker` agent with `async: true` and `fireAndForget: true`:
 
 ```text
-Task: Memory dreaming — analyze session and maintain memory.md.
-Memory file: <memPath from `uv run myk-pi-tools memory path`>
+Task: Memory dreaming — analyze session and maintain topic files.
+Memory topics directory: <from `uv run myk-pi-tools memory path`>/../topics/
 Session file: <current session file if available>
 
 Steps:
-1. Read the memory file directly.
+1. Read the topic files under .pi/memory/topics/ (lessons.md, preferences.md, patterns.md, decisions.md, completions.md, mistakes.md).
 2. If a session file is provided, read it and extract things worth remembering:
-   - User corrections → [lesson]
-   - User preferences → [preference]
-   - Mistakes or repeated fix attempts → [mistake]
-   - Completed features/PRs merged → [done]
-   - Patterns or conventions → [pattern]
-   Add new entries to the Learned section. Do NOT add duplicates.
-3. Reorganize the memory file:
-   - Remove duplicate or near-duplicate entries from Learned
-   - Remove stale/useless entries from Learned
-   - Keep under 50 entries
-   - NEVER remove or modify entries in the Pinned section
-4. Write the updated file using the write tool. Keep the exact format:
+   - User corrections → [lesson] in lessons.md
+   - User preferences → [preference] in preferences.md
+   - Mistakes or repeated fix attempts → [mistake] in mistakes.md
+   - Completed features/PRs merged → [done] in completions.md
+   - Patterns or conventions → [pattern] in patterns.md
+   Add new entries to the appropriate topic file. Do NOT add duplicates.
+3. Reorganize each topic file:
+   - Remove duplicate or near-duplicate entries
+   - Remove stale/useless entries
+   - NEVER remove or modify pinned entries (marked with *(pinned)*)
+4. Write the updated topic files. Each file uses this format:
 
-   # Memories
-   ## Pinned (user requested — never auto-remove)
-   - [category] summary
-   ## Learned (auto-extracted — dream may reorganize/remove)
-   - [category] summary
+   # TopicName
+   - [category] entry text *(pinned)*
+   - [category] entry text
 
 5. Memory rules: one line per entry, max ~100 chars, specific and actionable.
 ```

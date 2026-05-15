@@ -8,7 +8,7 @@ from myk_pi_tools.memory.store import MemoryFile
 
 
 @click.group()
-@click.option("--file-path", default=None, help="Path to memory file")
+@click.option("--file-path", default=None, help="Path to memory topics directory")
 @click.pass_context
 def memory(ctx: click.Context, file_path: str | None) -> None:
     """Project memory commands — persistent per-repo learning."""
@@ -55,7 +55,7 @@ def memory_add(ctx: click.Context, category: str, summary: str, pinned: bool) ->
 @memory.command("show")
 @click.pass_context
 def memory_show(ctx: click.Context) -> None:
-    """Show the memory file contents.
+    """Show all memory entries across topic files.
 
     Examples:
 
@@ -68,10 +68,10 @@ def memory_show(ctx: click.Context) -> None:
 @memory.command("migrate")
 @click.pass_context
 def memory_migrate(ctx: click.Context) -> None:
-    """Migrate from SQLite DB to memory.md (one-time).
+    """Migrate from SQLite DB to topic files (one-time).
 
-    Reads all memories from memories.db, writes them to memory.md,
-    then deletes the DB and related files.
+    Reads all memories from memories.db, writes them to topic files
+    under .pi/memory/topics/, then deletes the DB and related files.
 
     Examples:
 
@@ -88,7 +88,7 @@ def memory_migrate(ctx: click.Context) -> None:
 @memory.command("path")
 @click.pass_context
 def memory_path(ctx: click.Context) -> None:
-    """Print the memory file path.
+    """Print the memory topics directory path.
 
     Examples:
 

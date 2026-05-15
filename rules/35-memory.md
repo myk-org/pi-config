@@ -38,27 +38,33 @@ List all memory topic files with hotness scores and entry counts.
 
 ---
 
-## Memory File Format
+## Memory Storage
 
-The memory file has two sections:
+Memories are stored in topic files under `.pi/memory/topics/`:
+
+```text
+.pi/memory/
+├── memory-scores.json     # Scoring backend (auto-managed)
+└── topics/
+    ├── preferences.md     # [preference] entries
+    ├── lessons.md         # [lesson] entries
+    ├── patterns.md        # [pattern] entries
+    ├── decisions.md       # [decision] entries
+    ├── completions.md     # [done] entries
+    └── mistakes.md        # [mistake] entries
+```
+
+Each topic file uses this format:
 
 ```markdown
-# Memories
+# TopicName
 
-## Pinned (user requested — never auto-remove)
-- [preference] Always use uv run, never python directly
-- [lesson] Never merge PRs without asking first
-
-## Learned (auto-extracted — dream may reorganize/remove)
-- [lesson] buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid
-- [mistake] Closed issue with incomplete deliverables — check Done section before closing
+- [category] entry text *(pinned)*
+- [category] entry text
 ```
 
 **Pinned** — user explicitly said "remember this". Dream must NEVER remove these.
 **Learned** — auto-extracted by dreaming. Dream can reorganize, deduplicate, remove.
-
-Memories are also organized into topic files under `.pi/memory/topics/`
-(lessons.md, preferences.md, patterns.md, etc.).
 
 ---
 
@@ -139,7 +145,7 @@ Dreaming is a **self-contained action** — the LLM worker:
 1. **Reads** the session file and extracts things worth remembering
 2. **Adds** new entries to the Learned section
 3. **Reorganizes** the memory file — deduplicates, removes stale entries
-4. **Writes** the updated memory.md
+4. **Writes** updated topic files under .pi/memory/topics/
 5. **NEVER** removes or modifies Pinned entries
 
 ### Rules

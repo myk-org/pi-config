@@ -1,9 +1,8 @@
 /**
  * Rule & memory injection — loads rules/*.md for the orchestrator
- * and project memories from memory.md for all agents.
+ * and project memories from topic files for all agents.
  */
 
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -15,7 +14,6 @@ export function registerRules(
   getAsyncJobs?: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>,
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
-  let migrationChecked = false;
   let rebuildDone = false;
 
   // Run full rebuild on session start (once per session, not every turn)
@@ -71,22 +69,6 @@ export function registerRules(
       }
     }
 
-    // One-time migration: if memories.db exists, migrate to memory.md
-    if (!migrationChecked) {
-      migrationChecked = true;
-      try {
-        const memDir = path.join(ctx.cwd, ".pi", "memory");
-        const dbPath = path.join(memDir, "memories.db");
-        if (fs.existsSync(dbPath)) {
-          execFileSync(
-            "uv",
-            ["run", "myk-pi-tools", "memory", "migrate"],
-            { cwd: ctx.cwd, timeout: 10000, stdio: "ignore" },
-          );
-        }
-      } catch {}
-    }
-
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
 
@@ -95,7 +77,7 @@ export function registerRules(
   });
 }
 
-// Loads memories using situation report (scored, token-budgeted) with fallback to raw memory.md
+// Loads memories using situation report (scored, token-budgeted) from topic files
 function loadMemoriesWithScoring(cwd: string, isSubagent: boolean): string {
   try {
     const report = buildSituationReport(cwd);
@@ -106,33 +88,6 @@ function loadMemoriesWithScoring(cwd: string, isSubagent: boolean): string {
       }
       return result + "\n";
     }
-  } catch {
-    // Fall through to raw memory loading
-  }
-  return loadMemoriesRaw(cwd, isSubagent);
-}
-
-// Fallback: reads .pi/memory/memory.md raw (used when scoring is not available)
-function loadMemoriesRaw(cwd: string, isSubagent: boolean): string {
-  try {
-    const memPath = path.join(cwd, ".pi", "memory", "memory.md");
-    if (!fs.existsSync(memPath)) return "";
-    const raw = fs.readFileSync(memPath, "utf-8").trim();
-    if (!raw || raw === "# Memories") return "";
-
-    // Replace the plain header with a stronger framing
-    const content = raw.replace(
-      /^# Memories/,
-      "# CRITICAL: Project Memory \u2014 Lessons From Previous Sessions\n\n" +
-      "These memories were saved because they caused real problems. Apply them proactively.",
-    );
-
-    let result = "\n" + content + "\n";
-    if (isSubagent) {
-      result += "\n**Do NOT write to memory** \u2014 only the orchestrator writes memories.\n";
-    }
-    return result + "\n";
-  } catch {
-    return "";
-  }
+  } catch {}
+  return "";
 }

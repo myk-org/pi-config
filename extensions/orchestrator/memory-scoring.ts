@@ -171,44 +171,13 @@ export function saveScores(cwd: string, scores: ScoresFile): void {
   writeFileSync(path, JSON.stringify(scores, null, 2) + "\n", "utf-8");
 }
 
-// ── Memory File Parsing ────────────────────────────────────────────────────
+// ── Internal Types ─────────────────────────────────────────────────────────
 
 interface ParsedEntry {
   section: "pinned" | "learned";
   category: MemoryCategory;
   text: string;
   fullLine: string;
-}
-
-const CATEGORY_PATTERN = /^\s*-\s*\[(preference|lesson|pattern|decision|done|mistake)\]\s*(.+)$/;
-
-export function parseMemoryFile(content: string): ParsedEntry[] {
-  const entries: ParsedEntry[] = [];
-  let currentSection: "pinned" | "learned" | null = null;
-
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.includes("## Pinned")) {
-      currentSection = "pinned";
-      continue;
-    }
-    if (trimmed.includes("## Learned")) {
-      currentSection = "learned";
-      continue;
-    }
-    if (!currentSection) continue;
-
-    const match = trimmed.match(CATEGORY_PATTERN);
-    if (match) {
-      entries.push({
-        section: currentSection,
-        category: match[1] as MemoryCategory,
-        text: match[2]!.trim(),
-        fullLine: trimmed,
-      });
-    }
-  }
-  return entries;
 }
 
 // ── Rebuild Cycle ──────────────────────────────────────────────────────────
@@ -222,24 +191,9 @@ export interface RebuildResult {
 
 /**
  * Run a full rebuild cycle: score all entries, apply budgets, update lifecycle states.
- *
- * Reads from memory.md by default. Use rebuildFromEntries() to provide entries from topics.
+ * Takes entries from topic files (the sole source of truth).
  */
-export function rebuild(cwd: string): RebuildResult {
-  const memoryPath = join(cwd, ".pi", "memory", "memory.md");
-  if (!existsSync(memoryPath)) {
-    return { active: 0, provisional: 0, dropped: 0, total: 0 };
-  }
-
-  const content = readFileSync(memoryPath, "utf-8");
-  const parsed = parseMemoryFile(content);
-  return rebuildFromParsed(cwd, parsed);
-}
-
-/**
- * Rebuild from pre-parsed entries (used when topics are the source of truth).
- */
-export function rebuildFromEntries(
+export function rebuild(
   cwd: string,
   entries: { category: MemoryCategory; text: string; pinned: boolean }[],
 ): RebuildResult {
@@ -294,7 +248,7 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
     }
   }
 
-  // Step 2: Remove scores for entries that no longer exist in memory.md
+  // Step 2: Remove scores for entries that no longer exist in topics
   const currentHashes = new Set(parsed.map((e) => entryHash(e.fullLine)));
   for (const hash of Object.keys(scores.entries)) {
     if (!currentHashes.has(hash)) {
