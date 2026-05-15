@@ -1,8 +1,40 @@
 # Project Memory
 
-Persistent per-repo memory in `.pi/memory/memory.md`. Loaded automatically at session start.
+Scored, topic-organized memory system with stability-based decay.
+Memories are scored, prioritized, and injected into the system prompt via situation reports.
 
 **CLI:** `uv run myk-pi-tools memory <command>`
+
+---
+
+## Memory Tools (MANDATORY)
+
+You have three memory tools. **USE THEM PROACTIVELY:**
+
+### `memory_search` — Search Before Answering
+
+**MANDATORY:** Before answering questions about prior sessions, user preferences,
+past decisions, recurring patterns, or anything the user mentioned before —
+call `memory_search` first.
+
+```text
+memory_search(query: "docker")           # Search by keyword
+memory_search(query: "PR", category: "lesson")  # Filter by category
+```
+
+### `memory_reinforce` — Reinforce When Relevant
+
+**MANDATORY:** When you notice a memory is relevant to the current task,
+call `memory_reinforce` to bump its evidence count. This prevents useful
+memories from decaying.
+
+```text
+memory_reinforce(entryText: "...", category: "lesson")
+```
+
+### `memory_topics` — Inspect Topic Organization
+
+List all memory topic files with hotness scores and entry counts.
 
 ---
 
@@ -24,6 +56,26 @@ The memory file has two sections:
 
 **Pinned** — user explicitly said "remember this". Dream must NEVER remove these.
 **Learned** — auto-extracted by dreaming. Dream can reorganize, deduplicate, remove.
+
+Memories are also organized into topic files under `.pi/memory/topics/`
+(lessons.md, preferences.md, patterns.md, etc.).
+
+---
+
+## Scoring System
+
+Every memory has a stability score that decays over time:
+
+```text
+stability = cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)
+```
+
+- **Reinforcing** a memory (via `memory_reinforce`) bumps its evidence count and resets decay
+- **Pinned** entries have score = 9999 (never decay)
+- **Forgotten** entries have score = 0 (always dropped)
+- Entries below the eviction threshold are dropped automatically
+
+**Lifecycle:** active → provisional → candidate → dropped
 
 ---
 
