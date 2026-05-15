@@ -18,16 +18,10 @@ fi
 # Update myk-pi-tools to latest from local pi-config source
 uv tool install --force myk-pi-tools --from "$PI_PKG_DIR/myk-org/pi-config" 2>/dev/null || true
 
-# TODO: Switch back to upstream once PR is merged: https://github.com/isaacraja/pi-vertex-claude/pull/3
-# if [ ! -d "$PI_PKG_DIR/isaacraja/pi-vertex-claude" ]; then
-#     pi install git:github.com/isaacraja/pi-vertex-claude
-# else
-#     pi update git:github.com/isaacraja/pi-vertex-claude
-# fi
 if [ ! -d "$PI_PKG_DIR/myk-org/pi-vertex-claude" ]; then
-    pi install git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
+    pi install git:github.com/myk-org/pi-vertex-claude
 else
-    pi update git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
+    pi update git:github.com/myk-org/pi-vertex-claude
 fi
 
 # pi-web-access: register in pi settings if not already present
