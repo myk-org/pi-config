@@ -30,6 +30,11 @@ if ! grep -q 'pi-web-access' "$HOME/.pi/agent/settings.json" 2>/dev/null; then
     pi install npm:pi-web-access 2>/dev/null || true
 fi
 
+# tokenjuice: install pi extension if not already present
+if [ ! -f "$HOME/.pi/agent/extensions/tokenjuice.js" ]; then
+    tokenjuice install pi 2>/dev/null || true
+fi
+
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
 cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || true
