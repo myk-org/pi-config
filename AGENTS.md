@@ -61,6 +61,10 @@ pi-config/
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command — unified session status snapshot
 │   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
+│   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
+│   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
+│   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
+│   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities
 │   └── acpx-provider/              # ACPX provider extension
@@ -234,6 +238,41 @@ compresses bash tool output using pattern-based JSON rules. Pre-installed in the
 **Commands:** `/tj status`, `/tj on`, `/tj off`, `/tj raw-next`
 
 **Source:** Inspired by [OpenHuman's TokenJuice](https://github.com/tinyhumansai/openhuman) (issue #334)
+
+### Memory Evolution — Scored Learning, Situation Reports, Memory Tree
+
+Three-layer memory system with scored,
+prioritized, topic-organized context injection.
+
+Architecture inspired by [OpenHuman](https://github.com/tinyhumansai/openhuman).
+Clean-room TypeScript implementation under MIT — not a code translation.
+
+**Layer 1 — Scored Memory** (`memory-scoring.ts`):
+
+- Stability formula: `cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)`
+- 6 categories with decay half-lives (preference=90d, lesson=60d, done=14d)
+- Lifecycle states: active → provisional → candidate → dropped
+- Per-category budget caps, pinned/forgotten overrides
+- Companion file: `.pi/memory/memory-scores.json`
+
+**Layer 2 — Situation Reports** (`situation-report.ts`):
+
+- Token-budgeted context replaces raw memory dump in system prompt
+- Sections by priority: preferences → lessons → mistakes → patterns → decisions → completions
+- Lower-priority sections truncated when budget exceeded
+
+**Layer 3 — Memory Tree** (`memory-tree.ts`):
+
+- Entries organized into topic files under `.pi/memory/topics/`
+- Each topic limited to ~3000 tokens
+- Topics have hotness scores (reinforcement frequency)
+- Cold topics archived automatically (no reinforcement for 2× half-life)
+
+**Preference Auto-Extraction** (`preference-extractor.ts`):
+
+- Detects "I prefer...", "always use...", "never..." in user messages
+- Auto-adds to memory with explicit cue weight
+- Reinforces existing preferences on repetition
 
 ## Docker / Dockerfile
 

@@ -1,10 +1,20 @@
-"""Memory store — plain markdown file per-repo memory.
+"""Memory store — topic-based markdown files per-repo memory.
 
-File location: <git-root>/.pi/memory/memory.md
+File location: <git-root>/.pi/memory/topics/
 
-The file has two sections:
-- Pinned: user-requested memories (never auto-removed by dreaming)
-- Learned: auto-extracted memories (dream may reorganize/remove)
+Each category maps to a topic file:
+  - preference → preferences.md
+  - lesson → lessons.md
+  - pattern → patterns.md
+  - decision → decisions.md
+  - done → completions.md
+  - mistake → mistakes.md
+
+Each topic file has format:
+    # TopicName
+
+    - [category] entry text *(pinned)*
+    - [category] entry text
 """
 
 import sqlite3
@@ -18,117 +28,100 @@ def log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-_TEMPLATE = """# Memories
+CATEGORY_TO_TOPIC: dict[str, str] = {
+    "preference": "preferences",
+    "lesson": "lessons",
+    "pattern": "patterns",
+    "decision": "decisions",
+    "done": "completions",
+    "mistake": "mistakes",
+}
 
-## Pinned (user requested — never auto-remove)
 
-## Learned (auto-extracted — dream may reorganize/remove)
-"""
+def _topic_template(topic_name: str) -> str:
+    """Return the template for a new topic file."""
+    title = topic_name.replace("-", " ").title()
+    return f"# {title}\n"
 
 
 class MemoryFile:
-    """Per-repo memory file.
+    """Per-repo memory using topic files.
 
-    Manages a plain markdown file with two sections:
-    - Pinned: user-requested memories, protected from dreaming
-    - Learned: auto-extracted memories, dream can modify
+    Manages markdown files under a topics directory, one per category.
+    Entries can be pinned (protected from dreaming) or learned (auto-extracted).
     """
 
     def __init__(self, file_path: Path | None = None) -> None:
         if file_path is None:
             git_root = _get_git_root()
-            self.file_path = git_root / ".pi" / "memory" / "memory.md"
+            self.file_path = git_root / ".pi" / "memory" / "topics"
         else:
             self.file_path = file_path
 
-    def _ensure_file(self) -> None:
-        """Create memory file with template if it doesn't exist."""
-        if not self.file_path.exists():
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            self.file_path.write_text(_TEMPLATE)
+    def _topic_path(self, category: str) -> Path:
+        """Get the file path for a category's topic file."""
+        topic = CATEGORY_TO_TOPIC.get(category, category)
+        return self.file_path / f"{topic}.md"
+
+    def _ensure_dir(self) -> None:
+        """Create topics directory if it doesn't exist."""
+        self.file_path.mkdir(parents=True, exist_ok=True)
+
+    def _ensure_topic(self, category: str) -> Path:
+        """Ensure a topic file exists, creating it with template if needed."""
+        self._ensure_dir()
+        path = self._topic_path(category)
+        if not path.exists():
+            topic = CATEGORY_TO_TOPIC.get(category, category)
+            path.write_text(_topic_template(topic))
+        return path
 
     def read(self) -> str:
-        """Read the memory file contents."""
-        self._ensure_file()
-        return self.file_path.read_text()
+        """Read and merge all topic files into a single string."""
+        self._ensure_dir()
+        parts: list[str] = []
+        topic_files = sorted(self.file_path.glob("*.md"))
+        if not topic_files:
+            return ""
+        for topic_file in topic_files:
+            content = topic_file.read_text().strip()
+            if content:
+                parts.append(content)
+        return "\n\n".join(parts) + "\n" if parts else ""
+
+    def _write_to_topic(self, category: str, entry: str) -> None:
+        """Append an entry to the appropriate topic file."""
+        path = self._ensure_topic(category)
+        content = path.read_text()
+        content = content.rstrip() + "\n" + entry + "\n"
+        path.write_text(content)
 
     def write(self, content: str) -> None:
-        """Write content to the memory file."""
-        self._ensure_file()
-        self.file_path.write_text(content)
+        """Write content directly — used for raw overwrites of a single topic."""
+        self._ensure_dir()
+        # For backward compat: write as-is to a general file
+        # Callers should prefer _write_to_topic or add_pinned/add_learned
+        general = self.file_path / "general.md"
+        general.write_text(content)
 
     def add_pinned(self, category: str, summary: str) -> None:
-        """Add a memory to the Pinned section."""
-        content = self.read()
-        entry = f"- [{category}] {summary}"
-
-        # Find the Pinned section and append after its header
-        pinned_header = "## Pinned (user requested — never auto-remove)"
-        if pinned_header in content:
-            # Insert after the pinned header line
-            lines = content.split("\n")
-            insert_pos = None
-            for i, line in enumerate(lines):
-                if line.strip() == pinned_header:
-                    # Find the insertion point — after header and any existing entries
-                    insert_at = i + 1
-                    while insert_at < len(lines) and (
-                        lines[insert_at].startswith("- ") or lines[insert_at].strip() == ""
-                    ):
-                        if lines[insert_at].startswith("## "):
-                            break
-                        insert_at += 1
-                    # Insert before the blank line or next section
-                    if insert_at > i + 1 and lines[insert_at - 1].strip() == "":
-                        insert_pos = insert_at - 1
-                    else:
-                        insert_pos = insert_at
-                    break
-            if insert_pos is not None:
-                lines.insert(insert_pos, entry)
-            self.write("\n".join(lines))
-        else:
-            # Fallback: just append
-            content = content.rstrip() + "\n" + entry + "\n"
-            self.write(content)
+        """Add a pinned memory to the appropriate topic file."""
+        entry = f"- [{category}] {summary} *(pinned)*"
+        self._write_to_topic(category, entry)
 
     def add_learned(self, category: str, summary: str) -> None:
-        """Add a memory to the Learned section."""
-        content = self.read()
+        """Add a learned memory to the appropriate topic file."""
         entry = f"- [{category}] {summary}"
-
-        # Find the Learned section and append
-        learned_header = "## Learned (auto-extracted — dream may reorganize/remove)"
-        if learned_header in content:
-            lines = content.split("\n")
-            insert_pos = None
-            for i, line in enumerate(lines):
-                if line.strip() == learned_header:
-                    insert_at = i + 1
-                    while insert_at < len(lines) and (
-                        lines[insert_at].startswith("- ") or lines[insert_at].strip() == ""
-                    ):
-                        if lines[insert_at].startswith("## "):
-                            break
-                        insert_at += 1
-                    if insert_at > i + 1 and lines[insert_at - 1].strip() == "":
-                        insert_pos = insert_at - 1
-                    else:
-                        insert_pos = insert_at
-                    break
-            if insert_pos is not None:
-                lines.insert(insert_pos, entry)
-            self.write("\n".join(lines))
-        else:
-            content = content.rstrip() + "\n" + entry + "\n"
-            self.write(content)
+        self._write_to_topic(category, entry)
 
     def migrate_from_db(self) -> int:
-        """One-time migration: read memories.db, write to memory.md, delete db files.
+        """One-time migration: read memories.db, write to topic files, delete db files.
 
         Returns number of memories migrated.
         """
-        db_path = self.file_path.parent / "memories.db"
+        # DB lives in the parent of topics dir (.pi/memory/)
+        memory_dir = self.file_path.parent
+        db_path = memory_dir / "memories.db"
         if not db_path.exists():
             return 0
 
@@ -147,10 +140,7 @@ class MemoryFile:
             self._cleanup_db_files()
             return 0
 
-        # Ensure memory.md exists
-        self._ensure_file()
-
-        # Add all DB memories to Learned section
+        # Add all DB memories to topic files as learned entries
         for row in rows:
             self.add_learned(row["category"], row["summary"])
 
@@ -161,9 +151,9 @@ class MemoryFile:
 
     def _cleanup_db_files(self) -> None:
         """Remove SQLite DB and related files."""
-        db_dir = self.file_path.parent
+        memory_dir = self.file_path.parent
         for filename in ["memories.db", "dreams.md", "dreams.lock"]:
-            path = db_dir / filename
+            path = memory_dir / filename
             if path.exists():
                 try:
                     path.unlink()

@@ -1,7 +1,7 @@
 """Project memory module.
 
-Persistent per-repo memory stored as a plain markdown file.
-File location: <git-root>/.pi/memory/memory.md
+Persistent per-repo memory stored as topic files under `.pi/memory/topics/`.
+Each category maps to a topic file (e.g., lessons.md, preferences.md).
 
 Usage:
     from myk_pi_tools.memory import MemoryFile

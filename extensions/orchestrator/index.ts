@@ -32,6 +32,8 @@ import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
 import { registerPidiff } from "./pidiff.js";
 import { registerPromptGuard } from "./prompt-guard.js";
+import { registerPreferenceExtractor } from "./preference-extractor.js";
+import { registerMemoryTools } from "./memory-tools.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -83,4 +85,6 @@ export default function (pi: ExtensionAPI) {
   registerNvim(pi);
   registerPidiff(pi);
   registerPromptGuard(pi);
+  registerPreferenceExtractor(pi);
+  registerMemoryTools(pi);
 }

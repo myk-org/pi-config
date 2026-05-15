@@ -1,29 +1,87 @@
 # Project Memory
 
-Persistent per-repo memory in `.pi/memory/memory.md`. Loaded automatically at session start.
+Scored, topic-organized memory system with stability-based decay.
+Memories are scored, prioritized, and injected into the system prompt via situation reports.
 
 **CLI:** `uv run myk-pi-tools memory <command>`
 
 ---
 
-## Memory File Format
+## Memory Tools (MANDATORY)
 
-The memory file has two sections:
+You have three memory tools. **USE THEM PROACTIVELY:**
+
+### `memory_search` — Search Before Answering
+
+**MANDATORY:** Before answering questions about prior sessions, user preferences,
+past decisions, recurring patterns, or anything the user mentioned before —
+call `memory_search` first.
+
+```text
+memory_search(query: "docker")           # Search by keyword
+memory_search(query: "PR", category: "lesson")  # Filter by category
+```
+
+### `memory_reinforce` — Reinforce When Relevant
+
+**MANDATORY:** When you notice a memory is relevant to the current task,
+call `memory_reinforce` to bump its evidence count. This prevents useful
+memories from decaying.
+
+```text
+memory_reinforce(entryText: "...", category: "lesson")
+```
+
+### `memory_topics` — Inspect Topic Organization
+
+List all memory topic files with hotness scores and entry counts.
+
+---
+
+## Memory Storage
+
+Memories are stored in topic files under `.pi/memory/topics/`:
+
+```text
+.pi/memory/
+├── memory-scores.json     # Scoring backend (auto-managed)
+└── topics/
+    ├── preferences.md     # [preference] entries
+    ├── lessons.md         # [lesson] entries
+    ├── patterns.md        # [pattern] entries
+    ├── decisions.md       # [decision] entries
+    ├── completions.md     # [done] entries
+    └── mistakes.md        # [mistake] entries
+```
+
+Each topic file uses this format:
 
 ```markdown
-# Memories
+# TopicName
 
-## Pinned (user requested — never auto-remove)
-- [preference] Always use uv run, never python directly
-- [lesson] Never merge PRs without asking first
-
-## Learned (auto-extracted — dream may reorganize/remove)
-- [lesson] buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid
-- [mistake] Closed issue with incomplete deliverables — check Done section before closing
+- [category] entry text *(pinned)*
+- [category] entry text
 ```
 
 **Pinned** — user explicitly said "remember this". Dream must NEVER remove these.
 **Learned** — auto-extracted by dreaming. Dream can reorganize, deduplicate, remove.
+
+---
+
+## Scoring System
+
+Every memory has a stability score that decays over time:
+
+```text
+stability = cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)
+```
+
+- **Reinforcing** a memory (via `memory_reinforce`) bumps its evidence count and resets decay
+- **Pinned** entries have score = 9999 (never decay)
+- **Forgotten** entries have score = 0 (always dropped)
+- Entries below the eviction threshold are dropped automatically
+
+**Lifecycle:** active → provisional → candidate → dropped
 
 ---
 
@@ -87,7 +145,7 @@ Dreaming is a **self-contained action** — the LLM worker:
 1. **Reads** the session file and extracts things worth remembering
 2. **Adds** new entries to the Learned section
 3. **Reorganizes** the memory file — deduplicates, removes stale entries
-4. **Writes** the updated memory.md
+4. **Writes** updated topic files under .pi/memory/topics/
 5. **NEVER** removes or modifies Pinned entries
 
 ### Rules

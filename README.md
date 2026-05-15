@@ -27,7 +27,7 @@ Single extension that provides:
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
 | **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments |
 | **TokenJuice** | Tool output compression — [tokenjuice](https://github.com/vincentkoc/tokenjuice) compresses bash results using pattern-based rules to save context window tokens |
-| **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains memory.md |
+| **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember` — with autocomplete argument hints |
@@ -63,7 +63,7 @@ Single extension that provides:
 | `/query-db <command>` | Query the review comments database |
 | `/external-ai <agent> [--model <model>] [--session-id <id>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
 | `/external-ai-models-refresh` | Refresh cached AI CLI models for autocomplete |
-| `/dream` | Run memory consolidation — extract, deduplicate, maintain memory.md |
+| `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
@@ -300,12 +300,13 @@ Pass via `--env-file /path/to/.env` in the docker run command.
 
 ### Project memory
 
-The memory system stores per-repo lessons and patterns in `.pi/memory/memory.md` — a plain markdown file with two sections:
+The memory system stores per-repo lessons and patterns in `.pi/memory/topics/` as markdown
+files organized by category (lessons, preferences, patterns, decisions, completions, mistakes).
 
 - **Pinned** — user-requested memories (via `/remember`), never auto-removed
 - **Learned** — auto-extracted by dreaming, can be reorganized/removed
 
-The file is auto-added to the global gitignore in the container.
+The `.pi/memory/` directory is auto-added to the global gitignore in the container.
 
 For **native** (non-container) usage, add it to your global gitignore:
 
@@ -313,8 +314,6 @@ For **native** (non-container) usage, add it to your global gitignore:
 echo '.pi/memory/' >> ~/.gitignore-global
 git config --global core.excludesFile ~/.gitignore-global
 ```
-
-**Migration:** If you have an existing `memories.db`, it's automatically migrated to `memory.md` on the next session start.
 
 ### Pidash — live web dashboard
 
