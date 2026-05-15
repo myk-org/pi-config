@@ -21,6 +21,9 @@ const _rawHours = parseFloat(process.env.PI_DREAM_INTERVAL_HOURS || "3");
 const DREAM_INTERVAL_HOURS = Number.isFinite(_rawHours) && _rawHours >= 0.5 && _rawHours <= 24 ? _rawHours : 3;
 const DREAM_INTERVAL_MS = DREAM_INTERVAL_HOURS * 60 * 60 * 1000;
 
+// Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
+const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
+
 export function registerDreaming(
   pi: ExtensionAPI,
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
@@ -77,19 +80,37 @@ export function registerDreaming(
     else dreamInFlight = false;
   }
 
+  let rebuildTimer: ReturnType<typeof setInterval> | null = null;
+
   function startTimer(cwd: string) {
     lastCwd = cwd;
     if (dreamTimer) return;
+
+    // LLM dreaming — every 3h (expensive, spawns worker agent)
     dreamTimer = setInterval(() => {
       if (enabled && lastCwd) runDreamAsync(lastCwd);
     }, DREAM_INTERVAL_MS);
     if (dreamTimer.unref) dreamTimer.unref();
+
+    // Scoring rebuild — every 30 min (cheap, no LLM, just rescores + reorganizes topics)
+    if (!rebuildTimer) {
+      rebuildTimer = setInterval(() => {
+        if (enabled && lastCwd) {
+          try { rebuildAndOrganize(lastCwd); } catch {}
+        }
+      }, REBUILD_INTERVAL_MS);
+      if (rebuildTimer.unref) rebuildTimer.unref();
+    }
   }
 
   function stopTimer() {
     if (dreamTimer) {
       clearInterval(dreamTimer);
       dreamTimer = null;
+    }
+    if (rebuildTimer) {
+      clearInterval(rebuildTimer);
+      rebuildTimer = null;
     }
   }
 

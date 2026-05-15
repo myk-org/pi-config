@@ -278,6 +278,27 @@ export function regenerateMemoryMd(cwd: string): void {
   writeFileSync(memPath, content, "utf-8");
 }
 
+// ── Read All Topic Entries ──────────────────────────────────────────────────
+
+/**
+ * Read all entries from all topic files.
+ * This is the primary read path — topics are the source of truth.
+ */
+export function readAllTopicEntries(cwd: string): { text: string; category: MemoryCategory; pinned: boolean }[] {
+  const topicsDir = getTopicsDir(cwd);
+  if (!existsSync(topicsDir)) return [];
+
+  const all: { text: string; category: MemoryCategory; pinned: boolean }[] = [];
+  try {
+    const files = readdirSync(topicsDir).filter((f) => f.endsWith(".md"));
+    for (const file of files) {
+      const topicFile = readTopicFile(join(topicsDir, file));
+      all.push(...topicFile.entries);
+    }
+  } catch {}
+  return all;
+}
+
 // ── List Topics ────────────────────────────────────────────────────────────
 
 /**

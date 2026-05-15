@@ -19,7 +19,7 @@ import {
   entryHash,
   rebuild,
 } from "./memory-scoring.js";
-import { organizeIntoTopics, listTopics, regenerateMemoryMd, type TopicInfo } from "./memory-tree.js";
+import { organizeIntoTopics, listTopics, regenerateMemoryMd, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -125,11 +125,9 @@ export function buildSituationReport(
   // Read scores (rebuilt on session start + dreaming, not every turn)
   const scores = loadScores(cwd);
 
-  // Read topic info for hotness ordering (topic files updated by dreaming)
+  // Read from topic files (source of truth) with hotness ordering
   const topics = listTopics(cwd);
-
-  const content = readFileSync(memoryPath, "utf-8");
-  const parsed = parseMemoryFile(content);
+  const topicEntries = readAllTopicEntries(cwd);
 
   // Build topic hotness map for section ordering
   const topicHotness = new Map<string, number>();
@@ -137,20 +135,39 @@ export function buildSituationReport(
     topicHotness.set(t.name, t.hotness);
   }
 
-  // Build lookup: hash → { text, category, scored, isPinned }
+  // Build entries from topic files (source of truth)
   const entries: MemoryEntryWithText[] = [];
-  for (const p of parsed) {
-    const hash = entryHash(p.fullLine);
+  for (const te of topicEntries) {
+    const entryLine = `- [${te.category}] ${te.text}`;
+    const hash = entryHash(entryLine);
     const scored = scores.entries[hash];
     if (!scored) continue;
     // Only include active and provisional entries
     if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
     entries.push({
-      text: p.text,
-      category: p.category,
+      text: te.text,
+      category: te.category,
       scored,
-      isPinned: p.section === "pinned" || scored.userState === "pinned",
+      isPinned: te.pinned || scored.userState === "pinned",
     });
+  }
+
+  // Fallback: if no topic entries, try memory.md directly
+  if (entries.length === 0) {
+    const content = readFileSync(memoryPath, "utf-8");
+    const parsed = parseMemoryFile(content);
+    for (const p of parsed) {
+      const hash = entryHash(p.fullLine);
+      const scored = scores.entries[hash];
+      if (!scored) continue;
+      if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
+      entries.push({
+        text: p.text,
+        category: p.category,
+        scored,
+        isPinned: p.section === "pinned" || scored.userState === "pinned",
+      });
+    }
   }
 
   if (entries.length === 0) return "";
@@ -175,10 +192,28 @@ export function buildSituationReport(
     charBudget -= pinnedSection.length;
   }
 
-  // Build each scored section in priority order
+  // Build each scored section in priority order, boosted by topic hotness
   const nonPinned = entries.filter((e) => !e.isPinned);
 
-  for (const sectionDef of SECTIONS) {
+  // Sort sections: use base priority but boost sections whose topic is hotter
+  const sortedSections = [...SECTIONS].sort((a, b) => {
+    // Map section names to topic names
+    const topicMap: Record<string, string> = {
+      "Active Preferences": "preferences",
+      "Active Lessons": "lessons",
+      "Vetoes & Mistakes": "mistakes",
+      "Patterns": "patterns",
+      "Recent Decisions": "decisions",
+      "Recent Completions": "completions",
+    };
+    const aHot = topicHotness.get(topicMap[a.name] || "") || 0;
+    const bHot = topicHotness.get(topicMap[b.name] || "") || 0;
+    // Primary: priority (lower = higher). Secondary: hotness (higher = first)
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return bHot - aHot;
+  });
+
+  for (const sectionDef of sortedSections) {
     if (charBudget <= 0) break;
 
     const sectionEntries = nonPinned.filter((e) =>
