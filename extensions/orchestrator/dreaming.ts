@@ -41,32 +41,33 @@ export function registerDreaming(
     if (dreamInFlight) return; // Prevent concurrent dreams
     dreamInFlight = true;
     const { agents } = discoverAgents(cwd, "user");
-    const memPath = path.join(cwd, ".pi", "memory", "memory.md");
+    const topicsDir = path.join(cwd, ".pi", "memory", "topics");
     const sessionArg = lastSessionFile ? `\nSession file: ${lastSessionFile}` : "";
     const { id } = spawnAsyncAgent(
       "worker",
-      `Memory dreaming — analyze session and maintain memory.md.${sessionArg}\nMemory file: ${memPath}\n\n` +
+      `Memory dreaming — analyze session and maintain topic files.${sessionArg}\nTopics directory: ${topicsDir}\n\n` +
+      `Topic files are the source of truth for project memory. Each file holds entries for one category.\n\n` +
       `Steps:\n` +
-      `1. Read the memory file (${memPath}).\n` +
+      `1. Read all existing topic files in ${topicsDir}/ (lessons.md, preferences.md, patterns.md, decisions.md, completions.md, mistakes.md).\n` +
+      `   If the directory doesn't exist, create it.\n` +
       `2. If a session file is provided, read it and extract things worth remembering:\n` +
-      `   - User corrections → [lesson]\n` +
-      `   - User preferences → [preference]\n` +
-      `   - Mistakes or repeated fix attempts → [mistake]\n` +
-      `   - Completed features/PRs merged → [done]\n` +
-      `   - Patterns or conventions → [pattern]\n` +
-      `   Add new entries to the Learned section. Do NOT add duplicates of existing entries.\n` +
-      `3. Reorganize the memory file:\n` +
-      `   - Remove duplicate or near-duplicate entries from Learned\n` +
-      `   - Remove stale/useless entries from Learned\n` +
-      `   - Keep file at a reasonable size (aim for under 50 entries)\n` +
-      `   - NEVER remove or modify entries in the Pinned section\n` +
-      `4. Write the updated file. Use the write tool to overwrite ${memPath}.\n` +
-      `   Keep the exact format:\n` +
-      `   # Memories\n` +
-      `   ## Pinned (user requested — never auto-remove)\n` +
-      `   - [category] summary\n` +
-      `   ## Learned (auto-extracted — dream may reorganize/remove)\n` +
-      `   - [category] summary\n` +
+      `   - User corrections → [lesson] → lessons.md\n` +
+      `   - User preferences → [preference] → preferences.md\n` +
+      `   - Mistakes or repeated fix attempts → [mistake] → mistakes.md\n` +
+      `   - Completed features/PRs merged → [done] → completions.md\n` +
+      `   - Patterns or conventions → [pattern] → patterns.md\n` +
+      `   - Architectural/design decisions → [decision] → decisions.md\n` +
+      `   Do NOT add duplicates of existing entries.\n` +
+      `3. Reorganize each topic file:\n` +
+      `   - Remove duplicate or near-duplicate entries\n` +
+      `   - Remove stale/useless entries\n` +
+      `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
+      `   - NEVER remove or modify entries marked with *(pinned)*\n` +
+      `4. Write each updated topic file with this format:\n` +
+      `   # TopicName\n` +
+      `   \n` +
+      `   - [category] summary *(pinned)*    (if pinned)\n` +
+      `   - [category] summary               (if not pinned)\n` +
       `5. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
       cwd,
       agents,

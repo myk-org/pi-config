@@ -18,6 +18,7 @@ import {
   parseMemoryFile,
   entryHash,
   rebuild,
+  rebuildFromEntries,
 } from "./memory-scoring.js";
 import { organizeIntoTopics, listTopics, regenerateMemoryMd, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
 
@@ -98,15 +99,30 @@ interface MemoryEntryWithText {
 }
 
 /**
- * Run a full rebuild cycle: rescore all entries, organize into topics,
- * regenerate memory.md from topics. Called on session_start and by dreaming.
+ * Run a full rebuild cycle: rescore all entries from topics (source of truth).
+ * Called on session_start, every 30 min, and after dreaming.
+ *
+ * If topics don't exist yet but memory.md does (migration), populates topics first.
  */
 export function rebuildAndOrganize(cwd: string): void {
   const memoryPath = join(cwd, ".pi", "memory", "memory.md");
-  if (!existsSync(memoryPath)) return;
-  rebuild(cwd);
-  organizeIntoTopics(cwd);
-  regenerateMemoryMd(cwd);
+  const topicsDir = join(cwd, ".pi", "memory", "topics");
+
+  // Need at least one source to work with
+  if (!existsSync(memoryPath) && !existsSync(topicsDir)) return;
+
+  // Migration: if topics don't exist yet, populate from memory.md
+  if (!existsSync(topicsDir) && existsSync(memoryPath)) {
+    rebuild(cwd);
+    organizeIntoTopics(cwd);
+    return;
+  }
+
+  // Normal path: rebuild scores from topic files (source of truth)
+  const topicEntries = readAllTopicEntries(cwd);
+  if (topicEntries.length > 0) {
+    rebuildFromEntries(cwd, topicEntries);
+  }
 }
 
 /**
@@ -119,8 +135,9 @@ export function buildSituationReport(
   cwd: string,
   tokenBudget: number = DEFAULT_TOKEN_BUDGET,
 ): string {
+  const topicsDir = join(cwd, ".pi", "memory", "topics");
   const memoryPath = join(cwd, ".pi", "memory", "memory.md");
-  if (!existsSync(memoryPath)) return "";
+  if (!existsSync(topicsDir) && !existsSync(memoryPath)) return "";
 
   // Read scores (rebuilt on session start + dreaming, not every turn)
   const scores = loadScores(cwd);
@@ -152,8 +169,8 @@ export function buildSituationReport(
     });
   }
 
-  // Fallback: if no topic entries, try memory.md directly
-  if (entries.length === 0) {
+  // Fallback: if no topic entries, try memory.md directly (migration path)
+  if (entries.length === 0 && existsSync(memoryPath)) {
     const content = readFileSync(memoryPath, "utf-8");
     const parsed = parseMemoryFile(content);
     for (const p of parsed) {

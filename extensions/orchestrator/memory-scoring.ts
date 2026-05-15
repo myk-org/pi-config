@@ -223,7 +223,7 @@ export interface RebuildResult {
 /**
  * Run a full rebuild cycle: score all entries, apply budgets, update lifecycle states.
  *
- * This is called during dreaming (every 3h + session end).
+ * Reads from memory.md by default. Use rebuildFromEntries() to provide entries from topics.
  */
 export function rebuild(cwd: string): RebuildResult {
   const memoryPath = join(cwd, ".pi", "memory", "memory.md");
@@ -233,6 +233,29 @@ export function rebuild(cwd: string): RebuildResult {
 
   const content = readFileSync(memoryPath, "utf-8");
   const parsed = parseMemoryFile(content);
+  return rebuildFromParsed(cwd, parsed);
+}
+
+/**
+ * Rebuild from pre-parsed entries (used when topics are the source of truth).
+ */
+export function rebuildFromEntries(
+  cwd: string,
+  entries: { category: MemoryCategory; text: string; pinned: boolean }[],
+): RebuildResult {
+  const parsed = entries.map((e) => ({
+    section: (e.pinned ? "pinned" : "learned") as "pinned" | "learned",
+    category: e.category,
+    text: e.text,
+    fullLine: `- [${e.category}] ${e.text}`,
+  }));
+  return rebuildFromParsed(cwd, parsed);
+}
+
+function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
+  if (parsed.length === 0) {
+    return { active: 0, provisional: 0, dropped: 0, total: 0 };
+  }
   const scores = loadScores(cwd);
   const now = Date.now();
 

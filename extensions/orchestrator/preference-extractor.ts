@@ -2,15 +2,15 @@
  * Preference Auto-Extractor — detects user preferences from conversation.
  *
  * Listens to user input and automatically adds detected preference statements
- * to the memory file. Uses pattern matching to find phrases like "I prefer...",
- * "always use...", "never...", etc.
+ * to the preferences topic file. Uses pattern matching to find phrases like
+ * "I prefer...", "always use...", "never...", etc.
  *
  * Architecture inspired by OpenHuman (https://github.com/tinyhumansai/openhuman).
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extractPreferences, entryHash, loadScores, saveScores } from "./memory-scoring.js";
 import type { ScoredEntry } from "./memory-scoring.js";
@@ -35,20 +35,20 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
     const preferences = extractPreferences(text);
     if (preferences.length === 0) return;
 
-    const memDir = join(ctx.cwd, ".pi", "memory");
-    const memPath = join(memDir, "memory.md");
+    const topicsDir = join(ctx.cwd, ".pi", "memory", "topics");
+    const prefPath = join(topicsDir, "preferences.md");
 
-    // Ensure memory directory exists
-    if (!existsSync(memDir)) {
-      mkdirSync(memDir, { recursive: true });
+    // Ensure topics directory exists
+    if (!existsSync(topicsDir)) {
+      mkdirSync(topicsDir, { recursive: true });
     }
 
-    // Read existing memory file
+    // Read existing preferences topic file
     let content = "";
-    if (existsSync(memPath)) {
-      content = readFileSync(memPath, "utf-8");
+    if (existsSync(prefPath)) {
+      content = readFileSync(prefPath, "utf-8");
     } else {
-      content = "# Memories\n\n## Pinned (user requested — never auto-remove)\n\n## Learned (auto-extracted — dream may reorganize/remove)\n";
+      content = "# Preferences\n\n";
     }
 
     const scores = loadScores(ctx.cwd);
@@ -62,7 +62,7 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
       const lastExtracted = recentExtractions.get(hash);
       if (lastExtracted && Date.now() - lastExtracted < COOLDOWN_MS) continue;
 
-      // Check if already exists in memory
+      // Check if already exists
       if (content.includes(pref)) {
         // Reinforce existing entry
         if (scores.entries[hash]) {
@@ -73,29 +73,13 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
         continue;
       }
 
-      // Add to Learned section
-      const learnedMarker = "## Learned";
-      const learnedIdx = content.indexOf(learnedMarker);
-      if (learnedIdx !== -1) {
-        const afterMarker = content.indexOf("\n", learnedIdx);
-        if (afterMarker !== -1) {
-          // Find the next non-empty line after the section header
-          let insertIdx = afterMarker + 1;
-          // Skip the section description line if present
-          const nextLine = content.indexOf("\n", insertIdx);
-          if (nextLine !== -1 && content.slice(insertIdx, nextLine).trim().startsWith("-")) {
-            // There are already entries, insert before first entry
-          } else if (nextLine !== -1) {
-            insertIdx = nextLine + 1;
-          }
-          content = content.slice(0, insertIdx) + entryLine + "\n" + content.slice(insertIdx);
-        }
-      }
+      // Append to preferences topic file
+      content = content.trimEnd() + "\n" + entryLine + "\n";
 
       // Add score entry
       scores.entries[hash] = {
         class: "preference",
-        score: 1.0, // explicit cue weight × fresh recency
+        score: 1.0,
         evidenceCount: 1,
         cue: "explicit",
         firstSeen: new Date().toISOString(),
@@ -109,7 +93,7 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
     }
 
     if (added > 0) {
-      writeFileSync(memPath, content, "utf-8");
+      writeFileSync(prefPath, content, "utf-8");
       saveScores(ctx.cwd, scores);
     }
   });
