@@ -19,7 +19,7 @@ import {
   entryHash,
   rebuild,
 } from "./memory-scoring.js";
-import { organizeIntoTopics, type TopicInfo } from "./memory-tree.js";
+import { organizeIntoTopics, listTopics, regenerateMemoryMd, type TopicInfo } from "./memory-tree.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -98,6 +98,18 @@ interface MemoryEntryWithText {
 }
 
 /**
+ * Run a full rebuild cycle: rescore all entries, organize into topics,
+ * regenerate memory.md from topics. Called on session_start and by dreaming.
+ */
+export function rebuildAndOrganize(cwd: string): void {
+  const memoryPath = join(cwd, ".pi", "memory", "memory.md");
+  if (!existsSync(memoryPath)) return;
+  rebuild(cwd);
+  organizeIntoTopics(cwd);
+  regenerateMemoryMd(cwd);
+}
+
+/**
  * Build a situation report from scored memory entries.
  *
  * Returns a formatted markdown string that fits within the token budget,
@@ -110,16 +122,14 @@ export function buildSituationReport(
   const memoryPath = join(cwd, ".pi", "memory", "memory.md");
   if (!existsSync(memoryPath)) return "";
 
-  // Run a rebuild to ensure scores are current
-  rebuild(cwd);
+  // Read scores (rebuilt on session start + dreaming, not every turn)
+  const scores = loadScores(cwd);
 
-  // Organize entries into topic files (Layer 3) and regenerate memory.md from topics
-  const topics = organizeIntoTopics(cwd);
+  // Read topic info for hotness ordering (topic files updated by dreaming)
+  const topics = listTopics(cwd);
 
-  // Re-read memory.md (may have been regenerated from topics)
   const content = readFileSync(memoryPath, "utf-8");
   const parsed = parseMemoryFile(content);
-  const scores = loadScores(cwd);
 
   // Build topic hotness map for section ordering
   const topicHotness = new Map<string, number>();

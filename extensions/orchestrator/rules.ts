@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
-import { buildSituationReport } from "./situation-report.js";
+import { buildSituationReport, rebuildAndOrganize } from "./situation-report.js";
 
 export function registerRules(
   pi: ExtensionAPI,
@@ -16,8 +16,25 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let migrationChecked = false;
+  let rebuildDone = false;
+
+  // Run full rebuild on session start (once per session, not every turn)
+  pi.on("session_start", async (_event, ctx) => {
+    rebuildDone = false;
+    try {
+      rebuildAndOrganize(ctx.cwd);
+      rebuildDone = true;
+    } catch {}
+  });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    // Run rebuild on first agent start if session_start didn't fire yet
+    if (!rebuildDone) {
+      try {
+        rebuildAndOrganize(ctx.cwd);
+        rebuildDone = true;
+      } catch {}
+    }
     let extra = "";
 
     // Orchestrator rules — skip for specialist agents

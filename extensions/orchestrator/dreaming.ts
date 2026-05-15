@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "./agents.js";
+import { rebuildAndOrganize } from "./situation-report.js";
 
 // Default: 3 hours. Override with PI_DREAM_INTERVAL_HOURS env var (0.5–24).
 const _rawHours = parseFloat(process.env.PI_DREAM_INTERVAL_HOURS || "3");
@@ -68,8 +69,11 @@ export function registerDreaming(
       agents,
       { fireAndForget: true, name: "Dream" },
     );
-    // Reset flag after reasonable timeout (dream should complete in <5 min)
-    if (id) setTimeout(() => { dreamInFlight = false; }, 5 * 60 * 1000);
+    // After dream completes, rebuild scores and reorganize topics
+    if (id) setTimeout(() => {
+      dreamInFlight = false;
+      try { rebuildAndOrganize(cwd); } catch {}
+    }, 5 * 60 * 1000);
     else dreamInFlight = false;
   }
 
