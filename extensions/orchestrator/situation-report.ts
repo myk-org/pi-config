@@ -19,6 +19,7 @@ import {
   entryHash,
   rebuild,
 } from "./memory-scoring.js";
+import { organizeIntoTopics, type TopicInfo } from "./memory-tree.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -112,9 +113,19 @@ export function buildSituationReport(
   // Run a rebuild to ensure scores are current
   rebuild(cwd);
 
+  // Organize entries into topic files (Layer 3) and regenerate memory.md from topics
+  const topics = organizeIntoTopics(cwd);
+
+  // Re-read memory.md (may have been regenerated from topics)
   const content = readFileSync(memoryPath, "utf-8");
   const parsed = parseMemoryFile(content);
   const scores = loadScores(cwd);
+
+  // Build topic hotness map for section ordering
+  const topicHotness = new Map<string, number>();
+  for (const t of topics) {
+    topicHotness.set(t.name, t.hotness);
+  }
 
   // Build lookup: hash → { text, category, scored, isPinned }
   const entries: MemoryEntryWithText[] = [];
