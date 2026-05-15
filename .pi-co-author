@@ -1,0 +1,2 @@
+# Marker file: when present, pi injects Co-authored-by trailer into git commits.
+# Format: Co-authored-by: PI (<model-id>) <noreply@pi.dev>
