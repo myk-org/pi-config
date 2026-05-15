@@ -20,6 +20,11 @@ _DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-2.5-flash",
 }
 
+# Provider-specific flags required for non-interactive execution
+_PROVIDER_CLI_FLAGS: dict[str, list[str]] = {
+    "cursor": ["--force"],  # Skip workspace trust prompts in --print mode
+}
+
 
 async def _run_async(
     prompt: str,
@@ -77,7 +82,7 @@ def run(
 
     effective_cwd = Path(cwd).resolve() if cwd else Path.cwd()
 
-    effective_flags: list[str] = list(cli_flags or [])
+    effective_flags: list[str] = list(_PROVIDER_CLI_FLAGS.get(provider, [])) + list(cli_flags or [])
 
     continue_session = resume  # session_id mutual exclusivity already guarded above
 
