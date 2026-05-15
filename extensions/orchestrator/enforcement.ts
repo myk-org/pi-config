@@ -5,6 +5,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   DANGEROUS,
   getCurrentBranch,
@@ -187,6 +189,37 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             block: true,
             reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
           };
+
+        // Co-author trailer injection
+        if (existsSync(join(ctx.cwd, ".pi-co-author"))) {
+          const model = (ctx as any).model;
+          if (model?.id && !command.includes("Co-authored-by:")) {
+            // Pattern A: echo "..." | git commit -F -
+            const pipeIdx = command.lastIndexOf("|");
+            if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+              const echoPart = command.slice(0, pipeIdx);
+              const gitPart = command.slice(pipeIdx);
+              // Find the closing quote of the echo
+              const lastDoubleQuote = echoPart.lastIndexOf('"');
+              const lastSingleQuote = echoPart.lastIndexOf("'");
+              const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
+              if (lastQuoteIdx > 0) {
+                event.input.command =
+                  echoPart.slice(0, lastQuoteIdx) + `\\n\\nCo-authored-by: PI (${model.id}) <noreply@pi.dev>` + echoPart.slice(lastQuoteIdx) + gitPart;
+              }
+            }
+            // Pattern B: git commit -m "..."
+            else {
+              const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
+              if (mFlagMatch) {
+                const fullMatch = mFlagMatch[0];
+                const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1; // before closing quote
+                event.input.command =
+                  command.slice(0, insertPos) + `\n\nCo-authored-by: PI (${model.id}) <noreply@pi.dev>` + command.slice(insertPos);
+              }
+            }
+          }
+        }
       }
 
       // Block pushes to protected branches
