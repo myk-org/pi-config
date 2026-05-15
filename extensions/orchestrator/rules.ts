@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
+import { buildSituationReport } from "./situation-report.js";
 
 export function registerRules(
   pi: ExtensionAPI,
@@ -69,16 +70,33 @@ export function registerRules(
       } catch {}
     }
 
-    // Project memories — injected BEFORE rules so the LLM sees them first
-    const memories = loadMemories(ctx.cwd, isSubagent);
+    // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
+    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
 
     if (!extra && !memories) return;
     return { systemPrompt: memories + event.systemPrompt + extra };
   });
 }
 
-// Reads .pi/memory/memory.md, wraps with strong framing so the LLM prioritizes it
-function loadMemories(cwd: string, isSubagent: boolean): string {
+// Loads memories using situation report (scored, token-budgeted) with fallback to raw memory.md
+function loadMemoriesWithScoring(cwd: string, isSubagent: boolean): string {
+  try {
+    const report = buildSituationReport(cwd);
+    if (report) {
+      let result = "\n" + report + "\n";
+      if (isSubagent) {
+        result += "\n**Do NOT write to memory** \u2014 only the orchestrator writes memories.\n";
+      }
+      return result + "\n";
+    }
+  } catch {
+    // Fall through to raw memory loading
+  }
+  return loadMemoriesRaw(cwd, isSubagent);
+}
+
+// Fallback: reads .pi/memory/memory.md raw (used when scoring is not available)
+function loadMemoriesRaw(cwd: string, isSubagent: boolean): string {
   try {
     const memPath = path.join(cwd, ".pi", "memory", "memory.md");
     if (!fs.existsSync(memPath)) return "";
