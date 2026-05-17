@@ -228,17 +228,6 @@ or extension command):
 - Prompt templates: update the entry in `completions` AND ensure the command is in `promptTemplateCommands`
 - If adding a new completable command, follow the existing patterns (static items, cached fetchers, etc.)
 
-### TokenJuice — Tool Output Compression
-
-[TokenJuice](https://github.com/vincentkoc/tokenjuice) is an external pi extension that
-compresses bash tool output using pattern-based JSON rules. Pre-installed in the Docker image.
-
-**Install (native):** `npm install -g tokenjuice && tokenjuice install pi`
-
-**Commands:** `/tj status`, `/tj on`, `/tj off`, `/tj raw-next`
-
-**Source:** Inspired by [OpenHuman's TokenJuice](https://github.com/tinyhumansai/openhuman) (issue #334)
-
 ### Memory Evolution — Scored Learning, Situation Reports, Memory Tree
 
 Three-layer memory system with scored,

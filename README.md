@@ -26,7 +26,6 @@ Single extension that provides:
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
 | **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments |
-| **TokenJuice** | Tool output compression — [tokenjuice](https://github.com/vincentkoc/tokenjuice) compresses bash results using pattern-based rules to save context window tokens |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
@@ -105,8 +104,6 @@ uv tool install git+https://github.com/myk-org/pi-config
 npm install -g acpx           # External AI agent proxy (cursor, codex, gemini)
 npm install -g pi-web-access  # Web search/fetch skills (librarian)
 uvx install mcp-launchpad     # MCP server CLI (mcpl)
-npm install -g tokenjuice    # Tool output compression
-tokenjuice install pi         # Install pi extension
 ```
 
 #### Optional: Vertex AI (Claude via Google Cloud)
@@ -418,30 +415,6 @@ PI_PIDIFF_ENABLE=false pi
 /pidiff restart   # Restart the daemon
 ```
 
-### TokenJuice — tool output compression
-
-[TokenJuice](https://github.com/vincentkoc/tokenjuice) compresses bash tool output before it reaches the LLM
-context window. Uses pattern-based JSON rules to strip noise and keep only the important parts of CLI
-output — saving 60-80% of tokens on typical commands.
-
-Pre-installed in the Docker image. For native installs:
-
-```bash
-npm install -g tokenjuice
-tokenjuice install pi
-```
-
-After installing, reload pi (`/reload`). The `/tj` command controls the extension:
-
-```bash
-/tj status     # Show compression stats
-/tj on         # Enable compression
-/tj off        # Disable compression
-/tj raw-next   # Bypass compression for next command
-```
-
-TokenJuice ships with 100+ built-in rules for common CLI tools (git, pytest, npm, docker, kubectl, rg, eslint, etc.).
-
 ### Optional mounts
 
 | Mount | Purpose |
@@ -472,7 +445,6 @@ TokenJuice ships with 100+ built-in rules for common CLI tools (git, pytest, npm
 | `acpx` | Agent proxy for remote models |
 | `kubectl` / `oc` | Kubernetes and OpenShift CLI |
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
-| `tokenjuice` | Tool output compression — compresses CLI output to save context tokens |
 | `procps` | Process utilities (ps, top, pgrep, pkill) |
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
 | `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
