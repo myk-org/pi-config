@@ -5,7 +5,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DANGEROUS,
@@ -20,11 +20,56 @@ import {
   runGit,
 } from "./git-helpers.js";
 
+/** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
+function normalizeForRepeatCheck(command: string): string {
+  return command
+    .replace(/^\s*cd\s+\S+\s*&&\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Repeat detection via temp file — immune to module reload / closure issues
+const REPEAT_FILE = `/tmp/.pi-repeat-${process.pid}.json`;
+
+function readRepeatState(): { lastCmd: string; count: number } {
+  try {
+    return JSON.parse(readFileSync(REPEAT_FILE, "utf-8"));
+  } catch {
+    return { lastCmd: "", count: 0 };
+  }
+}
+
+function writeRepeatState(state: { lastCmd: string; count: number }): void {
+  try {
+    writeFileSync(REPEAT_FILE, JSON.stringify(state));
+  } catch {}
+}
+
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
+
+
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("bash", event)) return undefined;
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
+
+    // Block repeated identical commands (polling-by-spam) — orchestrator only
+    if (process.env.PI_SUBAGENT_CHILD !== "1") {
+      const normalized = normalizeForRepeatCheck(command);
+      const rs = readRepeatState();
+      if (normalized === rs.lastCmd) {
+        rs.count++;
+        writeRepeatState(rs);
+        if (rs.count >= 3) {
+          return {
+            block: true,
+            reason: `⛔ Same command executed ${rs.count} times in a row. Use a subagent with async: true for polling/monitoring instead of repeating the command.`,
+          };
+        }
+      } else {
+        writeRepeatState({ lastCmd: normalized, count: 1 });
+      }
+    }
 
     // Block timeout on long-running poll commands — these can take 30+ minutes
     // (rate limit waits). The LLM keeps setting timeouts despite prompt instructions.
