@@ -1,5 +1,22 @@
 # Critical Rules
 
+## Questions Are Not Instructions (MANDATORY)
+
+**When the user asks a question, ONLY answer the question.**
+
+- ❌ **DO NOT** modify files, create files, or delete files
+- ❌ **DO NOT** run commands that change state (git commit, git push, rm, write, edit)
+- ❌ **DO NOT** create branches, open PRs, open issues, or merge anything
+- ❌ **DO NOT** "fix" something you noticed while answering
+- ❌ **DO NOT** take ANY action beyond reading/searching to formulate the answer
+- ✅ **DO** answer the question
+- ✅ **DO** use read-only commands (read, bash with grep/cat/ls/rg, memory_search) to find the answer
+- ✅ **DO** ask for confirmation before taking action if the answer implies something should be done
+
+**A question mark (?) means ANSWER ONLY.** The user will explicitly tell you to act when they want action.
+
+---
+
 ## Task Focus (MANDATORY)
 
 **When executing a multi-step workflow** (e.g., implement → review → commit → push → PR):
