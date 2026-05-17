@@ -588,13 +588,11 @@ export function registerPidash(
     }
   });
 
-  // Sync thinking level on every turn
-  pi.on("turn_end", () => {
-    if (!ws || !connected) return;
-    try {
-      const level = (pi as any).getThinkingLevel?.();
-      if (level) ws.send(JSON.stringify({ type: "update_info", thinkingLevel: level }));
-    } catch {}
+  // Track thinking level changes via the official event
+  pi.on("thinking_level_select", (event: any) => {
+    if (ws && connected) {
+      ws.send(JSON.stringify({ type: "update_info", thinkingLevel: event.level }));
+    }
   });
 
   // Track diff viewer port
