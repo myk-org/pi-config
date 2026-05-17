@@ -70,7 +70,7 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 
 # Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli tokenjuice
+  npm install -g acpx agent-browser pi-web-access @google/gemini-cli
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 RUN chown -R node:node /home/node
