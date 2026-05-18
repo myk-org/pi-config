@@ -67,8 +67,8 @@ pi-config/
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities
-│   └── acpx-provider/              # ACPX provider extension
-│       └── index.ts
+│   └── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
+│       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
