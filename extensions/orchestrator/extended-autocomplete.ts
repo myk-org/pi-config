@@ -8,11 +8,11 @@
  *    — stacked provider that intercepts /command <arg> patterns
  *
  * Completions:
- *   /external-ai <Tab>         → ai-cli provider names + --fix, --peer
+ *   /external-ai <Tab>           → ai-cli provider names + --fix, --peer, --cli-flags
  *   /pr-review <Tab>             → open PR numbers
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
- *   /release <Tab>               → recent git tags
+ *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
  *   /review-handler <Tab>        → --autorabbit
  *   /dream-auto <Tab>            → on, off
  *   /pidash <Tab>                → start, stop, restart, status
@@ -52,6 +52,7 @@ const AI_CLI_FLAGS: AutocompleteItem[] = [
   { value: "--resume", label: "--resume", description: "Continue most recent session" },
   { value: "--session-id ", label: "--session-id", description: "Resume a specific session by ID" },
   { value: "--model ", label: "--model", description: "Set model (e.g., gpt-5.4-high)" },
+  { value: "--cli-flags ", label: "--cli-flags", description: "Extra flags passed to AI CLI binary" },
 ];
 
 // ── Filter helper ───────────────────────────────────────────────────
@@ -203,6 +204,9 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
 
       // After --model: show model completions for the detected provider
+      // After --cli-flags or --session-id: free-text, no completions
+      if (prevPart === "--cli-flags" || prevPart === "--session-id") return null;
+
       if (prevPart === "--model") {
         // Find the provider from earlier tokens
         const knownProviders = ["cursor", "claude", "gemini"];
@@ -270,8 +274,40 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     },
 
     "release": (prefix: string) => {
+      const parts = prefix.split(/\s+/);
+      const lastPart = parts[parts.length - 1] || "";
+      const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
+
+      const RELEASE_FLAGS: AutocompleteItem[] = [
+        { value: "--dry-run", label: "--dry-run", description: "Preview without creating" },
+        { value: "--prerelease", label: "--prerelease", description: "Create prerelease" },
+        { value: "--draft", label: "--draft", description: "Create draft release" },
+        { value: "--target ", label: "--target", description: "Target specific branch" },
+        { value: "--tag-match ", label: "--tag-match", description: "Filter tags by pattern" },
+      ];
+
+      // After --target: show branch completions
+      if (prevPart === "--target") {
+        void fetchBranches(lastCwd);
+        return branchCache.data ? filter(branchCache.data, lastPart) : null;
+      }
+
+      // After --tag-match: free-text pattern, no completions
+      if (prevPart === "--tag-match") return null;
+
+      // Collect used flags
+      const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
+
+      // Available flags (exclude already used)
+      const availableFlags = RELEASE_FLAGS.filter((f) => !usedFlags.has(f.value.trim()));
+
+      // Fetch tags
       void fetchTags(lastCwd);
-      return tagCache.data ? filter(tagCache.data, prefix) : null;
+      const tags = tagCache.data || [];
+
+      // Combine flags and tags
+      const combined = [...availableFlags, ...tags];
+      return filter(combined, lastPart);
     },
 
     "review-handler": (prefix: string) => {
