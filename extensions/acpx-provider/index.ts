@@ -512,14 +512,6 @@ function streamAcpx(
 // =============================================================================
 
 export default function (pi: ExtensionAPI) {
-	// Subagent child processes must NOT register acpx providers.
-	// acpx models are session-scoped to the parent pi process — child processes
-	// would create independent sessions to the coding agent (e.g., Cursor),
-	// losing conversation context and triggering agent-side sub-task protocols
-	// (like cursor/task) that our streaming code doesn't handle.
-	// Children fall back to standard API-based models instead.
-	if (process.env.PI_SUBAGENT_CHILD === "1") return;
-
 	// Capture cwd at extension load time, before pi potentially changes to /tmp.
 	// acpx needs this to find session markers in the project directory tree.
 	projectCwd = process.cwd();
