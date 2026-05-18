@@ -334,6 +334,7 @@ export async function runSingleAgent(
   signal: AbortSignal | undefined,
   onUpdate: OnUpdate | undefined,
   makeDetails: (r: SingleResult[]) => SubagentDetails,
+  parentModelId?: string,
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
@@ -359,7 +360,8 @@ export async function runSingleAgent(
   }
 
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
-  if (agent.model) args.push("--model", agent.model);
+  const effectiveModel = agent.model || parentModelId;
+  if (effectiveModel) args.push("--model", effectiveModel);
   if (agent.tools && agent.tools.length > 0)
     args.push("--tools", agent.tools.join(","));
 
@@ -383,7 +385,7 @@ export async function runSingleAgent(
       contextTokens: 0,
       turns: 0,
     },
-    model: agent.model,
+    model: effectiveModel,
     step,
   };
 
@@ -502,7 +504,7 @@ export async function runSingleAgent(
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -552,6 +554,7 @@ export function registerSubagentTool(
       const discovery = discoverAgents(ctx.cwd, scope);
       const agents = discovery.agents;
       const confirm = params.confirmProjectAgents ?? true;
+      const parentModelId = ctx.model?.id;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -676,12 +679,13 @@ export function registerSubagentTool(
             const r = spawnAsyncAgent(t.agent, t.task, t.cwd, agents, {
               fireAndForget: params.fireAndForget,
               name: (t as any).name,
+              parentModelId,
             });
             if (r.error) {
               errors.push(`${t.agent}: ${r.error}`);
             } else {
               const label = (t as any).name || t.agent;
-              results.push(`${label} [${r.id}]`);
+              results.push(`${label} [${r.id}]${r.model ? ` (${r.model})` : ""}`);
             }
           }
           const lines: string[] = [];
@@ -717,7 +721,7 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name });
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId });
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],
@@ -726,8 +730,9 @@ export function registerSubagentTool(
           };
         }
         const label = params.name || params.agent;
+        const modelInfo = result.model ? ` (${result.model})` : "";
         return {
-          content: [{ type: "text", text: `Async agent spawned: ${label} [${result.id}]\nUse /async-status to check progress. Results will appear when complete.` }],
+          content: [{ type: "text", text: `Async agent spawned: ${label} [${result.id}]${modelInfo}\nUse /async-status to check progress. Results will appear when complete.` }],
           details: mkd("single")([]),
         };
       }
@@ -803,6 +808,7 @@ export function registerSubagentTool(
             signal,
             chainUpdate,
             mkd("chain"),
+            parentModelId,
           );
           activeAgents.delete(s.agent);
           updateWorking();
@@ -943,6 +949,7 @@ export function registerSubagentTool(
                 }
               },
               mkd("parallel"),
+              parentModelId,
             );
             all[i] = r;
             activeAgents.delete(t.name || t.agent);
@@ -1015,6 +1022,7 @@ export function registerSubagentTool(
           signal,
           onUpdate,
           mkd("single"),
+          parentModelId,
         );
         activeAgents.delete(label);
         updateWorking();
