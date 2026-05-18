@@ -1,22 +1,22 @@
 /**
  * ACPX Provider Extension for pi
  *
- * Routes pi LLM requests through acpx CLI using persistent sessions.
+ * Routes pi LLM requests through acpx runtime library using persistent sessions.
  * This lets you use models only available through specific agents (e.g., Cursor's
  * Composer 2, GPT-5.4, etc.) as native pi models.
  *
  * How it works:
- * 1. On session_start, creates a named acpx session per agent
- * 2. On each LLM request, sends only the latest user message via `acpx <agent> prompt`
+ * 1. On session_start, creates an AcpxRuntime per agent and discovers models
+ * 2. On each LLM request, sends only the latest user message via runtime.startTurn()
  *    (the acpx session maintains full conversation history on the agent side)
- * 3. On model switch, calls `acpx <agent> set model` on the session
- * 4. On session_shutdown, closes the acpx session
+ * 3. Model is set per-session via ensureSession sessionOptions
+ * 4. On session_shutdown, closes acpx sessions and runtime
  *
  * Configuration:
- *   ACPX_AGENTS - Comma-separated list of agents (default: "cursor")
- *                 e.g., "cursor,claude,gemini,copilot"
+ *   ACPX_AGENTS - Comma-separated list of agents to register as providers
+ *                 e.g., "cursor" or "cursor,claude,gemini,copilot"
  *
- * Auto-discovered from: ~/.pi/agent/extensions/acpx-provider/
+ * Loaded from: extensions/acpx-provider/ (pi-config package)
  */
 
 import type {
@@ -28,186 +28,222 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn, execFileSync } from "child_process";
+import path from "node:path";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 
 // =============================================================================
 // Types
 // =============================================================================
 
-interface AcpxModelInfo {
-	modelId: string;
-	name: string;
-}
+// We import acpx types dynamically to handle the case where acpx isn't installed.
+// The runtime module is imported lazily on first use.
+type AcpxRuntime = import("acpx/runtime").AcpxRuntime;
+type AcpRuntimeHandle = import("acpx/runtime").AcpRuntimeHandle;
 
-interface JsonRpcMessage {
-	jsonrpc: string;
-	id?: number;
-	method?: string;
-	result?: any;
-	params?: any;
-	error?: any;
-}
-
-interface AgentSession {
-	name: string;
+interface AgentState {
 	agent: string;
-	/** Whether the system prompt has been sent to this session */
-	systemPromptSent: boolean;
+	runtime: AcpxRuntime;
+	/** Handles keyed by acpx model ID (or "default" for no model preference) */
+	handles: Map<string, AcpRuntimeHandle>;
+	/** In-flight handle creation promises to prevent race conditions */
+	pendingHandles: Map<string, Promise<AcpRuntimeHandle>>;
+	/** Whether the system prompt has been sent per handle */
+	systemPromptSent: Set<string>;
+	/** Available model IDs discovered from the agent */
+	availableModelIds: string[];
+	/** Resolves when model discovery is complete */
+	ready: Promise<void>;
+	/** Call to signal that initialization is complete */
+	signalReady: () => void;
 }
 
 // =============================================================================
-// Session Management
+// Module State
 // =============================================================================
 
-/** Active acpx sessions keyed by agent name */
-const sessions = new Map<string, AgentSession>();
-
-
+/** Active agent runtimes keyed by agent name */
+const agents = new Map<string, AgentState>();
 
 /**
  * The working directory captured at extension initialization time.
  * acpx searches for session markers starting from cwd, but pi's process
  * may run from /tmp where no markers exist. We capture the real project
- * cwd at init and pass it to all child processes.
+ * cwd at init and pass it to all runtime instances.
  */
-let projectCwd: string | undefined;
+let projectCwd: string;
 
 /** List of registered acpx agent names, used to reject non-acpx models */
 let registeredAgents: string[] = [];
 
-function sessionName(agent: string): string {
-	return `pi-${agent}-${process.pid}`;
+// =============================================================================
+// Runtime Initialization
+// =============================================================================
+
+async function createAgentRuntime(): Promise<AcpxRuntime> {
+	const {
+		createAcpRuntime,
+		createFileSessionStore,
+		createAgentRegistry,
+	} = await import("acpx/runtime");
+
+	const stateDir = path.join(os.homedir(), ".acpx", `pi-${process.pid}`);
+	const runtime = createAcpRuntime({
+		cwd: projectCwd,
+		sessionStore: createFileSessionStore({ stateDir }),
+		agentRegistry: createAgentRegistry(),
+		permissionMode: "approve-all",
+	});
+
+	return runtime;
 }
 
-function createSession(agent: string, cwd?: string): void {
-	const name = sessionName(agent);
-	const effectiveCwd = cwd || process.cwd();
-	// Try ensure first (idempotent), then new as fallback
-	try {
-		execFileSync("acpx", [agent, "sessions", "ensure", "--name", name], {
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: 15000,
-			cwd: effectiveCwd,
-		});
-	} catch (err) {
-		console.debug(`[acpx] session ensure failed for ${agent}, trying new:`, err);
+function sessionKey(agent: string, modelId?: string): string {
+	const model = modelId && modelId !== "default" ? `-${modelId.replace(/[^a-zA-Z0-9.-]/g, "_")}` : "";
+	return `pi-${agent}${model}-${process.pid}`;
+}
+
+async function ensureHandle(
+	state: AgentState,
+	acpxModelId: string | undefined,
+	systemPrompt?: string,
+): Promise<AcpRuntimeHandle> {
+	const key = acpxModelId || "default";
+
+	// Return existing handle
+	const existing = state.handles.get(key);
+	if (existing) return existing;
+
+	// Prevent race: if another call is already creating this handle, wait for it
+	const pending = state.pendingHandles.get(key);
+	if (pending) return pending;
+
+	const promise = (async () => {
 		try {
-			execFileSync("acpx", [agent, "sessions", "new", "--name", name], {
-				stdio: ["pipe", "pipe", "pipe"],
-				timeout: 15000,
-				cwd: effectiveCwd,
+			const sessionOpts: { model?: string; systemPrompt?: string } = {};
+			if (acpxModelId && acpxModelId !== "default") {
+				sessionOpts.model = acpxModelId;
+			}
+			if (systemPrompt) {
+				sessionOpts.systemPrompt = systemPrompt;
+			}
+
+			const handle = await state.runtime.ensureSession({
+				sessionKey: sessionKey(state.agent, acpxModelId),
+				agent: state.agent,
+				mode: "persistent",
+				cwd: projectCwd,
+				...(Object.keys(sessionOpts).length > 0 ? { sessionOptions: sessionOpts } : {}),
 			});
-		} catch (err) {
-			// Fall back to no named session
-			console.debug(`[acpx] session create failed for ${agent}:`, err);
-			sessions.set(agent, { name: "", agent, systemPromptSent: false });
-			return;
+
+			state.handles.set(key, handle);
+			return handle;
+		} finally {
+			state.pendingHandles.delete(key);
 		}
-	}
+	})();
 
-	sessions.set(agent, { name, agent, systemPromptSent: false });
-}
-
-function closeSession(agent: string, cwd?: string): void {
-	const session = sessions.get(agent);
-	if (!session || !session.name) return;
-	try {
-		execFileSync("acpx", [agent, "sessions", "close", session.name], {
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: 10000,
-			cwd,
-		});
-	} catch (err) {
-		console.debug(`[acpx] session close failed for ${agent}:`, err);
-	}
-	sessions.delete(agent);
+	state.pendingHandles.set(key, promise);
+	return promise;
 }
 
 // =============================================================================
 // Model Discovery
 // =============================================================================
 
-function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
-	return new Promise((resolve) => {
-		const models: AcpxModelInfo[] = [];
-		let output = "";
-		let resolved = false;
+/**
+ * Discover available models for an acpx agent.
+ *
+ * Uses the acpx/runtime library API: creates a temporary session, queries
+ * getStatus().models.availableModelIds, then closes the session.
+ *
+ * Returns an array of { id, name, provider } objects ready for model registries.
+ *
+ * @example
+ * ```typescript
+ * import { discoverAcpxModels } from "pi-orchestrator-config/extensions/acpx-provider";
+ * const models = await discoverAcpxModels("cursor", "/path/to/project");
+ * // [{ id: "cursor:gpt-5.4[...]", name: "Gpt 5.4 (cursor)", provider: "acpx-cursor" }, ...]
+ * ```
+ */
+export async function discoverAcpxModels(
+	agent: string,
+	cwd?: string,
+): Promise<Array<{ id: string; name: string; provider: string }>> {
+	// Validate agent name to prevent path traversal or injection
+	if (!/^[a-z0-9_-]+$/i.test(agent)) {
+		throw new Error(`Invalid agent name: ${agent}`);
+	}
 
-		// Use an invalid model name to trigger acpx's error message
-		// which lists all ACP-advertised models
-		const proc = spawn("acpx", ["--model", "__list__", agent, "exec", "x"], {
-			stdio: ["pipe", "pipe", "pipe"],
-			cwd: projectCwd,
-		});
+	const {
+		createAcpRuntime,
+		createFileSessionStore,
+		createAgentRegistry,
+	} = await import("acpx/runtime");
 
-		const timeout = setTimeout(() => {
-			if (!resolved) {
-				resolved = true;
-				proc.kill("SIGTERM");
-				resolve(models);
-			}
-		}, 30000);
-
-		// acpx writes the model list to stderr
-		proc.stderr.on("data", (chunk: Buffer) => {
-			output += chunk.toString();
-		});
-		proc.stdout.on("data", (chunk: Buffer) => {
-			output += chunk.toString();
-		});
-
-		proc.on("close", () => {
-			if (resolved) return;
-			resolved = true;
-			clearTimeout(timeout);
-
-			// Parse "Available models: modelId[opts], modelId2[opts], ..."
-			const match = output.match(/Available models:\s*(.+)/);
-			if (match) {
-				const modelList = match[1].trim().replace(/\.$/, "");
-				// Bracket-aware split: commas inside [] are part of the model ID
-				// e.g., gpt-5.4[context=272k,reasoning=medium,fast=false]
-				const entries: string[] = [];
-				let current = "";
-				let depth = 0;
-				for (const ch of modelList) {
-					if (ch === "[") depth++;
-					else if (ch === "]") depth = Math.max(0, depth - 1);
-					if (ch === "," && depth === 0) {
-						entries.push(current.trim());
-						current = "";
-					} else {
-						current += ch;
-					}
-				}
-				if (current.trim()) entries.push(current.trim());
-
-				for (const entry of entries) {
-					if (!entry) continue;
-					const bracketIdx = entry.indexOf("[");
-					const baseName = bracketIdx >= 0 ? entry.substring(0, bracketIdx) : entry;
-					if (baseName) {
-						const name = baseName
-							.replace(/-/g, " ")
-							.replace(/\b\w/g, (c) => c.toUpperCase());
-						// modelId = exact acpx string (with brackets, even empty)
-						models.push({ modelId: entry, name });
-					}
-				}
-			}
-
-			resolve(models);
-		});
-
-		proc.on("error", (err) => {
-			if (!resolved) {
-				console.debug("[acpx] discoverModels spawn error:", err);
-				resolved = true;
-				clearTimeout(timeout);
-				resolve(models);
-			}
-		});
+	const effectiveCwd = cwd || process.cwd();
+	const uid = randomUUID().slice(0, 8);
+	const stateDir = path.join(os.homedir(), ".acpx", `discover-${process.pid}-${uid}`);
+	const runtime = createAcpRuntime({
+		cwd: effectiveCwd,
+		sessionStore: createFileSessionStore({ stateDir }),
+		agentRegistry: createAgentRegistry(),
+		permissionMode: "deny-all",
 	});
+
+	let handle: AcpRuntimeHandle | undefined;
+	try {
+		handle = await runtime.ensureSession({
+			sessionKey: `discover-${agent}-${uid}`,
+			agent,
+			mode: "oneshot",
+			cwd: effectiveCwd,
+		});
+
+		const status = await runtime.getStatus({ handle });
+		const modelIds = status.models?.availableModelIds || [];
+
+		return modelIds.map((modelId) => ({
+			id: `${agent}:${modelId}`,
+			name: `${modelIdToDisplayName(modelId)} (${agent})`,
+			provider: `acpx-${agent}`,
+		}));
+	} catch (err) {
+		console.debug(`[acpx] model discovery failed for ${agent}:`, err);
+		return [];
+	} finally {
+		if (handle) {
+			await runtime.close({ handle, reason: "discovery complete" }).catch((err) => {
+				console.debug("[acpx] failed to close discovery session:", err);
+			});
+		}
+		await rm(stateDir, { recursive: true, force: true }).catch(() => {});
+	}
+}
+
+async function discoverModelsInternal(state: AgentState): Promise<string[]> {
+	try {
+		// Ensure a default session exists so we can query status
+		const handle = await ensureHandle(state, undefined);
+		const status = await state.runtime.getStatus({ handle });
+		if (status.models?.availableModelIds) {
+			state.availableModelIds = status.models.availableModelIds;
+			return status.models.availableModelIds;
+		}
+	} catch (err) {
+		console.debug(`[acpx] model discovery failed for ${state.agent}:`, err);
+	}
+	return [];
+}
+
+function modelIdToDisplayName(modelId: string): string {
+	// Strip bracket suffixes for display: gpt-5.4[context=272k,...] -> Gpt 5.4
+	const bracketIdx = modelId.indexOf("[");
+	const baseName = bracketIdx >= 0 ? modelId.substring(0, bracketIdx) : modelId;
+	return baseName
+		.replace(/-/g, " ")
+		.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // =============================================================================
@@ -215,36 +251,33 @@ function discoverModels(agent: string): Promise<AcpxModelInfo[]> {
 // =============================================================================
 
 /**
+ * Build the system prompt to send on first session creation.
+ * Since acpx sessions maintain their own conversation history,
+ * we set the system prompt once at session creation time.
+ */
+function buildSystemPrompt(context: Context): string | undefined {
+	if (!context.systemPrompt) return undefined;
+	return [
+		"You are being used as a backend LLM through pi coding agent.",
+		"You have full permission to read, write, edit, and execute any files or commands.",
+		"Follow these instructions:",
+		"",
+		context.systemPrompt,
+	].join("\n");
+}
+
+/**
  * Extract the latest user message from pi's context.
  * Since the acpx session maintains its own conversation history,
  * we only send the newest user message.
- *
- * On the first prompt of a session, we prepend pi's system prompt
- * so the remote agent has the right instructions.
  */
-function extractLatestUserMessage(context: Context, agent: string): string {
-	const parts: string[] = [];
-	const session = sessions.get(agent);
-
-	// On first prompt, send system prompt to establish context
-	if (session && !session.systemPromptSent && context.systemPrompt) {
-		parts.push(
-			"<system_instructions>",
-			"You are being used as a backend LLM through pi coding agent.",
-			"You have full permission to read, write, edit, and execute any files or commands.",
-			"Follow these instructions:",
-			"",
-			context.systemPrompt,
-			"</system_instructions>",
-			"",
-		);
-		session.systemPromptSent = true;
-	}
-
-	// Find last user message
+function extractLatestUserMessage(context: Context): string {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const msg = context.messages[i];
 		if (msg.role === "user") {
+			if (typeof msg.content === "string") {
+				return msg.content;
+			}
 			const textParts: string[] = [];
 			for (const block of msg.content) {
 				if ("text" in block && typeof block.text === "string") {
@@ -252,13 +285,12 @@ function extractLatestUserMessage(context: Context, agent: string): string {
 				}
 			}
 			if (textParts.length > 0) {
-				parts.push(textParts.join("\n"));
-				break;
+				return textParts.join("\n");
 			}
 		}
 	}
-
-	return parts.join("\n") || "hello";
+	console.debug("[acpx] no user message found in context, using fallback");
+	return "hello";
 }
 
 // =============================================================================
@@ -302,203 +334,157 @@ function streamAcpx(
 			}
 			const acpxModelId = colonIdx >= 0 ? model.id.substring(colonIdx + 1) : undefined;
 
-			// Ensure session exists — retry with cwd fallback
-			if (!sessions.has(agent)) {
-				createSession(agent, projectCwd);
-			}
-			// If session creation failed (empty name), try again with process.cwd()
-			const existingSession = sessions.get(agent);
-			if (existingSession && !existingSession.name) {
-				sessions.delete(agent);
-				createSession(agent, process.cwd());
+			const state = agents.get(agent);
+			if (!state) {
+				throw new Error(`Agent runtime not initialized: ${agent}`);
 			}
 
-			const session = sessions.get(agent);
-			const prompt = extractLatestUserMessage(context, agent);
+			// Wait for model discovery to complete before first use
+			await state.ready;
 
-			// Build acpx prompt command with session
-			const args = ["--format", "json", "--approve-all"];
-			if (acpxModelId && acpxModelId !== "default") {
-				args.push("--model", acpxModelId);
-			}
-			args.push(agent, "prompt");
-			if (session?.name) {
-				args.push("-s", session.name);
-			}
-			args.push(prompt);
+			// Build system prompt for first use
+			const handleKey = acpxModelId || "default";
+			const needsSystemPrompt = !state.systemPromptSent.has(handleKey);
+			const systemPrompt = needsSystemPrompt ? buildSystemPrompt(context) : undefined;
 
-			const proc = spawn("acpx", args, {
-				stdio: ["pipe", "pipe", "pipe"],
-				cwd: projectCwd,
+			// Ensure session handle exists (creates session with model + system prompt if needed)
+			const handle = await ensureHandle(state, acpxModelId, systemPrompt);
+			if (needsSystemPrompt) {
+				state.systemPromptSent.add(handleKey);
+			}
+
+			const prompt = extractLatestUserMessage(context);
+
+			// Create abort controller for cancellation
+			const abortController = new AbortController();
+			if (options?.signal) {
+				if (options.signal.aborted) {
+					abortController.abort();
+				} else {
+					options.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+				}
+			}
+
+			// Start the turn using the runtime API
+			const turn = state.runtime.startTurn({
+				handle,
+				text: prompt,
+				mode: "prompt",
+				requestId: `pi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+				signal: abortController.signal,
 			});
 
-			let buffer = "";
 			let textContentIndex = -1;
 			let thinkingContentIndex = -1;
-			let killed = false;
-			let stderrOutput = "";
+			let thinkingClosed = false;
 
-			// Handle abort
-			if (options?.signal) {
-				const onAbort = () => {
-					if (!killed) {
-						killed = true;
-						proc.kill("SIGTERM");
+			// Process events from the async iterator
+			for await (const event of turn.events) {
+				if (abortController.signal.aborted) break;
+
+				switch (event.type) {
+					case "text_delta": {
+						const text = event.text;
+						if (!text) break;
+
+						if (event.stream === "thought") {
+							// Thinking content
+							if (thinkingContentIndex < 0) {
+								output.content.push({ type: "thinking", thinking: "" });
+								thinkingContentIndex = output.content.length - 1;
+								stream.push({
+									type: "thinking_start",
+									contentIndex: thinkingContentIndex,
+									partial: output,
+								});
+							}
+							const block = output.content[thinkingContentIndex];
+							if (block.type === "thinking") {
+								block.thinking += text;
+								stream.push({
+									type: "thinking_delta",
+									contentIndex: thinkingContentIndex,
+									delta: text,
+									partial: output,
+								});
+							}
+						} else {
+							// Regular text content
+							if (textContentIndex < 0) {
+								// Close thinking block if open
+								if (thinkingContentIndex >= 0 && !thinkingClosed) {
+									thinkingClosed = true;
+									const thinkBlock = output.content[thinkingContentIndex];
+									if (thinkBlock.type === "thinking") {
+										stream.push({
+											type: "thinking_end",
+											contentIndex: thinkingContentIndex,
+											content: thinkBlock.thinking,
+											partial: output,
+										});
+									}
+								}
+								output.content.push({ type: "text", text: "" });
+								textContentIndex = output.content.length - 1;
+								stream.push({
+									type: "text_start",
+									contentIndex: textContentIndex,
+									partial: output,
+								});
+							}
+							const block = output.content[textContentIndex];
+							if (block.type === "text") {
+								block.text += text;
+								stream.push({
+									type: "text_delta",
+									contentIndex: textContentIndex,
+									delta: text,
+									partial: output,
+								});
+							}
+						}
+						break;
 					}
-				};
-				if (options.signal.aborted) {
-					killed = true;
-					proc.kill("SIGTERM");
-				} else {
-					options.signal.addEventListener("abort", onAbort, { once: true });
+
+					// tool_call / status events are the remote agent's tools, not pi's
+					default:
+						break;
 				}
 			}
 
-			proc.stdout.on("data", (chunk: Buffer) => {
-				buffer += chunk.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
+			// Get turn result for stop reason
+			const result = await turn.result;
+			if (result.status === "completed") {
+				output.stopReason = result.stopReason === "end_turn" ? "stop" : (result.stopReason || "stop");
+			} else if (result.status === "cancelled") {
+				output.stopReason = "stop";
+			} else if (result.status === "failed") {
+				throw new Error(`acpx turn failed: ${result.error.message}`);
+			}
 
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					let msg: JsonRpcMessage;
-					try {
-						msg = JSON.parse(line);
-					} catch {
-						continue;
-					}
-
-					if (msg.method === "session/update" && msg.params?.update) {
-						const update = msg.params.update;
-
-						switch (update.sessionUpdate) {
-							case "agent_message_chunk": {
-								const text = update.content?.text || "";
-								if (!text) break;
-
-								if (textContentIndex < 0) {
-									// Close thinking block if open
-									if (thinkingContentIndex >= 0) {
-										const thinkBlock = output.content[thinkingContentIndex];
-										if (thinkBlock.type === "thinking") {
-											stream.push({
-												type: "thinking_end",
-												contentIndex: thinkingContentIndex,
-												content: thinkBlock.thinking,
-												partial: output,
-											});
-										}
-									}
-									output.content.push({ type: "text", text: "" });
-									textContentIndex = output.content.length - 1;
-									stream.push({
-										type: "text_start",
-										contentIndex: textContentIndex,
-										partial: output,
-									});
-								}
-
-								const block = output.content[textContentIndex];
-								if (block.type === "text") {
-									block.text += text;
-									stream.push({
-										type: "text_delta",
-										contentIndex: textContentIndex,
-										delta: text,
-										partial: output,
-									});
-								}
-								break;
-							}
-
-							case "agent_thought_chunk": {
-								const text = update.content?.text || "";
-								if (!text) break;
-
-								if (thinkingContentIndex < 0) {
-									output.content.push({ type: "thinking", thinking: "" });
-									thinkingContentIndex = output.content.length - 1;
-									stream.push({
-										type: "thinking_start",
-										contentIndex: thinkingContentIndex,
-										partial: output,
-									});
-								}
-
-								const block = output.content[thinkingContentIndex];
-								if (block.type === "thinking") {
-									block.thinking += text;
-									stream.push({
-										type: "thinking_delta",
-										contentIndex: thinkingContentIndex,
-										delta: text,
-										partial: output,
-									});
-								}
-								break;
-							}
-
-							// Ignore tool_call / tool_call_update — remote agent's tools,
-							// not pi's. We only capture text output.
-							default:
-								break;
-						}
-					}
-
-					// Handle final result
-					if (msg.id !== undefined && msg.result?.stopReason) {
-						const reason = msg.result.stopReason;
-						output.stopReason = reason === "end_turn" ? "stop" : reason;
-					}
-
-					// Capture JSON-RPC errors for diagnostics
-					if (msg.error) {
-						stderrOutput += `JSON-RPC error: ${msg.error.message || JSON.stringify(msg.error)}\n`;
-					}
+			// Close open content blocks
+			if (thinkingContentIndex >= 0 && !thinkingClosed) {
+				const block = output.content[thinkingContentIndex];
+				if (block.type === "thinking") {
+					stream.push({
+						type: "thinking_end",
+						contentIndex: thinkingContentIndex,
+						content: block.thinking,
+						partial: output,
+					});
 				}
-			});
-
-			proc.stderr.on("data", (chunk: Buffer) => {
-				stderrOutput += chunk.toString();
-			});
-
-			await new Promise<void>((resolve, reject) => {
-				proc.on("close", (code) => {
-					// Close open content blocks
-					if (thinkingContentIndex >= 0) {
-						const block = output.content[thinkingContentIndex];
-						if (block.type === "thinking") {
-							stream.push({
-								type: "thinking_end",
-								contentIndex: thinkingContentIndex,
-								content: block.thinking,
-								partial: output,
-							});
-						}
-					}
-					if (textContentIndex >= 0) {
-						const block = output.content[textContentIndex];
-						if (block.type === "text") {
-							stream.push({
-								type: "text_end",
-								contentIndex: textContentIndex,
-								content: block.text,
-								partial: output,
-							});
-						}
-					}
-
-					if (killed || options?.signal?.aborted) {
-						reject(new Error("aborted"));
-					} else if (code !== 0 && output.content.length === 0) {
-						reject(new Error(`acpx exited with code ${code}: ${stderrOutput.trim()}`));
-					} else {
-						resolve();
-					}
-				});
-
-				proc.on("error", reject);
-			});
+			}
+			if (textContentIndex >= 0) {
+				const block = output.content[textContentIndex];
+				if (block.type === "text") {
+					stream.push({
+						type: "text_end",
+						contentIndex: textContentIndex,
+						content: block.text,
+						partial: output,
+					});
+				}
+			}
 
 			stream.push({
 				type: "done",
@@ -558,26 +544,50 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	// Discover real models and create acpx sessions on pi session start
+	// Initialize runtimes and discover models on pi session start
 	// Non-blocking: fire-and-forget so pi startup isn't delayed
 	pi.on("session_start", (_event, ctx) => {
 		void (async () => {
-			const discoveryResults = await Promise.allSettled(
+			const results = await Promise.allSettled(
 				agentList.map(async (agent) => {
-					const discoveredModels = await discoverModels(agent);
-					return { agent, discoveredModels };
+					try {
+						const runtime = await createAgentRuntime();
+						let signalReady!: () => void;
+						const ready = new Promise<void>((resolve) => { signalReady = resolve; });
+						const state: AgentState = {
+							agent,
+							runtime,
+							handles: new Map(),
+							pendingHandles: new Map(),
+							systemPromptSent: new Set(),
+							availableModelIds: [],
+							ready,
+							signalReady,
+						};
+						agents.set(agent, state);
+
+						const modelIds = await discoverModelsInternal(state);
+						signalReady();
+						return { agent, modelIds };
+					} catch (err) {
+						console.debug(`[acpx] runtime init failed for ${agent}:`, err);
+						// Set a resolved ready promise so streamAcpx doesn't hang
+						const state = agents.get(agent);
+						if (state) state.signalReady();
+						return { agent, modelIds: [] as string[] };
+					}
 				}),
 			);
 
-			for (const result of discoveryResults) {
+			for (const result of results) {
 				if (result.status === "rejected") continue;
 
-				const { agent, discoveredModels } = result.value;
+				const { agent, modelIds } = result.value;
 				try {
-					if (discoveredModels.length > 0) {
-						const models = discoveredModels.map((m) => ({
-							id: `${agent}:${m.modelId}`,
-							name: `${m.name} (${agent})`,
+					if (modelIds.length > 0) {
+						const models = modelIds.map((modelId) => ({
+							id: `${agent}:${modelId}`,
+							name: `${modelIdToDisplayName(modelId)} (${agent})`,
 							reasoning: false,
 							input: ["text" as const, "image" as const],
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -591,23 +601,32 @@ export default function (pi: ExtensionAPI) {
 							models,
 							streamSimple: streamAcpx,
 						});
-						ctx.ui.notify(`acpx-${agent}: ${discoveredModels.length} models discovered`, "info");
+						ctx.ui.notify(`acpx-${agent}: ${modelIds.length} models discovered`, "info");
 					} else {
-						ctx.ui.notify(`acpx-${agent}: no models discovered (timeout?)`, "warning");
+						ctx.ui.notify(`acpx-${agent}: no models discovered`, "warning");
 					}
-
-					createSession(agent, projectCwd);
 				} catch (err) {
 					ctx.ui.notify(`acpx-${agent}: setup failed: ${err}`, "error");
 				}
 			}
-		})();
+		})().catch((err) => {
+			console.error("[acpx] session_start initialization failed:", err);
+		});
 	});
 
 	// Clean up acpx sessions on pi shutdown
 	pi.on("session_shutdown", () => {
-		for (const agent of agentList) {
-			closeSession(agent, projectCwd);
+		const closePromises: Promise<void>[] = [];
+		for (const [, state] of agents) {
+			for (const [, handle] of state.handles) {
+				closePromises.push(
+					state.runtime.close({ handle, reason: "pi session shutdown" }).catch((err) => {
+						console.debug(`[acpx] session close failed:`, err);
+					}),
+				);
+			}
 		}
+		// Wait for graceful close, then clear state
+		return Promise.allSettled(closePromises).finally(() => agents.clear());
 	});
 }
