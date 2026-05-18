@@ -78,6 +78,32 @@ let projectCwd: string;
 let registeredAgents: string[] = [];
 
 // =============================================================================
+// SDK Console Error Suppression
+// =============================================================================
+
+/**
+ * Suppress the ACP SDK's console.error for unhandled extension methods.
+ * The SDK logs "Error handling request" for every agent-specific method
+ * (cursor/task, cursor/update_todos, etc.) that the client doesn't handle.
+ * These are harmless — the SDK sends methodNotFound back and the agent
+ * handles it — but the log noise breaks the console view.
+ *
+ * Same approach as acpx's internal shouldSuppressSdkConsoleError().
+ */
+let consoleErrorPatched = false;
+function installConsoleErrorSuppression(): void {
+	if (consoleErrorPatched) return;
+	consoleErrorPatched = true;
+	const originalConsoleError = console.error;
+	console.error = (...args: any[]) => {
+		if (args.length > 0 && typeof args[0] === "string" && args[0] === "Error handling request") {
+			return;
+		}
+		originalConsoleError(...args);
+	};
+}
+
+// =============================================================================
 // Runtime Initialization
 // =============================================================================
 
@@ -512,6 +538,9 @@ function streamAcpx(
 // =============================================================================
 
 export default function (pi: ExtensionAPI) {
+	// Suppress noisy ACP SDK errors for unhandled agent extension methods
+	installConsoleErrorSuppression();
+
 	// Capture cwd at extension load time, before pi potentially changes to /tmp.
 	// acpx needs this to find session markers in the project directory tree.
 	projectCwd = process.cwd();
