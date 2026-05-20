@@ -64,8 +64,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
   let lastCtx: any = null;
 
   function setStatus(ctx: any): void {
-    if (ctx?.hasUI) {
-      ctx.ui.setStatus("4-diff", ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${PIDIFF_PORT}`));
+    try {
+      if (ctx?.hasUI) {
+        ctx.ui.setStatus("4-diff", ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${PIDIFF_PORT}`));
+      }
+    } catch {
+      // ctx may be stale if session was replaced during WebSocket connect
     }
     pi.events?.emit("diff-viewer:port", PIDIFF_PORT);
   }

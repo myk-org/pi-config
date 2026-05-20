@@ -85,6 +85,33 @@ def memory_migrate(ctx: click.Context) -> None:
         click.echo("No DB found or empty — nothing to migrate.", err=True)
 
 
+@memory.command("forget")
+@click.option(
+    "--category",
+    "-c",
+    required=True,
+    type=click.Choice(["lesson", "decision", "mistake", "pattern", "done", "preference"]),
+    help="Memory category",
+)
+@click.option("--summary", "-s", required=True, help="Entry text to forget")
+@click.pass_context
+def memory_forget(ctx: click.Context, category: str, summary: str) -> None:
+    """Remove a memory entry.
+
+    Examples:
+
+        myk-pi-tools memory forget -c lesson -s "buildah chown -R skips target dir"
+
+        myk-pi-tools memory forget -c pattern -s "Container build monitor: old pattern"
+    """
+    mem = ctx.obj["mem"]
+    removed = mem.forget(category, summary)
+    if removed:
+        click.echo(f"Forgotten: [{category}] {summary}", err=True)
+    else:
+        click.echo(f"Not found: [{category}] {summary}", err=True)
+
+
 @memory.command("path")
 @click.pass_context
 def memory_path(ctx: click.Context) -> None:

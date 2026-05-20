@@ -17,6 +17,7 @@ Each topic file has format:
     - [category] entry text
 """
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -26,6 +27,15 @@ from myk_pi_tools.db.query import _get_git_root
 
 def log(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def _entry_hash(text: str) -> str:
+    """FNV-1a hash matching the TypeScript implementation in memory-scoring.ts."""
+    h = 0x811C9DC5
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return f"{h:08x}"
 
 
 CATEGORY_TO_TOPIC: dict[str, str] = {
@@ -148,6 +158,47 @@ class MemoryFile:
         self._cleanup_db_files()
 
         return len(rows)
+
+    def forget(self, category: str, summary: str) -> bool:
+        """Remove a memory entry from the topic file and optionally from memory-scores.json.
+
+        Returns True if removed, False if not found.
+        """
+        topic_path = self._topic_path(category)
+        if not topic_path.exists():
+            return False
+
+        content = topic_path.read_text()
+        pinned_line = f"- [{category}] {summary} *(pinned)*"
+        learned_line = f"- [{category}] {summary}"
+
+        lines = content.splitlines(keepends=True)
+        removed_line: str | None = None
+        for candidate in (pinned_line, learned_line):
+            if any(line.rstrip("\n") == candidate for line in lines):
+                removed_line = candidate
+                break
+
+        if removed_line is None:
+            return False
+
+        # Remove the line from the topic file
+        new_lines = [line for line in lines if line.rstrip("\n") != removed_line]
+        topic_path.write_text("".join(new_lines))
+
+        # Clean up memory-scores.json
+        scores_path = self.file_path.parent / "memory-scores.json"
+        if scores_path.exists():
+            try:
+                scores = json.loads(scores_path.read_text())
+                h = _entry_hash(removed_line)
+                if h in scores.get("entries", {}):
+                    del scores["entries"][h]
+                    scores_path.write_text(json.dumps(scores))
+            except (json.JSONDecodeError, OSError) as e:
+                log(f"Failed to clean memory-scores.json: {e}")
+
+        return True
 
     def _cleanup_db_files(self) -> None:
         """Remove SQLite DB and related files."""

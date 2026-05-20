@@ -118,6 +118,7 @@ stability = cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)
 ```bash
 uv run myk-pi-tools memory add -c <category> -s "summary"             # Add to Learned
 uv run myk-pi-tools memory add -c <category> -s "summary" --pinned    # Add to Pinned
+uv run myk-pi-tools memory forget -c <category> -s "summary"          # Remove an entry
 uv run myk-pi-tools memory show                                       # Show memory file
 uv run myk-pi-tools memory migrate                                    # One-time DB→md migration
 uv run myk-pi-tools memory path                                       # Print file path
