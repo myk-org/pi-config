@@ -1,11 +1,12 @@
 """Tests for the memory module."""
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from myk_pi_tools.memory.store import CATEGORY_TO_TOPIC, MemoryFile, _topic_template
+from myk_pi_tools.memory.store import CATEGORY_TO_TOPIC, MemoryFile, _entry_hash, _topic_template
 
 
 @pytest.fixture
@@ -125,6 +126,54 @@ class TestMixedEntries:
         lesson_pos = content.index("A lesson")
         mistake_pos = content.index("A mistake")
         assert lesson_pos < mistake_pos
+
+
+class TestForget:
+    def test_forget_learned_entry(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Some lesson")
+        assert memory_file.forget("lesson", "Some lesson") is True
+        content = (memory_file.file_path / "lessons.md").read_text()
+        assert "Some lesson" not in content
+
+    def test_forget_pinned_entry(self, memory_file: MemoryFile) -> None:
+        memory_file.add_pinned("preference", "Always use uv")
+        assert memory_file.forget("preference", "Always use uv") is True
+        content = (memory_file.file_path / "preferences.md").read_text()
+        assert "Always use uv" not in content
+
+    def test_forget_nonexistent_entry(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Existing lesson")
+        assert memory_file.forget("lesson", "Does not exist") is False
+
+    def test_forget_nonexistent_topic_file(self, memory_file: MemoryFile) -> None:
+        assert memory_file.forget("lesson", "No topic file") is False
+
+    def test_forget_leaves_other_entries(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Keep this")
+        memory_file.add_learned("lesson", "Remove this")
+        assert memory_file.forget("lesson", "Remove this") is True
+        content = (memory_file.file_path / "lessons.md").read_text()
+        assert "Keep this" in content
+        assert "Remove this" not in content
+
+    def test_forget_cleans_scores_file(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Some lesson")
+        line = "- [lesson] Some lesson"
+        scores = {"entries": {_entry_hash(line): {"class": "lesson", "score": 1.0}}}
+        # scores file lives in parent of topics dir
+        scores_path = memory_file.file_path.parent / "memory-scores.json"
+        scores_path.parent.mkdir(parents=True, exist_ok=True)
+        scores_path.write_text(json.dumps(scores))
+
+        assert memory_file.forget("lesson", "Some lesson") is True
+        updated = json.loads(scores_path.read_text())
+        assert _entry_hash(line) not in updated["entries"]
+
+    def test_forget_no_scores_file(self, memory_file: MemoryFile) -> None:
+        memory_file.add_learned("lesson", "Some lesson")
+        scores_path = memory_file.file_path.parent / "memory-scores.json"
+        assert not scores_path.exists()
+        assert memory_file.forget("lesson", "Some lesson") is True
 
 
 class TestMigration:

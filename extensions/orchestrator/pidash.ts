@@ -304,8 +304,12 @@ export function registerPidash(
         if ((heartbeat as any).unref) (heartbeat as any).unref();
 
         // Show status
-        if (ctx.hasUI) {
-          ctx.ui.setStatus("5-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
+        try {
+          if (ctx.hasUI) {
+            ctx.ui.setStatus("5-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
+          }
+        } catch {
+          // ctx may be stale if session was replaced during WebSocket connect
         }
       });
 
