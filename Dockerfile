@@ -77,6 +77,8 @@ RUN chown -R node:node /home/node
 USER node
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
+ENV TERM=xterm-256color
+ENV COLORTERM=truecolor
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
 
 # Cursor auth: create config dir (auth.json mounted or symlinked at runtime)
