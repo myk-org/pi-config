@@ -146,6 +146,7 @@ export function registerPidash(
         connected = true;
         connecting = false;
 
+        try {
         // Register this session
         const git = getGitStatus(ctx.cwd);
         const m = ctx.model;
@@ -273,6 +274,11 @@ export function registerPidash(
 
         // Signal replay is complete so the server can stop suppressing notifications
         try { wsClient.send(JSON.stringify({ type: "replay_complete" })); } catch {}
+
+        } catch (err) {
+          // ctx may be stale if session was replaced during WebSocket connect
+          debugLog(`open handler error (likely stale ctx): ${err}`);
+        }
 
         // Respond to pings (keepalive)
         wsClient.on("ping", () => {
