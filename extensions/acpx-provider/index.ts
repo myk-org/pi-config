@@ -608,6 +608,15 @@ export default function (pi: ExtensionAPI) {
 				}),
 			);
 
+			const safeNotify = (message: string, type: "info" | "warning" | "error") => {
+				try {
+					ctx.ui.notify(message, type);
+				} catch {
+					// ctx may be stale if session was replaced during async init
+					(type === "error" ? console.error : console.log)(`[acpx] ${message}`);
+				}
+			};
+
 			for (const result of results) {
 				if (result.status === "rejected") continue;
 
@@ -630,12 +639,12 @@ export default function (pi: ExtensionAPI) {
 							models,
 							streamSimple: streamAcpx,
 						});
-						ctx.ui.notify(`acpx-${agent}: ${modelIds.length} models discovered`, "info");
+						safeNotify(`acpx-${agent}: ${modelIds.length} models discovered`, "info");
 					} else {
-						ctx.ui.notify(`acpx-${agent}: no models discovered`, "warning");
+						safeNotify(`acpx-${agent}: no models discovered`, "warning");
 					}
 				} catch (err) {
-					ctx.ui.notify(`acpx-${agent}: setup failed: ${err}`, "error");
+					safeNotify(`acpx-${agent}: setup failed: ${err}`, "error");
 				}
 			}
 		})().catch((err) => {
