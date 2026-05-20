@@ -122,17 +122,23 @@ export function registerPidiff(pi: ExtensionAPI): void {
         ws = wsClient;
         connected = true;
         connecting = false;
-        setStatus(ctx);
 
-        // Register this session
-        const branch = getBranch(ctx.cwd);
-        wsClient.send(JSON.stringify({
-          type: "register",
-          pid: process.pid,
-          sessionId: `${process.pid}:${ctx.cwd}`,
-          cwd: ctx.cwd,
-          branch,
-        }));
+        try {
+          setStatus(ctx);
+
+          // Register this session
+          const branch = getBranch(ctx.cwd);
+          wsClient.send(JSON.stringify({
+            type: "register",
+            pid: process.pid,
+            sessionId: `${process.pid}:${ctx.cwd}`,
+            cwd: ctx.cwd,
+            branch,
+          }));
+        } catch {
+          // ctx may be stale if session was replaced during WebSocket connect
+          log("skipped registration — ctx is stale");
+        }
 
         // Keepalive
         wsClient.on("ping", () => { try { wsClient.pong(); } catch {} });
