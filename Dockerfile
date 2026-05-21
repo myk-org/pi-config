@@ -109,6 +109,9 @@ USER node
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
 
+# CodeRabbit CLI — local AI code reviews
+RUN /bin/bash -o pipefail -c "curl -fsSL https://cli.coderabbit.ai/install.sh | sh"
+
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Workaround: re-chown /home/node after cache mounts (buildah bug #6747).

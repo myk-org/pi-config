@@ -72,6 +72,7 @@ pi-config/
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
+│   ├── cr.md
 │   ├── dream.md
 │   ├── implement-and-review.md
 │   ├── implement.md

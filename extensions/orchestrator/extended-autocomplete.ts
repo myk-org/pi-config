@@ -14,6 +14,7 @@
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
  *   /review-handler <Tab>        → --autorabbit
+ *   /cr <Tab>                    → --base <branch>, --base-commit <commit>, --type, --config
  *   /dream-auto <Tab>            → on, off
  *   /pidash <Tab>                → start, stop, restart, status
  */
@@ -78,6 +79,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   const prCache = createCache<AutocompleteItem[]>();
   const branchCache = createCache<AutocompleteItem[]>();
   const tagCache = createCache<AutocompleteItem[]>();
+  const commitCache = createCache<AutocompleteItem[]>();
   const modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   let lastCwd = "";
 
@@ -191,6 +193,29 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     } catch {}
     tagCache.loading = false;
+  }
+
+  async function fetchCommits(cwd: string): Promise<void> {
+    if (isFresh(commitCache) || commitCache.loading) return;
+    commitCache.loading = true;
+    try {
+      const result = await pi.exec(
+        "git", ["log", "-20", "--format=%h|%s"],
+        { cwd, timeout: 5_000 },
+      );
+      if (result.code === 0) {
+        commitCache.data = result.stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0)
+          .map((l) => {
+            const [hash, ...rest] = l.split("|");
+            return { value: hash, label: hash, description: rest.join("|") };
+          });
+        commitCache.timestamp = Date.now();
+      }
+    } catch {}
+    commitCache.loading = false;
   }
 
   // ── Completion definitions ──────────────────────────────────────
@@ -310,6 +335,51 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       return filter(combined, lastPart);
     },
 
+    "cr": (prefix: string) => {
+      const parts = prefix.split(/\s+/);
+      const lastPart = parts[parts.length - 1] || "";
+      const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
+
+      const CR_FLAGS: AutocompleteItem[] = [
+        { value: "--autorabbit", label: "--autorabbit", description: "Auto-fix loop until approved" },
+        { value: "--base ", label: "--base", description: "Base branch for comparison" },
+        { value: "--base-commit ", label: "--base-commit", description: "Base commit for comparison" },
+        { value: "--type ", label: "--type", description: "Review type (all/committed/uncommitted)" },
+        { value: "--config ", label: "--config", description: "Additional instructions file" },
+      ];
+
+      const CR_TYPES: AutocompleteItem[] = [
+        { value: "all", label: "all", description: "Review all changes (default)" },
+        { value: "committed", label: "committed", description: "Review only committed changes" },
+        { value: "uncommitted", label: "uncommitted", description: "Review only uncommitted changes" },
+      ];
+
+      // After --base: show branch completions
+      if (prevPart === "--base") {
+        void fetchBranches(lastCwd);
+        return branchCache.data ? filter(branchCache.data, lastPart) : null;
+      }
+
+      // After --base-commit: show recent commits
+      if (prevPart === "--base-commit") {
+        void fetchCommits(lastCwd);
+        return commitCache.data ? filter(commitCache.data, lastPart) : null;
+      }
+
+      // After --type: show type options
+      if (prevPart === "--type") {
+        return filter(CR_TYPES, lastPart);
+      }
+
+      // After --config: file path, no completions
+      if (prevPart === "--config") return null;
+
+      // Show available flags (exclude already used)
+      const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
+      const availableFlags = CR_FLAGS.filter((f) => !usedFlags.has(f.value.trim()));
+      return filter(availableFlags, lastPart);
+    },
+
     "review-handler": (prefix: string) => {
       return filter([
         { value: "--autorabbit", label: "--autorabbit", description: "Auto-trigger CodeRabbit review" },
@@ -399,7 +469,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler", "cron",
+    "review-local", "release", "review-handler", "cron", "cr",
   ]);
 
   // /external-ai-models-refresh command — clears cache and re-fetches
