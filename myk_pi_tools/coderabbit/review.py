@@ -148,16 +148,16 @@ def run_review(extra_args: list[str]) -> int:
                 rc = proc.returncode
                 _log(f"[cr-review] cr exited rc={rc}")
 
-                if rc != 0 and not findings:
-                    _log(f"[cr-review] cr failed with exit code {rc}")
-                    _out({"type": "error", "message": f"cr exited with code {rc}"})
-                    return rc
-
                 if rate_limited:
                     _log(f"[cr-review] sleeping {wait_seconds}s before retry...")
                     time.sleep(wait_seconds)
                     _log("[cr-review] retrying now...")
                     continue
+
+                if rc != 0 and not findings:
+                    _log(f"[cr-review] cr failed with exit code {rc}")
+                    _out({"type": "error", "message": f"cr exited with code {rc}"})
+                    return rc
 
                 # Output to stdout — what the main AI reads
                 if findings:
