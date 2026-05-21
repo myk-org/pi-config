@@ -16,6 +16,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   curl \
   gnupg \
   jq \
+  unzip \
   ca-certificates \
   git \
   openssh-client \
@@ -108,6 +109,9 @@ USER node
 # Install Cursor Agent CLI and Claude Code (after uv tools)
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
+
+# CodeRabbit CLI — local AI code reviews
+RUN CI=true /bin/bash -o pipefail -c "curl -fsSL https://cli.coderabbit.ai/install.sh | sh"
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 

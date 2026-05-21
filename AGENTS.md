@@ -71,6 +71,7 @@ pi-config/
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── external-ai.md
+│   ├── coderabbit-local-review.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
 │   ├── implement-and-review.md
@@ -100,6 +101,10 @@ pi-config/
 │   ├── ai_cli/
 │   ├── cli.py
 │   ├── coderabbit/
+│   │   ├── commands.py
+│   │   ├── review.py
+│   │   ├── store.py
+│   │   └── validate.py
 │   ├── db/
 │   ├── memory/
 │   ├── pr/
@@ -111,6 +116,7 @@ pi-config/
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
 │   └── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README
