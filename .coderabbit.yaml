@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  poem: false
+  sequence_diagrams: false
+  auto_review:
+    enabled: false  # We use /coderabbit-local-review CLI, not PR auto-review
+  tools:
+    shellcheck:
+      enabled: true
+    ruff:
+      enabled: true
+    hadolint:
+      enabled: true
+    actionlint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    eslint:
+      enabled: true
+    biome:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    # Disable irrelevant linters
+    phpstan:
+      enabled: false
+    phpmd:
+      enabled: false
+    phpcs:
+      enabled: false
+    rubocop:
+      enabled: false
+    swiftlint:
+      enabled: false
+    detekt:
+      enabled: false
+    pmd:
+      enabled: false
+    buf:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    tflint:
+      enabled: false
+    checkov:
+      enabled: false
+    clippy:
+      enabled: false
+knowledge_base:
+  code_guidelines:
+    enabled: true  # Auto-picks up AGENTS.md

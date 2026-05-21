@@ -14,7 +14,7 @@
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
  *   /review-handler <Tab>        → --autorabbit
- *   /cr <Tab>                    → --base <branch>, --base-commit <commit>, --type, --config
+ *   /coderabbit-local-review <Tab>                    → --base <branch>, --base-commit <commit>, --type, --config
  *   /dream-auto <Tab>            → on, off
  *   /pidash <Tab>                → start, stop, restart, status
  */
@@ -335,7 +335,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       return filter(combined, lastPart);
     },
 
-    "cr": (prefix: string) => {
+    "coderabbit-local-review": (prefix: string) => {
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
       const prevPart = parts.length >= 2 ? parts[parts.length - 2] : "";
@@ -469,7 +469,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler", "cron", "cr",
+    "review-local", "release", "review-handler", "cron", "coderabbit-local-review",
   ]);
 
   // /external-ai-models-refresh command — clears cache and re-fetches

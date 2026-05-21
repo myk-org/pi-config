@@ -65,7 +65,7 @@ Single extension that provides:
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
-| `/cr` | Run CodeRabbit CLI review — local AI code review with `--agent` output |
+| `/coderabbit-local-review` | Run CodeRabbit CLI review — local AI code review with `--agent` output |
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
@@ -451,6 +451,7 @@ PI_PIDIFF_ENABLE=false pi
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
 | `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
 | `jq` | JSON processing |
+| `cr` | CodeRabbit CLI — local AI code reviews |
 | `curl` | HTTP requests |
 
 ### What's protected

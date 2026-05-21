@@ -26,6 +26,33 @@ def check(owner_repo: str, pr_number: int) -> None:
     sys.exit(run_check(owner_repo, pr_number))
 
 
+@coderabbit.command("validate")
+def validate() -> None:
+    """Check that cr CLI is installed and authenticated.
+
+    Exits 0 if ready, 1 if not (with clear error message).
+    """
+    from myk_pi_tools.coderabbit.validate import run_validate
+
+    sys.exit(run_validate())
+
+
+@coderabbit.command("review", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def review(args: tuple[str, ...]) -> None:
+    """Run cr review --agent, handle rate limits, return findings or approved.
+
+    Wraps `cr review --agent` with automatic rate limit handling.
+    Any extra ARGS are passed through to `cr review` (e.g. --base main, -t uncommitted).
+    Outputs NDJSON lines: finding events, then a final complete or error event.
+
+    ARGS: Extra flags passed to `cr review` (e.g. --base main --dir /path)
+    """
+    from myk_pi_tools.coderabbit.review import run_review
+
+    sys.exit(run_review(list(args)))
+
+
 @coderabbit.command("trigger")
 @click.argument("owner_repo")
 @click.argument("pr_number", type=int)
@@ -42,3 +69,25 @@ def trigger(owner_repo: str, pr_number: int, wait_seconds: int) -> None:
     from myk_pi_tools.coderabbit.rate_limit import run_trigger
 
     sys.exit(run_trigger(owner_repo, pr_number, wait_seconds))
+
+
+@coderabbit.command("store")
+@click.argument("json_path")
+def store(json_path: str) -> None:
+    """Store a local CodeRabbit review cycle to database.
+
+    JSON_PATH: Path to JSON file with cycle data.
+    """
+    from myk_pi_tools.coderabbit.store import run_store
+
+    sys.exit(run_store(json_path))
+
+
+@coderabbit.command("history")
+@click.option("--branch", default=None, help="Filter by branch name")
+@click.option("--limit", default=20, show_default=True, help="Max sessions to show")
+def history(branch: str | None, limit: int) -> None:
+    """Show history of local CodeRabbit review sessions."""
+    from myk_pi_tools.coderabbit.store import run_history
+
+    sys.exit(run_history(branch=branch, limit=limit))
