@@ -199,14 +199,14 @@ _ERR_INVALID_TAG_MATCH = "Invalid tag-match pattern: {!r}. Only alphanumeric, '.
 
 # Commit subjects that should be excluded from release changelogs
 _CHANGELOG_NOISE_PATTERNS = [
-    re.compile(r"address.*review", re.IGNORECASE),
-    re.compile(r"coderabbit", re.IGNORECASE),
+    re.compile(r"^Merge pull request"),
+    re.compile(r"^Merge branch"),
+    re.compile(r"^address.*review", re.IGNORECASE),
+    re.compile(r"^address.*coderabbit", re.IGNORECASE),
     re.compile(r"^chore:.*checkpoint", re.IGNORECASE),
     re.compile(r"^chore:.*bump version", re.IGNORECASE),
     re.compile(r"regenerate docs", re.IGNORECASE),
     re.compile(r"pre-commit autoupdate", re.IGNORECASE),
-    re.compile(r"^Merge pull request"),
-    re.compile(r"^Merge branch"),
 ]
 
 
