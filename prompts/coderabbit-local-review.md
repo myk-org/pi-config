@@ -27,7 +27,7 @@ Run a local CodeRabbit AI code review via `myk-pi-tools coderabbit review`.
 - `/coderabbit-local-review --base-commit abc123` — Review changes since specific commit
 - `/coderabbit-local-review --type uncommitted` — Review only uncommitted changes
 - `/coderabbit-local-review --type committed` — Review only committed (not pushed) changes
-- `/coderabbit-local-review --config .coderabbit.yaml` — Pass additional instructions file
+- `/coderabbit-local-review --config custom-rules.yaml` — Pass additional instructions file
 
 `--dir` is automatically set to the current working directory — never pass it explicitly.
 
@@ -75,7 +75,9 @@ Build: `uv run myk-pi-tools coderabbit review --dir <cwd> [cleaned args]`
 **Spawn as async subagent:**
 
 - Agent: `worker`
-- Task: `Run: <the exact command from Phase 2>. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+- Task: `Run: <the exact command from Phase 2> 2>/tmp/pi-work/cr-review.log.
+  Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.
+  The stderr is redirected to a log file — do NOT read or include it.`
 - async: true
 - **No timeout** — the CLI handles rate limits with automatic retries. NEVER set a timeout.
 - Name: `CodeRabbit Review`

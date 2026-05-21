@@ -31,6 +31,9 @@ def run_validate() -> int:
     # Check authenticated
     try:
         result = subprocess.run(["cr", "auth", "status", "--agent"], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            print(f"ERROR: cr auth status failed: {result.stderr.strip() or result.stdout.strip()}")
+            return 1
         data = json.loads(result.stdout)
         if not data.get("authenticated"):
             print("ERROR: Not authenticated with CodeRabbit. Run: cr auth login")

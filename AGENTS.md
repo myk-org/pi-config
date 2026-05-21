@@ -71,8 +71,8 @@ pi-config/
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── external-ai.md
-│   ├── coderabbit-rate-limit.md
 │   ├── coderabbit-local-review.md
+│   ├── coderabbit-rate-limit.md
 │   ├── dream.md
 │   ├── implement-and-review.md
 │   ├── implement.md
