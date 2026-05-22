@@ -533,6 +533,8 @@ def _build_body_comment_threads(
     threads: list[dict[str, Any]] = []
     for section_key, thread_type in (
         ("outside_diff", "outside_diff_comment"),
+        ("major", "major_comment"),
+        ("minor", "minor_comment"),
         ("nitpick", "nitpick_comment"),
         ("duplicate", "duplicate_comment"),
     ):
@@ -756,6 +758,24 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
         end_line = thread.get("end_line")
         if review_id is not None and path and line is not None:
             return f"odc:{review_id}:{path}:{line}:{end_line}"
+
+    # Major comments use review_id + location as composite key (stable across reordering)
+    if thread.get("type") == "major_comment":
+        review_id = thread.get("review_id")
+        path = thread.get("path")
+        line = thread.get("line")
+        end_line = thread.get("end_line")
+        if review_id is not None and path and line is not None:
+            return f"mjc:{review_id}:{path}:{line}:{end_line}"
+
+    # Minor comments use review_id + location as composite key (stable across reordering)
+    if thread.get("type") == "minor_comment":
+        review_id = thread.get("review_id")
+        path = thread.get("path")
+        line = thread.get("line")
+        end_line = thread.get("end_line")
+        if review_id is not None and path and line is not None:
+            return f"mnc:{review_id}:{path}:{line}:{end_line}"
 
     # Nitpick comments use review_id + location as composite key (stable across reordering)
     if thread.get("type") == "nitpick_comment":

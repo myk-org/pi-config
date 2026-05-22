@@ -399,7 +399,7 @@ def post_body_comment_replies(
     pr_number: str | int,
     body_comments: dict[str, list[dict[str, Any]]],
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Post consolidated PR comments for body comments (outside_diff, nitpick, duplicate).
+    """Post consolidated PR comments for body comments (outside_diff, major, minor, nitpick, duplicate).
 
     Groups comments by reviewer author and posts one or more PR comments per reviewer
     mentioning the reviewer so they know the comments were reviewed.
@@ -506,6 +506,8 @@ def run(json_path: str) -> None:
     replied_not_resolved_count = 0
     already_posted_count = 0
     outside_diff_count = 0
+    major_count = 0
+    minor_count = 0
     nitpick_count = 0
     duplicate_count = 0
 
@@ -536,10 +538,17 @@ def run(json_path: str) -> None:
             resolved_at = thread_data.get("resolved_at", "") or ""
             path = thread_data.get("path", "unknown") or "unknown"
 
-            # Outside-diff and nitpick comments have no GitHub thread to post to or resolve.
+            # Body-embedded comments (outside-diff, major, minor, nitpick, duplicate)
+            # have no GitHub thread to post to or resolve.
             # They are tracked via the review database only.
             comment_type = thread_data.get("type")
-            if comment_type in ("outside_diff_comment", "nitpick_comment", "duplicate_comment"):
+            if comment_type in (
+                "outside_diff_comment",
+                "major_comment",
+                "minor_comment",
+                "nitpick_comment",
+                "duplicate_comment",
+            ):
                 if status == "pending":
                     pending_count += 1
                     eprint(f"Skipping {category}[{i}] ({path}): {comment_type} status is pending")
@@ -697,6 +706,10 @@ def run(json_path: str) -> None:
             comment_type = comment_data.get("type", "")
             if comment_type == "outside_diff_comment":
                 outside_diff_count += 1
+            elif comment_type == "major_comment":
+                major_count += 1
+            elif comment_type == "minor_comment":
+                minor_count += 1
             elif comment_type == "nitpick_comment":
                 nitpick_count += 1
             elif comment_type == "duplicate_comment":
@@ -711,7 +724,15 @@ def run(json_path: str) -> None:
 
     # Print summary
     total_resolved = addressed_count + skipped_count
-    total_processed = total_resolved + replied_not_resolved_count + outside_diff_count + nitpick_count + duplicate_count
+    total_processed = (
+        total_resolved
+        + replied_not_resolved_count
+        + outside_diff_count
+        + major_count
+        + minor_count
+        + nitpick_count
+        + duplicate_count
+    )
     eprint(f"Posted {total_processed} comment(s)")
     eprint("")
     eprint("=== Summary ===")
@@ -723,6 +744,12 @@ def run(json_path: str) -> None:
 
     if outside_diff_count > 0:
         eprint(f"  Outside-diff: {outside_diff_count} (replied via consolidated PR comment)")
+
+    if major_count > 0:
+        eprint(f"  Major: {major_count} (replied via consolidated PR comment)")
+
+    if minor_count > 0:
+        eprint(f"  Minor: {minor_count} (replied via consolidated PR comment)")
 
     if nitpick_count > 0:
         eprint(f"  Nitpick: {nitpick_count} (replied via consolidated PR comment)")
