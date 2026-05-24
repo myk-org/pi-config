@@ -158,20 +158,19 @@ export function buildSituationReport(
   // Sort entries by score descending within each category
   entries.sort((a, b) => b.scored.score - a.scored.score);
 
-  // Build sections
+  // Build body sections first, then compute actual capacity from emitted content
   let charBudget = tokenBudget * CHARS_PER_TOKEN;
-  const reportSections: string[] = [];
+  const bodySections: string[] = [];
 
-  // Header
-  const header = "# Project Memory\n";
-  charBudget -= header.length;
-  reportSections.push(header);
+  // Reserve budget for header + possible warning
+  const headerReserve = 180;
+  charBudget -= headerReserve;
 
   // Pinned entries always come first (no budget limit)
   const pinned = entries.filter((e) => e.isPinned);
   if (pinned.length > 0) {
     const pinnedSection = formatSection("Pinned", pinned);
-    reportSections.push(pinnedSection);
+    bodySections.push(pinnedSection);
     charBudget -= pinnedSection.length;
   }
 
@@ -217,10 +216,41 @@ export function buildSituationReport(
     );
 
     if (section) {
-      reportSections.push(section);
+      bodySections.push(section);
       charBudget -= section.length;
     }
   }
+
+  // Build header and optional warning, then include their sizes in the capacity calculation
+  const bodyContent = bodySections.join("\n");
+
+  // Build header placeholder to measure its approximate length
+  // (actual % will be computed after including header+warning)
+  const headerTemplate = `# Project Memory [XX% — XXXX/${tokenBudget} tokens]\n`;
+  const warningText = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
+
+  // Estimate: include header; include warning if body alone suggests >80%
+  const bodyChars = bodyContent.length;
+  const roughUsage = (bodyChars + headerTemplate.length) / CHARS_PER_TOKEN / tokenBudget;
+  const includeWarning = roughUsage >= 0.8;
+
+  // Include header + warning in the actual usage
+  const headerChars = headerTemplate.length + (includeWarning ? warningText.length : 0);
+  const actualCharsUsed = bodyChars + headerChars;
+  const totalTokensUsed = Math.floor(actualCharsUsed / CHARS_PER_TOKEN);
+  const usagePercent = Math.floor((totalTokensUsed / tokenBudget) * 100);
+
+  // Build final report: header first, then body
+  const reportSections: string[] = [];
+  const header = `# Project Memory [${usagePercent}% — ${totalTokensUsed}/${tokenBudget} tokens]\n`;
+  reportSections.push(header);
+
+  // Consolidation warning when above 80%
+  if (usagePercent >= 80) {
+    reportSections.push(warningText);
+  }
+
+  reportSections.push(...bodySections);
 
   return reportSections.join("\n");
 }

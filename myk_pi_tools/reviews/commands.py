@@ -31,21 +31,27 @@ def reviews_fetch(review_url: str) -> None:
 
 @reviews.command("poll")
 @click.argument("review_url", required=False, default="")
-def reviews_poll(review_url: str) -> None:
-    """Poll for reviews with automatic CodeRabbit rate limit handling.
+@click.option(
+    "--source",
+    type=click.Choice(["coderabbit", "qodo"]),
+    default="coderabbit",
+    help="Which reviewer to poll for (default: coderabbit)",
+)
+def reviews_poll(review_url: str, source: str) -> None:
+    """Poll for reviews until new actionable comments appear.
 
-    Atomically combines rate limit check, trigger, and fetch into a single
-    command. If CodeRabbit is rate limited, waits and triggers re-review
-    before fetching.
+    Loops internally until something actionable happens, then returns
+    the fetch JSON. Behavior depends on --source:
 
-    Same output format as 'reviews fetch'.
+    - coderabbit: Checks approval, handles rate limits, triggers re-review
+    - qodo: Fetches and checks for new Qodo comments (no rate limit handling)
 
     REVIEW_URL: Optional specific review URL for context
     (e.g., #pullrequestreview-XXX or #discussion_rXXX)
     """
     from myk_pi_tools.reviews.poll import run
 
-    exit_code = run(review_url)
+    exit_code = run(review_url, source=source)
     sys.exit(exit_code)
 
 

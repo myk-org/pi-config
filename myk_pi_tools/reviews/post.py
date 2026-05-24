@@ -399,7 +399,7 @@ def post_body_comment_replies(
     pr_number: str | int,
     body_comments: dict[str, list[dict[str, Any]]],
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Post consolidated PR comments for body comments (outside_diff, major, minor, nitpick, duplicate).
+    """Post consolidated PR comments for body comments (outside_diff, major, minor, nitpick, duplicate, qodo sticky).
 
     Groups comments by reviewer author and posts one or more PR comments per reviewer
     mentioning the reviewer so they know the comments were reviewed.
@@ -510,6 +510,7 @@ def run(json_path: str) -> None:
     minor_count = 0
     nitpick_count = 0
     duplicate_count = 0
+    qodo_sticky_count = 0
 
     # Collect body comments for consolidated PR comments
     body_comments_by_reviewer: dict[str, list[dict[str, Any]]] = {}
@@ -538,7 +539,7 @@ def run(json_path: str) -> None:
             resolved_at = thread_data.get("resolved_at", "") or ""
             path = thread_data.get("path", "unknown") or "unknown"
 
-            # Body-embedded comments (outside-diff, major, minor, nitpick, duplicate)
+            # Body-embedded comments (outside-diff, major, minor, nitpick, duplicate, qodo sticky)
             # have no GitHub thread to post to or resolve.
             # They are tracked via the review database only.
             comment_type = thread_data.get("type")
@@ -548,6 +549,10 @@ def run(json_path: str) -> None:
                 "minor_comment",
                 "nitpick_comment",
                 "duplicate_comment",
+                "qodo_bug",
+                "qodo_rule_violation",
+                "qodo_requirement_gap",
+                "qodo_finding",
             ):
                 if status == "pending":
                     pending_count += 1
@@ -714,6 +719,8 @@ def run(json_path: str) -> None:
                 nitpick_count += 1
             elif comment_type == "duplicate_comment":
                 duplicate_count += 1
+            elif comment_type in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
+                qodo_sticky_count += 1
 
         body_comment_failed = total_body - len(body_updates)
         if body_comment_failed > 0:
@@ -732,6 +739,7 @@ def run(json_path: str) -> None:
         + minor_count
         + nitpick_count
         + duplicate_count
+        + qodo_sticky_count
     )
     eprint(f"Posted {total_processed} comment(s)")
     eprint("")
@@ -756,6 +764,9 @@ def run(json_path: str) -> None:
 
     if duplicate_count > 0:
         eprint(f"  Duplicate: {duplicate_count} (replied via consolidated PR comment)")
+
+    if qodo_sticky_count > 0:
+        eprint(f"  Qodo sticky: {qodo_sticky_count} (replied via consolidated PR comment)")
 
     if pending_count > 0:
         eprint(f"  Pending: {pending_count} threads (not processed yet)")
