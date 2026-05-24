@@ -207,8 +207,10 @@ Known extension commands:
    ---
    ```
 
-2. **MUST include the bug reporting policy blockquote** immediately after the
-   frontmatter — this is mandatory for every prompt template:
+2. **MUST include the bug reporting policy blockquote** after the
+   Raw Arguments section — this is mandatory for every prompt template.
+   The Raw Arguments block (`## Raw Arguments` + `$ARGUMENTS`) comes first
+   (pi substitutes it at load time), then the command title, then the policy:
 
    ```markdown
    > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug while executing this command — DO NOT work around it silently. Ask the user: "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
