@@ -74,16 +74,19 @@ The process is iterative:
 
 Before declaring test failures as blockers, compare against the baseline:
 
-1. Save current changes: `git diff > /tmp/pi-work/baseline.patch`
-2. Reset to clean state: `git checkout .`
+1. Save ALL current changes (staged + unstaged): `git diff HEAD > /tmp/pi-work/$(basename $PWD)/baseline.patch`
+2. Reset to clean state: `git checkout . && git reset HEAD .`
 3. Run tests → record baseline failure count
-4. Restore changes: `git apply /tmp/pi-work/baseline.patch`
-5. Run tests → record current failure count
-6. **Only NEW failures** (current minus baseline) block the review
-7. Pre-existing failures are noted in the review but do not block
+4. Restore changes: `git apply /tmp/pi-work/$(basename $PWD)/baseline.patch && rm /tmp/pi-work/$(basename $PWD)/baseline.patch`
+5. Re-stage previously staged files
+6. Run tests → record current failure count
+7. **Only NEW failures** (current minus baseline) block the review
+8. Pre-existing failures are noted in the review but do not block
+
+If patch apply fails, try `git apply --3way`. If that also fails, skip baseline
+comparison and note "baseline comparison unavailable" — do NOT block on all failures.
 
 This prevents blocking on test failures that existed before the PR.
-If the patch apply fails, skip baseline comparison and treat all failures as blocking.
 
 ## Staged Review Mode (Automated Workflows)
 
