@@ -168,6 +168,26 @@ You are the curator of your own memory.
 
 ---
 
+## Per-Turn Self-Improvement (MANDATORY)
+
+**After EVERY response, ask yourself:** "Did this turn contain something worth remembering?"
+
+Check for these triggers and act IMMEDIATELY — don't wait for dreaming:
+
+| What happened | Action |
+|---------------|--------|
+| User corrected you | `memory_add(text: "...", category: "lesson")` |
+| You tried something that failed | `memory_add(text: "...", category: "mistake")` |
+| User said "don't do X" or "always do Y" | `memory_add(text: "...", category: "preference")` |
+| A PR was merged | `memory_add(text: "...", category: "done")` |
+| You discovered a non-obvious pattern | `memory_add(text: "...", category: "pattern")` |
+| A technical decision was made | `memory_add(text: "...", category: "decision")` |
+
+**Do NOT wait for `/dream` or session shutdown.** Save immediately when you notice it.
+The difference between a useful memory system and a useless one is whether you actually write to it.
+
+---
+
 ## CLI
 
 ```bash

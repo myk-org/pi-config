@@ -205,20 +205,19 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
       }
 
-      // Build entry line
+      // Canonical line (no pinned marker) — used for hashing/scoring
+      const canonicalLine = `- [${category}] ${text}`;
+      // File line — includes pinned marker for display
       const entryLine = isPinned
         ? `- [${category}] ${text} *(pinned)*`
-        : `- [${category}] ${text}`;
+        : canonicalLine;
 
       // Check for duplicates
       const topicEntries = readAllTopicEntries(cwd);
       for (const te of topicEntries) {
         if (te.text === text && te.category === category) {
-          // Reinforce instead of duplicating
-          const reinforceLine = te.pinned
-            ? `- [${category}] ${text} *(pinned)*`
-            : `- [${category}] ${text}`;
-          reinforce(cwd, reinforceLine);
+          // Reinforce instead of duplicating — always use canonical line (no pinned marker)
+          reinforce(cwd, canonicalLine);
           return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
         }
       }
@@ -245,9 +244,9 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       content = content.trimEnd() + "\n" + entryLine + "\n";
       writeFileSync(topicPath, content, "utf-8");
 
-      // Add score entry
+      // Add score entry — always hash the canonical line (no pinned marker)
       const scores = loadScores(cwd);
-      const hash = entryHash(entryLine);
+      const hash = entryHash(canonicalLine);
       scores.entries[hash] = {
         class: category,
         score: isPinned ? PINNED_SCORE : 1.0,
@@ -324,9 +323,10 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
       writeFileSync(topicPath, cleaned, "utf-8");
 
-      // Clean up scores
+      // Clean up scores — always use canonical line for hash (no pinned marker)
       const scores = loadScores(cwd);
-      const hash = entryHash(removedLine);
+      const canonicalLine = `- [${category}] ${text}`;
+      const hash = entryHash(canonicalLine);
       if (scores.entries[hash]) {
         delete scores.entries[hash];
         saveScores(cwd, scores);
