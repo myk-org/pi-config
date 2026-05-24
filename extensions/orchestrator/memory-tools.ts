@@ -25,7 +25,7 @@ import {
   PINNED_SCORE,
   type ScoredEntry,
 } from "./memory-scoring.js";
-import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, type TopicInfo } from "./memory-tree.js";
+import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
@@ -240,8 +240,19 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         content = `# ${title}\n`;
       }
 
+      // Check topic size cap before writing
+      const newContent = content.trimEnd() + "\n" + entryLine + "\n";
+      if (newContent.length > MAX_TOPIC_CHARS) {
+        return {
+          content: [{
+            type: "text",
+            text: `Topic "${topicName}" would exceed size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars). Consolidate or remove entries first using memory_remove.`,
+          }],
+        };
+      }
+
       // Append entry
-      content = content.trimEnd() + "\n" + entryLine + "\n";
+      content = newContent;
       writeFileSync(topicPath, content, "utf-8");
 
       // Add score entry — always hash the canonical line (no pinned marker)

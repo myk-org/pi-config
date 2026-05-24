@@ -221,9 +221,22 @@ export function buildSituationReport(
     }
   }
 
-  // Calculate capacity from actual emitted content (after truncation)
+  // Build header and optional warning, then include their sizes in the capacity calculation
   const bodyContent = bodySections.join("\n");
-  const actualCharsUsed = bodyContent.length;
+
+  // Build header placeholder to measure its approximate length
+  // (actual % will be computed after including header+warning)
+  const headerTemplate = `# Project Memory [XX% — XXXX/${tokenBudget} tokens]\n`;
+  const warningText = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
+
+  // Estimate: include header; include warning if body alone suggests >80%
+  const bodyChars = bodyContent.length;
+  const roughUsage = (bodyChars + headerTemplate.length) / CHARS_PER_TOKEN / tokenBudget;
+  const includeWarning = roughUsage >= 0.8;
+
+  // Include header + warning in the actual usage
+  const headerChars = headerTemplate.length + (includeWarning ? warningText.length : 0);
+  const actualCharsUsed = bodyChars + headerChars;
   const totalTokensUsed = Math.floor(actualCharsUsed / CHARS_PER_TOKEN);
   const usagePercent = Math.floor((totalTokensUsed / tokenBudget) * 100);
 
@@ -234,8 +247,7 @@ export function buildSituationReport(
 
   // Consolidation warning when above 80%
   if (usagePercent >= 80) {
-    const warning = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
-    reportSections.push(warning);
+    reportSections.push(warningText);
   }
 
   reportSections.push(...bodySections);

@@ -21,7 +21,7 @@ import {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /** Max chars per topic file (~3000 tokens × 4 chars/token) */
-const MAX_TOPIC_CHARS = 12000;
+export const MAX_TOPIC_CHARS = 12000;
 
 /** Topic mapping: which categories go into which topic files */
 export const CATEGORY_TO_TOPIC: Record<MemoryCategory, string> = {
