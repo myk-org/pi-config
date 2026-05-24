@@ -204,7 +204,7 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
     try {
       const summary = event?.compactionEntry?.summary;
       if (!summary || summary.length < 50) return;
-      const sessionId = `session-${Date.now()}`;
+      const sessionId = ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
       indexSessionSummary(ctx.cwd, sessionId, summary);
     } catch (err) {
       console.error("[session-search] indexing failed on compact:", err);
