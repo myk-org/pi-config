@@ -36,6 +36,28 @@ For each issue, provide:
 - Which files and lines need modification
 - Testing approach to verify the fix
 
+## Rule of Three (MANDATORY)
+
+After **3 failed fix attempts**, STOP trying to fix and question the architecture:
+
+- Each failed fix reveals information — 3 failures indicate an architectural problem, not a code bug
+- DO NOT attempt fix #4 without discussing architecture with the user
+- Report: "3 fixes failed. This suggests an architectural issue, not a code bug. Here's what each attempt revealed: [list]. Recommend: [architectural change]."
+
+## Systematic Debugging
+
+Follow the systematic-debugging skill for all investigations.
+Load it with: `read ~/.agents/skills/systematic-debugging/SKILL.md`
+
+The 4 phases are:
+
+1. **Root cause investigation** — read errors, reproduce, check changes, trace data flow
+2. **Pattern analysis** — find working examples, compare differences
+3. **Hypothesis and testing** — one variable at a time, minimal change
+4. **Implementation** — regression test first, then fix root cause
+
+**Iron Law: NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.**
+
 **Important:** This agent diagnoses only — it does not modify files.
 The orchestrator should delegate the actual fix to the appropriate
 language specialist based on the debugger's findings.
