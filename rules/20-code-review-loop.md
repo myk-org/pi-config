@@ -75,26 +75,29 @@ The process is iterative:
 Before declaring test failures as blockers, compare against the baseline:
 
 ```bash
-# 1. Ensure temp dir exists
-mkdir -p /tmp/pi-work/$(basename $PWD)
+BASELINE_DIR="/tmp/pi-work/$(basename "$PWD")"
+mkdir -p "$BASELINE_DIR"
 
-# 2. Save ALL current changes (staged + unstaged)
-git diff HEAD > /tmp/pi-work/$(basename $PWD)/baseline.patch
+# 1. Save ALL changes (staged + unstaged + untracked)
+git diff HEAD > "$BASELINE_DIR/baseline.patch"
+git ls-files --others --exclude-standard > "$BASELINE_DIR/untracked.list"
 
-# 3. Reset to clean state (both index AND working tree)
+# 2. Reset to clean state
 git reset --hard HEAD
+# Remove untracked files listed (if any)
+xargs -r rm -f < "$BASELINE_DIR/untracked.list" 2>/dev/null || true
 
-# 4. Run tests → record baseline failure count
+# 3. Run tests → record baseline failure count
 # <run tests here>
 
-# 5. Restore changes
-git apply /tmp/pi-work/$(basename $PWD)/baseline.patch \
-  || git apply --3way /tmp/pi-work/$(basename $PWD)/baseline.patch
+# 4. Restore changes
+git apply "$BASELINE_DIR/baseline.patch" \
+  || git apply --3way "$BASELINE_DIR/baseline.patch"
 
-# 6. Clean up patch file
-rm -f /tmp/pi-work/$(basename $PWD)/baseline.patch
+# 5. Clean up
+rm -f "$BASELINE_DIR/baseline.patch" "$BASELINE_DIR/untracked.list"
 
-# 7. Run tests → record current failure count
+# 6. Run tests → record current failure count
 # <run tests here>
 ```
 
@@ -102,6 +105,7 @@ rm -f /tmp/pi-work/$(basename $PWD)/baseline.patch
 - Pre-existing failures are noted in the review but do not block
 - If both `git apply` and `git apply --3way` fail, skip baseline comparison
   and note "baseline comparison unavailable" — do NOT block on all failures
+- Untracked files are saved/restored separately since `git diff` doesn't capture them
 
 This prevents blocking on test failures that existed before the PR.
 
