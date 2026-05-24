@@ -352,26 +352,32 @@ Qodo if autoqodo, both if both flags active).
 
 #### 9a+9b: Wait and Fetch (combined async)
 
-**If autorabbit is ON:** `reviews poll` loops internally for CodeRabbit. Spawn ONE async worker:
+**Always pass `--source` explicitly. No defaults.**
+
+**If autorabbit is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+- Task: `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
-**If autoqodo is ON (without autorabbit):** `reviews fetch` checks for new Qodo comments. Spawn ONE async worker:
+**If autoqodo is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews fetch [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+- Task: `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
+- **No timeout** — the poll loops internally until new Qodo comments appear. NEVER set a timeout.
 
-**If BOTH are ON:** Spawn `reviews poll` (handles both CodeRabbit rate limits and general fetch).
-Use the same spawn as the autorabbit-only case above.
+**If BOTH are ON:** Spawn TWO async workers in parallel:
+
+1. `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+1. `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+
+When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn that agent.
+The other agent keeps running independently.
 
 **While waiting for the async result**, the session remains interactive — the user
-can continue working. When the result surfaces, process it based on which command was used:
-
-**For `reviews poll` result** (autorabbit ON, or both ON):
+can continue working. When the result surfaces, process it:
 
 Check the poll RAW output (not the worker's summary — look for the exact JSON string):
 
@@ -381,12 +387,6 @@ Check the poll RAW output (not the worker's summary — look for the exact JSON 
   Do NOT exit because the worker says "approved" or "0 comments" in its summary.
 - If **new comments found from auto-approved sources**: Run Phases 2-8 again with
   auto-approve behavior for the relevant sources.
-  After completing, spawn another async worker (go to 9a+9b again).
-
-**For `reviews fetch` result** (autoqodo ON without autorabbit):
-
-- If **0 Qodo comments found**: wait 2 minutes, then re-fetch (spawn another async worker, go to 9a+9b again).
-- If **new Qodo comments found**: Run Phases 2-8 with auto-approve behavior for Qodo.
   After completing, spawn another async worker (go to 9a+9b again).
 
 #### 9c: Exit Conditions (MANDATORY)

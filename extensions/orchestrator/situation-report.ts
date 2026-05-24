@@ -163,7 +163,7 @@ export function buildSituationReport(
   const bodySections: string[] = [];
 
   // Reserve budget for header + possible warning
-  const headerReserve = 120;
+  const headerReserve = 180;
   charBudget -= headerReserve;
 
   // Pinned entries always come first (no budget limit)

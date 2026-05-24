@@ -65,7 +65,64 @@ def _has_actionable_comments(pr_number: str) -> bool:
     return False
 
 
-def run(review_url: str = "") -> int:
+def _has_actionable_qodo_comments(pr_number: str) -> bool:
+    """Check if fetched reviews have actionable Qodo comments (not auto-skipped)."""
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+    json_path = tmp_base / "pi-work" / f"pr-{pr_number}-reviews.json"
+
+    if not json_path.exists():
+        return True
+
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return True
+
+    for comment in data.get("qodo", []):
+        if not comment.get("is_auto_skipped"):
+            return True
+
+    return False
+
+
+def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
+    """Poll for Qodo reviews in a loop until new comments appear.
+
+    Simpler than CodeRabbit polling — no rate limits, no approval check.
+    Just fetch, check for actionable qodo comments, sleep if none.
+    """
+    owner_repo = f"{owner}/{repo}"
+    cycle = 0
+
+    while True:
+        cycle += 1
+        print_stderr(f"[poll] Cycle {cycle} for {owner_repo}#{pr_number} (source: qodo)...")
+
+        # Fetch reviews
+        print_stderr("[poll] Fetching reviews...")
+        fetch_result = fetch_run(review_url)
+
+        if fetch_result == 0:
+            has_actionable = _has_actionable_qodo_comments(pr_number)
+            if has_actionable:
+                print_stderr("[poll] Found actionable Qodo comments.")
+                return 0
+            print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
+        else:
+            print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
+
+        # No actionable result — sleep and loop
+        print_stderr(f"[poll] No new Qodo comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
+        time.sleep(_POLL_SLEEP_SECONDS)
+
+
+def run(review_url: str = "", source: str = "coderabbit") -> int:
     """Poll for reviews in a loop until approval or new comments.
 
     Steps (repeated in a loop):
@@ -77,8 +134,13 @@ def run(review_url: str = "") -> int:
 
     Returns exit code (0 = success, 1 = error).
     """
-    # Step 1: Get PR info
+    # Get PR info
     owner, repo, pr_number = get_pr_info(review_url)
+
+    if source == "qodo":
+        return _run_qodo_poll(review_url, owner, repo, pr_number)
+
+    # CodeRabbit poll (source == "coderabbit" or "all")
     owner_repo = f"{owner}/{repo}"
     cycle = 0
     resume_attempts = 0

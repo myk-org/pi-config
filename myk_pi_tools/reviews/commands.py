@@ -31,7 +31,13 @@ def reviews_fetch(review_url: str) -> None:
 
 @reviews.command("poll")
 @click.argument("review_url", required=False, default="")
-def reviews_poll(review_url: str) -> None:
+@click.option(
+    "--source",
+    type=click.Choice(["coderabbit", "qodo", "all"]),
+    default="coderabbit",
+    help="Which reviewer to poll for (default: coderabbit)",
+)
+def reviews_poll(review_url: str, source: str) -> None:
     """Poll for reviews with automatic CodeRabbit rate limit handling.
 
     Atomically combines rate limit check, trigger, and fetch into a single
@@ -45,7 +51,7 @@ def reviews_poll(review_url: str) -> None:
     """
     from myk_pi_tools.reviews.poll import run
 
-    exit_code = run(review_url)
+    exit_code = run(review_url, source=source)
     sys.exit(exit_code)
 
 
