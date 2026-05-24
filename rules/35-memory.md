@@ -228,3 +228,23 @@ Dreaming is a **self-contained action** — the LLM worker:
 
 - **ALWAYS run dreaming as async + fireAndForget** — never block the session, never inject results into conversation
 - Tell the user: "Running memory consolidation in background..."
+
+---
+
+## Skill Creation (Procedural Memory)
+
+Memory stores facts. **Skills store procedures.**
+
+After completing a multi-step workflow that involved non-obvious steps,
+offer to save it as a reusable skill using `/create-skill <name>`.
+
+**Trigger:** After ANY successful workflow that took 3+ steps and involved
+discovery (trial-and-error, debugging, or non-obvious commands), ask:
+
+> "This workflow could be saved as a reusable skill. Want me to run `/create-skill <name>`?"
+
+**Do NOT create skills for:**
+
+- Simple one-step tasks
+- Standard workflows already covered by existing skills
+- Tasks that are unlikely to recur
