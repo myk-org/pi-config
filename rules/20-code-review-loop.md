@@ -74,14 +74,16 @@ The process is iterative:
 
 Before declaring test failures as blockers, compare against the baseline:
 
-1. Stash changes: `git stash`
-2. Run tests → record baseline failure count
-3. Pop stash: `git stash pop`
-4. Run tests → record current failure count
-5. **Only NEW failures** (current minus baseline) block the review
-6. Pre-existing failures are noted in the review but do not block
+1. Save current changes: `git diff > /tmp/pi-work/baseline.patch`
+2. Reset to clean state: `git checkout .`
+3. Run tests → record baseline failure count
+4. Restore changes: `git apply /tmp/pi-work/baseline.patch`
+5. Run tests → record current failure count
+6. **Only NEW failures** (current minus baseline) block the review
+7. Pre-existing failures are noted in the review but do not block
 
 This prevents blocking on test failures that existed before the PR.
+If the patch apply fails, skip baseline comparison and treat all failures as blocking.
 
 ## Staged Review Mode (Automated Workflows)
 

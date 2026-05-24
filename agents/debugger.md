@@ -47,7 +47,7 @@ After **3 failed fix attempts**, STOP trying to fix and question the architectur
 ## Systematic Debugging
 
 Follow the systematic-debugging skill for all investigations.
-Load it with: `read ~/.agents/skills/systematic-debugging/SKILL.md`
+This skill is available as `systematic-debugging` — load it when debugging.
 
 The 4 phases are:
 
