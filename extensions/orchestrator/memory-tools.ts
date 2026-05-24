@@ -4,6 +4,9 @@
  * Registers pi tools that the LLM can call to interact with the memory system:
  * - memory_search: search memories by keyword
  * - memory_reinforce: reinforce an existing memory (bump evidence)
+ * - memory_add: add a new memory entry
+ * - memory_remove: remove an outdated or incorrect memory entry
+ * - memory_topics: list all memory topic files with hotness scores
  *
  * Architecture inspired by OpenHuman (https://github.com/tinyhumansai/openhuman).
  * Clean-room TypeScript implementation under MIT — not a code translation.
@@ -11,13 +14,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   loadScores,
+  saveScores,
   entryHash,
   reinforce,
   getActiveEntries,
+  PINNED_SCORE,
+  type ScoredEntry,
 } from "./memory-scoring.js";
-import { listTopics, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
+import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, type TopicInfo } from "./memory-tree.js";
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
@@ -162,6 +170,171 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       const text = `Memory topics (${topics.length}):\n\n${lines.join("\n")}`;
       return { content: [{ type: "text", text }] };
+    },
+  });
+
+  // ── memory_add ──────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "memory_add",
+    label: "Memory Add",
+    description:
+      "Add a new memory entry. Use proactively when you learn something worth " +
+      "remembering: user preferences, environment facts, corrections, conventions, " +
+      "completed work. Keep entries short (one line, ~100 chars max), specific, and actionable.",
+    parameters: Type.Object({
+      text: Type.String({ description: "The memory entry text (short, specific, actionable)" }),
+      category: Type.String({
+        description: "Category: preference, lesson, pattern, decision, done, mistake",
+      }),
+      pinned: Type.Optional(
+        Type.Boolean({
+          description: "Pin this memory (never decays, never removed by dreaming). Only when user explicitly says 'remember this'.",
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx.cwd;
+      const category = params.category;
+      const text = params.text;
+      const isPinned = params.pinned ?? false;
+
+      // Validate category
+      const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
+      if (!validCategories.includes(category)) {
+        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+      }
+
+      // Build entry line
+      const entryLine = isPinned
+        ? `- [${category}] ${text} *(pinned)*`
+        : `- [${category}] ${text}`;
+
+      // Check for duplicates
+      const topicEntries = readAllTopicEntries(cwd);
+      for (const te of topicEntries) {
+        if (te.text === text && te.category === category) {
+          // Reinforce instead of duplicating
+          const reinforceLine = te.pinned
+            ? `- [${category}] ${text} *(pinned)*`
+            : `- [${category}] ${text}`;
+          reinforce(cwd, reinforceLine);
+          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
+        }
+      }
+
+      const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
+      const topicsDir = join(cwd, ".pi", "memory", "topics");
+      const topicPath = join(topicsDir, `${topicName}.md`);
+
+      // Ensure directory exists
+      if (!existsSync(topicsDir)) {
+        mkdirSync(topicsDir, { recursive: true });
+      }
+
+      // Read or create topic file
+      let content = "";
+      if (existsSync(topicPath)) {
+        content = readFileSync(topicPath, "utf-8");
+      } else {
+        const title = topicName.replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+        content = `# ${title}\n`;
+      }
+
+      // Append entry
+      content = content.trimEnd() + "\n" + entryLine + "\n";
+      writeFileSync(topicPath, content, "utf-8");
+
+      // Add score entry
+      const scores = loadScores(cwd);
+      const hash = entryHash(entryLine);
+      scores.entries[hash] = {
+        class: category,
+        score: isPinned ? PINNED_SCORE : 1.0,
+        evidenceCount: 1,
+        cue: "explicit",
+        firstSeen: new Date().toISOString(),
+        lastReinforced: new Date().toISOString(),
+        userState: isPinned ? "pinned" : "auto",
+        lifecycle: "active",
+      } as ScoredEntry;
+      saveScores(cwd, scores);
+
+      const pin = isPinned ? " (pinned)" : "";
+      return {
+        content: [{ type: "text", text: `Added: [${category}] ${text}${pin}` }],
+      };
+    },
+  });
+
+  // ── memory_remove ────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "memory_remove",
+    label: "Memory Remove",
+    description:
+      "Remove a memory entry that is no longer relevant or accurate. " +
+      "Use when information is outdated, wrong, or superseded by a newer entry.",
+    parameters: Type.Object({
+      text: Type.String({
+        description: "The exact text of the memory entry to remove (without category prefix)",
+      }),
+      category: Type.String({
+        description: "Category: preference, lesson, pattern, decision, done, mistake",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx.cwd;
+      const category = params.category;
+      const text = params.text;
+
+      // Validate category
+      const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
+      if (!validCategories.includes(category)) {
+        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+      }
+
+      const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
+      const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+
+      if (!existsSync(topicPath)) {
+        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }] };
+      }
+
+      const content = readFileSync(topicPath, "utf-8");
+      const pinnedLine = `- [${category}] ${text} *(pinned)*`;
+      const learnedLine = `- [${category}] ${text}`;
+
+      // Find which line matches
+      const lines = content.split("\n");
+      let removedLine: string | null = null;
+      for (const candidate of [pinnedLine, learnedLine]) {
+        if (lines.some(l => l.trimEnd() === candidate)) {
+          removedLine = candidate;
+          break;
+        }
+      }
+
+      if (!removedLine) {
+        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
+      }
+
+      // Remove the line and collapse consecutive blank lines
+      const newLines = lines.filter(l => l.trimEnd() !== removedLine);
+      const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
+      writeFileSync(topicPath, cleaned, "utf-8");
+
+      // Clean up scores
+      const scores = loadScores(cwd);
+      const hash = entryHash(removedLine);
+      if (scores.entries[hash]) {
+        delete scores.entries[hash];
+        saveScores(cwd, scores);
+      }
+
+      return {
+        content: [{ type: "text", text: `Removed: [${category}] ${text}` }],
+      };
     },
   });
 }

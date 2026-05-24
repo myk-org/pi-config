@@ -162,10 +162,21 @@ export function buildSituationReport(
   let charBudget = tokenBudget * CHARS_PER_TOKEN;
   const reportSections: string[] = [];
 
-  // Header
-  const header = "# Project Memory\n";
+  // Calculate capacity
+  const totalEntryChars = entries.reduce((sum, e) => sum + `- [${e.category}] ${e.text}`.length, 0);
+  const totalTokensUsed = Math.round(totalEntryChars / CHARS_PER_TOKEN);
+  const usagePercent = Math.round((totalTokensUsed / tokenBudget) * 100);
+
+  const header = `# Project Memory [${usagePercent}% — ${totalTokensUsed}/${tokenBudget} tokens]\n`;
   charBudget -= header.length;
   reportSections.push(header);
+
+  // Consolidation warning when above 80%
+  if (usagePercent >= 80) {
+    const warning = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
+    charBudget -= warning.length;
+    reportSections.push(warning);
+  }
 
   // Pinned entries always come first (no budget limit)
   const pinned = entries.filter((e) => e.isPinned);

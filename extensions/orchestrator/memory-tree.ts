@@ -24,7 +24,7 @@ import {
 const MAX_TOPIC_CHARS = 12000;
 
 /** Topic mapping: which categories go into which topic files */
-const CATEGORY_TO_TOPIC: Record<MemoryCategory, string> = {
+export const CATEGORY_TO_TOPIC: Record<MemoryCategory, string> = {
   preference: "preferences",
   lesson: "lessons",
   pattern: "patterns",

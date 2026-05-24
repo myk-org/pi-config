@@ -57,11 +57,13 @@ pi-config/
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
+│   │   ├── session-search.ts            # Keyword search over past conversation summaries
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command — unified session status snapshot
 │   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
+│   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
 │   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
@@ -262,6 +264,25 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Each topic limited to ~3000 tokens
 - Topics have hotness scores (reinforcement frequency)
 - Cold topics archived automatically (no reinforcement for 2× half-life)
+
+**Memory Tools** (`memory-tools.ts`):
+
+- `memory_search`: keyword search across all topic entries
+- `memory_reinforce`: bump evidence count to prevent decay
+- `memory_add`: LLM-initiated memory writes (pinned or learned)
+- `memory_remove`: LLM-initiated entry removal
+- `memory_topics`: list topic files with hotness scores
+
+**Session Search** (`session-search.ts`):
+
+- JSON-based keyword search over past conversation summaries
+- Indexed on session shutdown from compaction summaries
+- Storage: `.pi/data/session-search.json`
+
+**Capacity Signal** (`situation-report.ts`):
+
+- Header shows usage %: `# Project Memory [72% — 1,224/1,700 tokens]`
+- Consolidation warning injected when usage exceeds 80%
 
 **Preference Auto-Extraction** (`preference-extractor.ts`):
 

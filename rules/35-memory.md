@@ -9,7 +9,7 @@ Memories are scored, prioritized, and injected into the system prompt via situat
 
 ## Memory Tools (MANDATORY)
 
-You have three memory tools. **USE THEM PROACTIVELY:**
+You have six memory tools. **USE THEM PROACTIVELY:**
 
 ### `memory_search` — Search Before Answering
 
@@ -32,9 +32,47 @@ memories from decaying.
 memory_reinforce(entryText: "...", category: "lesson")
 ```
 
+### `memory_add` — Add New Memories Proactively
+
+**MANDATORY:** When you learn something worth remembering — user preferences,
+environment facts, corrections, conventions, completed work — add it immediately.
+Don't wait for dreaming or CLI. You own your memory.
+
+```text
+memory_add(text: "Always use --admin for gate-blocked PRs", category: "lesson")
+memory_add(text: "User prefers concise responses", category: "preference", pinned: true)
+```
+
+**Rules:**
+
+- Keep entries short (one line, ~100 chars max)
+- Be specific and actionable — not vague observations
+- Use `pinned: true` ONLY when the user explicitly says "remember this"
+- If the entry already exists, it's automatically reinforced instead
+
+### `memory_remove` — Remove Outdated Memories
+
+Remove entries that are no longer accurate or relevant. Use when information
+is outdated, wrong, or superseded by a newer entry.
+
+```text
+memory_remove(text: "Project uses Python 3.11", category: "lesson")
+```
+
 ### `memory_topics` — Inspect Topic Organization
 
 List all memory topic files with hotness scores and entry counts.
+
+### `session_search` — Recall Past Conversations
+
+Search past conversation summaries. Use when the user references something
+from a previous session, or when you need to recall what was discussed before.
+Returns matching snippets at zero LLM cost — no summarization, no token usage.
+
+```text
+session_search(query: "docker container build")
+session_search(query: "coderabbit review", limit: 5)
+```
 
 ---
 
@@ -85,6 +123,20 @@ stability = cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)
 
 ---
 
+## Capacity Signal
+
+The situation report header shows current memory usage:
+
+```text
+# Project Memory [72% — 1,224/1,700 tokens]
+```
+
+- **Below 80%** — add freely
+- **Above 80%** — consolidate before adding: merge related entries, remove outdated ones using `memory_remove`
+- The system warns you when capacity is high
+
+---
+
 ## Memory Quality Rules (CRITICAL)
 
 - **One line only** — entries MUST be a single short sentence, max ~100 chars
@@ -110,6 +162,9 @@ stability = cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)
 | User corrects you | `lesson` | Learned |
 | Multiple fix attempts | `mistake` | Learned |
 | User states a preference | `preference` | Learned |
+
+**Use `memory_add` tool directly** — don't delegate to CLI or wait for dreaming.
+You are the curator of your own memory.
 
 ---
 
