@@ -74,17 +74,34 @@ The process is iterative:
 
 Before declaring test failures as blockers, compare against the baseline:
 
-1. Save ALL current changes (staged + unstaged): `git diff HEAD > /tmp/pi-work/$(basename $PWD)/baseline.patch`
-2. Reset to clean state: `git checkout . && git reset HEAD .`
-3. Run tests → record baseline failure count
-4. Restore changes: `git apply /tmp/pi-work/$(basename $PWD)/baseline.patch && rm /tmp/pi-work/$(basename $PWD)/baseline.patch`
-5. Re-stage previously staged files
-6. Run tests → record current failure count
-7. **Only NEW failures** (current minus baseline) block the review
-8. Pre-existing failures are noted in the review but do not block
+```bash
+# 1. Ensure temp dir exists
+mkdir -p /tmp/pi-work/$(basename $PWD)
 
-If patch apply fails, try `git apply --3way`. If that also fails, skip baseline
-comparison and note "baseline comparison unavailable" — do NOT block on all failures.
+# 2. Save ALL current changes (staged + unstaged)
+git diff HEAD > /tmp/pi-work/$(basename $PWD)/baseline.patch
+
+# 3. Reset to clean state (both index AND working tree)
+git reset --hard HEAD
+
+# 4. Run tests → record baseline failure count
+# <run tests here>
+
+# 5. Restore changes
+git apply /tmp/pi-work/$(basename $PWD)/baseline.patch \
+  || git apply --3way /tmp/pi-work/$(basename $PWD)/baseline.patch
+
+# 6. Clean up patch file
+rm -f /tmp/pi-work/$(basename $PWD)/baseline.patch
+
+# 7. Run tests → record current failure count
+# <run tests here>
+```
+
+- **Only NEW failures** (current minus baseline) block the review
+- Pre-existing failures are noted in the review but do not block
+- If both `git apply` and `git apply --3way` fail, skip baseline comparison
+  and note "baseline comparison unavailable" — do NOT block on all failures
 
 This prevents blocking on test failures that existed before the PR.
 
