@@ -1,6 +1,6 @@
 ---
 description: Process ALL review sources (human, Qodo, CodeRabbit) from current PR
-argument-hint: "[--autorabbit]"
+argument-hint: "[--autorabbit] [--autoqodo]"
 ---
 
 ## Raw Arguments
@@ -64,39 +64,40 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 - `/review-handler` - Process reviews from current PR
 - `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
 - `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
+- `/review-handler --autoqodo` - Auto-fix Qodo comments in a loop
+- `/review-handler --autorabbit --autoqodo` - Auto-fix both CodeRabbit and Qodo comments
 
 ## Workflow
 
 > **CRITICAL — BEFORE ANY CLI COMMAND:**
-> `--autorabbit` is a **command-level flag**, NOT a CLI argument.
-> **NEVER** pass `--autorabbit` to `myk-pi-tools`. The CLI will reject it.
-> You MUST strip it from the raw arguments first. See Phase 0 below.
+> `--autorabbit` and `--autoqodo` are **command-level flags**, NOT CLI arguments.
+> **NEVER** pass `--autorabbit` or `--autoqodo` to `myk-pi-tools`. The CLI will reject it.
+> You MUST strip them from the raw arguments first. See Phase 0 below.
 
 ### Phase 0: Parse Arguments (MANDATORY — DO NOT SKIP)
 
 Read the **Raw Arguments** section above. Parse as follows:
 
-1. Check if the text `--autorabbit` appears in the raw arguments
-2. If YES: set autorabbit mode = ON, and remove `--autorabbit` from the text. The remaining text (if any) is the cleaned arguments.
-3. If NO: autorabbit mode = OFF, the entire raw arguments text is the cleaned arguments.
-4. Use ONLY the cleaned arguments for all subsequent CLI calls.
+1. Check if `--autorabbit` appears in the raw arguments
+   - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
+   - If NO: autorabbit mode = OFF
+2. Check if `--autoqodo` appears in the (remaining) raw arguments
+   - If YES: set autoqodo mode = ON, remove `--autoqodo` from the text
+   - If NO: autoqodo mode = OFF
+3. The remaining text is the cleaned arguments — pass these through to the CLI
+4. `--autorabbit` and `--autoqodo` are **command-level flags** — NEVER pass them to the CLI
+5. Both flags can be active simultaneously
 
-**Example:** Raw arguments = `--autorabbit`
+**Example:** Raw arguments = `--autorabbit --autoqodo`
 
-- autorabbit mode = ON
+- autorabbit mode = ON, autoqodo mode = ON
 - cleaned arguments = (empty)
-- CLI call = `myk-pi-tools reviews fetch` (NO `--autorabbit` flag)
+- CLI call = `myk-pi-tools reviews fetch` (NO flags)
 
-**Example:** Raw arguments = `--autorabbit https://github.com/org/repo/pull/123#pullrequestreview-456`
+### Auto Mode Fast Path (MANDATORY)
 
-- autorabbit mode = ON
-- cleaned arguments = `https://github.com/org/repo/pull/123#pullrequestreview-456`
-- CLI call = `myk-pi-tools reviews fetch https://github.com/...`
-
-### Autorabbit Fast Path (MANDATORY)
-
-**If autorabbit mode is ON (set in Phase 0), skip Phases 1-8 entirely
-and jump directly to Phase 9 (Autorabbit Polling Loop).** The polling
+**If autorabbit mode OR autoqodo mode is ON (set in Phase 0), skip Phases 1-8 entirely
+and jump directly to Phase 9 (Auto Polling Loop).** The polling
 loop handles fetching, processing, and posting internally. There is no
 initial fetch/review cycle — the first fetch happens inside the poll.
 
@@ -129,18 +130,24 @@ Returns JSON with:
 
 ### Phase 2: User Decision Collection
 
-> **CRITICAL — AUTORABBIT MODE CHECK (do this FIRST, before anything else):**
+> **CRITICAL — AUTO MODE CHECK (do this FIRST, before anything else):**
 >
-> If autorabbit mode is ON (set in Phase 0):
+> If autorabbit mode is ON:
 >
-> 1. **CodeRabbit comments → ALL auto-approved.** Do NOT use AskUserQuestion
->    for CodeRabbit. Do NOT ask the user. Set every CodeRabbit item to "yes"
->    automatically. Display the table for visibility only.
-> 2. **Human/Qodo comments** → follow the normal decision flow below.
-> 3. **If there are ONLY CodeRabbit comments** (no human, no Qodo) →
+> 1. **CodeRabbit comments → ALL auto-approved.** Set every CodeRabbit item to "yes" automatically.
+>
+> If autoqodo mode is ON:
+>
+> 1. **Qodo comments → ALL auto-approved.** Set every Qodo item to "yes" automatically.
+>
+> Combined behavior:
+>
+> 1. **Human comments** → ALWAYS follow the normal decision flow (never auto-approved).
+> 1. **If ALL comments are from auto-approved sources** (e.g., only CodeRabbit when autorabbit is on,
+>    or only Qodo when autoqodo is on, or both when both flags are on) →
 >    skip this entire phase and go directly to Phase 3.
 >
-> **In autorabbit mode, the user is NEVER asked about CodeRabbit items.**
+> **Auto-approved sources are NEVER presented to the user for decision.**
 
 **Normal mode (no `--autorabbit`):** Follow the full decision flow below.
 
@@ -279,7 +286,7 @@ Run tests with coverage.
 
 ### Phase 7: Commit & Push
 
-**If autorabbit mode is ON and there are ONLY CodeRabbit comments (no human, no qodo):**
+**If ALL comments are from auto-approved sources (see Phase 2 auto mode rules):**
 Skip asking the user — commit and push automatically.
 
 **Otherwise:** Ask user if they want to commit and push changes.
@@ -326,9 +333,9 @@ Store to database:
 myk-pi-tools reviews store {json_path}
 ```
 
-### Phase 9: Autorabbit Polling Loop (--autorabbit mode only)
+### Phase 9: Auto Polling Loop (--autorabbit / --autoqodo mode)
 
-**Skip this phase if `--autorabbit` was NOT passed.**
+**Skip this phase if NEITHER `--autorabbit` NOR `--autoqodo` was passed.**
 
 🚨 **ABSOLUTE RULE: NO USER INTERACTION DURING THE POLLING LOOP.**
 
@@ -340,7 +347,8 @@ want to do?" or "Should I keep polling?" or any variation. The loop
 runs silently until an exit condition is met. Period.**
 
 After the review flow completes (Phases 1-8), enter a polling loop
-to watch for new CodeRabbit comments.
+to watch for new comments from auto-approved sources (CodeRabbit if autorabbit,
+Qodo if autoqodo, both if both flags active).
 
 #### 9a+9b: Wait and Fetch (combined async)
 
@@ -360,18 +368,18 @@ can continue working. When the result surfaces, process it:
 Check the poll RAW output (not the worker's summary — look for the exact JSON string):
 
 - If output contains the EXACT string `"approved": true`: **EXIT the loop**. Notify the user:
-  "🎉 CodeRabbit approved this PR — no actionable comments. Autorabbit loop complete."
+  "🎉 All auto-approved reviewers approved this PR — no actionable comments. Auto loop complete."
   **CRITICAL:** Only exit on the literal JSON `{"approved": true}` from the CLI output.
   Do NOT exit because the worker says "approved" or "0 comments" in its summary.
-- If **new CodeRabbit comments found**: Run Phases 2-8 again with
-  autorabbit behavior (auto-approve CodeRabbit, ask user for others).
+- If **new comments found from auto-approved sources**: Run Phases 2-8 again with
+  auto-approve behavior for the relevant sources.
   After completing, spawn another `reviews poll` async worker (go to 9a+9b again).
 
 #### 9c: Exit Conditions (MANDATORY)
 
 **The loop MUST run until one of these conditions is met:**
 
-1. **CodeRabbit approved** — `reviews poll` returns `{"approved": true}`. Exit and notify the user.
+1. **All auto-approved reviewers approved** — `reviews poll` returns `{"approved": true}`. Exit and notify the user.
 2. **User explicitly stops** — user presses `Ctrl+C` or sends "stop", "exit", "done", or "quit".
 
 **No other reason is valid to exit the loop.**
@@ -417,10 +425,10 @@ Errors are recoverable — NEVER treat a command failure as a reason to exit.
 Each cycle displays a status update so the user knows the loop is active:
 
 ```text
-[autorabbit] Cycle {N} complete. Next check in 5 minutes...
-[autorabbit] Checking for new CodeRabbit comments...
-[autorabbit] Found {N} new comments — processing...
-[autorabbit] No new comments. Next check in 5 minutes...
-[autorabbit] CodeRabbit rate-limited. Handling automatically via reviews poll...
-[autorabbit] 🎉 CodeRabbit approved! No actionable comments. Loop complete.
+[auto] Cycle {N} complete. Next check in 5 minutes...
+[auto] Checking for new comments from auto-approved sources...
+[auto] Found {N} new comments — processing...
+[auto] No new comments. Next check in 5 minutes...
+[auto] Rate-limited. Handling automatically via reviews poll...
+[auto] 🎉 All auto-approved reviewers approved! No actionable comments. Loop complete.
 ```

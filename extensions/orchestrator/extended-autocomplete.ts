@@ -13,7 +13,7 @@
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
- *   /review-handler <Tab>        → --autorabbit
+ *   /review-handler <Tab>        → --autorabbit, --autoqodo
  *   /coderabbit-local-review <Tab>                    → --base <branch>, --base-commit <commit>, --type, --config
  *   /dream-auto <Tab>            → on, off
  *   /pidash <Tab>                → start, stop, restart, status
@@ -383,6 +383,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     "review-handler": (prefix: string) => {
       return filter([
         { value: "--autorabbit", label: "--autorabbit", description: "Auto-trigger CodeRabbit review" },
+        { value: "--autoqodo", label: "--autoqodo", description: "Auto-fix Qodo comments in a loop" },
       ], prefix);
     },
 
