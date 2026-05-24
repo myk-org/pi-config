@@ -85,7 +85,7 @@ git ls-files --others --exclude-standard > "$BASELINE_DIR/untracked.list"
 # 2. Reset to clean state
 git reset --hard HEAD
 # Remove untracked files listed (if any)
-xargs -r rm -f < "$BASELINE_DIR/untracked.list" 2>/dev/null || true
+xargs -r -d '\n' rm -f < "$BASELINE_DIR/untracked.list" 2>/dev/null || true
 
 # 3. Run tests → record baseline failure count
 # <run tests here>

@@ -4,7 +4,9 @@ description: "Create a reusable skill from a successful workflow — /create-ski
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
 > while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension issues.
+> "Should I create a GitHub issue for this?" Route to:
+> `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
+> Do not silently skip steps or apply manual fixes that hide the root cause.
 
 ## Raw Arguments
 
@@ -32,6 +34,12 @@ The name must be:
 - lowercase, hyphenated (e.g., `debug-container-build`)
 - max 64 characters
 - descriptive of what the skill does
+
+Validate the name:
+
+- Must match `^[a-z][a-z0-9-]*$` (lowercase, hyphens, starts with letter)
+- No spaces, underscores, or special characters
+- If invalid, ask the user to provide a valid name
 
 ### Step 2: Extract the Workflow
 
@@ -76,6 +84,10 @@ description: "<one-line description of what this skill does and when to use it �
 
 - Common mistake and how to avoid it
 ```
+
+**Security:** Before writing the SKILL.md, strip any secrets, API keys, tokens,
+passwords, or credentials from the workflow steps. Replace with placeholders
+like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 
 **Rules:**
 
