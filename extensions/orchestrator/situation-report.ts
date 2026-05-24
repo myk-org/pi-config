@@ -158,31 +158,19 @@ export function buildSituationReport(
   // Sort entries by score descending within each category
   entries.sort((a, b) => b.scored.score - a.scored.score);
 
-  // Build sections
+  // Build body sections first, then compute actual capacity from emitted content
   let charBudget = tokenBudget * CHARS_PER_TOKEN;
-  const reportSections: string[] = [];
+  const bodySections: string[] = [];
 
-  // Calculate capacity
-  const totalEntryChars = entries.reduce((sum, e) => sum + `- [${e.category}] ${e.text}`.length, 0);
-  const totalTokensUsed = Math.round(totalEntryChars / CHARS_PER_TOKEN);
-  const usagePercent = Math.round((totalTokensUsed / tokenBudget) * 100);
-
-  const header = `# Project Memory [${usagePercent}% — ${totalTokensUsed}/${tokenBudget} tokens]\n`;
-  charBudget -= header.length;
-  reportSections.push(header);
-
-  // Consolidation warning when above 80%
-  if (usagePercent >= 80) {
-    const warning = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
-    charBudget -= warning.length;
-    reportSections.push(warning);
-  }
+  // Reserve budget for header + possible warning
+  const headerReserve = 120;
+  charBudget -= headerReserve;
 
   // Pinned entries always come first (no budget limit)
   const pinned = entries.filter((e) => e.isPinned);
   if (pinned.length > 0) {
     const pinnedSection = formatSection("Pinned", pinned);
-    reportSections.push(pinnedSection);
+    bodySections.push(pinnedSection);
     charBudget -= pinnedSection.length;
   }
 
@@ -228,10 +216,29 @@ export function buildSituationReport(
     );
 
     if (section) {
-      reportSections.push(section);
+      bodySections.push(section);
       charBudget -= section.length;
     }
   }
+
+  // Calculate capacity from actual emitted content (after truncation)
+  const bodyContent = bodySections.join("\n");
+  const actualCharsUsed = bodyContent.length;
+  const totalTokensUsed = Math.floor(actualCharsUsed / CHARS_PER_TOKEN);
+  const usagePercent = Math.floor((totalTokensUsed / tokenBudget) * 100);
+
+  // Build final report: header first, then body
+  const reportSections: string[] = [];
+  const header = `# Project Memory [${usagePercent}% — ${totalTokensUsed}/${tokenBudget} tokens]\n`;
+  reportSections.push(header);
+
+  // Consolidation warning when above 80%
+  if (usagePercent >= 80) {
+    const warning = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
+    reportSections.push(warning);
+  }
+
+  reportSections.push(...bodySections);
 
   return reportSections.join("\n");
 }

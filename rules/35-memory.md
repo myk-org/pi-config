@@ -9,7 +9,7 @@ Memories are scored, prioritized, and injected into the system prompt via situat
 
 ## Memory Tools (MANDATORY)
 
-You have six memory tools. **USE THEM PROACTIVELY:**
+You have five memory tools and one session search tool. **USE THEM PROACTIVELY:**
 
 ### `memory_search` — Search Before Answering
 

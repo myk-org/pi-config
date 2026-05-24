@@ -34,7 +34,20 @@ function loadStore(cwd: string): SessionStore {
   const storePath = getStorePath(cwd);
   if (!existsSync(storePath)) return { entries: [] };
   try {
-    return JSON.parse(readFileSync(storePath, "utf-8"));
+    const raw = JSON.parse(readFileSync(storePath, "utf-8"));
+    if (!raw || typeof raw !== "object" || !Array.isArray(raw.entries)) {
+      console.error("[session-search] corrupt store shape, resetting");
+      return { entries: [] };
+    }
+    // Filter to only valid entries
+    const entries = raw.entries.filter(
+      (e: unknown): e is SessionEntry =>
+        typeof e === "object" && e !== null &&
+        typeof (e as any).sessionId === "string" &&
+        typeof (e as any).timestamp === "string" &&
+        typeof (e as any).summary === "string"
+    );
+    return { entries };
   } catch (err) {
     console.error("[session-search] corrupt store, resetting:", err);
     return { entries: [] };

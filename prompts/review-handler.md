@@ -16,7 +16,7 @@ $ARGUMENTS
 > "Should I create a GitHub issue for this?" Route to:
 > `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
 > Do not silently skip steps or apply manual fixes that hide the root cause.
-> Documented retry loops (e.g., autorabbit polling) are not bugs — only report reproducible failures.
+> Documented retry loops (e.g., auto polling) are not bugs — only report reproducible failures.
 
 Unified handler that processes ALL review sources from the current branch's GitHub PR.
 
@@ -103,11 +103,11 @@ initial fetch/review cycle — the first fetch happens inside the poll.
 
 ### Phase 1: Fetch Reviews
 
-**Skip this phase if autorabbit mode is ON — see Autorabbit Fast Path above.**
+**Skip this phase if autorabbit mode OR autoqodo mode is ON — see Auto Mode Fast Path above.**
 
 The `reviews fetch` command auto-detects the PR from the current branch.
 
-**Use the cleaned arguments from Phase 0 — NEVER pass `--autorabbit` to the CLI.**
+**Use the cleaned arguments from Phase 0 — NEVER pass `--autorabbit` or `--autoqodo` to the CLI.**
 
 If a specific review URL is in the cleaned arguments:
 
@@ -149,7 +149,7 @@ Returns JSON with:
 >
 > **Auto-approved sources are NEVER presented to the user for decision.**
 
-**Normal mode (no `--autorabbit`):** Follow the full decision flow below.
+**Normal mode (no `--autorabbit` / `--autoqodo`):** Follow the full decision flow below.
 
 **MANDATORY: Present ALL fetched items to the user for decision.
 Never silently hide or omit items — including auto-skipped ones.**
@@ -352,18 +352,26 @@ Qodo if autoqodo, both if both flags active).
 
 #### 9a+9b: Wait and Fetch (combined async)
 
-`reviews poll` loops internally until something actionable happens. Spawn ONE
-async worker and wait for the result.
-
-**Spawn the poll as one async subagent:**
+**If autorabbit is ON:** `reviews poll` loops internally for CodeRabbit. Spawn ONE async worker:
 
 - Agent: `worker`
 - Task: `Run: myk-pi-tools reviews poll [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
+**If autoqodo is ON (without autorabbit):** `reviews fetch` checks for new Qodo comments. Spawn ONE async worker:
+
+- Agent: `worker`
+- Task: `Run: myk-pi-tools reviews fetch [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+- async: true
+
+**If BOTH are ON:** Spawn `reviews poll` (handles both CodeRabbit rate limits and general fetch).
+Use the same spawn as the autorabbit-only case above.
+
 **While waiting for the async result**, the session remains interactive — the user
-can continue working. When the result surfaces, process it:
+can continue working. When the result surfaces, process it based on which command was used:
+
+**For `reviews poll` result** (autorabbit ON, or both ON):
 
 Check the poll RAW output (not the worker's summary — look for the exact JSON string):
 
@@ -373,7 +381,13 @@ Check the poll RAW output (not the worker's summary — look for the exact JSON 
   Do NOT exit because the worker says "approved" or "0 comments" in its summary.
 - If **new comments found from auto-approved sources**: Run Phases 2-8 again with
   auto-approve behavior for the relevant sources.
-  After completing, spawn another `reviews poll` async worker (go to 9a+9b again).
+  After completing, spawn another async worker (go to 9a+9b again).
+
+**For `reviews fetch` result** (autoqodo ON without autorabbit):
+
+- If **0 Qodo comments found**: wait 2 minutes, then re-fetch (spawn another async worker, go to 9a+9b again).
+- If **new Qodo comments found**: Run Phases 2-8 with auto-approve behavior for Qodo.
+  After completing, spawn another async worker (go to 9a+9b again).
 
 #### 9c: Exit Conditions (MANDATORY)
 

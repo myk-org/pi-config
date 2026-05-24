@@ -56,7 +56,7 @@ Single extension that provides:
 | `/pr-review [number\|url]` | Fetch PR diff, review with guidelines, post comments |
 | `/release [flags]` | Create GitHub release with changelog and version bumping |
 | `/review-local [branch]` | Review local uncommitted or branch changes |
-| `/review-handler [url] [--autorabbit]` | Process PR review comments, fix approved items |
+| `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
 | `/refine-review <url>` | Refine and improve existing PR review comments |
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/query-db <command>` | Query the review comments database |
@@ -65,7 +65,6 @@ Single extension that provides:
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
-| `/coderabbit-local-review` | Run CodeRabbit CLI review — local AI code review with `--agent` output |
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |

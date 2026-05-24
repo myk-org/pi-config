@@ -73,7 +73,6 @@ pi-config/
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 ├── prompts/                         # Prompt templates (slash commands)
 │   ├── external-ai.md
-│   ├── coderabbit-local-review.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
 │   ├── implement-and-review.md
@@ -103,10 +102,6 @@ pi-config/
 │   ├── ai_cli/
 │   ├── cli.py
 │   ├── coderabbit/
-│   │   ├── commands.py
-│   │   ├── review.py
-│   │   ├── store.py
-│   │   └── validate.py
 │   ├── db/
 │   ├── memory/
 │   ├── pr/
