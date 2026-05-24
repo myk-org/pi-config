@@ -8,6 +8,7 @@ Output: JSON with metadata and categorized comments saved to /tmp/pi-work/pr-<nu
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -732,7 +733,13 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
         body = thread.get("body")
 
         source = detect_source(author)
-        priority = classify_priority(body)
+
+        # Preserve pre-computed priority (e.g., from Qodo sticky findings)
+        existing_priority = thread.get("priority")
+        if existing_priority in ("HIGH", "MEDIUM", "LOW"):
+            priority = existing_priority
+        else:
+            priority = classify_priority(body)
 
         enriched = {
             **thread,
@@ -812,7 +819,8 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
         line = thread.get("line")
         title_hash = thread.get("body", "")[:80]
         if path and line is not None:
-            return f"qs:{path}:{line}:{hash(title_hash)}"
+            stable = hashlib.md5(title_hash.encode()).hexdigest()[:8]
+            return f"qs:{path}:{line}:{stable}"
 
     # Outside diff comments use review_id + location as composite key (stable across reordering)
     if thread.get("type") == "outside_diff_comment":
