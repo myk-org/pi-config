@@ -235,16 +235,22 @@ Dreaming is a **self-contained action** — the LLM worker:
 
 Memory stores facts. **Skills store procedures.**
 
-After completing a multi-step workflow that involved non-obvious steps,
-offer to save it as a reusable skill using `/create-skill <name>`.
+When you complete a multi-step workflow, save it as a skill using `/create-skill <name>`.
+Skills are reusable — next time the same task comes up, the skill provides the exact steps.
 
-**Trigger:** After ANY successful workflow that took 3+ steps and involved
-discovery (trial-and-error, debugging, or non-obvious commands), ask:
+**Auto-create skills when:**
 
-> "This workflow could be saved as a reusable skill. Want me to run `/create-skill <name>`?"
+- A workflow took 3+ steps and involved trial-and-error or non-obvious commands
+- You notice you're doing the same multi-step task for the second time
+- A debugging session revealed a non-obvious root cause + fix pattern
+- A build/deploy/integration required specific steps that aren't documented
 
 **Do NOT create skills for:**
 
 - Simple one-step tasks
 - Standard workflows already covered by existing skills
 - Tasks that are unlikely to recur
+
+**How:** Run `/create-skill <name>` — it extracts the workflow from the current
+conversation and saves it as `~/.agents/skills/<name>/SKILL.md`.
+The skill is available in the next pi session.
