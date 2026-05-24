@@ -138,7 +138,11 @@ Returns JSON with:
 >
 > If autoqodo mode is ON:
 >
-> 1. **Qodo comments → ALL auto-approved.** Set every Qodo item to "yes" automatically.
+> 1. **Qodo comments → auto-approved based on finding type:**
+>    - `qodo_bug` → **MUST address.** No skip allowed.
+>    - `qodo_rule_violation` → **MUST address.** No skip allowed.
+>    - `qodo_requirement_gap` → **Address unless you have a specific, documented reason not to.** If skipping, the reply MUST explain why.
+>    - `qodo_finding` (other) → **Address unless you have a good reason.** If skipping, explain why.
 >
 > Combined behavior:
 >
@@ -298,7 +302,7 @@ when threads are resolved.
 
 Post all replies to GitHub and store results in the database.
 
-**Body comments (outside-diff, major, minor, nitpick, duplicate):**
+**Body comments (outside-diff, major, minor, nitpick, duplicate, qodo sticky):**
 
 Comments that don't have GitHub review threads (e.g., CodeRabbit outside-diff,
 major, minor, nitpick, and duplicate comments) are replied to via a single

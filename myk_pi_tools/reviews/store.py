@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS comments (
     skip_reason TEXT,
     posted_at TEXT,
     resolved_at TEXT,
-    type TEXT DEFAULT NULL
+    type TEXT DEFAULT NULL,
+    quality_label TEXT DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_review_id ON comments(review_id);
@@ -102,6 +103,8 @@ def create_tables(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in cursor.fetchall()}
     if "type" not in columns:
         conn.execute("ALTER TABLE comments ADD COLUMN type TEXT DEFAULT NULL")
+    if "quality_label" not in columns:
+        conn.execute("ALTER TABLE comments ADD COLUMN quality_label TEXT DEFAULT NULL")
 
 
 def get_current_commit_sha(cwd: Path | None = None) -> str:
@@ -154,8 +157,8 @@ def insert_comment(conn: sqlite3.Connection, review_id: int, source: str, commen
         INSERT INTO comments (
             review_id, source, thread_id, node_id, comment_id, author,
             path, line, body, priority, status, reply, skip_reason,
-            posted_at, resolved_at, type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            posted_at, resolved_at, type, quality_label
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             review_id,
@@ -174,6 +177,7 @@ def insert_comment(conn: sqlite3.Connection, review_id: int, source: str, commen
             comment.get("posted_at"),
             comment.get("resolved_at"),
             comment.get("type"),
+            comment.get("quality_label"),
         ),
     )
 

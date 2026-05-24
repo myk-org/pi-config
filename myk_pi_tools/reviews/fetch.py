@@ -20,6 +20,14 @@ from typing import Any
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
+from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+
+# Map Qodo finding types to our type field
+_QODO_TYPE_MAP = {
+    "Bug": "qodo_bug",
+    "Rule violation": "qodo_rule_violation",
+    "Requirement gap": "qodo_requirement_gap",
+}
 
 # Known AI reviewer usernames
 QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
@@ -631,6 +639,53 @@ def fetch_coderabbit_body_comments(owner: str, repo: str, pr_number: str) -> lis
 fetch_coderabbit_outside_diff_comments = fetch_coderabbit_body_comments
 
 
+def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
+    """Fetch unresolved findings from Qodo's sticky summary comment.
+
+    Returns thread-like dicts for each unresolved finding.
+    """
+    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+    comments = run_gh_api(endpoint, paginate=True)
+
+    if comments is None or not isinstance(comments, list):
+        return []
+
+    results: list[dict[str, Any]] = []
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in ("qodo-code-review[bot]", "qodo-code-review"):
+            continue
+
+        body = comment.get("body", "")
+        if not is_qodo_sticky_comment(body):
+            continue
+
+        comment_id = comment.get("id")
+        findings = parse_qodo_sticky_comment(body)
+
+        for finding in findings:
+            thread_data = {
+                "thread_id": None,
+                "node_id": None,
+                "comment_id": comment_id,
+                "author": author,
+                "path": finding.get("path", ""),
+                "line": finding.get("line"),
+                "end_line": finding.get("end_line"),
+                "body": f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}",
+                "quality_label": finding.get("category", ""),
+                "type": _QODO_TYPE_MAP.get(finding.get("finding_type", ""), "qodo_finding"),
+                "source": "qodo",
+                "priority": "HIGH" if finding.get("finding_type") in ("Bug", "Rule violation") else "MEDIUM",
+                "reply": None,
+                "status": "pending",
+            }
+            results.append(thread_data)
+
+    return results
+
+
 def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str) -> dict[str, list[dict[str, Any]]]:
     """Process threads: add source and priority, categorize, and auto-skip previously dismissed."""
     human: list[dict[str, Any]] = []
@@ -685,6 +740,7 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
             "priority": priority,
             "reply": thread.get("reply"),
             "status": thread.get("status", "pending"),
+            "quality_label": thread.get("quality_label"),
         }
 
         # Check for previously dismissed similar comment (only if status is pending)
@@ -750,6 +806,14 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
 
 def get_thread_key(thread: dict[str, Any]) -> str | None:
     """Generate a unique key for deduplication."""
+    # Qodo sticky findings use path + line + body prefix as composite key
+    if thread.get("type") in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
+        path = thread.get("path")
+        line = thread.get("line")
+        title_hash = thread.get("body", "")[:80]
+        if path and line is not None:
+            return f"qs:{path}:{line}:{hash(title_hash)}"
+
     # Outside diff comments use review_id + location as composite key (stable across reordering)
     if thread.get("type") == "outside_diff_comment":
         review_id = thread.get("review_id")
@@ -891,6 +955,13 @@ def run(review_url: str = "") -> int:
         if body_comment_threads:
             print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
             all_threads = merge_threads(all_threads, body_comment_threads)
+
+        # Fetch Qodo sticky comment findings
+        print_stderr("Fetching Qodo sticky comment findings...")
+        qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number)
+        if qodo_sticky_findings:
+            print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
+            all_threads = merge_threads(all_threads, qodo_sticky_findings)
 
         # If review URL provided, also fetch specific thread(s)
         specific_threads: list[dict[str, Any]] = []

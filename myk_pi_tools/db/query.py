@@ -194,7 +194,9 @@ class ReviewDB:
         - ``not_addressed`` and ``skipped`` comments are always included (any type).
         - ``addressed`` comments are only included when their type is
           ``outside_diff_comment``, ``major_comment``, ``minor_comment``,
-          ``nitpick_comment``, or ``duplicate_comment``.  These types lack a GitHub review thread
+          ``nitpick_comment``, ``duplicate_comment``, ``qodo_bug``,
+          ``qodo_rule_violation``, ``qodo_requirement_gap``, or
+          ``qodo_finding``.  These types lack a GitHub review thread
           that can be resolved, so the database is the only mechanism to
           auto-skip them on subsequent fetches.  Normal
           inline thread comments rely on GitHub's ``isResolved`` filter in
@@ -235,7 +237,9 @@ class ReviewDB:
                           AND c.type IN (
                               'outside_diff_comment', 'major_comment',
                               'minor_comment', 'nitpick_comment',
-                              'duplicate_comment'))
+                              'duplicate_comment',
+                              'qodo_bug', 'qodo_rule_violation',
+                              'qodo_requirement_gap', 'qodo_finding'))
                   )
                 ORDER BY c.path, c.line
                 """,
