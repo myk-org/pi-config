@@ -33,7 +33,7 @@ def reviews_fetch(review_url: str) -> None:
 @click.argument("review_url", required=False, default="")
 @click.option(
     "--source",
-    type=click.Choice(["coderabbit", "qodo", "all"]),
+    type=click.Choice(["coderabbit", "qodo"]),
     default="coderabbit",
     help="Which reviewer to poll for (default: coderabbit)",
 )
