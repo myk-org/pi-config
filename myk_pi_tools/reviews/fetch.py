@@ -819,7 +819,7 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
         line = thread.get("line")
         title_hash = thread.get("body", "")[:80]
         if path and line is not None:
-            stable = hashlib.md5(title_hash.encode()).hexdigest()[:8]
+            stable = hashlib.sha256(title_hash.encode()).hexdigest()[:8]
             return f"qs:{path}:{line}:{stable}"
 
     # Outside diff comments use review_id + location as composite key (stable across reordering)
