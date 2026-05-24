@@ -21,7 +21,7 @@ from myk_pi_tools.release.info import Commit, _is_changelog_noise
         ("fix: address coderabbit suggestions", False),
         ("update coderabbit config", False),
         ("fix: address review feedback", False),
-        ("feat: add /coderabbit-local-review command", False),
+        ("feat: add /create-skill command", False),
         ("fix: coderabbit CLI integration", False),
         ("Merge pull request #360 from myk-org/feat/coderabbit", True),
         ("Merge branch 'main' into feature", True),
