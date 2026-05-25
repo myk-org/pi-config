@@ -95,32 +95,38 @@ def _has_actionable_qodo_comments(pr_number: str) -> bool:
 def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
     """Check if Qodo has approved the PR.
 
-    Qodo is considered to have approved when:
-    1. A "Persistent review updated to latest commit" comment exists from Qodo
-    2. The sticky summary comment has 0 unresolved findings
-
-    Returns True if approved, False otherwise.
+    Approved when:
+    1. Sticky comment has 0 unresolved findings
+    2. Sticky has at least one resolved/dismissed finding (not empty)
+    3. Sticky updated_at is AFTER PR head commit date (Qodo finished reviewing latest)
     """
     from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
 
-    # Fetch issue comments to find both the sticky and the "updated" confirmation
+    # Get PR head SHA
+    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+    pr_data = run_gh_api(pr_endpoint)
+    if not isinstance(pr_data, dict):
+        return False
+    head_sha = pr_data.get("head", {}).get("sha", "")
+    if not head_sha:
+        return False
+
+    # Get commit date for PR HEAD
+    commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
+    commit_data = run_gh_api(commit_endpoint)
+    if not isinstance(commit_data, dict):
+        return False
+    commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
+    if not commit_date:
+        return False
+
+    # Find the Qodo sticky comment
     endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
     comments = run_gh_api(endpoint, paginate=True)
-
     if not comments or not isinstance(comments, list):
         return False
 
     QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
-
-    # Get PR head SHA once (not per comment)
-    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
-    pr_data = run_gh_api(pr_endpoint)
-    head_sha = ""
-    if isinstance(pr_data, dict):
-        head_sha = pr_data.get("head", {}).get("sha", "")
-
-    has_update_confirmation = False
-    sticky_all_resolved = False
 
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
@@ -128,42 +134,40 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
             continue
 
         body = comment.get("body", "")
+        if not is_qodo_sticky_comment(body):
+            continue
 
-        # Check for "Persistent review updated" referencing the LATEST commit
-        # Skip the sticky comment itself — it can contain commit URLs in audit trail
-        if "Persistent review" in body and "updated to latest commit" in body and not is_qodo_sticky_comment(body):
-            # Extract commit hash from the URL in the body
-            commit_match = re.search(r"/commit/([0-9a-f]{7,40})", body)
-            if commit_match:
-                review_commit = commit_match.group(1)
-                # Match if review commit matches PR head SHA
-                if head_sha and head_sha.startswith(review_commit):
-                    has_update_confirmation = True
-                else:
-                    print_stderr(
-                        f"[poll] Qodo reviewed {review_commit[:7]} but HEAD is {head_sha[:7]} — not yet reviewed."
-                    )
+        # Check sticky was updated AFTER the commit
+        sticky_updated = comment.get("updated_at", "")
+        if not sticky_updated or sticky_updated < commit_date:
+            print_stderr(f"[poll] Sticky updated {sticky_updated} but commit at {commit_date} — not yet reviewed.")
+            return False
 
-        # Check the sticky summary comment
-        if is_qodo_sticky_comment(body):
-            unresolved = parse_qodo_sticky_comment(body)
-            # Truncate at "Previous review results" to match parser scope
-            import re as _re
+        # Parse for unresolved findings
+        unresolved = parse_qodo_sticky_comment(body)
+        if len(unresolved) > 0:
+            print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
+            return False
 
-            _prev_re = _re.compile(r"(?:<!-- FOLDED_SECTION_START -->|### Previous review results)")
-            _prev_match = _prev_re.search(body)
-            current_body = body[: _prev_match.start()] if _prev_match else body
-            # Only approve if current section has resolved/dismissed findings
-            has_resolved_findings = (
-                "\u2713 Resolved" in current_body
-                or "Resolved</code>" in current_body
-                or "\u2717 Dismissed" in current_body
-                or "Dismissed</code>" in current_body
-            )
-            if len(unresolved) == 0 and has_resolved_findings:
-                sticky_all_resolved = True
+        # Check at least one resolved/dismissed finding exists
+        _prev_re = re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", re.MULTILINE)
+        _prev_match = _prev_re.search(body)
+        current_body = body[: _prev_match.start()] if _prev_match else body
+        has_resolved = (
+            "\u2713 Resolved" in current_body
+            or "Resolved</code>" in current_body
+            or "\u2717 Dismissed" in current_body
+            or "Dismissed</code>" in current_body
+        )
+        if not has_resolved:
+            print_stderr("[poll] Sticky has no resolved findings — empty review.")
+            return False
 
-    return has_update_confirmation and sticky_all_resolved
+        # All checks passed
+        return True
+
+    # No sticky comment found
+    return False
 
 
 def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
