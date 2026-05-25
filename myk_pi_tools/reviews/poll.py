@@ -26,7 +26,7 @@ from myk_pi_tools.coderabbit.rate_limit import (
     run_trigger,
 )
 from myk_pi_tools.coderabbit.utils import find_summary_comment
-from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr
+from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
 from myk_pi_tools.reviews.fetch import run as fetch_run
 
 _RATE_LIMIT_BUFFER_SECONDS = 30
@@ -91,6 +91,49 @@ def _has_actionable_qodo_comments(pr_number: str) -> bool:
     return False
 
 
+def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
+    """Check if Qodo has approved the PR.
+
+    Qodo is considered to have approved when:
+    1. A "Persistent review updated to latest commit" comment exists from Qodo
+    2. The sticky summary comment has 0 unresolved findings
+
+    Returns True if approved, False otherwise.
+    """
+    from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+
+    # Fetch issue comments to find both the sticky and the "updated" confirmation
+    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+    comments = run_gh_api(endpoint, paginate=True)
+
+    if not comments or not isinstance(comments, list):
+        return False
+
+    QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
+
+    has_update_confirmation = False
+    sticky_all_resolved = False
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in QODO_USERS:
+            continue
+
+        body = comment.get("body", "")
+
+        # Check for "Persistent review updated" confirmation
+        if "Persistent review" in body and "updated to latest commit" in body:
+            has_update_confirmation = True
+
+        # Check the sticky summary comment
+        if is_qodo_sticky_comment(body):
+            unresolved = parse_qodo_sticky_comment(body)
+            if len(unresolved) == 0:
+                sticky_all_resolved = True
+
+    return has_update_confirmation and sticky_all_resolved
+
+
 def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
     """Poll for Qodo reviews in a loop until new comments appear.
 
@@ -103,6 +146,13 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
     while True:
         cycle += 1
         print_stderr(f"[poll] Cycle {cycle} for {owner_repo}#{pr_number} (source: qodo)...")
+
+        # Check if Qodo approved (all sticky findings resolved + update confirmation)
+        print_stderr("[poll] Checking Qodo approval...")
+        if _is_qodo_approved(owner, repo, pr_number):
+            print_stderr("[poll] Qodo approved — all findings resolved.")
+            print('{"approved": true}')
+            return 0
 
         # Fetch reviews
         print_stderr("[poll] Fetching reviews...")
