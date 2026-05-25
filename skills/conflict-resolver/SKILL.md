@@ -29,28 +29,19 @@ git status --porcelain | grep "^[UAD][UAD]"
 ### Detect the operation type
 
 ```bash
-# What caused the conflict?
-if [ -f .git/MERGE_HEAD ]; then
+# What caused the conflict? (worktree-safe — no .git/ path assumptions)
+if git rev-parse --verify -q MERGE_HEAD >/dev/null 2>&1; then
   echo "MERGE — ours=HEAD, theirs=MERGE_HEAD"
   THEIRS="MERGE_HEAD"
-elif [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+elif git rev-parse --verify -q REBASE_HEAD >/dev/null 2>&1; then
   echo "REBASE — ours=upstream, theirs=HEAD (swapped!)"
   THEIRS="REBASE_HEAD"
-elif [ -f .git/CHERRY_PICK_HEAD ]; then
+elif git rev-parse --verify -q CHERRY_PICK_HEAD >/dev/null 2>&1; then
   echo "CHERRY-PICK — ours=HEAD, theirs=CHERRY_PICK_HEAD"
   THEIRS="CHERRY_PICK_HEAD"
 fi
-```
 
-**⚠️ During rebase, `--ours` and `--theirs` are SWAPPED:**
-
-- `git merge`: `--ours` = your branch, `--theirs` = incoming
-- `git rebase`: `--ours` = upstream (the branch you're rebasing onto), `--theirs` = your commits
-
-For EACH conflicted file:
-
-```bash
-# See what each side changed
+# For EACH conflicted file — see what each side changed
 git log --oneline $THEIRS..HEAD -- <file>    # our commits
 git log --oneline HEAD..$THEIRS -- <file>    # their commits
 
@@ -61,6 +52,11 @@ git blame $THEIRS -- <file> | head -30
 # View the actual conflict markers
 grep -n "<<<<<<\|======\|>>>>>>" <file>
 ```
+
+**⚠️ During rebase, `--ours` and `--theirs` are SWAPPED:**
+
+- `git merge`: `--ours` = your branch, `--theirs` = incoming
+- `git rebase`: `--ours` = upstream (the branch you're rebasing onto), `--theirs` = your commits
 
 **Iron Law: understand BOTH sides before resolving. Never blindly accept one side.**
 
