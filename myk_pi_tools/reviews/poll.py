@@ -166,10 +166,12 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
 
 
 def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
-    """Poll for Qodo reviews in a loop until new comments appear.
+    """Poll for Qodo reviews in a loop until approved or new comments.
 
-    Simpler than CodeRabbit polling — no rate limits, no approval check.
-    Just fetch, check for actionable qodo comments, sleep if none.
+    Flow per cycle:
+    1. Fetch reviews — if actionable comments found, return them
+    2. If 0 new comments, check approval (sticky all resolved + commit match)
+    3. If not approved, sleep and retry
     """
     owner_repo = f"{owner}/{repo}"
     cycle = 0
@@ -178,14 +180,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
         cycle += 1
         print_stderr(f"[poll] Cycle {cycle} for {owner_repo}#{pr_number} (source: qodo)...")
 
-        # Check if Qodo approved (all sticky findings resolved + update confirmation)
-        print_stderr("[poll] Checking Qodo approval...")
-        if _is_qodo_approved(owner, repo, pr_number):
-            print_stderr("[poll] Qodo approved — all findings resolved.")
-            print('{"approved": true}')
-            return 0
-
-        # Fetch reviews
+        # Step 1: Fetch reviews first
         print_stderr("[poll] Fetching reviews...")
         fetch_result = fetch_run(review_url)
 
@@ -197,6 +192,15 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
             print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
         else:
             print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
+
+        # Step 2: Only check approval AFTER confirming 0 new comments
+        # This prevents approving before processing new findings
+        if fetch_result == 0:
+            print_stderr("[poll] Checking Qodo approval...")
+            if _is_qodo_approved(owner, repo, pr_number):
+                print_stderr("[poll] Qodo approved — all findings resolved.")
+                print('{"approved": true}')
+                return 0
 
         # No actionable result — sleep and loop
         print_stderr(f"[poll] No new Qodo comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
