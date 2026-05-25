@@ -11,6 +11,8 @@ on "no new comments" -- sleeps and retries.
 from __future__ import annotations
 
 import contextlib
+import re
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -121,14 +123,39 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
 
         body = comment.get("body", "")
 
-        # Check for "Persistent review updated" confirmation
+        # Check for "Persistent review updated" referencing the LATEST commit
         if "Persistent review" in body and "updated to latest commit" in body:
-            has_update_confirmation = True
+            # Extract commit hash from the URL in the body
+            commit_match = re.search(r"/commit/([0-9a-f]{7,40})", body)
+            if commit_match:
+                review_commit = commit_match.group(1)
+                # Get current HEAD
+                try:
+                    head_result = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    head_sha = head_result.stdout.strip() if head_result.returncode == 0 else ""
+                    # Match if HEAD starts with the review commit (or vice versa for short hashes)
+                    if head_sha and (head_sha.startswith(review_commit) or review_commit.startswith(head_sha[:7])):
+                        has_update_confirmation = True
+                    else:
+                        print_stderr(
+                            f"[poll] Qodo reviewed {review_commit[:7]} but HEAD is {head_sha[:7]} — not yet reviewed."
+                        )
+                except (subprocess.SubprocessError, OSError):
+                    pass
 
         # Check the sticky summary comment
         if is_qodo_sticky_comment(body):
             unresolved = parse_qodo_sticky_comment(body)
-            if len(unresolved) == 0:
+            # Only approve if sticky has actual resolved findings (not just empty/no review)
+            # If 0 unresolved but the sticky contains "✓ Resolved" → all findings were resolved
+            # If 0 unresolved and no resolved markers → no findings at all, don't approve
+            has_resolved_findings = "\u2713 Resolved" in body or "Resolved</code>" in body
+            if len(unresolved) == 0 and has_resolved_findings:
                 sticky_all_resolved = True
 
     return has_update_confirmation and sticky_all_resolved
