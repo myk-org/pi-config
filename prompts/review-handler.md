@@ -363,7 +363,7 @@ Qodo if autoqodo, both if both flags active).
 - Agent: `worker`
 - Task: `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-  `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
+  `Do NOT suppress stderr — let it stream to the terminal for diagnostics, but return ONLY stdout as your output.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
@@ -372,7 +372,7 @@ Qodo if autoqodo, both if both flags active).
 - Agent: `worker`
 - Task: `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-  `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
+  `Do NOT suppress stderr — let it stream to the terminal for diagnostics, but return ONLY stdout as your output.`
 - async: true
 - **No timeout** — the poll loops internally until new Qodo comments appear. NEVER set a timeout.
 
@@ -380,10 +380,10 @@ Qodo if autoqodo, both if both flags active).
 
 1. `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-   `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
+   `Do NOT suppress stderr — let it stream to the terminal for diagnostics, but return ONLY stdout as your output.`
 1. `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-   `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
+   `Do NOT suppress stderr — let it stream to the terminal for diagnostics, but return ONLY stdout as your output.`
 
 When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn that agent.
 The other agent keeps running independently.
