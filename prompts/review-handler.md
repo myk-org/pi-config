@@ -361,21 +361,29 @@ Qodo if autoqodo, both if both flags active).
 **If autorabbit is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+- Task: `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1].`
+  `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+  `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
 **If autoqodo is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+- Task: `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1].`
+  `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+  `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
 - async: true
 - **No timeout** — the poll loops internally until new Qodo comments appear. NEVER set a timeout.
 
 **If BOTH are ON:** Spawn TWO async workers in parallel:
 
-1. `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-1. `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1]. Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+1. `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1].`
+   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+   `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
+1. `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1].`
+   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+   `Do NOT redirect stderr (no 2>/dev/null) — stderr logs are needed for diagnostics.`
 
 When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn that agent.
 The other agent keeps running independently.
