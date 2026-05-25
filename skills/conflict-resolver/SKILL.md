@@ -34,7 +34,7 @@ if git rev-parse --verify -q MERGE_HEAD >/dev/null 2>&1; then
   echo "MERGE — ours=HEAD, theirs=MERGE_HEAD"
   THEIRS="MERGE_HEAD"
 elif git rev-parse --verify -q REBASE_HEAD >/dev/null 2>&1; then
-  echo "REBASE — ours=upstream, theirs=HEAD (swapped!)"
+  echo "REBASE — ours=upstream (HEAD), theirs=your commits (REBASE_HEAD) — swapped!"
   THEIRS="REBASE_HEAD"
 elif git rev-parse --verify -q CHERRY_PICK_HEAD >/dev/null 2>&1; then
   echo "CHERRY-PICK — ours=HEAD, theirs=CHERRY_PICK_HEAD"
