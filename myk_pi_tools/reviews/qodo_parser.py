@@ -47,8 +47,12 @@ _TYPE_RE = re.compile(r"<code>([^<]*(?:Bug|Rule violation|Requirement gap)[^<]*)
 _CATEGORY_RE = re.compile(r"<code>([^<]*(?:Correctness|Security|Reliability|Performance|Maintainability)[^<]*)</code>")
 
 # Boundary marking previous review iterations (duplicates of current findings)
+# Match the real fold marker — must be on its own line (not inside backtick quotes).
+# The marker appears as: \n<!-- FOLDED_SECTION_START -->\n
+# Inside code quotes it appears as: `<!-- FOLDED_SECTION_START -->`
 _PREVIOUS_RESULTS_RE = re.compile(
-    r"(?:<!-- FOLDED_SECTION_START -->|### Previous review results)",
+    r"^\s*<!-- FOLDED_SECTION_START -->\s*$",
+    re.MULTILINE,
 )
 
 

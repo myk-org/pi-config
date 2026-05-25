@@ -11,6 +11,7 @@ on "no new comments" -- sleeps and retries.
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -26,7 +27,7 @@ from myk_pi_tools.coderabbit.rate_limit import (
     run_trigger,
 )
 from myk_pi_tools.coderabbit.utils import find_summary_comment
-from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr
+from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
 from myk_pi_tools.reviews.fetch import run as fetch_run
 
 _RATE_LIMIT_BUFFER_SECONDS = 30
@@ -91,11 +92,101 @@ def _has_actionable_qodo_comments(pr_number: str) -> bool:
     return False
 
 
-def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
-    """Poll for Qodo reviews in a loop until new comments appear.
+def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
+    """Check if Qodo has approved the PR.
 
-    Simpler than CodeRabbit polling — no rate limits, no approval check.
-    Just fetch, check for actionable qodo comments, sleep if none.
+    Approved when:
+    1. Sticky comment has 0 unresolved findings
+    2. Sticky has at least one resolved/dismissed finding (not empty)
+    3. Sticky updated_at is AFTER PR head commit date (Qodo finished reviewing latest)
+    """
+    from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+
+    # Get PR head SHA
+    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+    pr_data = run_gh_api(pr_endpoint)
+    if not isinstance(pr_data, dict):
+        return False
+    head_sha = pr_data.get("head", {}).get("sha", "")
+    if not head_sha:
+        return False
+
+    # Get commit date for PR HEAD
+    commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
+    commit_data = run_gh_api(commit_endpoint)
+    if not isinstance(commit_data, dict):
+        return False
+    commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
+    if not commit_date:
+        return False
+
+    # Find the Qodo sticky comment
+    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+    comments = run_gh_api(endpoint, paginate=True)
+    if not comments or not isinstance(comments, list):
+        return False
+
+    QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
+
+    # Check if Qodo has a review-in-progress comment after our commit
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in QODO_USERS:
+            continue
+        body = comment.get("body", "")
+        if "Looking for bugs" in body:
+            print_stderr("[poll] Qodo review in progress (Looking for bugs). Not approved yet.")
+            return False
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in QODO_USERS:
+            continue
+
+        body = comment.get("body", "")
+        if not is_qodo_sticky_comment(body):
+            continue
+
+        # Check sticky was updated AFTER the commit
+        sticky_updated = comment.get("updated_at", "")
+        if not sticky_updated or sticky_updated < commit_date:
+            print_stderr(f"[poll] Sticky updated {sticky_updated} but commit at {commit_date} — not yet reviewed.")
+            return False
+
+        # Parse for unresolved findings
+        unresolved = parse_qodo_sticky_comment(body)
+        if len(unresolved) > 0:
+            print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
+            return False
+
+        # Check at least one resolved/dismissed finding exists
+        _prev_re = re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", re.MULTILINE)
+        _prev_match = _prev_re.search(body)
+        current_body = body[: _prev_match.start()] if _prev_match else body
+        has_resolved = (
+            "\u2713 Resolved" in current_body
+            or "Resolved</code>" in current_body
+            or "\u2717 Dismissed" in current_body
+            or "Dismissed</code>" in current_body
+        )
+        if not has_resolved:
+            print_stderr("[poll] Sticky has no resolved findings — empty review.")
+            return False
+
+        # All checks passed
+        return True
+
+    # No sticky comment found
+    return False
+
+
+def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
+    """Poll for Qodo reviews in a loop until approved or new comments.
+
+    Flow per cycle:
+    1. Fetch reviews — if actionable comments found, return them
+    2. If 0 new comments, check approval (sticky all resolved + commit match)
+    3. If not approved, sleep and retry
     """
     owner_repo = f"{owner}/{repo}"
     cycle = 0
@@ -104,7 +195,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
         cycle += 1
         print_stderr(f"[poll] Cycle {cycle} for {owner_repo}#{pr_number} (source: qodo)...")
 
-        # Fetch reviews
+        # Step 1: Fetch reviews first
         print_stderr("[poll] Fetching reviews...")
         fetch_result = fetch_run(review_url)
 
@@ -116,6 +207,15 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
             print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
         else:
             print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
+
+        # Step 2: Only check approval AFTER confirming 0 new comments
+        # This prevents approving before processing new findings
+        if fetch_result == 0:
+            print_stderr("[poll] Checking Qodo approval...")
+            if _is_qodo_approved(owner, repo, pr_number):
+                print_stderr("[poll] Qodo approved — all findings resolved.")
+                print('{"approved": true}')
+                return 0
 
         # No actionable result — sleep and loop
         print_stderr(f"[poll] No new Qodo comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
