@@ -130,7 +130,8 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
         body = comment.get("body", "")
 
         # Check for "Persistent review updated" referencing the LATEST commit
-        if "Persistent review" in body and "updated to latest commit" in body:
+        # Skip the sticky comment itself — it can contain commit URLs in audit trail
+        if "Persistent review" in body and "updated to latest commit" in body and not is_qodo_sticky_comment(body):
             # Extract commit hash from the URL in the body
             commit_match = re.search(r"/commit/([0-9a-f]{7,40})", body)
             if commit_match:
