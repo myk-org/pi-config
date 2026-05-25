@@ -136,7 +136,7 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
             if commit_match:
                 review_commit = commit_match.group(1)
                 # Match if review commit matches PR head SHA
-                if head_sha and (head_sha.startswith(review_commit) or review_commit.startswith(head_sha[:7])):
+                if head_sha and head_sha.startswith(review_commit):
                     has_update_confirmation = True
                 else:
                     print_stderr(
