@@ -112,6 +112,13 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
 
     QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
 
+    # Get PR head SHA once (not per comment)
+    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+    pr_data = run_gh_api(pr_endpoint)
+    head_sha = ""
+    if isinstance(pr_data, dict):
+        head_sha = pr_data.get("head", {}).get("sha", "")
+
     has_update_confirmation = False
     sticky_all_resolved = False
 
@@ -128,13 +135,7 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
             commit_match = re.search(r"/commit/([0-9a-f]{7,40})", body)
             if commit_match:
                 review_commit = commit_match.group(1)
-                # Get PR head SHA from GitHub API
-                pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
-                pr_data = run_gh_api(pr_endpoint)
-                head_sha = ""
-                if isinstance(pr_data, dict):
-                    head_sha = pr_data.get("head", {}).get("sha", "")
-                # Match if HEAD starts with the review commit (or vice versa for short hashes)
+                # Match if review commit matches PR head SHA
                 if head_sha and (head_sha.startswith(review_commit) or review_commit.startswith(head_sha[:7])):
                     has_update_confirmation = True
                 else:
@@ -145,14 +146,18 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
         # Check the sticky summary comment
         if is_qodo_sticky_comment(body):
             unresolved = parse_qodo_sticky_comment(body)
-            # Only approve if sticky has actual resolved findings (not just empty/no review)
-            # If 0 unresolved but the sticky contains "✓ Resolved" → all findings were resolved
-            # If 0 unresolved and no resolved markers → no findings at all, don't approve
+            # Truncate at "Previous review results" to match parser scope
+            import re as _re
+
+            _prev_re = _re.compile(r"(?:<!-- FOLDED_SECTION_START -->|### Previous review results)")
+            _prev_match = _prev_re.search(body)
+            current_body = body[: _prev_match.start()] if _prev_match else body
+            # Only approve if current section has resolved/dismissed findings
             has_resolved_findings = (
-                "\u2713 Resolved" in body
-                or "Resolved</code>" in body
-                or "\u2717 Dismissed" in body
-                or "Dismissed</code>" in body
+                "\u2713 Resolved" in current_body
+                or "Resolved</code>" in current_body
+                or "\u2717 Dismissed" in current_body
+                or "Dismissed</code>" in current_body
             )
             if len(unresolved) == 0 and has_resolved_findings:
                 sticky_all_resolved = True
