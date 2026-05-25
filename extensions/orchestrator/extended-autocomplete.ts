@@ -14,8 +14,11 @@
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
  *   /review-handler <Tab>        → --autorabbit, --autoqodo
+ *   /create-skill <Tab>          → (free-text name)
+ *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
  *   /pidash <Tab>                → start, stop, restart, status
+ *   /pidiff <Tab>                → start, stop, restart, status
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -78,7 +81,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   const prCache = createCache<AutocompleteItem[]>();
   const branchCache = createCache<AutocompleteItem[]>();
   const tagCache = createCache<AutocompleteItem[]>();
-  const commitCache = createCache<AutocompleteItem[]>();
   const modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
   let lastCwd = "";
 
@@ -192,29 +194,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     } catch {}
     tagCache.loading = false;
-  }
-
-  async function fetchCommits(cwd: string): Promise<void> {
-    if (isFresh(commitCache) || commitCache.loading) return;
-    commitCache.loading = true;
-    try {
-      const result = await pi.exec(
-        "git", ["log", "-20", "--format=%h|%s"],
-        { cwd, timeout: 5_000 },
-      );
-      if (result.code === 0) {
-        commitCache.data = result.stdout
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l.length > 0)
-          .map((l) => {
-            const [hash, ...rest] = l.split("|");
-            return { value: hash, label: hash, description: rest.join("|") };
-          });
-        commitCache.timestamp = Date.now();
-      }
-    } catch {}
-    commitCache.loading = false;
   }
 
   // ── Completion definitions ──────────────────────────────────────
@@ -425,7 +404,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler", "cron",
+    "review-local", "release", "review-handler", "cron", "create-skill",
   ]);
 
   // /external-ai-models-refresh command — clears cache and re-fetches

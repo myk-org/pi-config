@@ -228,3 +228,29 @@ Dreaming is a **self-contained action** — the LLM worker:
 
 - **ALWAYS run dreaming as async + fireAndForget** — never block the session, never inject results into conversation
 - Tell the user: "Running memory consolidation in background..."
+
+---
+
+## Skill Creation (Procedural Memory)
+
+Memory stores facts. **Skills store procedures.**
+
+When you complete a multi-step workflow, save it as a skill using `/create-skill <name>`.
+Skills are reusable — next time the same task comes up, the skill provides the exact steps.
+
+**Auto-create skills when:**
+
+- A workflow took 3+ steps and involved trial-and-error or non-obvious commands
+- You notice you're doing the same multi-step task for the second time
+- A debugging session revealed a non-obvious root cause + fix pattern
+- A build/deploy/integration required specific steps that aren't documented
+
+**Do NOT create skills for:**
+
+- Simple one-step tasks
+- Standard workflows already covered by existing skills
+- Tasks that are unlikely to recur
+
+**How:** Run `/create-skill <name>` — it extracts the workflow from the current
+conversation and saves it as `~/.agents/skills/<name>/SKILL.md`.
+The skill is available in the next pi session.

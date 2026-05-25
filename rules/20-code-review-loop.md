@@ -69,3 +69,74 @@ The process is iterative:
 5. Once approved, run tests
 6. If tests fail, fix the code. Minor test/config-only fixes can skip re-review and go to step 5. Substantive code changes require full re-review from step 2
 7. Only complete when all reviewers approve AND tests pass
+
+## Baseline Test Comparison (Step 5)
+
+Before declaring test failures as blockers, compare against the baseline:
+
+```bash
+BASELINE_DIR="/tmp/pi-work/$(basename "$PWD")"
+mkdir -p "$BASELINE_DIR"
+
+# 1. Save ALL changes (staged + unstaged + untracked)
+git diff HEAD > "$BASELINE_DIR/baseline.patch"
+git ls-files --others --exclude-standard > "$BASELINE_DIR/untracked.list"
+
+# 2. Reset to clean state
+git reset --hard HEAD
+# Remove untracked files listed (if any)
+xargs -r -d '\n' rm -f < "$BASELINE_DIR/untracked.list" 2>/dev/null || true
+
+# 3. Run tests → record baseline failure count
+# <run tests here>
+
+# 4. Restore changes
+git apply "$BASELINE_DIR/baseline.patch" \
+  || git apply --3way "$BASELINE_DIR/baseline.patch"
+
+# 5. Clean up
+rm -f "$BASELINE_DIR/baseline.patch" "$BASELINE_DIR/untracked.list"
+
+# 6. Run tests → record current failure count
+# <run tests here>
+```
+
+- **Only NEW failures** (current minus baseline) block the review
+- Pre-existing failures are noted in the review but do not block
+- If both `git apply` and `git apply --3way` fail, skip baseline comparison
+  and note "baseline comparison unavailable" — do NOT block on all failures
+- Untracked files are saved/restored separately since `git diff` doesn't capture them
+
+This prevents blocking on test failures that existed before the PR.
+
+## Staged Review Mode (Automated Workflows)
+
+For automated review flows (autorabbit, autoqodo), use **two-stage review order**
+instead of parallel review:
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│  Stage 1: Spec Compliance                                       │
+│  - Does the code meet the requirements/spec?                    │
+│  - Are all deliverables implemented?                            │
+│  - No scope creep?                                              │
+│              ↓                                                  │
+│  Stage 1 passed?  ──NO──→ Fix spec issues first (loop Stage 1)  │
+│              │                                                  │
+│             YES                                                 │
+│              ↓                                                  │
+│  Stage 2: Code Quality                                          │
+│  - Code quality and maintainability                             │
+│  - Security and bugs                                            │
+│  - Project guidelines adherence                                 │
+│              ↓                                                  │
+│  Stage 2 passed?  ──NO──→ Fix quality issues (loop Stage 2)     │
+│              │                                                  │
+│             YES                                                 │
+│              ↓                                                  │
+│  ✅ DONE                                                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why staged?** Don't polish code that doesn't meet spec — it wastes work.
+The parallel mode (all 3 reviewers at once) remains the default for manual reviews.
