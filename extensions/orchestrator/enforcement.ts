@@ -74,7 +74,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Strip timeout on long-running poll commands — these can take 30+ minutes
     // (rate limit waits). The LLM keeps setting timeouts despite prompt instructions.
     // Instead of blocking (which causes infinite retry loops), silently remove the timeout.
-    if (/\bmyk-pi-tools\b.*\breviews\s+poll\b/.test(command) && event.input.timeout) {
+    if (/\bmyk-pi-tools\b[\s\S]*\breviews\s+poll\b/.test(command) && event.input.timeout) {
       delete event.input.timeout;
     }
 
