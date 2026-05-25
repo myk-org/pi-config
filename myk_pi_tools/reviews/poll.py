@@ -128,6 +128,16 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
 
     QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
 
+    # Check if Qodo has a review-in-progress comment after our commit
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in QODO_USERS:
+            continue
+        body = comment.get("body", "")
+        if "Looking for bugs" in body:
+            print_stderr("[poll] Qodo review in progress (Looking for bugs). Not approved yet.")
+            return False
+
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
         if author not in QODO_USERS:
