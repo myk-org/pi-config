@@ -22,20 +22,41 @@ Before touching any file, gather context:
 # List all conflicted files
 git diff --name-only --diff-filter=U
 
-# Show conflict details
-git status --porcelain | grep "^UU"
+# Show ALL conflict types (UU=both modified, AA=both added, etc.)
+git status --porcelain | grep "^[UAD][UAD]"
 ```
+
+### Detect the operation type
+
+```bash
+# What caused the conflict?
+if [ -f .git/MERGE_HEAD ]; then
+  echo "MERGE — ours=HEAD, theirs=MERGE_HEAD"
+  THEIRS="MERGE_HEAD"
+elif [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+  echo "REBASE — ours=upstream, theirs=HEAD (swapped!)"
+  THEIRS="REBASE_HEAD"
+elif [ -f .git/CHERRY_PICK_HEAD ]; then
+  echo "CHERRY-PICK — ours=HEAD, theirs=CHERRY_PICK_HEAD"
+  THEIRS="CHERRY_PICK_HEAD"
+fi
+```
+
+**⚠️ During rebase, `--ours` and `--theirs` are SWAPPED:**
+
+- `git merge`: `--ours` = your branch, `--theirs` = incoming
+- `git rebase`: `--ours` = upstream (the branch you're rebasing onto), `--theirs` = your commits
 
 For EACH conflicted file:
 
 ```bash
 # See what each side changed
-git log --oneline MERGE_HEAD..HEAD -- <file>    # our commits
-git log --oneline HEAD..MERGE_HEAD -- <file>    # their commits
+git log --oneline $THEIRS..HEAD -- <file>    # our commits
+git log --oneline HEAD..$THEIRS -- <file>    # their commits
 
 # Get blame for context
 git blame HEAD -- <file> | head -30
-git blame MERGE_HEAD -- <file> | head -30
+git blame $THEIRS -- <file> | head -30
 
 # View the actual conflict markers
 grep -n "<<<<<<\|======\|>>>>>>" <file>
@@ -64,33 +85,43 @@ Classify each side's changes by intent:
 3. **Conflicting logic** → prefer the more recent or more tested change
 4. **Style/format conflicts** → accept either, prefer consistency with surrounding code
 5. **Deletions vs modifications** → investigate why deleted; deletion is usually intentional
-6. **Lock files** (`package-lock.json`, `uv.lock`, `yarn.lock`, `pnpm-lock.yaml`) → NEVER merge manually. Accept one side, regenerate:
+6. **Lock files** (`package-lock.json`, `uv.lock`, `yarn.lock`, `pnpm-lock.yaml`) → NEVER merge manually.
+   Resolve the **manifest first** (`package.json`, `pyproject.toml`, etc.), then regenerate:
 
 ```bash
+# Step 1: Resolve the manifest file (package.json, pyproject.toml) normally
+# Step 2: Delete the conflicted lock file and regenerate
+
 # For uv.lock
-git checkout --theirs uv.lock
+rm -f uv.lock
 uv lock
 
 # For package-lock.json
-git checkout --theirs package-lock.json
+rm -f package-lock.json
 npm install
 
 # For yarn.lock
-git checkout --theirs yarn.lock
+rm -f yarn.lock
 yarn install
 ```
+
+The manifest defines WHAT you want. The lock file is generated FROM the manifest. Never pick a side for the lock file — just regenerate it.
 
 ### Resolution Commands
 
 ```bash
-# Accept theirs entirely (incoming/base branch)
+# Accept theirs entirely (incoming changes)
 git checkout --theirs <file>
 git add <file>
 
-# Accept ours entirely (current branch)
+# Accept ours entirely (current branch changes)
 git checkout --ours <file>
 git add <file>
+```
 
+**⚠️ During rebase, `--ours`/`--theirs` are swapped.** If unsure, use `git diff :2:<file> :3:<file>` to compare stage 2 (ours) vs stage 3 (theirs) directly.
+
+```bash
 # Manual resolution
 # 1. Open file, read conflict markers
 # 2. Remove <<<<<<< ======= >>>>>>> markers
