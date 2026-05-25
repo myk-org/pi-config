@@ -71,13 +71,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
-    // Block timeout on long-running poll commands — these can take 30+ minutes
+    // Strip timeout on long-running poll commands — these can take 30+ minutes
     // (rate limit waits). The LLM keeps setting timeouts despite prompt instructions.
+    // Instead of blocking (which causes infinite retry loops), silently remove the timeout.
     if (/\bmyk-pi-tools\b.*\breviews\s+poll\b/.test(command) && event.input.timeout) {
-      return {
-        block: true,
-        reason: `⛔ reviews poll must not have a timeout (it can take 30+ min for rate limit waits). Retry without the timeout parameter.`,
-      };
+      delete event.input.timeout;
     }
 
     // Block direct python/pip — check at start or after pipe/semicolon/&& operators
