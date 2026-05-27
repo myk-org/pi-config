@@ -69,14 +69,36 @@ export function createDeferredProxy(
                     return () => {};
                 case 'registerTool':
                     return (tool: any) => {
+                        // Inject anti-loop warning into coms_send description
+                        // (upstream coms_net_send has this but coms_send doesn't)
+                        if (tool.name === "coms_send" && tool.description && !tool.description.includes("DO NOT")) {
+                            tool.description +=
+                                "\n\n\u26a0\ufe0f  DO NOT call this tool to REPLY to an inbound message. " +
+                                "When you receive a `[from <peer>] \u2026` follow-up, just write your answer as your normal assistant message \u2014 " +
+                                "the coms extension automatically captures the final assistant text at the end of your turn and " +
+                                "submits it back to the original caller. Calling coms_send in response creates a new outbound message, not a reply.";
+                        }
                         const origExecute = tool.execute;
-                        tool.execute = async (callId: string, params: any) => {
+                        tool.execute = async (callId: string, params: any, signal?: AbortSignal, ...rest: any[]) => {
                             if (!state.active) {
                                 return {
                                     content: [{ type: "text" as const, text: inactiveMessage }],
                                 };
                             }
-                            return origExecute(callId, params);
+                            // For *_await tools: wrap with abort signal support
+                            // so ESC can interrupt the blocking wait
+                            if (tool.name?.endsWith("_await") && signal) {
+                                return Promise.race([
+                                    origExecute(callId, params, signal, ...rest),
+                                    new Promise<any>((_, reject) => {
+                                        if (signal.aborted) reject(new Error("aborted"));
+                                        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+                                    }),
+                                ]).catch((err) => ({
+                                    content: [{ type: "text" as const, text: `⚠️ ${tool.name} interrupted: ${err.message}` }],
+                                }));
+                            }
+                            return origExecute(callId, params, signal, ...rest);
                         };
                         return target.registerTool(tool);
                     };
