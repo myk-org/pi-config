@@ -15,6 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as crypto from "node:crypto";
 import { execSync, spawn } from "node:child_process";
 import upstreamComsNetInit from "./upstream-coms/coms-net.js";
 
@@ -91,6 +92,12 @@ async function ensureServerRunning(
     const projDir = path.join(COMS_NET_DIR, "projects", project);
     fs.mkdirSync(projDir, { recursive: true });
 
+    // Generate auth token and write server.secret.json so both server and client can read it
+    const token = crypto.randomBytes(32).toString("hex");
+    const secretPath = path.join(projDir, "server.secret.json");
+    fs.writeFileSync(secretPath, JSON.stringify({ token }, null, 2));
+    try { fs.chmodSync(secretPath, 0o600); } catch {}
+
     // Spawn server in background
     const logFile = path.join(projDir, "server.log");
     log(`spawning coms-net server: ${bunPath} ${scriptPath}`);
@@ -101,6 +108,8 @@ async function ensureServerRunning(
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
+            PI_COMS_NET_HOST: "0.0.0.0", // LAN-accessible
+            PI_COMS_NET_AUTH_TOKEN: token,
             PI_COMS_NET_PORT: "0", // OS picks free port
         },
     });
