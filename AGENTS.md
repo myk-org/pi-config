@@ -42,6 +42,8 @@ pi-config/
 │   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget support)
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
+│   │   ├── coms.ts                  # P2P agent communication wrapper (on-demand /coms command)
+│   │   ├── coms-net.ts              # Networked agent communication wrapper (on-demand /coms-net command, auto-manages hub server)
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon, forwards provider response info)
@@ -68,6 +70,7 @@ pi-config/
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
+│   │   ├── upstream-coms/           # Synced upstream files from disler/pi-vs-claude-code (coms.ts, coms-net.ts, coms-net-server.ts, themeMap.ts)
 │   │   └── utils.ts                 # Shared utilities
 │   └── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
@@ -112,7 +115,8 @@ pi-config/
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
-│   └── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   └── sync-coms-upstream.sh        # Sync upstream coms files from disler/pi-vs-claude-code
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
@@ -195,6 +199,8 @@ Known extension commands:
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
 | `/cron` | `cron.ts` | Schedule recurring tasks |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
+| `/coms` | `coms.ts` | P2P agent communication (start/stop/status) |
+| `/coms-net` | `coms-net.ts` | Networked agent communication (start/stop/status/server-stop) |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ### Adding a Prompt Template
