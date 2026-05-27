@@ -71,19 +71,14 @@ When you receive an inbound message, it appears as:
 
 ## Outbound Messages — How to Initiate
 
-To START a new conversation with a peer, use the send tool then poll for the response.
-
-❌ **WRONG:** `coms_send` → `coms_await` (blocks the entire session — user can't interact)
-
-✅ **RIGHT:** `coms_send` → continue working → `coms_get` to check later
+To START a new conversation with a peer, use the send tool then await the response.
 
 ### Example: Outbound conversation (P2P)
 
 ```text
 1. coms_list                          # Find available peers
 2. coms_send(peer="pi-2", msg="...")  # Send the question
-3. ... continue other work ...        # Don't block
-4. coms_get                           # Poll for response
+3. coms_await                         # Wait for response (ESC to interrupt)
 ```
 
 ### Example: Outbound conversation (Networked)
@@ -91,21 +86,15 @@ To START a new conversation with a peer, use the send tool then poll for the res
 ```text
 1. coms_net_list                          # Find available peers
 2. coms_net_send(peer="pi-2", msg="...")  # Send the question
-3. ... continue other work ...            # Don't block
-4. coms_net_get                           # Poll for response
+3. coms_net_await                         # Wait for response (ESC to interrupt)
 ```
-
-`coms_await` / `coms_net_await` are also available — they block until the response arrives
-but the user can press ESC to interrupt. Use when you need the response before continuing.
 
 ---
 
 ## Key Rules
 
-1. **Avoid `coms_await` / `coms_net_await`** — they block the session.
-   Use `coms_get` / `coms_net_get` to poll instead.
-   If the user explicitly asks to await, `coms_await` is interruptible via ESC.
+1. **`coms_await` / `coms_net_await` are interruptible** — user can press ESC to cancel.
+   Use them freely for outbound conversations.
 2. **Never call send tools to reply** to inbound messages — your assistant text is the reply
 3. **Always check peers first** — use list tools before sending to verify the peer exists
 4. **Don't mix prefixes** — `coms_` tools only work with `/coms`, `coms_net_` tools only work with `/coms-net`
-5. **Poll, don't block** — use `coms_get` / `coms_net_get` to check for responses non-blockingly
