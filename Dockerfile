@@ -53,6 +53,9 @@ COPY --from=uv /uvx /usr/local/bin/uvx
 RUN curl -fsSL https://go.dev/dl/go1.24.4.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 ENV PATH="/usr/local/go/bin:$PATH"
 
+# Install Bun (required by coms-net-server)
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+
 # Install kubectl and oc (OpenShift CLI)
 RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
   chmod +x /usr/local/bin/kubectl && \
