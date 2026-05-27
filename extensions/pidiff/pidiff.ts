@@ -183,7 +183,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
             const message = `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review, null, 2)}\n\`\`\`\n\nPlease address these review comments.`;
             pi.sendUserMessage(message, { deliverAs: "followUp" });
           }
-        } catch {}
+        } catch (e: any) { log(`message handler error: ${e.message}`); }
       });
 
       wsClient.on("close", () => {

@@ -64,7 +64,7 @@ const browserWatchMap = new WeakMap<any, string | null>();
 
 const UI_DIR = path.join(
   path.dirname(process.argv[1] || __filename),
-  "..", "extensions", "orchestrator", "pidash-ui", "dist",
+  "..", "extensions", "pidash", "pidash-ui", "dist",
 );
 
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -370,7 +370,7 @@ browserWss.on("connection", (ws: any) => {
         }
         return;
       }
-    } catch {}
+    } catch (e: any) { log(`browser message error: ${e.message}`); }
   });
 
   ws.on("close", () => {
@@ -452,7 +452,7 @@ asyncWss.on("connection", (ws: any) => {
         asyncAgents.delete(parsed.id);
         return;
       }
-    } catch {}
+    } catch (e: any) { log(`async message error: ${e.message}`); }
   });
 
   ws.on("close", () => {
