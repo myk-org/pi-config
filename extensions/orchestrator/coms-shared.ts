@@ -101,7 +101,9 @@ export function createDeferredProxy(
                                     try {
                                         await handler(evt, ctx);
                                         state.active = true;
-                                    } catch {}
+                                    } catch (err) {
+                                        console.error(`[coms] reload reactivation failed:`, err);
+                                    }
                                 }
                             });
                         }

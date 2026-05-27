@@ -167,13 +167,9 @@ export function registerComsNet(pi: ExtensionAPI) {
 
     upstreamComsNetInit(proxyPi as any);
 
-    // Clean up server we started on session shutdown
-    pi.on("session_shutdown", async () => {
-        if (serverStartedByUs) {
-            killServer(activeProject, log);
-            serverStartedByUs = false;
-        }
-    });
+    // Don't auto-kill the server on session shutdown — other sessions may
+    // be connected. The server has its own stale detection and cleanup.
+    // User can explicitly stop it with /coms-net server-stop.
 
     pi.registerCommand("coms-net", {
         description: "Networked agent communication: /coms-net start [--name X --purpose Y --project Z --color #HEX] | stop | status | server-stop",
