@@ -213,7 +213,9 @@ function getAllowlistPath(cwd: string): string {
 
 function readAllowlist(cwd: string): Record<string, string> {
   try {
-    return JSON.parse(readFileSync(getAllowlistPath(cwd), "utf-8"));
+    const parsed = JSON.parse(readFileSync(getAllowlistPath(cwd), "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
   } catch (err) {
     const path = getAllowlistPath(cwd);
     if (existsSync(path)) console.error(`[prompt-guard] Failed to read allowlist ${path}:`, err);
