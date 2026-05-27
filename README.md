@@ -29,7 +29,8 @@ Single extension that provides:
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
-| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember` — with autocomplete argument hints |
+| **Inter-agent communication** | P2P (`/coms`) and networked (`/coms-net`) agent communication — on-demand activation via slash commands |
+| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
@@ -69,6 +70,41 @@ Single extension that provides:
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer daemon |
+| `/coms start\|stop\|status` | P2P local agent communication (Unix socket) |
+| `/coms-net start\|stop\|status\|server-stop` | Networked agent communication (HTTP/SSE hub) |
+
+### Inter-Agent Communication (coms & coms-net)
+
+Two systems for Pi agents to communicate with each other, activated on-demand via slash commands:
+
+**P2P Local (`/coms`)** — Direct Unix socket communication between agents on the same machine. No server needed.
+
+```text
+/coms start --name planner --purpose "Plans the work"
+/coms stop
+/coms status
+```
+
+**Networked (`/coms-net`)** — HTTP/SSE hub for communication across machines. Server auto-starts on localhost.
+
+```text
+/coms-net start --name dev --purpose "Development agent"
+/coms-net stop
+/coms-net status
+```
+
+For LAN/remote access, set `PI_COMS_NET_AUTH_TOKEN` and `PI_COMS_NET_HOST=0.0.0.0` in your environment.
+
+**Tools available once activated:**
+
+| Tool | Description |
+|------|-------------|
+| `*_list` | List peer agents with names, models, context usage |
+| `*_send` | Send a prompt to a peer agent |
+| `*_get` | Non-blocking poll for a response |
+| `*_await` | Block until response arrives |
+
+Based on [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-code) coms extensions. Upstream files synced via `scripts/sync-coms-upstream.sh`.
 
 ## Installation
 

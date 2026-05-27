@@ -69,6 +69,12 @@ pi-config/
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities
+│   ├── coms/                        # Inter-agent communication extension (standalone)
+│   │   ├── index.ts                 # Entry point — registers coms and coms-net
+│   │   ├── coms.ts                  # P2P agent communication wrapper (on-demand /coms command)
+│   │   ├── coms-net.ts              # Networked agent communication wrapper (on-demand /coms-net command, auto-manages hub server)
+│   │   ├── coms-shared.ts           # Shared proxy factory, flag parser, state persistence
+│   │   └── upstream-coms/           # Synced upstream files from disler/pi-vs-claude-code (coms.ts, coms-net.ts, coms-net-server.ts, themeMap.ts)
 │   └── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 ├── prompts/                         # Prompt templates (slash commands)
@@ -112,7 +118,8 @@ pi-config/
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
-│   └── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   └── sync-coms-upstream.sh        # Sync upstream coms files from disler/pi-vs-claude-code
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint
@@ -195,6 +202,8 @@ Known extension commands:
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
 | `/cron` | `cron.ts` | Schedule recurring tasks |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
+| `/coms` | `coms/coms.ts` | P2P agent communication (start/stop/status) |
+| `/coms-net` | `coms/coms-net.ts` | Networked agent communication (start/stop/status/server-stop) |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ### Adding a Prompt Template
