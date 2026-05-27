@@ -38,6 +38,7 @@ coms_net_list      # Networked peers
 | List peers | `coms_list` | `coms_net_list` |
 | Send message | `coms_send` | `coms_net_send` |
 | Poll for response | `coms_get` | `coms_net_get` |
+| Block until response | `coms_await` | `coms_net_await` |
 
 ---
 
@@ -94,11 +95,16 @@ To START a new conversation with a peer, use the send tool then poll for the res
 4. coms_net_get                           # Poll for response
 ```
 
+`coms_await` / `coms_net_await` are also available — they block until the response arrives
+but the user can press ESC to interrupt. Use when you need the response before continuing.
+
 ---
 
 ## Key Rules
 
-1. **Never use `coms_await` / `coms_net_await`** — they block the session and prevent user interaction
+1. **Avoid `coms_await` / `coms_net_await`** — they block the session.
+   Use `coms_get` / `coms_net_get` to poll instead.
+   If the user explicitly asks to await, `coms_await` is interruptible via ESC.
 2. **Never call send tools to reply** to inbound messages — your assistant text is the reply
 3. **Always check peers first** — use list tools before sending to verify the peer exists
 4. **Don't mix prefixes** — `coms_` tools only work with `/coms`, `coms_net_` tools only work with `/coms-net`
