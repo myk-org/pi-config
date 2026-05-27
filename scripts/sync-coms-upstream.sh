@@ -70,6 +70,12 @@ for f in "${DEST_DIR}"/*.ts; do
         "$f"
 done
 
+# --- Strip trailing whitespace (pre-commit hook fixes this, keep synced files clean) ---
+
+for f in "${DEST_DIR}"/*.ts; do
+    sed -i 's/[[:space:]]*$//' "$f"
+done
+
 # --- Patch relative import extensions (.ts → .js for ESM resolution) ---
 
 for f in "${DEST_DIR}"/*.ts; do
