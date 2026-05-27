@@ -382,6 +382,53 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
       return null;
     },
+    "coms": (prefix: string) => {
+      const parts = prefix.split(/\s+/);
+      const lastPart = parts[parts.length - 1] || "";
+      if (parts.length <= 1) {
+        return filter([
+          { value: "start ", description: "Start P2P agent communication" },
+          { value: "stop", description: "Stop coms (on session end)" },
+          { value: "status", description: "Show coms status" },
+        ], lastPart);
+      }
+      if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
+        const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
+        return filter([
+          { value: "--name ", description: "Agent name" },
+          { value: "--purpose ", description: "Agent purpose description" },
+          { value: "--project ", description: "Project namespace (default: default)" },
+          { value: "--color ", description: "Hex color #RRGGBB" },
+          { value: "--explicit", description: "Hide from auto-discovery" },
+        ].filter((f) => !usedFlags.has(f.value.trim())), lastPart);
+      }
+      return null;
+    },
+    "coms-net": (prefix: string) => {
+      const parts = prefix.split(/\s+/);
+      const lastPart = parts[parts.length - 1] || "";
+      if (parts.length <= 1) {
+        return filter([
+          { value: "start ", description: "Start networked agent communication (auto-starts server)" },
+          { value: "stop", description: "Stop coms-net (on session end)" },
+          { value: "status", description: "Show coms-net + server status" },
+          { value: "server-stop", description: "Stop the coms-net hub server" },
+        ], lastPart);
+      }
+      if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
+        const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
+        return filter([
+          { value: "--name ", description: "Agent name" },
+          { value: "--purpose ", description: "Agent purpose description" },
+          { value: "--project ", description: "Project namespace (default: default)" },
+          { value: "--color ", description: "Hex color #RRGGBB" },
+          { value: "--explicit", description: "Hide from auto-discovery" },
+          { value: "--server-url ", description: "Hub server URL (overrides auto-discovery)" },
+          { value: "--auth-token ", description: "Bearer token for the hub" },
+        ].filter((f) => !usedFlags.has(f.value.trim())), lastPart);
+      }
+      return null;
+    },
   };
 
   // ── Mechanism 1: registerCommand wrapping for extension commands ─
