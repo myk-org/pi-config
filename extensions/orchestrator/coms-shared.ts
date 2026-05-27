@@ -86,6 +86,7 @@ export function createDeferredProxy(
                             state.capturedSessionStart = handler;
                             // Register with real pi to auto-reactivate on reload
                             return target.on(event, async (evt: any, ctx: any) => {
+                                if (evt?.reason !== "reload") return;
                                 // Check if coms was active before reload
                                 let wasActive = false;
                                 let savedFlags: Record<string, any> = {};
