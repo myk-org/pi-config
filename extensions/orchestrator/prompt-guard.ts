@@ -278,9 +278,10 @@ export function registerPromptGuard(pi: ExtensionAPI): void {
     }).join("\n");
     const scoreStr = (result.score * 100).toFixed(0);
 
+    const filePath = event.toolName === "read" && typeof event.input.path === "string" ? event.input.path : null;
     const warning = [
       `${emoji} PROMPT INJECTION ${level} (score: ${scoreStr}%)`,
-      `Tool: ${event.toolName}`,
+      `Tool: ${event.toolName}${filePath ? ` — ${filePath}` : ""}`,
       `Reasons:`,
       reasonList,
       ``,
@@ -299,7 +300,7 @@ export function registerPromptGuard(pi: ExtensionAPI): void {
     // Has UI (orchestrator) — ask user for approval
     if (ctx.hasUI) {
       const choice = await ctx.ui.select(
-        `${emoji} Prompt injection detected in ${event.toolName} output (score: ${scoreStr}%)\n\n` +
+        `${emoji} Prompt injection detected in ${event.toolName} output (score: ${scoreStr}%)${filePath ? `\nFile: ${filePath}` : ""}\n\n` +
         `Reasons:\n${reasonList}\n\n` +
         `Allow this content to reach the LLM?`,
         ["Block content", "Allow (with warning)", "Allow always"],

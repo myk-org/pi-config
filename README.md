@@ -20,6 +20,7 @@ Single extension that provides:
 | **Python/pip enforcement** | Blocks `python`/`pip` — requires `uv`/`uvx` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
 | **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
+| **Prompt injection guard** | Detects injection in tool output, content-hash allowlist, auto-blocks agents |
 | **Rule injection** | Injects orchestrator routing rules into system prompt |
 | **Git status** | Live git status in status line with colored icons — updates after every tool call. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |

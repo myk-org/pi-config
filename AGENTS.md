@@ -66,7 +66,7 @@ pi-config/
 │   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
 │   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
-│   │   ├── prompt-guard.ts            # Prompt injection detection for tool results
+│   │   ├── prompt-guard.ts            # Prompt injection detection for tool results (allowlist, agent blocking)
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities
