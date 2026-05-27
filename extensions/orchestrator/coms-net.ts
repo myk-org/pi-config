@@ -137,6 +137,7 @@ export function registerComsNet(pi: ExtensionAPI) {
     let activeProject = "default";
     let serverStartedByUs = false;
     let capturedSessionStart: ((event: any, ctx: any) => Promise<void>) | null = null;
+    let capturedSessionShutdown: (() => Promise<void>) | null = null;
     const flagValues = new Map<string, any>();
 
     const log = (msg: string) => {
@@ -177,6 +178,10 @@ export function registerComsNet(pi: ExtensionAPI) {
                         if (event === 'session_start') {
                             capturedSessionStart = handler;
                             return;
+                        }
+                        if (event === 'session_shutdown') {
+                            capturedSessionShutdown = handler;
+                            return target.on(event, handler);
                         }
                         return target.on(event, handler);
                     };
@@ -247,7 +252,11 @@ export function registerComsNet(pi: ExtensionAPI) {
                     try { ctx.ui.notify("📡 coms-net not active", "info"); } catch {}
                     return;
                 }
-                try { ctx.ui.notify("📡 coms-net will stop when the session ends", "info"); } catch {}
+                if (capturedSessionShutdown) {
+                    try { await capturedSessionShutdown(); } catch {}
+                }
+                active = false;
+                try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "server-stop") {
                 killServer(activeProject, log);
                 serverStartedByUs = false;

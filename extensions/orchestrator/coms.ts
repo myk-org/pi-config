@@ -13,6 +13,7 @@ import upstreamComsInit from "./upstream-coms/coms.js";
 export function registerComs(pi: ExtensionAPI) {
     let active = false;
     let capturedSessionStart: ((event: any, ctx: any) => Promise<void>) | null = null;
+    let capturedSessionShutdown: (() => Promise<void>) | null = null;
     const flagValues = new Map<string, any>();
 
     const proxyPi = new Proxy(pi, {
@@ -46,10 +47,14 @@ export function registerComs(pi: ExtensionAPI) {
                     return (event: string, handler: any) => {
                         if (event === 'session_start') {
                             capturedSessionStart = handler;
-                            return; // capture, don't register
+                            return;
                         }
-                        // agent_end, session_shutdown etc — pass through
-                        // They check internal state (identity) and no-op when inactive
+                        if (event === 'session_shutdown') {
+                            capturedSessionShutdown = handler;
+                            // Still register with real pi for normal session end
+                            return target.on(event, handler);
+                        }
+                        // agent_end etc — pass through
                         return target.on(event, handler);
                     };
                 default: {
@@ -99,7 +104,11 @@ export function registerComs(pi: ExtensionAPI) {
                     try { ctx.ui.notify("📡 coms not active", "info"); } catch {}
                     return;
                 }
-                try { ctx.ui.notify("📡 coms will stop when the session ends", "info"); } catch {}
+                if (capturedSessionShutdown) {
+                    try { await capturedSessionShutdown(); } catch {}
+                }
+                active = false;
+                try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
             } else if (subcommand === "status") {
                 try {
                     ctx.ui.notify(active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
