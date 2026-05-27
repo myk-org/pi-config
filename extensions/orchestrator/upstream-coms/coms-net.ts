@@ -27,7 +27,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { applyExtensionDefaults } from "./themeMap.ts";
+import { applyExtensionDefaults } from "./themeMap.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";

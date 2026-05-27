@@ -18,7 +18,7 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { applyExtensionDefaults } from "./themeMap.ts";
+import { applyExtensionDefaults } from "./themeMap.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";

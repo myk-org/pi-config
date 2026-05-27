@@ -132,7 +132,7 @@ function applyExtensionTitle(ctx: ExtensionContext): void {
  * Drop-in replacement for applyExtensionTheme — call this in every session_start.
  *
  * Usage:
- *   import { applyExtensionDefaults } from "./themeMap.ts";
+ *   import { applyExtensionDefaults } from "./themeMap.js";
  *
  *   pi.on("session_start", async (_event, ctx) => {
  *     applyExtensionDefaults(import.meta.url, ctx);

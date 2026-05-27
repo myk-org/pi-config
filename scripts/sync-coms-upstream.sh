@@ -70,6 +70,12 @@ for f in "${DEST_DIR}"/*.ts; do
         "$f"
 done
 
+# --- Patch relative import extensions (.ts → .js for ESM resolution) ---
+
+for f in "${DEST_DIR}"/*.ts; do
+    sed -i 's|from "\./themeMap\.ts"|from "./themeMap.js"|g' "$f"
+done
+
 # --- Patch detect-secrets false positives (Crockford Base32 alphabet) ---
 
 for f in "${DEST_DIR}"/*.ts; do
