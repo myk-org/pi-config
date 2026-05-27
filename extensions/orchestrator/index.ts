@@ -34,8 +34,6 @@ import { registerPidiff } from "./pidiff.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerSessionSearch } from "./session-search.js";
-import { registerComs } from "./coms.js";
-import { registerComsNet } from "./coms-net.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -89,6 +87,4 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerSessionSearch(pi);
-  registerComs(pi);
-  registerComsNet(pi);
 }

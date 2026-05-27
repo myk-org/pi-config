@@ -16,7 +16,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync, spawn } from "node:child_process";
-import { parseFlags, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
+import { fileURLToPath } from "node:url";
+import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsNetInit from "./upstream-coms/coms-net.js";
 
 const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
@@ -65,7 +66,7 @@ function findBun(): string | null {
 
 function getServerScriptPath(): string {
     return path.resolve(
-        path.dirname(new URL(import.meta.url).pathname),
+        path.dirname(fileURLToPath(import.meta.url)),
         "upstream-coms", "coms-net-server.ts",
     );
 }
@@ -175,7 +176,7 @@ export function registerComsNet(pi: ExtensionAPI) {
         description: "Networked agent communication: /coms-net start [--name X --purpose Y --project Z --color #HEX] | stop | status | server-stop",
         handler: async (args: string, ctx: any) => {
             const trimmed = (args || "").trim();
-            const parts = trimmed.split(/\s+/);
+            const parts = tokenizeArgs(trimmed);
             const subcommand = parts[0] || "status";
 
             if (subcommand === "start") {

@@ -10,20 +10,48 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
+ * Tokenize a command string respecting double and single quotes.
+ * Quoted values are returned as single tokens with quotes stripped.
+ */
+export function tokenizeArgs(input: string): string[] {
+    const tokens: string[] = [];
+    let current = '';
+    let inQuote: string | null = null;
+    for (const ch of input) {
+        if (inQuote) {
+            if (ch === inQuote) {
+                inQuote = null;
+            } else {
+                current += ch;
+            }
+        } else if (ch === '"' || ch === "'") {
+            inQuote = ch;
+        } else if (/\s/.test(ch)) {
+            if (current) { tokens.push(current); current = ''; }
+        } else {
+            current += ch;
+        }
+    }
+    if (current) tokens.push(current);
+    return tokens;
+}
+
+/**
  * Parse --key value pairs from command arguments into a Map.
  * Boolean flags (like --explicit) are set to true without consuming the next token.
  */
 export function parseFlags(parts: string[], values: Map<string, any>): void {
     for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
-        if (part.startsWith("--") && i + 1 < parts.length) {
-            const key = part.slice(2);
-            if (key === "explicit") {
-                values.set(key, true);
-                continue;
-            }
+        if (!part.startsWith('--')) continue;
+        const key = part.slice(2);
+        if (key === 'explicit') {
+            values.set(key, true);
+            continue;
+        }
+        if (i + 1 < parts.length) {
             const val = parts[i + 1];
-            if (val && !val.startsWith("--")) {
+            if (val && !val.startsWith('--')) {
                 values.set(key, val);
                 i++;
             }

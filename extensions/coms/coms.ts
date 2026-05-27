@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parseFlags, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./upstream-coms/coms.js";
 
 export function registerComs(pi: ExtensionAPI) {
@@ -29,7 +29,7 @@ export function registerComs(pi: ExtensionAPI) {
         description: "P2P agent communication: /coms start [--name X --purpose Y --project Z --color #HEX] | stop | status",
         handler: async (args: string, ctx: any) => {
             const trimmed = (args || "").trim();
-            const parts = trimmed.split(/\s+/);
+            const parts = tokenizeArgs(trimmed);
             const subcommand = parts[0] || "status";
 
             if (subcommand === "start") {

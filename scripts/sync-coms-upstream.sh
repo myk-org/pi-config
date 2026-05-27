@@ -4,7 +4,7 @@ set -euo pipefail
 CACHE_DIR="${HOME}/.pi/cache/pi-vs-claude-code"
 REPO_URL="https://github.com/disler/pi-vs-claude-code.git"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEST_DIR="${SCRIPT_DIR}/../extensions/orchestrator/upstream-coms"
+DEST_DIR="${SCRIPT_DIR}/../extensions/coms/upstream-coms"
 
 FORCE=0
 for arg in "$@"; do
