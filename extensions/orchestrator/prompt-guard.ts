@@ -52,7 +52,7 @@ const DETECTION_RULES: DetectionRule[] = [
     message: "Attempts to redefine assistant role or policy scope.",
     score: 0.30,
     pattern:
-      /(you\s+are\s+now|act\s+as|developer\s+mode|jailbreak|unrestricted\s+mode|dan\s+mode)/i,
+      /(you\s+are\s+now|developer\s+mode|jailbreak|unrestricted\s+mode|dan\s+mode)/i,
   },
   {
     code: "exfiltrate.system_prompt",
@@ -66,7 +66,7 @@ const DETECTION_RULES: DetectionRule[] = [
     message: "Attempts to exfiltrate secrets, credentials, or private data.",
     score: 0.50,
     pattern:
-      /(send|post|exfiltrate|upload|transmit)\s+.{0,30}(api\s*key|secret|token|password|private\s+key|credentials?|session\s+cookie|jwt|bearer)/i,
+      /(send|exfiltrate|upload|transmit)\s+.{0,30}(api\s*key|secret|token|password|private\s+key|credentials?|session\s+cookie|jwt|bearer)/i,
   },
   {
     code: "tool.abuse",
@@ -138,8 +138,7 @@ function normalizeText(input: string): {
   const hasExfiltrationIntent =
     collapsed.includes("system prompt") ||
     collapsed.includes("developer instructions") ||
-    collapsed.includes("hidden prompt") ||
-    collapsed.includes("reveal");
+    collapsed.includes("hidden prompt");
 
   return { lowered, collapsed, hadZwsp, hasInstructionOverride, hasExfiltrationIntent };
 }
