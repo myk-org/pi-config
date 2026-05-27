@@ -19,6 +19,8 @@
  *   /dream-auto <Tab>            → on, off
  *   /pidash <Tab>                → start, stop, restart, status
  *   /pidiff <Tab>                → start, stop, restart, status
+ *   /coms <Tab>                  → start, stop, status + --name, --purpose, --project, --color, --explicit
+ *   /coms-net <Tab>              → start, stop, status, server-stop + --name, --purpose, --project, --color, --explicit, --server-url, --auth-token
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

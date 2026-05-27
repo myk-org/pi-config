@@ -16,6 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync, spawn } from "node:child_process";
+import { parseFlags, createDeferredProxy, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsNetInit from "./upstream-coms/coms-net.js";
 
 const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
@@ -39,6 +40,10 @@ function readServerJson(project: string): { local_url?: string; pid?: number } |
 async function isServerHealthy(project: string): Promise<boolean> {
     const sj = readServerJson(project);
     if (!sj?.local_url) return false;
+    try {
+        const url = new URL(sj.local_url);
+        if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") return false;
+    } catch { return false; }
     try {
         const resp = await fetch(`${sj.local_url}/health`, { signal: AbortSignal.timeout(2000) });
         if (!resp.ok) return false;
@@ -69,7 +74,6 @@ async function ensureServerRunning(
     project: string,
     log: (msg: string) => void,
 ): Promise<boolean> {
-    // Already running?
     if (await isServerHealthy(project)) {
         log("server already running");
         return true;
@@ -87,28 +91,29 @@ async function ensureServerRunning(
         return false;
     }
 
-    // Ensure project dir exists
     const projDir = path.join(COMS_NET_DIR, "projects", project);
     fs.mkdirSync(projDir, { recursive: true });
 
-    // Spawn server in background
     // Binds to 127.0.0.1 by default (safe). For LAN access, user sets
     // PI_COMS_NET_AUTH_TOKEN and PI_COMS_NET_HOST=0.0.0.0 in their env.
     const logFile = path.join(projDir, "server.log");
     log(`spawning coms-net server: ${bunPath} ${scriptPath}`);
 
+    const outFd = fs.openSync(logFile, "a");
+    const errFd = fs.openSync(logFile, "a");
     const child = spawn(bunPath, [scriptPath], {
         detached: true,
-        stdio: ["ignore", fs.openSync(logFile, "a"), fs.openSync(logFile, "a")],
+        stdio: ["ignore", outFd, errFd],
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
-            PI_COMS_NET_PORT: "0", // OS picks free port
+            PI_COMS_NET_PORT: "0",
         },
     });
     child.unref();
+    try { fs.closeSync(outFd); } catch {}
+    try { fs.closeSync(errFd); } catch {}
 
-    // Wait for server to come up
     const deadline = Date.now() + SERVER_STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, SERVER_POLL_INTERVAL_MS));
@@ -124,7 +129,7 @@ async function ensureServerRunning(
 
 function killServer(project: string, log: (msg: string) => void): void {
     const sj = readServerJson(project);
-    if (sj?.pid) {
+    if (sj?.pid && Number.isInteger(sj.pid) && sj.pid > 0) {
         try {
             process.kill(sj.pid, "SIGTERM");
             log(`sent SIGTERM to server pid ${sj.pid}`);
@@ -134,13 +139,19 @@ function killServer(project: string, log: (msg: string) => void): void {
     }
 }
 
+function isValidProject(project: string): boolean {
+    return !/[\/\\]|\.\./.test(project);
+}
+
 export function registerComsNet(pi: ExtensionAPI) {
-    let active = false;
+    const state: DeferredUpstream = {
+        capturedSessionStart: null,
+        capturedSessionShutdown: null,
+        flagValues: new Map(),
+        active: false,
+    };
     let activeProject = "default";
     let serverStartedByUs = false;
-    let capturedSessionStart: ((event: any, ctx: any) => Promise<void>) | null = null;
-    let capturedSessionShutdown: (() => Promise<void>) | null = null;
-    const flagValues = new Map<string, any>();
 
     const log = (msg: string) => {
         try {
@@ -148,55 +159,9 @@ export function registerComsNet(pi: ExtensionAPI) {
         } catch {}
     };
 
-    const proxyPi = new Proxy(pi, {
-        get(target: any, prop: string | symbol) {
-            if (typeof prop === 'symbol') {
-                const val = target[prop];
-                return typeof val === 'function' ? val.bind(target) : val;
-            }
-
-            switch (prop) {
-                case 'registerFlag':
-                    return () => {};
-                case 'getFlag':
-                    return (name: string) => flagValues.get(name);
-                case 'registerCommand':
-                    return () => {};
-                case 'registerTool':
-                    return (tool: any) => {
-                        const origExecute = tool.execute;
-                        tool.execute = async (callId: string, params: any) => {
-                            if (!active) {
-                                return {
-                                    content: [{ type: "text" as const, text: "⚠️ coms-net not active. Run `/coms-net start` first." }],
-                                };
-                            }
-                            return origExecute(callId, params);
-                        };
-                        return target.registerTool(tool);
-                    };
-                case 'on':
-                    return (event: string, handler: any) => {
-                        if (event === 'session_start') {
-                            capturedSessionStart = handler;
-                            return;
-                        }
-                        if (event === 'session_shutdown') {
-                            capturedSessionShutdown = handler;
-                            return target.on(event, handler);
-                        }
-                        return target.on(event, handler);
-                    };
-                default: {
-                    const val = target[prop];
-                    if (typeof val === 'function') {
-                        return val.bind(target);
-                    }
-                    return val;
-                }
-            }
-        }
-    });
+    const proxyPi = createDeferredProxy(
+        pi, state, "⚠️ coms-net not active. Run `/coms-net start` first.",
+    );
 
     upstreamComsNetInit(proxyPi as any);
 
@@ -216,15 +181,19 @@ export function registerComsNet(pi: ExtensionAPI) {
             const subcommand = parts[0] || "status";
 
             if (subcommand === "start") {
-                if (active) {
+                if (state.active) {
                     try { ctx.ui.notify("📡 coms-net already active", "warning"); } catch {}
                     return;
                 }
-                parseFlags(parts.slice(1), flagValues);
-                const project = (flagValues.get("project") as string) || "default";
+                parseFlags(parts.slice(1), state.flagValues);
+                const project = (state.flagValues.get("project") as string) || "default";
+                if (!isValidProject(project)) {
+                    try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
+                    return;
+                }
                 activeProject = project;
 
-                if (!capturedSessionStart) {
+                if (!state.capturedSessionStart) {
                     try { ctx.ui.notify("📡 coms-net: internal error — no session handler captured", "error"); } catch {}
                     return;
                 }
@@ -242,32 +211,36 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
 
                 try {
-                    await capturedSessionStart({}, ctx);
-                    active = true;
+                    await state.capturedSessionStart({}, ctx);
+                    state.active = true;
                     const sj = readServerJson(project);
                     try { ctx.ui.notify(`📡 coms-net active — server at ${sj?.local_url || "unknown"}`, "info"); } catch {}
                 } catch (err: any) {
                     try { ctx.ui.notify(`📡 coms-net start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
                 }
             } else if (subcommand === "stop") {
-                if (!active) {
+                if (!state.active) {
                     try { ctx.ui.notify("📡 coms-net not active", "info"); } catch {}
                     return;
                 }
-                if (capturedSessionShutdown) {
-                    try { await capturedSessionShutdown(); } catch {}
+                if (state.capturedSessionShutdown) {
+                    try { await state.capturedSessionShutdown(); } catch {}
                 }
-                active = false;
+                state.active = false;
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "server-stop") {
                 killServer(activeProject, log);
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net server stopped", "info"); } catch {}
             } else if (subcommand === "status") {
-                const project = (flagValues.get("project") as string) || "default";
+                const project = (state.flagValues.get("project") as string) || "default";
+                if (!isValidProject(project)) {
+                    try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
+                    return;
+                }
                 const serverUp = await isServerHealthy(project);
                 const sj = readServerJson(project);
-                let msg = `📡 coms-net: ${active ? "active" : "inactive"}\n`;
+                let msg = `📡 coms-net: ${state.active ? "active" : "inactive"}\n`;
                 msg += `Server: ${serverUp ? `running at ${sj?.local_url}` : "not running"}\n`;
                 if (serverStartedByUs) msg += "(server started by this session)";
                 try { ctx.ui.notify(msg, "info"); } catch {}
@@ -276,22 +249,4 @@ export function registerComsNet(pi: ExtensionAPI) {
             }
         },
     });
-}
-
-function parseFlags(parts: string[], values: Map<string, any>): void {
-    for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        if (part.startsWith("--") && i + 1 < parts.length) {
-            const key = part.slice(2);
-            if (key === "explicit") {
-                values.set(key, true);
-                continue;
-            }
-            const val = parts[i + 1];
-            if (val && !val.startsWith("--")) {
-                values.set(key, val);
-                i++;
-            }
-        }
-    }
 }
