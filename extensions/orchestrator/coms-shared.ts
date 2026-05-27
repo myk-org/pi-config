@@ -1,5 +1,10 @@
 /**
  * coms-shared.ts — Shared utilities for coms and coms-net wrappers.
+ *
+ * Handles reload resilience: when coms is active and the user runs /reload,
+ * session_shutdown fires (upstream cleans up the old socket/connection),
+ * then session_start fires with reason="reload". We detect this and
+ * auto-reactivate with the same flags.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -39,20 +44,14 @@ export interface DeferredUpstream {
 
 /**
  * Create a Proxy around the pi API that defers upstream extension activation.
- *
- * Intercepts:
- * - registerFlag → no-op (we parse args from slash command)
- * - getFlag → returns from flagValues map
- * - registerCommand → no-op (we register our own)
- * - registerTool → wraps execute with activation guard
- * - on("session_start") → captures handler instead of registering
- * - on("session_shutdown") → captures handler AND passes through
- * - everything else → pass through to real pi
+ * On reload, session_shutdown passes through (upstream cleans up), then
+ * session_start auto-reactivates if the persist key exists.
  */
 export function createDeferredProxy(
     pi: ExtensionAPI,
     state: DeferredUpstream,
     inactiveMessage: string,
+    persistKey: string,
 ): ExtensionAPI {
     return new Proxy(pi, {
         get(target: any, prop: string | symbol) {
@@ -85,10 +84,29 @@ export function createDeferredProxy(
                     return (event: string, handler: any) => {
                         if (event === 'session_start') {
                             state.capturedSessionStart = handler;
-                            return;
+                            // Register with real pi to auto-reactivate on reload
+                            return target.on(event, async (evt: any, ctx: any) => {
+                                // Check if coms was active before reload
+                                let wasActive = false;
+                                let savedFlags: Record<string, any> = {};
+                                for (const entry of ctx.sessionManager.getEntries()) {
+                                    if (entry.type === "custom" && entry.customType === persistKey) {
+                                        wasActive = entry.data?.active === true;
+                                        savedFlags = entry.data?.flags || {};
+                                    }
+                                }
+                                if (wasActive) {
+                                    state.flagValues = new Map(Object.entries(savedFlags));
+                                    try {
+                                        await handler(evt, ctx);
+                                        state.active = true;
+                                    } catch {}
+                                }
+                            });
                         }
                         if (event === 'session_shutdown') {
                             state.capturedSessionShutdown = handler;
+                            // Pass through — upstream needs to clean up socket/connection
                             return target.on(event, handler);
                         }
                         return target.on(event, handler);
@@ -103,4 +121,15 @@ export function createDeferredProxy(
             }
         }
     }) as ExtensionAPI;
+}
+
+/**
+ * Persist coms activation state so it survives reload.
+ */
+export function persistState(pi: ExtensionAPI, persistKey: string, state: DeferredUpstream): void {
+    try {
+        const flags: Record<string, any> = {};
+        for (const [k, v] of state.flagValues) flags[k] = v;
+        pi.appendEntry(persistKey, { active: state.active, flags });
+    } catch {}
 }

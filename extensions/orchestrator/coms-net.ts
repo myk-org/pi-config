@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync, spawn } from "node:child_process";
-import { parseFlags, createDeferredProxy, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsNetInit from "./upstream-coms/coms-net.js";
 
 const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
@@ -159,8 +159,10 @@ export function registerComsNet(pi: ExtensionAPI) {
         } catch {}
     };
 
+    const PERSIST_KEY = "coms-net-state";
+
     const proxyPi = createDeferredProxy(
-        pi, state, "⚠️ coms-net not active. Run `/coms-net start` first.",
+        pi, state, "⚠️ coms-net not active. Run `/coms-net start` first.", PERSIST_KEY,
     );
 
     upstreamComsNetInit(proxyPi as any);
@@ -213,6 +215,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 try {
                     await state.capturedSessionStart({}, ctx);
                     state.active = true;
+                    persistState(pi, PERSIST_KEY, state);
                     const sj = readServerJson(project);
                     try { ctx.ui.notify(`📡 coms-net active — server at ${sj?.local_url || "unknown"}`, "info"); } catch {}
                 } catch (err: any) {
@@ -227,6 +230,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     try { await state.capturedSessionShutdown(); } catch {}
                 }
                 state.active = false;
+                persistState(pi, PERSIST_KEY, state);
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "server-stop") {
                 killServer(activeProject, log);

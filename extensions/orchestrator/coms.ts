@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parseFlags, createDeferredProxy, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./upstream-coms/coms.js";
 
 export function registerComs(pi: ExtensionAPI) {
@@ -17,8 +17,10 @@ export function registerComs(pi: ExtensionAPI) {
         active: false,
     };
 
+    const PERSIST_KEY = "coms-state";
+
     const proxyPi = createDeferredProxy(
-        pi, state, "⚠️ coms not active. Run `/coms start` first.",
+        pi, state, "⚠️ coms not active. Run `/coms start` first.", PERSIST_KEY,
     );
 
     upstreamComsInit(proxyPi as any);
@@ -45,6 +47,7 @@ export function registerComs(pi: ExtensionAPI) {
                 try {
                     await state.capturedSessionStart({}, ctx);
                     state.active = true;
+                    persistState(pi, PERSIST_KEY, state);
                 } catch (err: any) {
                     try { ctx.ui.notify(`📡 coms start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
                 }
@@ -57,6 +60,7 @@ export function registerComs(pi: ExtensionAPI) {
                     try { await state.capturedSessionShutdown(); } catch {}
                 }
                 state.active = false;
+                persistState(pi, PERSIST_KEY, state);
                 try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
             } else if (subcommand === "status") {
                 try {
