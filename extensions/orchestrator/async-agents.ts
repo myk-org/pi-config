@@ -738,6 +738,13 @@ export function registerAsyncAgents(
     },
   });
 
+  // Handle async-kill from pidash browser UI
+  pi.events.on("pidash:async-kill", (target: unknown) => {
+    if (typeof target === "string") {
+      killAsyncAgent(target);
+    }
+  });
+
   return {
     spawnAsyncAgent,
     killAsyncAgent,

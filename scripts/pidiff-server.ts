@@ -302,7 +302,7 @@ const browserWatchMap = new WeakMap<any, { sessionId: string | null; worktreePat
 
 // ── HTTP Server ─────────────────────────────────────────────────────
 
-const UI_DIR = path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "orchestrator", "pidiff-ui", "dist");
+const UI_DIR = path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidiff", "pidiff-ui", "dist");
 
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url || "/", `http://localhost`);

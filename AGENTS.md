@@ -44,13 +44,6 @@ pi-config/
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
-│   │   ├── pidash.ts                # Live web dashboard extension (connects to pidash daemon, forwards provider response info)
-│   │   ├── pidash-ui/               # React + shadcn/ui web dashboard
-│   │   │   ├── src/                 # React source (components, hooks, types)
-│   │   │   └── dist/               # Built output (generated, gitignored)
-│   │   ├── pidiff.ts                # Standalone diff viewer extension (spawns/connects to pidiff daemon)
-│   │   ├── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
-│   │   ├── daemon-manager.ts        # Shared daemon infrastructure (pidash + pidiff)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
@@ -75,6 +68,18 @@ pi-config/
 │   │   ├── coms-net.ts              # Networked agent communication wrapper (on-demand /coms-net command, auto-manages hub server)
 │   │   ├── coms-shared.ts           # Shared proxy factory, flag parser, state persistence
 │   │   └── upstream-coms/           # Synced upstream files from disler/pi-vs-claude-code (coms.ts, coms-net.ts, coms-net-server.ts, themeMap.ts)
+│   ├── pidash/                      # Live web dashboard extension (standalone)
+│   │   ├── index.ts                 # Entry point
+│   │   ├── pidash.ts                # Dashboard logic (connects to pidash daemon, forwards provider response info)
+│   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket)
+│   │   └── pidash-ui/               # React + shadcn/ui web dashboard
+│   │       ├── src/                 # React source (components, hooks, types)
+│   │       └── dist/               # Built output (generated, gitignored)
+│   ├── pidiff/                      # Diff viewer extension (standalone)
+│   │   ├── index.ts                 # Entry point
+│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to pidiff daemon)
+│   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket)
+│   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   └── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 ├── prompts/                         # Prompt templates (slash commands)
@@ -186,7 +191,7 @@ waiting for long-running agents.
 ### Adding an Extension Command
 
 Extension commands (like `/pidash`, `/pidiff`, `/btw`, `/status`) are registered in
-the extension source files under `extensions/orchestrator/`. Each command uses
+the extension source files under `extensions/`. Each command uses
 `context.registerCommand()` with a name, description, and handler.
 
 Known extension commands:
@@ -194,8 +199,8 @@ Known extension commands:
 | Command | Source | Description |
 |---------|--------|-------------|
 | `/btw` | `btw.ts` | Quick side questions |
-| `/pidash` | `pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
-| `/pidiff` | `pidiff.ts` | Manage pidiff daemon (start/stop/restart/status) |
+| `/pidash` | `pidash/pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
+| `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff daemon (start/stop/restart/status) |
 | `/status` | `status.ts` | Unified session status snapshot |
 | `/async-status` | `async-agents.ts` | Background agent status |
 | `/dream` | `dreaming.ts` | Memory consolidation |

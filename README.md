@@ -404,7 +404,7 @@ PI_PIDASH_ENABLE=false pi
 **Building the UI (first run only — auto-built):**
 
 ```bash
-cd extensions/orchestrator/pidash-ui
+cd extensions/pidash/pidash-ui
 npm install && npm run build
 ```
 

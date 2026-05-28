@@ -2,7 +2,7 @@
  * Extended autocomplete — argument completions for slash commands.
  *
  * Two mechanisms:
- * 1. getArgumentCompletions on extension commands (dream-auto, pidash, etc.)
+ * 1. getArgumentCompletions on extension commands (dream-auto, etc.)
  *    — injected via registerCommand wrapping
  * 2. addAutocompleteProvider for prompt templates (external-ai, review-local, etc.)
  *    — stacked provider that intercepts /command <arg> patterns
@@ -17,8 +17,6 @@
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
- *   /pidash <Tab>                → start, stop, restart, status
- *   /pidiff <Tab>                → start, stop, restart, status
  *   /coms <Tab>                  → start, stop, status + --name, --purpose, --project, --color, --explicit
  *   /coms-net <Tab>              → start, stop, status, server-stop + --name, --purpose, --project, --color, --explicit, --server-url, --auth-token
  */
@@ -327,24 +325,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       return filter([
         { value: "on", label: "on", description: "Enable auto-dreaming (every 3h + session end)" },
         { value: "off", label: "off", description: "Disable auto-dreaming" },
-      ], prefix);
-    },
-
-    "pidash": (prefix: string) => {
-      return filter([
-        { value: "start", label: "start", description: "Start pidash server" },
-        { value: "stop", label: "stop", description: "Stop pidash server" },
-        { value: "restart", label: "restart", description: "Restart pidash server" },
-        { value: "status", label: "status", description: "Show pidash status" },
-      ], prefix);
-    },
-
-    "pidiff": (prefix: string) => {
-      return filter([
-        { value: "start", label: "start", description: "Start pidiff server" },
-        { value: "stop", label: "stop", description: "Stop pidiff server" },
-        { value: "restart", label: "restart", description: "Restart pidiff server" },
-        { value: "status", label: "status", description: "Show pidiff status" },
       ], prefix);
     },
 

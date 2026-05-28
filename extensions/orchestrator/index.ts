@@ -11,7 +11,6 @@
  * - Async agent infrastructure
  * - ask_user tool
  * - Memory dreaming (background consolidation)
- * - Pidash web UI (live session viewer)
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -19,7 +18,6 @@ import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
 import { registerDreaming } from "./dreaming.js";
-import { registerPidash } from "./pidash.js";
 import { registerEnforcement } from "./enforcement.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
@@ -30,7 +28,6 @@ import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
 import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
-import { registerPidiff } from "./pidiff.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerSessionSearch } from "./session-search.js";
@@ -57,12 +54,23 @@ export default function (pi: ExtensionAPI) {
       const origHandler = options.handler;
       options.handler = async (args: string, ctx: any) => {
         latestCommandCtx = ctx;
+        pi.events.emit("pidash:command-ctx", ctx);
         return origHandler(args, ctx);
       };
       commandHandlerRegistry.set(name, options.handler);
+      // Notify pidash extension about new command handler
+      pi.events.emit("pidash:register-command", { name, handler: options.handler });
     }
     return originalRegisterCommand(name, options);
   };
+
+  // Replay all registered command handlers when pidash requests them
+  // (handles extension load order — pidash may load after orchestrator)
+  pi.events.on("pidash:request-commands", () => {
+    for (const [name, handler] of commandHandlerRegistry) {
+      pi.events.emit("pidash:register-command", { name, handler });
+    }
+  });
 
   // Extended autocomplete must register FIRST — it wraps registerCommand
   // to inject getArgumentCompletions before other modules register their commands.
@@ -78,12 +86,10 @@ export default function (pi: ExtensionAPI) {
   registerBtw(pi);
   registerDreaming(pi, spawnAsyncAgent);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
-  registerPidash(pi, killAsyncAgent);
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);
   registerNvim(pi);
-  registerPidiff(pi);
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerSessionSearch(pi);

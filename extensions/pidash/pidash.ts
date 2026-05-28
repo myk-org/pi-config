@@ -15,8 +15,9 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { commandHandlerRegistry, latestCommandCtx } from "./index.js";
-import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, waitForDaemon, createLogger } from "./daemon-manager.js";
+// Command handler registry — standalone, populated via pi.events from other extensions
+const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
+import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, createLogger } from "./daemon-manager.js";
 
 const DEFAULT_PORT = 19190;
 const PIDASH_PORT = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
@@ -77,7 +78,6 @@ let diffPort: number | null = null;
 
 export function registerPidash(
   pi: ExtensionAPI,
-  killAsyncAgent?: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
@@ -85,6 +85,15 @@ export function registerPidash(
   if (pidashDisabled) {
     pi.registerCommand("pidash", {
       description: "Manage pidash server — /pidash start|stop|restart|status",
+      getArgumentCompletions: (prefix: string) => {
+        const items = [
+          { value: "start", label: "start", description: "Start pidash server" },
+          { value: "stop", label: "stop", description: "Stop pidash server" },
+          { value: "restart", label: "restart", description: "Restart pidash server" },
+          { value: "status", label: "status", description: "Show pidash status" },
+        ];
+        return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+      },
       handler: async (_args, ctx) => {
         if (ctx.hasUI) ctx.ui.notify("pidash is disabled (PI_PIDASH_ENABLE=false). Set PI_PIDASH_ENABLE=true or unset it to enable.", "info");
       },
@@ -392,7 +401,7 @@ export function registerPidash(
 
             if (parsed.command === "switch-session" && parsed.sessionFile) {
               debugLog(`switch-session: ${parsed.sessionFile}`);
-              const ctx = pidashCommandCtx || latestCommandCtx;
+              const ctx = pidashCommandCtx;
               if (ctx?.switchSession) {
                 try {
                   await ctx.switchSession(parsed.sessionFile, {
@@ -429,11 +438,11 @@ export function registerPidash(
                 const cmds = (pi as any).getCommands?.() || [];
                 const list = cmds.map((c: any) => ({ name: c.name, description: c.description || "" }));
                 if (ws && connected) ws.send(JSON.stringify({ type: "commands-list", commands: list }));
-              } catch {}
+              } catch (e: any) { debugLog(`list-commands error: ${e.message}`); }
             }
 
           }
-        } catch {}
+        } catch (e: any) { debugLog(`message handler error: ${e.message}`); }
       });
 
       wsClient.on("close", (code: number, reason: Buffer) => {
@@ -631,16 +640,6 @@ export function registerPidash(
     }
   });
 
-  // Handle async-kill from browser
-  if (killAsyncAgent) {
-    pi.events.on("pidash:async-kill", (target: unknown) => {
-      if (typeof target === "string") {
-        const { killed } = killAsyncAgent(target);
-        debugLog(`async-kill result: ${killed.join(", ") || "none"}`);
-      }
-    });
-  }
-
   // Forward async agent status to browser
   pi.events.on("pidash:async-status", (data: unknown) => {
     if (ws && connected) {
@@ -668,7 +667,7 @@ export function registerPidash(
         if (event.headers["x-request-id"]) info.requestId = event.headers["x-request-id"];
       }
       ws.send(JSON.stringify(info));
-    } catch {}
+    } catch (e: any) { debugLog(`provider response forward error: ${e.message}`); }
   });
 
   // Periodically update git status
@@ -736,6 +735,15 @@ export function registerPidash(
   // Called once at startup via /pidash, then reused for all browser commands
   pi.registerCommand("pidash", {
     description: "Manage pidash server — /pidash start|stop|restart|status",
+    getArgumentCompletions: (prefix: string) => {
+      const items = [
+        { value: "start", label: "start", description: "Start pidash server" },
+        { value: "stop", label: "stop", description: "Stop pidash server" },
+        { value: "restart", label: "restart", description: "Restart pidash server" },
+        { value: "status", label: "status", description: "Show pidash status" },
+      ];
+      return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+    },
     handler: async (args, ctx) => {
       execCtx = ctx;
       pidashCommandCtx = ctx;  // Real ExtensionCommandContext
@@ -807,6 +815,29 @@ export function registerPidash(
 
       if (ctx.hasUI) ctx.ui.notify("Usage: /pidash start|stop|restart|status", "info");
     },
+  });
+
+  // Listen for command handler registrations from other extensions
+  pi.events.on("pidash:register-command", (data: unknown) => {
+    const d = data as { name: string; handler: (args: string, ctx: any) => Promise<void> };
+    if (typeof d?.name === "string" && typeof d?.handler === "function") {
+      if (commandHandlerRegistry.has(d.name)) {
+        debugLog(`command handler overwritten: ${d.name}`);
+      }
+      commandHandlerRegistry.set(d.name, d.handler);
+      debugLog(`registered command handler: ${d.name}`);
+    }
+  });
+
+  // Request existing commands (handles load order — orchestrator may have loaded first)
+  pi.events.emit("pidash:request-commands");
+
+  // Capture command context from orchestrator for switch-session fallback
+  // Only accept real ExtensionCommandContext (has switchSession method)
+  pi.events.on("pidash:command-ctx", (ctx: unknown) => {
+    if (ctx && typeof (ctx as any)?.switchSession === "function") {
+      pidashCommandCtx = ctx as any;
+    }
   });
 
   // Intercept extension commands from browser
