@@ -49,6 +49,15 @@ export function registerPidiff(pi: ExtensionAPI): void {
   if (pidiffDisabled) {
     pi.registerCommand("pidiff", {
       description: "Manage pidiff server — /pidiff start|stop|restart|status",
+      getArgumentCompletions: (prefix: string) => {
+        const items = [
+          { value: "start", label: "start", description: "Start pidiff server" },
+          { value: "stop", label: "stop", description: "Stop pidiff server" },
+          { value: "restart", label: "restart", description: "Restart pidiff server" },
+          { value: "status", label: "status", description: "Show pidiff status" },
+        ];
+        return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+      },
       handler: async (_args, ctx) => {
         if (ctx.hasUI) ctx.ui.notify("pidiff is disabled (PI_PIDIFF_ENABLE=false). Set PI_PIDIFF_ENABLE=true or unset it to enable.", "info");
       },
@@ -204,6 +213,15 @@ export function registerPidiff(pi: ExtensionAPI): void {
   // /pidiff command
   pi.registerCommand("pidiff", {
     description: "Manage pidiff server — /pidiff start|stop|restart|status",
+    getArgumentCompletions: (prefix: string) => {
+      const items = [
+        { value: "start", label: "start", description: "Start pidiff server" },
+        { value: "stop", label: "stop", description: "Stop pidiff server" },
+        { value: "restart", label: "restart", description: "Restart pidiff server" },
+        { value: "status", label: "status", description: "Show pidiff status" },
+      ];
+      return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+    },
     handler: async (args, ctx) => {
       lastCtx = ctx;
       const cmd = (args || "").trim().toLowerCase();

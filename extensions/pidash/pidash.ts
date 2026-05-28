@@ -85,6 +85,15 @@ export function registerPidash(
   if (pidashDisabled) {
     pi.registerCommand("pidash", {
       description: "Manage pidash server — /pidash start|stop|restart|status",
+      getArgumentCompletions: (prefix: string) => {
+        const items = [
+          { value: "start", label: "start", description: "Start pidash server" },
+          { value: "stop", label: "stop", description: "Stop pidash server" },
+          { value: "restart", label: "restart", description: "Restart pidash server" },
+          { value: "status", label: "status", description: "Show pidash status" },
+        ];
+        return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+      },
       handler: async (_args, ctx) => {
         if (ctx.hasUI) ctx.ui.notify("pidash is disabled (PI_PIDASH_ENABLE=false). Set PI_PIDASH_ENABLE=true or unset it to enable.", "info");
       },
@@ -726,6 +735,15 @@ export function registerPidash(
   // Called once at startup via /pidash, then reused for all browser commands
   pi.registerCommand("pidash", {
     description: "Manage pidash server — /pidash start|stop|restart|status",
+    getArgumentCompletions: (prefix: string) => {
+      const items = [
+        { value: "start", label: "start", description: "Start pidash server" },
+        { value: "stop", label: "stop", description: "Stop pidash server" },
+        { value: "restart", label: "restart", description: "Restart pidash server" },
+        { value: "status", label: "status", description: "Show pidash status" },
+      ];
+      return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
+    },
     handler: async (args, ctx) => {
       execCtx = ctx;
       pidashCommandCtx = ctx;  // Real ExtensionCommandContext
