@@ -538,6 +538,10 @@ function streamAcpx(
 // =============================================================================
 
 export default function (pi: ExtensionAPI) {
+	// Subagents don't need acpx providers — they use the parent's model via --model flag.
+	// Without this guard, cursor-agent spawns as a child and prevents the subagent from exiting.
+	if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
 	// Suppress noisy ACP SDK errors for unhandled agent extension methods
 	installConsoleErrorSuppression();
 
