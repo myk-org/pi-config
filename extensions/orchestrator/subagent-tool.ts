@@ -476,7 +476,9 @@ export async function runSingleAgent(
           aborted = true;
           proc.kill("SIGTERM");
           setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
+            if (proc.pid == null) return;
+            try { process.kill(proc.pid, 0); } catch { return; }
+            try { proc.kill("SIGKILL"); } catch {}
           }, 5000);
         };
         if (signal.aborted) kill();
@@ -799,19 +801,23 @@ export function registerSubagentTool(
           activeAgents.clear();
           activeAgents.add(s.agent);
           updateWorking();
-          const r = await runSingleAgent(
-            agents,
-            s.agent,
-            t,
-            s.cwd,
-            i + 1,
-            signal,
-            chainUpdate,
-            mkd("chain"),
-            parentModelId,
-          );
-          activeAgents.delete(s.agent);
-          updateWorking();
+          let r: SingleResult;
+          try {
+            r = await runSingleAgent(
+              agents,
+              s.agent,
+              t,
+              s.cwd,
+              i + 1,
+              signal,
+              chainUpdate,
+              mkd("chain"),
+              parentModelId,
+            );
+          } finally {
+            activeAgents.delete(s.agent);
+            updateWorking();
+          }
           results.push(r);
           if (
             r.exitCode !== 0 ||
@@ -935,25 +941,29 @@ export function registerSubagentTool(
             const label = t.name || t.agent;
             activeAgents.add(label);
             updateWorking();
-            const r = await runSingleAgent(
-              agents,
-              t.agent,
-              t.task,
-              t.cwd,
-              undefined,
-              signal,
-              (p) => {
-                if (p.details?.results[0]) {
-                  all[i] = p.details.results[0];
-                  emitAll();
-                }
-              },
-              mkd("parallel"),
-              parentModelId,
-            );
+            let r: SingleResult;
+            try {
+              r = await runSingleAgent(
+                agents,
+                t.agent,
+                t.task,
+                t.cwd,
+                undefined,
+                signal,
+                (p) => {
+                  if (p.details?.results[0]) {
+                    all[i] = p.details.results[0];
+                    emitAll();
+                  }
+                },
+                mkd("parallel"),
+                parentModelId,
+              );
+            } finally {
+              activeAgents.delete(label);
+              updateWorking();
+            }
             all[i] = r;
-            activeAgents.delete(t.name || t.agent);
-            updateWorking();
             emitAll();
             return r;
           },
@@ -1013,19 +1023,23 @@ export function registerSubagentTool(
         const label = params.name || params.agent;
         activeAgents.add(label);
         updateWorking();
-        const r = await runSingleAgent(
-          agents,
-          params.agent,
-          params.task,
-          params.cwd,
-          undefined,
-          signal,
-          onUpdate,
-          mkd("single"),
-          parentModelId,
-        );
-        activeAgents.delete(label);
-        updateWorking();
+        let r: SingleResult;
+        try {
+          r = await runSingleAgent(
+            agents,
+            params.agent,
+            params.task,
+            params.cwd,
+            undefined,
+            signal,
+            onUpdate,
+            mkd("single"),
+            parentModelId,
+          );
+        } finally {
+          activeAgents.delete(label);
+          updateWorking();
+        }
         const err =
           r.exitCode !== 0 ||
           r.stopReason === "error" ||
