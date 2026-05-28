@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
@@ -52,8 +53,7 @@ export function ensureUiBuilt(uiDirName: string, log: (msg: string) => void): vo
 
   log(`${uiDirName} dist/ not found, building...`);
   try {
-    const { execSync: ex } = require("node:child_process");
-    ex("npm install --production=false && npm run build", {
+    execSync("npm install --production=false && npm run build", {
       cwd: uiDir,
       stdio: "ignore",
       timeout: 60000,
@@ -121,7 +121,6 @@ export function spawnDaemon(opts: SpawnOptions): void {
   opts.log(`spawning daemon: ${cmd}`);
 
   try {
-    const { execSync } = require("node:child_process");
     execSync(cmd, {
       stdio: "ignore",
       env: { ...process.env, ...(opts.env || {}) },
@@ -135,7 +134,6 @@ export function spawnDaemon(opts: SpawnOptions): void {
 
 export function killDaemon(pattern: string, log: (msg: string) => void): void {
   try {
-    const { execSync } = require("node:child_process");
     execSync(`pkill -f "${pattern}"`, { stdio: "ignore" });
     log(`killed processes matching: ${pattern}`);
   } catch {}

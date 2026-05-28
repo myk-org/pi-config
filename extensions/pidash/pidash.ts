@@ -833,8 +833,11 @@ export function registerPidash(
   pi.events.emit("pidash:request-commands");
 
   // Capture command context from orchestrator for switch-session fallback
+  // Only accept real ExtensionCommandContext (has switchSession method)
   pi.events.on("pidash:command-ctx", (ctx: unknown) => {
-    if (ctx) pidashCommandCtx = ctx as any;
+    if (ctx && typeof (ctx as any)?.switchSession === "function") {
+      pidashCommandCtx = ctx as any;
+    }
   });
 
   // Intercept extension commands from browser
