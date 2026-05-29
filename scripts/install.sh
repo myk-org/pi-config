@@ -207,7 +207,7 @@ nvm install 22'
             exit 1
         fi
         $GUM style --foreground 3 "Still missing: ${missing_list}. Tools requiring them will be disabled."
-        gum_confirm "Continue with limited features?" || exit 0
+        gum_confirm "Continue with limited features?" || exit 1
     fi
 }
 
@@ -532,7 +532,7 @@ show_plan() {
     echo ""
 
     if [[ "$ALL_MODE" != true ]]; then
-        gum_confirm "Proceed with installation?" || exit 0
+        gum_confirm "Proceed with installation?" || exit 1
     fi
 }
 
