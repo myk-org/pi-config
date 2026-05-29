@@ -28,6 +28,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import questionary
 from questionary import Choice
@@ -61,7 +62,8 @@ class Tool:
     description: str
     installed: bool
     disabled: str  # "" if enabled, "requires X" if disabled
-    install_cmd: str
+    install_cmd: str = ""
+    install_fn: Any = None  # optional callable, used instead of install_cmd
     installed_label: str = "installed"
 
 
@@ -277,7 +279,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     # ── Step 6: Environment Setup ────────────────────────────────────────
     gd = "" if has["git"] else "requires git"
     gi = _gitignore_path()
-    gi_dir = str(Path(gi).parent)
     mem_inst = wt_inst = False
     try:
         content = Path(gi).read_text()
@@ -286,7 +287,21 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     except Exception:
         pass
 
-    mk_gi = f'mkdir -p "{gi_dir}" && touch "{gi}" && git config --global core.excludesfile "{gi}"'
+    def _add_to_gitignore(entry: str) -> None:
+        """Add an entry to the global gitignore using Python (no shell)."""
+        gi_path = Path(gi)
+        gi_path.parent.mkdir(parents=True, exist_ok=True)
+        gi_path.touch(exist_ok=True)
+        subprocess.run(
+            ["git", "config", "--global", "core.excludesfile", str(gi_path)],
+            check=True,
+            capture_output=True,
+        )
+        content = gi_path.read_text()
+        if entry not in content:
+            with gi_path.open("a") as f:
+                f.write(f"{entry}\n")
+
     step5 = Step(
         "⚙️",
         "Environment Setup",
@@ -297,7 +312,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Prevent memory files from being committed",
                 installed=mem_inst,
                 disabled=gd,
-                install_cmd=f'{mk_gi} && echo ".pi/memory/" >> "{gi}"',
+                install_fn=lambda: _add_to_gitignore(".pi/memory/"),
                 installed_label="configured",
             ),
             Tool(
@@ -305,7 +320,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Prevent git worktree dirs from being committed",
                 installed=wt_inst,
                 disabled=gd,
-                install_cmd=f'{mk_gi} && echo ".worktrees/" >> "{gi}"',
+                install_fn=lambda: _add_to_gitignore(".worktrees/"),
                 installed_label="configured",
             ),
         ],
@@ -423,6 +438,11 @@ def install_all(selections: list[Tool]) -> tuple[int, int, list[Tool]]:
     for tool in selections:
         print(f"  ⏳ {tool.name}...", end="", flush=True)
         try:
+            if tool.install_fn:
+                tool.install_fn()
+                print(f"\r\033[2K  {GREEN}✓{RESET} {tool.name}")
+                installed += 1
+                continue
             result = subprocess.run(
                 tool.install_cmd,
                 shell=True,
