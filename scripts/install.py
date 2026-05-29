@@ -295,7 +295,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         subprocess.run(
             ["git", "config", "--global", "core.excludesfile", str(gi_path)],
             check=True,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
         )
         content = gi_path.read_text()
         if entry not in content:
