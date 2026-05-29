@@ -324,7 +324,7 @@ if command -v dpkg &>/dev/null; then
     sudo dpkg -i \"\$tmpdir/glab.deb\"
 else
     curl -fsSL -o \"\$tmpdir/glab.rpm\" \"https://gitlab.com/gitlab-org/cli/-/releases/v\${glab_ver}/downloads/glab_\${glab_ver}_linux_${ARCH_DL}.rpm\"
-    sudo dnf install -y \"\$tmpdir/glab.rpm\" 2>/dev/null || sudo rpm -ivh \"\$tmpdir/glab.rpm\"
+    sudo dnf install -y \"\$tmpdir/glab.rpm\" || sudo rpm -ivh \"\$tmpdir/glab.rpm\"
 fi
 rm -rf \"\$tmpdir\"")
     fi
