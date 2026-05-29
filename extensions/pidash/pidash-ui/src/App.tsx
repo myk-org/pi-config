@@ -41,6 +41,7 @@ export function App() {
   const [tokens, setTokens] = useState<TokenUsage | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
+  const [streamingBehavior, setStreamingBehavior] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchType, setSearchType] = useState("all");
   const [scrollKey, setScrollKey] = useState(0);
@@ -122,7 +123,7 @@ export function App() {
           setQueuedCount(c => c + 1);
           break;
         case "streaming-behavior":
-          // Available for future UI use (steer vs followUp distinction)
+          setStreamingBehavior(ev.behavior || null);
           break;
         case "agent_start":
           setStreaming(true);
@@ -131,6 +132,7 @@ export function App() {
         case "agent_end":
           setStreaming(false);
           setQueuedCount(0);
+          setStreamingBehavior(null);
           thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           lastUserRef.current = "";
