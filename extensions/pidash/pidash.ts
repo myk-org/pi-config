@@ -849,8 +849,14 @@ export function registerPidash(
     }
   });
 
-  // Intercept extension commands from browser
+  // Forward streamingBehavior to browser for general awareness
   pi.on("input", async (event, _ctx) => {
+    if ((event as any).streamingBehavior && ws && connected) {
+      try { ws.send(JSON.stringify({ type: "streaming-behavior", behavior: (event as any).streamingBehavior })); }
+      catch (e: any) { debugLog(`streaming-behavior send error: ${e.message}`); }
+    }
+
+    // Intercept extension commands from browser
     if (event.source !== "extension") return;
     if (!event.text.startsWith("/")) return;
 

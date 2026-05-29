@@ -121,12 +121,16 @@ export function App() {
         case "prompt-queued":
           setQueuedCount(c => c + 1);
           break;
+        case "streaming-behavior":
+          // Available for future UI use (steer vs followUp distinction)
+          break;
         case "agent_start":
           setStreaming(true);
           setQueuedCount(0);
           break;
         case "agent_end":
           setStreaming(false);
+          setQueuedCount(0);
           thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           lastUserRef.current = "";
