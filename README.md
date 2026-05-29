@@ -147,7 +147,7 @@ uvx install mcp-launchpad     # MCP server CLI (mcpl)
 If using Claude models through Google Cloud Vertex AI:
 
 ```bash
-pi install git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
+pi install git:github.com/myk-org/pi-vertex-claude
 ```
 
 #### Optional: Browser automation
