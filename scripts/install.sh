@@ -137,6 +137,9 @@ check_prereqs() {
                 spin_install "Installing git..." "sudo apt-get install -y git"
             elif command -v dnf &>/dev/null; then
                 spin_install "Installing git..." "sudo dnf install -y git"
+            else
+                $GUM style --foreground 1 "  Cannot auto-install git on this platform. Install manually and re-run."
+                exit 1
             fi
         fi
     fi
@@ -185,10 +188,18 @@ nvm install 22'
     if [[ "$HAS_NODE" == false || "$HAS_GIT" == false || \
           "$HAS_PI" == false || "$HAS_UV" == false ]]; then
         echo ""
-        $GUM style --foreground 3 "Some prerequisites still missing. Tools requiring them will be disabled."
-        if [[ "$ALL_MODE" != true ]]; then
-            gum_confirm "Continue with limited features?" || exit 0
+        local missing_list=""
+        [[ "$HAS_NODE" == false ]] && missing_list+="Node.js, "
+        [[ "$HAS_GIT" == false ]]  && missing_list+="git, "
+        [[ "$HAS_PI" == false ]]   && missing_list+="pi, "
+        [[ "$HAS_UV" == false ]]   && missing_list+="uv, "
+        missing_list="${missing_list%, }"
+        if [[ "$ALL_MODE" == true ]]; then
+            $GUM style --foreground 1 "Missing prerequisites: ${missing_list}. Cannot proceed in --all mode."
+            exit 1
         fi
+        $GUM style --foreground 3 "Still missing: ${missing_list}. Tools requiring them will be disabled."
+        gum_confirm "Continue with limited features?" || exit 0
     fi
 }
 
