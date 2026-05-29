@@ -40,7 +40,7 @@ ARCH = platform.machine()
 ARCH_DL = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(ARCH, ARCH)
 OS_LOWER = SYSTEM.lower()
 HOME = Path.home()
-TOTAL_STEPS = 7
+TOTAL_STEPS = 5
 
 
 GREEN = "\033[32m"
@@ -336,7 +336,7 @@ def print_step_header(num: int, icon: str, title: str, description: str) -> None
     os.system("clear" if os.name != "nt" else "cls")
     print()
     print("  ╭─────────────────────────────────────────╮")
-    print(f"  │  Step {num} of {TOTAL_STEPS} — {icon} {title:<25}  │")
+    print(f"  │  Step {num} of {TOTAL_STEPS} — {icon} {title:<25s}  │")
     print("  ╰─────────────────────────────────────────╯")
     print(f"  {description}")
     print()
