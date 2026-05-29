@@ -62,6 +62,14 @@ HAS_NODE=true; HAS_GIT=true; HAS_PI=true; HAS_UV=true
 COUNT_INSTALLED=0; COUNT_UPDATED=0; COUNT_SKIPPED=0; COUNT_FAILED=0
 TOTAL_STEPS=7
 
+# Collected selections across all steps (populated during wizard, installed after confirmation)
+declare -a ALL_STEP_NUMS=()      # step number for each item
+declare -a ALL_TOOL_NAMES=()     # tool name
+declare -a ALL_TOOL_CMDS=()      # install command
+declare -a ALL_TOOL_INSTALLED=() # was it already installed?
+declare -a ALL_TOOL_UPDATE=()    # has update?
+declare -a ALL_TOOL_SUDO=()     # needs sudo?
+
 STEP_ICONS=("📦" "🐍" "📦" "🔧" "🌐" "🏗️" "⚙️")
 STEP_TITLES=("Pi Packages" "Python Tools" "npm Packages" "CLI Tools" "Browser Automation" "Infrastructure" "Environment Setup")
 STEP_DESCS=(
@@ -425,18 +433,16 @@ run_step() {
     local count=${#T_NAMES[@]}
     local -a opts=() preselected=() labels=()
 
-    # Show disabled items, build selectable options
+    # Show disabled and installed items as static text, build selectable options for new items only
     for ((i = 0; i < count; i++)); do
         if [[ -n "${T_DISABLED[$i]}" ]]; then
             labels+=("")
             $GUM style --foreground 240 "  ⊘ ${T_NAMES[$i]} — ${T_DESCS[$i]} [${T_DISABLED[$i]}]"
+        elif [[ ${T_INSTALLED[$i]} -eq 1 ]]; then
+            labels+=("")
+            $GUM style --foreground 2 "  🔒 ${T_NAMES[$i]} — ${T_DESCS[$i]} ✓ installed"
         else
-            local lbl
-            if [[ ${T_INSTALLED[$i]} -eq 1 ]]; then
-                lbl="${T_NAMES[$i]} — ${T_DESCS[$i]} [installed]"
-            else
-                lbl="${T_NAMES[$i]} — ${T_DESCS[$i]}"
-            fi
+            local lbl="${T_NAMES[$i]} — ${T_DESCS[$i]}"
             labels+=("$lbl")
             opts+=("$lbl")
             preselected+=("$lbl")
@@ -444,7 +450,7 @@ run_step() {
     done
 
     if [[ ${#opts[@]} -eq 0 ]]; then
-        $GUM style --foreground 240 "  All items require missing prerequisites — skipping"
+        $GUM style --foreground 240 "  Nothing to select — skipping"
         echo ""
         return 0
     fi
@@ -476,19 +482,73 @@ run_step() {
         return 0
     fi
 
-    # Check sudo requirement for selected items
-    local step_needs_sudo=false
+    # Save selections for later installation
     for ((i = 0; i < count; i++)); do
-        [[ -z "${labels[$i]}" ]] && continue
-        if [[ ${T_NEEDS_SUDO[$i]} -eq 1 && ${T_INSTALLED[$i]} -eq 0 ]] \
-           && echo "$selected" | grep -qxF "${labels[$i]}"; then
-            step_needs_sudo=true; break
+        [[ -z "${labels[$i]}" ]] && continue  # disabled or installed
+        if echo "$selected" | grep -qxF "${labels[$i]}"; then
+            ALL_STEP_NUMS+=("$step")
+            ALL_TOOL_NAMES+=("${T_NAMES[$i]}")
+            ALL_TOOL_CMDS+=("${T_CMDS[$i]}")
+            ALL_TOOL_INSTALLED+=("${T_INSTALLED[$i]}")
+            ALL_TOOL_UPDATE+=("${T_HAS_UPDATE[$i]}")
+            ALL_TOOL_SUDO+=("${T_NEEDS_SUDO[$i]}")
         fi
     done
 
-    if [[ "$step_needs_sudo" == true && "$SUDO_ALLOWED" != "yes" \
-          && "$OS" == "Linux" && $EUID -ne 0 ]]; then
+    echo ""
+}
+
+# ─── Show installation plan and confirm ──────────────────────────────────────
+show_plan() {
+    local total=${#ALL_TOOL_NAMES[@]}
+    if [[ $total -eq 0 ]]; then
         echo ""
+        $GUM style --foreground 240 "Nothing to install — all tools are already present."
+        echo ""
+        exit 0
+    fi
+
+    echo ""
+    $GUM style --border rounded --padding "0 2" --border-foreground 6 \
+        "Installation Plan"
+    echo ""
+
+    local current_step=""
+    for ((i = 0; i < total; i++)); do
+        local step_num="${ALL_STEP_NUMS[$i]}"
+        local idx=$((step_num - 1))
+        if [[ "$step_num" != "$current_step" ]]; then
+            [[ -n "$current_step" ]] && echo ""
+            current_step="$step_num"
+            $GUM style --bold "  ${STEP_ICONS[$idx]} ${STEP_TITLES[$idx]}"
+        fi
+        local action="install"
+        [[ ${ALL_TOOL_INSTALLED[$i]} -eq 1 ]] && action="update"
+        echo "    • ${ALL_TOOL_NAMES[$i]} ($action)"
+    done
+
+    echo ""
+    $GUM style --faint "  Total: $total tool(s) to process"
+    echo ""
+
+    if [[ "$ALL_MODE" != true ]]; then
+        gum_confirm "Proceed with installation?" || exit 0
+    fi
+}
+
+# ─── Install all collected items ─────────────────────────────────────────────
+install_all() {
+    local total=${#ALL_TOOL_NAMES[@]}
+
+    # Check if any selected items need sudo
+    local needs_sudo=false
+    for ((i = 0; i < total; i++)); do
+        if [[ ${ALL_TOOL_SUDO[$i]} -eq 1 && ${ALL_TOOL_INSTALLED[$i]} -eq 0 ]]; then
+            needs_sudo=true; break
+        fi
+    done
+    if [[ "$needs_sudo" == true && "$SUDO_ALLOWED" != "yes" \
+          && "$OS" == "Linux" && $EUID -ne 0 ]]; then
         if [[ "$ALL_MODE" == true ]] || gum_confirm "Some tools require sudo. Allow?"; then
             SUDO_ALLOWED="yes"
             sudo -v 2>/dev/null || true
@@ -498,46 +558,41 @@ run_step() {
     fi
 
     echo ""
+    $GUM style --bold "Installing..."
+    echo ""
 
-    # Install each selected item
-    for ((i = 0; i < count; i++)); do
-        [[ -z "${labels[$i]}" ]] && continue  # disabled
+    local current_step=""
+    for ((i = 0; i < total; i++)); do
+        local step_num="${ALL_STEP_NUMS[$i]}"
+        local idx=$((step_num - 1))
+        local name="${ALL_TOOL_NAMES[$i]}"
 
-        local name="${T_NAMES[$i]}"
-
-        # Not selected → skip silently
-        if ! echo "$selected" | grep -qxF "${labels[$i]}"; then
-            continue
-        fi
-
-        # Already installed, no update → skip
-        if [[ ${T_INSTALLED[$i]} -eq 1 && ${T_HAS_UPDATE[$i]} -eq 0 ]]; then
-            $GUM style --foreground 240 "  — $name (already installed)"
-            ((COUNT_SKIPPED++)) || true
-            continue
+        if [[ "$step_num" != "$current_step" ]]; then
+            [[ -n "$current_step" ]] && echo ""
+            current_step="$step_num"
+            $GUM style --bold "  ${STEP_ICONS[$idx]} ${STEP_TITLES[$idx]}"
         fi
 
         # Needs sudo but declined → skip
-        if [[ ${T_NEEDS_SUDO[$i]} -eq 1 && "$SUDO_ALLOWED" == "no" ]]; then
-            $GUM style --foreground 1 "  ✗ $name — requires sudo"
+        if [[ ${ALL_TOOL_SUDO[$i]} -eq 1 && "$SUDO_ALLOWED" == "no" ]]; then
+            $GUM style --foreground 1 "    ✗ $name — requires sudo"
             ((COUNT_SKIPPED++)) || true
             continue
         fi
 
-        # Install / update with spinner
         local action="Installing"
-        [[ ${T_INSTALLED[$i]} -eq 1 ]] && action="Updating"
+        [[ ${ALL_TOOL_INSTALLED[$i]} -eq 1 ]] && action="Updating"
 
-        if spin_install "$action $name..." "${T_CMDS[$i]}"; then
-            if [[ ${T_INSTALLED[$i]} -eq 1 ]]; then
-                $GUM style --foreground 2 "  ✓ $name (updated)"
+        if spin_install "$action $name..." "${ALL_TOOL_CMDS[$i]}"; then
+            if [[ ${ALL_TOOL_INSTALLED[$i]} -eq 1 ]]; then
+                $GUM style --foreground 2 "    ✓ $name (updated)"
                 ((COUNT_UPDATED++)) || true
             else
-                $GUM style --foreground 2 "  ✓ $name"
+                $GUM style --foreground 2 "    ✓ $name"
                 ((COUNT_INSTALLED++)) || true
             fi
         else
-            $GUM style --foreground 1 "  ✗ $name — install failed"
+            $GUM style --foreground 1 "    ✗ $name — install failed"
             ((COUNT_FAILED++)) || true
         fi
     done
@@ -600,6 +655,8 @@ main() {
         run_step "$step"
     done
 
+    show_plan
+    install_all
     show_summary
 }
 
