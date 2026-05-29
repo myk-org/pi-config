@@ -40,7 +40,7 @@ ARCH_DL = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(ARCH, AR
 OS_LOWER = SYSTEM.lower()
 HOME = Path.home()
 TOTAL_STEPS = 7
-IS_LINUX_USER = SYSTEM == "Linux" and os.geteuid() != 0
+
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -62,8 +62,7 @@ class Tool:
     installed: bool
     disabled: str  # "" if enabled, "requires X" if disabled
     install_cmd: str
-    needs_sudo: bool = False
-    has_update: bool = False
+    installed_label: str = "installed"
 
 
 @dataclass
@@ -94,53 +93,6 @@ def _gitignore_path() -> str:
 
 
 # ── Install Command Builders ──────────────────────────────────────────────
-
-
-def _gh_install_cmd() -> str:
-    if SYSTEM == "Darwin":
-        return "brew install gh"
-    if shutil.which("apt-get"):
-        return (
-            "sudo mkdir -p -m 755 /etc/apt/keyrings && "
-            "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
-            "| sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && "
-            "sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && "
-            'echo "deb [arch=$(dpkg --print-architecture) '
-            "signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] "
-            'https://cli.github.com/packages stable main" '
-            "| sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && "
-            "sudo apt-get update -qq && sudo apt-get install -y -qq gh"
-        )
-    return (
-        "gh_ver=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest "
-        """| grep -o '"tag_name":"v[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/^v//') && """
-        f'tmpdir=$(mktemp -d) && curl -fsSL -o "$tmpdir/gh.rpm" '
-        f'"https://github.com/cli/cli/releases/download/v${{gh_ver}}/gh_${{gh_ver}}_linux_{ARCH_DL}.rpm" && '
-        'sudo rpm -ivh "$tmpdir/gh.rpm" && rm -rf "$tmpdir"'
-    )
-
-
-def _glab_install_cmd() -> str:
-    if SYSTEM == "Darwin":
-        return "brew install glab"
-    api = (
-        "glab_ver=$(curl -fsSL 'https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases' "
-        """| grep -o '"tag_name":"v[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/^v//') && """
-    )
-    if shutil.which("dpkg"):
-        return (
-            api + 'tmpdir=$(mktemp -d) && curl -fsSL -o "$tmpdir/glab.deb" '
-            f'"https://gitlab.com/gitlab-org/cli/-/releases/v${{glab_ver}}/downloads/'
-            f'glab_${{glab_ver}}_linux_{ARCH_DL}.deb" && '
-            'sudo dpkg -i "$tmpdir/glab.deb" && rm -rf "$tmpdir"'
-        )
-    return (
-        api + 'tmpdir=$(mktemp -d) && curl -fsSL -o "$tmpdir/glab.rpm" '
-        f'"https://gitlab.com/gitlab-org/cli/-/releases/v${{glab_ver}}/downloads/'
-        f'glab_${{glab_ver}}_linux_{ARCH_DL}.rpm" && '
-        '(sudo dnf install -y "$tmpdir/glab.rpm" || sudo rpm -ivh "$tmpdir/glab.rpm") && '
-        'rm -rf "$tmpdir"'
-    )
 
 
 # ── Prerequisites ──────────────────────────────────────────────────────────
@@ -181,6 +133,14 @@ def check_prereqs() -> dict[str, bool]:
         hint = f"  ({hints[name]})" if not present else ""
         print(f"  {color}  {icon}{RESET} {name}{hint}")
 
+    # pi is the only hard requirement — nothing works without it
+    if not prereqs["pi"]:
+        print()
+        print(f"  {RED}{BOLD}Cannot continue without pi.{RESET}")
+        print("  Install: npm install -g @earendil-works/pi-coding-agent")
+        sys.exit(1)
+
+    # node, uv, git are soft — warn and continue with limited features
     if not all(prereqs.values()):
         print()
         answer = questionary.confirm("Some prerequisites missing. Continue with limited features?").ask()
@@ -195,7 +155,6 @@ def check_prereqs() -> dict[str, bool]:
 
 def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     has = prereqs
-    sudo = "sudo " if IS_LINUX_USER else ""
 
     # ── Step 1: Pi Packages ──────────────────────────────────────────────
     pi_dis = "" if has["pi"] else "requires pi"
@@ -218,7 +177,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=pi_cfg,
                 disabled=pi_dis,
                 install_cmd=f"pi {'update' if pi_cfg else 'install'} git:github.com/myk-org/pi-config",
-                has_update=True,
             ),
             Tool(
                 "pi-vertex-claude",
@@ -226,7 +184,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=pi_vtx,
                 disabled=pi_dis,
                 install_cmd=f"pi {'update' if pi_vtx else 'install'} git:github.com/myk-org/pi-vertex-claude",
-                has_update=True,
             ),
             Tool(
                 "pi-web-access",
@@ -234,6 +191,20 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=pi_web,
                 disabled=pi_dis,
                 install_cmd="pi install npm:pi-web-access",
+            ),
+            Tool(
+                "myk-pi-tools",
+                "CLI utilities for pi-config (reviews, releases, memory)",
+                installed=bool(shutil.which("myk-pi-tools")),
+                disabled="requires uv" if not has["uv"] else pi_dis,
+                install_cmd='uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git"',
+            ),
+            Tool(
+                "bun",
+                "JavaScript runtime — required by coms-net server",
+                installed=bool(shutil.which("bun")),
+                disabled="",
+                install_cmd="curl -fsSL https://bun.sh/install | bash",
             ),
         ],
     )
@@ -246,13 +217,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         "CLI utilities used by pi-config workflows",
         [
             Tool(
-                "myk-pi-tools",
-                "PR reviews · releases · memory management",
-                installed=bool(shutil.which("myk-pi-tools")),
-                disabled=uv_dis,
-                install_cmd='uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git"',
-            ),
-            Tool(
                 "mcp-launchpad (mcpl)",
                 "MCP server discovery and tool execution",
                 installed=bool(shutil.which("mcpl")),
@@ -261,7 +225,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
             ),
             Tool(
                 "prek",
-                "Kubernetes/OpenShift resource explorer",
+                "Fast Git hook manager (pre-commit alternative)",
                 installed=bool(shutil.which("prek")),
                 disabled=uv_dis,
                 install_cmd="uv tool install prek",
@@ -278,7 +242,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         [
             Tool(
                 "acpx",
-                "External AI agent proxy (Cursor/Codex/Copilot)",
+                "Headless CLI client for Agent Client Protocol (ACP)",
                 installed=bool(shutil.which("acpx")),
                 disabled=nd,
                 install_cmd="npm install -g acpx",
@@ -293,48 +257,9 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         ],
     )
 
-    # ── Step 4: CLI Tools ────────────────────────────────────────────────
-    step4 = Step(
-        "🔧",
-        "CLI Tools",
-        "Developer CLIs used by specialist agents",
-        [
-            Tool(
-                "gh",
-                "GitHub CLI — PRs · issues · releases",
-                installed=bool(shutil.which("gh")),
-                disabled="",
-                install_cmd=_gh_install_cmd(),
-                needs_sudo=IS_LINUX_USER,
-            ),
-            Tool(
-                "glab",
-                "GitLab CLI — MRs and pipelines",
-                installed=bool(shutil.which("glab")),
-                disabled="",
-                install_cmd=_glab_install_cmd(),
-                needs_sudo=IS_LINUX_USER,
-            ),
-            Tool(
-                "bun",
-                "JavaScript runtime — coms-net server",
-                installed=bool(shutil.which("bun")),
-                disabled="",
-                install_cmd="curl -fsSL https://bun.sh/install | bash",
-            ),
-            Tool(
-                "coderabbit",
-                "Local AI code reviews",
-                installed=bool(shutil.which("cr")),
-                disabled="",
-                install_cmd='CI=true bash -c "$(curl -fsSL https://cli.coderabbit.ai/install.sh)"',
-            ),
-        ],
-    )
-
-    # ── Step 5: Browser Automation ───────────────────────────────────────
+    # ── Step 4: Browser Automation ───────────────────────────────────────
     pw_inst = bool(glob.glob(str(HOME / ".cache/ms-playwright/chromium-*")))
-    step5 = Step(
+    step4 = Step(
         "🌐",
         "Browser Automation",
         "Headless browser for agent-browser web automation",
@@ -349,61 +274,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         ],
     )
 
-    # ── Step 6: Infrastructure ───────────────────────────────────────────
-    oc_arch = "aarch64" if ARCH in ("arm64", "aarch64") else ARCH
-    oc_os = "mac" if SYSTEM == "Darwin" else "linux"
-    oc_suf = "-arm64" if ARCH in ("aarch64", "arm64") else ""
-
-    step6 = Step(
-        "🏗️",
-        "Infrastructure",
-        "Optional tools for infrastructure specialist agents",
-        [
-            Tool(
-                "kubectl",
-                "Kubernetes CLI — kubernetes-expert agent",
-                installed=bool(shutil.which("kubectl")),
-                disabled="",
-                install_cmd=(
-                    f"kube_ver=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && "
-                    f'tmpdir=$(mktemp -d) && curl -fsSL -o "$tmpdir/kubectl" '
-                    f'"https://dl.k8s.io/release/${{kube_ver}}/bin/{OS_LOWER}/{ARCH_DL}/kubectl" && '
-                    f'chmod +x "$tmpdir/kubectl" && '
-                    f'{sudo}install -m 0755 "$tmpdir/kubectl" /usr/local/bin/kubectl && '
-                    f'rm -rf "$tmpdir"'
-                ),
-                needs_sudo=IS_LINUX_USER,
-            ),
-            Tool(
-                "oc",
-                "OpenShift CLI — kubernetes-expert agent",
-                installed=bool(shutil.which("oc")),
-                disabled="",
-                install_cmd=(
-                    f"tmpdir=$(mktemp -d) && "
-                    f'curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/{oc_arch}/clients/ocp/'
-                    f'stable/openshift-client-{oc_os}{oc_suf}.tar.gz" | tar xz -C "$tmpdir" oc && '
-                    f'{sudo}install -m 0755 "$tmpdir/oc" /usr/local/bin/oc && rm -rf "$tmpdir"'
-                ),
-                needs_sudo=IS_LINUX_USER,
-            ),
-            Tool(
-                "Go",
-                "Go compiler — go-expert agent",
-                installed=bool(shutil.which("go")),
-                disabled="",
-                install_cmd=(
-                    f'go_ver=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1) && '
-                    f"{sudo}rm -rf /usr/local/go && "
-                    f'curl -fsSL "https://go.dev/dl/${{go_ver}}.{OS_LOWER}-{ARCH_DL}.tar.gz" '
-                    f"| {sudo}tar xz -C /usr/local"
-                ),
-                needs_sudo=IS_LINUX_USER,
-            ),
-        ],
-    )
-
-    # ── Step 7: Environment Setup ────────────────────────────────────────
+    # ── Step 6: Environment Setup ────────────────────────────────────────
     gd = "" if has["git"] else "requires git"
     gi = _gitignore_path()
     gi_dir = str(Path(gi).parent)
@@ -416,7 +287,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         pass
 
     mk_gi = f'mkdir -p "{gi_dir}" && touch "{gi}" && git config --global core.excludesfile "{gi}"'
-    step7 = Step(
+    step5 = Step(
         "⚙️",
         "Environment Setup",
         "Git configuration for pi-config",
@@ -427,6 +298,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=mem_inst,
                 disabled=gd,
                 install_cmd=f'{mk_gi} && echo ".pi/memory/" >> "{gi}"',
+                installed_label="configured",
             ),
             Tool(
                 ".worktrees/ in gitignore",
@@ -434,17 +306,19 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=wt_inst,
                 disabled=gd,
                 install_cmd=f'{mk_gi} && echo ".worktrees/" >> "{gi}"',
+                installed_label="configured",
             ),
         ],
     )
 
-    return [step1, step2, step3, step4, step5, step6, step7]
+    return [step1, step2, step3, step4, step5]
 
 
 # ── Step UI ────────────────────────────────────────────────────────────────
 
 
 def print_step_header(num: int, icon: str, title: str, description: str) -> None:
+    os.system("clear" if os.name != "nt" else "cls")
     print()
     print("  ╭─────────────────────────────────────────╮")
     print(f"  │  Step {num} of {TOTAL_STEPS} — {icon} {title:<25}  │")
@@ -463,16 +337,32 @@ def run_step(step_idx: int, step: Step) -> list[Tool]:
 
         if tool.disabled:
             choices.append(Choice(label, checked=False, disabled=tool.disabled))
-        elif tool.installed and not tool.has_update:
-            choices.append(Choice(label, checked=True, disabled="installed"))
+        elif tool.installed:
+            choices.append(Choice(label, checked=True, disabled=tool.installed_label))
         else:
-            if tool.installed and tool.has_update:
-                label += " (update available)"
             choices.append(Choice(label, checked=True))
+
+    # If all choices are disabled (all installed/disabled), skip the prompt
+    has_selectable = any(not tool.installed and not tool.disabled for tool in step.tools)
+    if not has_selectable:
+        # Just show status, no prompt needed
+        for tool in step.tools:
+            if tool.installed:
+                print(f"  {GREEN}✓{RESET} {tool.name} — {tool.description} {DIM}({tool.installed_label}){RESET}")
+            elif tool.disabled:
+                print(f"  {DIM}⊘ {tool.name} — {tool.description} ({tool.disabled}){RESET}")
+        print()
+        return []
 
     result = questionary.checkbox(
         "Select tools:",
         choices=choices,
+        style=questionary.Style([
+            ("highlighted", "noinherit"),
+            ("selected", "noinherit"),
+            ("pointer", "noinherit bold"),
+            ("answer", "noinherit"),
+        ]),
     ).ask()
 
     if result is None:
@@ -485,8 +375,6 @@ def run_step(step_idx: int, step: Step) -> list[Tool]:
     selected: list[Tool] = []
     for tool in step.tools:
         label = f"{tool.name} — {tool.description}"
-        if tool.installed and tool.has_update:
-            label += " (update available)"
 
         if label in result:
             selected.append(tool)
@@ -499,7 +387,7 @@ def auto_select_all(steps: list[Step]) -> list[Tool]:
     selected: list[Tool] = []
     for step in steps:
         for tool in step.tools:
-            if not tool.disabled and (not tool.installed or tool.has_update):
+            if not tool.disabled and not tool.installed:
                 selected.append(tool)
     return selected
 
@@ -523,13 +411,14 @@ def show_plan(selections: list[Tool]) -> None:
 # ── Installation ───────────────────────────────────────────────────────────
 
 
-def install_all(selections: list[Tool]) -> tuple[int, int]:
+def install_all(selections: list[Tool]) -> tuple[int, int, list[Tool]]:
     print()
     print("  Installing...")
     print()
 
     installed = 0
     failed = 0
+    failed_tools: list[Tool] = []
 
     for tool in selections:
         print(f"  ⏳ {tool.name}...", end="", flush=True)
@@ -542,28 +431,31 @@ def install_all(selections: list[Tool]) -> tuple[int, int]:
                 timeout=300,
             )
             if result.returncode == 0:
-                print(f"\r  {GREEN}✓{RESET} {tool.name}")
+                print(f"\r\033[2K  {GREEN}✓{RESET} {tool.name}")
                 installed += 1
             else:
-                print(f"\r  {RED}✗{RESET} {tool.name} — failed")
+                print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — failed")
                 if result.stderr:
                     for line in result.stderr.strip().splitlines()[-2:]:
                         print(f"    {DIM}{line}{RESET}")
                 failed += 1
+                failed_tools.append(tool)
         except subprocess.TimeoutExpired:
-            print(f"\r  {RED}✗{RESET} {tool.name} — timed out (5m)")
+            print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — timed out (5m)")
             failed += 1
+            failed_tools.append(tool)
         except Exception as exc:
-            print(f"\r  {RED}✗{RESET} {tool.name} — {exc}")
+            print(f"\r\033[2K  {RED}✗{RESET} {tool.name} — {exc}")
             failed += 1
+            failed_tools.append(tool)
 
-    return installed, failed
+    return installed, failed, failed_tools
 
 
 # ── Summary ────────────────────────────────────────────────────────────────
 
 
-def show_summary(installed: int, failed: int, skipped: int) -> None:
+def show_summary(installed: int, failed: int, skipped: int, failed_tools: list[Tool] | None = None) -> None:
     print()
     print("  ╭─────────────────────────────────────────╮")
     print("  │           Install Complete               │")
@@ -573,6 +465,11 @@ def show_summary(installed: int, failed: int, skipped: int) -> None:
     print(f"  {DIM}—{RESET} Skipped:   {skipped}")
     if failed:
         print(f"  {RED}✗{RESET} Failed:    {failed}")
+    if failed_tools:
+        print()
+        print(f"  {BOLD}To install failed tools manually:{RESET}")
+        for tool in failed_tools:
+            print(f"    {DIM}${RESET} {tool.install_cmd}")
     print()
     print("  Run 'pi' to start a session!")
     print()
@@ -637,13 +534,13 @@ def main() -> None:
     skipped = total_tools - len(selections)
 
     # Install
-    installed, failed = install_all(selections)
+    installed, failed, failed_tools = install_all(selections)
 
     # Adjust skipped to account for failures
     skipped = total_tools - installed - failed
 
     # Summary
-    show_summary(installed, failed, skipped)
+    show_summary(installed, failed, skipped, failed_tools)
 
 
 def check_prereqs_quiet() -> dict[str, bool]:
@@ -687,4 +584,8 @@ def check_prereqs_quiet() -> dict[str, bool]:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n  Aborted.")
+        sys.exit(130)
