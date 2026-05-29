@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["textual"]
+# dependencies = ["questionary"]
 # ///
 """
-pi-config TUI Installer
-========================
-Interactive wizard for installing pi-config and related tooling.
+pi-config Installer
+====================
+Interactive CLI installer for pi-config and related tooling.
 
 Usage:
-    uvx --with textual python scripts/install.py
-    uv run --with textual scripts/install.py
+    uv run scripts/install.py
+    uvx scripts/install.py
 
 Options:
-    --all     Install everything non-interactively (no TUI)
+    --all     Install everything non-interactively (no prompts)
     --help    Show help message
 """
 
@@ -25,17 +25,14 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from textual import work
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Footer, Header, ProgressBar, RichLog, Rule, Static
+import questionary
+from questionary import Choice
 
-# ── Platform ───────────────────────────────────────────────────────────────
+# ── Constants ──────────────────────────────────────────────────────────────
 
 SYSTEM = platform.system()
 ARCH = platform.machine()
@@ -45,6 +42,15 @@ HOME = Path.home()
 TOTAL_STEPS = 7
 IS_LINUX_USER = SYSTEM == "Linux" and os.geteuid() != 0
 
+GREEN = "\033[32m"
+RED = "\033[31m"
+DIM = "\033[90m"
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+RESET = "\033[0m"
+
+ALL_MODE = False
+
 
 # ── Data Models ────────────────────────────────────────────────────────────
 
@@ -53,33 +59,22 @@ IS_LINUX_USER = SYSTEM == "Linux" and os.geteuid() != 0
 class Tool:
     name: str
     description: str
+    installed: bool
+    disabled: str  # "" if enabled, "requires X" if disabled
     install_cmd: str
-    installed: bool = False
-    disabled: bool = False
-    disabled_reason: str = ""
-    has_update: bool = False
     needs_sudo: bool = False
-    selected: bool = True
+    has_update: bool = False
 
 
 @dataclass
-class StepDef:
-    number: int
+class Step:
     icon: str
     title: str
     description: str
     tools: list[Tool] = field(default_factory=list)
 
 
-@dataclass
-class Prereq:
-    name: str
-    present: bool
-    install_hint: str
-    version: str = ""
-
-
-# ── Prerequisite Checks ───────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────
 
 
 def _run_quiet(cmd: list[str]) -> str:
@@ -89,46 +84,16 @@ def _run_quiet(cmd: list[str]) -> str:
         return ""
 
 
-def check_prereqs() -> dict[str, Prereq]:
-    prereqs: dict[str, Prereq] = {}
-
-    # Node.js ≥22
-    if shutil.which("node"):
-        ver = _run_quiet(["node", "--version"]).lstrip("v")
-        try:
-            if int(ver.split(".")[0]) >= 22:
-                prereqs["node"] = Prereq("Node.js ≥22", True, "", f"v{ver}")
-            else:
-                prereqs["node"] = Prereq("Node.js ≥22", False, f"Current: v{ver}. Upgrade: nvm install 22", f"v{ver}")
-        except ValueError:
-            prereqs["node"] = Prereq("Node.js ≥22", False, "nvm install 22")
-    else:
-        prereqs["node"] = Prereq("Node.js ≥22", False, "nvm install 22  or  https://nodejs.org/")
-
-    # git
+def _gitignore_path() -> str:
+    path = ""
     if shutil.which("git"):
-        prereqs["git"] = Prereq("git", True, "", _run_quiet(["git", "--version"]))
-    else:
-        prereqs["git"] = Prereq("git", False, "apt install git  /  brew install git")
-
-    # pi
-    prereqs["pi"] = (
-        Prereq("pi", True, "")
-        if shutil.which("pi")
-        else Prereq("pi", False, "npm install -g @earendil-works/pi-coding-agent")
-    )
-
-    # uv
-    prereqs["uv"] = (
-        Prereq("uv", True, "")
-        if shutil.which("uv")
-        else Prereq("uv", False, "curl -LsSf https://astral.sh/uv/install.sh | sh")
-    )
-
-    return prereqs
+        path = _run_quiet(["git", "config", "--global", "core.excludesfile"])
+    if not path:
+        path = str(HOME / ".config/git/ignore")
+    return path.replace("~", str(HOME))
 
 
-# ── Install Command Helpers ───────────────────────────────────────────────
+# ── Install Command Builders ──────────────────────────────────────────────
 
 
 def _gh_install_cmd() -> str:
@@ -178,20 +143,58 @@ def _glab_install_cmd() -> str:
     )
 
 
-def _gitignore_path() -> str:
-    path = ""
-    if shutil.which("git"):
-        path = _run_quiet(["git", "config", "--global", "core.excludesfile"])
-    if not path:
-        path = str(HOME / ".config/git/ignore")
-    return path.replace("~", str(HOME))
+# ── Prerequisites ──────────────────────────────────────────────────────────
 
 
-# ── Step Definitions ──────────────────────────────────────────────────────
+def check_prereqs() -> dict[str, bool]:
+    prereqs: dict[str, bool] = {}
+
+    # Node.js >= 22
+    node_path = shutil.which("node")
+    if node_path:
+        ver = _run_quiet(["node", "--version"]).lstrip("v")
+        try:
+            prereqs["node"] = int(ver.split(".")[0]) >= 22
+        except ValueError:
+            prereqs["node"] = False
+    else:
+        prereqs["node"] = False
+
+    prereqs["git"] = shutil.which("git") is not None
+    prereqs["pi"] = shutil.which("pi") is not None
+    prereqs["uv"] = shutil.which("uv") is not None
+
+    # Display results
+    print()
+    print("  Prerequisites:")
+
+    hints = {
+        "node": "Install: https://nodejs.org or nvm install 22",
+        "git": "Install: apt install git / brew install git",
+        "pi": "Install: npm install -g @earendil-works/pi-coding-agent",
+        "uv": "Install: curl -LsSf https://astral.sh/uv/install.sh | sh",
+    }
+
+    for name, present in prereqs.items():
+        icon = "✓" if present else "✗"
+        color = GREEN if present else RED
+        hint = f"  ({hints[name]})" if not present else ""
+        print(f"  {color}  {icon}{RESET} {name}{hint}")
+
+    if not all(prereqs.values()):
+        print()
+        answer = questionary.confirm("Some prerequisites missing. Continue with limited features?").ask()
+        if answer is None or not answer:
+            sys.exit(1)
+
+    return prereqs
 
 
-def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
-    has = {k: v.present for k, v in prereqs.items()}
+# ── Step Definitions ───────────────────────────────────────────────────────
+
+
+def build_steps(prereqs: dict[str, bool]) -> list[Step]:
+    has = prereqs
     sudo = "sudo " if IS_LINUX_USER else ""
 
     # ── Step 1: Pi Packages ──────────────────────────────────────────────
@@ -204,8 +207,7 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
     except Exception:
         pass
 
-    step1 = StepDef(
-        1,
+    step1 = Step(
         "📦",
         "Pi Packages",
         "Core pi extensions — orchestrator, agents, and model providers",
@@ -213,36 +215,32 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 "pi-config",
                 "Orchestrator + 24 agents + prompts",
-                f"pi {'update' if pi_cfg else 'install'} git:github.com/myk-org/pi-config",
                 installed=pi_cfg,
-                disabled=bool(pi_dis),
-                disabled_reason=pi_dis,
+                disabled=pi_dis,
+                install_cmd=f"pi {'update' if pi_cfg else 'install'} git:github.com/myk-org/pi-config",
                 has_update=True,
             ),
             Tool(
                 "pi-vertex-claude",
                 "Claude via Google Cloud Vertex AI",
-                f"pi {'update' if pi_vtx else 'install'} git:github.com/myk-org/pi-vertex-claude",
                 installed=pi_vtx,
-                disabled=bool(pi_dis),
-                disabled_reason=pi_dis,
+                disabled=pi_dis,
+                install_cmd=f"pi {'update' if pi_vtx else 'install'} git:github.com/myk-org/pi-vertex-claude",
                 has_update=True,
             ),
             Tool(
                 "pi-web-access",
                 "Web search · fetch · librarian skills",
-                "pi install npm:pi-web-access",
                 installed=pi_web,
-                disabled=bool(pi_dis),
-                disabled_reason=pi_dis,
+                disabled=pi_dis,
+                install_cmd="pi install npm:pi-web-access",
             ),
         ],
     )
 
     # ── Step 2: Python Tools ─────────────────────────────────────────────
     uv_dis = "" if has["uv"] else "requires uv"
-    step2 = StepDef(
-        2,
+    step2 = Step(
         "🐍",
         "Python Tools",
         "CLI utilities used by pi-config workflows",
@@ -250,35 +248,30 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 "myk-pi-tools",
                 "PR reviews · releases · memory management",
-                'uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git"',
                 installed=bool(shutil.which("myk-pi-tools")),
-                disabled=bool(uv_dis),
-                disabled_reason=uv_dis,
+                disabled=uv_dis,
+                install_cmd='uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git"',
             ),
             Tool(
                 "mcp-launchpad (mcpl)",
                 "MCP server discovery and tool execution",
-                "uv tool install mcp-launchpad --from "
-                '"mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git"',
                 installed=bool(shutil.which("mcpl")),
-                disabled=bool(uv_dis),
-                disabled_reason=uv_dis,
+                disabled=uv_dis,
+                install_cmd='uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git"',
             ),
             Tool(
                 "prek",
                 "Kubernetes/OpenShift resource explorer",
-                "uv tool install prek",
                 installed=bool(shutil.which("prek")),
-                disabled=bool(uv_dis),
-                disabled_reason=uv_dis,
+                disabled=uv_dis,
+                install_cmd="uv tool install prek",
             ),
         ],
     )
 
     # ── Step 3: npm Packages ─────────────────────────────────────────────
     nd = "" if has["node"] else "requires Node.js"
-    step3 = StepDef(
-        3,
+    step3 = Step(
         "📦",
         "npm Packages",
         "Node.js tools for agent capabilities",
@@ -286,25 +279,22 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 "acpx",
                 "External AI agent proxy (Cursor/Codex/Copilot)",
-                "npm install -g acpx",
                 installed=bool(shutil.which("acpx")),
-                disabled=bool(nd),
-                disabled_reason=nd,
+                disabled=nd,
+                install_cmd="npm install -g acpx",
             ),
             Tool(
                 "agent-browser",
                 "Browser automation for web testing",
-                "npm install -g agent-browser",
                 installed=bool(shutil.which("agent-browser")),
-                disabled=bool(nd),
-                disabled_reason=nd,
+                disabled=nd,
+                install_cmd="npm install -g agent-browser",
             ),
         ],
     )
 
     # ── Step 4: CLI Tools ────────────────────────────────────────────────
-    step4 = StepDef(
-        4,
+    step4 = Step(
         "🔧",
         "CLI Tools",
         "Developer CLIs used by specialist agents",
@@ -312,36 +302,39 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 "gh",
                 "GitHub CLI — PRs · issues · releases",
-                _gh_install_cmd(),
                 installed=bool(shutil.which("gh")),
+                disabled="",
+                install_cmd=_gh_install_cmd(),
                 needs_sudo=IS_LINUX_USER,
             ),
             Tool(
                 "glab",
                 "GitLab CLI — MRs and pipelines",
-                _glab_install_cmd(),
                 installed=bool(shutil.which("glab")),
+                disabled="",
+                install_cmd=_glab_install_cmd(),
                 needs_sudo=IS_LINUX_USER,
             ),
             Tool(
                 "bun",
                 "JavaScript runtime — coms-net server",
-                "curl -fsSL https://bun.sh/install | bash",
                 installed=bool(shutil.which("bun")),
+                disabled="",
+                install_cmd="curl -fsSL https://bun.sh/install | bash",
             ),
             Tool(
                 "coderabbit",
                 "Local AI code reviews",
-                'CI=true bash -c "$(curl -fsSL https://cli.coderabbit.ai/install.sh)"',
                 installed=bool(shutil.which("cr")),
+                disabled="",
+                install_cmd='CI=true bash -c "$(curl -fsSL https://cli.coderabbit.ai/install.sh)"',
             ),
         ],
     )
 
     # ── Step 5: Browser Automation ───────────────────────────────────────
     pw_inst = bool(glob.glob(str(HOME / ".cache/ms-playwright/chromium-*")))
-    step5 = StepDef(
-        5,
+    step5 = Step(
         "🌐",
         "Browser Automation",
         "Headless browser for agent-browser web automation",
@@ -349,10 +342,9 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 "playwright + chromium",
                 "Headless Chromium browser engine",
-                "npx playwright install --with-deps chromium",
                 installed=pw_inst,
-                disabled=bool(nd),
-                disabled_reason=nd,
+                disabled=nd,
+                install_cmd="npx playwright install --with-deps chromium",
             ),
         ],
     )
@@ -362,8 +354,7 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
     oc_os = "mac" if SYSTEM == "Darwin" else "linux"
     oc_suf = "-arm64" if ARCH in ("aarch64", "arm64") else ""
 
-    step6 = StepDef(
-        6,
+    step6 = Step(
         "🏗️",
         "Infrastructure",
         "Optional tools for infrastructure specialist agents",
@@ -371,33 +362,42 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 "kubectl",
                 "Kubernetes CLI — kubernetes-expert agent",
-                f"kube_ver=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && "
-                f'tmpdir=$(mktemp -d) && curl -fsSL -o "$tmpdir/kubectl" '
-                f'"https://dl.k8s.io/release/${{kube_ver}}/bin/{OS_LOWER}/{ARCH_DL}/kubectl" && '
-                f'chmod +x "$tmpdir/kubectl" && '
-                f'{sudo}install -m 0755 "$tmpdir/kubectl" /usr/local/bin/kubectl && '
-                f'rm -rf "$tmpdir"',
                 installed=bool(shutil.which("kubectl")),
+                disabled="",
+                install_cmd=(
+                    f"kube_ver=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && "
+                    f'tmpdir=$(mktemp -d) && curl -fsSL -o "$tmpdir/kubectl" '
+                    f'"https://dl.k8s.io/release/${{kube_ver}}/bin/{OS_LOWER}/{ARCH_DL}/kubectl" && '
+                    f'chmod +x "$tmpdir/kubectl" && '
+                    f'{sudo}install -m 0755 "$tmpdir/kubectl" /usr/local/bin/kubectl && '
+                    f'rm -rf "$tmpdir"'
+                ),
                 needs_sudo=IS_LINUX_USER,
             ),
             Tool(
                 "oc",
                 "OpenShift CLI — kubernetes-expert agent",
-                f"tmpdir=$(mktemp -d) && "
-                f'curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/{oc_arch}/clients/ocp/'
-                f'stable/openshift-client-{oc_os}{oc_suf}.tar.gz" | tar xz -C "$tmpdir" oc && '
-                f'{sudo}install -m 0755 "$tmpdir/oc" /usr/local/bin/oc && rm -rf "$tmpdir"',
                 installed=bool(shutil.which("oc")),
+                disabled="",
+                install_cmd=(
+                    f"tmpdir=$(mktemp -d) && "
+                    f'curl -fsSL "https://mirror.openshift.com/pub/openshift-v4/{oc_arch}/clients/ocp/'
+                    f'stable/openshift-client-{oc_os}{oc_suf}.tar.gz" | tar xz -C "$tmpdir" oc && '
+                    f'{sudo}install -m 0755 "$tmpdir/oc" /usr/local/bin/oc && rm -rf "$tmpdir"'
+                ),
                 needs_sudo=IS_LINUX_USER,
             ),
             Tool(
                 "Go",
                 "Go compiler — go-expert agent",
-                f'go_ver=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1) && '
-                f"{sudo}rm -rf /usr/local/go && "
-                f'curl -fsSL "https://go.dev/dl/${{go_ver}}.{OS_LOWER}-{ARCH_DL}.tar.gz" '
-                f"| {sudo}tar xz -C /usr/local",
                 installed=bool(shutil.which("go")),
+                disabled="",
+                install_cmd=(
+                    f'go_ver=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1) && '
+                    f"{sudo}rm -rf /usr/local/go && "
+                    f'curl -fsSL "https://go.dev/dl/${{go_ver}}.{OS_LOWER}-{ARCH_DL}.tar.gz" '
+                    f"| {sudo}tar xz -C /usr/local"
+                ),
                 needs_sudo=IS_LINUX_USER,
             ),
         ],
@@ -416,8 +416,7 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
         pass
 
     mk_gi = f'mkdir -p "{gi_dir}" && touch "{gi}" && git config --global core.excludesfile "{gi}"'
-    step7 = StepDef(
-        7,
+    step7 = Step(
         "⚙️",
         "Environment Setup",
         "Git configuration for pi-config",
@@ -425,18 +424,16 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
             Tool(
                 ".pi/memory/ in gitignore",
                 "Prevent memory files from being committed",
-                f'{mk_gi} && echo ".pi/memory/" >> "{gi}"',
                 installed=mem_inst,
-                disabled=bool(gd),
-                disabled_reason=gd,
+                disabled=gd,
+                install_cmd=f'{mk_gi} && echo ".pi/memory/" >> "{gi}"',
             ),
             Tool(
                 ".worktrees/ in gitignore",
                 "Prevent git worktree dirs from being committed",
-                f'{mk_gi} && echo ".worktrees/" >> "{gi}"',
                 installed=wt_inst,
-                disabled=bool(gd),
-                disabled_reason=gd,
+                disabled=gd,
+                install_cmd=f'{mk_gi} && echo ".worktrees/" >> "{gi}"',
             ),
         ],
     )
@@ -444,409 +441,249 @@ def build_steps(prereqs: dict[str, Prereq]) -> list[StepDef]:
     return [step1, step2, step3, step4, step5, step6, step7]
 
 
-# ── TUI Screens ───────────────────────────────────────────────────────────
+# ── Step UI ────────────────────────────────────────────────────────────────
 
 
-class PrereqScreen(Screen):
-    """Prerequisites check screen."""
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
-        with VerticalScroll(id="content"):
-            yield Static("[bold cyan]🔍 Prerequisites Check[/]")
-            yield Static("")
-            prereqs: dict[str, Prereq] = self.app.prereqs
-            for p in prereqs.values():
-                if p.present:
-                    ver = f"  [dim]({p.version})[/]" if p.version else ""
-                    yield Static(f"  [green]✓[/] {p.name}{ver}")
-                else:
-                    yield Static(f"  [red]✗[/] {p.name}")
-                    yield Static(f"    [dim]Install: {p.install_hint}[/]")
-            yield Static("")
-            yield Rule()
-            yield Static("")
-            all_ok = all(p.present for p in prereqs.values())
-            with Horizontal(classes="buttons"):
-                if all_ok:
-                    yield Button("Continue", variant="primary", id="btn-continue")
-                else:
-                    yield Button("Continue with limited features", variant="warning", id="btn-continue")
-                yield Button("Quit", variant="error", id="btn-quit")
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-quit":
-            self.app.exit()
-        elif event.button.id == "btn-continue":
-            self.app.switch_screen(StepScreen(0))
+def print_step_header(num: int, icon: str, title: str, description: str) -> None:
+    print()
+    print("  ╭─────────────────────────────────────────╮")
+    print(f"  │  Step {num} of {TOTAL_STEPS} — {icon} {title:<25}  │")
+    print("  ╰─────────────────────────────────────────╯")
+    print(f"  {description}")
+    print()
 
 
-class StepScreen(Screen):
-    """Wizard step screen with checkboxes for tool selection."""
+def run_step(step_idx: int, step: Step) -> list[Tool]:
+    """Run one interactive step, return list of selected tools to install."""
+    print_step_header(step_idx + 1, step.icon, step.title, step.description)
 
-    def __init__(self, step_idx: int) -> None:
-        super().__init__()
-        self.step_idx = step_idx
+    choices: list[Choice] = []
+    for tool in step.tools:
+        label = f"{tool.name} — {tool.description}"
 
-    @property
-    def step(self) -> StepDef:
-        return self.app.steps[self.step_idx]
-
-    def compose(self) -> ComposeResult:
-        step = self.step
-        yield Header(show_clock=False)
-        with VerticalScroll(id="content"):
-            yield Static(f"[bold cyan]Step {step.number} of {TOTAL_STEPS} — {step.icon} {step.title}[/]")
-            yield Static(f"[dim]{step.description}[/]")
-            yield Static("")
-            for i, tool in enumerate(step.tools):
-                if tool.disabled:
-                    yield Checkbox(
-                        f"{tool.name} — {tool.description}  ({tool.disabled_reason})",
-                        value=False,
-                        disabled=True,
-                        id=f"tool-{i}",
-                    )
-                elif tool.installed and not tool.has_update:
-                    yield Checkbox(
-                        f"{tool.name} — {tool.description}  ✓ installed",
-                        value=True,
-                        disabled=True,
-                        id=f"tool-{i}",
-                    )
-                else:
-                    label = f"{tool.name} — {tool.description}"
-                    if tool.installed and tool.has_update:
-                        label += "  (update available)"
-                    yield Checkbox(label, value=tool.selected, id=f"tool-{i}")
-            yield Static("")
-            yield Rule()
-            yield Static("")
-            with Horizontal(classes="buttons"):
-                yield Button("Next", variant="primary", id="btn-next")
-                yield Button("Skip", variant="default", id="btn-skip")
-                yield Button("Quit", variant="error", id="btn-quit")
-        yield Footer()
-
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if event.checkbox.id and event.checkbox.id.startswith("tool-"):
-            idx = int(event.checkbox.id.split("-")[1])
-            self.step.tools[idx].selected = event.value
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-quit":
-            self.app.exit()
-        elif event.button.id == "btn-skip":
-            for tool in self.step.tools:
-                tool.selected = False
-            self._advance()
-        elif event.button.id == "btn-next":
-            self._advance()
-
-    def _advance(self) -> None:
-        next_idx = self.step_idx + 1
-        if next_idx >= TOTAL_STEPS:
-            self.app.switch_screen(PlanScreen())
+        if tool.disabled:
+            choices.append(Choice(label, checked=False, disabled=tool.disabled))
+        elif tool.installed and not tool.has_update:
+            choices.append(Choice(label, checked=True, disabled="installed"))
         else:
-            self.app.switch_screen(StepScreen(next_idx))
+            if tool.installed and tool.has_update:
+                label += " (update available)"
+            choices.append(Choice(label, checked=True))
+
+    result = questionary.checkbox(
+        "Select tools:",
+        choices=choices,
+    ).ask()
+
+    if result is None:
+        # Ctrl+C or Escape
+        print()
+        print(f"  {DIM}Cancelled.{RESET}")
+        sys.exit(1)
+
+    # Map selected labels back to Tool objects
+    selected: list[Tool] = []
+    for tool in step.tools:
+        label = f"{tool.name} — {tool.description}"
+        if tool.installed and tool.has_update:
+            label += " (update available)"
+
+        if label in result:
+            selected.append(tool)
+
+    return selected
 
 
-class PlanScreen(Screen):
-    """Summary screen showing what will be installed."""
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
-        selected = self.app.get_selected_tools()
-        with VerticalScroll(id="content"):
-            yield Static("[bold cyan]📋 Installation Plan[/]")
-            yield Static("")
-            if not selected:
-                yield Static("[dim]Nothing to install — all tools are present or none selected.[/]")
-                yield Static("")
-                with Horizontal(classes="buttons"):
-                    yield Button("Exit", variant="primary", id="btn-exit")
-            else:
-                for step_num, tools in selected.items():
-                    step_def = self.app.steps[step_num - 1]
-                    yield Static(f"  [bold]{step_def.icon} {step_def.title}[/]")
-                    for tool in tools:
-                        action = "update" if tool.installed else "install"
-                        yield Static(f"    • {tool.name}  [dim]({action})[/]")
-                    yield Static("")
-                total = sum(len(t) for t in selected.values())
-                yield Static(f"  [dim]Total: {total} tool(s) to process[/]")
-                yield Static("")
-                yield Rule()
-                yield Static("")
-                with Horizontal(classes="buttons"):
-                    yield Button("Confirm", variant="success", id="btn-confirm")
-                    yield Button("Back", variant="default", id="btn-back")
-                    yield Button("Quit", variant="error", id="btn-quit")
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id in ("btn-quit", "btn-exit"):
-            self.app.exit()
-        elif event.button.id == "btn-back":
-            self.app.switch_screen(StepScreen(TOTAL_STEPS - 1))
-        elif event.button.id == "btn-confirm":
-            self.app.switch_screen(InstallScreen())
-
-
-class InstallScreen(Screen):
-    """Installation progress screen."""
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
-        with Vertical(id="install-content"):
-            yield Static("[bold cyan]⚡ Installing...[/]", id="install-title")
-            yield Static("")
-            yield RichLog(id="log", markup=True, highlight=False)
-            yield ProgressBar(id="progress", show_eta=False)
-            yield Static("", id="status")
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self._run_installs()
-
-    @work(thread=True)
-    def _run_installs(self) -> None:
-        selected = self.app.get_selected_tools()
-        all_tools = [(s, t) for s, tools in selected.items() for t in tools]
-        total = len(all_tools)
-
-        def write(text: str) -> None:
-            try:
-                self.app.call_from_thread(self.query_one("#log", RichLog).write, text)
-            except Exception:
-                pass
-
-        def set_status(text: str) -> None:
-            try:
-                self.app.call_from_thread(self.query_one("#status", Static).update, text)
-            except Exception:
-                pass
-
-        def advance_bar() -> None:
-            try:
-                self.app.call_from_thread(self.query_one("#progress", ProgressBar).advance, 1)
-            except Exception:
-                pass
-
-        if total == 0:
-            write("[dim]Nothing to install.[/]")
-            set_status("[green]Done! Press q to exit.[/]")
-            return
-
-        # Set progress bar total
-        try:
-            bar = self.query_one("#progress", ProgressBar)
-            self.app.call_from_thread(setattr, bar, "total", total)
-        except Exception:
-            pass
-
-        installed = updated = failed = 0
-        current_step: int | None = None
-
-        for _i, (step_num, tool) in enumerate(all_tools):
-            step_def = self.app.steps[step_num - 1]
-            if step_num != current_step:
-                if current_step is not None:
-                    write("")
-                current_step = step_num
-                write(f"[bold]{step_def.icon} {step_def.title}[/]")
-
-            action = "Updating" if tool.installed else "Installing"
-            set_status(f"[yellow]{action} {tool.name}...[/]")
-
-            try:
-                result = subprocess.run(
-                    tool.install_cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if result.returncode == 0:
-                    if tool.installed:
-                        write(f"  [green]✓[/] {tool.name} [dim](updated)[/]")
-                        updated += 1
-                    else:
-                        write(f"  [green]✓[/] {tool.name}")
-                        installed += 1
-                else:
-                    write(f"  [red]✗[/] {tool.name} — install failed")
-                    if result.stderr:
-                        for line in result.stderr.strip().splitlines()[-3:]:
-                            write(f"    [dim]{line}[/]")
-                    failed += 1
-            except subprocess.TimeoutExpired:
-                write(f"  [red]✗[/] {tool.name} — timed out (5m)")
-                failed += 1
-            except Exception as exc:
-                write(f"  [red]✗[/] {tool.name} — {exc}")
-                failed += 1
-
-            advance_bar()
-
-        write("")
-        write("━" * 44)
-        write("[bold green]Install Complete[/]")
-        write(f"  ✓ Installed: {installed}")
-        write(f"  ↻ Updated:   {updated}")
-        write(f"  ✗ Failed:    {failed}")
-        write("")
-        write("  Run [bold]pi[/] to start a session!")
-        set_status("[green]Done! Press q to exit.[/]")
-
-
-# ── App ────────────────────────────────────────────────────────────────────
-
-
-class InstallerApp(App):
-    """pi-config interactive installer."""
-
-    TITLE = "pi-config Installer"
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("escape", "quit", "Quit"),
-    ]
-
-    CSS = """
-    #content {
-        margin: 0 2;
-        padding: 1 2;
-    }
-    #install-content {
-        margin: 0 2;
-        padding: 1 2;
-    }
-    Checkbox {
-        margin-left: 2;
-        height: auto;
-    }
-    .buttons {
-        height: auto;
-        margin: 0 0;
-    }
-    .buttons Button {
-        margin: 0 1 0 0;
-    }
-    #log {
-        height: 1fr;
-        min-height: 10;
-        margin: 1 0;
-    }
-    #progress {
-        margin: 1 0 0 0;
-    }
-    #status {
-        margin: 0 0 1 0;
-    }
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.prereqs: dict[str, Prereq] = {}
-        self.steps: list[StepDef] = []
-
-    def on_mount(self) -> None:
-        self.prereqs = check_prereqs()
-        self.steps = build_steps(self.prereqs)
-        self.push_screen(PrereqScreen())
-
-    def get_selected_tools(self) -> dict[int, list[Tool]]:
-        """Return tools selected for install/update, grouped by step number."""
-        result: dict[int, list[Tool]] = {}
-        for step in self.steps:
-            selected = [t for t in step.tools if t.selected and not t.disabled and (not t.installed or t.has_update)]
-            if selected:
-                result[step.number] = selected
-        return result
-
-
-# ── Non-Interactive Mode ──────────────────────────────────────────────────
-
-
-def run_all_mode() -> None:
-    """Install everything without TUI — plain text progress."""
-    print("pi-config installer (--all mode)")
-    print("=" * 44)
-
-    prereqs = check_prereqs()
-    print("\n🔍 Prerequisites:")
-    for p in prereqs.values():
-        if p.present:
-            ver = f" ({p.version})" if p.version else ""
-            print(f"  ✓ {p.name}{ver}")
-        else:
-            print(f"  ✗ {p.name} — {p.install_hint}")
-
-    if not all(p.present for p in prereqs.values()):
-        print("\n⚠  Some prerequisites missing. Dependent tools will be skipped.")
-
-    steps = build_steps(prereqs)
-    installed = updated = failed = 0
-
+def auto_select_all(steps: list[Step]) -> list[Tool]:
+    """Auto-select everything not installed and not disabled."""
+    selected: list[Tool] = []
     for step in steps:
-        to_install = [t for t in step.tools if not t.disabled and (not t.installed or t.has_update)]
-        if not to_install:
-            continue
+        for tool in step.tools:
+            if not tool.disabled and (not tool.installed or tool.has_update):
+                selected.append(tool)
+    return selected
 
-        print(f"\n{step.icon} {step.title}")
-        for tool in to_install:
-            action = "Updating" if tool.installed else "Installing"
-            print(f"  {action} {tool.name}...", end=" ", flush=True)
-            try:
-                result = subprocess.run(
-                    tool.install_cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if result.returncode == 0:
-                    print("✓")
-                    if tool.installed:
-                        updated += 1
-                    else:
-                        installed += 1
-                else:
-                    print("✗")
-                    if result.stderr:
-                        for line in result.stderr.strip().splitlines()[-2:]:
-                            print(f"    {line}")
-                    failed += 1
-            except subprocess.TimeoutExpired:
-                print("✗ (timed out)")
+
+# ── Plan ───────────────────────────────────────────────────────────────────
+
+
+def show_plan(selections: list[Tool]) -> None:
+    print()
+    print("  ╭─────────────────────────────────────────╮")
+    print("  │         Installation Plan                │")
+    print("  ╰─────────────────────────────────────────╯")
+    print()
+    for tool in selections:
+        print(f"    • {tool.name} — {tool.description}")
+    print()
+    print(f"  Total: {len(selections)} tool(s)")
+    print()
+
+
+# ── Installation ───────────────────────────────────────────────────────────
+
+
+def install_all(selections: list[Tool]) -> tuple[int, int]:
+    print()
+    print("  Installing...")
+    print()
+
+    installed = 0
+    failed = 0
+
+    for tool in selections:
+        print(f"  ⏳ {tool.name}...", end="", flush=True)
+        try:
+            result = subprocess.run(
+                tool.install_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                print(f"\r  {GREEN}✓{RESET} {tool.name}")
+                installed += 1
+            else:
+                print(f"\r  {RED}✗{RESET} {tool.name} — failed")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[-2:]:
+                        print(f"    {DIM}{line}{RESET}")
                 failed += 1
-            except Exception as exc:
-                print(f"✗ ({exc})")
-                failed += 1
+        except subprocess.TimeoutExpired:
+            print(f"\r  {RED}✗{RESET} {tool.name} — timed out (5m)")
+            failed += 1
+        except Exception as exc:
+            print(f"\r  {RED}✗{RESET} {tool.name} — {exc}")
+            failed += 1
 
-    print(f"\n{'=' * 44}")
-    print(f"  ✓ Installed: {installed}")
-    print(f"  ↻ Updated:   {updated}")
-    print(f"  ✗ Failed:    {failed}")
-    print("\n  Run 'pi' to start a session!")
+    return installed, failed
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────
+# ── Summary ────────────────────────────────────────────────────────────────
+
+
+def show_summary(installed: int, failed: int, skipped: int) -> None:
+    print()
+    print("  ╭─────────────────────────────────────────╮")
+    print("  │           Install Complete               │")
+    print("  ╰─────────────────────────────────────────╯")
+    print()
+    print(f"  {GREEN}✓{RESET} Installed: {installed}")
+    print(f"  {DIM}—{RESET} Skipped:   {skipped}")
+    if failed:
+        print(f"  {RED}✗{RESET} Failed:    {failed}")
+    print()
+    print("  Run 'pi' to start a session!")
+    print()
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="pi-config TUI Installer — interactive wizard for pi-config and related tooling",
-    )
-    parser.add_argument("--all", action="store_true", help="Install everything non-interactively (no TUI)")
-    args = parser.parse_args()
+    global ALL_MODE
 
-    if args.all:
-        run_all_mode()
+    parser = argparse.ArgumentParser(
+        description="pi-config Installer — interactive CLI for pi-config and related tooling",
+    )
+    parser.add_argument("--all", action="store_true", help="Install everything non-interactively (no prompts)")
+    args = parser.parse_args()
+    ALL_MODE = args.all
+
+    print()
+    print(f"  {BOLD}{CYAN}pi-config Installer{RESET}")
+    print(f"  {DIM}{'─' * 37}{RESET}")
+
+    # Prerequisites
+    if ALL_MODE:
+        prereqs = check_prereqs_quiet()
     else:
-        app = InstallerApp()
-        app.run()
+        prereqs = check_prereqs()
+
+    # Build steps
+    steps = build_steps(prereqs)
+
+    # Collect selections
+    selections: list[Tool] = []
+    if ALL_MODE:
+        selections = auto_select_all(steps)
+        print()
+        print(f"  {DIM}--all mode: auto-selecting {len(selections)} tool(s){RESET}")
+    else:
+        for i, step in enumerate(steps):
+            selected = run_step(i, step)
+            selections.extend(selected)
+
+    if not selections:
+        print()
+        print("  Nothing to install.")
+        print()
+        return
+
+    # Show plan
+    show_plan(selections)
+
+    # Confirm
+    if not ALL_MODE:
+        answer = questionary.confirm("Proceed with installation?").ask()
+        if answer is None or not answer:
+            print()
+            print(f"  {DIM}Cancelled.{RESET}")
+            sys.exit(1)
+
+    # Count skipped (installed+disabled that weren't selected)
+    total_tools = sum(len(step.tools) for step in steps)
+    skipped = total_tools - len(selections)
+
+    # Install
+    installed, failed = install_all(selections)
+
+    # Adjust skipped to account for failures
+    skipped = total_tools - installed - failed
+
+    # Summary
+    show_summary(installed, failed, skipped)
+
+
+def check_prereqs_quiet() -> dict[str, bool]:
+    """Check prerequisites without interactive prompts (for --all mode)."""
+    prereqs: dict[str, bool] = {}
+
+    node_path = shutil.which("node")
+    if node_path:
+        ver = _run_quiet(["node", "--version"]).lstrip("v")
+        try:
+            prereqs["node"] = int(ver.split(".")[0]) >= 22
+        except ValueError:
+            prereqs["node"] = False
+    else:
+        prereqs["node"] = False
+
+    prereqs["git"] = shutil.which("git") is not None
+    prereqs["pi"] = shutil.which("pi") is not None
+    prereqs["uv"] = shutil.which("uv") is not None
+
+    hints = {
+        "node": "Install: https://nodejs.org or nvm install 22",
+        "git": "Install: apt install git / brew install git",
+        "pi": "Install: npm install -g @earendil-works/pi-coding-agent",
+        "uv": "Install: curl -LsSf https://astral.sh/uv/install.sh | sh",
+    }
+
+    print()
+    print("  Prerequisites:")
+    for name, present in prereqs.items():
+        icon = "✓" if present else "✗"
+        color = GREEN if present else RED
+        hint = f"  ({hints[name]})" if not present else ""
+        print(f"  {color}  {icon}{RESET} {name}{hint}")
+
+    if not all(prereqs.values()):
+        print()
+        print(f"  {DIM}⚠  Some prerequisites missing. Dependent tools will be skipped.{RESET}")
+
+    return prereqs
 
 
 if __name__ == "__main__":
