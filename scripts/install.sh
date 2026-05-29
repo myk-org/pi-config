@@ -11,6 +11,19 @@ GUM=""
 
 cleanup() { [[ -n "${TMPDIR_INSTALL:-}" ]] && rm -rf "${TMPDIR_INSTALL:-}" 2>/dev/null || true; }
 trap cleanup EXIT
+trap 'echo ""; echo "  Aborted."; exit 130' INT
+
+# gum confirm wrapper — exits on Ctrl+C (130)
+gum_confirm() {
+    $GUM confirm "$@" && return 0
+    local rc=$?
+    if [[ $rc -eq 130 ]]; then
+        echo ""
+        echo "  Aborted."
+        exit 130
+    fi
+    return 1
+}
 
 # ─── gum bootstrap ──────────────────────────────────────────────────────────
 ensure_gum() {
@@ -117,7 +130,7 @@ check_prereqs() {
     echo ""
 
     if [[ "$need_git" == true ]]; then
-        if [[ "$ALL_MODE" == true ]] || $GUM confirm "Install git?"; then
+        if [[ "$ALL_MODE" == true ]] || gum_confirm "Install git?"; then
             if [[ "$OS" == "Darwin" ]]; then
                 xcode-select --install 2>/dev/null || true
             elif command -v apt-get &>/dev/null; then
@@ -129,7 +142,7 @@ check_prereqs() {
     fi
 
     if [[ "$need_node" == true ]]; then
-        if [[ "$ALL_MODE" == true ]] || $GUM confirm "Install Node.js 22 (via nvm)?"; then
+        if [[ "$ALL_MODE" == true ]] || gum_confirm "Install Node.js 22 (via nvm)?"; then
             # shellcheck disable=SC2016
             spin_install "Installing Node.js 22..." '
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
@@ -143,7 +156,7 @@ nvm install 22'
     fi
 
     if [[ "$need_uv" == true ]]; then
-        if [[ "$ALL_MODE" == true ]] || $GUM confirm "Install uv?"; then
+        if [[ "$ALL_MODE" == true ]] || gum_confirm "Install uv?"; then
             spin_install "Installing uv..." "curl -LsSf https://astral.sh/uv/install.sh | sh"
             [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
             # shellcheck disable=SC1091
@@ -152,7 +165,7 @@ nvm install 22'
     fi
 
     if [[ "$need_pi" == true ]]; then
-        if [[ "$ALL_MODE" == true ]] || $GUM confirm "Install pi?"; then
+        if [[ "$ALL_MODE" == true ]] || gum_confirm "Install pi?"; then
             spin_install "Installing pi..." "npm install -g @earendil-works/pi-coding-agent"
         fi
     fi
@@ -174,7 +187,7 @@ nvm install 22'
         echo ""
         $GUM style --foreground 3 "Some prerequisites still missing. Tools requiring them will be disabled."
         if [[ "$ALL_MODE" != true ]]; then
-            $GUM confirm "Continue with limited features?" || exit 0
+            gum_confirm "Continue with limited features?" || exit 0
         fi
     fi
 }
@@ -432,10 +445,18 @@ run_step() {
         local csv
         csv=$(printf '%s,' "${preselected[@]}")
         csv="${csv%,}"
+        local rc=0
         selected=$($GUM choose --no-limit --height=20 \
             --header="Select tools (space to toggle, enter to confirm):" \
             --selected="$csv" \
-            "${opts[@]}") || true
+            "${opts[@]}") || rc=$?
+        # gum returns 1 on Esc, 130 on Ctrl+C
+        if [[ $rc -eq 130 ]]; then
+            echo ""
+            echo "  Aborted."
+            exit 130
+        fi
+        # rc=1 (Esc) → treat as skip this step (empty selected)
     fi
 
     if [[ -z "$selected" ]]; then
@@ -457,7 +478,7 @@ run_step() {
     if [[ "$step_needs_sudo" == true && "$SUDO_ALLOWED" != "yes" \
           && "$OS" == "Linux" && $EUID -ne 0 ]]; then
         echo ""
-        if [[ "$ALL_MODE" == true ]] || $GUM confirm "Some tools require sudo. Allow?"; then
+        if [[ "$ALL_MODE" == true ]] || gum_confirm "Some tools require sudo. Allow?"; then
             SUDO_ALLOWED="yes"
             sudo -v 2>/dev/null || true
         else
