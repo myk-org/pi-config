@@ -450,13 +450,12 @@ run_step() {
             --header="Select tools (space to toggle, enter to confirm):" \
             --selected="$csv" \
             "${opts[@]}") || rc=$?
-        # gum returns 1 on Esc, 130 on Ctrl+C
-        if [[ $rc -eq 130 ]]; then
+        # gum returns 1 on Esc, 130 on Ctrl+C — both should exit
+        if [[ $rc -ne 0 ]]; then
             echo ""
             echo "  Aborted."
-            exit 130
+            exit "$rc"
         fi
-        # rc=1 (Esc) → treat as skip this step (empty selected)
     fi
 
     if [[ -z "$selected" ]]; then
