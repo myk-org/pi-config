@@ -300,11 +300,12 @@ rm -rf \"\$tmpdir\"")
     else
         T_CMDS+=("glab_ver=\$(curl -fsSL 'https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases' | grep -o '\"tag_name\":\"v[^\"]*\"' | head -1 | cut -d'\"' -f4 | sed 's/^v//')
 tmpdir=\$(mktemp -d)
-curl -fsSL -o \"\$tmpdir/glab.deb\" \"https://gitlab.com/gitlab-org/cli/-/releases/v\${glab_ver}/downloads/glab_\${glab_ver}_linux_${ARCH_DL}.deb\"
 if command -v dpkg &>/dev/null; then
+    curl -fsSL -o \"\$tmpdir/glab.deb\" \"https://gitlab.com/gitlab-org/cli/-/releases/v\${glab_ver}/downloads/glab_\${glab_ver}_linux_${ARCH_DL}.deb\"
     sudo dpkg -i \"\$tmpdir/glab.deb\"
 else
-    sudo rpm -ivh \"\$tmpdir/glab.deb\"
+    curl -fsSL -o \"\$tmpdir/glab.rpm\" \"https://gitlab.com/gitlab-org/cli/-/releases/v\${glab_ver}/downloads/glab_\${glab_ver}_linux_${ARCH_DL}.rpm\"
+    sudo dnf install -y \"\$tmpdir/glab.rpm\" 2>/dev/null || sudo rpm -ivh \"\$tmpdir/glab.rpm\"
 fi
 rm -rf \"\$tmpdir\"")
     fi
