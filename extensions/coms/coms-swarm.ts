@@ -313,7 +313,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
             }
 
             // Use cwd with slashes replaced — matches the parent session's coms project
-            const parentProject = ctx.cwd.replace(/^\//,"").replace(/\//g, "__");
+            const parentProject = ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
 
             for (const name of args.names) {
                 if (peers.has(name)) {

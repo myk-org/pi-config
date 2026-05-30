@@ -111,7 +111,7 @@ export function registerComs(pi: ExtensionAPI) {
 
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
-                    const proj = ctx.cwd.replace(/^\//,"").replace(/\//g, "__");
+                    const proj = ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
                     if (!proj) {
                         try { ctx.ui.notify("📡 coms: cannot start from /. Run from a project directory.", "error"); } catch {}
                         return;

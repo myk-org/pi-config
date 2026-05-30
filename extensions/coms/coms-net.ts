@@ -225,7 +225,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 parseFlags(parts.slice(1), state.flagValues);
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
-                    const proj = ctx.cwd.replace(/^\//,"").replace(/\//g, "__");
+                    const proj = ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
                     if (!proj) {
                         try { ctx.ui.notify("📡 coms-net: cannot start from /. Run from a project directory.", "error"); } catch {}
                         return;
@@ -281,7 +281,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net server stopped", "info"); } catch {}
             } else if (subcommand === "status") {
-                const project = (state.flagValues.get("project") as string) || ctx.cwd.replace(/^\//,"").replace(/\//g, "__") || "unknown";
+                const project = (state.flagValues.get("project") as string) || ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__") || "unknown";
                 if (!isValidProject(project)) {
                     try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
                     return;
