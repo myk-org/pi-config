@@ -421,6 +421,11 @@ export function registerComsSwarm(pi: ExtensionAPI): {
                 try { ctx.ui.notify(`📡 swarm send: peer "${name}" not found`, "warning"); } catch {}
             }
 
+            if (validTargets.length === 0) {
+                try { ctx.ui.notify("📡 swarm send: no valid peers to send to", "warning"); } catch {}
+                return true;
+            }
+
             for (const name of validTargets) {
                 const peer = peers.get(name)!;
 
