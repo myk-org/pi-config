@@ -314,7 +314,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     state.active = true;
                     persistState(pi, PERSIST_KEY, state);
                     const sj = readServerJson(project);
-                    const serverAddr = sj?.public_url || (sj?.host && sj?.port ? `http://${sj.host}:${sj.port}` : sj?.local_url) || "unknown";
+                    const serverAddr = (sj?.host && sj?.port ? `http://${sj.host}:${sj.port}` : sj?.public_url || sj?.local_url) || "unknown";
                     try { ctx.ui.notify(`📡 coms-net active — server at ${serverAddr}`, "info"); } catch {}
                 } catch (err: any) {
                     try { ctx.ui.notify(`📡 coms-net start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
@@ -346,7 +346,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 const serverUp = await isServerHealthy(project);
                 const sj = readServerJson(project);
                 let msg = `📡 coms-net: ${state.active ? "active" : "inactive"}\n`;
-                msg += `Server: ${serverUp ? `running at ${sj?.public_url || (sj?.host && sj?.port ? `http://${sj.host}:${sj.port}` : sj?.local_url)}` : "not running"}\n`;
+                msg += `Server: ${serverUp ? `running at ${sj?.host && sj?.port ? `http://${sj.host}:${sj.port}` : sj?.public_url || sj?.local_url}` : "not running"}\n`;
                 if (serverStartedByUs) msg += "(server started by this session)";
                 try { ctx.ui.notify(msg, "info"); } catch {}
             } else {
