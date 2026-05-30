@@ -174,7 +174,7 @@ async function spawnPeer(
     // Build the /coms start command for this peer
     let comsStartCmd = `/coms start --name ${name}`;
     if (purpose) comsStartCmd += ` --purpose "${purpose}"`;
-    if (parentProject) comsStartCmd += ` --project ${parentProject}`;
+    if (parentProject) comsStartCmd += ` --project "${parentProject}"`;
 
     // Subscribe to events for logging
     session.subscribe((event: any) => {
