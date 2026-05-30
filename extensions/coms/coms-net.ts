@@ -216,17 +216,6 @@ export function registerComsNet(pi: ExtensionAPI) {
         }
     }
 
-    // Restore serverStartedByUs after reload
-    pi.on("session_start", (event: any) => {
-        if (event?.reason !== "reload") return;
-        if (state.extra?.serverStartedByUs) {
-            serverStartedByUs = true;
-        }
-        if (state.extra?.activeProject) {
-            activeProject = state.extra.activeProject;
-        }
-    });
-
     const log = (msg: string) => {
         try {
             pi.appendEntry("coms-net-log", { event: "wrapper", ts: new Date().toISOString(), msg });
@@ -240,6 +229,18 @@ export function registerComsNet(pi: ExtensionAPI) {
     );
 
     upstreamComsNetInit(proxyPi as any);
+
+    // Restore serverStartedByUs after reload — MUST be registered after
+    // createDeferredProxy/upstreamComsNetInit so the proxy hydrates state.extra first
+    pi.on("session_start", (event: any) => {
+        if (event?.reason !== "reload") return;
+        if (state.extra?.serverStartedByUs) {
+            serverStartedByUs = true;
+        }
+        if (state.extra?.activeProject) {
+            activeProject = state.extra.activeProject;
+        }
+    });
 
     // Don't auto-kill the server on session shutdown — other sessions may
     // be connected. The server has its own stale detection and cleanup.
