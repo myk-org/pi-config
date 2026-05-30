@@ -116,7 +116,7 @@ async function ensureServerRunning(
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
-            PI_COMS_NET_PORT: process.env.PI_COMS_NET_PORT || "0",
+            PI_COMS_NET_PORT: /^\d+$/.test(process.env.PI_COMS_NET_PORT || "") ? process.env.PI_COMS_NET_PORT! : "0",
         },
     });
     child.unref();

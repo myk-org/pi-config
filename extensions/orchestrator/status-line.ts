@@ -25,9 +25,9 @@ export function registerStatusLine(
     if (text === lastStatusText) return; // Skip redundant re-renders
     lastStatusText = text;
     ctx.ui.setStatus("4-git", text);
-    // Clear individual statuses to avoid duplicates
+    // Clear legacy status keys to avoid duplicates
     ctx.ui.setStatus("container", undefined);
-    ctx.ui.setStatus("4-git", undefined);
+    ctx.ui.setStatus("git", undefined);
   };
 
   // ── Git branch status line ─────────────────────────────────────────────
