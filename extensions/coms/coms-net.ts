@@ -187,6 +187,14 @@ export function registerComsNet(pi: ExtensionAPI) {
         active: false,
     };
     let activeProject = "";
+
+    function getProject(ctx?: any): string {
+        if (activeProject) return activeProject;
+        const fromFlags = state.flagValues.get("project") as string;
+        if (fromFlags) return fromFlags;
+        const cwd = ctx?.cwd || process.cwd() || "";
+        return cwd.replace(/^[\\/]/, "").replace(/[\\/]/g, "__") || "unknown";
+    }
     let serverStartedByUs = false;
 
     const log = (msg: string) => {
@@ -262,7 +270,7 @@ export function registerComsNet(pi: ExtensionAPI) {
             if (subcommand === "start") {
                 if (state.active) {
                     // Check if server is actually still running
-                    if (await isServerHealthy(activeProject)) {
+                    if (await isServerHealthy(getProject(ctx))) {
                         try { ctx.ui.notify("📡 coms-net already active", "warning"); } catch {}
                         return;
                     }
@@ -413,11 +421,11 @@ export function registerComsNet(pi: ExtensionAPI) {
                 state.active = false;
                 persistState(pi, PERSIST_KEY, state);
                 // User explicitly stopped — kill server unconditionally
-                killServer(activeProject, log);
+                killServer(getProject(), log);
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "status") {
-                const project = activeProject || (state.flagValues.get("project") as string) || ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__") || "unknown";
+                const project = getProject(ctx);
                 if (!isValidProject(project)) {
                     try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
                     return;
@@ -439,7 +447,7 @@ export function registerComsNet(pi: ExtensionAPI) {
         if (!serverStartedByUs) return;
         // Don't kill server on reload — it will be reused after reload
         if (event?.reason === "reload") return;
-        killServer(activeProject, log);
+        killServer(getProject(), log);
         log("server killed on shutdown (we started it)");
     });
 }
