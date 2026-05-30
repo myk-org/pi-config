@@ -101,7 +101,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
         }));
         prCache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
     prCache.loading = false;
   }
 
@@ -133,7 +133,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
         branchCache.data = items;
         branchCache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] branch fetch failed:", e?.message || e); }
     branchCache.loading = false;
   }
 
@@ -165,11 +165,11 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
               }
             }
           }
-        } catch {}
+        } catch (e: any) { console.debug("[autocomplete] model JSON parse failed:", e?.message || e); }
         cache.data = items;
         cache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] model fetch failed:", e?.message || e); }
     cache.loading = false;
   }
 
@@ -190,7 +190,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
           .map((t) => ({ value: t, label: t, description: "git tag" }));
         tagCache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] tag fetch failed:", e?.message || e); }
     tagCache.loading = false;
   }
 
@@ -357,7 +357,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
               description: t.description || t.task || "",
             })), lastPart);
           }
-        } catch {}
+        } catch (e: any) { console.debug("[autocomplete] cron task fetch failed:", e?.message || e); }
         return null;
       }
       return null;

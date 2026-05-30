@@ -184,5 +184,5 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
         const flags: Record<string, any> = {};
         for (const [k, v] of state.flagValues) flags[k] = v;
         pi.appendEntry(persistKey, { active: state.active, flags });
-    } catch {}
+    } catch (e: any) { console.debug("[coms-shared] persist state failed:", e?.message || e); }
 }

@@ -167,7 +167,7 @@ export function registerComsNet(pi: ExtensionAPI) {
     const log = (msg: string) => {
         try {
             pi.appendEntry("coms-net-log", { event: "wrapper", ts: new Date().toISOString(), msg });
-        } catch {}
+        } catch (e: any) { console.debug("[coms-net] log append failed:", e?.message || e); }
     };
 
     const PERSIST_KEY = "coms-net-state";
@@ -321,7 +321,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     try {
                         const sec = JSON.parse(fs.readFileSync(secretPath, "utf-8"));
                         token = sec?.token || "";
-                    } catch {}
+                    } catch (e: any) { console.debug("[coms-net] read secret token failed:", e?.message || e); }
                 }
                 const headers: Record<string, string> = {};
                 if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -353,7 +353,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     return;
                 }
             }
-        } catch {}
+        } catch (e: any) { console.debug("[coms-net] shutdown peer check failed:", e?.message || e); }
         // If we can't verify peers, keep server alive to avoid killing shared hubs
         log("server kept alive on shutdown (couldn't verify peer count)");
     });

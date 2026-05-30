@@ -85,7 +85,7 @@ export function findJitiPath(): string | undefined {
       );
       if (fs.existsSync(globalCandidate)) jitiPath = globalCandidate;
     }
-  } catch {}
+  } catch (e: any) { console.debug("[pidash-daemon] jiti path resolution failed:", e?.message || e); }
   return jitiPath;
 }
 

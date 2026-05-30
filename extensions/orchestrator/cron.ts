@@ -39,7 +39,7 @@ const CRON_FILE = path.join(os.tmpdir(), `pi-cron-${process.pid}.json`);
 function saveCrons(tasks: CronTask[]): void {
   try {
     fs.writeFileSync(CRON_FILE, JSON.stringify(tasks), { mode: 0o600 });
-  } catch {}
+  } catch (e: any) { console.debug("[cron] save crons failed:", e?.message || e); }
 }
 
 function loadCrons(): CronTask[] {
@@ -62,7 +62,7 @@ function cleanupOrphanedCronFiles(): void {
         }
       }
     }
-  } catch {}
+  } catch (e: any) { console.debug("[cron] cleanup orphaned cron files failed:", e?.message || e); }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -330,7 +330,7 @@ export function registerCron(
             });
             sections.push(`**${label}:**\n${lines.join("\n")}`);
           }
-        } catch {}
+        } catch (e: any) { console.debug("[cron] list-all scan failed:", e?.message || e); }
         if (sections.length === 0) {
           return { content: [{ type: "text", text: "No scheduled tasks in any session." }] };
         }
@@ -405,7 +405,7 @@ export function registerCron(
             });
             sections.push(`${label}:\n${lines.join("\n")}`);
           }
-        } catch {}
+        } catch (e: any) { console.debug("[cron] list-all command scan failed:", e?.message || e); }
         if (ctx.hasUI) ctx.ui.notify(sections.length > 0 ? sections.join("\n\n") : "No crons in any session.", "info");
         return;
       }

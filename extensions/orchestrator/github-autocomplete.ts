@@ -197,7 +197,7 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
           for (const issue of issues) {
             items.push({ ...issue, state: issue.state.toLowerCase(), kind: "issue", url: issue.url || "" });
           }
-        } catch {}
+        } catch (e: any) { console.debug("[github-autocomplete] issues JSON parse failed:", e?.message || e); }
       }
 
       if (prsResult.code === 0) {
@@ -206,7 +206,7 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
           for (const pr of prs) {
             items.push({ ...pr, state: pr.state.toLowerCase(), kind: "pr", url: pr.url || "" });
           }
-        } catch {}
+        } catch (e: any) { console.debug("[github-autocomplete] PRs JSON parse failed:", e?.message || e); }
       }
 
       if (items.length === 0) return undefined;

@@ -164,7 +164,7 @@ export function registerPidash(
         let thinking = "medium";
         try {
           thinking = (pi as any).getThinkingLevel?.() || "medium";
-        } catch {}
+        } catch (e: any) { console.debug("[pidash] getThinkingLevel failed:", e?.message || e); }
         const reg = JSON.stringify({
           type: "register",
           pid: process.pid,

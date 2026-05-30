@@ -42,7 +42,7 @@ function readRepeatState(): { lastCmd: string; count: number } {
 function writeRepeatState(state: { lastCmd: string; count: number }): void {
   try {
     writeFileSync(REPEAT_FILE, JSON.stringify(state));
-  } catch {}
+  } catch (e: any) { console.debug("[enforcement] write repeat state failed:", e?.message || e); }
 }
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {

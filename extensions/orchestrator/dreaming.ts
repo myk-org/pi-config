@@ -76,7 +76,7 @@ export function registerDreaming(
     // After dream completes, rebuild scores and reorganize topics
     if (id) setTimeout(() => {
       dreamInFlight = false;
-      try { rebuildAndOrganize(cwd); } catch {}
+      try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
     }, 5 * 60 * 1000);
     else dreamInFlight = false;
   }
@@ -97,7 +97,7 @@ export function registerDreaming(
     if (!rebuildTimer) {
       rebuildTimer = setInterval(() => {
         if (enabled && lastCwd) {
-          try { rebuildAndOrganize(lastCwd); } catch {}
+          try { rebuildAndOrganize(lastCwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
         }
       }, REBUILD_INTERVAL_MS);
       if (rebuildTimer.unref) rebuildTimer.unref();
@@ -158,6 +158,6 @@ export function registerDreaming(
     // (can't use spawnAsyncAgent since the session is ending)
     try {
       runDreamAsync(lastCwd);
-    } catch {}
+    } catch (e: any) { console.debug("[dreaming] shutdown dream failed:", e?.message || e); }
   });
 }

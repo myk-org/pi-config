@@ -22,7 +22,7 @@ export function registerRules(
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
-    } catch {}
+    } catch (e: any) { console.debug("[rules] rebuildAndOrganize on session_start failed:", e?.message || e); }
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -31,7 +31,7 @@ export function registerRules(
       try {
         rebuildAndOrganize(ctx.cwd);
         rebuildDone = true;
-      } catch {}
+      } catch (e: any) { console.debug("[rules] rebuildAndOrganize on agent_start failed:", e?.message || e); }
     }
     let extra = "";
 
@@ -88,6 +88,6 @@ function loadMemoriesWithScoring(cwd: string, isSubagent: boolean): string {
       }
       return result + "\n";
     }
-  } catch {}
+  } catch (e: any) { console.debug("[rules] situation report failed:", e?.message || e); }
   return "";
 }

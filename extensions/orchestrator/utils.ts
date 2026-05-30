@@ -14,7 +14,7 @@ export function terminalNotify(title: string, body: string): void {
       timeout: 2000,
       stdio: ["pipe", "pipe", "pipe"],
     });
-  } catch {}
+  } catch (e: any) { console.debug("[utils] notify-send failed:", e?.message || e); }
 }
 
 /** Set SSH timeout for git operations — prevents hung connections */
@@ -36,7 +36,7 @@ export function isRunningInContainer(): boolean {
     // Check cgroup for container runtimes
     const cgroup = fs.readFileSync("/proc/1/cgroup", "utf-8");
     if (/docker|containerd|kubepods|libpod/.test(cgroup)) return true;
-  } catch {}
+  } catch (e: any) { console.debug("[utils] container detection failed:", e?.message || e); }
   return false;
 }
 

@@ -71,7 +71,7 @@ export function registerStatusLine(
         changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
 
       buildStatus(ctx, gitPart);
-    } catch {}
+    } catch (e: any) { console.debug("[status-line] git status update failed:", e?.message || e); }
   };
 
   pi.on("session_start", updateBranch);

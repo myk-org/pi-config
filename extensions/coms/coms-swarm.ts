@@ -54,7 +54,7 @@ function cleanupPeerRegistry(name: string, project: string): void {
                 }
             }
         }
-    } catch {}
+    } catch (e: any) { console.debug("[coms-swarm] cleanup discovery file failed:", e?.message || e); }
 }
 
 const peers = new Map<string, SwarmPeer>();
@@ -222,7 +222,7 @@ interface PeerConfig {
 function persistSwarm(pi: ExtensionAPI, peerConfigs: PeerConfig[]): void {
     try {
         pi.appendEntry(SWARM_PERSIST_KEY, { peers: peerConfigs });
-    } catch {}
+    } catch (e: any) { console.debug("[coms-swarm] persist swarm failed:", e?.message || e); }
 }
 
 export function registerComsSwarm(pi: ExtensionAPI): {
@@ -247,7 +247,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
     const log = (msg: string) => {
         try {
             pi.appendEntry("coms-swarm-log", { event: "swarm", ts: new Date().toISOString(), msg });
-        } catch {}
+        } catch (e: any) { console.debug("[coms-swarm] log append failed:", e?.message || e); }
     };
 
     function savePeerConfigs(): void {
@@ -276,7 +276,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
                     savedPeers = entry.data?.peers || [];
                 }
             }
-        } catch {}
+        } catch (e: any) { console.debug("[coms-swarm] restore peers failed:", e?.message || e); }
         if (savedPeers.length === 0) return;
 
         log(`reload: restoring ${savedPeers.length} swarm peer(s)`);
