@@ -205,10 +205,10 @@ export function registerComsNet(pi: ExtensionAPI) {
 
     // Don't auto-kill the server on session shutdown — other sessions may
     // be connected. The server has its own stale detection and cleanup.
-    // User can explicitly stop it with /coms-net server-stop.
+
 
     pi.registerCommand("coms-net", {
-        description: "Networked agent communication: /coms-net start | connect | stop | status | server-stop",
+        description: "Networked agent communication: /coms-net start | connect | stop | status",
         getArgumentCompletions: (prefix: string) => {
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
             const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
@@ -224,7 +224,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     { v: "connect", l: "connect", d: "Connect to a running server" },
                     { v: "stop", l: "stop", d: "Stop coms-net" },
                     { v: "status", l: "status", d: "Show coms-net + server status" },
-                    { v: "server-stop", l: "server-stop", d: "Stop the hub server" },
+
                 ]);
             }
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
@@ -247,7 +247,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     { v: "--project ", l: "--project", d: "Project namespace" },
                     { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
                     { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
-                    { v: "--server-url ", l: "--server-url", d: "Hub server URL" },
+                    { v: "--url ", l: "--url", d: "Hub server URL" },
                     { v: "--auth-token ", l: "--auth-token", d: "Bearer token for the hub" },
                 ].filter(f => !used.has(f.v.trim())));
             }
@@ -360,6 +360,10 @@ export function registerComsNet(pi: ExtensionAPI) {
                     return;
                 }
 
+                // Map --url to server-url for upstream compatibility
+                if (state.flagValues.has("url")) {
+                    state.flagValues.set("server-url", state.flagValues.get("url"));
+                }
                 const serverUrl = state.flagValues.get("server-url") as string | undefined;
                 try {
                     await state.capturedSessionStart({}, ctx);
@@ -385,10 +389,6 @@ export function registerComsNet(pi: ExtensionAPI) {
                 killServer(activeProject, log);
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
-            } else if (subcommand === "server-stop") {
-                killServer(activeProject, log);
-                serverStartedByUs = false;
-                try { ctx.ui.notify("📡 coms-net server stopped", "info"); } catch {}
             } else if (subcommand === "status") {
                 const project = (state.flagValues.get("project") as string) || ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__") || "unknown";
                 if (!isValidProject(project)) {
@@ -402,7 +402,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 if (serverStartedByUs) msg += "(server started by this session)";
                 try { ctx.ui.notify(msg, "info"); } catch {}
             } else {
-                try { ctx.ui.notify(`📡 coms-net: unknown subcommand "${subcommand}". Use: start | connect | stop | status | server-stop`, "warning"); } catch {}
+                try { ctx.ui.notify(`📡 coms-net: unknown subcommand "${subcommand}". Use: start | connect | stop | status`, "warning"); } catch {}
             }
         },
     });
