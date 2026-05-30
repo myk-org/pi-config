@@ -9,7 +9,9 @@ Two communication systems are available for talking to other pi sessions:
 | **P2P** (coms) | `/coms start` | `coms_` | Direct peer-to-peer |
 | **Networked** (coms-net) | `/coms-net start` | `coms_net_` | Hub server relay |
 
-Only one system is active at a time. **Don't mix tool prefixes** — check which is active first.
+Both systems can be active. When asked to list peers, send messages, or interact with coms —
+**try both** `coms_list` and `coms_net_list`. If one fails, use the other.
+Don't assume which system is active.
 
 ---
 
@@ -97,4 +99,4 @@ To START a new conversation with a peer, use the send tool then await the respon
    Use them freely for outbound conversations.
 2. **Never call send tools to reply** to inbound messages — your assistant text is the reply
 3. **Always check peers first** — use list tools before sending to verify the peer exists
-4. **Don't mix prefixes** — `coms_` tools only work with `/coms`, `coms_net_` tools only work with `/coms-net`
+4. **Try both systems** — when asked to interact with peers without specifying which system, try `coms_` first, then `coms_net_` if it fails (or vice versa)
