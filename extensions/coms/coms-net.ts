@@ -36,7 +36,7 @@ function serverJsonPath(project: string): string {
     return path.join(COMS_NET_DIR, "projects", project, "server.json");
 }
 
-function readServerJson(project: string): { local_url?: string; pid?: number } | null {
+function readServerJson(project: string): { local_url?: string; public_url?: string; host?: string; port?: number; pid?: number } | null {
     const p = serverJsonPath(project);
     try {
         if (!fs.existsSync(p)) return null;
@@ -116,7 +116,7 @@ async function ensureServerRunning(
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
-            PI_COMS_NET_PORT: "0",
+            PI_COMS_NET_PORT: process.env.PI_COMS_NET_PORT || "0",
         },
     });
     child.unref();
@@ -264,7 +264,8 @@ export function registerComsNet(pi: ExtensionAPI) {
                     state.active = true;
                     persistState(pi, PERSIST_KEY, state);
                     const sj = readServerJson(project);
-                    try { ctx.ui.notify(`📡 coms-net active — server at ${sj?.local_url || "unknown"}`, "info"); } catch {}
+                    const serverAddr = sj?.public_url || sj?.local_url || "unknown";
+                    try { ctx.ui.notify(`📡 coms-net active — server at ${serverAddr}`, "info"); } catch {}
                 } catch (err: any) {
                     try { ctx.ui.notify(`📡 coms-net start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
                 }
@@ -292,7 +293,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 const serverUp = await isServerHealthy(project);
                 const sj = readServerJson(project);
                 let msg = `📡 coms-net: ${state.active ? "active" : "inactive"}\n`;
-                msg += `Server: ${serverUp ? `running at ${sj?.local_url}` : "not running"}\n`;
+                msg += `Server: ${serverUp ? `running at ${sj?.public_url || sj?.local_url}` : "not running"}\n`;
                 if (serverStartedByUs) msg += "(server started by this session)";
                 try { ctx.ui.notify(msg, "info"); } catch {}
             } else {
