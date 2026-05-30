@@ -152,14 +152,27 @@ async function ensureServerRunning(
 
 function killServer(project: string, log: (msg: string) => void): void {
     const sj = readServerJson(project);
-    if (sj?.pid && Number.isInteger(sj.pid) && sj.pid > 0) {
-        try {
-            process.kill(sj.pid, "SIGTERM");
-            log(`sent SIGTERM to server pid ${sj.pid}`);
-        } catch {
-            // already dead
-        }
+    if (!sj?.pid || !Number.isInteger(sj.pid) || sj.pid <= 0) return;
+    const pid = sj.pid;
+    try {
+        process.kill(pid, "SIGTERM");
+        log(`sent SIGTERM to server pid ${pid}`);
+    } catch {
+        log(`server pid ${pid} already dead`);
+        return;
     }
+    // Wait up to 3s for clean exit, then SIGKILL
+    let waited = 0;
+    const check = () => {
+        try { process.kill(pid, 0); } catch { return; } // dead
+        waited += 100;
+        if (waited >= 3000) {
+            try { process.kill(pid, "SIGKILL"); log(`sent SIGKILL to server pid ${pid}`); } catch {}
+            return;
+        }
+        setTimeout(check, 100);
+    };
+    setTimeout(check, 100);
 }
 
 function isValidProject(project: string): boolean {
@@ -386,6 +399,8 @@ export function registerComsNet(pi: ExtensionAPI) {
             }
         } catch (e: any) { console.debug("[coms-net] shutdown peer check failed:", e?.message || e); }
         // If we can't verify peers, keep server alive to avoid killing shared hubs
-        log("server kept alive on shutdown (couldn't verify peer count)");
+        // Can't verify peers — kill it since we started it. Better than zombie servers.
+        killServer(activeProject, log);
+        log("server killed on shutdown (couldn't verify peer count, we started it)");
     });
 }
