@@ -319,6 +319,14 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
                 const headers: Record<string, string> = {};
                 if (token) headers["Authorization"] = `Bearer ${token}`;
+                // Validate local_url is loopback to prevent token leak
+                try {
+                    const parsed = new URL(sj.local_url);
+                    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost" && parsed.hostname !== "::1") {
+                        log("server url is not loopback, skipping peer check");
+                        return;
+                    }
+                } catch { return; }
                 const url = `${sj.local_url}/v1/agents?project=${encodeURIComponent(activeProject)}&include_explicit=true`;
                 const resp = await fetch(url, {
                     headers,

@@ -45,9 +45,13 @@ function cleanupPeerRegistry(name: string, project: string): void {
             // Read socket path before deleting
             const data = JSON.parse(fs.readFileSync(registryFile, "utf-8"));
             fs.unlinkSync(registryFile);
-            // Remove socket
+            // Remove socket (validate it's in the coms sockets dir)
             if (data.endpoint) {
-                try { fs.unlinkSync(data.endpoint); } catch {}
+                const socketsDir = path.join(comsDir, "sockets");
+                const resolved = path.resolve(data.endpoint);
+                if (resolved.startsWith(socketsDir + path.sep)) {
+                    try { fs.unlinkSync(resolved); } catch {}
+                }
             }
         }
     } catch {}
