@@ -193,7 +193,9 @@ export function registerComsNet(pi: ExtensionAPI) {
         const fromFlags = state.flagValues.get("project") as string;
         if (fromFlags) return fromFlags;
         const cwd = ctx?.cwd || process.cwd() || "";
-        return cwd.replace(/^[\\/]/, "").replace(/[\\/]/g, "__") || "unknown";
+        const proj = cwd.replace(/^[\\/]/, "").replace(/[\\/]/g, "__");
+        if (!proj) throw new Error("coms-net: cannot determine project — no cwd available");
+        return proj;
     }
     let serverStartedByUs = false;
 
