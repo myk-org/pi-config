@@ -414,8 +414,10 @@ export function registerComsNet(pi: ExtensionAPI) {
     });
 
     // Kill server on session shutdown if we started it and no other peers are connected
-    pi.on("session_shutdown", () => {
+    pi.on("session_shutdown", (event: any) => {
         if (!serverStartedByUs) return;
+        // Don't kill server on reload — it will be reused after reload
+        if (event?.reason === "reload") return;
         killServer(activeProject, log);
         log("server killed on shutdown (we started it)");
     });
