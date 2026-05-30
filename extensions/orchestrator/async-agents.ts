@@ -129,7 +129,13 @@ export function registerAsyncAgents(
   function ensureAsyncPoller() {
     if (asyncState.poller) return;
     asyncState.poller = setInterval(() => {
-      if (!asyncState.lastCtx?.hasUI) return;
+      try {
+        if (!asyncState.lastCtx?.hasUI) return;
+      } catch {
+        // ctx is stale (session ended) — stop polling
+        if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
+        return;
+      }
       if (asyncState.jobs.size === 0) {
         updateAsyncWidget();
         return;
