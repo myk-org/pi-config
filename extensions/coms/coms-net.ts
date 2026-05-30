@@ -84,9 +84,21 @@ async function ensureServerRunning(
     log: (msg: string) => void,
     options?: { port?: string; host?: string },
 ): Promise<boolean> {
+    // If port/host explicitly requested, check if running server matches
     if (await isServerHealthy(project)) {
-        log("server already running");
-        return true;
+        const sj = readServerJson(project);
+        const wantPort = options?.port;
+        const wantHost = options?.host;
+        const needRestart = (wantPort && sj?.port !== Number(wantPort)) ||
+                            (wantHost && sj?.host !== wantHost);
+        if (needRestart) {
+            log(`server running but port/host mismatch — restarting`);
+            killServer(project, log);
+            await new Promise(r => setTimeout(r, 1000));
+        } else {
+            log("server already running");
+            return true;
+        }
     }
 
     const bunPath = findBun();
