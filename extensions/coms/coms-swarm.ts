@@ -13,8 +13,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+    AuthStorage,
     createAgentSession,
     DefaultResourceLoader,
+    ModelRegistry,
     SessionManager,
     getAgentDir,
 } from "@earendil-works/pi-coding-agent";
@@ -144,6 +146,27 @@ async function spawnPeer(
 
     if (tools) {
         sessionOptions.tools = tools;
+    }
+
+    // Apply model if specified
+    if (modelPattern) {
+        try {
+            const authStorage = AuthStorage.create();
+            const modelRegistry = ModelRegistry.create(authStorage);
+            const available = await modelRegistry.getAvailable();
+            const match = available.find(
+                (m: any) => m.id.includes(modelPattern) || m.name?.includes(modelPattern)
+            );
+            if (match) {
+                sessionOptions.model = match;
+                sessionOptions.authStorage = authStorage;
+                sessionOptions.modelRegistry = modelRegistry;
+            } else {
+                log(`model "${modelPattern}" not found, using default`);
+            }
+        } catch (err: any) {
+            log(`model lookup failed: ${err.message}`);
+        }
     }
 
     const { session } = await createAgentSession(sessionOptions);
