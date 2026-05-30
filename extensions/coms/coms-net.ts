@@ -331,6 +331,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 try {
                     await state.capturedSessionStart({}, ctx);
                     state.active = true;
+                    serverStartedByUs = true;
                     persistState(pi, PERSIST_KEY, state);
                     const sj = readServerJson(project);
                     const serverAddr = (sj?.host && sj?.port ? `http://${sj.host}:${sj.port}` : sj?.public_url || sj?.local_url) || "unknown";
