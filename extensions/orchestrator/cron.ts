@@ -113,9 +113,9 @@ export function registerCron(
     saveCrons([...tasks.values()]);
     if (lastCtx?.hasUI) {
       if (count > 0) {
-        lastCtx.ui.setStatus("2-crons", lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`));
+        lastCtx.ui.setStatus("3-crons", lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`));
       } else {
-        lastCtx.ui.setStatus("2-crons", lastCtx.ui.theme.fg("muted", `⏰ 0 crons`));
+        lastCtx.ui.setStatus("3-crons", lastCtx.ui.theme.fg("muted", `⏰ 0 crons`));
       }
     }
     pi.events.emit("pidash:cron-status", {

@@ -173,7 +173,7 @@ export function registerComsNet(pi: ExtensionAPI) {
     // User can explicitly stop it with /coms-net server-stop.
 
     pi.registerCommand("coms-net", {
-        description: "Networked agent communication: /coms-net start [--name X --purpose Y --project Z --color #HEX] | stop | status | server-stop",
+        description: "Networked agent communication: /coms-net start | stop | status | server-stop",
         handler: async (args: string, ctx: any) => {
             const trimmed = (args || "").trim();
             const parts = tokenizeArgs(trimmed);
@@ -185,7 +185,11 @@ export function registerComsNet(pi: ExtensionAPI) {
                     return;
                 }
                 parseFlags(parts.slice(1), state.flagValues);
-                const project = (state.flagValues.get("project") as string) || "default";
+                // Default project to cwd so sessions in different dirs are isolated
+                if (!state.flagValues.has("project")) {
+                    state.flagValues.set("project", ctx.cwd.replace(/^\//,"").replace(/\//g, "__"));
+                }
+                const project = state.flagValues.get("project") as string;
                 if (!isValidProject(project)) {
                     try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
                     return;
@@ -234,7 +238,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net server stopped", "info"); } catch {}
             } else if (subcommand === "status") {
-                const project = (state.flagValues.get("project") as string) || "default";
+                const project = (state.flagValues.get("project") as string) || ctx.cwd.replace(/^\//,"").replace(/\//g, "__");
                 if (!isValidProject(project)) {
                     try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
                     return;

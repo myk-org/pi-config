@@ -24,10 +24,10 @@ export function registerStatusLine(
     const text = parts.join(ctx.ui.theme.fg("dim", ICON_SEP));
     if (text === lastStatusText) return; // Skip redundant re-renders
     lastStatusText = text;
-    ctx.ui.setStatus("3-git", text);
+    ctx.ui.setStatus("4-git", text);
     // Clear individual statuses to avoid duplicates
     ctx.ui.setStatus("container", undefined);
-    ctx.ui.setStatus("git", undefined);
+    ctx.ui.setStatus("4-git", undefined);
   };
 
   // ── Git branch status line ─────────────────────────────────────────────
@@ -85,7 +85,12 @@ export function registerStatusLine(
     lastCtx = ctx;
   });
   const gitPoller = setInterval(() => {
-    if (lastCtx) updateBranch(null, lastCtx);
+    if (!lastCtx) return;
+    try {
+      updateBranch(null, lastCtx);
+    } catch {
+      clearInterval(gitPoller);
+    }
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
 
@@ -123,7 +128,12 @@ export function registerStatusLine(
   pi.on("tool_execution_end", touchActivity);
 
   const timePoller = setInterval(() => {
-    if (lastCtx && lastActivityTime) updateTimestamp(lastCtx);
+    if (!lastCtx || !lastActivityTime) return;
+    try {
+      updateTimestamp(lastCtx);
+    } catch {
+      clearInterval(timePoller);
+    }
   }, 30_000);
   if (timePoller.unref) timePoller.unref();
 

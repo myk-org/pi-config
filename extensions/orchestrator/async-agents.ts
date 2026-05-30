@@ -107,9 +107,9 @@ export function registerAsyncAgents(
     const changed = widgetKey !== lastWidgetKey;
     lastWidgetKey = widgetKey;
     if (running.length > 0) {
-      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("warning", `⏳ ${running.length} async agent${running.length > 1 ? "s" : ""}`));
+      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("warning", `⏳ async: ${running.length}`));
     } else if (changed) {
-      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("muted", `⏳ 0 async agents`));
+      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("muted", `💤 async: 0`));
     }
     // Always emit to pidash — browser may have reconnected and needs fresh state
     pi.events.emit("pidash:async-status", {
