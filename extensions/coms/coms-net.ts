@@ -208,7 +208,7 @@ export function registerComsNet(pi: ExtensionAPI) {
 
 
     pi.registerCommand("coms-net", {
-        description: "Networked agent communication: /coms-net start | connect | stop | status",
+        description: "Networked agent communication: /coms-net start | connect | disconnect | stop | status",
         getArgumentCompletions: (prefix: string) => {
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
             const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
@@ -222,7 +222,8 @@ export function registerComsNet(pi: ExtensionAPI) {
                 return mk([
                     { v: "start", l: "start", d: "Start local server and connect" },
                     { v: "connect", l: "connect", d: "Connect to a running server" },
-                    { v: "stop", l: "stop", d: "Stop coms-net" },
+                    { v: "disconnect", l: "disconnect", d: "Disconnect from server (keep server running)" },
+                    { v: "stop", l: "stop", d: "Stop coms-net + kill server" },
                     { v: "status", l: "status", d: "Show coms-net + server status" },
 
                 ]);
@@ -381,6 +382,21 @@ export function registerComsNet(pi: ExtensionAPI) {
                 } catch (err: any) {
                     try { ctx.ui.notify(`📡 coms-net connect failed: ${err?.message ?? String(err)}`, "error"); } catch {}
                 }
+            } else if (subcommand === "disconnect") {
+                if (!state.active) {
+                    try { ctx.ui.notify("📡 coms-net not active", "info"); } catch {}
+                    return;
+                }
+                if (serverStartedByUs) {
+                    try { ctx.ui.notify("📡 coms-net: you started the server — use /coms-net stop instead", "warning"); } catch {}
+                    return;
+                }
+                if (state.capturedSessionShutdown) {
+                    try { await state.capturedSessionShutdown(); } catch {}
+                }
+                state.active = false;
+                persistState(pi, PERSIST_KEY, state);
+                try { ctx.ui.notify("📡 coms-net disconnected", "info"); } catch {}
             } else if (subcommand === "stop") {
                 if (!state.active) {
                     try { ctx.ui.notify("📡 coms-net not active", "info"); } catch {}
@@ -408,7 +424,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 if (serverStartedByUs) msg += "(server started by this session)";
                 try { ctx.ui.notify(msg, "info"); } catch {}
             } else {
-                try { ctx.ui.notify(`📡 coms-net: unknown subcommand "${subcommand}". Use: start | connect | stop | status`, "warning"); } catch {}
+                try { ctx.ui.notify(`📡 coms-net: unknown subcommand "${subcommand}". Use: start | connect | disconnect | stop | status`, "warning"); } catch {}
             }
         },
     });
