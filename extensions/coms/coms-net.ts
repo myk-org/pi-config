@@ -12,6 +12,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { fuzzyFilter } from "@earendil-works/pi-tui";
+
+function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
+    if (!query.trim()) return items.length > 0 ? items : null;
+    const result = fuzzyFilter(items, query, i => `${i.label} ${i.description || ""}`);
+    return result.length > 0 ? result : null;
+}
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -174,6 +182,35 @@ export function registerComsNet(pi: ExtensionAPI) {
 
     pi.registerCommand("coms-net", {
         description: "Networked agent communication: /coms-net start | stop | status | server-stop",
+        getArgumentCompletions: (prefix: string) => {
+            const parts = prefix.split(/\s+/);
+            const lastPart = parts[parts.length - 1] || "";
+            const base = lastPart === "" ? prefix : prefix.slice(0, prefix.length - lastPart.length);
+            const mk = (items: {v: string; l: string; d: string}[]) =>
+                fuzzy(items.map(i => ({ value: base + i.v, label: i.l, description: i.d })), lastPart);
+
+            if (parts.length <= 1) {
+                return mk([
+                    { v: "start", l: "start", d: "Start networked agent communication" },
+                    { v: "stop", l: "stop", d: "Stop coms-net" },
+                    { v: "status", l: "status", d: "Show coms-net + server status" },
+                    { v: "server-stop", l: "server-stop", d: "Stop the hub server" },
+                ]);
+            }
+            if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
+                const used = new Set(parts.filter(p => p.startsWith("--")));
+                return mk([
+                    { v: "--name ", l: "--name", d: "Agent name" },
+                    { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
+                    { v: "--project ", l: "--project", d: "Project namespace" },
+                    { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
+                    { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
+                    { v: "--server-url ", l: "--server-url", d: "Hub server URL" },
+                    { v: "--auth-token ", l: "--auth-token", d: "Bearer token for the hub" },
+                ].filter(f => !used.has(f.v.trim())));
+            }
+            return null;
+        },
         handler: async (args: string, ctx: any) => {
             const trimmed = (args || "").trim();
             const parts = tokenizeArgs(trimmed);
