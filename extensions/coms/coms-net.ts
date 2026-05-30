@@ -208,7 +208,7 @@ export function registerComsNet(pi: ExtensionAPI) {
     // User can explicitly stop it with /coms-net server-stop.
 
     pi.registerCommand("coms-net", {
-        description: "Networked agent communication: /coms-net start | stop | status | server-stop",
+        description: "Networked agent communication: /coms-net start | connect | stop | status | server-stop",
         getArgumentCompletions: (prefix: string) => {
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
             const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
@@ -220,7 +220,8 @@ export function registerComsNet(pi: ExtensionAPI) {
 
             if (completed.length === 0) {
                 return mk([
-                    { v: "start", l: "start", d: "Start networked agent communication" },
+                    { v: "start", l: "start", d: "Start local server and connect" },
+                    { v: "connect", l: "connect", d: "Connect to a running server" },
                     { v: "stop", l: "stop", d: "Stop coms-net" },
                     { v: "status", l: "status", d: "Show coms-net + server status" },
                     { v: "server-stop", l: "server-stop", d: "Stop the hub server" },
@@ -234,10 +235,20 @@ export function registerComsNet(pi: ExtensionAPI) {
                     { v: "--project ", l: "--project", d: "Project namespace" },
                     { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
                     { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
-                    { v: "--server-url ", l: "--server-url", d: "Hub server URL" },
-                    { v: "--auth-token ", l: "--auth-token", d: "Bearer token for the hub" },
                     { v: "--port ", l: "--port", d: "Server port" },
                     { v: "--host ", l: "--host", d: "Server bind address (e.g. 0.0.0.0)" },
+                ].filter(f => !used.has(f.v.trim())));
+            }
+            if (completed[0] === "connect" && (lastPart.startsWith("-") || lastPart === "")) {
+                const used = new Set(completed.filter(p => p.startsWith("--")));
+                return mk([
+                    { v: "--name ", l: "--name", d: "Agent name" },
+                    { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
+                    { v: "--project ", l: "--project", d: "Project namespace" },
+                    { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
+                    { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
+                    { v: "--server-url ", l: "--server-url", d: "Hub server URL" },
+                    { v: "--auth-token ", l: "--auth-token", d: "Bearer token for the hub" },
                 ].filter(f => !used.has(f.v.trim())));
             }
             return null;
@@ -276,22 +287,8 @@ export function registerComsNet(pi: ExtensionAPI) {
                     return;
                 }
 
-                // If user passed --server-url, skip auto-start — they're connecting to a remote server
-                const serverUrl = state.flagValues.get("server-url") as string | undefined;
                 const port = state.flagValues.get("port") as string | undefined;
                 const host = state.flagValues.get("host") as string | undefined;
-                if (serverUrl) {
-                    // Remote server — don't auto-start, just connect
-                    try {
-                        await state.capturedSessionStart({}, ctx);
-                        state.active = true;
-                        persistState(pi, PERSIST_KEY, state);
-                        try { ctx.ui.notify(`📡 coms-net active — connected to ${serverUrl}`, "info"); } catch {}
-                    } catch (err: any) {
-                        try { ctx.ui.notify(`📡 coms-net start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
-                    }
-                    return;
-                }
 
                 // Auto-start server, or restart if port/host mismatch
                 const alreadyRunning = await isServerHealthy(project);
@@ -334,6 +331,46 @@ export function registerComsNet(pi: ExtensionAPI) {
                 } catch (err: any) {
                     try { ctx.ui.notify(`📡 coms-net start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
                 }
+            } else if (subcommand === "connect") {
+                if (state.active) {
+                    try { ctx.ui.notify("📡 coms-net already active", "warning"); } catch {}
+                    return;
+                }
+                state.flagValues = new Map();
+                parseFlags(parts.slice(1), state.flagValues);
+                // Default project to cwd so sessions in different dirs are isolated
+                if (!state.flagValues.has("project")) {
+                    const cwd = ctx.cwd || "";
+                    const proj = cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
+                    if (!proj) {
+                        try { ctx.ui.notify("📡 coms-net: cannot connect from /. Run from a project directory.", "error"); } catch {}
+                        return;
+                    }
+                    state.flagValues.set("project", proj);
+                }
+                const project = state.flagValues.get("project") as string;
+                if (!isValidProject(project)) {
+                    try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
+                    return;
+                }
+                activeProject = project;
+
+                if (!state.capturedSessionStart) {
+                    try { ctx.ui.notify("📡 coms-net: internal error — no session handler captured", "error"); } catch {}
+                    return;
+                }
+
+                const serverUrl = state.flagValues.get("server-url") as string | undefined;
+                try {
+                    await state.capturedSessionStart({}, ctx);
+                    state.active = true;
+                    persistState(pi, PERSIST_KEY, state);
+                    serverStartedByUs = false;
+                    const displayUrl = serverUrl || "local server";
+                    try { ctx.ui.notify(`📡 coms-net active — connected to ${displayUrl}`, "info"); } catch {}
+                } catch (err: any) {
+                    try { ctx.ui.notify(`📡 coms-net connect failed: ${err?.message ?? String(err)}`, "error"); } catch {}
+                }
             } else if (subcommand === "stop") {
                 if (!state.active) {
                     try { ctx.ui.notify("📡 coms-net not active", "info"); } catch {}
@@ -365,7 +402,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 if (serverStartedByUs) msg += "(server started by this session)";
                 try { ctx.ui.notify(msg, "info"); } catch {}
             } else {
-                try { ctx.ui.notify(`📡 coms-net: unknown subcommand "${subcommand}". Use: start | stop | status | server-stop`, "warning"); } catch {}
+                try { ctx.ui.notify(`📡 coms-net: unknown subcommand "${subcommand}". Use: start | connect | stop | status | server-stop`, "warning"); } catch {}
             }
         },
     });
