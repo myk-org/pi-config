@@ -263,12 +263,31 @@ export function registerComsNet(pi: ExtensionAPI) {
                     return;
                 }
 
-                // Auto-start server if not running
+                // Auto-start server, or restart if port/host mismatch
+                const port = state.flagValues.get("port") as string | undefined;
+                const host = state.flagValues.get("host") as string | undefined;
                 const alreadyRunning = await isServerHealthy(project);
-                if (!alreadyRunning) {
+                if (alreadyRunning) {
+                    // Check if running server matches requested port/host
+                    const sj = readServerJson(project);
+                    const wantPort = port || process.env.PI_COMS_NET_PORT;
+                    const wantHost = host || process.env.PI_COMS_NET_HOST;
+                    const mismatch = (wantPort && sj?.port !== Number(wantPort)) ||
+                                     (wantHost && sj?.host !== wantHost);
+                    if (mismatch) {
+                        log(`server port/host mismatch — restarting (want ${wantHost || "*"}:${wantPort || "*"}, have ${sj?.host}:${sj?.port})`);
+                        killServer(project, log);
+                        await new Promise(r => setTimeout(r, 1000));
+                        try { ctx.ui.notify("📡 Restarting coms-net server (port/host changed)...", "info"); } catch {}
+                        const started = await ensureServerRunning(project, log, { port, host });
+                        if (!started) {
+                            try { ctx.ui.notify("📡 coms-net: failed to restart server.", "error"); } catch {}
+                            return;
+                        }
+                        serverStartedByUs = true;
+                    }
+                } else {
                     try { ctx.ui.notify("📡 Starting coms-net server...", "info"); } catch {}
-                    const port = state.flagValues.get("port") as string | undefined;
-                    const host = state.flagValues.get("host") as string | undefined;
                     const started = await ensureServerRunning(project, log, { port, host });
                     if (!started) {
                         try { ctx.ui.notify("📡 coms-net: failed to start server. Is Bun installed?", "error"); } catch {}
