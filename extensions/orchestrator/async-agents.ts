@@ -493,6 +493,7 @@ export function registerAsyncAgents(
         // Read existing output and watch for new content
         let filePos = 0;
         let textBuffer = "";
+        let lastLoggedError = "";
 
         function readNewContent() {
           if (closed) return;
@@ -520,7 +521,14 @@ export function registerAsyncAgents(
               cachedLines = undefined;
               tui.requestRender();
             }
-          } catch (e: any) { console.debug("[async-agents] live output read failed:", e?.message || e); }
+          } catch (e: any) {
+            if (e?.code === "ENOENT") return;
+            const msg = e?.message || String(e);
+            if (msg !== lastLoggedError) {
+              lastLoggedError = msg;
+              console.debug("[async-agents] live output read failed:", msg);
+            }
+          }
         }
 
         // Poll for new content every 500ms

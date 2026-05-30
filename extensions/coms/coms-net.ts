@@ -167,12 +167,12 @@ function killServer(project: string, log: (msg: string) => void): void {
         try { process.kill(pid, 0); } catch { return; } // dead
         waited += 100;
         if (waited >= 3000) {
-            try { process.kill(pid, "SIGKILL"); log(`sent SIGKILL to server pid ${pid}`); } catch {}
+            try { process.kill(pid, "SIGKILL"); log(`sent SIGKILL to server pid ${pid}`); } catch (e: any) { log(`SIGKILL to pid ${pid} failed: ${e?.message}`); }
             return;
         }
-        setTimeout(check, 100);
+        setTimeout(check, 100).unref();
     };
-    setTimeout(check, 100);
+    setTimeout(check, 100).unref();
 }
 
 function isValidProject(project: string): boolean {
@@ -189,10 +189,15 @@ export function registerComsNet(pi: ExtensionAPI) {
     let activeProject = "";
 
     function getProject(ctx?: any): string {
+        // When ctx provides cwd, derive from it to avoid stale cache after resume/dir-change
+        if (ctx?.cwd) {
+            const proj = ctx.cwd.replace(/^[\\/]/, "").replace(/[\\/]/g, "__");
+            if (proj) return proj;
+        }
         if (activeProject) return activeProject;
         const fromFlags = state.flagValues.get("project") as string;
         if (fromFlags) return fromFlags;
-        const cwd = ctx?.cwd || process.cwd() || "";
+        const cwd = process.cwd() || "";
         const proj = cwd.replace(/^[\\/]/, "").replace(/[\\/]/g, "__");
         if (!proj) throw new Error("coms-net: cannot determine project — no cwd available");
         return proj;
@@ -201,7 +206,14 @@ export function registerComsNet(pi: ExtensionAPI) {
 
     function persist() {
         state.extra = { serverStartedByUs, activeProject: getProject() };
-        persistState(pi, PERSIST_KEY, state);
+        // Don't persist auth token to disk — security sensitive
+        const authToken = state.flagValues.get('auth-token');
+        if (authToken !== undefined) state.flagValues.delete('auth-token');
+        try {
+            persistState(pi, PERSIST_KEY, state);
+        } finally {
+            if (authToken !== undefined) state.flagValues.set('auth-token', authToken);
+        }
     }
 
     // Restore serverStartedByUs after reload

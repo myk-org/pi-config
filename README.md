@@ -71,7 +71,7 @@ Single extension that provides:
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer daemon |
 | `/coms start\|stop\|status` | P2P local agent communication (Unix socket) |
-| `/coms-net start\|stop\|status\|server-stop` | Networked agent communication (HTTP/SSE hub) |
+| `/coms-net start\|connect\|disconnect\|stop\|status` | Networked agent communication (HTTP/SSE hub) |
 
 ### Inter-Agent Communication (coms & coms-net)
 
@@ -89,6 +89,8 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 
 ```text
 /coms-net start --name dev --purpose "Development agent"
+/coms-net connect
+/coms-net disconnect
 /coms-net stop
 /coms-net status
 ```
