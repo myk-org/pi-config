@@ -301,4 +301,32 @@ export function registerComsNet(pi: ExtensionAPI) {
             }
         },
     });
+
+    // Kill server on session shutdown if we started it and no other peers are connected
+    pi.on("session_shutdown", async () => {
+        if (!serverStartedByUs) return;
+        try {
+            const sj = readServerJson(activeProject);
+            if (sj?.local_url) {
+                const resp = await fetch(`${sj.local_url}/v1/agents`, {
+                    signal: AbortSignal.timeout(2000),
+                });
+                if (resp.ok) {
+                    const agents = await resp.json();
+                    const otherAgents = (agents?.agents || []).length;
+                    if (otherAgents <= 1) {
+                        // Only us (or nobody) — safe to kill
+                        killServer(activeProject, log);
+                        log("server killed on shutdown (no other peers)");
+                    } else {
+                        log(`server kept alive (${otherAgents - 1} other peer(s) connected)`);
+                    }
+                    return;
+                }
+            }
+        } catch {}
+        // If we can't check peers, kill anyway since we started it
+        killServer(activeProject, log);
+        log("server killed on shutdown (couldn't verify peers)");
+    });
 }
