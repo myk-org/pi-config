@@ -106,6 +106,7 @@ export function registerComs(pi: ExtensionAPI) {
                     try { ctx.ui.notify("📡 coms already active", "warning"); } catch {}
                     return;
                 }
+                state.flagValues = new Map();
                 parseFlags(parts.slice(1), state.flagValues);
 
                 // Default project to cwd so sessions in different dirs are isolated
