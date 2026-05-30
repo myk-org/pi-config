@@ -120,46 +120,31 @@ See the [Docker section](#docker-sandboxed-execution) below for the full run com
 
 ### Native (without Docker)
 
-If you prefer running pi directly on your host:
-
-#### Pi package (extension + agents + prompts)
+Run the interactive installer — it walks you through each component with multi-select checkboxes:
 
 ```bash
-pi install git:github.com/myk-org/pi-config
+uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
 ```
 
-#### CLI tool (myk-pi-tools)
+Or if you already have the repo cloned:
 
 ```bash
-uv tool install git+https://github.com/myk-org/pi-config
+uv run scripts/install.py
 ```
 
-#### Recommended tools
+The installer covers:
+
+- **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
+- **Python Tools** — mcp-launchpad (mcpl), prek
+- **npm Packages** — acpx, agent-browser
+- **Browser Automation** — playwright + chromium
+- **Environment Setup** — gitignore configuration
+
+For non-interactive (CI) usage:
 
 ```bash
-npm install -g acpx           # External AI agent proxy (cursor, codex, gemini)
-npm install -g pi-web-access  # Web search/fetch skills (librarian)
-uvx install mcp-launchpad     # MCP server CLI (mcpl)
+uv run scripts/install.py --all
 ```
-
-#### Optional: Vertex AI (Claude via Google Cloud)
-
-If using Claude models through Google Cloud Vertex AI:
-
-```bash
-pi install git:github.com/myk-org/pi-vertex-claude
-```
-
-#### Optional: Browser automation
-
-For browser automation (screenshots, form filling, web testing), install [agent-browser](https://github.com/nicobailon/agent-browser):
-
-```bash
-npm install -g agent-browser
-npx playwright install --with-deps chromium
-```
-
-The pi package installs globally to `~/.pi/agent/git/`. Agents are bundled with the extension and discovered automatically.
 
 ## Updating
 
