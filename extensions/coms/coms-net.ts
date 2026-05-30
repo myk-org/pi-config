@@ -260,8 +260,14 @@ export function registerComsNet(pi: ExtensionAPI) {
 
             if (subcommand === "start") {
                 if (state.active) {
-                    try { ctx.ui.notify("📡 coms-net already active", "warning"); } catch {}
-                    return;
+                    // Check if server is actually still running
+                    if (await isServerHealthy(activeProject)) {
+                        try { ctx.ui.notify("📡 coms-net already active", "warning"); } catch {}
+                        return;
+                    }
+                    // Server died — reset state and allow restart
+                    state.active = false;
+                    serverStartedByUs = false;
                 }
                 state.flagValues = new Map();
                 parseFlags(parts.slice(1), state.flagValues);
@@ -390,7 +396,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "status") {
-                const project = (state.flagValues.get("project") as string) || ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__") || "unknown";
+                const project = activeProject || (state.flagValues.get("project") as string) || ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__") || "unknown";
                 if (!isValidProject(project)) {
                     try { ctx.ui.notify("📡 coms-net: invalid project name", "error"); } catch {}
                     return;
