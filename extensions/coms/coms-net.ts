@@ -87,8 +87,8 @@ async function ensureServerRunning(
     // If port/host explicitly requested, check if running server matches
     if (await isServerHealthy(project)) {
         const sj = readServerJson(project);
-        const wantPort = options?.port;
-        const wantHost = options?.host;
+        const wantPort = options?.port || process.env.PI_COMS_NET_PORT;
+        const wantHost = options?.host || process.env.PI_COMS_NET_HOST;
         const needRestart = (wantPort && sj?.port !== Number(wantPort)) ||
                             (wantHost && sj?.host !== wantHost);
         if (needRestart) {
