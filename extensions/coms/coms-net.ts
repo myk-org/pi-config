@@ -183,13 +183,15 @@ export function registerComsNet(pi: ExtensionAPI) {
     pi.registerCommand("coms-net", {
         description: "Networked agent communication: /coms-net start | stop | status | server-stop",
         getArgumentCompletions: (prefix: string) => {
-            const parts = prefix.split(/\s+/);
-            const lastPart = parts[parts.length - 1] || "";
-            const base = lastPart === "" ? prefix : prefix.slice(0, prefix.length - lastPart.length);
+            const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+            const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
+            const lastPart = atNextToken ? "" : tokens[tokens.length - 1];
+            const completed = atNextToken ? tokens : tokens.slice(0, -1);
+            const base = atNextToken ? prefix : prefix.slice(0, prefix.length - lastPart.length);
             const mk = (items: {v: string; l: string; d: string}[]) =>
                 fuzzy(items.map(i => ({ value: base + i.v, label: i.l, description: i.d })), lastPart);
 
-            if (parts.length <= 1) {
+            if (completed.length === 0) {
                 return mk([
                     { v: "start", l: "start", d: "Start networked agent communication" },
                     { v: "stop", l: "stop", d: "Stop coms-net" },
@@ -197,8 +199,8 @@ export function registerComsNet(pi: ExtensionAPI) {
                     { v: "server-stop", l: "server-stop", d: "Stop the hub server" },
                 ]);
             }
-            if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(parts.filter(p => p.startsWith("--")));
+            if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
+                const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
                     { v: "--name ", l: "--name", d: "Agent name" },
                     { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
@@ -225,7 +227,8 @@ export function registerComsNet(pi: ExtensionAPI) {
                 parseFlags(parts.slice(1), state.flagValues);
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
-                    const proj = ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
+                    const cwd = ctx.cwd || "";
+                    const proj = cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
                     if (!proj) {
                         try { ctx.ui.notify("📡 coms-net: cannot start from /. Run from a project directory.", "error"); } catch {}
                         return;

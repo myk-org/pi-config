@@ -39,13 +39,16 @@ export function registerComs(pi: ExtensionAPI) {
     pi.registerCommand("coms", {
         description: "P2P agent communication: /coms start | stop | status | swarm add/stop/status",
         getArgumentCompletions: (prefix: string) => {
-            const parts = prefix.split(/\s+/);
-            const lastPart = parts[parts.length - 1] || "";
-            const base = lastPart === "" ? prefix : prefix.slice(0, prefix.length - lastPart.length);
+            // Parse: split on whitespace, trailing space means "next token position"
+            const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+            const atNextToken = prefix.endsWith(" ") || tokens.length === 0;
+            const lastPart = atNextToken ? "" : tokens[tokens.length - 1];
+            const completed = atNextToken ? tokens : tokens.slice(0, -1);
+            const base = atNextToken ? prefix : prefix.slice(0, prefix.length - lastPart.length);
             const mk = (items: {v: string; l: string; d: string}[]) =>
                 fuzzy(items.map(i => ({ value: base + i.v, label: i.l, description: i.d })), lastPart);
 
-            if (parts.length <= 1) {
+            if (completed.length === 0) {
                 return mk([
                     { v: "start", l: "start", d: "Start P2P agent communication" },
                     { v: "stop", l: "stop", d: "Stop coms" },
@@ -53,8 +56,8 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "swarm", l: "swarm", d: "Manage peer agent swarm" },
                 ]);
             }
-            if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(parts.filter(p => p.startsWith("--")));
+            if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
+                const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
                     { v: "--name ", l: "--name", d: "Agent name" },
                     { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
@@ -63,7 +66,7 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
                 ].filter(f => !used.has(f.v.trim())));
             }
-            if (parts[0] === "swarm" && parts.length <= 2) {
+            if (completed[0] === "swarm" && completed.length === 1) {
                 return mk([
                     { v: "add", l: "add", d: "Spawn a peer agent" },
                     { v: "stop", l: "stop", d: "Stop swarm peers" },
@@ -71,8 +74,8 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "send", l: "send", d: "Send message to peer(s)" },
                 ]);
             }
-            if (parts[0] === "swarm" && parts[1] === "add" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(parts.filter(p => p.startsWith("--")));
+            if (completed[0] === "swarm" && completed[1] === "add" && (lastPart.startsWith("-") || lastPart === "")) {
+                const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
                     { v: "--name ", l: "--name", d: "Peer name" },
                     { v: "--purpose ", l: "--purpose", d: "Peer purpose" },
@@ -81,13 +84,13 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "--read-only", l: "--read-only", d: "Read-only peer" },
                 ].filter(f => !used.has(f.v.trim())));
             }
-            if (parts[0] === "swarm" && parts[1] === "stop" && (lastPart.startsWith("-") || lastPart === "")) {
+            if (completed[0] === "swarm" && completed[1] === "stop" && (lastPart.startsWith("-") || lastPart === "")) {
                 return mk([
                     { v: "--name ", l: "--name", d: "Peer to stop (omit for all)" },
                 ]);
             }
-            if (parts[0] === "swarm" && parts[1] === "send" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(parts.filter(p => p.startsWith("--")));
+            if (completed[0] === "swarm" && completed[1] === "send" && (lastPart.startsWith("-") || lastPart === "")) {
+                const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
                     { v: "--name ", l: "--name", d: "Send to specific peer" },
                     { v: "--all ", l: "--all", d: "Broadcast to all peers" },
@@ -111,7 +114,8 @@ export function registerComs(pi: ExtensionAPI) {
 
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
-                    const proj = ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
+                    const cwd = ctx.cwd || "";
+                    const proj = cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
                     if (!proj) {
                         try { ctx.ui.notify("📡 coms: cannot start from /. Run from a project directory.", "error"); } catch {}
                         return;
@@ -156,7 +160,8 @@ export function registerComs(pi: ExtensionAPI) {
                     try { ctx.ui.notify("📡 swarm send: Run `/coms start` first.", "error"); } catch {}
                     return;
                 }
-                const handled = await swarmHandler.handleSwarmCommand(subcommand, parts, ctx);
+                const parentProject = state.flagValues.get("project") as string || "";
+                const handled = await swarmHandler.handleSwarmCommand(subcommand, parts, ctx, parentProject);
                 if (!handled) {
                     try { ctx.ui.notify('📡 swarm: use add | stop | status | send', "warning"); } catch {}
                 }

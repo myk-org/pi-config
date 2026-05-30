@@ -222,7 +222,7 @@ function persistSwarm(pi: ExtensionAPI, peerConfigs: PeerConfig[]): void {
 }
 
 export function registerComsSwarm(pi: ExtensionAPI): {
-    handleSwarmCommand: (subcommand: string, parts: string[], ctx: any) => Promise<boolean>;
+    handleSwarmCommand: (subcommand: string, parts: string[], ctx: any, parentProject?: string) => Promise<boolean>;
 } {
     let lastCtx: any = null;
 
@@ -298,7 +298,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
         }
     });
 
-    async function handleSwarmCommand(subcommand: string, parts: string[], ctx: any): Promise<boolean> {
+    async function handleSwarmCommand(subcommand: string, parts: string[], ctx: any, parentProject?: string): Promise<boolean> {
         if (subcommand !== "swarm") return false;
 
         const action = parts[1] || "status";
@@ -313,7 +313,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
             }
 
             // Use cwd with slashes replaced — matches the parent session's coms project
-            const parentProject = ctx.cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
+            const project = parentProject || (ctx.cwd || "").replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
 
             for (const name of args.names) {
                 if (peers.has(name)) {
@@ -321,7 +321,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
                     continue;
                 }
 
-                console.log(`[coms-swarm] spawning peer: ${name}, project: ${parentProject}, cwd: ${ctx.cwd}`);
+                console.log(`[coms-swarm] spawning peer: ${name}, project: ${project}, cwd: ${ctx.cwd}`);
                 try {
                     const peer = await spawnPeer(
                         name,
@@ -330,7 +330,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
                         args.model,
                         args.readOnly,
                         ctx.cwd,
-                        parentProject,
+                        project,
                         log,
                     );
                     peers.set(name, peer);
