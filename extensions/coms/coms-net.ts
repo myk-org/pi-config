@@ -82,6 +82,7 @@ function getServerScriptPath(): string {
 async function ensureServerRunning(
     project: string,
     log: (msg: string) => void,
+    options?: { port?: string; host?: string },
 ): Promise<boolean> {
     if (await isServerHealthy(project)) {
         log("server already running");
@@ -116,7 +117,8 @@ async function ensureServerRunning(
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
-            PI_COMS_NET_PORT: process.env.PI_COMS_NET_PORT || "0",
+            PI_COMS_NET_PORT: options?.port || process.env.PI_COMS_NET_PORT || "0",
+            ...(options?.host ? { PI_COMS_NET_HOST: options.host } : {}),
         },
     });
     child.unref();
@@ -209,6 +211,8 @@ export function registerComsNet(pi: ExtensionAPI) {
                     { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
                     { v: "--server-url ", l: "--server-url", d: "Hub server URL" },
                     { v: "--auth-token ", l: "--auth-token", d: "Bearer token for the hub" },
+                    { v: "--port ", l: "--port", d: "Server port" },
+                    { v: "--host ", l: "--host", d: "Server bind address (e.g. 0.0.0.0)" },
                 ].filter(f => !used.has(f.v.trim())));
             }
             return null;
@@ -251,7 +255,9 @@ export function registerComsNet(pi: ExtensionAPI) {
                 const alreadyRunning = await isServerHealthy(project);
                 if (!alreadyRunning) {
                     try { ctx.ui.notify("📡 Starting coms-net server...", "info"); } catch {}
-                    const started = await ensureServerRunning(project, log);
+                    const port = state.flagValues.get("port") as string | undefined;
+                    const host = state.flagValues.get("host") as string | undefined;
+                    const started = await ensureServerRunning(project, log, { port, host });
                     if (!started) {
                         try { ctx.ui.notify("📡 coms-net: failed to start server. Is Bun installed?", "error"); } catch {}
                         return;
