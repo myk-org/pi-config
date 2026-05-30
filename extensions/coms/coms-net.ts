@@ -402,6 +402,10 @@ export function registerComsNet(pi: ExtensionAPI) {
                     try { ctx.ui.notify("📡 coms-net not active", "info"); } catch {}
                     return;
                 }
+                if (!serverStartedByUs) {
+                    try { ctx.ui.notify("📡 coms-net: you didn't start the server — use /coms-net disconnect instead", "warning"); } catch {}
+                    return;
+                }
                 if (state.capturedSessionShutdown) {
                     try { await state.capturedSessionShutdown(); } catch {}
                 }
