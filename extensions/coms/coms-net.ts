@@ -326,7 +326,10 @@ export function registerComsNet(pi: ExtensionAPI) {
                         log("server url is not loopback, skipping peer check");
                         return;
                     }
-                } catch { return; }
+                } catch {
+                    log("shutdown: invalid local_url in server.json, skipping peer check");
+                    return;
+                }
                 const url = `${sj.local_url}/v1/agents?project=${encodeURIComponent(activeProject)}&include_explicit=true`;
                 const resp = await fetch(url, {
                     headers,
