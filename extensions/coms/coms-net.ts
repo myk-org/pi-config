@@ -329,11 +329,9 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
                 state.active = false;
                 persistState(pi, PERSIST_KEY, state);
-                // Kill server if we started it and no other peers
-                if (serverStartedByUs) {
-                    killServer(activeProject, log);
-                    serverStartedByUs = false;
-                }
+                // User explicitly stopped — kill server unconditionally
+                killServer(activeProject, log);
+                serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "server-stop") {
                 killServer(activeProject, log);
