@@ -199,6 +199,22 @@ export function registerComsNet(pi: ExtensionAPI) {
     }
     let serverStartedByUs = false;
 
+    function persist() {
+        state.extra = { serverStartedByUs, activeProject: getProject() };
+        persistState(pi, PERSIST_KEY, state);
+    }
+
+    // Restore serverStartedByUs after reload
+    pi.on("session_start", (event: any) => {
+        if (event?.reason !== "reload") return;
+        if (state.extra?.serverStartedByUs) {
+            serverStartedByUs = true;
+        }
+        if (state.extra?.activeProject) {
+            activeProject = state.extra.activeProject;
+        }
+    });
+
     const log = (msg: string) => {
         try {
             pi.appendEntry("coms-net-log", { event: "wrapper", ts: new Date().toISOString(), msg });
@@ -342,7 +358,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     await state.capturedSessionStart({}, ctx);
                     state.active = true;
                     serverStartedByUs = true;
-                    persistState(pi, PERSIST_KEY, state);
+                    persist();
                     const sj = readServerJson(project);
                     const serverAddr = (sj?.host && sj?.port ? `http://${sj.host}:${sj.port}` : sj?.public_url || sj?.local_url) || "unknown";
                     try { ctx.ui.notify(`📡 coms-net active — server at ${serverAddr}`, "info"); } catch {}
@@ -386,7 +402,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 try {
                     await state.capturedSessionStart({}, ctx);
                     state.active = true;
-                    persistState(pi, PERSIST_KEY, state);
+                    persist();
                     serverStartedByUs = false;
                     const displayUrl = serverUrl || "local server";
                     try { ctx.ui.notify(`📡 coms-net active — connected to ${displayUrl}`, "info"); } catch {}
@@ -406,7 +422,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     try { await state.capturedSessionShutdown(); } catch {}
                 }
                 state.active = false;
-                persistState(pi, PERSIST_KEY, state);
+                persist();
                 try { ctx.ui.notify("📡 coms-net disconnected", "info"); } catch {}
             } else if (subcommand === "stop") {
                 if (!state.active) {
@@ -421,7 +437,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     try { await state.capturedSessionShutdown(); } catch {}
                 }
                 state.active = false;
-                persistState(pi, PERSIST_KEY, state);
+                persist();
                 // User explicitly stopped — kill server unconditionally
                 killServer(getProject(), log);
                 serverStartedByUs = false;
