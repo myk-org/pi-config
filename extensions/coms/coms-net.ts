@@ -186,7 +186,7 @@ export function registerComsNet(pi: ExtensionAPI) {
         flagValues: new Map(),
         active: false,
     };
-    let activeProject = "default";
+    let activeProject = "";
     let serverStartedByUs = false;
 
     const log = (msg: string) => {
