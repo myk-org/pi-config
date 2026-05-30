@@ -276,9 +276,24 @@ export function registerComsNet(pi: ExtensionAPI) {
                     return;
                 }
 
-                // Auto-start server, or restart if port/host mismatch
+                // If user passed --server-url, skip auto-start — they're connecting to a remote server
+                const serverUrl = state.flagValues.get("server-url") as string | undefined;
                 const port = state.flagValues.get("port") as string | undefined;
                 const host = state.flagValues.get("host") as string | undefined;
+                if (serverUrl) {
+                    // Remote server — don't auto-start, just connect
+                    try {
+                        await state.capturedSessionStart({}, ctx);
+                        state.active = true;
+                        persistState(pi, PERSIST_KEY, state);
+                        try { ctx.ui.notify(`📡 coms-net active — connected to ${serverUrl}`, "info"); } catch {}
+                    } catch (err: any) {
+                        try { ctx.ui.notify(`📡 coms-net start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
+                    }
+                    return;
+                }
+
+                // Auto-start server, or restart if port/host mismatch
                 const alreadyRunning = await isServerHealthy(project);
                 if (alreadyRunning) {
                     // Check if running server matches requested port/host
