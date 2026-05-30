@@ -40,6 +40,8 @@ export function App() {
   const [model, setModel] = useState("");
   const [tokens, setTokens] = useState<TokenUsage | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [queuedCount, setQueuedCount] = useState(0);
+  const [streamingBehavior, setStreamingBehavior] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchType, setSearchType] = useState("all");
   const [scrollKey, setScrollKey] = useState(0);
@@ -117,9 +119,20 @@ export function App() {
           }
 
       switch (ev.type) {
-        case "agent_start": setStreaming(true); break;
+        case "prompt-queued":
+          setQueuedCount(c => c + 1);
+          break;
+        case "streaming-behavior":
+          setStreamingBehavior(ev.behavior || null);
+          break;
+        case "agent_start":
+          setStreaming(true);
+          setQueuedCount(0);
+          break;
         case "agent_end":
           setStreaming(false);
+          setQueuedCount(0);
+          setStreamingBehavior(null);
           thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           lastUserRef.current = "";
@@ -426,6 +439,7 @@ export function App() {
     setModel(s.model || "");
     setTokens(null);
     setStreaming(false);
+    setQueuedCount(0);
     setSearchQuery("");
     setSearchType("all");
     setScrollKey(k => k + 1);
@@ -639,6 +653,12 @@ export function App() {
                 }
               }}
             />
+            {queuedCount > 0 && (
+              <div className="px-3 py-1.5 bg-yellow-500/10 border-t border-yellow-500/20 text-xs text-yellow-500 flex items-center gap-1.5">
+                <span>⏳</span>
+                <span>{queuedCount} prompt{queuedCount > 1 ? "s" : ""} queued — will run after current turn</span>
+              </div>
+            )}
             <InputBar disabled={!session.active} streaming={streaming} onSend={handleSend} onAbort={handleAbort} commands={availableCommands} />
             <InfoBar session={session} model={model} tokens={tokens} send={send} onMessage={onMessage} />
           </>

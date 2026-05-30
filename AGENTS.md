@@ -124,6 +124,7 @@ pi-config/
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   ├── install.py                   # Interactive TUI installer for native deployment (questionary)
 │   └── sync-coms-upstream.sh        # Sync upstream coms files from disler/pi-vs-claude-code
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition

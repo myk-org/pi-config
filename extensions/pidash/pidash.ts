@@ -73,6 +73,7 @@ function getCurrentBranch(cwd: string): string {
 }
 
 let diffPort: number | null = null;
+let isStreaming = false;
 
 // ── Registration ─────────────────────────────────────────────────────
 
@@ -333,6 +334,10 @@ export function registerPidash(
           const parsed = JSON.parse(data.toString());
           if (parsed.type === "prompt" && (parsed.text || parsed.images)) {
             debugLog(`received prompt from browser: ${(parsed.text || "").slice(0, 100)}${parsed.images ? ` [+${parsed.images.length} images]` : ""}`);
+            // Notify browser if prompt is queued during streaming
+            if (isStreaming && ws && connected) {
+              try { ws.send(JSON.stringify({ type: "prompt-queued" })); } catch (e: any) { debugLog(`prompt-queued send error: ${e.message}`); }
+            }
             if (parsed.images && parsed.images.length > 0) {
               // Build content array with text + images
               const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
@@ -586,6 +591,10 @@ export function registerPidash(
 
   forward("agent_start");
   forward("agent_end");
+
+  // Track streaming state for prompt-queued feedback
+  pi.on("agent_start", () => { isStreaming = true; });
+  pi.on("agent_end", () => { isStreaming = false; });
   forward("turn_start");
   forward("turn_end");
   forward("message_start");
@@ -840,8 +849,14 @@ export function registerPidash(
     }
   });
 
-  // Intercept extension commands from browser
+  // Forward streamingBehavior to browser for general awareness
   pi.on("input", async (event, _ctx) => {
+    if ((event as any).streamingBehavior && ws && connected) {
+      try { ws.send(JSON.stringify({ type: "streaming-behavior", behavior: (event as any).streamingBehavior })); }
+      catch (e: any) { debugLog(`streaming-behavior send error: ${e.message}`); }
+    }
+
+    // Intercept extension commands from browser
     if (event.source !== "extension") return;
     if (!event.text.startsWith("/")) return;
 

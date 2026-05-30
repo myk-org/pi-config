@@ -20,6 +20,7 @@ export interface SessionInfo {
 export interface PiEvent {
   type: string;
   message?: any;
+  behavior?: string;
   id?: string;
   method?: string;
   title?: string;
