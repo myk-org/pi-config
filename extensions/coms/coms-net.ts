@@ -32,43 +32,6 @@ const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
 const SERVER_STARTUP_TIMEOUT_MS = 10_000;
 const SERVER_POLL_INTERVAL_MS = 300;
 
-/**
- * Resolve PI_COMS_NET_* env vars — checks process.env first, falls back to shell
- * (shell profiles may set them after Node starts).
- */
-function resolveComsNetEnv(): Record<string, string> {
-    const vars = ["PI_COMS_NET_PORT", "PI_COMS_NET_HOST", "PI_COMS_NET_AUTH_TOKEN"];
-    const result: Record<string, string> = {};
-    const missing: string[] = [];
-
-    for (const name of vars) {
-        if (process.env[name]) {
-            result[name] = process.env[name]!;
-        } else {
-            missing.push(name);
-        }
-    }
-
-    if (missing.length > 0) {
-        try {
-            const cmd = missing.map(n => `echo \${${n}}`).join(";");
-            const out = execSync(`bash -lc '${cmd}'`, { encoding: "utf-8", timeout: 3000 }).trim().split("\n");
-            for (let i = 0; i < missing.length; i++) {
-                const val = (out[i] || "").trim();
-                if (val) result[missing[i]] = val;
-            }
-        } catch {}
-    }
-
-    // Validate port
-    if (result.PI_COMS_NET_PORT && !/^\d+$/.test(result.PI_COMS_NET_PORT)) {
-        delete result.PI_COMS_NET_PORT;
-    }
-    if (!result.PI_COMS_NET_PORT) result.PI_COMS_NET_PORT = "0";
-
-    return result;
-}
-
 function serverJsonPath(project: string): string {
     return path.join(COMS_NET_DIR, "projects", project, "server.json");
 }
@@ -153,7 +116,7 @@ async function ensureServerRunning(
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
-            ...resolveComsNetEnv(),
+            PI_COMS_NET_PORT: process.env.PI_COMS_NET_PORT || "0",
         },
     });
     child.unref();
