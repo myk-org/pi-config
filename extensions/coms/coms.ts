@@ -141,9 +141,18 @@ export function registerComs(pi: ExtensionAPI) {
                     ctx.ui.notify(state.active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
                 } catch {}
             } else if (subcommand === "swarm") {
+                const action = parts[1] || "";
+                if (action === "add" && !state.active) {
+                    try { ctx.ui.notify("📡 swarm add: Run `/coms start` first.", "error"); } catch {}
+                    return;
+                }
+                if (action === "send" && !state.active) {
+                    try { ctx.ui.notify("📡 swarm send: Run `/coms start` first.", "error"); } catch {}
+                    return;
+                }
                 const handled = await swarmHandler.handleSwarmCommand(subcommand, parts, ctx);
                 if (!handled) {
-                    try { ctx.ui.notify('📡 swarm: use add | stop | status', "warning"); } catch {}
+                    try { ctx.ui.notify('📡 swarm: use add | stop | status | send', "warning"); } catch {}
                 }
             } else {
                 try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status | swarm`, "warning"); } catch {}

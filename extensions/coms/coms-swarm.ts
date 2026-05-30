@@ -414,11 +414,14 @@ export function registerComsSwarm(pi: ExtensionAPI): {
                 ? Array.from(peers.keys())
                 : [targetName];
 
-            for (const name of targets) {
-                if (!peers.has(name)) {
-                    try { ctx.ui.notify(`📡 swarm send: peer "${name}" not found`, "warning"); } catch {}
-                    continue;
-                }
+            const validTargets = targets.filter(n => peers.has(n));
+            let pending = validTargets.length;
+            const invalidTargets = targets.filter(n => !peers.has(n));
+            for (const name of invalidTargets) {
+                try { ctx.ui.notify(`📡 swarm send: peer "${name}" not found`, "warning"); } catch {}
+            }
+
+            for (const name of validTargets) {
                 const peer = peers.get(name)!;
 
                 // Fire each peer prompt — response surfaces via sendMessage as it completes
@@ -458,9 +461,7 @@ export function registerComsSwarm(pi: ExtensionAPI): {
                 log(`sent to ${name}: ${message.slice(0, 100)}`);
             }
 
-            const validTargets = targets.filter(n => peers.has(n));
             const targetDesc = targetName ? `"${targetName}"` : `all ${validTargets.length} peer(s)`;
-            let pending = validTargets.length;
             try { ctx.ui.setStatus("2-swarm", ctx.ui.theme.fg("warning", `⏳ swarm: waiting...`)); } catch {}
             return true;
         }
