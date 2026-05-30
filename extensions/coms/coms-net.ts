@@ -356,54 +356,9 @@ export function registerComsNet(pi: ExtensionAPI) {
     });
 
     // Kill server on session shutdown if we started it and no other peers are connected
-    pi.on("session_shutdown", async () => {
+    pi.on("session_shutdown", () => {
         if (!serverStartedByUs) return;
-        try {
-            const sj = readServerJson(activeProject);
-            if (sj?.local_url) {
-                // Resolve auth token (env or server.secret.json)
-                let token = process.env.PI_COMS_NET_AUTH_TOKEN || "";
-                if (!token) {
-                    const secretPath = path.join(COMS_NET_DIR, "projects", activeProject, "server.secret.json");
-                    try {
-                        const sec = JSON.parse(fs.readFileSync(secretPath, "utf-8"));
-                        token = sec?.token || "";
-                    } catch (e: any) { console.debug("[coms-net] read secret token failed:", e?.message || e); }
-                }
-                const headers: Record<string, string> = {};
-                if (token) headers["Authorization"] = `Bearer ${token}`;
-                // Validate local_url is loopback to prevent token leak
-                try {
-                    const parsed = new URL(sj.local_url);
-                    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost" && parsed.hostname !== "::1") {
-                        log("server url is not loopback, skipping peer check");
-                        return;
-                    }
-                } catch {
-                    log("shutdown: invalid local_url in server.json, skipping peer check");
-                    return;
-                }
-                const url = `${sj.local_url}/v1/agents?project=${encodeURIComponent(activeProject)}&include_explicit=true`;
-                const resp = await fetch(url, {
-                    headers,
-                    signal: AbortSignal.timeout(2000),
-                });
-                if (resp.ok) {
-                    const agents = await resp.json();
-                    const otherAgents = (agents?.agents || []).length;
-                    if (otherAgents <= 1) {
-                        killServer(activeProject, log);
-                        log("server killed on shutdown (no other peers)");
-                    } else {
-                        log(`server kept alive (${otherAgents - 1} other peer(s) connected)`);
-                    }
-                    return;
-                }
-            }
-        } catch (e: any) { console.debug("[coms-net] shutdown peer check failed:", e?.message || e); }
-        // If we can't verify peers, keep server alive to avoid killing shared hubs
-        // Can't verify peers — kill it since we started it. Better than zombie servers.
         killServer(activeProject, log);
-        log("server killed on shutdown (couldn't verify peer count, we started it)");
+        log("server killed on shutdown (we started it)");
     });
 }
