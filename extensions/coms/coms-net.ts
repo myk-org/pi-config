@@ -308,14 +308,26 @@ export function registerComsNet(pi: ExtensionAPI) {
         try {
             const sj = readServerJson(activeProject);
             if (sj?.local_url) {
-                const resp = await fetch(`${sj.local_url}/v1/agents`, {
+                // Resolve auth token (env or server.secret.json)
+                let token = process.env.PI_COMS_NET_AUTH_TOKEN || "";
+                if (!token) {
+                    const secretPath = path.join(COMS_NET_DIR, "projects", activeProject, "server.secret.json");
+                    try {
+                        const sec = JSON.parse(fs.readFileSync(secretPath, "utf-8"));
+                        token = sec?.token || "";
+                    } catch {}
+                }
+                const headers: Record<string, string> = {};
+                if (token) headers["Authorization"] = `Bearer ${token}`;
+                const url = `${sj.local_url}/v1/agents?project=${encodeURIComponent(activeProject)}&include_explicit=true`;
+                const resp = await fetch(url, {
+                    headers,
                     signal: AbortSignal.timeout(2000),
                 });
                 if (resp.ok) {
                     const agents = await resp.json();
                     const otherAgents = (agents?.agents || []).length;
                     if (otherAgents <= 1) {
-                        // Only us (or nobody) — safe to kill
                         killServer(activeProject, log);
                         log("server killed on shutdown (no other peers)");
                     } else {
@@ -325,8 +337,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
             }
         } catch {}
-        // If we can't check peers, kill anyway since we started it
-        killServer(activeProject, log);
-        log("server killed on shutdown (couldn't verify peers)");
+        // If we can't verify peers, keep server alive to avoid killing shared hubs
+        log("server kept alive on shutdown (couldn't verify peer count)");
     });
 }
