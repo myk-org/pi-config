@@ -294,11 +294,29 @@ export function registerAsyncAgents(
 
     // Find jiti for TypeScript execution
     let jitiCliPath: string | undefined;
+    // Strategy 1: resolve from pi's own require context
     try {
       const piPkgDir = path.dirname(require.resolve("@earendil-works/pi-coding-agent/package.json"));
       const candidate = path.join(piPkgDir, "node_modules/jiti/lib/jiti-cli.mjs");
       if (fs.existsSync(candidate)) jitiCliPath = candidate;
-    } catch (e: any) { console.debug("[async-agents] jiti path resolution failed:", e?.message || e); }
+    } catch (e: any) {
+      asyncLog(`jiti strategy 1 (require.resolve) failed: ${e?.message || e}`);
+    }
+    // Strategy 2: resolve from the pi binary (works for global npm installs)
+    if (!jitiCliPath) {
+      try {
+        const piScript = process.argv[1];
+        if (piScript) {
+          const realPath = fs.realpathSync(piScript);
+          // pi script -> dist/cli.js, package root is 2 levels up
+          const piPkgDir = path.dirname(path.dirname(realPath));
+          const candidate = path.join(piPkgDir, "node_modules/jiti/lib/jiti-cli.mjs");
+          if (fs.existsSync(candidate)) jitiCliPath = candidate;
+        }
+      } catch (e: any) {
+        asyncLog(`jiti strategy 2 (process.argv) failed: ${e?.message || e}`);
+      }
+    }
 
     const spawnArgs = jitiCliPath
       ? [jitiCliPath, runnerPath, configPath]
