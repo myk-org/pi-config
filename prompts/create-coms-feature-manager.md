@@ -32,6 +32,29 @@ a Feature Manager role — an agent that:
 
 ## Workflow
 
+### Step 0: Check for Existing Prompt
+
+Check if `.pi/prompts/coms-feature-manager.md` already exists in the current project.
+
+If it **does NOT exist** → proceed to Step 1.
+
+If it **exists** → ask the user using AskUserQuestion:
+
+> `.pi/prompts/coms-feature-manager.md` already exists. What do you want to do?
+
+Options:
+
+- **Update** — Re-generate from template, preserving any manual customizations where possible
+- **Overwrite** — Delete and generate fresh from template
+- **Cancel** — Keep the existing prompt, do nothing
+
+If **Update**: read the existing prompt first, then generate the new one, and merge any
+custom sections the user added (sections not in the template) into the new output.
+
+If **Overwrite**: delete the existing file and proceed from Step 1.
+
+If **Cancel**: stop and inform the user.
+
 ### Step 1: Read the Template
 
 Read the template file:
@@ -128,7 +151,27 @@ Tell the user:
 
 > ✅ Created `.pi/prompts/coms-feature-manager.md`
 >
-> To use it: start a coms session, then load this prompt as the manager agent's system prompt.
+> Run `/reload` to register the new `/coms-feature-manager` command.
+>
+> To use it: start a coms session, then run `/coms-feature-manager` to activate the manager role.
 > The manager will coordinate with a coder peer via coms to implement features.
 
 List the key customizations made (test command, verification approach, included/excluded sections).
+
+### Step 7: Validate the Generated Prompt (MANDATORY)
+
+After writing the file, read it back and validate against the current project:
+
+1. **No remaining placeholders** — search for `{{` in the output. If any `{{PLACEHOLDER}}` values
+   remain unfilled, either fill them now or remove the line/section they belong to.
+2. **No stale HTML comments** — search for `<!--`. All comment markers must be removed.
+3. **Test command works** — run the test command from the prompt and verify it executes
+   (it doesn't need to pass, just confirm the command is valid).
+4. **File paths are correct** — verify any hardcoded paths in the prompt exist on disk.
+5. **Sections match project** — if deploy/E2E sections are included, verify deploy commands
+   are real. If removed, verify no dangling references to deployment remain in other sections
+   (e.g., workflow steps, final sign-off).
+6. **Workflow is coherent** — read the Workflow section end-to-end and confirm every step
+   makes sense for this project. No references to features the project doesn't have.
+
+If any issues are found, fix the generated prompt and re-write it. Report what was fixed.
