@@ -6,11 +6,32 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+/** Cached path to notify-send (null = not available, checked once) */
+let notifySendPath: string | null | undefined;
+
 /** Send a desktop notification via notify-send (Linux only, no-op if unavailable) */
 export function terminalNotify(title: string, body: string): void {
+  // Subagent children and coms peers don't own a terminal
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  // Check for notify-send once
+  if (notifySendPath === undefined) {
+    try {
+      notifySendPath = execFileSync("which", ["notify-send"], {
+        timeout: 2000,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim() || null;
+    } catch (e: any) {
+      console.debug("[utils] notify-send lookup failed:", e?.message || e);
+      notifySendPath = null;
+    }
+  }
+  if (!notifySendPath) return;
+
   const project = path.basename(process.cwd());
   try {
-    execFileSync("notify-send", [`${title} (${project})`, body], {
+    execFileSync(notifySendPath, [`${title} (${project})`, body], {
       timeout: 2000,
       stdio: ["pipe", "pipe", "pipe"],
     });

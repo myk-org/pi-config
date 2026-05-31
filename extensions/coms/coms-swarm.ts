@@ -180,13 +180,6 @@ async function spawnPeer(
     if (purpose) comsStartCmd += ` --purpose "${purpose}"`;
     if (parentProject) comsStartCmd += ` --project "${parentProject}"`;
 
-    // Subscribe to events for logging
-    session.subscribe((event: any) => {
-        if (event.type === "agent_end") {
-            log(`peer ${name}: agent_end`);
-        }
-    });
-
     // Always send /coms start to register with coms
     // (even on resume — coms state doesn't persist in the session file)
     await session.prompt(comsStartCmd);
