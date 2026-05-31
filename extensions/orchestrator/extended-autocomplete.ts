@@ -385,7 +385,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler", "cron", "create-skill",
+    "review-local", "release", "review-handler", "cron", "create-skill", "create-coms-feature-manager",
   ]);
 
   // /external-ai-models-refresh command — clears cache and re-fetches

@@ -38,7 +38,7 @@ Check if `.pi/prompts/coms-feature-manager.md` already exists in the current pro
 
 If it **does NOT exist** → proceed to Step 1.
 
-If it **exists** → ask the user using AskUserQuestion:
+If it **exists** → ask the user using ask_user:
 
 > `.pi/prompts/coms-feature-manager.md` already exists. What do you want to do?
 
@@ -84,7 +84,7 @@ Examine the current project to determine:
 
 ### Step 2.5: Ask About Live Verification
 
-Ask the user using AskUserQuestion:
+Ask the user using ask_user:
 
 > Does this project need **live/E2E verification** (deploy to dev, verify in browser/CLI, test unhappy paths)?
 
@@ -102,7 +102,7 @@ If the user chooses **Yes**, ask a follow-up for the deploy details:
 > - Health check command (e.g., `curl -s http://localhost:8080/health`)
 > - Admin user (if applicable)
 
-The user can provide these now or leave empty — the template will have `{{PLACEHOLDER}}` values they can fill manually later.
+If the user doesn't provide values, use `TBD` as the placeholder text (never leave `{{...}}` tokens in the output).
 
 ### Step 3: Fill Placeholders
 
