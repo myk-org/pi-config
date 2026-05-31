@@ -90,7 +90,7 @@ export function registerStatusLine(
       lastCtx.ui.theme; // probe for stale ctx
       updateBranch(null, lastCtx);
     } catch {
-      // ctx is stale or other error — skip this cycle, don't clear interval
+      lastCtx = null; // stale — wait for next session_start to refresh
     }
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
@@ -134,7 +134,7 @@ export function registerStatusLine(
       lastCtx.ui.theme; // probe for stale ctx
       updateTimestamp(lastCtx);
     } catch {
-      // ctx is stale or other error — skip this cycle, don't clear interval
+      lastCtx = null; // stale — wait for next session_start to refresh
     }
   }, 30_000);
   if (timePoller.unref) timePoller.unref();

@@ -1625,8 +1625,8 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			if (currentCtx?.hasUI) {
-				currentCtx.ui.setWidget("coms-net-pool", undefined);
-				currentCtx.ui.setStatus("coms-net", "");
+				try { currentCtx.ui.setWidget("coms-net-pool", undefined); } catch { /* best-effort */ }
+				try { currentCtx.ui.setStatus("coms-net", ""); } catch { /* best-effort */ }
 			}
 		} catch { /* ctx may be stale on shutdown */ }
 	}
