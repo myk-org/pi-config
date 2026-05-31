@@ -6,15 +6,29 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+/** Whether notify-send is available (false = ENOENT, never retry) */
+let notifyAvailable: boolean | undefined;
+
 /** Send a desktop notification via notify-send (Linux only, no-op if unavailable) */
 export function terminalNotify(title: string, body: string): void {
+  // Subagent children and coms peers don't own a terminal
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+  if (notifyAvailable === false) return;
+
   const project = path.basename(process.cwd());
   try {
     execFileSync("notify-send", [`${title} (${project})`, body], {
       timeout: 2000,
       stdio: ["pipe", "pipe", "pipe"],
     });
-  } catch (e: any) { console.debug("[utils] notify-send failed:", e?.message || e); }
+    notifyAvailable = true;
+  } catch (e: any) {
+    if (e?.code === "ENOENT") {
+      notifyAvailable = false;
+    } else {
+      console.debug("[utils] notify-send failed:", e?.message || e);
+    }
+  }
 }
 
 /** Set SSH timeout for git operations — prevents hung connections */
