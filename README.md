@@ -60,6 +60,7 @@ Single extension that provides:
 | `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
 | `/refine-review <url>` | Refine and improve existing PR review comments |
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
+| `/create-coms-feature-manager` | Generate a coms feature-manager prompt customized for the current project |
 | `/query-db <command>` | Query the review comments database |
 | `/external-ai <agent> [--model <model>] [--session-id <id>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
 | `/external-ai-models-refresh` | Refresh cached AI CLI models for autocomplete |

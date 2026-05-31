@@ -82,7 +82,10 @@ pi-config/
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   └── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
 │       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
+├── templates/                       # Immutable prompt templates (source files for /create-* commands)
+│   └── coms-feature-manager-prompt.md  # Coms feature manager template
 ├── prompts/                         # Prompt templates (slash commands)
+│   ├── create-coms-feature-manager.md
 │   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
 │   ├── dream.md
@@ -237,6 +240,23 @@ Known extension commands:
    `extensions/orchestrator/extended-autocomplete.ts` — add an entry to the
    `completions` map and include the command name in `promptTemplateCommands`.
    This gives users Tab-completion for your command's arguments.
+
+### Adding a Source Template
+
+Source templates live in `templates/` and serve as immutable inputs for `/create-*` slash commands.
+The `/create-*` prompt reads the template, analyzes the current project, fills in placeholders,
+and writes a customized version to the project's `.pi/prompts/` directory.
+
+**Naming convention:** `create-X.md` (prompt) → `X-prompt.md` (template)
+
+Example: `prompts/create-coms-feature-manager.md` reads from `templates/coms-feature-manager-prompt.md`
+
+**Rules:**
+
+- ✅ Templates are immutable — never modify them at runtime
+- ✅ Use `{{PLACEHOLDER}}` syntax for values the `/create-*` command fills in
+- ✅ Use `[OPTIONAL]` markers for sections that may not apply to all projects
+- ❌ Templates are NOT slash commands — they have no YAML frontmatter
 
 ### Modifying Slash Command Arguments
 
