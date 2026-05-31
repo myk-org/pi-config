@@ -1586,9 +1586,11 @@ export default function (pi: ExtensionAPI) {
 				pi.appendEntry("coms-log", { event: "shutdown", session_id: identity.session_id });
 			} catch { /* best-effort */ }
 		}
-		if (currentCtx?.hasUI) {
-			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
-		}
+		try {
+			if (currentCtx?.hasUI) {
+				currentCtx.ui.setWidget("coms-pool", undefined);
+			}
+		} catch { /* ctx may be stale on shutdown */ }
 	}
 
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });

@@ -87,9 +87,10 @@ export function registerStatusLine(
   const gitPoller = setInterval(() => {
     if (!lastCtx) return;
     try {
+      lastCtx.ui.theme; // probe for stale ctx
       updateBranch(null, lastCtx);
     } catch {
-      clearInterval(gitPoller);
+      // ctx is stale or other error — skip this cycle, don't clear interval
     }
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
@@ -130,9 +131,10 @@ export function registerStatusLine(
   const timePoller = setInterval(() => {
     if (!lastCtx || !lastActivityTime) return;
     try {
+      lastCtx.ui.theme; // probe for stale ctx
       updateTimestamp(lastCtx);
     } catch {
-      clearInterval(timePoller);
+      // ctx is stale or other error — skip this cycle, don't clear interval
     }
   }, 30_000);
   if (timePoller.unref) timePoller.unref();

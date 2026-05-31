@@ -1623,10 +1623,12 @@ export default function (pi: ExtensionAPI) {
 			} catch { /* best-effort */ }
 		}
 
-		if (currentCtx?.hasUI) {
-			try { currentCtx.ui.setWidget("coms-net-pool", undefined); } catch { /* ignore */ }
-			try { currentCtx.ui.setStatus("coms-net", ""); } catch { /* ignore */ }
-		}
+		try {
+			if (currentCtx?.hasUI) {
+				currentCtx.ui.setWidget("coms-net-pool", undefined);
+				currentCtx.ui.setStatus("coms-net", "");
+			}
+		} catch { /* ctx may be stale on shutdown */ }
 	}
 
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });
