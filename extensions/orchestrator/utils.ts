@@ -16,7 +16,7 @@ export function terminalNotify(title: string, body: string): void {
   if (notifyAvailable === false) return;
 
   const project = path.basename(process.cwd());
-  execFile("notify-send", [`${title} (${project})`, body], {
+  const child = execFile("notify-send", [`${title} (${project})`, body], {
     timeout: 2000,
   }, (err) => {
     if (err) {
@@ -29,6 +29,7 @@ export function terminalNotify(title: string, body: string): void {
       notifyAvailable = true;
     }
   });
+  child.unref();
 }
 
 /** Set SSH timeout for git operations — prevents hung connections */
