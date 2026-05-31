@@ -2,7 +2,7 @@
  * Shared utilities used across orchestrator modules.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -16,19 +16,19 @@ export function terminalNotify(title: string, body: string): void {
   if (notifyAvailable === false) return;
 
   const project = path.basename(process.cwd());
-  try {
-    execFileSync("notify-send", [`${title} (${project})`, body], {
-      timeout: 2000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    notifyAvailable = true;
-  } catch (e: any) {
-    if (e?.code === "ENOENT") {
-      notifyAvailable = false;
+  execFile("notify-send", [`${title} (${project})`, body], {
+    timeout: 2000,
+  }, (err) => {
+    if (err) {
+      if ((err as any).code === "ENOENT") {
+        notifyAvailable = false;
+      } else {
+        console.debug("[utils] notify-send failed:", err.message);
+      }
     } else {
-      console.debug("[utils] notify-send failed:", e?.message || e);
+      notifyAvailable = true;
     }
-  }
+  });
 }
 
 /** Set SSH timeout for git operations — prevents hung connections */
