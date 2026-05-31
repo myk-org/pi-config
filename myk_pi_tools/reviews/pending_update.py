@@ -85,6 +85,10 @@ def backfill_node_ids(
         print_stderr("Warning: Could not fetch review comments for node_id backfill")
         return
 
+    if not isinstance(api_comments, list):
+        print_stderr("Warning: Unexpected API response format for node_id backfill")
+        return
+
     id_to_node: dict[int, str] = {
         int(c["id"]): c["node_id"] for c in api_comments if c.get("id") is not None and c.get("node_id") is not None
     }
