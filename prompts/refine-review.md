@@ -119,21 +119,22 @@ Update the JSON file at `json_path`:
 
 ### Phase 6: Submit Decision
 
-Ask the user what review action to take using AskUserQuestion:
+Ask the user using AskUserQuestion:
+
+> Submit the review with **Request Changes**?
 
 Options:
 
-- **Comment** - Submit as general feedback
-- **Approve** - Approve the PR
-- **Request changes** - Request changes
-- **Don't submit yet** - Keep the review pending
+- **Yes** - Submit with Request Changes
+- **Yes, with summary** - Submit with Request Changes and add a review summary
+- **Don't submit yet** - Keep the review pending (comments are already updated)
 
-If user chooses to submit, optionally ask for a review summary (can be empty).
+If user chooses "Yes, with summary", ask for the summary text.
 
 Update the JSON metadata:
 
-- Set `submit_action` to the chosen action (COMMENT/APPROVE/REQUEST_CHANGES), or omit if keeping pending
-- Set `submit_summary` to the summary text
+- If submitting: set `submit_action` to `REQUEST_CHANGES` and `submit_summary` to the summary text (or empty string)
+- If keeping pending: do not set `submit_action`
 
 ### Phase 7: Execute Updates
 
@@ -158,7 +159,7 @@ If the command fails, display the error. If it reports a 404, inform the user th
 Display:
 
 - Number of comments refined vs kept as original
-- Review action taken (submitted as COMMENT/APPROVE/REQUEST_CHANGES, or kept pending)
+- Review action taken (submitted as Request Changes, or kept pending)
 - PR URL for reference
 
 ---

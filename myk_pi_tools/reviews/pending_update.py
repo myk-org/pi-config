@@ -1,22 +1,28 @@
 """Update pending review comment bodies and optionally submit the review.
 
 This module reads a JSON file produced by pending_fetch (and refined by an AI),
-updates each accepted comment's body via the GitHub API, and optionally submits
-the review with a specified action (COMMENT, APPROVE, REQUEST_CHANGES).
+updates each accepted comment's body via the GitHub GraphQL API, and optionally
+submits the review with a specified action (COMMENT, APPROVE, REQUEST_CHANGES).
 
-Expected JSON structure:
+Comment updates use the GraphQL ``updatePullRequestReviewComment`` mutation with
+the comment's ``node_id``.  This works for pending (unsubmitted) review comments,
+which return 404 when accessed through the REST API.
+
+Expected JSON structure::
+
   {
     "metadata": {
       "owner": "...",
       "repo": "...",
       "pr_number": 123,
       "review_id": 456,
-      "submit_action": "COMMENT",        # optional
+      "submit_action": "REQUEST_CHANGES",        # optional
       "submit_summary": "Summary text"    # optional
     },
     "comments": [
       {
         "id": 789,
+        "node_id": "PRRC_kwDOABC123",
         "path": "src/main.py",
         "line": 42,
         "body": "original comment",
@@ -53,32 +59,47 @@ def check_dependencies() -> None:
         sys.exit(1)
 
 
-def update_comment_body(
-    owner: str,
-    repo: str,
-    comment_id: int,
-    refined_body: str,
-) -> str:
-    """Update a pull request review comment body via the GitHub API.
+# GraphQL mutation template for updating a pending review comment body.
+_UPDATE_COMMENT_MUTATION = """
+mutation($id: ID!, $body: String!) {
+  updatePullRequestReviewComment(input: {
+    pullRequestReviewCommentId: $id,
+    body: $body
+  }) {
+    pullRequestReviewComment { id body databaseId }
+  }
+}
+""".strip()
 
-    Uses stdin (--input -) to pass the body safely, handling multiline content,
-    apostrophes, code blocks, and other special characters.
+
+def update_comment_body(node_id: str | None, refined_body: str) -> str:
+    """Update a pull request review comment body via the GitHub GraphQL API.
+
+    Uses the ``updatePullRequestReviewComment`` mutation with the comment's
+    ``node_id``.  The JSON payload is passed via stdin (``--input -``) so that
+    special characters in the body (quotes, newlines, code blocks) are handled
+    safely by ``json.dumps``.
 
     Args:
-        owner: Repository owner.
-        repo: Repository name.
-        comment_id: The comment ID to update.
+        node_id: The GraphQL node ID of the comment (e.g. ``PRRC_kwDOABC123``).
         refined_body: The new body text.
 
     Returns:
-        "success" on success, "not_found" on 404, or "error" on other failures.
+        "success" on success, "not_found" if the comment no longer exists,
+        or "error" on other failures.
     """
-    endpoint = f"/repos/{owner}/{repo}/pulls/comments/{comment_id}"
-    payload = json.dumps({"body": refined_body})
+    if not node_id:
+        print_stderr("Error: node_id is required")
+        return "error"
+
+    payload = json.dumps({
+        "query": _UPDATE_COMMENT_MUTATION,
+        "variables": {"id": node_id, "body": refined_body},
+    })
 
     try:
         result = subprocess.run(
-            ["gh", "api", "--method", "PATCH", endpoint, "--input", "-"],
+            ["gh", "api", "graphql", "--input", "-"],
             input=payload,
             capture_output=True,
             text=True,
@@ -86,13 +107,28 @@ def update_comment_body(
             encoding="utf-8",
         )
     except subprocess.TimeoutExpired:
-        print_stderr(f"Error: Update comment {comment_id} timed out after 120 seconds")
+        print_stderr(f"Error: Update comment {node_id} timed out after 120 seconds")
         return "error"
 
     if result.returncode != 0:
         stderr = result.stderr or ""
-        print_stderr(f"Error updating comment {comment_id}: {stderr.strip()}")
-        if "404" in stderr or "Not Found" in stderr:
+        print_stderr(f"Error updating comment {node_id}: {stderr.strip()}")
+        if "NOT_FOUND" in stderr or "Could not resolve" in stderr:
+            return "not_found"
+        return "error"
+
+    # GraphQL can return 200 with errors in the response body.
+    try:
+        response = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        print_stderr(f"Warning: Could not parse GraphQL response for {node_id}")
+        return "error"
+
+    if "errors" in response:
+        error_msgs = [e.get("message", "") for e in response["errors"]]
+        combined = "; ".join(error_msgs)
+        print_stderr(f"GraphQL error updating comment {node_id}: {combined}")
+        if any("NOT_FOUND" in m or "Could not resolve" in m for m in error_msgs):
             return "not_found"
         return "error"
 
@@ -205,7 +241,7 @@ def run(json_path: str, *, submit: bool = False) -> int:
     fail_count = 0
 
     for i, comment in enumerate(comments):
-        comment_id = comment.get("id")
+        node_id = comment.get("node_id")
         refined_body = comment.get("refined_body")
         status = comment.get("status", "pending")
         path = comment.get("path", "unknown")
@@ -223,20 +259,14 @@ def run(json_path: str, *, submit: bool = False) -> int:
             print_stderr(f"Skipping comment [{i}] ({path}): refined_body unchanged")
             continue
 
-        if comment_id is None:
+        if not node_id:
             fail_count += 1
-            print_stderr(f"Error: Comment [{i}] ({path}) has no ID")
+            print_stderr(f"Error: Comment [{i}] ({path}) has no node_id")
             continue
 
-        try:
-            comment_id = int(comment_id)
-        except (TypeError, ValueError):
-            print_stderr(f"Warning: Skipping comment [{i}] ({path}): invalid comment ID: {comment_id!r}")
-            fail_count += 1
-            continue
-        print_stderr(f"Updating comment [{i}] ({path}, id={comment_id})...")
+        print_stderr(f"Updating comment [{i}] ({path}, node_id={node_id})...")
 
-        result = update_comment_body(owner, repo, comment_id, refined_body)
+        result = update_comment_body(node_id, refined_body)
         if result == "success":
             success_count += 1
             print_stderr("  Updated successfully")
