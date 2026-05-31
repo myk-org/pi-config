@@ -1,7 +1,3 @@
----
-description: "Coms feature manager — review and direct a coder peer via inter-agent communication"
----
-
 # Feature Manager Prompt — Template
 
 > **Usage:** Copy this template into your project (e.g., `.dev/feature-manager-prompt.md`).
