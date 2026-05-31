@@ -46,7 +46,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from myk_pi_tools.reviews.fetch import print_stderr
+from myk_pi_tools.reviews.fetch import print_stderr, run_gh_api
 
 # Valid submit actions for a review
 VALID_SUBMIT_ACTIONS = {"COMMENT", "APPROVE", "REQUEST_CHANGES"}
@@ -80,33 +80,9 @@ def backfill_node_ids(
     print_stderr(f"Backfilling node_id for {len(needs_backfill)} comment(s) from GitHub API...")
 
     endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
-    try:
-        result = subprocess.run(
-            ["gh", "api", endpoint, "--paginate"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            encoding="utf-8",
-        )
-    except subprocess.TimeoutExpired:
-        print_stderr("Warning: Fetching review comments for node_id backfill timed out")
-        return
-
-    if result.returncode != 0:
-        stderr = result.stderr or ""
-        print_stderr(f"Warning: Failed to fetch review comments for backfill: {stderr.strip()}")
-        return
-
-    try:
-        data = json.loads(f"[{result.stdout.replace('][', ',')}]")
-        api_comments: list[dict[str, Any]] = []
-        for item in data:
-            if isinstance(item, list):
-                api_comments.extend(item)
-            else:
-                api_comments.append(item)
-    except (json.JSONDecodeError, TypeError):
-        print_stderr("Warning: Could not parse review comments API response")
+    api_comments = run_gh_api(endpoint, paginate=True)
+    if api_comments is None:
+        print_stderr("Warning: Could not fetch review comments for node_id backfill")
         return
 
     id_to_node: dict[int, str] = {
