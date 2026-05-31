@@ -145,14 +145,13 @@ mkdir -p .pi/prompts
 
 Write to `.pi/prompts/coms-feature-manager.md`
 
-**MANDATORY:** The output file MUST start with YAML frontmatter (the template does not include it):
+**MANDATORY:** The output file MUST start with these exact 3 lines (the template does not include them):
 
-```yaml
----
-description: "Coms feature manager — review and direct a coder peer via inter-agent communication"
----
-```
+Line 1: `---`
+Line 2: `description: "Coms feature manager — review and direct a coder peer via inter-agent communication"`
+Line 3: `---`
 
+Do NOT include any fence markers or code block syntax — the file must start with literal `---` on line 1.
 This registers it as a `/coms-feature-manager` slash command in pi.
 
 ### Step 6: Report
