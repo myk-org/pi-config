@@ -52,6 +52,87 @@ from myk_pi_tools.reviews.fetch import print_stderr
 VALID_SUBMIT_ACTIONS = {"COMMENT", "APPROVE", "REQUEST_CHANGES"}
 
 
+def backfill_node_ids(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    review_id: int,
+    comments: list[dict[str, Any]],
+) -> None:
+    """Backfill missing node_id values for accepted comments from the GitHub API.
+
+    Checks if any accepted comment with a refined_body is missing its node_id.
+    If so, fetches review comments from the REST API and fills in the gaps.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        pr_number: Pull request number.
+        review_id: Review ID.
+        comments: List of comment dicts (mutated in place).
+    """
+    needs_backfill = [
+        c for c in comments if c.get("status") == "accepted" and c.get("refined_body") and not c.get("node_id")
+    ]
+    if not needs_backfill:
+        return
+
+    print_stderr(f"Backfilling node_id for {len(needs_backfill)} comment(s) from GitHub API...")
+
+    endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
+    try:
+        result = subprocess.run(
+            ["gh", "api", endpoint, "--paginate"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding="utf-8",
+        )
+    except subprocess.TimeoutExpired:
+        print_stderr("Warning: Fetching review comments for node_id backfill timed out")
+        return
+
+    if result.returncode != 0:
+        stderr = result.stderr or ""
+        print_stderr(f"Warning: Failed to fetch review comments for backfill: {stderr.strip()}")
+        return
+
+    try:
+        data = json.loads(f"[{result.stdout.replace('][', ',')}]")
+        api_comments: list[dict[str, Any]] = []
+        for item in data:
+            if isinstance(item, list):
+                api_comments.extend(item)
+            else:
+                api_comments.append(item)
+    except (json.JSONDecodeError, TypeError):
+        print_stderr("Warning: Could not parse review comments API response")
+        return
+
+    id_to_node: dict[int, str] = {
+        int(c["id"]): c["node_id"] for c in api_comments if c.get("id") is not None and c.get("node_id") is not None
+    }
+
+    filled = 0
+    for comment in needs_backfill:
+        comment_id = comment.get("id")
+        if comment_id is None:
+            continue
+        try:
+            cid = int(comment_id)
+        except (TypeError, ValueError):
+            continue
+        if cid in id_to_node:
+            comment["node_id"] = id_to_node[cid]
+            path = comment.get("path", "unknown")
+            print_stderr(f"  Backfilled node_id for comment {comment_id} ({path})")
+            filled += 1
+
+    if filled == 0:
+        print_stderr("Warning: Could not match any comments by ID — node_ids remain empty")
+    print_stderr(f"Backfilled {filled}/{len(needs_backfill)} comment(s)")
+
+
 def check_dependencies() -> None:
     """Check required dependencies are available."""
     if shutil.which("gh") is None:
@@ -230,8 +311,11 @@ def run(json_path: str, *, submit: bool = False) -> int:
 
     print_stderr(f"Processing pending review {review_id} for {owner}/{repo}#{pr_number}")
 
-    # Process comments
+    # Backfill missing node_ids before processing
     comments = data.get("comments", [])
+    backfill_node_ids(owner, repo, pr_number, review_id, comments)
+
+    # Process comments
     if not comments:
         print_stderr("No comments to process")
         return 0
@@ -261,7 +345,7 @@ def run(json_path: str, *, submit: bool = False) -> int:
 
         if not node_id:
             fail_count += 1
-            print_stderr(f"Error: Comment [{i}] ({path}) has no node_id")
+            print_stderr(f"Error: Comment [{i}] ({path}) has no node_id. Re-run 'reviews pending-fetch' to refresh.")
             continue
 
         print_stderr(f"Updating comment [{i}] ({path}, node_id={node_id})...")

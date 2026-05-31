@@ -121,15 +121,14 @@ Update the JSON file at `json_path`:
 
 Ask the user using AskUserQuestion:
 
-> Submit the review with **Request Changes**?
+> Submit the review with **Request Changes**? (yes/no)
 
 Options:
 
 - **Yes** - Submit with Request Changes
-- **Yes, with summary** - Submit with Request Changes and add a review summary
-- **Don't submit yet** - Keep the review pending (comments are already updated)
+- **No** - Keep the review pending (comments are already updated)
 
-If user chooses "Yes, with summary", ask for the summary text.
+If user chooses "Yes", ask a follow-up: "Add a review summary? (leave empty to skip)"
 
 Update the JSON metadata:
 
@@ -144,7 +143,7 @@ If user chose to submit (Phase 6), run with `--submit` flag:
 myk-pi-tools reviews pending-update "<json_path>" --submit
 ```
 
-If user chose "Don't submit yet", run without `--submit`:
+If user chose "No", run without `--submit`:
 
 ```bash
 myk-pi-tools reviews pending-update "<json_path>"
