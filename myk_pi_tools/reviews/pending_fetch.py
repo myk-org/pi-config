@@ -162,6 +162,7 @@ def fetch_pending_review_comments(
     for c in raw_comments:
         comment: dict[str, Any] = {
             "id": c.get("id"),
+            "node_id": c.get("node_id"),
             "path": c.get("path"),
             "line": c.get("line"),
             "side": c.get("side", "RIGHT"),

@@ -119,21 +119,21 @@ Update the JSON file at `json_path`:
 
 ### Phase 6: Submit Decision
 
-Ask the user what review action to take using AskUserQuestion:
+Ask the user using AskUserQuestion:
+
+> Submit the review with **Request Changes**? (yes/no)
 
 Options:
 
-- **Comment** - Submit as general feedback
-- **Approve** - Approve the PR
-- **Request changes** - Request changes
-- **Don't submit yet** - Keep the review pending
+- **Yes** - Submit with Request Changes
+- **No** - Keep the review pending (comments are already updated)
 
-If user chooses to submit, optionally ask for a review summary (can be empty).
+If user chooses "Yes", ask a follow-up: "Add a review summary? (leave empty to skip)"
 
 Update the JSON metadata:
 
-- Set `submit_action` to the chosen action (COMMENT/APPROVE/REQUEST_CHANGES), or omit if keeping pending
-- Set `submit_summary` to the summary text
+- If submitting: set `submit_action` to `REQUEST_CHANGES` and `submit_summary` to the summary text (or empty string)
+- If keeping pending: do not set `submit_action`
 
 ### Phase 7: Execute Updates
 
@@ -143,7 +143,7 @@ If user chose to submit (Phase 6), run with `--submit` flag:
 myk-pi-tools reviews pending-update "<json_path>" --submit
 ```
 
-If user chose "Don't submit yet", run without `--submit`:
+If user chose "No", run without `--submit`:
 
 ```bash
 myk-pi-tools reviews pending-update "<json_path>"
@@ -158,7 +158,7 @@ If the command fails, display the error. If it reports a 404, inform the user th
 Display:
 
 - Number of comments refined vs kept as original
-- Review action taken (submitted as COMMENT/APPROVE/REQUEST_CHANGES, or kept pending)
+- Review action taken (submitted as Request Changes, or kept pending)
 - PR URL for reference
 
 ---
