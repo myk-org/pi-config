@@ -294,6 +294,10 @@ Run tests with coverage.
 
 ### Phase 7: Commit & Push
 
+**NEVER amend commits — always create NEW commits.** Amending + force-push prevents
+automated reviewers (Qodo, CodeRabbit) from detecting changes and re-evaluating findings.
+Each fix cycle MUST be a separate commit so reviewers can see what changed.
+
 **If ALL comments are from auto-approved sources (see Phase 2 auto mode rules):**
 Skip asking the user — commit and push automatically.
 
