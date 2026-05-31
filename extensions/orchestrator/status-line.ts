@@ -87,9 +87,11 @@ export function registerStatusLine(
   const gitPoller = setInterval(() => {
     if (!lastCtx) return;
     try {
+      lastCtx.ui.theme; // probe for stale ctx
       updateBranch(null, lastCtx);
-    } catch {
-      clearInterval(gitPoller);
+    } catch (e: any) {
+      console.debug("[status-line] git poller error, pausing until next session_start:", e?.message || e);
+      lastCtx = null;
     }
   }, 5000);
   if (gitPoller.unref) gitPoller.unref();
@@ -130,9 +132,11 @@ export function registerStatusLine(
   const timePoller = setInterval(() => {
     if (!lastCtx || !lastActivityTime) return;
     try {
+      lastCtx.ui.theme; // probe for stale ctx
       updateTimestamp(lastCtx);
-    } catch {
-      clearInterval(timePoller);
+    } catch (e: any) {
+      console.debug("[status-line] time poller error, pausing until next session_start:", e?.message || e);
+      lastCtx = null;
     }
   }, 30_000);
   if (timePoller.unref) timePoller.unref();
