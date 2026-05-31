@@ -68,6 +68,8 @@ export interface DeferredUpstream {
     flagValues: Map<string, any>;
     /** Whether the upstream extension is active */
     active: boolean;
+    /** Extra persisted state (e.g., serverStartedByUs for coms-net) */
+    extra?: Record<string, any>;
 }
 
 /**
@@ -140,14 +142,17 @@ export function createDeferredProxy(
                                 // Check if coms was active before reload
                                 let wasActive = false;
                                 let savedFlags: Record<string, any> = {};
+                                let savedExtra: Record<string, any> = {};
                                 for (const entry of ctx.sessionManager.getEntries()) {
                                     if (entry.type === "custom" && entry.customType === persistKey) {
                                         wasActive = entry.data?.active === true;
                                         savedFlags = entry.data?.flags || {};
+                                        savedExtra = entry.data?.extra || {};
                                     }
                                 }
                                 if (wasActive) {
                                     state.flagValues = new Map(Object.entries(savedFlags));
+                                    state.extra = savedExtra;
                                     try {
                                         await handler(evt, ctx);
                                         state.active = true;
@@ -183,6 +188,6 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
     try {
         const flags: Record<string, any> = {};
         for (const [k, v] of state.flagValues) flags[k] = v;
-        pi.appendEntry(persistKey, { active: state.active, flags });
-    } catch {}
+        pi.appendEntry(persistKey, { active: state.active, flags, extra: state.extra || {} });
+    } catch (e: any) { console.debug("[coms-shared] persist state failed:", e?.message || e); }
 }

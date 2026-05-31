@@ -230,7 +230,7 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
           "prek — pre-commit wrapper (.pre-commit-config.yaml detected). Install: https://github.com/j178/prek",
         );
       }
-    } catch {}
+    } catch (e: any) { console.debug("[session-validation] tool detection failed:", e?.message || e); }
 
     if (missing.length > 0 || optional.length > 0) {
       const parts: string[] = [];
@@ -262,7 +262,7 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
               currentVersion = pkg.version;
               break;
             }
-          } catch {}
+          } catch (e: any) { console.debug("[session-validation] package.json parse failed:", e?.message || e); }
         }
         searchDir = path.dirname(searchDir);
       }
@@ -275,14 +275,14 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
           let lastVersion: string | null = null;
           try {
             lastVersion = fs.readFileSync(versionFile, "utf-8").trim();
-          } catch {}
+          } catch (e: any) { console.debug("[session-validation] read last version failed:", e?.message || e); }
 
           if (!lastVersion) {
             // First run — just record the version, no notification
             try {
               fs.mkdirSync(path.dirname(versionFile), { recursive: true });
               fs.writeFileSync(versionFile, currentVersion, "utf-8");
-            } catch {}
+            } catch (e: any) { console.debug("[session-validation] write version file failed:", e?.message || e); }
           } else if (lastVersion !== currentVersion && hasCmd("gh")) {
             // Version changed — fetch release notes (5s timeout, no shell)
             const tag = `v${currentVersion}`;
@@ -305,17 +305,17 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
                 );
                 notified = true;
               }
-            } catch {}
+            } catch (e: any) { console.debug("[session-validation] release notes fetch failed:", e?.message || e); }
             // Only update version file after successful notification
             // so failed attempts retry on next session
             if (notified) {
               try {
                 fs.mkdirSync(path.dirname(versionFile), { recursive: true });
                 fs.writeFileSync(versionFile, currentVersion, "utf-8");
-              } catch {}
+              } catch (e: any) { console.debug("[session-validation] write version after notify failed:", e?.message || e); }
             }
           }
       }
-    } catch {}
+    } catch (e: any) { console.debug("[session-validation] upgrade changelog failed:", e?.message || e); }
   });
 }

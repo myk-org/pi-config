@@ -138,7 +138,7 @@ function archiveColdTopics(topicsDir: string, topics: TopicInfo[], now: number):
       if (!hasPinned) {
         try {
           unlinkSync(topic.path);
-        } catch {}
+        } catch (e: any) { console.debug("[memory-tree] archive topic delete failed:", e?.message || e); }
       }
     }
   }
@@ -161,7 +161,7 @@ export function readAllTopicEntries(cwd: string): { text: string; category: Memo
       const topicFile = readTopicFile(join(topicsDir, file));
       all.push(...topicFile.entries);
     }
-  } catch {}
+  } catch (e: any) { console.debug("[memory-tree] read topic entries failed:", e?.message || e); }
   return all;
 }
 
@@ -206,7 +206,7 @@ export function listTopics(cwd: string): TopicInfo[] {
         chars: readFileSync(path, "utf-8").length,
       });
     }
-  } catch {}
+  } catch (e: any) { console.debug("[memory-tree] list topics failed:", e?.message || e); }
 
   return infos.sort((a, b) => b.hotness - a.hotness);
 }

@@ -17,8 +17,6 @@
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
- *   /coms <Tab>                  → start, stop, status + --name, --purpose, --project, --color, --explicit
- *   /coms-net <Tab>              → start, stop, status, server-stop + --name, --purpose, --project, --color, --explicit, --server-url, --auth-token
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -103,7 +101,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
         }));
         prCache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
     prCache.loading = false;
   }
 
@@ -135,7 +133,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
         branchCache.data = items;
         branchCache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] branch fetch failed:", e?.message || e); }
     branchCache.loading = false;
   }
 
@@ -167,11 +165,11 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
               }
             }
           }
-        } catch {}
+        } catch (e: any) { console.debug("[autocomplete] model JSON parse failed:", e?.message || e); }
         cache.data = items;
         cache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] model fetch failed:", e?.message || e); }
     cache.loading = false;
   }
 
@@ -192,7 +190,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
           .map((t) => ({ value: t, label: t, description: "git tag" }));
         tagCache.timestamp = Date.now();
       }
-    } catch {}
+    } catch (e: any) { console.debug("[autocomplete] tag fetch failed:", e?.message || e); }
     tagCache.loading = false;
   }
 
@@ -359,58 +357,12 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
               description: t.description || t.task || "",
             })), lastPart);
           }
-        } catch {}
+        } catch (e: any) { console.debug("[autocomplete] cron task fetch failed:", e?.message || e); }
         return null;
       }
       return null;
     },
-    "coms": (prefix: string) => {
-      const parts = prefix.split(/\s+/);
-      const lastPart = parts[parts.length - 1] || "";
-      if (parts.length <= 1) {
-        return filter([
-          { value: "start ", label: "start", description: "Start P2P agent communication" },
-          { value: "stop", label: "stop", description: "Stop coms (on session end)" },
-          { value: "status", label: "status", description: "Show coms status" },
-        ], lastPart);
-      }
-      if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
-        const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
-        return filter([
-          { value: "--name ", label: "--name", description: "Agent name" },
-          { value: "--purpose ", label: "--purpose", description: "Agent purpose description" },
-          { value: "--project ", label: "--project", description: "Project namespace (default: default)" },
-          { value: "--color ", label: "--color", description: "Hex color #RRGGBB" },
-          { value: "--explicit", label: "--explicit", description: "Hide from auto-discovery" },
-        ].filter((f) => !usedFlags.has(f.value.trim())), lastPart);
-      }
-      return null;
-    },
-    "coms-net": (prefix: string) => {
-      const parts = prefix.split(/\s+/);
-      const lastPart = parts[parts.length - 1] || "";
-      if (parts.length <= 1) {
-        return filter([
-          { value: "start ", label: "start", description: "Start networked agent communication (auto-starts server)" },
-          { value: "stop", label: "stop", description: "Stop coms-net (on session end)" },
-          { value: "status", label: "status", description: "Show coms-net + server status" },
-          { value: "server-stop", label: "server-stop", description: "Stop the coms-net hub server" },
-        ], lastPart);
-      }
-      if (parts[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
-        const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
-        return filter([
-          { value: "--name ", label: "--name", description: "Agent name" },
-          { value: "--purpose ", label: "--purpose", description: "Agent purpose description" },
-          { value: "--project ", label: "--project", description: "Project namespace (default: default)" },
-          { value: "--color ", label: "--color", description: "Hex color #RRGGBB" },
-          { value: "--explicit", label: "--explicit", description: "Hide from auto-discovery" },
-          { value: "--server-url ", label: "--server-url", description: "Hub server URL (overrides auto-discovery)" },
-          { value: "--auth-token ", label: "--auth-token", description: "Bearer token for the hub" },
-        ].filter((f) => !usedFlags.has(f.value.trim())), lastPart);
-      }
-      return null;
-    },
+
   };
 
   // ── Mechanism 1: registerCommand wrapping for extension commands ─
@@ -434,7 +386,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "cron", "create-skill",
-    "coms", "coms-net",
   ]);
 
   // /external-ai-models-refresh command — clears cache and re-fetches

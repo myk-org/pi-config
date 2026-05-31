@@ -84,7 +84,7 @@ export function registerStatus(
           const stateText = dirtyCount > 0 ? `${dirtyCount} changed file${dirtyCount > 1 ? "s" : ""}` : "clean";
           lines.push(`🔀 Git: ${branch} ${stateIcon} ${stateText} (${repoName})`);
         }
-      } catch {}
+      } catch (e: any) { console.debug("[status] git status failed:", e?.message || e); }
 
       // ── Container ──────────────────────────────────────────────────
       if (inContainer) {

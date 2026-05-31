@@ -616,8 +616,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					ctx.ui.notify(message, type);
 				} catch {
-					// ctx may be stale if session was replaced during async init
-					(type === "error" ? console.error : console.log)(`[acpx] ${message}`);
+					// ctx is stale after session resume/reload — silently ignore
 				}
 			};
 

@@ -209,7 +209,7 @@ Known extension commands:
 | `/cron` | `cron.ts` | Schedule recurring tasks |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
 | `/coms` | `coms/coms.ts` | P2P agent communication (start/stop/status) |
-| `/coms-net` | `coms/coms-net.ts` | Networked agent communication (start/stop/status/server-stop) |
+| `/coms-net` | `coms/coms-net.ts` | Networked agent communication (start/connect/disconnect/stop/status) |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ### Adding a Prompt Template

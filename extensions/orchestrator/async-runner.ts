@@ -153,7 +153,7 @@ async function run(config: RunConfig): Promise<void> {
           if (pidashWs?.readyState === 1) {
             pidashWs.send(JSON.stringify({ type: "async_event", id: config.id, event: ev }));
           }
-        } catch {}
+        } catch (e: any) { console.debug("[async-runner] event processing failed:", e?.message || e); }
       }
 
       // Update status periodically (every ~10 lines)
@@ -191,7 +191,7 @@ async function run(config: RunConfig): Promise<void> {
           if (p.type === "text") finalOutput = p.text;
         }
       }
-    } catch {}
+    } catch (e: any) { console.debug("[async-runner] final line parse failed:", e?.message || e); }
   }
 
   // Write final status

@@ -107,9 +107,9 @@ export function registerAsyncAgents(
     const changed = widgetKey !== lastWidgetKey;
     lastWidgetKey = widgetKey;
     if (running.length > 0) {
-      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("warning", `⏳ ${running.length} async agent${running.length > 1 ? "s" : ""}`));
+      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("warning", `⏳ async: ${running.length}`));
     } else if (changed) {
-      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("muted", `⏳ 0 async agents`));
+      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("muted", `💤 async: 0`));
     }
     // Always emit to pidash — browser may have reconnected and needs fresh state
     pi.events.emit("pidash:async-status", {
@@ -165,7 +165,7 @@ export function registerAsyncAgents(
         for (const file of files) {
           processResultFile(path.join(ASYNC_RESULTS_DIR, file));
         }
-      } catch {}
+      } catch (e: any) { console.debug("[async-agents] result file scan failed:", e?.message || e); }
 
       // Remove completed/failed jobs older than 30s
       for (const [id, job] of asyncState.jobs.entries()) {
@@ -235,7 +235,7 @@ export function registerAsyncAgents(
         setTimeout(() => processResultFile(resultPath), 100);
       });
       if (asyncState.watcher.unref) asyncState.watcher.unref();
-    } catch {}
+    } catch (e: any) { console.debug("[async-agents] watcher setup failed:", e?.message || e); }
   }
 
   function spawnAsyncAgent(
@@ -298,7 +298,7 @@ export function registerAsyncAgents(
       const piPkgDir = path.dirname(require.resolve("@earendil-works/pi-coding-agent/package.json"));
       const candidate = path.join(piPkgDir, "node_modules/jiti/lib/jiti-cli.mjs");
       if (fs.existsSync(candidate)) jitiCliPath = candidate;
-    } catch {}
+    } catch (e: any) { console.debug("[async-agents] jiti path resolution failed:", e?.message || e); }
 
     const spawnArgs = jitiCliPath
       ? [jitiCliPath, runnerPath, configPath]
@@ -352,7 +352,7 @@ export function registerAsyncAgents(
           }
         }
       }
-    } catch {}
+    } catch (e: any) { console.debug("[async-agents] orphan cleanup failed:", e?.message || e); }
 
     // Restore jobs from status files in ASYNC_DIR that belong to this session
     try {
@@ -391,13 +391,13 @@ export function registerAsyncAgents(
           asyncLog(`restored job: ${id} state=${job.status}`);
         }
       }
-    } catch {}
+    } catch (e: any) { console.debug("[async-agents] job restore failed:", e?.message || e); }
 
     // Start poller if we have jobs or unprocessed result files
     let hasResultFiles = false;
     try {
       hasResultFiles = fs.existsSync(ASYNC_RESULTS_DIR) && fs.readdirSync(ASYNC_RESULTS_DIR).some(f => f.endsWith(".json"));
-    } catch {}
+    } catch (e: any) { console.debug("[async-agents] result files check failed:", e?.message || e); }
     if (asyncState.jobs.size > 0 || hasResultFiles) {
       ensureAsyncPoller();
     }
@@ -493,6 +493,7 @@ export function registerAsyncAgents(
         // Read existing output and watch for new content
         let filePos = 0;
         let textBuffer = "";
+        let lastLoggedError = "";
 
         function readNewContent() {
           if (closed) return;
@@ -520,7 +521,14 @@ export function registerAsyncAgents(
               cachedLines = undefined;
               tui.requestRender();
             }
-          } catch {}
+          } catch (e: any) {
+            if (e?.code === "ENOENT") return;
+            const msg = e?.message || String(e);
+            if (msg !== lastLoggedError) {
+              lastLoggedError = msg;
+              console.debug("[async-agents] live output read failed:", msg);
+            }
+          }
         }
 
         // Poll for new content every 500ms

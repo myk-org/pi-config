@@ -139,10 +139,14 @@ Returns JSON with:
 > If autoqodo mode is ON:
 >
 > 1. **Qodo comments → auto-approved based on finding type:**
->    - `qodo_bug` → **MUST address.** No skip allowed.
->    - `qodo_rule_violation` → **MUST address.** No skip allowed.
->    - `qodo_requirement_gap` → **Address unless you have a specific, documented reason not to.** If skipping, the reply MUST explain why.
->    - `qodo_finding` (other) → **Address unless you have a good reason.** If skipping, explain why.
+>    - `qodo_bug` → **MUST address.** Fix the code. No skip allowed.
+>    - `qodo_rule_violation` → **MUST address.** Fix the code. No skip allowed.
+>    - `qodo_requirement_gap` → **MUST address.** Either fix the code OR update the issue requirements to document the design decision. No skip allowed.
+>    - `qodo_finding` (other) → **MUST address.** Either fix the code OR update the issue requirements. No skip allowed.
+>
+>    **No finding type is optional. Every finding gets a code fix or an issue update.**
+>    **"Not a realistic issue", "by design", or "not applicable" are NOT valid skip reasons**
+>    **unless the issue has been updated to explicitly document that decision.**
 >
 > Combined behavior:
 >
