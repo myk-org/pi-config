@@ -1,7 +1,7 @@
 /**
  * memory-embeddings.ts — Vector embedding support for memory search
  *
- * Embeds memory entries and search queries using BAAI/bge-small-en-v1.5 via
+ * Embeds memory entries and search queries using Xenova/bge-small-en-v1.5 via
  * @xenova/transformers (in-process ONNX, no Python, no subprocess).
  * Stores embeddings in .pi/memory/embeddings.json.
  *
