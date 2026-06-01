@@ -10,7 +10,6 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./upstream-coms/coms.js";
-import { registerComsSwarm } from "./coms-swarm.js";
 
 function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
     if (!query.trim()) return items.length > 0 ? items : null;
@@ -34,10 +33,8 @@ export function registerComs(pi: ExtensionAPI) {
 
     upstreamComsInit(proxyPi as any);
 
-    const swarmHandler = registerComsSwarm(pi);
-
     pi.registerCommand("coms", {
-        description: "P2P agent communication: /coms start | stop | status | swarm add/stop/status",
+        description: "P2P agent communication: /coms start | stop | status",
         getArgumentCompletions: (prefix: string) => {
             // Parse: split on whitespace, trailing space means "next token position"
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
@@ -53,7 +50,6 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "start", l: "start", d: "Start P2P agent communication" },
                     { v: "stop", l: "stop", d: "Stop coms" },
                     { v: "status", l: "status", d: "Show coms status" },
-                    { v: "swarm", l: "swarm", d: "Manage peer agent swarm" },
                 ]);
             }
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
@@ -64,37 +60,6 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "--project ", l: "--project", d: "Project namespace" },
                     { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
                     { v: "--explicit", l: "--explicit", d: "Hide from auto-discovery" },
-                ].filter(f => !used.has(f.v.trim())));
-            }
-            if (completed[0] === "swarm" && completed.length === 1) {
-                return mk([
-                    { v: "add", l: "add", d: "Spawn a peer agent" },
-                    { v: "stop", l: "stop", d: "Stop swarm peers" },
-                    { v: "status", l: "status", d: "Show swarm peers" },
-                    { v: "send", l: "send", d: "Send message to peer(s)" },
-                ]);
-            }
-            if (completed[0] === "swarm" && completed[1] === "add" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(completed.filter(p => p.startsWith("--")));
-                return mk([
-                    { v: "--name ", l: "--name", d: "Peer name" },
-                    { v: "--purpose ", l: "--purpose", d: "Peer purpose" },
-                    { v: "--system-prompt ", l: "--system-prompt", d: "Peer system prompt" },
-                    { v: "--model ", l: "--model", d: "Peer model" },
-                    { v: "--read-only", l: "--read-only", d: "Read-only peer" },
-                ].filter(f => !used.has(f.v.trim())));
-            }
-            if (completed[0] === "swarm" && completed[1] === "stop" && (lastPart.startsWith("-") || lastPart === "")) {
-                return mk([
-                    { v: "--name ", l: "--name", d: "Peer to stop (omit for all)" },
-                ]);
-            }
-            if (completed[0] === "swarm" && completed[1] === "send" && (lastPart.startsWith("-") || lastPart === "")) {
-                const used = new Set(completed.filter(p => p.startsWith("--")));
-                return mk([
-                    { v: "--name ", l: "--name", d: "Send to specific peer" },
-                    { v: "--all ", l: "--all", d: "Broadcast to all peers" },
-                    { v: "--msg ", l: "--msg", d: "Message to send" },
                 ].filter(f => !used.has(f.v.trim())));
             }
             return null;
@@ -150,23 +115,8 @@ export function registerComs(pi: ExtensionAPI) {
                 try {
                     ctx.ui.notify(state.active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
                 } catch {}
-            } else if (subcommand === "swarm") {
-                const action = parts[1] || "";
-                if (action === "add" && !state.active) {
-                    try { ctx.ui.notify("📡 swarm add: Run `/coms start` first.", "error"); } catch {}
-                    return;
-                }
-                if (action === "send" && !state.active) {
-                    try { ctx.ui.notify("📡 swarm send: Run `/coms start` first.", "error"); } catch {}
-                    return;
-                }
-                const parentProject = state.flagValues.get("project") as string || "";
-                const handled = await swarmHandler.handleSwarmCommand(subcommand, parts, ctx, parentProject);
-                if (!handled) {
-                    try { ctx.ui.notify('📡 swarm: use add | stop | status | send', "warning"); } catch {}
-                }
             } else {
-                try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status | swarm`, "warning"); } catch {}
+                try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status`, "warning"); } catch {}
             }
         },
     });
