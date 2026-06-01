@@ -25,13 +25,16 @@ export function registerRules(
     } catch (e: any) { console.debug("[rules] rebuildAndOrganize on session_start failed:", e?.message || e); }
 
     // Bootstrap vector embeddings — init model + embed missing entries (orchestrator only)
+    // Only init model if there are entries to embed (avoids ~2.7s model load for empty projects)
     if (!isSubagent) {
       try {
-        const { initEmbeddings, embedMissing } = await import("./memory-embeddings.js");
         const { readAllTopicEntries } = await import("./memory-tree.js");
-        await initEmbeddings();
         const entries = readAllTopicEntries(ctx.cwd);
-        if (entries.length > 0) await embedMissing(ctx.cwd, entries);
+        if (entries.length > 0) {
+          const { initEmbeddings, embedMissing } = await import("./memory-embeddings.js");
+          await initEmbeddings();
+          await embedMissing(ctx.cwd, entries);
+        }
       } catch (e: any) { console.debug("[rules] embedding bootstrap failed:", e?.message?.slice(0, 100)); }
     }
   });
