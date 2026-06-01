@@ -9,7 +9,7 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   type ScoredEntry,
@@ -251,15 +251,6 @@ export function buildSituationReport(
   }
 
   reportSections.push(...bodySections);
-
-  // Write synthesized memory summary for auto-injection
-  try {
-    const summaryPath = join(cwd, ".pi", "memory", "memory_summary.md");
-    const summaryContent = bodySections.join("\n\n");
-    if (summaryContent.trim()) {
-      writeFileSync(summaryPath, summaryContent, "utf-8");
-    }
-  } catch { /* non-fatal */ }
 
   return reportSections.join("\n");
 }

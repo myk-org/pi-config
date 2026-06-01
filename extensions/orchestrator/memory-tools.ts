@@ -620,18 +620,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       report += `Review the above memories and take ALL of these actions:\n`;
       report += `1. **Identify contradictions** — if two entries conflict, keep the newer/more specific one. Use memory_edit to invalidate the stale one.\n`;
       report += `2. **Merge duplicates** — if entries say the same thing differently, keep the best version. Use memory_edit to update.\n`;
-      report += `3. **Auto-generate skills** — if you see a multi-step workflow (3+ steps) that recurs across entries:\n`;
-      report += `   - Create the skill file directly: write ~/.agents/skills/<name>/SKILL.md\n`;
-      report += `   - Include: description, trigger conditions, step-by-step instructions, example commands\n`;
-      report += `   - Name it descriptively (e.g., "pidash-deploy", "pr-review-cycle")\n`;
+      report += `3. **Identify skill candidates** — if you see a multi-step workflow (3+ steps) that recurs across entries,\n`;
+      report += `   report it and suggest using /create-skill <name> to capture it.\n`;
       report += `4. **Remove stale** — if entries reference things that no longer exist or apply, use memory_remove.\n`;
-      report += `5. **Write memory summary** — write a synthesized summary to .pi/memory/memory_summary.md that captures:\n`;
-      report += `   - Key user preferences and working style\n`;
-      report += `   - Critical rules and lessons\n`;
-      report += `   - Active patterns and conventions\n`;
-      report += `   - Keep it under 500 words, structured with headers\n`;
-      report += `6. **NEVER touch pinned entries** — they are user-explicit and permanent.\n\n`;
-      report += `*Take ALL actions using memory_edit, memory_remove, write, and bash. Don't just report — fix everything.*`;
+      report += `5. **NEVER touch pinned entries** — they are user-explicit and permanent.\n\n`;
+      report += `*Take actions using memory_edit and memory_remove. Report skill candidates for user to create.*`;
 
       return { content: [{ type: "text", text: report }] };
     },
