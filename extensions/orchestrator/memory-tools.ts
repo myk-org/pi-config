@@ -84,14 +84,12 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       }
 
       // Keyword substring search (existing behavior)
-      const keywordResults = new Set<string>();
       const keywordMatches = searchEntries
         .filter((entry) => {
           if (params.category && entry.category !== params.category) return false;
           return entry.text.toLowerCase().includes(queryLower) ||
             entry.category.includes(queryLower);
         });
-      for (const m of keywordMatches) keywordResults.add(m.text);
 
       // Vector similarity search (additive — merges with keyword results)
       const vectorMatches = vectorSearch(
@@ -135,7 +133,15 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
             similarity: entry.similarity,
           };
         })
-        .slice(0, 30); // Allow room for both vector and keyword results
+        // Sort: pinned first, then by combined rank (similarity + stability score)
+        .sort((a, b) => {
+          if (a.pinned && !b.pinned) return -1;
+          if (!a.pinned && b.pinned) return 1;
+          const aRank = (a.similarity ?? 0) * 100 + (a.score ?? 0);
+          const bRank = (b.similarity ?? 0) * 100 + (b.score ?? 0);
+          return bRank - aRank;
+        })
+        .slice(0, 30);
 
       if (results.length === 0) {
         return {
