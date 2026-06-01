@@ -430,11 +430,11 @@ def run(pr_number: int | None = None) -> None:
                     timeout=5,
                 )
                 if port_result.returncode != 0 or not port_result.stdout.strip():
-                    print(f"\nHTML report saved: {html_path}")
+                    print(f"\nHTML report saved: {html_path} — open in browser to view")
                     return
                 port = port_result.stdout.strip()
                 if not port.isdigit():
-                    print(f"\nHTML report saved: {html_path}")
+                    print(f"\nHTML report saved: {html_path} — open in browser to view")
                     return
                 subprocess.Popen(
                     ["uv", "run", "python3", str(httpd), "--port", port, "--dir", str(html_path.parent)],
@@ -444,12 +444,12 @@ def run(pr_number: int | None = None) -> None:
                 )
                 print(f"\nHTML report: http://localhost:{port}/{html_path.name}")
             except Exception as e:
-                print(f"\nHTML report saved: {html_path}")
+                print(f"\nHTML report saved: {html_path} — open in browser to view")
                 log(f"Warning: Could not start HTTP server: {e}")
         else:
-            print(f"\nHTML report saved: {html_path}")
+            print(f"\nHTML report saved: {html_path} — open in browser to view")
     else:
-        print(f"\nHTML report saved: {html_path}")
+        print(f"\nHTML report saved: {html_path} — open in browser to view")
 
 
 if __name__ == "__main__":
