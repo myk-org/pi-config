@@ -236,6 +236,21 @@ Agent system prompt here.
 
 Use `agentScope: "both"` in the subagent tool to include project agents.
 
+### Image Generation
+
+The `generate_image` tool creates images from structured descriptions via Gemini API.
+
+**Required environment variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `PI_IMAGE_MODEL` | Gemini model name (e.g., `gemini-3-pro-image`). No default. |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key |
+
+**Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
+
+In containers, images are auto-served via HTTP for browser preview.
+
 ## Docker (Sandboxed Execution)
 
 Run pi inside a disposable container for **filesystem isolation** — the agent can only access your mounted project directory and pi settings. Everything else on the host is protected.
@@ -306,8 +321,11 @@ GITHUB_TOKEN=ghp_xxx
 GITHUB_API_TOKEN=ghp_xxx
 GH_CONFIG_DIR=/home/myakove/.config/gh
 
-# Gemini (optional)
+# Gemini (optional — required for image generation)
 GEMINI_API_KEY=xxx
+
+# Image generation model (required for generate_image tool)
+PI_IMAGE_MODEL=gemini-3-pro-image
 
 # acpx agents (optional)
 # ACPX_AGENTS=cursor
