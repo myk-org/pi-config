@@ -23,6 +23,15 @@ export function registerRules(
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
     } catch (e: any) { console.debug("[rules] rebuildAndOrganize on session_start failed:", e?.message || e); }
+
+    // Bootstrap vector embeddings — init model + embed missing entries
+    try {
+      const { initEmbeddings, embedMissing } = await import("./memory-embeddings.js");
+      const { readAllTopicEntries } = await import("./memory-tree.js");
+      await initEmbeddings();
+      const entries = readAllTopicEntries(ctx.cwd);
+      if (entries.length > 0) await embedMissing(ctx.cwd, entries);
+    } catch (e: any) { console.debug("[rules] embedding bootstrap failed:", e?.message?.slice(0, 100)); }
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -72,7 +81,7 @@ export function registerRules(
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
 
-    // Auto-inject relevant memories based on user's prompt via vector search
+    // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
     let contextMemories = "";
     if (!isSubagent && event.prompt) {
       try {
@@ -80,8 +89,7 @@ export function registerRules(
         const { readAllTopicEntries } = await import("./memory-tree.js");
         const entries = readAllTopicEntries(ctx.cwd);
         if (entries.length > 0) {
-          const results = vectorSearch(ctx.cwd, event.prompt, entries, 5);
-          // Only include high-confidence matches (similarity > 0.65)
+          const results = await vectorSearch(ctx.cwd, event.prompt, entries, 5);
           const relevant = results.filter(r => r.similarity > 0.65);
           if (relevant.length > 0) {
             contextMemories = "\n# Contextually Relevant Memories\n\n" +
@@ -128,7 +136,7 @@ export function registerRules(
 
       // Build a search query from modified file paths
       const searchQuery = `files modified: ${modifiedPaths.join(", ")}`;
-      const results = vectorSearch(ctx.cwd, searchQuery, entries, 3);
+      const results = await vectorSearch(ctx.cwd, searchQuery, entries, 3);
       const relevant = results.filter(r => r.similarity > 0.70);
 
       if (relevant.length > 0) {

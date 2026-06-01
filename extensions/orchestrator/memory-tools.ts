@@ -61,7 +61,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       // Lazy migration: embed any entries missing from the vector store
       if (!embeddingsMigrated) {
         try {
-          embedMissing(cwd, topicEntries);
+          await embedMissing(cwd, topicEntries);
           embeddingsMigrated = true; // Only mark done on success
         } catch {
           console.debug("[memory] embedding migration failed, will retry next search");
@@ -91,7 +91,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         });
 
       // Vector similarity search (additive — merges with keyword results)
-      const vectorMatches = vectorSearch(
+      const vectorMatches = await vectorSearch(
         cwd,
         params.query,
         searchEntries.filter((e) => !params.category || e.category === params.category),
@@ -324,7 +324,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       saveScores(cwd, scores);
 
       // Embed the new entry for vector search
-      embedEntry(cwd, text, category);
+      await embedEntry(cwd, text, category);
 
       const pin = isPinned ? " (pinned)" : "";
       return {
@@ -428,7 +428,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       }
 
       // Get relevant memories via vector + keyword search
-      const vectorMatches = vectorSearch(cwd, params.query, topicEntries, 10);
+      const vectorMatches = await vectorSearch(cwd, params.query, topicEntries, 10);
       const queryLower = params.query.toLowerCase();
       const keywordMatches = topicEntries.filter(e =>
         e.text.toLowerCase().includes(queryLower)
@@ -547,7 +547,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
         // Update embeddings
         removeEmbedding(cwd, text, category);
-        embedEntry(cwd, newText, category);
+        await embedEntry(cwd, newText, category);
 
         return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }] };
       }

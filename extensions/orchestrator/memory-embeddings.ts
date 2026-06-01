@@ -2,25 +2,26 @@
  * memory-embeddings.ts — Vector embedding support for memory search
  *
  * Embeds memory entries and search queries using BAAI/bge-small-en-v1.5 via
- * a Python subprocess (fastembed). Stores embeddings in .pi/memory/embeddings.json.
+ * @xenova/transformers (in-process ONNX, no Python, no subprocess).
+ * Stores embeddings in .pi/memory/embeddings.json.
  *
- * Falls back gracefully when fastembed is unavailable — callers always get a
+ * Falls back gracefully when the model is unavailable — callers always get a
  * result (possibly empty) and never throw.
  */
 
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 
 const EMBEDDING_DIM = 384;
-const EMBED_TIMEOUT_MS = 30_000;
 
-// In-memory embedding cache for queries (avoids re-embedding the same query)
+// Lazy-loaded pipeline — initialized once per process
+let pipelineInstance: any = null;
+let pipelineLoading: Promise<any> | null = null;
+let modelUnavailable = false;
+
+// In-memory embedding cache for queries
 const queryCache = new Map<string, number[]>();
-// Track if fastembed is known unavailable (don't retry every call)
-let fastembedUnavailable = false;
 
 interface EmbeddingStore {
   model: string;
@@ -41,7 +42,7 @@ function loadStore(cwd: string): EmbeddingStore {
       // Corrupted file — start fresh
     }
   }
-  return { model: "BAAI/bge-small-en-v1.5", dim: EMBEDDING_DIM, entries: {} };
+  return { model: "Xenova/bge-small-en-v1.5", dim: EMBEDDING_DIM, entries: {} };
 }
 
 function saveStore(cwd: string, store: EmbeddingStore): void {
@@ -60,55 +61,76 @@ function embeddingKey(text: string, category?: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
-// PEP 723 inline script with dependency metadata — uv handles Python + deps
-const EMBED_SCRIPT = [
-  "# /// script",
-  '# requires-python = ">=3.11"',
-  '# dependencies = ["fastembed", "numpy"]',
-  "# ///",
-  "import sys, json",
-  'from fastembed import TextEmbedding',
-  'm = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")',
-  "json.dump([e.tolist() for e in m.embed(json.loads(sys.stdin.read()))], sys.stdout)",
-].join("\n");
+/**
+ * Get or initialize the embedding pipeline.
+ * Lazy-loaded on first use, cached for process lifetime.
+ */
+async function getPipeline(): Promise<any> {
+  if (modelUnavailable) return null;
+  if (pipelineInstance) return pipelineInstance;
+  if (pipelineLoading) return pipelineLoading;
 
-let embedScriptPath: string | null = null;
+  pipelineLoading = (async () => {
+    try {
+      const { pipeline } = await import("@xenova/transformers");
+      const extractor = await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", {
+        quantized: true,
+      });
+      pipelineInstance = extractor;
+      return extractor;
+    } catch (err: any) {
+      console.debug("[memory-embeddings] model init failed:", err?.message?.slice(0, 100));
+      modelUnavailable = true;
+      return null;
+    } finally {
+      pipelineLoading = null;
+    }
+  })();
 
-function getEmbedScriptPath(): string {
-  if (embedScriptPath) return embedScriptPath;
-  // Write to a unique temp file with restrictive permissions
-  const tmpDir = mkdtempSync(join(tmpdir(), "pi-embed-"));
-  const scriptPath = join(tmpDir, "embed.py");
-  writeFileSync(scriptPath, EMBED_SCRIPT, { mode: 0o600 });
-  embedScriptPath = scriptPath;
-  return scriptPath;
+  return pipelineLoading;
 }
 
 /**
- * Call uv run with PEP 723 script to embed texts.
- * uv auto-resolves Python + dependencies from the script metadata.
- * Returns array of vectors, or null if unavailable.
+ * Embed texts using the in-process ONNX model.
+ * Returns array of vectors, or null if model is unavailable.
  */
-function runEmbedProcess(texts: string[]): number[][] | null {
-  if (fastembedUnavailable || texts.length === 0) return null;
+async function embed(texts: string[]): Promise<number[][] | null> {
+  if (texts.length === 0) return null;
+
+  const extractor = await getPipeline();
+  if (!extractor) return null;
 
   try {
-    const scriptPath = getEmbedScriptPath();
-    const input = JSON.stringify(texts);
-    const result = execFileSync("uv", ["run", scriptPath], {
-      input,
-      encoding: "utf-8",
-      timeout: EMBED_TIMEOUT_MS,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return JSON.parse(result) as number[][];
-  } catch (err: any) {
-    if (err?.message?.includes("ENOENT") || err?.message?.includes("No module named")) {
-      fastembedUnavailable = true;
+    const result = await extractor(texts, { pooling: "cls", normalize: true });
+    const vectors: number[][] = [];
+    for (let i = 0; i < texts.length; i++) {
+      vectors.push(Array.from(result[i].data as Float32Array));
     }
+    return vectors;
+  } catch (err: any) {
     console.debug("[memory-embeddings] embed failed:", err?.message?.slice(0, 100));
     return null;
   }
+}
+
+/**
+ * Embed a single query text with caching.
+ */
+async function embedQuery(query: string): Promise<number[] | null> {
+  const cached = queryCache.get(query);
+  if (cached) return cached;
+
+  const vectors = await embed([query]);
+  if (!vectors || vectors.length === 0) return null;
+
+  queryCache.set(query, vectors[0]);
+  // Cap cache size
+  if (queryCache.size > 200) {
+    const firstKey = queryCache.keys().next().value;
+    if (firstKey) queryCache.delete(firstKey);
+  }
+
+  return vectors[0];
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -127,21 +149,33 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // ── Public API ──────────────────────────────────────────────────────────
 
 /**
- * Embed a single memory entry and store it. Called on memory_add.
- * No-op if fastembed is unavailable.
+ * Initialize the embedding model (call at session start).
+ * Downloads the model on first run (~50MB), loads ONNX (~2.7s).
+ * Subsequent calls are instant (cached in process memory).
  */
-export function embedEntry(cwd: string, text: string, category?: string): void {
+export async function initEmbeddings(): Promise<boolean> {
+  const pipeline = await getPipeline();
+  return pipeline !== null;
+}
+
+/**
+ * Embed a single memory entry and store it. Called on memory_add.
+ * No-op if model is unavailable.
+ */
+export async function embedEntry(cwd: string, text: string, category?: string): Promise<void> {
   try {
-  const store = loadStore(cwd);
-  const hash = embeddingKey(text, category);
-  if (store.entries[hash]) return; // Already embedded
+    const store = loadStore(cwd);
+    const hash = embeddingKey(text, category);
+    if (store.entries[hash]) return; // Already embedded
 
-  const vectors = runEmbedProcess([text]);
-  if (!vectors || vectors.length === 0) return;
+    const vectors = await embed([text]);
+    if (!vectors || vectors.length === 0) return;
 
-  store.entries[hash] = vectors[0];
-  saveStore(cwd, store);
-  } catch (err: any) { console.debug("[memory-embeddings] embedEntry failed:", err?.message?.slice(0, 100)); }
+    store.entries[hash] = vectors[0];
+    saveStore(cwd, store);
+  } catch (err: any) {
+    console.debug("[memory-embeddings] embedEntry failed:", err?.message?.slice(0, 100));
+  }
 }
 
 /**
@@ -149,42 +183,33 @@ export function embedEntry(cwd: string, text: string, category?: string): void {
  */
 export function removeEmbedding(cwd: string, text: string, category?: string): void {
   try {
-  const store = loadStore(cwd);
-  const hash = embeddingKey(text, category);
-  if (store.entries[hash]) {
-    delete store.entries[hash];
-    saveStore(cwd, store);
+    const store = loadStore(cwd);
+    const hash = embeddingKey(text, category);
+    if (store.entries[hash]) {
+      delete store.entries[hash];
+      saveStore(cwd, store);
+    }
+  } catch (err: any) {
+    console.debug("[memory-embeddings] removeEmbedding failed:", err?.message?.slice(0, 100));
   }
-  } catch (err: any) { console.debug("[memory-embeddings] removeEmbedding failed:", err?.message?.slice(0, 100)); }
 }
 
 /**
  * Search memory entries by vector similarity.
  * Returns entries sorted by similarity score (highest first).
- * Returns empty array if fastembed is unavailable or no embeddings exist.
+ * Returns empty array if model is unavailable or no embeddings exist.
  */
-export function vectorSearch(
+export async function vectorSearch(
   cwd: string,
   query: string,
   entries: { text: string; category: string; pinned: boolean }[],
   topK: number = 20,
-): { text: string; category: string; pinned: boolean; similarity: number }[] {
+): Promise<{ text: string; category: string; pinned: boolean; similarity: number }[]> {
   const store = loadStore(cwd);
   if (Object.keys(store.entries).length === 0) return [];
 
-  // Get query embedding (cached)
-  let queryVec = queryCache.get(query);
-  if (!queryVec) {
-    const vectors = runEmbedProcess([query]);
-    if (!vectors || vectors.length === 0) return [];
-    queryVec = vectors[0];
-    queryCache.set(query, queryVec);
-    // Cap cache size
-    if (queryCache.size > 100) {
-      const firstKey = queryCache.keys().next().value;
-      if (firstKey) queryCache.delete(firstKey);
-    }
-  }
+  const queryVec = await embedQuery(query);
+  if (!queryVec) return [];
 
   // Score all entries that have embeddings
   const scored: { text: string; category: string; pinned: boolean; similarity: number }[] = [];
@@ -205,17 +230,17 @@ export function vectorSearch(
  * Used for initial migration when vector search is first enabled.
  * Returns count of newly embedded entries.
  */
-export function embedMissing(
+export async function embedMissing(
   cwd: string,
   entries: { text: string; category: string }[],
-): number {
+): Promise<number> {
   const store = loadStore(cwd);
   const missing = entries.filter(e => !store.entries[embeddingKey(e.text, e.category)]);
   if (missing.length === 0) return 0;
 
   // Batch embed all missing entries
   const texts = missing.map(e => e.text);
-  const vectors = runEmbedProcess(texts);
+  const vectors = await embed(texts);
   if (!vectors || vectors.length !== texts.length) return 0;
 
   let stored = 0;
@@ -231,12 +256,10 @@ export function embedMissing(
 }
 
 /**
- * Check if vector search is available (fastembed installed).
+ * Check if vector search is available (model can load).
  */
-export function isVectorSearchAvailable(): boolean {
-  if (fastembedUnavailable) return false;
-  // Try a trivial embed to check
-  const result = runEmbedProcess(["test"]);
-  if (!result) return false;
-  return true;
+export async function isVectorSearchAvailable(): Promise<boolean> {
+  if (modelUnavailable) return false;
+  const pipeline = await getPipeline();
+  return pipeline !== null;
 }
