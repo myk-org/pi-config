@@ -554,7 +554,7 @@ export function registerSubagentTool(
       const discovery = discoverAgents(ctx.cwd, scope);
       const agents = discovery.agents;
       const confirm = params.confirmProjectAgents ?? true;
-      const parentModelId = ctx.model?.id;
+      const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
