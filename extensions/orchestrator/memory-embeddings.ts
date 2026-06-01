@@ -80,7 +80,7 @@ async function getPipeline(): Promise<any> {
       return extractor;
     } catch (err: any) {
       console.debug("[memory-embeddings] model init failed:", err?.message?.slice(0, 100));
-      modelUnavailable = true;
+      // Don't permanently disable — allow retry on next call
       return null;
     } finally {
       pipelineLoading = null;

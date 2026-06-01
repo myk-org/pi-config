@@ -24,14 +24,16 @@ export function registerRules(
       rebuildDone = true;
     } catch (e: any) { console.debug("[rules] rebuildAndOrganize on session_start failed:", e?.message || e); }
 
-    // Bootstrap vector embeddings — init model + embed missing entries
-    try {
-      const { initEmbeddings, embedMissing } = await import("./memory-embeddings.js");
-      const { readAllTopicEntries } = await import("./memory-tree.js");
-      await initEmbeddings();
-      const entries = readAllTopicEntries(ctx.cwd);
-      if (entries.length > 0) await embedMissing(ctx.cwd, entries);
-    } catch (e: any) { console.debug("[rules] embedding bootstrap failed:", e?.message?.slice(0, 100)); }
+    // Bootstrap vector embeddings — init model + embed missing entries (orchestrator only)
+    if (!isSubagent) {
+      try {
+        const { initEmbeddings, embedMissing } = await import("./memory-embeddings.js");
+        const { readAllTopicEntries } = await import("./memory-tree.js");
+        await initEmbeddings();
+        const entries = readAllTopicEntries(ctx.cwd);
+        if (entries.length > 0) await embedMissing(ctx.cwd, entries);
+      } catch (e: any) { console.debug("[rules] embedding bootstrap failed:", e?.message?.slice(0, 100)); }
+    }
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
