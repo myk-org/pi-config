@@ -105,9 +105,13 @@ function getHttpdPath(): string {
     return path.resolve(thisDir, "..", "..", "scripts", "httpd.py");
 }
 
-function serveImage(imagePath: string): { url: string } | null {
+function serveImage(imagePath: string): { url: string; port: string; dir: string } | null {
     // Only serve via HTTP in containers (where user can't access local files)
-    if (!process.env.PI_CONTAINER) return null;
+    // Use filesystem checks matching orchestrator's isRunningInContainer()
+    const inContainer = fs.existsSync("/.dockerenv") ||
+        fs.existsSync("/run/.containerenv") ||
+        (() => { try { return fs.readFileSync("/proc/1/cgroup", "utf-8").includes("docker") || fs.readFileSync("/proc/1/cgroup", "utf-8").includes("containerd"); } catch { return false; } })();
+    if (!inContainer) return null;
 
     const httpd = getHttpdPath();
     if (!fs.existsSync(httpd)) return null;
@@ -121,16 +125,18 @@ function serveImage(imagePath: string): { url: string } | null {
 
         const dir = path.dirname(imagePath);
         const filename = path.basename(imagePath);
-        const logFile = path.join("/tmp/pi-work", `httpd-${port}.log`);
+        const logFile = path.join(dir, `httpd-${port}.log`);
 
-        // Launch server in background
+        // Launch server in background — close FDs after spawn
+        const logFd = fs.openSync(logFile, "a");
         const child = spawn("uv", ["run", "python3", httpd, "--port", port, "--dir", dir], {
             detached: true,
-            stdio: ["ignore", fs.openSync(logFile, "a"), fs.openSync(logFile, "a")],
+            stdio: ["ignore", logFd, logFd],
         });
         child.unref();
+        fs.closeSync(logFd);
 
-        return { url: `http://localhost:${port}/${filename}` };
+        return { url: `http://localhost:${port}/${filename}`, port, dir };
     } catch {
         return null;
     }
@@ -282,9 +288,21 @@ export function createImageGenTool(): ToolDefinition {
                 const ext = getExtensionForMime(image.mimeType);
                 const filename = `pi-image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
                 const filepath = path.join(tempDir, filename);
-                const buffer = Buffer.from(image.data, "base64");
-                fs.writeFileSync(filepath, buffer);
-                savedPaths.push(filepath);
+                try {
+                    const buffer = Buffer.from(image.data, "base64");
+                    if (buffer.length === 0) continue; // Skip empty/malformed data
+                    fs.writeFileSync(filepath, buffer);
+                    savedPaths.push(filepath);
+                } catch (err: any) {
+                    // Skip corrupted image data — log but don't crash
+                    console.debug(`[image-gen] Failed to decode/save image: ${err?.message?.slice(0, 100)}`);
+                }
+            }
+
+            // Start a single preview server for all images (container only)
+            let previewServer: { url: string; port: string; dir: string } | null = null;
+            if (savedPaths.length > 0) {
+                previewServer = serveImage(savedPaths[0]);
             }
 
             const lines = [
@@ -292,12 +310,10 @@ export function createImageGenTool(): ToolDefinition {
                 `Generated ${savedPaths.length} image(s):`,
             ];
             for (const p of savedPaths) {
-                const served = serveImage(p);
-                if (served) {
-                    lines.push(`  ${p}`);
-                    lines.push(`  Preview: ${served.url}`);
-                } else {
-                    lines.push(`  ${p}`);
+                lines.push(`  ${p}`);
+                if (previewServer) {
+                    const filename = path.basename(p);
+                    lines.push(`  Preview: http://localhost:${previewServer.port}/${filename}`);
                 }
             }
             if (responseText.trim()) {
