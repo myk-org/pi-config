@@ -103,15 +103,17 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       // Add vector results first (sorted by similarity)
       for (const vm of vectorMatches) {
-        if (!seen.has(vm.text)) {
-          seen.add(vm.text);
+        const dedupKey = `${vm.category}:${vm.text}`;
+        if (!seen.has(dedupKey)) {
+          seen.add(dedupKey);
           merged.push(vm);
         }
       }
       // Add keyword-only results (not already in vector results)
       for (const km of keywordMatches) {
-        if (!seen.has(km.text)) {
-          seen.add(km.text);
+        const dedupKey = `${km.category}:${km.text}`;
+        if (!seen.has(dedupKey)) {
+          seen.add(dedupKey);
           merged.push({ text: km.text, category: km.category, pinned: km.pinned });
         }
       }
@@ -438,10 +440,12 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       const seen = new Set<string>();
       const relevant: { text: string; category: string; similarity?: number }[] = [];
       for (const vm of vectorMatches) {
-        if (!seen.has(vm.text)) { seen.add(vm.text); relevant.push(vm); }
+        const dedupKey = `${vm.category}:${vm.text}`;
+        if (!seen.has(dedupKey)) { seen.add(dedupKey); relevant.push(vm); }
       }
       for (const km of keywordMatches) {
-        if (!seen.has(km.text)) { seen.add(km.text); relevant.push({ text: km.text, category: km.category }); }
+        const dedupKey = `${km.category}:${km.text}`;
+        if (!seen.has(dedupKey)) { seen.add(dedupKey); relevant.push({ text: km.text, category: km.category }); }
       }
 
       if (relevant.length === 0) {

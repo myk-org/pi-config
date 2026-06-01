@@ -9,7 +9,7 @@
  * result (possibly empty) and never throw.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -49,7 +49,10 @@ function saveStore(cwd: string, store: EmbeddingStore): void {
   try {
     const dir = join(cwd, ".pi", "memory");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(getStorePath(cwd), JSON.stringify(store), "utf-8");
+    const target = getStorePath(cwd);
+    const tmp = target + ".tmp";
+    writeFileSync(tmp, JSON.stringify(store), "utf-8");
+    renameSync(tmp, target);
   } catch (err: any) {
     console.debug("[memory-embeddings] save failed:", err?.message?.slice(0, 100));
   }
@@ -127,7 +130,7 @@ async function embedQuery(query: string): Promise<number[] | null> {
   // Cap cache size
   if (queryCache.size > 200) {
     const firstKey = queryCache.keys().next().value;
-    if (firstKey) queryCache.delete(firstKey);
+    if (firstKey !== undefined) queryCache.delete(firstKey);
   }
 
   return vectors[0];
