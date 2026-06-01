@@ -45,7 +45,9 @@ export function registerDreaming(
     const sessionArg = lastSessionFile ? `\nSession file: ${lastSessionFile}` : "";
     const { id } = spawnAsyncAgent(
       "worker",
-      `Memory dreaming — analyze session and maintain topic files.${sessionArg}\nTopics directory: ${topicsDir}\n\n` +
+      `Memory dreaming — analyze session and maintain topic files.\n` +
+      `Session file: ${lastSessionFile || "none"}\n` +
+      `Topics directory: ${topicsDir}\n\n` +
       `Topic files are the source of truth for project memory. Each file holds entries for one category.\n\n` +
       `Steps:\n` +
       `1. Read all existing topic files in ${topicsDir}/ (lessons.md, preferences.md, patterns.md, decisions.md, completions.md, mistakes.md).\n` +
@@ -58,17 +60,26 @@ export function registerDreaming(
       `   - Patterns or conventions → [pattern] → patterns.md\n` +
       `   - Architectural/design decisions → [decision] → decisions.md\n` +
       `   Do NOT add duplicates of existing entries.\n` +
-      `3. Reorganize each topic file:\n` +
+      `3. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
+      `   If it does, read the timestamp — only process sessions newer than that.\n` +
+      `   Session directory: find .jsonl files under the pi sessions directory.\n` +
+      `   For each unprocessed session, extract durable knowledge (same categories as step 2).\n` +
+      `   Limit: process at most 5 sessions per dream cycle to avoid overload.\n` +
+      `4. Reorganize each topic file:\n` +
       `   - Remove duplicate or near-duplicate entries\n` +
       `   - Remove stale/useless entries\n` +
       `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
       `   - NEVER remove or modify entries marked with *(pinned)*\n` +
-      `4. Write each updated topic file with this format:\n` +
+      `5. Write each updated topic file with this format:\n` +
       `   # TopicName\n` +
       `   \n` +
       `   - [category] summary *(pinned)*    (if pinned)\n` +
       `   - [category] summary               (if not pinned)\n` +
-      `5. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
+      `6. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
+      `   create a skill file at ~/.agents/skills/<name>/SKILL.md with the steps.\n` +
+      `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
+      `7. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
+      `8. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
       cwd,
       agents,
       { fireAndForget: true, name: "Dream" },

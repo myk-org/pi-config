@@ -57,6 +57,7 @@ pi-config/
 │   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
 │   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
+│   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
 │   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
@@ -300,12 +301,26 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Topics have hotness scores (reinforcement frequency)
 - Cold topics archived automatically (no reinforcement for 2× half-life)
 
+**Layer 4 — Vector Embeddings** (`memory-embeddings.ts`):
+
+- Model: `Xenova/bge-small-en-v1.5` (384 dims, runs locally via @xenova/transformers ONNX)
+- Storage: `.pi/memory/embeddings.json`
+- Embed on write: `memory_add` embeds each entry immediately
+- Semantic search: `memory_search` embeds query, cosine similarity against stored vectors
+- Hybrid results: union of vector + keyword matches, deduplicated
+- Fallback: keyword-only search when @xenova/transformers is unavailable
+- Migration: first `memory_search` call embeds all existing entries missing from store
+- No API keys needed — runs entirely locally
+
 **Memory Tools** (`memory-tools.ts`):
 
-- `memory_search`: keyword search across all topic entries
+- `memory_search`: hybrid keyword + vector search across all topic entries
 - `memory_reinforce`: bump evidence count to prevent decay
 - `memory_add`: LLM-initiated memory writes (pinned or learned)
 - `memory_remove`: LLM-initiated entry removal
+- `memory_edit`: update content in-place or invalidate/supersede entries
+- `memory_reflect`: synthesize a coherent answer from recalled memories
+- `memory_consolidate`: analyze all memories, identify contradictions, merge duplicates, suggest skills
 - `memory_topics`: list topic files with hotness scores
 
 **Session Search** (`session-search.ts`):

@@ -76,6 +76,7 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli
 
+
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 RUN chown -R node:node /home/node
 USER node
