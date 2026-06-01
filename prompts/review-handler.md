@@ -1,6 +1,6 @@
 ---
 description: Process ALL review sources (human, Qodo, CodeRabbit) from current PR
-argument-hint: "[--autorabbit] [--autoqodo]"
+argument-hint: "[--autorabbit] [--autoqodo] [status]"
 ---
 
 ## Raw Arguments
@@ -63,6 +63,7 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 - `/review-handler` - Process reviews from current PR
 - `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
+- `/review-handler status` - Show all review comments from DB for current PR
 - `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
 - `/review-handler --autoqodo` - Auto-fix Qodo comments in a loop
 - `/review-handler --autorabbit --autoqodo` - Auto-fix both CodeRabbit and Qodo comments
@@ -78,15 +79,17 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 Read the **Raw Arguments** section above. Parse as follows:
 
-1. Check if `--autorabbit` appears in the raw arguments
+1. Check if `status` appears in the raw arguments
+   - If YES: run `myk-pi-tools reviews status` and return the output. Skip all other phases.
+2. Check if `--autorabbit` appears in the raw arguments
    - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
    - If NO: autorabbit mode = OFF
-2. Check if `--autoqodo` appears in the (remaining) raw arguments
+3. Check if `--autoqodo` appears in the (remaining) raw arguments
    - If YES: set autoqodo mode = ON, remove `--autoqodo` from the text
    - If NO: autoqodo mode = OFF
-3. The remaining text is the cleaned arguments — pass these through to the CLI
-4. `--autorabbit` and `--autoqodo` are **command-level flags** — NEVER pass them to the CLI
-5. Both flags can be active simultaneously
+4. The remaining text is the cleaned arguments — pass these through to the CLI
+5. `--autorabbit` and `--autoqodo` are **command-level flags** — NEVER pass them to the CLI
+6. Both flags can be active simultaneously
 
 **Example:** Raw arguments = `--autorabbit --autoqodo`
 

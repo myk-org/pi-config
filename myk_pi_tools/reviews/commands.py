@@ -105,6 +105,18 @@ def reviews_pending_update(json_path: str, submit: bool) -> None:  # noqa: FBT00
     sys.exit(exit_code)
 
 
+@reviews.command("status")
+def reviews_status() -> None:
+    """Show review status for current PR.
+
+    Queries the reviews database and displays all comments across all
+    review cycles. Outputs a TUI table and generates an HTML report.
+    """
+    from myk_pi_tools.reviews.status import run
+
+    run()
+
+
 @reviews.command("store")
 @click.argument("json_path")
 def reviews_store(json_path: str) -> None:
