@@ -10,8 +10,9 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const EMBEDDING_DIM = 384;
 const EMBED_TIMEOUT_MS = 30_000;
@@ -59,18 +60,42 @@ function embeddingKey(text: string, category?: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
-const EMBED_SCRIPT = `import sys,json;from fastembed import TextEmbedding;m=TextEmbedding(model_name="BAAI/bge-small-en-v1.5");json.dump([e.tolist() for e in m.embed(json.loads(sys.stdin.read()))],sys.stdout)`;
+// PEP 723 inline script with dependency metadata — uv handles Python + deps
+const EMBED_SCRIPT = [
+  "# /// script",
+  '# requires-python = ">=3.11"',
+  '# dependencies = ["fastembed", "numpy"]',
+  "# ///",
+  "import sys, json",
+  'from fastembed import TextEmbedding',
+  'm = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")',
+  "json.dump([e.tolist() for e in m.embed(json.loads(sys.stdin.read()))], sys.stdout)",
+].join("\n");
+
+let embedScriptPath: string | null = null;
+
+function getEmbedScriptPath(): string {
+  if (embedScriptPath) return embedScriptPath;
+  // Write to a unique temp file with restrictive permissions
+  const tmpDir = mkdtempSync(join(tmpdir(), "pi-embed-"));
+  const scriptPath = join(tmpDir, "embed.py");
+  writeFileSync(scriptPath, EMBED_SCRIPT, { mode: 0o600 });
+  embedScriptPath = scriptPath;
+  return scriptPath;
+}
 
 /**
- * Call the Python subprocess to embed texts.
- * Returns array of vectors, or null if fastembed is unavailable.
+ * Call uv run with PEP 723 script to embed texts.
+ * uv auto-resolves Python + dependencies from the script metadata.
+ * Returns array of vectors, or null if unavailable.
  */
 function runEmbedProcess(texts: string[]): number[][] | null {
   if (fastembedUnavailable || texts.length === 0) return null;
 
   try {
+    const scriptPath = getEmbedScriptPath();
     const input = JSON.stringify(texts);
-    const result = execFileSync("uv", ["run", "--with", "fastembed", "--with", "numpy", "python3", "-c", EMBED_SCRIPT], {
+    const result = execFileSync("uv", ["run", scriptPath], {
       input,
       encoding: "utf-8",
       timeout: EMBED_TIMEOUT_MS,
@@ -78,7 +103,6 @@ function runEmbedProcess(texts: string[]): number[][] | null {
     });
     return JSON.parse(result) as number[][];
   } catch (err: any) {
-    // If uv or fastembed not available, mark as unavailable to avoid retrying
     if (err?.message?.includes("ENOENT") || err?.message?.includes("No module named")) {
       fastembedUnavailable = true;
     }
@@ -183,10 +207,10 @@ export function vectorSearch(
  */
 export function embedMissing(
   cwd: string,
-  entries: { text: string }[],
+  entries: { text: string; category: string }[],
 ): number {
   const store = loadStore(cwd);
-  const missing = entries.filter(e => !store.entries[embeddingKey(e.text, (e as any).category)]);
+  const missing = entries.filter(e => !store.entries[embeddingKey(e.text, e.category)]);
   if (missing.length === 0) return 0;
 
   // Batch embed all missing entries
@@ -195,7 +219,7 @@ export function embedMissing(
   if (!vectors || vectors.length !== texts.length) return 0;
 
   for (let i = 0; i < missing.length; i++) {
-    store.entries[embeddingKey(missing[i].text, (missing[i] as any).category)] = vectors[i];
+    store.entries[embeddingKey(missing[i].text, missing[i].category)] = vectors[i];
   }
   saveStore(cwd, store);
   return texts.length;

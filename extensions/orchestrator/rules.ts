@@ -72,8 +72,29 @@ export function registerRules(
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
 
-    if (!extra && !memories) return;
-    return { systemPrompt: memories + event.systemPrompt + extra };
+    // Auto-inject relevant memories based on user's prompt via vector search
+    let contextMemories = "";
+    if (!isSubagent && event.prompt) {
+      try {
+        const { vectorSearch } = await import("./memory-embeddings.js");
+        const { readAllTopicEntries } = await import("./memory-tree.js");
+        const entries = readAllTopicEntries(ctx.cwd);
+        if (entries.length > 0) {
+          const results = vectorSearch(ctx.cwd, event.prompt, entries, 5);
+          // Only include high-confidence matches (similarity > 0.65)
+          const relevant = results.filter(r => r.similarity > 0.65);
+          if (relevant.length > 0) {
+            contextMemories = "\n# Contextually Relevant Memories\n\n" +
+              "These memories were automatically retrieved based on your current message:\n\n" +
+              relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
+              "\n\n";
+          }
+        }
+      } catch { /* vector search unavailable — non-fatal */ }
+    }
+
+    if (!extra && !memories && !contextMemories) return;
+    return { systemPrompt: memories + contextMemories + event.systemPrompt + extra };
   });
 }
 
