@@ -165,8 +165,9 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         "Source": 10,
         "File": 25,
         "Line": 5,
-        "Summary": 45,
+        "Summary": 40,
         "Status": 12,
+        "Reply": 40,
     }
 
     def pad(text: str, width: int) -> str:
@@ -182,7 +183,8 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         f"{'File':<{col_widths['File']}} "
         f"{'Line':<{col_widths['Line']}} "
         f"{'Summary':<{col_widths['Summary']}} "
-        f"{'Status':<{col_widths['Status']}}"
+        f"{'Status':<{col_widths['Status']}} "
+        f"{'Reply':<{col_widths['Reply']}}"
     )
     separator = "  " + "─" * (sum(col_widths.values()) + len(col_widths) - 1)
 
@@ -196,13 +198,15 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         file_name = (c.get("path") or "").split("/")[-1]
         line_num = str(c.get("line") or "")
 
+        reply = (c.get("reply") or c.get("skip_reason") or "")[: col_widths["Reply"]]
         row = (
             f"  {pad(str(i), col_widths['#'])} "
             f"{pad(c['source'], col_widths['Source'])} "
             f"{pad(file_name, col_widths['File'])} "
             f"{pad(line_num, col_widths['Line'])} "
             f"{pad(summary, col_widths['Summary'])} "
-            f"{pad(status, col_widths['Status'])}"
+            f"{pad(status, col_widths['Status'])} "
+            f"{pad(reply, col_widths['Reply'])}"
         )
         lines.append(row)
 
@@ -232,6 +236,8 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
         "not_addressed": "#f85149",
         "pending": "#8b949e",
     }
+
+    pr_url = f"https://github.com/{pr_info.get('owner', '')}/{pr_info.get('repo', '')}/pull/{pr_info['number']}"
 
     rows_html = ""
     for i, c in enumerate(comments, 1):
@@ -281,11 +287,9 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
     </style>
 </head>
 <body>
-    <h1><a href="https://github.com/
-{pr_info.get("owner", "")}/{pr_info.get("repo", "")}
-/pull/{pr_info["number"]}" target="_blank"
-        style="color: #58a6ff; text-decoration: none;">
-        PR #{pr_info["number"]}</a>
+    <h1><a href="{pr_url}" target="_blank"
+        style="color: #58a6ff; text-decoration: none;"
+        >PR #{pr_info["number"]}</a>
         — {escape(pr_info["title"])}</h1>
     <h2>{escape(pr_info["branch"])}</h2>
     <table>
@@ -403,7 +407,6 @@ def run(pr_number: int | None = None) -> None:
     pr_info["owner"] = owner
     pr_info["repo"] = repo
     comments = query_comments(db_path, pr_num)
-    comments = deduplicate_comments(comments)
 
     # TUI output
     print(format_tui_table(comments, pr_info))
@@ -426,7 +429,13 @@ def run(pr_number: int | None = None) -> None:
                     text=True,
                     timeout=5,
                 )
+                if port_result.returncode != 0 or not port_result.stdout.strip():
+                    print(f"\nHTML report saved: {html_path}")
+                    return
                 port = port_result.stdout.strip()
+                if not port.isdigit():
+                    print(f"\nHTML report saved: {html_path}")
+                    return
                 subprocess.Popen(
                     ["uv", "run", "python3", str(httpd), "--port", port, "--dir", str(html_path.parent)],
                     stdout=subprocess.DEVNULL,
