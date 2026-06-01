@@ -90,7 +90,7 @@ export function registerRules(
               "\n\n";
           }
         }
-      } catch { /* vector search unavailable — non-fatal */ }
+      } catch (e: any) { console.debug("[rules] vector search auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
     if (!extra && !memories && !contextMemories) return;
