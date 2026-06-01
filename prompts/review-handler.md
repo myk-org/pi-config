@@ -1,6 +1,6 @@
 ---
 description: Process ALL review sources (human, Qodo, CodeRabbit) from current PR
-argument-hint: "[--autorabbit] [--autoqodo]"
+argument-hint: "[--autorabbit] [--autoqodo] [status [PR#]]"
 ---
 
 ## Raw Arguments
@@ -63,6 +63,8 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 - `/review-handler` - Process reviews from current PR
 - `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
+- `/review-handler status` - Show all review comments from DB for current PR
+- `/review-handler status 413` - Show review comments for specific PR number
 - `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
 - `/review-handler --autoqodo` - Auto-fix Qodo comments in a loop
 - `/review-handler --autorabbit --autoqodo` - Auto-fix both CodeRabbit and Qodo comments
@@ -78,15 +80,19 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 Read the **Raw Arguments** section above. Parse as follows:
 
-1. Check if `--autorabbit` appears in the raw arguments
+1. Check if `status` appears in the raw arguments
+   - If YES: extract optional PR number after `status` (e.g., `status 413` → PR 413)
+   - Run `myk-pi-tools reviews status` (or `myk-pi-tools reviews status --pr 413` if PR number given)
+   - Return the output to the user. **STOP HERE — skip ALL other phases. Do not proceed.**
+2. Check if `--autorabbit` appears in the raw arguments
    - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
    - If NO: autorabbit mode = OFF
-2. Check if `--autoqodo` appears in the (remaining) raw arguments
+3. Check if `--autoqodo` appears in the (remaining) raw arguments
    - If YES: set autoqodo mode = ON, remove `--autoqodo` from the text
    - If NO: autoqodo mode = OFF
-3. The remaining text is the cleaned arguments — pass these through to the CLI
-4. `--autorabbit` and `--autoqodo` are **command-level flags** — NEVER pass them to the CLI
-5. Both flags can be active simultaneously
+4. The remaining text is the cleaned arguments — pass these through to the CLI
+5. `--autorabbit` and `--autoqodo` are **command-level flags** — NEVER pass them to the CLI
+6. Both flags can be active simultaneously
 
 **Example:** Raw arguments = `--autorabbit --autoqodo`
 
@@ -145,8 +151,29 @@ Returns JSON with:
 >    - `qodo_finding` (other) → **MUST address.** Either fix the code OR update the issue requirements. No skip allowed.
 >
 >    **No finding type is optional. Every finding gets a code fix or an issue update.**
->    **"Not a realistic issue", "by design", or "not applicable" are NOT valid skip reasons**
->    **unless the issue has been updated to explicitly document that decision.**
+>    **"Not a realistic issue", "by design", or "not applicable" are NOT valid skip reasons.**
+>
+>    🚨 **STRICT ENFORCEMENT — EVERY QODO FINDING MUST RESULT IN ONE OF:**
+>    1. **Code fix** — change the code to address the finding. Commit and push.
+>    2. **Issue spec update** — if the finding is about a spec mismatch (code does X, spec says Y),
+>       update the GitHub issue to match the actual design. Use `gh issue edit` to fix the spec.
+>       Then reply to Qodo referencing the updated spec.
+>
+>    **Bare assertions without proof are FORBIDDEN:**
+>    - ❌ "Already addressed" (without citing commit SHA or diff link)
+>    - ❌ "By design" (without citing updated issue spec)
+>    - ❌ "Not applicable" (without explaining why AND updating spec if needed)
+>  
+>    **WITH proof, these are allowed:**
+>    - ✅ "Already addressed in commit abc123 — see diff" (links to specific change)
+>    - ✅ "By design per updated issue #N spec" (issue was actually updated)
+>  
+>    **Posting the same reply multiple times without a NEW code fix or spec update is a HARD VIOLATION.**
+>
+>    **If a Qodo sticky comment keeps re-appearing after your reply:**
+>    - The spec does not match the code — FIX THE SPEC (gh issue edit)
+>    - OR the code does not match the spec — FIX THE CODE
+>    - NEVER post the same reply again. That means you haven't actually addressed it.
 >
 > Combined behavior:
 >

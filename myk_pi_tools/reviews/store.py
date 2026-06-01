@@ -60,10 +60,15 @@ def log(message: str) -> None:
 
 
 def get_project_root() -> Path:
-    """Detect project root using git rev-parse --show-toplevel."""
+    """Detect main project root (resolves through git worktrees).
+
+    Uses git-common-dir to always return the main repo root,
+    not the worktree root. This ensures .pi/data/reviews.db
+    is shared across all worktrees.
+    """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--git-common-dir"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -71,7 +76,8 @@ def get_project_root() -> Path:
         if result.returncode != 0:
             log(f"Error: git rev-parse failed: {result.stderr.strip()}")
             sys.exit(1)
-        return Path(result.stdout.strip())
+        git_common = Path(result.stdout.strip()).resolve()
+        return git_common.parent
     except subprocess.TimeoutExpired:
         log("Error: git command timed out")
         sys.exit(1)
