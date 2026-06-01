@@ -848,13 +848,16 @@ def _extract_sticky_title(body: str) -> str:
 
 def get_thread_key(thread: dict[str, Any]) -> str | None:
     """Generate a unique key for deduplication."""
-    # Qodo sticky findings use path + normalized title as composite key
+    # Qodo sticky findings use type + path + normalized title as composite key
     # Line number excluded — shifts after rebases, causing false mismatches
-    if thread.get("type") in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
+    # Type included — prevents cross-type collisions on same file+title
+    qodo_type = thread.get("type")
+    if qodo_type in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
         path = thread.get("path")
         title = _extract_sticky_title(thread.get("body", ""))
         if path and title:
-            stable = hashlib.sha256(title.encode()).hexdigest()[:12]
+            material = f"{qodo_type}:{title}"
+            stable = hashlib.sha256(material.encode()).hexdigest()[:12]
             return f"qs:{path}:{stable}"
 
     # Outside diff comments use review_id + location as composite key (stable across reordering)
