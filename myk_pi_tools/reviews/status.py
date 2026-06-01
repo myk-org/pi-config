@@ -156,7 +156,7 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
     lines.append("")
 
     if not comments:
-        lines.append("No review comments stored.")
+        lines.append("No review comments found for this PR.")
         return "\n".join(lines)
 
     # Fixed column widths for clean alignment
@@ -166,7 +166,7 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         "File": 25,
         "Line": 5,
         "Summary": 40,
-        "Status": 12,
+        "Status": 15,
         "Reply": 40,
     }
 
@@ -237,7 +237,15 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
         "pending": "#8b949e",
     }
 
-    pr_url = f"https://github.com/{pr_info.get('owner', '')}/{pr_info.get('repo', '')}/pull/{pr_info['number']}"
+    owner = pr_info.get("owner", "")
+    repo = pr_info.get("repo", "")
+    pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_info['number']}" if owner and repo else ""
+    pr_link = (
+        f'<a href="{pr_url}" target="_blank" rel="noopener noreferrer"'
+        f' style="color: #58a6ff; text-decoration: none;">PR #{pr_info["number"]}</a>'
+        if pr_url
+        else f"PR #{pr_info['number']}"
+    )
 
     rows_html = ""
     for i, c in enumerate(comments, 1):
@@ -287,10 +295,7 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
     </style>
 </head>
 <body>
-    <h1><a href="{pr_url}" target="_blank"
-        style="color: #58a6ff; text-decoration: none;"
-        >PR #{pr_info["number"]}</a>
-        — {escape(pr_info["title"])}</h1>
+    <h1>{pr_link} — {escape(pr_info["title"])}</h1>
     <h2>{escape(pr_info["branch"])}</h2>
     <table>
         <thead>
