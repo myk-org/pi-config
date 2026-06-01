@@ -49,8 +49,6 @@ Before doing anything, verify a coder peer is available:
 >
 > **Networked:** Run `/coms-net start` in both sessions
 >
-> **Swarm:** Run `/coms swarm add --name coder` to spawn a peer in this session
->
 > Once the peer is connected, run this command again.
 
 **Do NOT proceed without a peer.** The feature manager pattern requires a coder peer to communicate with.
