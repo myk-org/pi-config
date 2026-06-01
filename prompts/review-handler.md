@@ -151,8 +151,21 @@ Returns JSON with:
 >    - `qodo_finding` (other) → **MUST address.** Either fix the code OR update the issue requirements. No skip allowed.
 >
 >    **No finding type is optional. Every finding gets a code fix or an issue update.**
->    **"Not a realistic issue", "by design", or "not applicable" are NOT valid skip reasons**
->    **unless the issue has been updated to explicitly document that decision.**
+>    **"Not a realistic issue", "by design", or "not applicable" are NOT valid skip reasons.**
+>
+>    🚨 **STRICT ENFORCEMENT — EVERY QODO FINDING MUST RESULT IN ONE OF:**
+>    1. **Code fix** — change the code to address the finding. Commit and push.
+>    2. **Issue spec update** — if the finding is about a spec mismatch (code does X, spec says Y),
+>       update the GitHub issue to match the actual design. Use `gh issue edit` to fix the spec.
+>       Then reply to Qodo referencing the updated spec.
+>
+>    **There is no third option. "Already addressed", "by design", "not applicable" are FORBIDDEN.**
+>    **Posting the same reply multiple times without a code fix or spec update is a HARD VIOLATION.**
+>
+>    **If a Qodo sticky comment keeps re-appearing after your reply:**
+>    - The spec does not match the code — FIX THE SPEC (gh issue edit)
+>    - OR the code does not match the spec — FIX THE CODE
+>    - NEVER post the same reply again. That means you haven't actually addressed it.
 >
 > Combined behavior:
 >
