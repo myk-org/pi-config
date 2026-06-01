@@ -706,6 +706,7 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
     # Preload and index dismissed comments once per run for performance
     dismissed_by_path: dict[str, list[dict[str, Any]]] = {}
     dismissed_by_comment_id: dict[int, list[dict[str, Any]]] = {}
+    dismissed_by_key: dict[str, dict[str, Any]] = {}
     if db:
         try:
             for c in db.get_dismissed_comments(owner, repo):
@@ -723,10 +724,15 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
                         pass
                     else:
                         dismissed_by_comment_id.setdefault(cid, []).append(c)
+                # Index sticky findings by thread key for exact matching
+                key = get_thread_key(c)
+                if key:
+                    dismissed_by_key[key] = c
         except Exception as e:
             print_stderr(f"Warning: Failed to preload dismissed comments: {e}")
             dismissed_by_path = {}
             dismissed_by_comment_id = {}
+            dismissed_by_key = {}
 
     for thread in threads:
         author = thread.get("author")
@@ -751,55 +757,69 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
         }
 
         # Check for previously dismissed similar comment (only if status is pending)
-        if (dismissed_by_path or dismissed_by_comment_id) and enriched.get("status") == "pending":
-            path = (thread.get("path") or "").strip()
-            thread_body = (thread.get("body") or "").strip()
-            if thread_body:
-                try:
-                    # Build candidate list: try path first, then comment_id
-                    candidates: list[dict[str, Any]] = []
-                    if path:
-                        candidates = dismissed_by_path.get(path, [])
-                    if not candidates:
-                        # For pathless items (outside_diff_comments),
-                        # match by comment_id instead
-                        cid = thread.get("comment_id")
-                        if cid is None:
-                            cid = thread.get("issue_comment_id")
-                        if cid is not None:
-                            try:
-                                cid = int(cid)
-                            except (TypeError, ValueError):
-                                cid = None
-                        if cid is not None:
-                            candidates = dismissed_by_comment_id.get(cid, [])
+        if (dismissed_by_path or dismissed_by_comment_id or dismissed_by_key) and enriched.get("status") == "pending":
+            # Fast path: exact match by thread key (works for sticky findings)
+            thread_key = get_thread_key(enriched)
+            if thread_key and thread_key in dismissed_by_key:
+                prev = dismissed_by_key[thread_key]
+                reason = (prev.get("reply") or prev.get("skip_reason") or "").strip()
+                if reason:
+                    original_status = prev.get("status", "skipped")
+                    enriched["status"] = "skipped"
+                    enriched["skip_reason"] = reason
+                    enriched["original_status"] = original_status
+                    enriched["reply"] = f"Auto-skipped ({original_status}): {reason}"
+                    enriched["is_auto_skipped"] = True
 
-                    # Find best matching dismissed comment
-                    if candidates:
-                        best = None
-                        best_score = 0.0
-                        for prev in candidates:
-                            prev_body = (prev.get("body") or "").strip()
-                            if not prev_body:
-                                continue
-                            score = similarity(thread_body, prev_body)
-                            if score >= 0.6 and score > best_score:
-                                best = prev
-                                best_score = score
-                                if best_score == 1.0:
-                                    break
+            if not enriched.get("is_auto_skipped"):
+                path = (thread.get("path") or "").strip()
+                thread_body = (thread.get("body") or "").strip()
+                if thread_body:
+                    try:
+                        # Build candidate list: try path first, then comment_id
+                        candidates: list[dict[str, Any]] = []
+                        if path:
+                            candidates = dismissed_by_path.get(path, [])
+                        if not candidates:
+                            # For pathless items (outside_diff_comments),
+                            # match by comment_id instead
+                            cid = thread.get("comment_id")
+                            if cid is None:
+                                cid = thread.get("issue_comment_id")
+                            if cid is not None:
+                                try:
+                                    cid = int(cid)
+                                except (TypeError, ValueError):
+                                    cid = None
+                            if cid is not None:
+                                candidates = dismissed_by_comment_id.get(cid, [])
 
-                        if best:
-                            reason = (best.get("skip_reason") or best.get("reply") or "").strip()
-                            if reason:
-                                original_status = best.get("status", "skipped")
-                                enriched["status"] = "skipped"
-                                enriched["skip_reason"] = reason
-                                enriched["original_status"] = original_status  # Display-only, not persisted to DB
-                                enriched["reply"] = f"Auto-skipped ({original_status}): {reason}"
-                                enriched["is_auto_skipped"] = True
-                except Exception as e:
-                    print_stderr(f"Warning: Failed to match dismissed comment: {e}")
+                        # Find best matching dismissed comment
+                        if candidates:
+                            best = None
+                            best_score = 0.0
+                            for prev in candidates:
+                                prev_body = (prev.get("body") or "").strip()
+                                if not prev_body:
+                                    continue
+                                score = similarity(thread_body, prev_body)
+                                if score >= 0.6 and score > best_score:
+                                    best = prev
+                                    best_score = score
+                                    if best_score == 1.0:
+                                        break
+
+                            if best:
+                                reason = (best.get("skip_reason") or best.get("reply") or "").strip()
+                                if reason:
+                                    original_status = best.get("status", "skipped")
+                                    enriched["status"] = "skipped"
+                                    enriched["skip_reason"] = reason
+                                    enriched["original_status"] = original_status  # Display-only, not persisted to DB
+                                    enriched["reply"] = f"Auto-skipped ({original_status}): {reason}"
+                                    enriched["is_auto_skipped"] = True
+                    except Exception as e:
+                        print_stderr(f"Warning: Failed to match dismissed comment: {e}")
 
         if source == "human":
             human.append(enriched)
@@ -811,16 +831,31 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
     return {"human": human, "qodo": qodo, "coderabbit": coderabbit}
 
 
+def _extract_sticky_title(body: str) -> str:
+    """Extract the **title** from a Qodo sticky finding body for stable hashing."""
+    # Match **Title text** at the start (after optional HTML/numbering)
+    m = re.search(r"\*\*([^*]+)\*\*", body[:200])
+    if m:
+        return m.group(1).strip().lower()
+    # Fallback: first non-empty line, stripped of HTML/markdown
+    for line in body.split("\n"):
+        clean = re.sub(r"<[^>]+>", "", line).strip()
+        clean = clean.replace("**", "").replace("*", "").replace("`", "").strip()
+        if clean and len(clean) > 5:
+            return clean[:60].lower()
+    return body[:60].lower()
+
+
 def get_thread_key(thread: dict[str, Any]) -> str | None:
     """Generate a unique key for deduplication."""
-    # Qodo sticky findings use path + line + body prefix as composite key
+    # Qodo sticky findings use path + normalized title as composite key
+    # Line number excluded — shifts after rebases, causing false mismatches
     if thread.get("type") in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
         path = thread.get("path")
-        line = thread.get("line")
-        title_hash = thread.get("body", "")[:80]
-        if path and line is not None:
-            stable = hashlib.sha256(title_hash.encode()).hexdigest()[:8]
-            return f"qs:{path}:{line}:{stable}"
+        title = _extract_sticky_title(thread.get("body", ""))
+        if path and title:
+            stable = hashlib.sha256(title.encode()).hexdigest()[:12]
+            return f"qs:{path}:{stable}"
 
     # Outside diff comments use review_id + location as composite key (stable across reordering)
     if thread.get("type") == "outside_diff_comment":
