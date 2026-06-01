@@ -11,6 +11,8 @@ import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"] as const;
 const IMAGE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
@@ -95,6 +97,43 @@ function getTempDir(cwd: string): string {
     const dir = path.join("/tmp/pi-work", basename);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
+}
+
+function getHttpdPath(): string {
+    // Resolve relative to this extension's location → ../../scripts/httpd.py
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    return path.resolve(thisDir, "..", "..", "scripts", "httpd.py");
+}
+
+function serveImage(imagePath: string): { url: string } | null {
+    // Only serve via HTTP in containers (where user can't access local files)
+    if (!process.env.PI_CONTAINER) return null;
+
+    const httpd = getHttpdPath();
+    if (!fs.existsSync(httpd)) return null;
+
+    try {
+        // Find a free port
+        const port = execFileSync("uv", ["run", "python3", httpd, "--find-port"], {
+            encoding: "utf-8",
+            timeout: 5000,
+        }).trim();
+
+        const dir = path.dirname(imagePath);
+        const filename = path.basename(imagePath);
+        const logFile = path.join("/tmp/pi-work", `httpd-${port}.log`);
+
+        // Launch server in background
+        const child = spawn("uv", ["run", "python3", httpd, "--port", port, "--dir", dir], {
+            detached: true,
+            stdio: ["ignore", fs.openSync(logFile, "a"), fs.openSync(logFile, "a")],
+        });
+        child.unref();
+
+        return { url: `http://localhost:${port}/${filename}` };
+    } catch {
+        return null;
+    }
 }
 
 export function createImageGenTool(): ToolDefinition {
@@ -251,8 +290,16 @@ export function createImageGenTool(): ToolDefinition {
             const lines = [
                 `Model: ${model}`,
                 `Generated ${savedPaths.length} image(s):`,
-                ...savedPaths.map(p => `  ${p}`),
             ];
+            for (const p of savedPaths) {
+                const served = serveImage(p);
+                if (served) {
+                    lines.push(`  ${p}`);
+                    lines.push(`  Preview: ${served.url}`);
+                } else {
+                    lines.push(`  ${p}`);
+                }
+            }
             if (responseText.trim()) {
                 lines.push("", responseText.trim());
             }
