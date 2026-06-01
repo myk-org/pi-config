@@ -159,8 +159,16 @@ Returns JSON with:
 >       update the GitHub issue to match the actual design. Use `gh issue edit` to fix the spec.
 >       Then reply to Qodo referencing the updated spec.
 >
->    **There is no third option. "Already addressed", "by design", "not applicable" are FORBIDDEN.**
->    **Posting the same reply multiple times without a code fix or spec update is a HARD VIOLATION.**
+>    **Bare assertions without proof are FORBIDDEN:**
+>    - ❌ "Already addressed" (without citing commit SHA or diff link)
+>    - ❌ "By design" (without citing updated issue spec)
+>    - ❌ "Not applicable" (without explaining why AND updating spec if needed)
+>  
+>    **WITH proof, these are allowed:**
+>    - ✅ "Already addressed in commit abc123 — see diff" (links to specific change)
+>    - ✅ "By design per updated issue #N spec" (issue was actually updated)
+>  
+>    **Posting the same reply multiple times without a NEW code fix or spec update is a HARD VIOLATION.**
 >
 >    **If a Qodo sticky comment keeps re-appearing after your reply:**
 >    - The spec does not match the code — FIX THE SPEC (gh issue edit)
