@@ -80,8 +80,9 @@ export function registerRules(
         const { readAllTopicEntries } = await import("./memory-tree.js");
         const entries = readAllTopicEntries(ctx.cwd);
         if (entries.length > 0) {
-          // Ensure embeddings exist before searching
-          try { embedMissing(ctx.cwd, entries); } catch { /* non-fatal */ }
+          // Embed missing entries in background — don't block agent start
+          // embedMissing runs synchronously (subprocess), so skip it here
+          // and let memory_search handle migration lazily
           const results = vectorSearch(ctx.cwd, event.prompt, entries, 5);
           // Only include high-confidence matches (similarity > 0.65)
           const relevant = results.filter(r => r.similarity > 0.65);

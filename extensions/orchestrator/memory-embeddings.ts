@@ -218,14 +218,16 @@ export function embedMissing(
   const vectors = runEmbedProcess(texts);
   if (!vectors || vectors.length !== texts.length) return 0;
 
+  let stored = 0;
   for (let i = 0; i < missing.length; i++) {
     const vec = vectors[i];
     // Validate vector dimensions — skip corrupted results
     if (!Array.isArray(vec) || vec.length !== EMBEDDING_DIM) continue;
     store.entries[embeddingKey(missing[i].text, missing[i].category)] = vec;
+    stored++;
   }
   saveStore(cwd, store);
-  return texts.length;
+  return stored;
 }
 
 /**
