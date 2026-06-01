@@ -96,6 +96,55 @@ export function registerRules(
     if (!extra && !memories && !contextMemories) return;
     return { systemPrompt: memories + contextMemories + event.systemPrompt + extra };
   });
+
+  // Post-turn memory reminder: after a turn completes, check if any tool
+  // results suggest relevant memories the AI should know about.
+  // This catches cases where the user's prompt doesn't mention deployment
+  // but the AI just modified files that have deployment-related memories.
+  pi.on("turn_end", async (_event, ctx) => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+    // Check what files were modified in this turn by looking at tool results
+    const toolResults = (_event as any).toolResults;
+    if (!toolResults || !Array.isArray(toolResults) || toolResults.length === 0) return;
+
+    // Extract file paths from edit/write tool results
+    const modifiedPaths: string[] = [];
+    for (const tr of toolResults) {
+      const name = (tr as any)?.toolName;
+      if (name === "edit" || name === "write") {
+        const path = (tr as any)?.input?.path;
+        if (typeof path === "string") modifiedPaths.push(path);
+      }
+    }
+    if (modifiedPaths.length === 0) return;
+
+    // Search for memories related to the modified files
+    try {
+      const { vectorSearch } = await import("./memory-embeddings.js");
+      const { readAllTopicEntries } = await import("./memory-tree.js");
+      const entries = readAllTopicEntries(ctx.cwd);
+      if (entries.length === 0) return;
+
+      // Build a search query from modified file paths
+      const searchQuery = `files modified: ${modifiedPaths.join(", ")}`;
+      const results = vectorSearch(ctx.cwd, searchQuery, entries, 3);
+      const relevant = results.filter(r => r.similarity > 0.70);
+
+      if (relevant.length > 0) {
+        const reminder = relevant
+          .map(r => `- [${r.category}] ${r.text}`)
+          .join("\n");
+        pi.sendMessage({
+          customType: "memory-reminder",
+          content: `📝 **Memory reminder** (based on files you just modified):\n\n${reminder}`,
+          display: true,
+        }, { triggerTurn: false, deliverAs: "followUp" });
+      }
+    } catch (e: any) {
+      console.debug("[rules] turn_end memory reminder failed:", e?.message?.slice(0, 100));
+    }
+  });
 }
 
 // Loads memories using situation report (scored, token-budgeted) from topic files
