@@ -80,8 +80,11 @@ pi-config/
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to pidiff daemon)
 │   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
-│   └── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
-│       └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
+│   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
+│   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
+│   └── image-gen/                   # Image generation extension (standalone)
+│       ├── index.ts                # Entry point — registers generate_image tool
+│       └── image-gen.ts            # Gemini API image generation (env: PI_IMAGE_MODEL, GEMINI_API_KEY)
 ├── templates/                       # Immutable prompt templates (source files for /create-* commands)
 │   └── coms-feature-manager-prompt.md  # Coms feature manager template
 ├── prompts/                         # Prompt templates (slash commands)
