@@ -308,7 +308,7 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Embed on write: `memory_add` embeds each entry immediately
 - Semantic search: `memory_search` embeds query, cosine similarity against stored vectors
 - Hybrid results: union of vector + keyword matches, deduplicated
-- Fallback: keyword-only search when fastembed is unavailable
+- Fallback: keyword-only search when @xenova/transformers is unavailable
 - Migration: first `memory_search` call embeds all existing entries missing from store
 - No API keys needed — runs entirely locally
 
