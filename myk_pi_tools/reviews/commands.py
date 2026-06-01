@@ -106,7 +106,8 @@ def reviews_pending_update(json_path: str, submit: bool) -> None:  # noqa: FBT00
 
 
 @reviews.command("status")
-def reviews_status() -> None:
+@click.option("--pr", type=int, default=None, help="PR number (default: auto-detect from current branch)")
+def reviews_status(pr: int | None) -> None:
     """Show review status for current PR.
 
     Queries the reviews database and displays all comments across all
@@ -114,7 +115,7 @@ def reviews_status() -> None:
     """
     from myk_pi_tools.reviews.status import run
 
-    run()
+    run(pr_number=pr)
 
 
 @reviews.command("store")

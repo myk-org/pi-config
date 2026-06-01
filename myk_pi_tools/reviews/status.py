@@ -2,7 +2,7 @@
 
 Outputs:
 1. TUI table to stdout
-2. HTML file saved to /tmp/pi-work/<project>/review-status.html
+2. HTML file saved to /tmp/pi-work/<project>/review-status-<pr>.html
 """
 
 import json
@@ -99,24 +99,44 @@ def query_comments(db_path: Path, pr_number: int) -> list[dict]:
         conn.close()
 
 
+def get_pr_repo_info(db_path: Path, pr_number: int) -> tuple[str, str]:
+    """Get owner/repo for a PR from the reviews DB."""
+    if not db_path.exists():
+        return ("", "")
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT owner, repo FROM reviews WHERE pr_number = ? LIMIT 1",
+            (pr_number,),
+        ).fetchone()
+        return (row[0], row[1]) if row else ("", "")
+    except sqlite3.Error:
+        return ("", "")
+    finally:
+        conn.close()
+
+
 def extract_summary(body: str, max_len: int = 60) -> str:
     """Extract a short summary from the comment body."""
     if not body:
         return ""
-    # Try to get the first meaningful line (skip HTML tags, empty lines)
-    for line in body.split("\n"):
+    # Strip ALL HTML tags from entire body first
+    cleaned_body = re.sub(r"<[^>]+>", "", body)
+    # Try to get the first meaningful line
+    for line in cleaned_body.split("\n"):
         line = line.strip()
-        if not line or line.startswith("<") or line.startswith("#"):
+        if not line or line.startswith("#"):
             continue
-        # Strip HTML tags and markdown bold/italic
-        line = re.sub(r"<[^>]+>", "", line)
+        # Strip markdown bold/italic/code
         clean = line.replace("**", "").replace("*", "").replace("`", "")
         # Strip leading numbering like "1\." or "2."
         if clean and clean[0].isdigit() and "." in clean[:4]:
             clean = clean.split(".", 1)[1].strip()
+        # Strip escaped backslashes from markdown
+        clean = clean.replace("\\", "")
         if clean:
             return clean[:max_len] + ("..." if len(clean) > max_len else "")
-    return body[:max_len].replace("\n", " ") + ("..." if len(body) > max_len else "")
+    return cleaned_body[:max_len].replace("\n", " ").strip() + ("..." if len(cleaned_body) > max_len else "")
 
 
 def deduplicate_comments(comments: list[dict]) -> list[dict]:
@@ -131,7 +151,7 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
 
 
 def format_tui_table(comments: list[dict], pr_info: dict) -> str:
-    """Format comments as a TUI table."""
+    """Format comments as a clean TUI table."""
     lines = [f"PR #{pr_info['number']} ({pr_info['branch']}) — {pr_info['title']}"]
     lines.append("")
 
@@ -139,54 +159,61 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         lines.append("No review comments stored.")
         return "\n".join(lines)
 
-    # Build table
-    headers = ["#", "Source", "File", "Line", "Summary", "Status", "Reply"]
-    rows = []
+    # Fixed column widths for clean alignment
+    col_widths = {
+        "#": 4,
+        "Source": 10,
+        "File": 25,
+        "Line": 5,
+        "Summary": 45,
+        "Status": 12,
+    }
+
+    def pad(text: str, width: int) -> str:
+        """Pad/truncate text to exact width."""
+        if len(text) > width:
+            return text[: width - 1] + "…"
+        return text.ljust(width)
+
+    # Header
+    header = (
+        f"  {'#':<{col_widths['#']}} "
+        f"{'Source':<{col_widths['Source']}} "
+        f"{'File':<{col_widths['File']}} "
+        f"{'Line':<{col_widths['Line']}} "
+        f"{'Summary':<{col_widths['Summary']}} "
+        f"{'Status':<{col_widths['Status']}}"
+    )
+    separator = "  " + "─" * (sum(col_widths.values()) + len(col_widths) - 1)
+
+    lines.append(header)
+    lines.append(separator)
+
+    # Rows
     for i, c in enumerate(comments, 1):
-        summary = extract_summary(c["body"])
-        reply = (c.get("reply") or c.get("skip_reason") or "")[:50]
-        if reply and len(c.get("reply") or c.get("skip_reason") or "") > 50:
-            reply += "..."
-        rows.append([
-            str(i),
-            c["source"],
-            (c.get("path") or "").split("/")[-1],  # basename only
-            str(c.get("line") or ""),
-            summary,
-            c.get("status") or "pending",
-            reply,
-        ])
+        summary = extract_summary(c["body"], col_widths["Summary"])
+        status = c.get("status") or "pending"
+        file_name = (c.get("path") or "").split("/")[-1]
+        line_num = str(c.get("line") or "")
 
-    # Calculate column widths
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for j, cell in enumerate(row):
-            widths[j] = max(widths[j], len(cell))
-
-    # Cap widths
-    widths[4] = min(widths[4], 50)  # Summary
-    widths[6] = min(widths[6], 50)  # Reply
-
-    def fmt_row(cells: list[str]) -> str:
-        parts = []
-        for j, cell in enumerate(cells):
-            w = widths[j]
-            parts.append(cell[:w].ljust(w))
-        return "| " + " | ".join(parts) + " |"
-
-    lines.append(fmt_row(headers))
-    lines.append("|" + "|".join("-" * (w + 2) for w in widths) + "|")
-    for row in rows:
-        lines.append(fmt_row(row))
+        row = (
+            f"  {pad(str(i), col_widths['#'])} "
+            f"{pad(c['source'], col_widths['Source'])} "
+            f"{pad(file_name, col_widths['File'])} "
+            f"{pad(line_num, col_widths['Line'])} "
+            f"{pad(summary, col_widths['Summary'])} "
+            f"{pad(status, col_widths['Status'])}"
+        )
+        lines.append(row)
 
     # Summary counts
-    lines.append("")
+    lines.append(separator)
     status_counts: dict[str, int] = {}
     for c in comments:
         s = c.get("status") or "pending"
         status_counts[s] = status_counts.get(s, 0) + 1
     parts = [f"{v} {k}" for k, v in sorted(status_counts.items())]
-    lines.append(f"Total: {len(comments)} comments — {', '.join(parts)}")
+    lines.append(f"  Total: {len(comments)} — {', '.join(parts)}")
 
     return "\n".join(lines)
 
@@ -194,10 +221,16 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
 def generate_html(comments: list[dict], pr_info: dict) -> str:
     """Generate HTML report with styled table."""
     status_colors = {
-        "addressed": "#d4edda",
-        "skipped": "#fff3cd",
-        "not_addressed": "#f8d7da",
-        "pending": "#e2e3e5",
+        "addressed": "#1a3a2a",
+        "skipped": "#3a3520",
+        "not_addressed": "#3a1a1a",
+        "pending": "#2a2a2a",
+    }
+    status_text_colors = {
+        "addressed": "#3fb950",
+        "skipped": "#d29922",
+        "not_addressed": "#f85149",
+        "pending": "#8b949e",
     }
 
     rows_html = ""
@@ -214,7 +247,9 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
             <td title="{path}">{escape(path.split("/")[-1])}</td>
             <td>{c.get("line") or ""}</td>
             <td>{summary}</td>
-            <td style="background-color: {bg}; font-weight: bold;">{escape(status)}</td>
+            <td style="background-color: {bg}; font-weight: bold;
+                color: {status_text_colors.get(status, "#c9d1d9")};">
+                {escape(status)}</td>
             <td>{reply}</td>
         </tr>"""
 
@@ -231,20 +266,27 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Review Status — PR #{pr_info["number"]}</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont,
-            'Segoe UI', Roboto, sans-serif; margin: 2rem;
-            background: #f8f9fa; color: #212529; }}
-        h1 {{ font-size: 1.5rem; margin-bottom: 0.25rem; }}
-        h2 {{ font-size: 1rem; color: #6c757d; font-weight: normal; margin-top: 0; }}
-        table {{ border-collapse: collapse; width: 100%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-        th, td {{ padding: 8px 12px; text-align: left; border: 1px solid #dee2e6; font-size: 0.875rem; }}
-        th {{ background: #343a40; color: white; font-weight: 600; }}
-        tr:hover {{ background: #f1f3f5; }}
-        .summary {{ margin-top: 1rem; color: #6c757d; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 2rem; background: #0d1117; color: #c9d1d9; }}
+        h1 {{ font-size: 1.5rem; margin-bottom: 0.25rem; color: #f0f6fc; }}
+        h2 {{ font-size: 1rem; color: #8b949e; font-weight: normal; margin-top: 0; }}
+        table {{ border-collapse: collapse; width: 100%; background: #161b22;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5); border-radius: 6px; overflow: hidden; }}
+        th, td {{ padding: 10px 14px; text-align: left; border: 1px solid #30363d;
+            font-size: 0.875rem; }}
+        th {{ background: #21262d; color: #f0f6fc; font-weight: 600; }}
+        tr:nth-child(even) {{ background: #1c2128; }}
+        tr:hover {{ background: #272d36; }}
+        .summary {{ margin-top: 1rem; color: #8b949e; }}
     </style>
 </head>
 <body>
-    <h1>PR #{pr_info["number"]} — {escape(pr_info["title"])}</h1>
+    <h1><a href="https://github.com/
+{pr_info.get("owner", "")}/{pr_info.get("repo", "")}
+/pull/{pr_info["number"]}" target="_blank"
+        style="color: #58a6ff; text-decoration: none;">
+        PR #{pr_info["number"]}</a>
+        — {escape(pr_info["title"])}</h1>
     <h2>{escape(pr_info["branch"])}</h2>
     <table>
         <thead>
@@ -267,16 +309,61 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
 </html>"""
 
 
-def save_html(html: str, project_name: str) -> Path:
+def save_html(html: str, project_name: str, pr_number: int) -> Path:
     """Save HTML to temp directory and return path."""
     tmp_dir = Path("/tmp/pi-work") / project_name
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    html_path = tmp_dir / "review-status.html"
+    html_path = tmp_dir / f"review-status-{pr_number}.html"
     html_path.write_text(html, encoding="utf-8")
     return html_path
 
 
-def run() -> None:
+def list_prs_from_db(db_path: Path) -> None:
+    """List all PRs that have reviews stored in the database."""
+    if not db_path.exists():
+        print("No reviews database found.")
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        cursor = conn.execute(
+            """
+            SELECT r.pr_number,
+                   COUNT(c.id) as total,
+                   SUM(CASE WHEN c.status = 'addressed' THEN 1 ELSE 0 END) as addressed,
+                   SUM(CASE WHEN c.status = 'skipped' THEN 1 ELSE 0 END) as skipped,
+                   SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) as pending,
+                   MIN(r.created_at) as first_review,
+                   MAX(r.created_at) as last_review
+            FROM reviews r
+            JOIN comments c ON c.review_id = r.id
+            GROUP BY r.pr_number
+            ORDER BY r.pr_number DESC
+            """,
+        )
+        rows = cursor.fetchall()
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return
+    finally:
+        conn.close()
+
+    if not rows:
+        print("No reviews stored in the database.")
+        return
+
+    print("Available PRs in reviews database:\n")
+    print(f"  {'PR':<8} {'Total':<8} {'Addressed':<11} {'Skipped':<9} {'Pending':<9} {'Last Review'}")
+    print(f"  {'─' * 70}")
+    for row in rows:
+        pr, total, addressed, skipped, pending, _first, last = row
+        last_short = (last or "")[:10]
+        print(f"  #{pr:<7} {total:<8} {addressed:<11} {skipped:<9} {pending:<9} {last_short}")
+
+    print("\nUse: myk-pi-tools reviews status --pr <number>")
+
+
+def run(pr_number: int | None = None) -> None:
     """Main entry point for reviews status command."""
     project_root = get_project_root()
     project_name = project_root.name
@@ -286,12 +373,36 @@ def run() -> None:
         print("No reviews database found. Run /review-handler first.")
         sys.exit(0)
 
-    pr_info = get_current_pr()
-    if not pr_info or not pr_info.get("number"):
-        log("Error: Could not detect current PR. Check out a branch with an open PR.")
-        sys.exit(1)
+    if pr_number:
+        # Explicit PR number — build minimal pr_info
+        pr_info = {"number": pr_number, "title": f"PR #{pr_number}", "branch": ""}
+        # Try to get title from gh CLI
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", str(pr_number), "--json", "title,headRefName"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                pr_info["title"] = data.get("title", pr_info["title"])
+                pr_info["branch"] = data.get("headRefName", "")
+        except Exception:
+            pass  # Keep minimal info
+    else:
+        detected = get_current_pr()
+        if not detected or not detected.get("number"):
+            # List all PRs in the DB
+            list_prs_from_db(db_path)
+            sys.exit(0)
+        pr_info = detected
 
-    comments = query_comments(db_path, pr_info["number"])
+    pr_num = int(str(pr_info["number"]))
+    owner, repo = get_pr_repo_info(db_path, pr_num)
+    pr_info["owner"] = owner
+    pr_info["repo"] = repo
+    comments = query_comments(db_path, pr_num)
     comments = deduplicate_comments(comments)
 
     # TUI output
@@ -299,7 +410,7 @@ def run() -> None:
 
     # HTML output
     html = generate_html(comments, pr_info)
-    html_path = save_html(html, project_name)
+    html_path = save_html(html, project_name, pr_num)
 
     # Check if in container
     in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
@@ -322,7 +433,7 @@ def run() -> None:
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-                print(f"\nHTML report: http://localhost:{port}/review-status.html")
+                print(f"\nHTML report: http://localhost:{port}/{html_path.name}")
             except Exception as e:
                 print(f"\nHTML report saved: {html_path}")
                 log(f"Warning: Could not start HTTP server: {e}")

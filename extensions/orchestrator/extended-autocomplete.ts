@@ -314,6 +314,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
     "review-handler": (prefix: string) => {
       return filter([
+        { value: "status", label: "status", description: "Show all review comments from DB for current PR" },
         { value: "--autorabbit", label: "--autorabbit", description: "Auto-fix CodeRabbit comments in a loop" },
         { value: "--autoqodo", label: "--autoqodo", description: "Auto-fix Qodo comments in a loop" },
       ], prefix);

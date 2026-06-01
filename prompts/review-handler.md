@@ -1,6 +1,6 @@
 ---
 description: Process ALL review sources (human, Qodo, CodeRabbit) from current PR
-argument-hint: "[--autorabbit] [--autoqodo] [status]"
+argument-hint: "[--autorabbit] [--autoqodo] [status [PR#]]"
 ---
 
 ## Raw Arguments
@@ -64,6 +64,7 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 - `/review-handler` - Process reviews from current PR
 - `/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456` - With specific review URL
 - `/review-handler status` - Show all review comments from DB for current PR
+- `/review-handler status 413` - Show review comments for specific PR number
 - `/review-handler --autorabbit` - Auto-fix CodeRabbit comments in a loop
 - `/review-handler --autoqodo` - Auto-fix Qodo comments in a loop
 - `/review-handler --autorabbit --autoqodo` - Auto-fix both CodeRabbit and Qodo comments
@@ -80,7 +81,9 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 Read the **Raw Arguments** section above. Parse as follows:
 
 1. Check if `status` appears in the raw arguments
-   - If YES: run `myk-pi-tools reviews status` and return the output. Skip all other phases.
+   - If YES: extract optional PR number after `status` (e.g., `status 413` → PR 413)
+   - Run `myk-pi-tools reviews status` (or `myk-pi-tools reviews status --pr 413` if PR number given)
+   - Return the output to the user. **STOP HERE — skip ALL other phases. Do not proceed.**
 2. Check if `--autorabbit` appears in the raw arguments
    - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
    - If NO: autorabbit mode = OFF
