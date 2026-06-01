@@ -127,6 +127,9 @@ export function registerRules(
     }
     if (modifiedPaths.length === 0) return;
 
+    // Deduplicate and cap paths
+    const uniquePaths = [...new Set(modifiedPaths)].slice(0, 10);
+
     // Search for memories related to the modified files
     try {
       const { vectorSearch } = await import("./memory-embeddings.js");
@@ -135,7 +138,7 @@ export function registerRules(
       if (entries.length === 0) return;
 
       // Build a search query from modified file paths
-      const searchQuery = `files modified: ${modifiedPaths.join(", ")}`;
+      const searchQuery = `files modified: ${uniquePaths.join(", ")}`;
       const results = await vectorSearch(ctx.cwd, searchQuery, entries, 3);
       const relevant = results.filter(r => r.similarity > 0.70);
 
