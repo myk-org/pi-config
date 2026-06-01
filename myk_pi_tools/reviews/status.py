@@ -13,6 +13,7 @@ import subprocess
 import sys
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
 
 def log(message: str) -> None:
@@ -239,9 +240,13 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
 
     owner = pr_info.get("owner", "")
     repo = pr_info.get("repo", "")
-    pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_info['number']}" if owner and repo else ""
+    pr_url = (
+        f"https://github.com/{quote(owner, safe='')}/{quote(repo, safe='')}/pull/{pr_info['number']}"
+        if owner and repo
+        else ""
+    )
     pr_link = (
-        f'<a href="{pr_url}" target="_blank" rel="noopener noreferrer"'
+        f'<a href="{escape(pr_url)}" target="_blank" rel="noopener noreferrer"'
         f' style="color: #58a6ff; text-decoration: none;">PR #{pr_info["number"]}</a>'
         if pr_url
         else f"PR #{pr_info['number']}"
