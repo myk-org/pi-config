@@ -27,6 +27,7 @@ import {
 } from "./memory-scoring.js";
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
+import { readFileSync as fsReadFileSync } from "node:fs";
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
@@ -399,6 +400,217 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: `Removed: [${category}] ${text}` }],
       };
+    },
+  });
+
+  // ── memory_reflect ──────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "memory_reflect",
+    label: "Memory Reflect",
+    description:
+      "Synthesize an answer from long-term memory. Instead of returning raw entries, " +
+      "this tool searches memory and produces a coherent summary answering the question. " +
+      "Use when you need to understand a pattern, process, or context from past sessions.",
+    parameters: Type.Object({
+      query: Type.String({ description: "Question to answer from memory" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx.cwd;
+      const topicEntries = readAllTopicEntries(cwd);
+      if (topicEntries.length === 0) {
+        return { content: [{ type: "text", text: "No memories to reflect on." }] };
+      }
+
+      // Get relevant memories via vector + keyword search
+      const vectorMatches = vectorSearch(cwd, params.query, topicEntries, 10);
+      const queryLower = params.query.toLowerCase();
+      const keywordMatches = topicEntries.filter(e =>
+        e.text.toLowerCase().includes(queryLower)
+      );
+
+      // Merge and deduplicate
+      const seen = new Set<string>();
+      const relevant: { text: string; category: string; similarity?: number }[] = [];
+      for (const vm of vectorMatches) {
+        if (!seen.has(vm.text)) { seen.add(vm.text); relevant.push(vm); }
+      }
+      for (const km of keywordMatches) {
+        if (!seen.has(km.text)) { seen.add(km.text); relevant.push({ text: km.text, category: km.category }); }
+      }
+
+      if (relevant.length === 0) {
+        return { content: [{ type: "text", text: `No relevant memories found for: "${params.query}"` }] };
+      }
+
+      // Format as structured context for the AI to synthesize
+      const memoryContext = relevant
+        .slice(0, 15)
+        .map(r => {
+          const sim = r.similarity !== undefined ? ` (${r.similarity.toFixed(3)})` : "";
+          return `- [${r.category}] ${r.text}${sim}`;
+        })
+        .join("\n");
+
+      const text = `## Recalled memories for: "${params.query}"\n\n${memoryContext}\n\n` +
+        `*${relevant.length} memories found. Synthesize these into a coherent answer.*`;
+      return { content: [{ type: "text", text }] };
+    },
+  });
+
+  // ── memory_edit ─────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "memory_edit",
+    label: "Memory Edit",
+    description:
+      "Update, invalidate, or supersede a memory entry in-place. " +
+      "Use 'update' to change content, 'invalidate' to mark as superseded by another entry. " +
+      "More precise than remove+add — preserves scoring history.",
+    parameters: Type.Object({
+      op: Type.Union([
+        Type.Literal("update"),
+        Type.Literal("invalidate"),
+      ], { description: "Operation: update (change content) or invalidate (supersede)" }),
+      text: Type.String({ description: "Exact text of the memory entry to edit" }),
+      category: Type.String({ description: "Category: preference, lesson, pattern, decision, done, mistake" }),
+      newText: Type.Optional(Type.String({ description: "New text content (for update)" })),
+      supersededBy: Type.Optional(Type.String({ description: "Text of the replacement entry (for invalidate)" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx.cwd;
+      const { op, text, category, newText, supersededBy } = params;
+
+      const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
+      if (!validCategories.includes(category)) {
+        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+      }
+
+      const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
+      const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+
+      if (!existsSync(topicPath)) {
+        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }] };
+      }
+
+      const content = readFileSync(topicPath, "utf-8");
+      const oldLine = `- [${category}] ${text}`;
+      const oldLinePinned = `- [${category}] ${text} *(pinned)*`;
+
+      // Find the matching line
+      const lines = content.split("\n");
+      let matchIndex = -1;
+      let wasPinned = false;
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trimEnd();
+        if (trimmed === oldLinePinned) { matchIndex = i; wasPinned = true; break; }
+        if (trimmed === oldLine) { matchIndex = i; break; }
+      }
+
+      if (matchIndex === -1) {
+        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
+      }
+
+      if (op === "update") {
+        if (!newText) {
+          return { content: [{ type: "text", text: "newText is required for update operation." }] };
+        }
+        // Replace the line
+        const pin = wasPinned ? " *(pinned)*" : "";
+        lines[matchIndex] = `- [${category}] ${newText}${pin}`;
+        writeFileSync(topicPath, lines.join("\n"), "utf-8");
+
+        // Update scores: transfer old entry's score to new entry
+        const scores = loadScores(cwd);
+        const oldHash = entryHash(`- [${category}] ${text}`);
+        const newHash = entryHash(`- [${category}] ${newText}`);
+        if (scores.entries[oldHash]) {
+          scores.entries[newHash] = { ...scores.entries[oldHash] };
+          delete scores.entries[oldHash];
+          saveScores(cwd, scores);
+        }
+
+        // Update embeddings
+        removeEmbedding(cwd, text, category);
+        embedEntry(cwd, newText, category);
+
+        return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }] };
+      }
+
+      if (op === "invalidate") {
+        // Remove the old entry
+        lines.splice(matchIndex, 1);
+        const cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n");
+        writeFileSync(topicPath, cleaned, "utf-8");
+
+        // Clean up scores and embeddings for old entry
+        const scores = loadScores(cwd);
+        const oldHash = entryHash(`- [${category}] ${text}`);
+        if (scores.entries[oldHash]) {
+          delete scores.entries[oldHash];
+          saveScores(cwd, scores);
+        }
+        removeEmbedding(cwd, text, category);
+
+        let result = `Invalidated: [${category}] ${text}`;
+        if (supersededBy) {
+          result += `\nSuperseded by: ${supersededBy}`;
+        }
+        return { content: [{ type: "text", text: result }] };
+      }
+
+      return { content: [{ type: "text", text: `Unknown operation: ${op}` }] };
+    },
+  });
+
+  // ── memory_consolidate ──────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "memory_consolidate",
+    label: "Memory Consolidate",
+    description:
+      "Analyze all memories and produce a consolidated summary. " +
+      "Identifies patterns, removes contradictions, merges related entries, " +
+      "and generates reusable skills from recurring multi-step workflows. " +
+      "Run periodically or when memory is getting large.",
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const cwd = ctx.cwd;
+      const topicEntries = readAllTopicEntries(cwd);
+      if (topicEntries.length === 0) {
+        return { content: [{ type: "text", text: "No memories to consolidate." }] };
+      }
+
+      // Group entries by category
+      const byCategory: Record<string, string[]> = {};
+      for (const entry of topicEntries) {
+        if (!byCategory[entry.category]) byCategory[entry.category] = [];
+        byCategory[entry.category].push(`${entry.pinned ? "(pinned) " : ""}${entry.text}`);
+      }
+
+      // Build consolidation prompt for the AI
+      let report = `## Memory Consolidation Report\n\n`;
+      report += `**Total entries:** ${topicEntries.length}\n`;
+      report += `**Categories:** ${Object.keys(byCategory).join(", ")}\n\n`;
+
+      for (const [cat, entries] of Object.entries(byCategory)) {
+        report += `### ${cat} (${entries.length})\n`;
+        for (const e of entries) {
+          report += `- ${e}\n`;
+        }
+        report += "\n";
+      }
+
+      report += `## Instructions\n\n`;
+      report += `Review the above memories and:\n`;
+      report += `1. **Identify contradictions** — if two entries conflict, keep the newer/more specific one. Use memory_edit to invalidate the stale one.\n`;
+      report += `2. **Merge duplicates** — if entries say the same thing differently, keep the best version. Use memory_edit to update.\n`;
+      report += `3. **Extract skills** — if you see a multi-step workflow repeated across entries, suggest creating a skill with /create-skill.\n`;
+      report += `4. **Remove stale** — if entries reference things that no longer exist or apply, use memory_remove.\n`;
+      report += `5. **NEVER touch pinned entries** — they are user-explicit and permanent.\n\n`;
+      report += `*Take action using memory_edit, memory_remove, and /create-skill. Don't just report — fix.*`;
+
+      return { content: [{ type: "text", text: report }] };
     },
   });
 }

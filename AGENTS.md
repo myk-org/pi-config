@@ -318,6 +318,9 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - `memory_reinforce`: bump evidence count to prevent decay
 - `memory_add`: LLM-initiated memory writes (pinned or learned)
 - `memory_remove`: LLM-initiated entry removal
+- `memory_edit`: update content in-place or invalidate/supersede entries
+- `memory_reflect`: synthesize a coherent answer from recalled memories
+- `memory_consolidate`: analyze all memories, identify contradictions, merge duplicates, suggest skills
 - `memory_topics`: list topic files with hotness scores
 
 **Session Search** (`session-search.ts`):
