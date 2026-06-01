@@ -26,10 +26,14 @@ import {
   type ScoredEntry,
 } from "./memory-scoring.js";
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
+import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  // Track whether we've done the initial embedding migration
+  let embeddingsMigrated = false;
 
   // ── memory_search ────────────────────────────────────────────────────
 
@@ -53,6 +57,12 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       // Read from topics (source of truth)
       const topicEntries = readAllTopicEntries(cwd);
+
+      // Lazy migration: embed any entries missing from the vector store
+      if (!embeddingsMigrated) {
+        embeddingsMigrated = true;
+        try { embedMissing(cwd, topicEntries); } catch { /* non-fatal */ }
+      }
       const scores = loadScores(cwd);
       const queryLower = params.query.toLowerCase();
 
@@ -68,14 +78,46 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: "No memories found." }] };
       }
 
-      const results = searchEntries
+      // Keyword substring search (existing behavior)
+      const keywordResults = new Set<string>();
+      const keywordMatches = searchEntries
         .filter((entry) => {
           if (params.category && entry.category !== params.category) return false;
           return entry.text.toLowerCase().includes(queryLower) ||
             entry.category.includes(queryLower);
-        })
+        });
+      for (const m of keywordMatches) keywordResults.add(m.text);
+
+      // Vector similarity search (additive — merges with keyword results)
+      const vectorMatches = vectorSearch(
+        cwd,
+        params.query,
+        searchEntries.filter((e) => !params.category || e.category === params.category),
+      );
+
+      // Merge: union of keyword + vector results, deduplicated by text
+      const seen = new Set<string>();
+      const merged: { text: string; category: string; pinned: boolean; similarity?: number }[] = [];
+
+      // Add vector results first (sorted by similarity)
+      for (const vm of vectorMatches) {
+        if (!seen.has(vm.text)) {
+          seen.add(vm.text);
+          merged.push(vm);
+        }
+      }
+      // Add keyword-only results (not already in vector results)
+      for (const km of keywordMatches) {
+        if (!seen.has(km.text)) {
+          seen.add(km.text);
+          merged.push({ text: km.text, category: km.category, pinned: km.pinned });
+        }
+      }
+
+      const results = merged
         .map((entry) => {
-          const hash = entryHash(entry.fullLine);
+          const canonLine = `- [${entry.category}] ${entry.text}`;
+          const hash = entryHash(canonLine);
           const scored = scores.entries[hash];
           return {
             text: entry.text,
@@ -85,9 +127,9 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
             lifecycle: scored?.lifecycle ?? "unknown",
             evidenceCount: scored?.evidenceCount ?? 0,
             lastReinforced: scored?.lastReinforced ?? "unknown",
+            similarity: entry.similarity,
           };
         })
-        .sort((a, b) => b.score - a.score)
         .slice(0, 20);
 
       if (results.length === 0) {
@@ -98,7 +140,8 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       const lines = results.map((r) => {
         const pin = r.pinned ? " (pinned)" : "";
-        return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}, lifecycle: ${r.lifecycle}`;
+        const sim = r.similarity !== undefined ? `, similarity: ${r.similarity.toFixed(3)}` : "";
+        return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}${sim}`;
       });
 
       const text = `Found ${results.length} memories matching "${params.query}":\n\n${lines.join("\n")}`;
@@ -270,6 +313,9 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       } as ScoredEntry;
       saveScores(cwd, scores);
 
+      // Embed the new entry for vector search
+      embedEntry(cwd, text);
+
       const pin = isPinned ? " (pinned)" : "";
       return {
         content: [{ type: "text", text: `Added: [${category}] ${text}${pin}` }],
@@ -333,6 +379,9 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       const newLines = lines.filter(l => l.trimEnd() !== removedLine);
       const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
       writeFileSync(topicPath, cleaned, "utf-8");
+
+      // Remove embedding
+      removeEmbedding(cwd, text);
 
       // Clean up scores — always use canonical line for hash (no pinned marker)
       const scores = loadScores(cwd);

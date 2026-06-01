@@ -57,6 +57,7 @@ pi-config/
 │   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
 │   │   ├── memory-scoring.ts          # Stability-based memory scoring engine
 │   │   ├── memory-tools.ts              # AI-accessible memory tools (search, reinforce, add, remove)
+│   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
 │   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
