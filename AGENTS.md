@@ -301,9 +301,20 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Topics have hotness scores (reinforcement frequency)
 - Cold topics archived automatically (no reinforcement for 2× half-life)
 
+**Layer 4 — Vector Embeddings** (`memory-embeddings.ts`):
+
+- Model: `BAAI/bge-small-en-v1.5` (384 dims, runs locally via fastembed ONNX)
+- Storage: `.pi/memory/embeddings.json`
+- Embed on write: `memory_add` embeds each entry immediately
+- Semantic search: `memory_search` embeds query, cosine similarity against stored vectors
+- Hybrid results: union of vector + keyword matches, deduplicated
+- Fallback: keyword-only search when fastembed is unavailable
+- Migration: first `memory_search` call embeds all existing entries missing from store
+- No API keys needed — runs entirely locally
+
 **Memory Tools** (`memory-tools.ts`):
 
-- `memory_search`: keyword search across all topic entries
+- `memory_search`: hybrid keyword + vector search across all topic entries
 - `memory_reinforce`: bump evidence count to prevent decay
 - `memory_add`: LLM-initiated memory writes (pinned or learned)
 - `memory_remove`: LLM-initiated entry removal

@@ -60,8 +60,12 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       // Lazy migration: embed any entries missing from the vector store
       if (!embeddingsMigrated) {
-        embeddingsMigrated = true;
-        try { embedMissing(cwd, topicEntries); } catch { /* non-fatal */ }
+        try {
+          embedMissing(cwd, topicEntries);
+          embeddingsMigrated = true; // Only mark done on success
+        } catch {
+          console.debug("[memory] embedding migration failed, will retry next search");
+        }
       }
       const scores = loadScores(cwd);
       const queryLower = params.query.toLowerCase();
@@ -130,7 +134,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
             similarity: entry.similarity,
           };
         })
-        .slice(0, 20);
+        .slice(0, 30); // Allow room for both vector and keyword results
 
       if (results.length === 0) {
         return {
@@ -314,7 +318,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       saveScores(cwd, scores);
 
       // Embed the new entry for vector search
-      embedEntry(cwd, text);
+      embedEntry(cwd, text, category);
 
       const pin = isPinned ? " (pinned)" : "";
       return {
@@ -381,7 +385,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       writeFileSync(topicPath, cleaned, "utf-8");
 
       // Remove embedding
-      removeEmbedding(cwd, text);
+      removeEmbedding(cwd, text, category);
 
       // Clean up scores — always use canonical line for hash (no pinned marker)
       const scores = loadScores(cwd);

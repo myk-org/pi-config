@@ -9,14 +9,13 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const EMBEDDING_DIM = 384;
 const EMBED_TIMEOUT_MS = 30_000;
 
-// In-memory cache of the Python embed script path
-let embedScriptPath: string | null = null;
 // In-memory embedding cache for queries (avoids re-embedding the same query)
 const queryCache = new Map<string, number[]>();
 // Track if fastembed is known unavailable (don't retry every call)
@@ -45,38 +44,22 @@ function loadStore(cwd: string): EmbeddingStore {
 }
 
 function saveStore(cwd: string, store: EmbeddingStore): void {
-  const dir = join(cwd, ".pi", "memory");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(getStorePath(cwd), JSON.stringify(store), "utf-8");
-}
-
-/** Simple hash for embedding keys — same as memory-scoring entryHash would work but we use the raw text */
-function textHash(text: string): string {
-  let hash = 0;
-  for (let i = 0; i < text.length; i++) {
-    const chr = text.charCodeAt(i);
-    hash = ((hash << 5) - hash) + chr;
-    hash |= 0;
+  try {
+    const dir = join(cwd, ".pi", "memory");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(getStorePath(cwd), JSON.stringify(store), "utf-8");
+  } catch (err: any) {
+    console.debug("[memory-embeddings] save failed:", err?.message?.slice(0, 100));
   }
-  return hash.toString(36);
 }
 
-function getEmbedScript(): string {
-  if (embedScriptPath) return embedScriptPath;
-  // Write the Python embed script to a temp location
-  const script = `
-import sys, json
-from fastembed import TextEmbedding
-model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-texts = json.loads(sys.stdin.read())
-embeddings = list(model.embed(texts))
-json.dump([e.tolist() for e in embeddings], sys.stdout)
-`.trim();
-  const scriptPath = join("/tmp", "pi-memory-embed.py");
-  writeFileSync(scriptPath, script, "utf-8");
-  embedScriptPath = scriptPath;
-  return scriptPath;
+/** SHA-256 hash for embedding keys — includes category to avoid cross-category collisions */
+function embeddingKey(text: string, category?: string): string {
+  const input = category ? `[${category}] ${text}` : text;
+  return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
+
+const EMBED_SCRIPT = `import sys,json;from fastembed import TextEmbedding;m=TextEmbedding(model_name="BAAI/bge-small-en-v1.5");json.dump([e.tolist() for e in m.embed(json.loads(sys.stdin.read()))],sys.stdout)`;
 
 /**
  * Call the Python subprocess to embed texts.
@@ -86,9 +69,8 @@ function runEmbedProcess(texts: string[]): number[][] | null {
   if (fastembedUnavailable || texts.length === 0) return null;
 
   try {
-    const script = getEmbedScript();
     const input = JSON.stringify(texts);
-    const result = execFileSync("uv", ["run", "--with", "fastembed", "--with", "numpy", "python3", script], {
+    const result = execFileSync("uv", ["run", "--with", "fastembed", "--with", "numpy", "python3", "-c", EMBED_SCRIPT], {
       input,
       encoding: "utf-8",
       timeout: EMBED_TIMEOUT_MS,
@@ -124,9 +106,10 @@ function cosineSimilarity(a: number[], b: number[]): number {
  * Embed a single memory entry and store it. Called on memory_add.
  * No-op if fastembed is unavailable.
  */
-export function embedEntry(cwd: string, text: string): void {
+export function embedEntry(cwd: string, text: string, category?: string): void {
+  try {
   const store = loadStore(cwd);
-  const hash = textHash(text);
+  const hash = embeddingKey(text, category);
   if (store.entries[hash]) return; // Already embedded
 
   const vectors = runEmbedProcess([text]);
@@ -134,18 +117,21 @@ export function embedEntry(cwd: string, text: string): void {
 
   store.entries[hash] = vectors[0];
   saveStore(cwd, store);
+  } catch (err: any) { console.debug("[memory-embeddings] embedEntry failed:", err?.message?.slice(0, 100)); }
 }
 
 /**
  * Remove an entry's embedding from the store. Called on memory_remove.
  */
-export function removeEmbedding(cwd: string, text: string): void {
+export function removeEmbedding(cwd: string, text: string, category?: string): void {
+  try {
   const store = loadStore(cwd);
-  const hash = textHash(text);
+  const hash = embeddingKey(text, category);
   if (store.entries[hash]) {
     delete store.entries[hash];
     saveStore(cwd, store);
   }
+  } catch (err: any) { console.debug("[memory-embeddings] removeEmbedding failed:", err?.message?.slice(0, 100)); }
 }
 
 /**
@@ -179,7 +165,7 @@ export function vectorSearch(
   // Score all entries that have embeddings
   const scored: { text: string; category: string; pinned: boolean; similarity: number }[] = [];
   for (const entry of entries) {
-    const hash = textHash(entry.text);
+    const hash = embeddingKey(entry.text, entry.category);
     const entryVec = store.entries[hash];
     if (!entryVec) continue;
     const similarity = cosineSimilarity(queryVec, entryVec);
@@ -200,7 +186,7 @@ export function embedMissing(
   entries: { text: string }[],
 ): number {
   const store = loadStore(cwd);
-  const missing = entries.filter(e => !store.entries[textHash(e.text)]);
+  const missing = entries.filter(e => !store.entries[embeddingKey(e.text, (e as any).category)]);
   if (missing.length === 0) return 0;
 
   // Batch embed all missing entries
@@ -208,8 +194,8 @@ export function embedMissing(
   const vectors = runEmbedProcess(texts);
   if (!vectors || vectors.length !== texts.length) return 0;
 
-  for (let i = 0; i < texts.length; i++) {
-    store.entries[textHash(texts[i])] = vectors[i];
+  for (let i = 0; i < missing.length; i++) {
+    store.entries[embeddingKey(missing[i].text, (missing[i] as any).category)] = vectors[i];
   }
   saveStore(cwd, store);
   return texts.length;
