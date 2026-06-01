@@ -27,7 +27,6 @@ import {
 } from "./memory-scoring.js";
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
-import { readFileSync as fsReadFileSync } from "node:fs";
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
@@ -520,6 +519,16 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       if (op === "update") {
         if (!newText) {
           return { content: [{ type: "text", text: "newText is required for update operation." }] };
+        }
+        // Enforce single-line content
+        if (newText.includes("\n")) {
+          return { content: [{ type: "text", text: "newText must be a single line (no newlines)." }] };
+        }
+        // Check topic size cap
+        const currentContent = readFileSync(topicPath, "utf-8");
+        const newContent = currentContent.replace(lines[matchIndex], `- [${category}] ${newText}${wasPinned ? " *(pinned)*" : ""}`);
+        if (newContent.length > MAX_TOPIC_CHARS) {
+          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }] };
         }
         // Replace the line
         const pin = wasPinned ? " *(pinned)*" : "";

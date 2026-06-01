@@ -219,7 +219,10 @@ export function embedMissing(
   if (!vectors || vectors.length !== texts.length) return 0;
 
   for (let i = 0; i < missing.length; i++) {
-    store.entries[embeddingKey(missing[i].text, missing[i].category)] = vectors[i];
+    const vec = vectors[i];
+    // Validate vector dimensions — skip corrupted results
+    if (!Array.isArray(vec) || vec.length !== EMBEDDING_DIM) continue;
+    store.entries[embeddingKey(missing[i].text, missing[i].category)] = vec;
   }
   saveStore(cwd, store);
   return texts.length;

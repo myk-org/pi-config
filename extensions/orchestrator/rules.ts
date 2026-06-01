@@ -76,10 +76,12 @@ export function registerRules(
     let contextMemories = "";
     if (!isSubagent && event.prompt) {
       try {
-        const { vectorSearch } = await import("./memory-embeddings.js");
+        const { vectorSearch, embedMissing } = await import("./memory-embeddings.js");
         const { readAllTopicEntries } = await import("./memory-tree.js");
         const entries = readAllTopicEntries(ctx.cwd);
         if (entries.length > 0) {
+          // Ensure embeddings exist before searching
+          try { embedMissing(ctx.cwd, entries); } catch { /* non-fatal */ }
           const results = vectorSearch(ctx.cwd, event.prompt, entries, 5);
           // Only include high-confidence matches (similarity > 0.65)
           const relevant = results.filter(r => r.similarity > 0.65);
