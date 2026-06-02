@@ -17,15 +17,11 @@ Show the live state of running autoqodo/autorabbit review-handler agents.
 
 ### Steps
 
-1. **Check if any review-handler agents are running:**
-   Run the `/async-status` command. Look at the output for agents whose task contains `reviews poll`.
-   If none found, tell the user:
-   "No review handler agents running — nothing to show."
-   Do not proceed to step 2.
+1. Run `/async-status`. Look for agents whose task contains `reviews poll`.
+   If none found → "No review handler agents running — nothing to show."
 
-2. **If agents ARE running**, for each PR being handled:
-   - Extract the PR number from the agent's task or worktree cwd
-   - Run `myk-pi-tools reviews status --pr <number>` to generate the HTML report
-   - Extract the HTML report path from the CLI output line `HTML report saved: <path>`
-   - **Container** (check `/.dockerenv` or `/run/.containerenv`): serve via file preview rule (`rules/45-file-preview.md`)
-   - **Native** (not in container): show `file://<path>` as a clickable link
+2. For each running review agent, extract the PR number from the agent's task or worktree cwd.
+   Run `myk-pi-tools reviews status --pr <number>` to generate the HTML report.
+   Extract the path from `HTML report saved: <path>` in the output.
+   - **Container** (`/.dockerenv` or `/run/.containerenv` exists): serve via file preview rule (`rules/45-file-preview.md`)
+   - **Native**: show `file://<path>`
