@@ -186,18 +186,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Git protection
     const gitCwd = resolveEffectiveCwd(command, ctx.cwd);
     if (isGitRepo(gitCwd)) {
-      // Block branch switching when use_worktrees is enabled
+      // Block branch creation AND switching when use_worktrees is enabled
       if (getSetting(ctx.cwd, "use_worktrees")) {
-        if (hasGitSub(command, "checkout") && /\bgit\b.*\bcheckout\b\s+(-b|-B)\b/.test(command)) {
+        if (hasGitSub(command, "checkout") && !command.includes("--")) {
           return {
             block: true,
-            reason: "⛔ Branch creation via checkout blocked — use_worktrees is enabled. Use: git worktree add .worktrees/<name> -b <branch> origin/main",
+            reason: "⛔ git checkout blocked — use_worktrees is enabled. Use: git worktree add .worktrees/<name> -b <branch> origin/main",
           };
         }
-        if (hasGitSub(command, "switch") && /\bgit\b.*\bswitch\b\s+(-c|-C)\b/.test(command)) {
+        if (hasGitSub(command, "switch")) {
           return {
             block: true,
-            reason: "⛔ Branch creation via switch blocked — use_worktrees is enabled. Use: git worktree add .worktrees/<name> -b <branch> origin/main",
+            reason: "⛔ git switch blocked — use_worktrees is enabled. Use: git worktree add .worktrees/<name> -b <branch> origin/main",
           };
         }
       }

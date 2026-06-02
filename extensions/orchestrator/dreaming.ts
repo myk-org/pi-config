@@ -153,9 +153,10 @@ export function registerDreaming(
     if (dreamTimer) return;
 
     // Override dream interval from project settings if available
+    // getSetting already resolves project > env > default(3), just clamp range
     const projectHours = getSetting(cwd, "dream_interval_hours");
-    const effectiveMs = (Number.isFinite(projectHours) && projectHours >= 0.5 && projectHours <= 24
-      ? projectHours : DREAM_INTERVAL_HOURS) * 60 * 60 * 1000;
+    const clampedHours = Math.max(0.5, Math.min(24, projectHours));
+    const effectiveMs = clampedHours * 60 * 60 * 1000;
 
     // LLM dreaming — every 3h (expensive, spawns worker agent)
     dreamTimer = setInterval(() => {

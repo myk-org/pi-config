@@ -120,11 +120,19 @@ export function migrateCoAuthorFile(cwd: string): void {
   if (!existsSync(legacyPath)) return;
 
   try {
-    const settings = loadProjectSettings(cwd);
-    if (settings.co_author === undefined) {
-      settings.co_author = true;
+    const settingsPath = getSettingsPath(cwd);
+    const dir = dirname(settingsPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    // Read raw JSON to preserve unknown keys
+    let raw: Record<string, unknown> = {};
+    if (existsSync(settingsPath)) {
+      try { raw = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch {}
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) raw = {};
     }
-    saveProjectSettings(cwd, settings);
+    if (raw.co_author === undefined) {
+      raw.co_author = true;
+    }
+    writeFileSync(settingsPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
     unlinkSync(legacyPath);
     console.debug("[project-settings] Migrated .pi-co-author → pi-config-settings.json");
     clearSettingsCache();
