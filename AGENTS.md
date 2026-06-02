@@ -310,12 +310,12 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 
 **Layer 4 — Vector Embeddings** (`memory-embeddings.ts`):
 
-- Model: `Xenova/bge-small-en-v1.5` (384 dims, runs locally via @xenova/transformers ONNX)
+- Model: `Xenova/bge-small-en-v1.5` (384 dims, runs locally via @huggingface/transformers ONNX)
 - Storage: `.pi/memory/embeddings.json`
 - Embed on write: `memory_add` embeds each entry immediately
 - Semantic search: `memory_search` embeds query, cosine similarity against stored vectors
 - Hybrid results: union of vector + keyword matches, deduplicated
-- Fallback: keyword-only search when @xenova/transformers is unavailable
+- Fallback: keyword-only search when @huggingface/transformers is unavailable
 - Migration: first `memory_search` call embeds all existing entries missing from store
 - No API keys needed — runs entirely locally
 
