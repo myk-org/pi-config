@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { rebuildAndOrganize } from "./situation-report.js";
@@ -147,14 +148,25 @@ export function registerDreaming(
 
   let rebuildTimer: ReturnType<typeof setInterval> | null = null;
 
+  let currentIntervalMs = 0;
+
   function startTimer(cwd: string) {
     lastCwd = cwd;
-    if (dreamTimer) return;
 
-    // LLM dreaming — every 3h (expensive, spawns worker agent)
+    // Resolve dream interval from project settings
+    const projectHours = getSetting(cwd, "dream_interval_hours");
+    const clampedHours = Math.max(0.5, Math.min(24, projectHours));
+    const effectiveMs = clampedHours * 60 * 60 * 1000;
+
+    // Restart timer if interval changed (or first start)
+    if (dreamTimer && currentIntervalMs === effectiveMs) return;
+    if (dreamTimer) clearInterval(dreamTimer);
+    currentIntervalMs = effectiveMs;
+
+    // LLM dreaming
     dreamTimer = setInterval(() => {
       if (enabled && lastCwd) runDreamAsync(lastCwd);
-    }, DREAM_INTERVAL_MS);
+    }, effectiveMs);
     if (dreamTimer.unref) dreamTimer.unref();
 
     // Scoring rebuild — every 30 min (cheap, no LLM, just rescores + reorganizes topics)
