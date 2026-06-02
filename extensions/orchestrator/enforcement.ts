@@ -45,6 +45,25 @@ function writeRepeatState(state: { lastCmd: string; count: number }): void {
   } catch (e: any) { console.debug("[enforcement] write repeat state failed:", e?.message || e); }
 }
 
+/** Parse bash command for cd target to resolve the effective working directory (worktree support) */
+function resolveEffectiveCwd(command: string, sessionCwd: string): string {
+  // Match: cd /path/to/dir && ..., cd /path/to/dir; ...
+  const cdMatch = command.match(/^\s*cd\s+([^\s;&|]+)/);
+  if (cdMatch) {
+    const target = cdMatch[1].replace(/['"]/g, "");
+    if (target.startsWith("/")) return target;
+    return join(sessionCwd, target);
+  }
+  // Match: git -C /path/to/dir ...
+  const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
+  if (gitCMatch) {
+    const target = gitCMatch[1].replace(/['"]/g, "");
+    if (target.startsWith("/")) return target;
+    return join(sessionCwd, target);
+  }
+  return sessionCwd;
+}
+
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
 
 
@@ -153,8 +172,19 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       return { block: true, reason: remoteExecReason };
     }
 
+    // Enforce git commit/push only via git-expert agent
+    if (process.env.PI_AGENT_NAME !== "git-expert") {
+      if (hasGitSub(command, "commit") || hasGitSub(command, "push")) {
+        return {
+          block: true,
+          reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
+        };
+      }
+    }
+
     // Git protection
-    if (isGitRepo(ctx.cwd)) {
+    const gitCwd = resolveEffectiveCwd(command, ctx.cwd);
+    if (isGitRepo(gitCwd)) {
       // Block git add . / git add -A
       if (
         hasGitSub(command, "add") &&
@@ -174,7 +204,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         if (addMatch) {
           const files = addMatch[1].split(/\s+/).filter((f) => !f.startsWith("-"));
           for (const file of files) {
-            const checkIgnored = runGit(["check-ignore", "-q", file], ctx.cwd);
+            const checkIgnored = runGit(["check-ignore", "-q", file], gitCwd);
             if (checkIgnored.code === 0) {
               return {
                 block: true,
@@ -199,9 +229,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         };
       }
 
-      const branch = getCurrentBranch(ctx.cwd);
-      const mainBranch = getMainBranch(ctx.cwd);
-      const protectedBranches = getProtectedBranches(ctx.cwd);
+      const branch = getCurrentBranch(gitCwd);
+      const mainBranch = getMainBranch(gitCwd);
+      const protectedBranches = getProtectedBranches(gitCwd);
 
       // Block commits to protected branches
       if (hasGitSub(command, "commit")) {
@@ -217,24 +247,24 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git commit in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
           };
 
-        const pr = getPrMergeStatus(branch, ctx.cwd);
+        const pr = getPrMergeStatus(branch, gitCwd);
         if (pr.merged)
           return {
             block: true,
             reason: `⛔ PR #${pr.info} for '${branch}' already merged. Create a new branch from ${mainBranch || "main"}.`,
           };
 
-        if (command.includes("--amend") && isBranchAhead(ctx.cwd))
+        if (command.includes("--amend") && isBranchAhead(gitCwd))
           return undefined;
 
-        if (mainBranch && isBranchMerged(branch, mainBranch, ctx.cwd))
+        if (mainBranch && isBranchMerged(branch, mainBranch, gitCwd))
           return {
             block: true,
             reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
           };
 
         // Co-author trailer injection
-        if (existsSync(join(ctx.cwd, ".pi-co-author"))) {
+        if (existsSync(join(gitCwd, ".pi-co-author"))) {
           const model = (ctx as any).model;
           if (model?.id && !command.includes("Co-authored-by:")) {
             // Pattern A: echo "..." | git commit -F -
@@ -282,13 +312,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             };
         }
         if (branch) {
-          const pr = getPrMergeStatus(branch, ctx.cwd);
+          const pr = getPrMergeStatus(branch, gitCwd);
           if (pr.merged)
             return {
               block: true,
               reason: `⛔ PR #${pr.info} for '${branch}' already merged. Create a new branch.`,
             };
-          if (mainBranch && isBranchMerged(branch, mainBranch, ctx.cwd))
+          if (mainBranch && isBranchMerged(branch, mainBranch, gitCwd))
             return {
               block: true,
               reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
