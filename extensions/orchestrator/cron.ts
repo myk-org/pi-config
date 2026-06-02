@@ -41,12 +41,14 @@ let CRON_FILE = ""; // Set on session_start to project-scoped dir
 export function getCronFilePath(): string { return CRON_FILE; }
 
 function saveCrons(tasks: CronTask[]): void {
+  if (!CRON_FILE) return;
   try {
     fs.writeFileSync(CRON_FILE, JSON.stringify(tasks), { mode: 0o600 });
   } catch (e: any) { console.debug("[cron] save crons failed:", e?.message || e); }
 }
 
 function loadCrons(): CronTask[] {
+  if (!CRON_FILE) return [];
   try {
     const data = JSON.parse(fs.readFileSync(CRON_FILE, "utf-8"));
     return Array.isArray(data) ? data : [];
