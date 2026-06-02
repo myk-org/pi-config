@@ -21,7 +21,7 @@ Save a successful workflow as a reusable pi skill.
 ## Usage
 
 - `/create-skill <name>` — Create a skill with the given name from the current conversation
-- `/create-skill` — Prompt for a name
+- `/create-skill` — Prompt for a name and scope
 
 ## Workflow
 
@@ -41,6 +41,19 @@ Validate the name:
 - No spaces, underscores, or special characters
 - If invalid, ask the user to provide a valid name
 
+### Step 1.5: Determine Skill Scope
+
+Ask the user where to create the skill:
+
+> Where should this skill be created?
+>
+> - **Global** (`~/.agents/skills/`) — available in all projects
+> - **Project** (`.pi/skills/`) — available only in this project
+
+Use `ask_user` with options: `["Global (~/.agents/skills/)", "Project (.pi/skills/)"]`
+
+Store the chosen path prefix for Step 3.
+
 ### Step 2: Extract the Workflow
 
 Review the current conversation and identify:
@@ -53,10 +66,13 @@ Review the current conversation and identify:
 
 ### Step 3: Write the SKILL.md
 
-Create the skill file at `~/.agents/skills/<name>/SKILL.md`:
+Create the skill file at the chosen location from Step 1.5:
+
+- **Global:** `~/.agents/skills/<name>/SKILL.md`
+- **Project:** `.pi/skills/<name>/SKILL.md`
 
 ```bash
-mkdir -p ~/.agents/skills/<name>
+mkdir -p <chosen-path>/<name>
 ```
 
 The SKILL.md must follow this exact format:
@@ -101,6 +117,7 @@ like `<API_KEY>` or `$ENV_VAR`. Skills are stored in plain text.
 
 Tell the user:
 
-> ✅ Skill `<name>` created at `~/.agents/skills/<name>/SKILL.md`
+> ✅ Skill `<name>` created at `<chosen-path>/<name>/SKILL.md`
 >
-> It will be available in the next pi session. Reload pi to use it immediately.
+> **Global skills** are available in all projects. **Project skills** are available only in this project.
+> Reload pi to use it immediately.
