@@ -7,7 +7,7 @@
  * 3. Default (only dream_interval_hours has a default of 3)
  */
 
-import { existsSync, lstatSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, statSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -76,7 +76,7 @@ function getSettings(cwd: string): ProjectSettings {
     cachedCwd = cwd;
     try {
       const settingsPath = getSettingsPath(cwd);
-      cachedMtime = existsSync(settingsPath) ? lstatSync(settingsPath).mtimeMs : 0;
+      cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
     lastMtimeCheck = now;
     return cachedSettings;
@@ -86,7 +86,7 @@ function getSettings(cwd: string): ProjectSettings {
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
   let mtime = 0;
-  try { if (existsSync(settingsPath)) mtime = lstatSync(settingsPath).mtimeMs; } catch {}
+  try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
   if (mtime === cachedMtime) return cachedSettings;
   cachedSettings = loadProjectSettings(cwd);
   cachedMtime = mtime;
