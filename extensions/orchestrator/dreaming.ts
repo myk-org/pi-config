@@ -76,7 +76,12 @@ export function registerDreaming(
       `   - [category] summary *(pinned)*    (if pinned)\n` +
       `   - [category] summary               (if not pinned)\n` +
       `6. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
-      `   create a skill file at ~/.agents/skills/<name>/SKILL.md with the steps.\n` +
+      `   create a skill file at .pi/skills/<name>/SKILL.md (project-level, NOT global ~/.agents/).\n` +
+      `   The SKILL.md MUST start with YAML frontmatter:\n` +
+      `   ---\n` +
+      `   name: <name>\n` +
+      `   description: "What this skill does and when to use it"\n` +
+      `   ---\n` +
       `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
       `7. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
       `8. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
