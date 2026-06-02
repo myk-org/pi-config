@@ -2,7 +2,7 @@
  * memory-embeddings.ts — Vector embedding support for memory search
  *
  * Embeds memory entries and search queries using Xenova/bge-small-en-v1.5 via
- * @xenova/transformers (in-process ONNX, no Python, no subprocess).
+ * @huggingface/transformers (in-process ONNX, no Python, no subprocess).
  * Stores embeddings in .pi/memory/embeddings.json.
  *
  * Falls back gracefully when the model is unavailable — callers always get a
@@ -75,7 +75,7 @@ async function getPipeline(): Promise<any> {
 
   pipelineLoading = (async () => {
     try {
-      const { pipeline } = await import("@xenova/transformers");
+      const { pipeline } = await import("@huggingface/transformers");
       const extractor = await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", {
         quantized: true,
       });
