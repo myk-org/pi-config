@@ -83,7 +83,12 @@ Read the **Raw Arguments** section above. Parse as follows:
 1. Check if `status` appears in the raw arguments
    - If YES: extract optional PR number after `status` (e.g., `status 413` → PR 413)
    - Run `myk-pi-tools reviews status` (or `myk-pi-tools reviews status --pr 413` if PR number given)
-   - Return the output to the user. **STOP HERE — skip ALL other phases. Do not proceed.**
+   - Present the full CLI output as formatted text in your response (not as raw bash output).
+     Show everything: table, diagnostics, errors — include all of it.
+   - If the CLI output contains `HTML report saved:`, extract the full path after it.
+     Serve the report using the file preview rule (see `rules/45-file-preview.md`).
+     The file preview rule handles httpd startup, port allocation, and container detection.
+   - **STOP HERE — skip ALL other phases. Do not proceed.**
 2. Check if `--autorabbit` appears in the raw arguments
    - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
    - If NO: autorabbit mode = OFF
