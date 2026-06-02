@@ -379,7 +379,7 @@ export function registerAsyncAgents(
     // Zombie cleanup: scan project dir for dead agents
     try {
       for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
-        if (!entry.startsWith("worker-")) continue;
+        if (entry.startsWith("async-results-") || entry.startsWith("cron-") || entry.startsWith("subagent-") || entry.startsWith(".") || entry.endsWith(".json") || entry.endsWith(".log")) continue;
         const jobDir = path.join(PROJECT_TMP_DIR, entry);
         try {
           const markerPath = path.join(jobDir, "session.json");
@@ -389,12 +389,8 @@ export function registerAsyncAgents(
           if (marker.resultsDir === ASYNC_RESULTS_DIR) continue;
           const parentPid = marker.parentPid;
           const parentStartTime = marker.parentStartTime;
-          if (!parentPid) {
-            // Legacy entry without parentPid — check process directly
-            const status = readAsyncStatus(jobDir);
-            if (status?.pid) {
-              try { process.kill(status.pid, 0); continue; } catch {} // dead
-            }
+          if (!parentPid || !parentStartTime) {
+            // Missing identity — can't verify, remove as stale
             try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
             continue;
           }

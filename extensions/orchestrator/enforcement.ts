@@ -8,6 +8,7 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
+import { getProjectTmpDir } from "./utils.js";
 import {
   DANGEROUS,
   getCurrentBranch,
@@ -35,7 +36,6 @@ let REPEAT_FILE = "";
 
 function ensureRepeatFile(cwd: string): void {
   if (!REPEAT_FILE) {
-    const { getProjectTmpDir } = require("./utils.js");
     REPEAT_FILE = join(getProjectTmpDir(cwd), `.repeat-${process.pid}.json`);
   }
 }

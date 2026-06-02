@@ -22,6 +22,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { getProjectTmpDir } from "./utils.js";
 
 // ── Cache infrastructure ────────────────────────────────────────────
 
@@ -352,9 +355,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       // After "remove" — show task IDs (supports multi-select)
       if (sub === "remove" || sub === "rm" || sub === "delete" || sub === "kill") {
         try {
-          const { getProjectTmpDir } = require("./utils.js");
-          const cronFile = require("node:path").join(getProjectTmpDir(process.cwd()), `cron-${process.pid}.json`);
-          const cronTasks = JSON.parse(require("node:fs").readFileSync(cronFile, "utf-8"));
+          const cronFile = path.join(getProjectTmpDir(process.cwd()), `cron-${process.pid}.json`);
+          const cronTasks = JSON.parse(fs.readFileSync(cronFile, "utf-8"));
           if (Array.isArray(cronTasks)) {
             const alreadySelected = new Set(parts.slice(1).filter(p => p !== lastPart));
             return filter(cronTasks.filter((t: any) => !alreadySelected.has(String(t.id))).map((t: any) => ({
