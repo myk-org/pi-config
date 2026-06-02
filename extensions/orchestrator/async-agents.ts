@@ -255,10 +255,16 @@ export function registerAsyncAgents(
     fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
 
     // Write session marker so restore can match jobs to sessions
-    const parentStartTime = (() => {
-      try { return fs.readFileSync(`/proc/${process.pid}/stat`, "utf-8").split(" ")[21]; }
-      catch { return ""; }
-    })();
+    let parentStartTime = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        parentStartTime = fs.readFileSync(`/proc/${process.pid}/stat`, "utf-8").split(" ")[21] || "";
+        if (parentStartTime) break;
+      } catch { /* retry */ }
+    }
+    if (!parentStartTime) {
+      console.debug("[async-agents] WARNING: could not read /proc/self/stat starttime after 3 attempts");
+    }
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
@@ -391,8 +397,7 @@ export function registerAsyncAgents(
           const parentPid = marker.parentPid;
           const parentStartTime = marker.parentStartTime;
           if (!parentPid || !parentStartTime) {
-            // Missing identity — can't verify, remove as stale
-            try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
+            // Missing identity — can't safely verify, skip
             continue;
           }
           // Check if parent pi process is alive via /proc/PID/stat starttime

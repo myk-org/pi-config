@@ -37,6 +37,9 @@ export interface CronTask {
 
 let CRON_FILE = ""; // Set on session_start to project-scoped dir
 
+/** Get current cron file path — used by autocomplete */
+export function getCronFilePath(): string { return CRON_FILE; }
+
 function saveCrons(tasks: CronTask[]): void {
   try {
     fs.writeFileSync(CRON_FILE, JSON.stringify(tasks), { mode: 0o600 });
