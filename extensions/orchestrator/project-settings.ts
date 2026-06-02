@@ -27,7 +27,15 @@ function loadProjectSettings(cwd: string): ProjectSettings {
   const settingsPath = getSettingsPath(cwd);
   if (!existsSync(settingsPath)) return {};
   try {
-    return JSON.parse(readFileSync(settingsPath, "utf-8")) as ProjectSettings;
+    const raw = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+    const result: ProjectSettings = {};
+    if (typeof raw.co_author === "boolean") result.co_author = raw.co_author;
+    if (typeof raw.use_worktrees === "boolean") result.use_worktrees = raw.use_worktrees;
+    if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
+      result.dream_interval_hours = raw.dream_interval_hours;
+    }
+    return result;
   } catch {
     return {};
   }

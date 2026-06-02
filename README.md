@@ -228,6 +228,8 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
 
 Resolution order: project file → env var → default.
 
+Global env vars: `PI_CO_AUTHOR`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`
+
 ### Override agents
 
 Place a `.md` file with the same `name` frontmatter in `~/.pi/agent/agents/` (user) or `.pi/agents/` (project) to override a bundled agent.
