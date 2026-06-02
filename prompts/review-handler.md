@@ -84,22 +84,27 @@ Read the **Raw Arguments** section above. Parse as follows:
    - If YES: extract optional PR number after `status` (e.g., `status 413` → PR 413)
    - Run `myk-pi-tools reviews status` (or `myk-pi-tools reviews status --pr 413` if PR number given)
    - Extract the table from the CLI output and present it as formatted text in your response (not as raw bash output)
-   - If the output includes an HTML report path (`HTML_PATH`), make it accessible:
-     - **Container** (check if `/.dockerenv` or `/.containerenv` exists): serve via httpd:
+   - If the output includes an HTML report path, make it accessible:
+     - **Container** (check if `/.dockerenv` or `/run/.containerenv` exists): serve via httpd:
 
        ```bash
+       HTML_PATH="/tmp/pi-work/pi-config/review-status-NNN.html"  # from CLI output
        HTTPD=~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
        PORT=$(uv run python3 $HTTPD --find-port)
        LOGDIR=/tmp/pi-work/pi-config
-       mkdir -p $LOGDIR
-       nohup uv run python3 $HTTPD --port $PORT --dir $(dirname $HTML_PATH) > $LOGDIR/httpd-$PORT.log 2>&1 &
+       mkdir -p "$LOGDIR"
+       nohup uv run python3 $HTTPD --port "$PORT" --dir "$(dirname "$HTML_PATH")" > "$LOGDIR/httpd-$PORT.log" 2>&1 &
        disown
        sleep 0.5
-       if ! kill -0 $! 2>/dev/null; then echo "Server failed:"; cat $LOGDIR/httpd-$PORT.log; fi
+       if ! kill -0 $! 2>/dev/null; then echo "Server failed:"; cat "$LOGDIR/httpd-$PORT.log"; fi
        ```
 
-       Then tell the user: "Report: `http://localhost:$PORT/$(basename $HTML_PATH)`"
-     - **Native** (no container markers): tell the user: "Report: `file://$HTML_PATH`"
+       Then tell the user the URL (without backticks so it's clickable):
+       <!-- markdownlint-disable-next-line MD034 -->
+       Report: http://localhost:PORT/review-status-NNN.html
+     - **Native** (no container markers): tell the user the path (without backticks):
+       <!-- markdownlint-disable-next-line MD034 -->
+       Report: file:///tmp/pi-work/pi-config/review-status-NNN.html
    - **STOP HERE — skip ALL other phases. Do not proceed.**
 2. Check if `--autorabbit` appears in the raw arguments
    - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
