@@ -316,20 +316,10 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       const tokens = prefix.trim().split(/\s+/).filter(Boolean);
       const selected = new Set(tokens);
       const lastPart = prefix.endsWith(" ") ? "" : (tokens[tokens.length - 1] || "");
-      // status and --auto flags are mutually exclusive
-      const hasStatus = tokens.includes("status");
-      const hasAutoFlag = tokens.some(t => t.startsWith("--auto"));
-      if (hasStatus) return null; // status is standalone, no more suggestions
-      const all = hasAutoFlag
-        ? [ // Only show remaining --auto flags (status excluded)
-            { value: "--autorabbit", label: "--autorabbit", description: "Auto-fix CodeRabbit comments in a loop" },
-            { value: "--autoqodo", label: "--autoqodo", description: "Auto-fix Qodo comments in a loop" },
-          ]
-        : [ // Show all options
-            { value: "status", label: "status", description: "Show all review comments from DB for current PR" },
-            { value: "--autorabbit", label: "--autorabbit", description: "Auto-fix CodeRabbit comments in a loop" },
-            { value: "--autoqodo", label: "--autoqodo", description: "Auto-fix Qodo comments in a loop" },
-          ];
+      const all = [
+        { value: "--autorabbit", label: "--autorabbit", description: "Auto-fix CodeRabbit comments in a loop" },
+        { value: "--autoqodo", label: "--autoqodo", description: "Auto-fix Qodo comments in a loop" },
+      ];
       const available = all.filter(item => !selected.has(item.value));
       return filter(available, lastPart);
     },
