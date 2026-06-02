@@ -27,15 +27,42 @@ def log(message: str) -> None:
 
 
 def _get_git_root() -> Path:
-    """Detect git root using git rev-parse --show-toplevel.
+    """Detect the main git repo root (not worktree root).
+
+    Uses --git-common-dir which always points to the main repo's .git/,
+    even when running inside a worktree. Falls back to --show-toplevel.
 
     Returns:
-        Path to the git repository root.
+        Path to the main git repository root.
 
     Raises:
         RuntimeError: If git command fails or times out.
     """
     try:
+        # --git-common-dir returns the shared .git dir (main repo), not worktree's
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            git_dir = Path(result.stdout.strip())
+            # .git dir's parent is the repo root
+            return git_dir.parent
+
+        # Fallback: --git-common-dir without --path-format (older git versions)
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            git_dir = Path(result.stdout.strip()).resolve()
+            return git_dir.parent
+
+        # Last resort: --show-toplevel + walk up to find .pi/
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
@@ -44,7 +71,16 @@ def _get_git_root() -> Path:
         )
         if result.returncode != 0:
             raise RuntimeError(f"git rev-parse failed: {result.stderr.strip()}")
-        return Path(result.stdout.strip())
+        root = Path(result.stdout.strip())
+        # If this is a worktree, .pi/ won't exist here — walk up to find it
+        candidate = root
+        for _ in range(5):
+            if (candidate / ".pi").is_dir():
+                return candidate
+            if candidate.parent == candidate:
+                break
+            candidate = candidate.parent
+        return root
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("git command timed out") from exc
     except FileNotFoundError as exc:
