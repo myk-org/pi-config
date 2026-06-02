@@ -201,15 +201,44 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
     },
   });
 
+  // Accumulate user messages for session-end indexing
+  let sessionMessages: string[] = [];
+  let sessionCwd = "";
+  let sessionId = "";
+
+  pi.on("session_start", (_event, ctx) => {
+    sessionMessages = [];
+    sessionCwd = ctx.cwd;
+    sessionId = ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
+  });
+
+  pi.on("input", (event, _ctx) => {
+    const text = event?.text;
+    if (text && text.length >= 15) {
+      sessionMessages.push(text.slice(0, 200));
+    }
+  });
+
   // Index compaction summaries when context is compacted
   pi.on("session_compact", (event, ctx) => {
     try {
       const summary = event?.compactionEntry?.summary;
       if (!summary || summary.length < 50) return;
-      const sessionId = ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
-      indexSessionSummary(ctx.cwd, sessionId, summary);
+      const sid = ctx.sessionManager?.getSessionId?.() || sessionId;
+      indexSessionSummary(ctx.cwd, sid, summary);
     } catch (err) {
       console.error("[session-search] indexing failed on compact:", err);
+    }
+  });
+
+  // Index accumulated messages on session shutdown
+  pi.on("session_shutdown", () => {
+    try {
+      if (sessionMessages.length < 3 || !sessionCwd) return;
+      const summary = sessionMessages.join(" | ").slice(0, 1000);
+      indexSessionSummary(sessionCwd, sessionId, summary);
+    } catch (err) {
+      console.error("[session-search] indexing failed on shutdown:", err);
     }
   });
 }

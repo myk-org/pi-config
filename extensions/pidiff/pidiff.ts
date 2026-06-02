@@ -75,7 +75,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
   function setStatus(ctx: any): void {
     try {
       if (ctx?.hasUI) {
-        ctx.ui.setStatus("4-diff", ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${PIDIFF_PORT}`));
+        ctx.ui.setStatus("8-diff", ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${PIDIFF_PORT}`));
       }
     } catch {
       // ctx may be stale if session was replaced during WebSocket connect
@@ -230,7 +230,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
         killDaemon("pidiff-server", log);
-        if (ctx.hasUI) { ctx.ui.setStatus("4-diff", undefined); ctx.ui.notify("pidiff server stopped", "info"); }
+        if (ctx.hasUI) { ctx.ui.setStatus("8-diff", undefined); ctx.ui.notify("pidiff server stopped", "info"); }
         return;
       }
 

@@ -34,12 +34,23 @@ export function registerDreaming(
   let dreamTimer: ReturnType<typeof setInterval> | null = null;
   let enabled = true;
   let lastCwd = "";
+  let lastCtx: any = null;
 
   let dreamInFlight = false;
+
+  function updateDreamStatus() {
+    if (!lastCtx?.ui) return;
+    if (dreamInFlight) {
+      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("warning", "🌙"));
+    } else {
+      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("muted", "🌙"));
+    }
+  }
 
   function runDreamAsync(cwd: string, lastSessionFile?: string) {
     if (dreamInFlight) return; // Prevent concurrent dreams
     dreamInFlight = true;
+    updateDreamStatus();
     const { agents } = discoverAgents(cwd, "user");
     const topicsDir = path.join(cwd, ".pi", "memory", "topics");
     const { id } = spawnAsyncAgent(
@@ -95,9 +106,13 @@ export function registerDreaming(
     // After dream completes, rebuild scores and reorganize topics
     if (id) setTimeout(() => {
       dreamInFlight = false;
+      updateDreamStatus();
       try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
     }, 5 * 60 * 1000);
-    else dreamInFlight = false;
+    else {
+      dreamInFlight = false;
+      updateDreamStatus();
+    }
   }
 
   let rebuildTimer: ReturnType<typeof setInterval> | null = null;
@@ -143,6 +158,7 @@ export function registerDreaming(
       if (arg === "on") {
         enabled = true;
         lastCwd = ctx.cwd;
+        lastCtx = ctx;
         startTimer(ctx.cwd);
         ctx.ui.notify("🌙 Auto-dreaming enabled (every 3h + session end)", "info");
       } else if (arg === "off") {
@@ -161,14 +177,16 @@ export function registerDreaming(
     description: "Run memory consolidation now (background, non-blocking)",
     handler: async (_args, ctx) => {
       lastCwd = ctx.cwd;
+      lastCtx = ctx;
       runDreamAsync(ctx.cwd);
-      ctx.ui.notify("🌙 Running memory consolidation in background...", "info");
     },
   });
 
   // Update cwd on session start
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
+    lastCtx = ctx;
+    updateDreamStatus();
     if (enabled) startTimer(ctx.cwd);
   });
 
