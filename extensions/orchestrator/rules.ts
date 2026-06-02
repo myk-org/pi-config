@@ -181,9 +181,11 @@ export function registerRules(
               `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet.replace(/[`$]/g, "")}`
             ).join("\n") +
             "\n\n";
-          // Telemetry — log session injections
+          // Telemetry — log session injections (same safeguards as logMemoryInjection)
           try {
             const telemetryPath = path.join(ctx.cwd, ".pi", "data", "memory-telemetry.jsonl");
+            const dir = path.dirname(telemetryPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
             const entry = JSON.stringify({
               ts: new Date().toISOString(),
               event: "session-inject",
@@ -191,7 +193,12 @@ export function registerRules(
               sessionCount: sessionResults.length,
             });
             fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
-          } catch { /* best-effort */ }
+            const stat = fs.statSync(telemetryPath);
+            if (stat.size > 512000) {
+              const lines = fs.readFileSync(telemetryPath, "utf-8").split("\n").filter(Boolean);
+              fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
+            }
+          } catch (e: any) { console.debug("[rules] session telemetry write failed:", e?.message?.slice(0, 100)); }
         }
       } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }
     }
