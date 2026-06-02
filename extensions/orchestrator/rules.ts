@@ -22,8 +22,8 @@ const SOCIAL_CLOSERS = new Set([
 function isSocialCloser(text: string): boolean {
   const stripped = text.trim().toLowerCase();
   if (SOCIAL_CLOSERS.has(stripped)) return true;
-  // Emoji-only messages (no alphanumeric content)
-  if (stripped.length > 0 && stripped.length <= 8 && !/[a-z0-9]/.test(stripped)) return true;
+  // Emoji-only messages (no alphanumeric, no non-Latin scripts like CJK/Cyrillic)
+  if (stripped.length > 0 && stripped.length <= 8 && !/[a-z0-9\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(stripped)) return true;
   return false;
 }
 
@@ -181,6 +181,17 @@ export function registerRules(
               `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet.replace(/[`$]/g, "")}`
             ).join("\n") +
             "\n\n";
+          // Telemetry — log session injections
+          try {
+            const telemetryPath = path.join(ctx.cwd, ".pi", "data", "memory-telemetry.jsonl");
+            const entry = JSON.stringify({
+              ts: new Date().toISOString(),
+              event: "session-inject",
+              prompt: event.prompt.slice(0, 200),
+              sessionCount: sessionResults.length,
+            });
+            fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
+          } catch { /* best-effort */ }
         }
       } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }
     }

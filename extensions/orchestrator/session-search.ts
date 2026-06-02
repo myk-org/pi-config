@@ -221,11 +221,13 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
   });
 
   // Index compaction summaries when context is compacted
-  pi.on("session_compact", (event, _ctx) => {
+  pi.on("session_compact", (event, ctx) => {
     try {
       const summary = event?.compactionEntry?.summary;
       if (!summary || summary.length < 50) return;
-      indexSessionSummary(sessionCwd, sessionId, summary);
+      const cwd = sessionCwd || ctx.cwd;
+      const sid = sessionId || ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
+      indexSessionSummary(cwd, sid, summary);
     } catch (err) {
       console.error("[session-search] indexing failed on compact:", err);
     }
