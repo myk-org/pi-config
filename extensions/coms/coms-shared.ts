@@ -199,7 +199,10 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
  * Prune stale coms registry entries on startup — removes entries with dead PIDs.
  * Call from session_start in both coms.ts and coms-net.ts.
  */
+let _pruned = false;
 export function pruneStaleRegistry(): void {
+    if (_pruned) return; // Already pruned this session (coms + coms-net both call this)
+    _pruned = true;
     const projectsDir = path.join(os.homedir(), ".pi", "coms", "projects");
     if (!fs.existsSync(projectsDir)) return;
     let dirs: string[];
