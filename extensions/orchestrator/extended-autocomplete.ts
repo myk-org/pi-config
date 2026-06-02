@@ -314,7 +314,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
     "review-handler": (prefix: string) => {
       const tokens = prefix.trim().split(/\s+/).filter(Boolean);
-      const selected = new Set(tokens.filter(p => p.startsWith("--")));
+      const selected = new Set(tokens);
       const lastPart = prefix.endsWith(" ") ? "" : (tokens[tokens.length - 1] || "");
       const all = [
         { value: "status", label: "status", description: "Show all review comments from DB for current PR" },
