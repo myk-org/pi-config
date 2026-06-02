@@ -11,6 +11,8 @@
  */
 
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "./agents.js";
@@ -103,13 +105,23 @@ export function registerDreaming(
       agents,
       { fireAndForget: true, name: "Dream" },
     );
-    // After dream completes, rebuild scores and reorganize topics
-    if (id) setTimeout(() => {
-      dreamInFlight = false;
-      updateDreamStatus();
-      try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
-    }, 5 * 60 * 1000);
-    else {
+    // Poll the async agent status file until dream completes
+    if (id) {
+      const statusPath = path.join(os.tmpdir(), "pi-async-agents", id, "status.json");
+      const pollInterval = setInterval(() => {
+        try {
+          if (!fs.existsSync(statusPath)) return;
+          const status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+          if (status.state === "complete" || status.state === "failed") {
+            clearInterval(pollInterval);
+            dreamInFlight = false;
+            updateDreamStatus();
+            try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
+          }
+        } catch { /* poll is best-effort */ }
+      }, 15_000); // Check every 15 seconds
+      if (pollInterval.unref) pollInterval.unref();
+    } else {
       dreamInFlight = false;
       updateDreamStatus();
     }
@@ -186,6 +198,7 @@ export function registerDreaming(
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
+    dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
     updateDreamStatus();
     if (enabled) startTimer(ctx.cwd);
   });
