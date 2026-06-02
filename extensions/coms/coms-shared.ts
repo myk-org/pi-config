@@ -8,6 +8,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 /**
  * Tokenize a command string respecting double and single quotes.
@@ -190,4 +193,31 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
         for (const [k, v] of state.flagValues) flags[k] = v;
         pi.appendEntry(persistKey, { active: state.active, flags, extra: state.extra || {} });
     } catch (e: any) { console.debug("[coms-shared] persist state failed:", e?.message || e); }
+}
+
+/**
+ * Prune stale coms registry entries on startup — removes entries with dead PIDs.
+ * Call from session_start in both coms.ts and coms-net.ts.
+ */
+export function pruneStaleRegistry(): void {
+    const projectsDir = path.join(os.homedir(), ".pi", "coms", "projects");
+    if (!fs.existsSync(projectsDir)) return;
+    for (const proj of fs.readdirSync(projectsDir)) {
+        const projDir = path.join(projectsDir, proj);
+        if (!fs.statSync(projDir).isDirectory()) continue;
+        const agentsDir = path.join(projDir, "agents");
+        if (!fs.existsSync(agentsDir)) continue;
+        for (const file of fs.readdirSync(agentsDir)) {
+            if (!file.endsWith(".json")) continue;
+            const fp = path.join(agentsDir, file);
+            try {
+                const data = JSON.parse(fs.readFileSync(fp, "utf-8"));
+                process.kill(data.pid, 0);
+            } catch (e: any) {
+                if (e?.code === "ESRCH") {
+                    try { fs.unlinkSync(fp); } catch {}
+                }
+            }
+        }
+    }
 }
