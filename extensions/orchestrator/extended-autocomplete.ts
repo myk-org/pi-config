@@ -316,8 +316,6 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       const tokens = prefix.trim().split(/\s+/).filter(Boolean);
       const selected = new Set(tokens);
       const lastPart = prefix.endsWith(" ") ? "" : (tokens[tokens.length - 1] || "");
-      // status and --auto flags are mutually exclusive
-      const hasAutoFlag = tokens.some(t => t.startsWith("--auto"));
       const all = [
         { value: "--autorabbit", label: "--autorabbit", description: "Auto-fix CodeRabbit comments in a loop" },
         { value: "--autoqodo", label: "--autoqodo", description: "Auto-fix Qodo comments in a loop" },
