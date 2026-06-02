@@ -233,8 +233,8 @@ export function pruneStaleRegistry(): void {
                             }
                             // Check socket endpoint — reliable in containers (pid reuse)
                             const endpoint = data?.endpoint;
-                            if (!endpoint) {
-                                // No endpoint — old format entry, remove
+                            if (typeof endpoint !== "string" || !endpoint) {
+                                // No/invalid endpoint — old format entry, remove
                                 try { fs.unlinkSync(fp); } catch {}
                                 continue;
                             }
@@ -247,15 +247,23 @@ export function pruneStaleRegistry(): void {
                             const sock = net.createConnection(endpoint);
                             sock.setTimeout(500);
                             sock.on("connect", () => sock.destroy()); // alive
-                            sock.on("error", () => {
+                            sock.on("error", (err: any) => {
                                 sock.destroy();
-                                try { fs.unlinkSync(fp); } catch {}
-                                try { fs.unlinkSync(endpoint); } catch {}
+                                // Only prune on definitive dead signals
+                                if (err?.code === "ECONNREFUSED" || err?.code === "ENOENT") {
+                                    try { fs.unlinkSync(fp); } catch {}
+                                    // Only unlink socket if it's under the coms sockets dir
+                                    if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
+                                        try { fs.unlinkSync(endpoint); } catch {}
+                                    }
+                                }
                             });
                             sock.on("timeout", () => {
                                 sock.destroy();
                                 try { fs.unlinkSync(fp); } catch {}
-                                try { fs.unlinkSync(endpoint); } catch {}
+                                if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
+                                    try { fs.unlinkSync(endpoint); } catch {}
+                                }
                             });
                         } catch (e: any) {
                             if (e?.code === "ESRCH" || e instanceof SyntaxError) {
