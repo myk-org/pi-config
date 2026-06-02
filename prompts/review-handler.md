@@ -83,8 +83,9 @@ Read the **Raw Arguments** section above. Parse as follows:
 1. Check if `status` appears in the raw arguments
    - If YES: extract optional PR number after `status` (e.g., `status 413` → PR 413)
    - Run `myk-pi-tools reviews status` (or `myk-pi-tools reviews status --pr 413` if PR number given)
-   - Extract the table from the CLI output and present it as formatted text in your response
-     (not as raw bash output — the user should see the table directly)
+   - Present the CLI output as formatted text in your response (not as raw bash output).
+     If the output contains a table, show it directly. If it contains diagnostics or errors,
+     show those instead.
    - If the CLI output contains `HTML report saved:`, extract the full path after it.
      Serve the report using the file preview rule (see `rules/45-file-preview.md`).
      The file preview rule handles httpd startup, port allocation, and container detection.
