@@ -83,7 +83,18 @@ Read the **Raw Arguments** section above. Parse as follows:
 1. Check if `status` appears in the raw arguments
    - If YES: extract optional PR number after `status` (e.g., `status 413` → PR 413)
    - Run `myk-pi-tools reviews status` (or `myk-pi-tools reviews status --pr 413` if PR number given)
-   - Return the output to the user. **STOP HERE — skip ALL other phases. Do not proceed.**
+   - Extract the table from the CLI output and present it as formatted text in your response (not as raw bash output)
+   - If the output includes an HTML report path, serve it using the file preview httpd:
+
+     ```bash
+     HTTPD=~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
+     PORT=$(uv run python3 $HTTPD --find-port)
+     nohup uv run python3 $HTTPD --port $PORT --dir $(dirname $HTML_PATH) > /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log 2>&1 &
+     disown
+     ```
+
+     Then tell the user: "Report: `http://localhost:$PORT/$(basename $HTML_PATH)`"
+   - **STOP HERE — skip ALL other phases. Do not proceed.**
 2. Check if `--autorabbit` appears in the raw arguments
    - If YES: set autorabbit mode = ON, remove `--autorabbit` from the text
    - If NO: autorabbit mode = OFF
