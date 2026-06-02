@@ -50,9 +50,14 @@ Ask the user where to create the skill:
 > - **Global** (`~/.agents/skills/`) — available in all projects
 > - **Project** (`.pi/skills/`) — available only in this project
 
-Use `ask_user` with options: `["Global (~/.agents/skills/)", "Project (.pi/skills/)"]`
+Use `ask_user` with options: `["Global", "Project"]`
 
-Store the chosen path prefix for Step 3.
+Map the response to the path:
+
+- "Global" → `~/.agents/skills/`
+- "Project" → `.pi/skills/`
+
+Store the resolved path for Step 3.
 
 ### Step 2: Extract the Workflow
 
