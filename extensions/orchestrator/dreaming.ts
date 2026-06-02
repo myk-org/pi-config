@@ -42,7 +42,6 @@ export function registerDreaming(
     dreamInFlight = true;
     const { agents } = discoverAgents(cwd, "user");
     const topicsDir = path.join(cwd, ".pi", "memory", "topics");
-    const sessionArg = lastSessionFile ? `\nSession file: ${lastSessionFile}` : "";
     const { id } = spawnAsyncAgent(
       "worker",
       `Memory dreaming — analyze session and maintain topic files.\n` +
@@ -52,7 +51,11 @@ export function registerDreaming(
       `Steps:\n` +
       `1. Read all existing topic files in ${topicsDir}/ (lessons.md, preferences.md, patterns.md, decisions.md, completions.md, mistakes.md).\n` +
       `   If the directory doesn't exist, create it.\n` +
-      `2. If a session file is provided, read it and extract things worth remembering:\n` +
+      `2. QUALITY GATE: Before extracting from any session, assess its quality:\n` +
+      `   - Score depth (substantive exchanges > 100 chars? decisions made? corrections?)\n` +
+      `   - Skip sessions that are only greetings, trivial Q&A, or < 3 exchanges\n` +
+      `   - Only extract from sessions with real decisions, corrections, or completed work\n` +
+      `3. If a session file is provided, read it and extract things worth remembering:\n` +
       `   - User corrections → [lesson] → lessons.md\n` +
       `   - User preferences → [preference] → preferences.md\n` +
       `   - Mistakes or repeated fix attempts → [mistake] → mistakes.md\n` +
@@ -60,22 +63,22 @@ export function registerDreaming(
       `   - Patterns or conventions → [pattern] → patterns.md\n` +
       `   - Architectural/design decisions → [decision] → decisions.md\n` +
       `   Do NOT add duplicates of existing entries.\n` +
-      `3. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
+      `4. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
       `   If it does, read the timestamp — only process sessions newer than that.\n` +
       `   Session directory: find .jsonl files under the pi sessions directory.\n` +
-      `   For each unprocessed session, extract durable knowledge (same categories as step 2).\n` +
+      `   For each unprocessed session, extract durable knowledge (same categories as step 3).\n` +
       `   Limit: process at most 5 sessions per dream cycle to avoid overload.\n` +
-      `4. Reorganize each topic file:\n` +
+      `5. Reorganize each topic file:\n` +
       `   - Remove duplicate or near-duplicate entries\n` +
       `   - Remove stale/useless entries\n` +
       `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
       `   - NEVER remove or modify entries marked with *(pinned)*\n` +
-      `5. Write each updated topic file with this format:\n` +
+      `6. Write each updated topic file with this format:\n` +
       `   # TopicName\n` +
       `   \n` +
       `   - [category] summary *(pinned)*    (if pinned)\n` +
       `   - [category] summary               (if not pinned)\n` +
-      `6. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
+      `7. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
       `   create a skill file at .pi/skills/<name>/SKILL.md (project-level, NOT global ~/.agents/).\n` +
       `   The SKILL.md MUST start with YAML frontmatter:\n` +
       `   ---\n` +
@@ -83,8 +86,8 @@ export function registerDreaming(
       `   description: "What this skill does and when to use it"\n` +
       `   ---\n` +
       `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
-      `7. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
-      `8. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
+      `8. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
+      `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
       cwd,
       agents,
       { fireAndForget: true, name: "Dream" },

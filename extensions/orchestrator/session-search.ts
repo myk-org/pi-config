@@ -94,14 +94,14 @@ export function indexSessionSummary(
 
 // ── Search sessions ────────────────────────────────────────────────────────
 
-interface SearchResult {
+export interface SearchResult {
   sessionId: string;
   timestamp: string;
   snippet: string;
   score: number;
 }
 
-function searchSessions(
+export function searchSessions(
   cwd: string,
   query: string,
   limit: number = 10,
@@ -150,6 +150,8 @@ function searchSessions(
 
   return results.slice(0, limit);
 }
+
+
 
 // ── Tool Registration ──────────────────────────────────────────────────────
 

@@ -162,8 +162,8 @@ export function buildSituationReport(
   let charBudget = tokenBudget * CHARS_PER_TOKEN;
   const bodySections: string[] = [];
 
-  // Reserve budget for header + possible warning
-  const headerReserve = 180;
+  // Reserve budget for header + possible warning + ground truth instruction
+  const headerReserve = 330;
   charBudget -= headerReserve;
 
   // Pinned entries always come first (no budget limit)
@@ -249,6 +249,12 @@ export function buildSituationReport(
   if (usagePercent >= 80) {
     reportSections.push(warningText);
   }
+
+  // Ground Truth instruction — tell the LLM to trust injected memory
+  reportSections.push(
+    "> **Ground Truth:** Memories above and contextually relevant memories injected below are authoritative. " +
+    "Use them directly — do not re-discover or re-verify information already in your context window.\n"
+  );
 
   reportSections.push(...bodySections);
 

@@ -1,6 +1,9 @@
 /**
  * Rule & memory injection — loads rules/*.md for the orchestrator
  * and project memories from topic files for all agents.
+ *
+ * Includes: social closer gate, session history auto-injection,
+ * retrieval telemetry, and vector-based contextual memory injection.
  */
 
 import * as fs from "node:fs";
@@ -8,6 +11,38 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, rebuildAndOrganize } from "./situation-report.js";
+
+/** Social closer gate — skip expensive vector search for trivial messages */
+const SOCIAL_CLOSERS = new Set([
+  "ok", "yes", "no", "thanks", "thank you", "got it", "sure",
+  "right", "correct", "agreed", "nice", "cool", "great", "perfect",
+  "👍", "👌", "✅", "🙏", "😊", "🎉", "💯",
+]);
+
+function isSocialCloser(text: string): boolean {
+  return SOCIAL_CLOSERS.has(text.trim().toLowerCase());
+}
+
+/** Log what memories were auto-injected for retrieval telemetry */
+function logMemoryInjection(cwd: string, prompt: string, injected: { text: string; category: string; similarity: number }[]): void {
+  try {
+    const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
+    const dir = path.dirname(telemetryPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      prompt: prompt.slice(0, 200),
+      injected: injected.map(m => ({ text: m.text.slice(0, 100), category: m.category, similarity: m.similarity })),
+    });
+    fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
+    // Cap file at 500KB
+    const stat = fs.statSync(telemetryPath);
+    if (stat.size > 512000) {
+      const lines = fs.readFileSync(telemetryPath, "utf-8").split("\n").filter(Boolean);
+      fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
+    }
+  } catch (e: any) { console.debug("[rules] telemetry write failed:", e?.message?.slice(0, 100)); }
+}
 
 export function registerRules(
   pi: ExtensionAPI,
@@ -87,8 +122,9 @@ export function registerRules(
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
+    const shouldSearch = !isSubagent && !!event.prompt && !isSocialCloser(event.prompt);
     let contextMemories = "";
-    if (!isSubagent && event.prompt) {
+    if (shouldSearch) {
       try {
         const { vectorSearch } = await import("./memory-embeddings.js");
         const { readAllTopicEntries } = await import("./memory-tree.js");
@@ -101,13 +137,32 @@ export function registerRules(
               "These memories were automatically retrieved based on your current message:\n\n" +
               relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
               "\n\n";
+            // Retrieval telemetry — track what was injected
+            logMemoryInjection(ctx.cwd, event.prompt, relevant);
           }
         }
       } catch (e: any) { console.debug("[rules] vector search auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
-    if (!extra && !memories && !contextMemories) return;
-    return { systemPrompt: memories + contextMemories + event.systemPrompt + extra };
+    // Auto-inject relevant session history (keyword search, zero LLM cost)
+    let sessionContext = "";
+    if (shouldSearch) {
+      try {
+        const { searchSessions } = await import("./session-search.js");
+        const sessionResults = searchSessions(ctx.cwd, event.prompt, 3);
+        if (sessionResults.length > 0) {
+          sessionContext = "\n# Relevant Past Sessions\n\n" +
+            "Automatically retrieved from past conversation summaries:\n\n" +
+            sessionResults.map(r =>
+              `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet}`
+            ).join("\n") +
+            "\n\n";
+        }
+      } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }
+    }
+
+    if (!extra && !memories && !contextMemories && !sessionContext) return;
+    return { systemPrompt: memories + contextMemories + sessionContext + event.systemPrompt + extra };
   });
 
   // Post-turn memory reminder: after a turn completes, check if any tool

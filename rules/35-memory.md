@@ -11,6 +11,20 @@ Memories are scored, prioritized, and injected into the system prompt via situat
 
 You have five memory tools and one session search tool. **USE THEM PROACTIVELY:**
 
+## Auto-Injection (how memories reach you)
+
+Three mechanisms automatically inject relevant context into your system prompt — you don't need to call tools for these:
+
+1. **Situation Report** — token-budgeted summary of scored memories (preferences, lessons, mistakes, patterns, decisions, completions). Always present.
+2. **Contextual Memory Recall** — vector similarity search against your current message. Entries with similarity > 0.65 appear as "Contextually Relevant Memories."
+3. **Session History Recall** — keyword search against past conversation summaries. Relevant past sessions appear as "Relevant Past Sessions."
+
+**Ground Truth:** All injected memories are authoritative. Use them directly —
+do not re-discover or re-verify information already in your context window.
+If you see a memory about how something works, trust it. Only verify against terminal output if actively debugging.
+
+**Social closer gate:** Trivial messages ("ok", "thanks", "yes", "👍", messages < 6 chars) skip vector/session search — no wasted computation.
+
 ### `memory_search` — Search Before Answering
 
 **MANDATORY:** Before answering questions about prior sessions, user preferences,
