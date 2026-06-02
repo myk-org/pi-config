@@ -202,22 +202,32 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
 export function pruneStaleRegistry(): void {
     const projectsDir = path.join(os.homedir(), ".pi", "coms", "projects");
     if (!fs.existsSync(projectsDir)) return;
-    for (const proj of fs.readdirSync(projectsDir)) {
-        const projDir = path.join(projectsDir, proj);
-        if (!fs.statSync(projDir).isDirectory()) continue;
-        const agentsDir = path.join(projDir, "agents");
-        if (!fs.existsSync(agentsDir)) continue;
-        for (const file of fs.readdirSync(agentsDir)) {
-            if (!file.endsWith(".json")) continue;
-            const fp = path.join(agentsDir, file);
-            try {
-                const data = JSON.parse(fs.readFileSync(fp, "utf-8"));
-                process.kill(data.pid, 0);
-            } catch (e: any) {
-                if (e?.code === "ESRCH") {
-                    try { fs.unlinkSync(fp); } catch {}
+    let dirs: string[];
+    try { dirs = fs.readdirSync(projectsDir); } catch { return; }
+    for (const proj of dirs) {
+        try {
+            const projDir = path.join(projectsDir, proj);
+            if (!fs.statSync(projDir).isDirectory()) continue;
+            const agentsDir = path.join(projDir, "agents");
+            if (!fs.existsSync(agentsDir)) continue;
+            for (const file of fs.readdirSync(agentsDir)) {
+                if (!file.endsWith(".json")) continue;
+                const fp = path.join(agentsDir, file);
+                try {
+                    const data = JSON.parse(fs.readFileSync(fp, "utf-8"));
+                    if (typeof data?.pid !== "number") {
+                        // Malformed entry — remove
+                        try { fs.unlinkSync(fp); } catch {}
+                        continue;
+                    }
+                    process.kill(data.pid, 0);
+                } catch (e: any) {
+                    if (e?.code === "ESRCH" || e instanceof SyntaxError) {
+                        // Dead process or malformed JSON — remove
+                        try { fs.unlinkSync(fp); } catch {}
+                    }
                 }
             }
-        }
+        } catch { /* skip unreadable project directory */ }
     }
 }

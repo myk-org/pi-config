@@ -231,8 +231,13 @@ export function registerComsNet(pi: ExtensionAPI) {
     upstreamComsNetInit(proxyPi as any);
 
     // Prune stale registry entries on session start (cleans up after crashes)
-    pi.on("session_start", () => {
+    // Also reset coms-net state on fresh starts (non-reload) to clear phantom peers
+    pi.on("session_start", (evt: any) => {
         try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms-net] stale cleanup:", e?.message?.slice(0, 100)); }
+        if (evt?.reason !== "reload") {
+            state.active = false;
+            persistState(pi, PERSIST_KEY, state);
+        }
     });
 
     // Restore serverStartedByUs after reload — MUST be registered after

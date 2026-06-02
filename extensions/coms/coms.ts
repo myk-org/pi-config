@@ -34,8 +34,13 @@ export function registerComs(pi: ExtensionAPI) {
     upstreamComsInit(proxyPi as any);
 
     // Prune stale registry entries on session start (cleans up after crashes)
-    pi.on("session_start", () => {
+    // Also reset coms state on fresh starts (non-reload) to clear phantom peers
+    pi.on("session_start", (evt: any) => {
         try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms] stale cleanup:", e?.message?.slice(0, 100)); }
+        if (evt?.reason !== "reload") {
+            state.active = false;
+            persistState(pi, PERSIST_KEY, state);
+        }
     });
 
     pi.registerCommand("coms", {
