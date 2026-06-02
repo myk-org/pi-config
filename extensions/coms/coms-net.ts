@@ -25,7 +25,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsNetInit from "./upstream-coms/coms-net.js";
 
 const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
@@ -229,6 +229,18 @@ export function registerComsNet(pi: ExtensionAPI) {
     );
 
     upstreamComsNetInit(proxyPi as any);
+
+    // Prune stale registry entries on session start (cleans up after crashes)
+    // Also reset coms-net state on fresh starts (non-reload) to clear phantom peers
+    pi.on("session_start", (evt: any) => {
+        try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms-net] stale cleanup:", e?.message?.slice(0, 100)); }
+        if (evt?.reason !== "reload") {
+            state.active = false;
+            state.flagValues.delete("auth-token"); // Don't persist auth tokens
+            state.extra = {}; // Clear server flags (serverStartedByUs, activeProject, etc.)
+            persistState(pi, PERSIST_KEY, state);
+        }
+    });
 
     // Restore serverStartedByUs after reload — MUST be registered after
     // createDeferredProxy/upstreamComsNetInit so the proxy hydrates state.extra first

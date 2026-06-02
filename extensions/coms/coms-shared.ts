@@ -8,6 +8,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 /**
  * Tokenize a command string respecting double and single quotes.
@@ -190,4 +193,52 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
         for (const [k, v] of state.flagValues) flags[k] = v;
         pi.appendEntry(persistKey, { active: state.active, flags, extra: state.extra || {} });
     } catch (e: any) { console.debug("[coms-shared] persist state failed:", e?.message || e); }
+}
+
+/**
+ * Prune stale coms registry entries on startup — removes entries with dead PIDs.
+ * Call from session_start in both coms.ts and coms-net.ts.
+ */
+let _pruned = false;
+/**
+ * Prune stale coms registry entries — non-blocking.
+ * Runs once per session (coms + coms-net both call this).
+ */
+export function pruneStaleRegistry(): void {
+    if (_pruned) return;
+    _pruned = true;
+    // Run async to avoid blocking session_start
+    setImmediate(() => {
+        try {
+            const comsDir = process.env.PI_COMS_DIR || path.join(os.homedir(), ".pi", "coms");
+            const projectsDir = path.join(comsDir, "projects");
+            if (!fs.existsSync(projectsDir)) return;
+            let dirs: string[];
+            try { dirs = fs.readdirSync(projectsDir); } catch { return; }
+            for (const proj of dirs) {
+                try {
+                    const projDir = path.join(projectsDir, proj);
+                    if (!fs.lstatSync(projDir).isDirectory()) continue;
+                    const agentsDir = path.join(projDir, "agents");
+                    if (!fs.existsSync(agentsDir)) continue;
+                    for (const file of fs.readdirSync(agentsDir)) {
+                        if (!file.endsWith(".json")) continue;
+                        const fp = path.join(agentsDir, file);
+                        try {
+                            const data = JSON.parse(fs.readFileSync(fp, "utf-8"));
+                            if (typeof data?.pid !== "number") {
+                                try { fs.unlinkSync(fp); } catch {}
+                                continue;
+                            }
+                            process.kill(data.pid, 0);
+                        } catch (e: any) {
+                            if (e?.code === "ESRCH" || e instanceof SyntaxError) {
+                                try { fs.unlinkSync(fp); } catch {}
+                            }
+                        }
+                    }
+                } catch { /* skip unreadable project directory */ }
+            }
+        } catch (e: any) { console.debug("[coms] async prune failed:", e?.message?.slice(0, 100)); }
+    });
 }

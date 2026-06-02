@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
-import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./upstream-coms/coms.js";
 
 function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
@@ -32,6 +32,16 @@ export function registerComs(pi: ExtensionAPI) {
     );
 
     upstreamComsInit(proxyPi as any);
+
+    // Prune stale registry entries on session start (cleans up after crashes)
+    // Also reset coms state on fresh starts (non-reload) to clear phantom peers
+    pi.on("session_start", (evt: any) => {
+        try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms] stale cleanup:", e?.message?.slice(0, 100)); }
+        if (evt?.reason !== "reload") {
+            state.active = false;
+            persistState(pi, PERSIST_KEY, state);
+        }
+    });
 
     pi.registerCommand("coms", {
         description: "P2P agent communication: /coms start | stop | status",
