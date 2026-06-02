@@ -190,7 +190,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       if (getSetting(ctx.cwd, "use_worktrees")) {
         const mb = getMainBranch(gitCwd) || "main";
         const hint = `Use: git worktree add .worktrees/<name> -b <branch> ${mb}`;
-        if (hasGitSub(command, "checkout") && !command.includes("--")) {
+        if (hasGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b\s+--\s/.test(command)) {
           return { block: true, reason: `⛔ git checkout blocked — use_worktrees is enabled. ${hint}` };
         }
         if (hasGitSub(command, "switch")) {
