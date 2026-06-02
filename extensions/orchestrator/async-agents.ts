@@ -380,8 +380,8 @@ export function registerAsyncAgents(
     try {
       for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
         const jobDir = path.join(PROJECT_TMP_DIR, entry);
-        if (!fs.statSync(jobDir).isDirectory()) continue;
         try {
+          if (!fs.statSync(jobDir).isDirectory()) continue;
           const markerPath = path.join(jobDir, "session.json");
           // Only process dirs that have session.json (agent dirs)
           if (!fs.existsSync(markerPath)) continue;
