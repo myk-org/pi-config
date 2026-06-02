@@ -63,7 +63,7 @@ pi-config/
 │   │   ├── project-settings.ts        # Project-level settings (.pi/pi-config-settings.json)
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
-│   │   └── utils.ts                 # Shared utilities
+│   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, etc.)
 │   ├── coms/                        # Inter-agent communication extension (standalone)
 │   │   ├── index.ts                 # Entry point — registers coms and coms-net
 │   │   ├── coms.ts                  # P2P agent communication wrapper (on-demand /coms command)
@@ -196,6 +196,35 @@ waiting for long-running agents.
 
 1. Edit the `ASYNC_ONLY_AGENTS` set in `extensions/orchestrator/subagent-tool.ts`
 2. Update this section in `AGENTS.md`
+
+### Project-Scoped Temp Directories
+
+All async agent temp files live under project-scoped subdirectories:
+
+```text
+/tmp/pi-data/<project>/
+├── debug.log                    # Async debug log
+├── cron-<pid>.json              # Cron task state
+├── .repeat-<pid>.json           # Repeat command detection
+├── nvim-<pid>-<ts>.lua          # Nvim integration (ephemeral)
+├── nvim-qf-<pid>-<ts>.json      # Nvim quickfix data (ephemeral)
+├── async-cfg-<id>.json          # Async runner config (ephemeral)
+├── subagent-<random>/           # Subagent prompt temp dir (ephemeral)
+├── async-results-pid-<pid>/     # Async agent completion results (picked up by poller)
+└── worker-<id>/                 # Async agent working dir
+    ├── status.json              # Agent state (running/complete/failed)
+    ├── session.json             # Parent PID + starttime for zombie detection
+    ├── output.log               # Agent output
+    └── system-prompt.md         # Agent system prompt
+```
+
+**Project name format:** cwd with `/` replaced by `__` (e.g., `home__myakove__git__pi-config`).
+
+**Zombie cleanup:** On `session_start`, scans project dir for dead agents.
+Checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` field 22.
+Dead parent = zombie = delete.
+
+**Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — creates dir if missing, returns path.
 
 ### Adding an Extension Command
 

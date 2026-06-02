@@ -27,7 +27,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
-import { clockHHMM, getPiInvocation } from "./utils.js";
+import { clockHHMM, getPiInvocation, getProjectTmpDir } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -304,8 +304,11 @@ async function mapWithConcurrency<I, O>(
 async function writePromptFile(
   name: string,
   prompt: string,
+  cwd?: string,
 ): Promise<{ dir: string; filePath: string }> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+  let dir: string;
+  const projectDir = getProjectTmpDir(cwd || process.cwd());
+  dir = await fs.promises.mkdtemp(path.join(projectDir, "subagent-"));
   const filePath = path.join(
     dir,
     `prompt-${name.replace(/[^\w.-]+/g, "_")}.md`,
@@ -404,7 +407,7 @@ export async function runSingleAgent(
 
   try {
     if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptFile(agent.name, agent.systemPrompt);
+      const tmp = await writePromptFile(agent.name, agent.systemPrompt, cwd);
       tmpDir = tmp.dir;
       tmpFile = tmp.filePath;
       args.push("--append-system-prompt", tmpFile);

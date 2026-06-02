@@ -13,11 +13,12 @@ const require = createRequire(import.meta.url);
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
-import { getPiInvocation } from "./utils.js";
+import { getPiInvocation, getProjectTmpDir, PI_TMP_BASE_DIR } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const ASYNC_BASE_DIR = path.join(os.tmpdir(), "pi-async-agents");
+
+
 const ASYNC_POLL_INTERVAL_MS = 3000;
 
 // ── Interfaces ───────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ export interface AsyncJob {
   name?: string;
   task: string;
   status: "queued" | "running" | "complete" | "failed";
-  asyncDir: string;
+  workerDir: string;
   startedAt: number;
   updatedAt: number;
   output?: string;
@@ -47,19 +48,16 @@ interface AsyncState {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function readAsyncStatus(asyncDir: string): any | null {
+function readAsyncStatus(workerDir: string): any | null {
   try {
-    const statusPath = path.join(asyncDir, "status.json");
+    const statusPath = path.join(workerDir, "status.json");
     return JSON.parse(fs.readFileSync(statusPath, "utf-8"));
   } catch { return null; }
 }
 
 /** Derive a stable directory name from a session file path. */
-function sessionDirName(sessionFile: string): string {
-  if (!sessionFile) return `pid-${process.pid}`;
-  const { createHash } = require("node:crypto");
-  const normalized = path.resolve(sessionFile);
-  return `session-${createHash("sha256").update(normalized).digest("hex").slice(0, 12)}`;
+function sessionResultsDirName(): string {
+  return `async-results-pid-${process.pid}`;
 }
 
 export function formatDuration(ms: number): string {
@@ -80,14 +78,15 @@ export function registerAsyncAgents(
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
-  const ASYNC_DIR = ASYNC_BASE_DIR;
-  let ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, `pid-${process.pid}`);
+  let PROJECT_TMP_DIR = PI_TMP_BASE_DIR; // Updated to project-scoped dir on session_start
+  let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
   const ASYNC_DEBUG = !!process.env.PI_ASYNC_DEBUG;
-  const ASYNC_LOG = path.join(os.tmpdir(), "pi-async-debug.log");
+  const EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PI_TMP_BASE_DIR, `early-debug-${process.pid}.log`) : "";
+  let DEBUG_LOG_PATH = EARLY_LOG_PATH; // Starts with early log, moved to project dir on session_start
   function asyncLog(msg: string) {
-    if (!ASYNC_DEBUG) return;
-    try { fs.appendFileSync(ASYNC_LOG, `${new Date().toISOString()} ${msg}\n`); } catch {}
+    if (!ASYNC_DEBUG || !DEBUG_LOG_PATH) return;
+    try { fs.appendFileSync(DEBUG_LOG_PATH, `${new Date().toISOString()} ${msg}\n`); } catch {}
   }
 
   const asyncState: AsyncState = {
@@ -143,7 +142,7 @@ export function registerAsyncAgents(
 
       for (const job of asyncState.jobs.values()) {
         if (job.status === "complete" || job.status === "failed") continue;
-        const status = readAsyncStatus(job.asyncDir);
+        const status = readAsyncStatus(job.workerDir);
         if (status) {
           job.status = status.state;
           job.updatedAt = status.lastUpdate ?? Date.now();
@@ -249,14 +248,29 @@ export function registerAsyncAgents(
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
 
     const id = `${agentName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const asyncDir = path.join(ASYNC_DIR, id);
+    const workerDir = path.join(PROJECT_TMP_DIR, id);
     const resultPath = path.join(ASYNC_RESULTS_DIR, `${id}.json`);
 
-    fs.mkdirSync(asyncDir, { recursive: true });
+    fs.mkdirSync(workerDir, { recursive: true });
     fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
 
     // Write session marker so restore can match jobs to sessions
-    fs.writeFileSync(path.join(asyncDir, "session.json"), JSON.stringify({ resultsDir: ASYNC_RESULTS_DIR, fireAndForget: options?.fireAndForget || false }), { mode: 0o600 });
+    let parentStartTime = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        parentStartTime = fs.readFileSync(`/proc/${process.pid}/stat`, "utf-8").split(" ")[21] || "";
+        if (parentStartTime) break;
+      } catch { /* retry */ }
+    }
+    if (!parentStartTime) {
+      console.debug("[async-agents] WARNING: could not read /proc/self/stat starttime after 3 attempts");
+    }
+    fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
+      resultsDir: ASYNC_RESULTS_DIR,
+      fireAndForget: options?.fireAndForget || false,
+      parentPid: process.pid,
+      parentStartTime,
+    }), { mode: 0o600 });
 
     // Build pi args
     const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
@@ -265,7 +279,7 @@ export function registerAsyncAgents(
     if (agent.tools?.length) piArgs.push("--tools", agent.tools.join(","));
 
     if (agent.systemPrompt?.trim()) {
-      const promptPath = path.join(asyncDir, "system-prompt.md");
+      const promptPath = path.join(workerDir, "system-prompt.md");
       fs.writeFileSync(promptPath, agent.systemPrompt, { mode: 0o600 });
       piArgs.push("--append-system-prompt", promptPath);
     }
@@ -275,7 +289,7 @@ export function registerAsyncAgents(
     const inv = getPiInvocation(piArgs);
 
     // Write config for the runner
-    const configPath = path.join(os.tmpdir(), `pi-async-cfg-${id}.json`);
+    const configPath = path.join(PROJECT_TMP_DIR, `async-cfg-${id}.json`);
     fs.writeFileSync(configPath, JSON.stringify({
       id,
       agent: agentName,
@@ -283,7 +297,7 @@ export function registerAsyncAgents(
       cwd,
       model: effectiveModel,
       resultPath,
-      asyncDir,
+      workerDir,
       sessionId: `${process.pid}:${process.cwd()}`,
       piCommand: inv.command,
       piArgs: inv.args,
@@ -336,7 +350,7 @@ export function registerAsyncAgents(
       name: options?.name,
       task: task.slice(0, 200),
       status: "queued",
-      asyncDir,
+      workerDir,
       startedAt: Date.now(),
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
@@ -353,30 +367,58 @@ export function registerAsyncAgents(
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
 
-    // Set results dir based on session file — stable across reload/resume/--continue
-    const sessionFile = ctx.sessionManager?.getSessionFile?.() || (ctx as any).sessionFile || "";
-    ASYNC_RESULTS_DIR = path.join(ASYNC_BASE_DIR, sessionDirName(sessionFile));
-    asyncLog(`session_start: sessionFile=${sessionFile.slice(-40)} resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
+    // Set project-scoped dir first (getProjectTmpDir creates it if missing)
+    PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
 
-    // Clean up legacy PID-based results directories only if their process is dead
+    // Set results dir — PID-scoped under project dir
+    ASYNC_RESULTS_DIR = path.join(PROJECT_TMP_DIR, sessionResultsDirName());
+    const projectLogPath = path.join(PROJECT_TMP_DIR, "debug.log");
+    // Move early startup logs to project dir
+    if (EARLY_LOG_PATH && fs.existsSync(EARLY_LOG_PATH)) {
+      try {
+        fs.appendFileSync(projectLogPath, fs.readFileSync(EARLY_LOG_PATH, "utf-8"));
+        fs.unlinkSync(EARLY_LOG_PATH);
+      } catch {}
+    }
+    DEBUG_LOG_PATH = projectLogPath;
+
+    // Zombie cleanup: scan project dir for dead agents
     try {
-      for (const entry of fs.readdirSync(ASYNC_BASE_DIR)) {
-        const m = entry.match(/^(?:results|pid)-(\d+)$/);
-        if (m) {
-          const pid = +m[1];
-          try { process.kill(pid, 0); } catch {
-            // Process dead — safe to clean up
-            try { fs.rmSync(path.join(ASYNC_BASE_DIR, entry), { recursive: true, force: true }); } catch {}
+      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
+        const jobDir = path.join(PROJECT_TMP_DIR, entry);
+        try {
+          if (!fs.statSync(jobDir).isDirectory()) continue;
+          const markerPath = path.join(jobDir, "session.json");
+          // Only process dirs that have session.json (agent dirs)
+          if (!fs.existsSync(markerPath)) continue;
+          const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8"));
+          // Skip our own session's agents
+          if (marker.resultsDir === ASYNC_RESULTS_DIR) continue;
+          const parentPid = marker.parentPid;
+          const parentStartTime = marker.parentStartTime;
+          if (!parentPid || !parentStartTime) {
+            // Missing identity — can't safely verify, skip
+            continue;
           }
-        }
+          // Check if parent pi process is alive via /proc/PID/stat starttime
+          try {
+            const stat = fs.readFileSync(`/proc/${parentPid}/stat`, "utf-8");
+            const currentStartTime = stat.split(" ")[21];
+            if (currentStartTime === parentStartTime) continue; // alive, same process
+          } catch {} // /proc not found = dead
+          // Parent dead or PID reused — zombie, delete
+          try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
+        } catch {} // skip unreadable dirs
       }
-    } catch (e: any) { console.debug("[async-agents] orphan cleanup failed:", e?.message || e); }
+    } catch (e: any) { console.debug("[async-agents] zombie cleanup failed:", e?.message?.slice(0, 100)); }
 
-    // Restore jobs from status files in ASYNC_DIR that belong to this session
+    asyncLog(`session_start: resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
+
+    // Restore jobs from status files in PROJECT_TMP_DIR that belong to this session
     try {
-      for (const entry of fs.readdirSync(ASYNC_DIR)) {
+      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
         if (entry.startsWith("session-") || entry.startsWith("pid-")) continue;
-        const jobDir = path.join(ASYNC_DIR, entry);
+        const jobDir = path.join(PROJECT_TMP_DIR, entry);
         const status = readAsyncStatus(jobDir);
         if (!status) continue;
         // Check if this job belongs to our session
@@ -398,7 +440,7 @@ export function registerAsyncAgents(
             agent: status.agent || "unknown",
             task: (status.task || "").slice(0, 200),
             status: isComplete ? status.state : "running",
-            asyncDir: path.join(ASYNC_DIR, entry),
+            workerDir: path.join(PROJECT_TMP_DIR, entry),
             startedAt: status.startedAt || Date.now(),
             updatedAt: status.lastUpdate || Date.now(),
             exitCode: status.exitCode,
@@ -468,7 +510,7 @@ export function registerAsyncAgents(
       if (idx < 0) return;
 
       const job = running[idx];
-      const outputPath = path.join(job.asyncDir, "output.log");
+      const outputPath = path.join(job.workerDir, "output.log");
 
       // Create a live output viewer as an overlay
       await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
@@ -597,7 +639,7 @@ export function registerAsyncAgents(
 
             const headerWidth = width - 2;
             const dur = formatDuration(Date.now() - job.startedAt);
-            const status = readAsyncStatus(job.asyncDir);
+            const status = readAsyncStatus(job.workerDir);
             const state = status?.state || job.status;
             const stateIcon = state === "complete" ? "✅" : state === "failed" ? "❌" : "⏳";
             const header = truncateToWidth(`${stateIcon} ${job.name || job.agent} — ${dur} — ${job.task.slice(0, 40)}`, headerWidth);
@@ -668,7 +710,7 @@ export function registerAsyncAgents(
     }
 
     for (const job of targets) {
-      const status = readAsyncStatus(job.asyncDir);
+      const status = readAsyncStatus(job.workerDir);
       if (status?.pid) {
         try {
           const tree = execFileSync("pstree", ["-p", String(status.pid)], { encoding: "utf-8", timeout: 3000 });
@@ -736,7 +778,7 @@ export function registerAsyncAgents(
       const job = running[idx];
 
       // Kill entire process tree
-      const status = readAsyncStatus(job.asyncDir);
+      const status = readAsyncStatus(job.workerDir);
       if (status?.pid) {
         const killLog: string[] = [];
         try {
@@ -753,7 +795,7 @@ export function registerAsyncAgents(
           try { process.kill(status.pid, "SIGKILL"); killLog.push(`killed runner ${status.pid}`); } catch {}
           if (status.childPid) try { process.kill(status.childPid, "SIGKILL"); killLog.push(`killed child ${status.childPid}`); } catch {}
         }
-        const logPath = path.join(job.asyncDir, "kill.log");
+        const logPath = path.join(job.workerDir, "kill.log");
         fs.writeFileSync(logPath, killLog.join("\n"), "utf-8");
       }
 

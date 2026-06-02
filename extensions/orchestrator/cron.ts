@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "./agents.js";
+import { getProjectTmpDir } from "./utils.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -34,15 +35,20 @@ export interface CronTask {
 
 // ── Persistence ──────────────────────────────────────────────────────
 
-const CRON_FILE = path.join(os.tmpdir(), `pi-cron-${process.pid}.json`);
+let CRON_FILE = ""; // Set on session_start to project-scoped dir
+
+/** Get current cron file path — used by autocomplete */
+export function getCronFilePath(): string { return CRON_FILE; }
 
 function saveCrons(tasks: CronTask[]): void {
+  if (!CRON_FILE) return;
   try {
     fs.writeFileSync(CRON_FILE, JSON.stringify(tasks), { mode: 0o600 });
   } catch (e: any) { console.debug("[cron] save crons failed:", e?.message || e); }
 }
 
 function loadCrons(): CronTask[] {
+  if (!CRON_FILE) return [];
   try {
     const data = JSON.parse(fs.readFileSync(CRON_FILE, "utf-8"));
     return Array.isArray(data) ? data : [];
@@ -53,9 +59,10 @@ function loadCrons(): CronTask[] {
 
 function cleanupOrphanedCronFiles(): void {
   try {
-    const dir = os.tmpdir();
+    // Clean up project-scoped cron files
+    const dir = path.dirname(CRON_FILE);
     for (const f of fs.readdirSync(dir)) {
-      const m = f.match(/^pi-cron-(\d+)\.json$/);
+      const m = f.match(/^cron-(\d+)\.json$/);
       if (m && +m[1] !== process.pid) {
         try { process.kill(+m[1], 0); } catch {
           try { fs.unlinkSync(path.join(dir, f)); } catch {}
@@ -63,6 +70,7 @@ function cleanupOrphanedCronFiles(): void {
       }
     }
   } catch (e: any) { console.debug("[cron] cleanup orphaned cron files failed:", e?.message || e); }
+
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -184,6 +192,7 @@ export function registerCron(
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
+    CRON_FILE = path.join(getProjectTmpDir(ctx.cwd), `cron-${process.pid}.json`);
     cleanupOrphanedCronFiles();
 
     // Restore from persistence (after /reload or /new)
@@ -310,9 +319,9 @@ export function registerCron(
       if (action === "list-all") {
         const sections: string[] = [];
         try {
-          const dir = os.tmpdir();
+          const dir = path.dirname(CRON_FILE);
           for (const f of fs.readdirSync(dir)) {
-            const m = f.match(/^pi-cron-(\d+)\.json$/);
+            const m = f.match(/^cron-(\d+)\.json$/);
             if (!m) continue;
             const pid = +m[1];
             const isMe = pid === process.pid;
@@ -385,9 +394,9 @@ export function registerCron(
       if (sub === "list-all") {
         const sections: string[] = [];
         try {
-          const dir = os.tmpdir();
+          const dir = path.dirname(CRON_FILE);
           for (const f of fs.readdirSync(dir)) {
-            const m = f.match(/^pi-cron-(\d+)\.json$/);
+            const m = f.match(/^cron-(\d+)\.json$/);
             if (!m) continue;
             const pid = +m[1];
             const isMe = pid === process.pid;

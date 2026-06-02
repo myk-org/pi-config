@@ -18,7 +18,7 @@ interface RunConfig {
   tools?: string[];
   systemPrompt?: string;
   resultPath: string;
-  asyncDir: string;
+  workerDir: string;
   sessionId?: string;
   piCommand: string;
   piArgs: string[];
@@ -52,8 +52,8 @@ function writeJson(filePath: string, data: object): void {
 }
 
 async function run(config: RunConfig): Promise<void> {
-  const statusPath = path.join(config.asyncDir, "status.json");
-  const outputPath = path.join(config.asyncDir, "output.log");
+  const statusPath = path.join(config.workerDir, "status.json");
+  const outputPath = path.join(config.workerDir, "output.log");
   const startedAt = Date.now();
 
   const status: StatusPayload = {
@@ -74,7 +74,7 @@ async function run(config: RunConfig): Promise<void> {
   // Connect to pidash server to stream events
   const pidashPort = parseInt(process.env.PI_PIDASH_PORT || "", 10) || 19190;
   let pidashWs: any = null;
-  const pidashLog = path.join(config.asyncDir, "pidash-ws.log");
+  const pidashLog = path.join(config.workerDir, "pidash-ws.log");
   fs.writeFileSync(pidashLog, `START port=${pidashPort} id=${config.id}\n`);
   try {
     const _require = createRequire(import.meta.url);
@@ -221,7 +221,7 @@ async function run(config: RunConfig): Promise<void> {
     durationMs: endedAt - startedAt,
     cwd: config.cwd,
     sessionId: config.sessionId,
-    asyncDir: config.asyncDir,
+    workerDir: config.workerDir,
   });
 }
 
