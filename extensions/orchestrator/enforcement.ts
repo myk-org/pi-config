@@ -187,7 +187,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const gitCwd = resolveEffectiveCwd(command, ctx.cwd);
     if (isGitRepo(gitCwd)) {
       // Block branch switching when use_worktrees is enabled
-      if (getSetting(gitCwd, "use_worktrees")) {
+      if (getSetting(ctx.cwd, "use_worktrees")) {
         if (hasGitSub(command, "checkout") && /\bgit\b.*\bcheckout\b\s+(-b|-B)\b/.test(command)) {
           return {
             block: true,
@@ -281,7 +281,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           };
 
         // Co-author trailer injection
-        if (getSetting(gitCwd, "co_author")) {
+        if (getSetting(ctx.cwd, "co_author")) {
           const model = (ctx as any).model;
           if (model?.id && !command.includes("Co-authored-by:")) {
             // Pattern A: echo "..." | git commit -F -
