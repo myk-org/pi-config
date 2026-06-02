@@ -51,7 +51,13 @@ function resolveEffectiveCwd(command: string, sessionCwd: string): string {
   const cdMatch = command.match(/^\s*cd\s+([^\s;&|]+)/);
   if (cdMatch) {
     const target = cdMatch[1].replace(/['"]/g, "");
-    // Resolve relative paths against session cwd
+    if (target.startsWith("/")) return target;
+    return join(sessionCwd, target);
+  }
+  // Match: git -C /path/to/dir ...
+  const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
+  if (gitCMatch) {
+    const target = gitCMatch[1].replace(/['"]/g, "");
     if (target.startsWith("/")) return target;
     return join(sessionCwd, target);
   }
@@ -166,12 +172,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       return { block: true, reason: remoteExecReason };
     }
 
-    // Enforce git commit/push only via subagent (never directly from orchestrator)
-    if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    // Enforce git commit/push only via git-expert agent
+    if (process.env.PI_AGENT_NAME !== "git-expert") {
       if (hasGitSub(command, "commit") || hasGitSub(command, "push")) {
         return {
           block: true,
-          reason: "⛔ git commit/push must be executed via git-expert agent. Delegate to git-expert.",
+          reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
         };
       }
     }

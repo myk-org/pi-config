@@ -418,7 +418,7 @@ export async function runSingleAgent(
         cwd: cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
+        env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName },
       });
       let buf = "";
 
