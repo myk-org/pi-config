@@ -30,9 +30,18 @@ function normalizeForRepeatCheck(command: string): string {
 }
 
 // Repeat detection via temp file — immune to module reload / closure issues
-const REPEAT_FILE = `/tmp/.pi-repeat-${process.pid}.json`;
+// Repeat detection file — set to project dir on first use
+let REPEAT_FILE = "";
+
+function ensureRepeatFile(cwd: string): void {
+  if (!REPEAT_FILE) {
+    const { getProjectTmpDir } = require("./utils.js");
+    REPEAT_FILE = join(getProjectTmpDir(cwd), `.repeat-${process.pid}.json`);
+  }
+}
 
 function readRepeatState(): { lastCmd: string; count: number } {
+  if (!REPEAT_FILE) return { lastCmd: "", count: 0 };
   try {
     return JSON.parse(readFileSync(REPEAT_FILE, "utf-8"));
   } catch {
@@ -41,6 +50,7 @@ function readRepeatState(): { lastCmd: string; count: number } {
 }
 
 function writeRepeatState(state: { lastCmd: string; count: number }): void {
+  if (!REPEAT_FILE) return;
   try {
     writeFileSync(REPEAT_FILE, JSON.stringify(state));
   } catch (e: any) { console.debug("[enforcement] write repeat state failed:", e?.message || e); }
@@ -75,6 +85,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only
     if (process.env.PI_SUBAGENT_CHILD !== "1") {
+      ensureRepeatFile(ctx.cwd);
       const normalized = normalizeForRepeatCheck(command);
       const rs = readRepeatState();
       if (normalized === rs.lastCmd) {

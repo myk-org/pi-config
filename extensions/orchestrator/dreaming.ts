@@ -19,6 +19,7 @@ import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { rebuildAndOrganize } from "./situation-report.js";
+import { getProjectTmpDir } from "./utils.js";
 
 // Default: 3 hours. Override with PI_DREAM_INTERVAL_HOURS env var (0.5–24).
 const _rawHours = parseFloat(process.env.PI_DREAM_INTERVAL_HOURS || "3");
@@ -112,7 +113,9 @@ export function registerDreaming(
     );
     // Poll the async agent status file until dream completes
     if (id) {
-      const statusPath = path.join(os.tmpdir(), "pi-async-agents", id, "status.json");
+      // Scan project dir for the worker's status file
+      const projectDir = getProjectTmpDir(cwd);
+      const statusPath = path.join(projectDir, id, "status.json");
       const pollStart = Date.now();
       const POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 min max
       if (activePollInterval) clearInterval(activePollInterval);

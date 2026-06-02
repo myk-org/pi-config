@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runGit } from "./git-helpers.js";
+import { getProjectTmpDir } from "./utils.js";
 
 const NVIM_SOCKET = process.env.NVIM;
 
@@ -23,10 +24,10 @@ export function isInsideNvim(): boolean {
  * Execute a lua file in the parent nvim instance via --remote-expr.
  * Returns the JSON-parsed result, or null on failure.
  */
-function nvimExecLua(luaCode: string): any | null {
+function nvimExecLua(luaCode: string, cwd?: string): any | null {
   if (!NVIM_SOCKET) return null;
 
-  const tmpFile = path.join(os.tmpdir(), `pi-nvim-${process.pid}-${Date.now()}.lua`);
+  const tmpFile = path.join(getProjectTmpDir(cwd || process.cwd()), `nvim-${process.pid}-${Date.now()}.lua`);
   try {
     fs.writeFileSync(tmpFile, luaCode, "utf-8");
     const result = execFileSync(
@@ -48,10 +49,10 @@ function nvimExecLua(luaCode: string): any | null {
  * Send a quickfix list to nvim and open the quickfix window.
  * Each entry: { filename, lnum?, col?, text }
  */
-function nvimSetQuickfix(entries: Array<{ filename: string; lnum?: number; col?: number; text?: string }>, title?: string): boolean {
+function nvimSetQuickfix(entries: Array<{ filename: string; lnum?: number; col?: number; text?: string }>, title?: string, cwd?: string): boolean {
   if (!NVIM_SOCKET || entries.length === 0) return false;
 
-  const dataFile = path.join(os.tmpdir(), `pi-nvim-qf-${process.pid}-${Date.now()}.json`);
+  const dataFile = path.join(getProjectTmpDir(cwd || process.cwd()), `nvim-qf-${process.pid}-${Date.now()}.json`);
   try {
     fs.writeFileSync(dataFile, JSON.stringify(entries), "utf-8");
 
@@ -79,7 +80,7 @@ vim.cmd("copen")
 return vim.fn.json_encode({status = "ok", count = #items})
 `;
 
-    const result = nvimExecLua(lua);
+    const result = nvimExecLua(lua, cwd);
     // Clean up data file if lua didn't remove it (nvim unreachable)
     if (result?.status !== "ok") {
       try { fs.unlinkSync(dataFile); } catch {}
@@ -156,7 +157,7 @@ export function registerNvim(pi: ExtensionAPI): void {
         text: f.status,
       }));
 
-      const ok = nvimSetQuickfix(entries, "pi: changed files");
+      const ok = nvimSetQuickfix(entries, "pi: changed files", ctx.cwd);
       if (ok) {
         ctx.ui.notify(`Sent ${entries.length} changed file(s) to nvim quickfix.`, "info");
       } else {

@@ -352,7 +352,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       // After "remove" — show task IDs (supports multi-select)
       if (sub === "remove" || sub === "rm" || sub === "delete" || sub === "kill") {
         try {
-          const cronFile = require("node:path").join(require("node:os").tmpdir(), `pi-cron-${process.pid}.json`);
+          const { getProjectTmpDir } = require("./utils.js");
+          const cronFile = require("node:path").join(getProjectTmpDir(process.cwd()), `cron-${process.pid}.json`);
           const cronTasks = JSON.parse(require("node:fs").readFileSync(cronFile, "utf-8"));
           if (Array.isArray(cronTasks)) {
             const alreadySelected = new Set(parts.slice(1).filter(p => p !== lastPart));
