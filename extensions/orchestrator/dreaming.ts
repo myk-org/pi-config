@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "./agents.js";
+import { ICON_DREAM } from "./icons.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 
 // Default: 3 hours. Override with PI_DREAM_INTERVAL_HOURS env var (0.5–24).
@@ -43,9 +44,9 @@ export function registerDreaming(
   function updateDreamStatus() {
     if (!lastCtx?.ui) return;
     if (dreamInFlight) {
-      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("warning", "🌙"));
+      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("warning", ICON_DREAM));
     } else {
-      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("muted", "🌙"));
+      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("muted", ICON_DREAM));
     }
   }
 
@@ -192,6 +193,16 @@ export function registerDreaming(
       lastCtx = ctx;
       runDreamAsync(ctx.cwd);
     },
+  });
+
+  // Set initial dream status on first agent start (fires on /reload too, unlike session_start)
+  let initialized = false;
+  pi.on("before_agent_start", (_event, ctx) => {
+    if (!initialized) {
+      initialized = true;
+      lastCtx = ctx;
+      updateDreamStatus();
+    }
   });
 
   // Update cwd on session start
