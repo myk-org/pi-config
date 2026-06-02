@@ -75,7 +75,7 @@ def _get_git_root() -> Path:
         # If this is a worktree, .pi/ won't exist here — walk up to find it
         candidate = root
         for _ in range(5):
-            if (candidate / ".pi").exists():
+            if (candidate / ".pi").is_dir():
                 return candidate
             if candidate.parent == candidate:
                 break
