@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getSetting } from "./project-settings.js";
 import {
   DANGEROUS,
   getCurrentBranch,
@@ -185,6 +186,22 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Git protection
     const gitCwd = resolveEffectiveCwd(command, ctx.cwd);
     if (isGitRepo(gitCwd)) {
+      // Block branch switching when use_worktrees is enabled
+      if (getSetting(gitCwd, "use_worktrees")) {
+        if (hasGitSub(command, "checkout") && /\bgit\b.*\bcheckout\b\s+(-b|-B)\b/.test(command)) {
+          return {
+            block: true,
+            reason: "⛔ Branch creation via checkout blocked — use_worktrees is enabled. Use: git worktree add .worktrees/<name> -b <branch> origin/main",
+          };
+        }
+        if (hasGitSub(command, "switch") && /\bgit\b.*\bswitch\b\s+(-c|-C)\b/.test(command)) {
+          return {
+            block: true,
+            reason: "⛔ Branch creation via switch blocked — use_worktrees is enabled. Use: git worktree add .worktrees/<name> -b <branch> origin/main",
+          };
+        }
+      }
+
       // Block git add . / git add -A
       if (
         hasGitSub(command, "add") &&
@@ -264,7 +281,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           };
 
         // Co-author trailer injection
-        if (existsSync(join(gitCwd, ".pi-co-author"))) {
+        if (getSetting(gitCwd, "co_author")) {
           const model = (ctx as any).model;
           if (model?.id && !command.includes("Co-authored-by:")) {
             // Pattern A: echo "..." | git commit -F -

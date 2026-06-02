@@ -19,6 +19,7 @@ import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
 import { registerDreaming } from "./dreaming.js";
 import { registerEnforcement } from "./enforcement.js";
+import { registerProjectSettings } from "./project-settings.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
 import { registerStatusLine } from "./status-line.js";
@@ -79,6 +80,7 @@ export default function (pi: ExtensionAPI) {
   registerAskUser(pi, terminalNotify);
   const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
+  registerProjectSettings(pi);
   registerEnforcement(pi, IN_CONTAINER);
   registerRules(pi, getAsyncJobs);
 
