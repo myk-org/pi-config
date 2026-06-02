@@ -20,15 +20,22 @@ const SOCIAL_CLOSERS = new Set([
 ]);
 
 function isSocialCloser(text: string): boolean {
-  return SOCIAL_CLOSERS.has(text.trim().toLowerCase());
+  const stripped = text.trim().toLowerCase();
+  if (SOCIAL_CLOSERS.has(stripped)) return true;
+  // Emoji-only messages (no alphanumeric content)
+  if (stripped.length > 0 && stripped.length <= 8 && !/[a-z0-9]/.test(stripped)) return true;
+  return false;
 }
+
+/** Track last injected memories for usage detection in turn_end */
+let lastInjectedMemories: { text: string; category: string; similarity: number }[] = [];
 
 /** Log what memories were auto-injected for retrieval telemetry */
 function logMemoryInjection(cwd: string, prompt: string, injected: { text: string; category: string; similarity: number }[]): void {
   try {
     const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
     const dir = path.dirname(telemetryPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const entry = JSON.stringify({
       ts: new Date().toISOString(),
       prompt: prompt.slice(0, 200),
@@ -42,6 +49,22 @@ function logMemoryInjection(cwd: string, prompt: string, injected: { text: strin
       fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
     }
   } catch (e: any) { console.debug("[rules] telemetry write failed:", e?.message?.slice(0, 100)); }
+}
+
+/** Log whether injected memories were referenced in the LLM response */
+function logMemoryUsage(cwd: string, injected: { text: string; category: string; similarity: number }[], used: { text: string; category: string; similarity: number }[]): void {
+  try {
+    const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      event: "usage",
+      injectedCount: injected.length,
+      usedCount: used.length,
+      usageRate: injected.length > 0 ? +(used.length / injected.length).toFixed(2) : 0,
+      used: used.map(m => ({ text: m.text.slice(0, 100), category: m.category })),
+    });
+    fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
+  } catch (e: any) { console.debug("[rules] telemetry usage write failed:", e?.message?.slice(0, 100)); }
 }
 
 export function registerRules(
@@ -139,6 +162,7 @@ export function registerRules(
               "\n\n";
             // Retrieval telemetry — track what was injected
             logMemoryInjection(ctx.cwd, event.prompt, relevant);
+            lastInjectedMemories = relevant;
           }
         }
       } catch (e: any) { console.debug("[rules] vector search auto-inject failed:", e?.message?.slice(0, 100)); }
@@ -154,7 +178,7 @@ export function registerRules(
           sessionContext = "\n# Relevant Past Sessions\n\n" +
             "Automatically retrieved from past conversation summaries:\n\n" +
             sessionResults.map(r =>
-              `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet}`
+              `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet.replace(/[`$]/g, "")}`
             ).join("\n") +
             "\n\n";
         }
@@ -171,6 +195,23 @@ export function registerRules(
   // but the AI just modified files that have deployment-related memories.
   pi.on("turn_end", async (_event, ctx) => {
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+    // Retrieval telemetry — detect if injected memories were used in the response
+    try {
+      const response = (_event as any).response || (_event as any).assistantMessage || "";
+      if (response && lastInjectedMemories.length > 0) {
+        const responseLower = typeof response === "string" ? response.toLowerCase() : "";
+        if (responseLower.length > 50) {
+          const used = lastInjectedMemories.filter(m =>
+            responseLower.includes(m.text.toLowerCase().slice(0, 40))
+          );
+          if (used.length > 0 || lastInjectedMemories.length > 0) {
+            logMemoryUsage(ctx.cwd, lastInjectedMemories, used);
+          }
+        }
+        lastInjectedMemories = [];
+      }
+    } catch (e: any) { console.debug("[rules] telemetry usage detection failed:", e?.message?.slice(0, 100)); }
 
     // Check what files were modified in this turn by looking at tool results
     const toolResults = (_event as any).toolResults;

@@ -40,14 +40,17 @@ export function registerDreaming(
   let lastCtx: any = null;
 
   let dreamInFlight = false;
+  let activePollInterval: ReturnType<typeof setInterval> | null = null;
 
   function updateDreamStatus() {
-    if (!lastCtx?.ui) return;
-    if (dreamInFlight) {
-      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("warning", ICON_DREAM));
-    } else {
-      lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("muted", ICON_DREAM));
-    }
+    try {
+      if (!lastCtx?.ui) return;
+      if (dreamInFlight) {
+        lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("warning", ICON_DREAM));
+      } else {
+        lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("muted", ICON_DREAM));
+      }
+    } catch { /* stale UI context — ignore */ }
   }
 
   function runDreamAsync(cwd: string, lastSessionFile?: string) {
@@ -109,12 +112,25 @@ export function registerDreaming(
     // Poll the async agent status file until dream completes
     if (id) {
       const statusPath = path.join(os.tmpdir(), "pi-async-agents", id, "status.json");
+      const pollStart = Date.now();
+      const POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 min max
+      if (activePollInterval) clearInterval(activePollInterval);
       const pollInterval = setInterval(() => {
         try {
+          // Timeout guard — don't poll forever
+          if (Date.now() - pollStart > POLL_TIMEOUT_MS) {
+            clearInterval(pollInterval);
+            activePollInterval = null;
+            dreamInFlight = false;
+            updateDreamStatus();
+            console.debug("[dreaming] poll timed out after 30 min");
+            return;
+          }
           if (!fs.existsSync(statusPath)) return;
           const status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
           if (status.state === "complete" || status.state === "failed") {
             clearInterval(pollInterval);
+            activePollInterval = null;
             dreamInFlight = false;
             updateDreamStatus();
             try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
@@ -122,6 +138,7 @@ export function registerDreaming(
         } catch { /* poll is best-effort */ }
       }, 15_000); // Check every 15 seconds
       if (pollInterval.unref) pollInterval.unref();
+      activePollInterval = pollInterval;
     } else {
       dreamInFlight = false;
       updateDreamStatus();
@@ -189,6 +206,10 @@ export function registerDreaming(
   pi.registerCommand("dream", {
     description: "Run memory consolidation now (background, non-blocking)",
     handler: async (_args, ctx) => {
+      if (dreamInFlight) {
+        ctx.ui.notify("Dream already running — wait for it to finish", "warning");
+        return;
+      }
       lastCwd = ctx.cwd;
       lastCtx = ctx;
       runDreamAsync(ctx.cwd);
@@ -209,6 +230,7 @@ export function registerDreaming(
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
+    if (activePollInterval) { clearInterval(activePollInterval); activePollInterval = null; }
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
     updateDreamStatus();
     if (enabled) startTimer(ctx.cwd);

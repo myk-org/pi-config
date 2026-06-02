@@ -214,18 +214,18 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
 
   pi.on("input", (event, _ctx) => {
     const text = event?.text;
-    if (text && text.length >= 15) {
-      sessionMessages.push(text.slice(0, 200));
-    }
+    if (!text || text.length < 15) return;
+    // Skip slash commands and system-injected text
+    if (text.startsWith("/") || text.startsWith("[IMPORTANT:") || text.startsWith("[SYSTEM:")) return;
+    sessionMessages.push(text.slice(0, 200));
   });
 
   // Index compaction summaries when context is compacted
-  pi.on("session_compact", (event, ctx) => {
+  pi.on("session_compact", (event, _ctx) => {
     try {
       const summary = event?.compactionEntry?.summary;
       if (!summary || summary.length < 50) return;
-      const sid = ctx.sessionManager?.getSessionId?.() || sessionId;
-      indexSessionSummary(ctx.cwd, sid, summary);
+      indexSessionSummary(sessionCwd, sessionId, summary);
     } catch (err) {
       console.error("[session-search] indexing failed on compact:", err);
     }
