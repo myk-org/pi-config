@@ -156,6 +156,16 @@ export function registerDreaming(
     },
   });
 
+  // /dream command — manual trigger for memory consolidation
+  pi.registerCommand("dream", {
+    description: "Run memory consolidation now (background, non-blocking)",
+    handler: async (_args, ctx) => {
+      lastCwd = ctx.cwd;
+      runDreamAsync(ctx.cwd);
+      ctx.ui.notify("🌙 Running memory consolidation in background...", "info");
+    },
+  });
+
   // Update cwd on session start
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
