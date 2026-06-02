@@ -9,6 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 import * as os from "node:os";
 
@@ -232,30 +233,30 @@ export function pruneStaleRegistry(): void {
                             }
                             // Check socket endpoint — reliable in containers (pid reuse)
                             const endpoint = data?.endpoint;
-                            if (endpoint && !fs.existsSync(endpoint)) {
+                            if (!endpoint) {
+                                // No endpoint — old format entry, remove
+                                try { fs.unlinkSync(fp); } catch {}
+                                continue;
+                            }
+                            if (!fs.existsSync(endpoint)) {
                                 // Socket file gone — definitely dead
                                 try { fs.unlinkSync(fp); } catch {}
                                 continue;
                             }
-                            if (endpoint) {
-                                // Socket exists — try connect to verify
-                                const net = require("net") as typeof import("net");
-                                const sock = net.createConnection(endpoint);
-                                sock.setTimeout(500);
-                                sock.on("connect", () => sock.destroy()); // alive
-                                sock.on("error", () => {
-                                    try { fs.unlinkSync(fp); } catch {}
-                                    try { fs.unlinkSync(endpoint); } catch {}
-                                });
-                                sock.on("timeout", () => {
-                                    sock.destroy();
-                                    try { fs.unlinkSync(fp); } catch {}
-                                    try { fs.unlinkSync(endpoint); } catch {}
-                                });
-                            } else {
-                                // No endpoint — fall back to pid check
-                                process.kill(data.pid, 0);
-                            }
+                            // Socket exists — try connect to verify
+                            const sock = net.createConnection(endpoint);
+                            sock.setTimeout(500);
+                            sock.on("connect", () => sock.destroy()); // alive
+                            sock.on("error", () => {
+                                sock.destroy();
+                                try { fs.unlinkSync(fp); } catch {}
+                                try { fs.unlinkSync(endpoint); } catch {}
+                            });
+                            sock.on("timeout", () => {
+                                sock.destroy();
+                                try { fs.unlinkSync(fp); } catch {}
+                                try { fs.unlinkSync(endpoint); } catch {}
+                            });
                         } catch (e: any) {
                             if (e?.code === "ESRCH" || e instanceof SyntaxError) {
                                 try { fs.unlinkSync(fp); } catch {}
@@ -263,6 +264,37 @@ export function pruneStaleRegistry(): void {
                         }
                     }
                 } catch { /* skip unreadable project directory */ }
+            }
+            // Cleanup orphan sockets (no matching registry entry)
+            const socketsDir = path.join(comsDir, "sockets");
+            if (fs.existsSync(socketsDir)) {
+                try {
+                    const allEndpoints = new Set<string>();
+                    // Collect all endpoints from remaining registry entries
+                    for (const p of dirs) {
+                        try {
+                            const pd = path.join(projectsDir, p);
+                            if (!fs.lstatSync(pd).isDirectory()) continue;
+                            const ad = path.join(pd, "agents");
+                            if (!fs.existsSync(ad)) continue;
+                            for (const f of fs.readdirSync(ad)) {
+                                if (!f.endsWith(".json")) continue;
+                                try {
+                                    const d = JSON.parse(fs.readFileSync(path.join(ad, f), "utf-8"));
+                                    if (d?.endpoint) allEndpoints.add(d.endpoint);
+                                } catch {}
+                            }
+                        } catch {}
+                    }
+                    // Remove sockets with no registry entry
+                    for (const sf of fs.readdirSync(socketsDir)) {
+                        if (!sf.endsWith(".sock")) continue;
+                        const sp = path.join(socketsDir, sf);
+                        if (!allEndpoints.has(sp)) {
+                            try { fs.unlinkSync(sp); } catch {}
+                        }
+                    }
+                } catch {}
             }
         } catch (e: any) { console.debug("[coms] async prune failed:", e?.message?.slice(0, 100)); }
     });
