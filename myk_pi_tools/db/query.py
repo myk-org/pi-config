@@ -27,15 +27,31 @@ def log(message: str) -> None:
 
 
 def _get_git_root() -> Path:
-    """Detect git root using git rev-parse --show-toplevel.
+    """Detect the main git repo root (not worktree root).
+
+    Uses --git-common-dir which always points to the main repo's .git/,
+    even when running inside a worktree. Falls back to --show-toplevel.
 
     Returns:
-        Path to the git repository root.
+        Path to the main git repository root.
 
     Raises:
         RuntimeError: If git command fails or times out.
     """
     try:
+        # --git-common-dir returns the shared .git dir (main repo), not worktree's
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            git_dir = Path(result.stdout.strip())
+            # .git dir's parent is the repo root
+            return git_dir.parent
+
+        # Fallback: --show-toplevel (returns worktree root in worktrees)
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
