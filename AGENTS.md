@@ -18,7 +18,7 @@ pi-config/
 │   ├── debugger.md
 │   ├── docker-expert.md
 │   ├── docs-fetcher.md
-│   ├── frontend-expert.md
+│   ├── ts-expert.md
 │   ├── git-expert.md
 │   ├── github-expert.md
 │   ├── go-expert.md
@@ -92,7 +92,6 @@ pi-config/
 │   ├── create-coms-feature-manager.md
 │   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
-│   ├── dream.md
 │   ├── implement-and-review.md
 │   ├── implement.md
 │   ├── pr-review.md
@@ -301,6 +300,14 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Topics have hotness scores (reinforcement frequency)
 - Cold topics archived automatically (no reinforcement for 2× half-life)
 
+**Auto-Injection Pipeline** (`rules.ts`):
+
+- `before_agent_start`: injects situation report + vector-matched memories + session history
+- Social closer gate: skips search for trivial messages ("ok", "thanks", "👍")
+- `turn_end`: file-change memory reminders (vector search on modified file paths)
+- Retrieval telemetry: logs injected memories to `.pi/data/memory-telemetry.jsonl`
+- Ground Truth instruction: tells LLM to trust injected context as authoritative
+
 **Layer 4 — Vector Embeddings** (`memory-embeddings.ts`):
 
 - Model: `Xenova/bge-small-en-v1.5` (384 dims, runs locally via @xenova/transformers ONNX)
@@ -327,6 +334,7 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 
 - JSON-based keyword search over past conversation summaries
 - Indexed on session shutdown from compaction summaries
+- Auto-injected in `before_agent_start` for relevant past sessions
 - Storage: `.pi/data/session-search.json`
 
 **Capacity Signal** (`situation-report.ts`):

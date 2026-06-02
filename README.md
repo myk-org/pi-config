@@ -39,7 +39,7 @@ Single extension that provides:
 
 | Category | Agents |
 |----------|--------|
-| Languages | python-expert, go-expert, frontend-expert, java-expert, bash-expert |
+| Languages | python-expert, go-expert, ts-expert, java-expert, bash-expert |
 | Infrastructure | docker-expert, kubernetes-expert, jenkins-expert |
 | Dev workflow | git-expert, github-expert, test-runner, test-automator, debugger |
 | Documentation | technical-documentation-writer, api-documenter, docs-fetcher |

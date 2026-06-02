@@ -1,6 +1,6 @@
 ---
-name: frontend-expert
-description: Frontend development (JS/TS/React/Vue/Angular/CSS). UI design, component creation, and modern web technologies.
+name: ts-expert
+description: TypeScript, JavaScript, and frontend framework development (React/Vue/Angular/CSS). UI design, component creation, and modern web technologies.
 tools: read, write, edit, bash
 ---
 

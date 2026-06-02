@@ -1,6 +1,9 @@
 /**
  * Rule & memory injection — loads rules/*.md for the orchestrator
  * and project memories from topic files for all agents.
+ *
+ * Includes: social closer gate, session history auto-injection,
+ * retrieval telemetry, and vector-based contextual memory injection.
  */
 
 import * as fs from "node:fs";
@@ -8,6 +11,61 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, rebuildAndOrganize } from "./situation-report.js";
+
+/** Social closer gate — skip expensive vector search for trivial messages */
+const SOCIAL_CLOSERS = new Set([
+  "ok", "yes", "no", "thanks", "thank you", "got it", "sure",
+  "right", "correct", "agreed", "nice", "cool", "great", "perfect",
+  "👍", "👌", "✅", "🙏", "😊", "🎉", "💯",
+]);
+
+function isSocialCloser(text: string): boolean {
+  const stripped = text.trim().toLowerCase();
+  if (SOCIAL_CLOSERS.has(stripped)) return true;
+  // Emoji-only messages (no alphanumeric, no non-Latin scripts like CJK/Cyrillic)
+  if (stripped.length > 0 && stripped.length <= 8 && !/[a-z0-9\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(stripped)) return true;
+  return false;
+}
+
+/** Track last injected memories for usage detection in turn_end */
+let lastInjectedMemories: { text: string; category: string; similarity: number }[] = [];
+
+/** Log what memories were auto-injected for retrieval telemetry */
+function logMemoryInjection(cwd: string, prompt: string, injected: { text: string; category: string; similarity: number }[]): void {
+  try {
+    const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
+    const dir = path.dirname(telemetryPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      prompt: prompt.slice(0, 200),
+      injected: injected.map(m => ({ text: m.text.slice(0, 100), category: m.category, similarity: m.similarity })),
+    });
+    fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
+    // Cap file at 500KB
+    const stat = fs.statSync(telemetryPath);
+    if (stat.size > 512000) {
+      const lines = fs.readFileSync(telemetryPath, "utf-8").split("\n").filter(Boolean);
+      fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
+    }
+  } catch (e: any) { console.debug("[rules] telemetry write failed:", e?.message?.slice(0, 100)); }
+}
+
+/** Log whether injected memories were referenced in the LLM response */
+function logMemoryUsage(cwd: string, injected: { text: string; category: string; similarity: number }[], used: { text: string; category: string; similarity: number }[]): void {
+  try {
+    const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      event: "usage",
+      injectedCount: injected.length,
+      usedCount: used.length,
+      usageRate: injected.length > 0 ? +(used.length / injected.length).toFixed(2) : 0,
+      used: used.map(m => ({ text: m.text.slice(0, 100), category: m.category })),
+    });
+    fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
+  } catch (e: any) { console.debug("[rules] telemetry usage write failed:", e?.message?.slice(0, 100)); }
+}
 
 export function registerRules(
   pi: ExtensionAPI,
@@ -87,8 +145,9 @@ export function registerRules(
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
+    const shouldSearch = !isSubagent && !!event.prompt && !isSocialCloser(event.prompt);
     let contextMemories = "";
-    if (!isSubagent && event.prompt) {
+    if (shouldSearch) {
       try {
         const { vectorSearch } = await import("./memory-embeddings.js");
         const { readAllTopicEntries } = await import("./memory-tree.js");
@@ -101,13 +160,51 @@ export function registerRules(
               "These memories were automatically retrieved based on your current message:\n\n" +
               relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
               "\n\n";
+            // Retrieval telemetry — track what was injected
+            logMemoryInjection(ctx.cwd, event.prompt, relevant);
+            lastInjectedMemories = relevant;
           }
         }
       } catch (e: any) { console.debug("[rules] vector search auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
-    if (!extra && !memories && !contextMemories) return;
-    return { systemPrompt: memories + contextMemories + event.systemPrompt + extra };
+    // Auto-inject relevant session history (keyword search, zero LLM cost)
+    let sessionContext = "";
+    if (shouldSearch) {
+      try {
+        const { searchSessions } = await import("./session-search.js");
+        const sessionResults = searchSessions(ctx.cwd, event.prompt, 3);
+        if (sessionResults.length > 0) {
+          sessionContext = "\n# Relevant Past Sessions\n\n" +
+            "Automatically retrieved from past conversation summaries:\n\n" +
+            sessionResults.map(r =>
+              `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet.replace(/[`$]/g, "")}`
+            ).join("\n") +
+            "\n\n";
+          // Telemetry — log session injections (same safeguards as logMemoryInjection)
+          try {
+            const telemetryPath = path.join(ctx.cwd, ".pi", "data", "memory-telemetry.jsonl");
+            const dir = path.dirname(telemetryPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+            const entry = JSON.stringify({
+              ts: new Date().toISOString(),
+              event: "session-inject",
+              prompt: event.prompt.slice(0, 200),
+              sessionCount: sessionResults.length,
+            });
+            fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
+            const stat = fs.statSync(telemetryPath);
+            if (stat.size > 512000) {
+              const lines = fs.readFileSync(telemetryPath, "utf-8").split("\n").filter(Boolean);
+              fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
+            }
+          } catch (e: any) { console.debug("[rules] session telemetry write failed:", e?.message?.slice(0, 100)); }
+        }
+      } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }
+    }
+
+    if (!extra && !memories && !contextMemories && !sessionContext) return;
+    return { systemPrompt: memories + contextMemories + sessionContext + event.systemPrompt + extra };
   });
 
   // Post-turn memory reminder: after a turn completes, check if any tool
@@ -116,6 +213,23 @@ export function registerRules(
   // but the AI just modified files that have deployment-related memories.
   pi.on("turn_end", async (_event, ctx) => {
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+    // Retrieval telemetry — detect if injected memories were used in the response
+    try {
+      const response = (_event as any).response || (_event as any).assistantMessage || "";
+      if (response && lastInjectedMemories.length > 0) {
+        const responseLower = typeof response === "string" ? response.toLowerCase() : "";
+        if (responseLower.length > 50) {
+          const used = lastInjectedMemories.filter(m =>
+            responseLower.includes(m.text.toLowerCase().slice(0, 40))
+          );
+          if (used.length > 0 || lastInjectedMemories.length > 0) {
+            logMemoryUsage(ctx.cwd, lastInjectedMemories, used);
+          }
+        }
+        lastInjectedMemories = [];
+      }
+    } catch (e: any) { console.debug("[rules] telemetry usage detection failed:", e?.message?.slice(0, 100)); }
 
     // Check what files were modified in this turn by looking at tool results
     const toolResults = (_event as any).toolResults;

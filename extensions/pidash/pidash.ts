@@ -322,7 +322,7 @@ export function registerPidash(
         // Show status
         try {
           if (ctx.hasUI) {
-            ctx.ui.setStatus("5-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
+            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
           }
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect
@@ -765,7 +765,7 @@ export function registerPidash(
         connected = false;
         killDaemon("pidash-server", debugLog);
         if (ctx.hasUI) {
-          ctx.ui.setStatus("5-pidash", undefined);
+          ctx.ui.setStatus("9-pidash", undefined);
           ctx.ui.notify("pidash server stopped", "info");
         }
         return;

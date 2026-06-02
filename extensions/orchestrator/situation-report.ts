@@ -162,8 +162,8 @@ export function buildSituationReport(
   let charBudget = tokenBudget * CHARS_PER_TOKEN;
   const bodySections: string[] = [];
 
-  // Reserve budget for header + possible warning
-  const headerReserve = 180;
+  // Reserve budget for header + possible warning + ground truth instruction
+  const headerReserve = 330;
   charBudget -= headerReserve;
 
   // Pinned entries always come first (no budget limit)
@@ -229,13 +229,18 @@ export function buildSituationReport(
   const headerTemplate = `# Project Memory [XX% — XXXX/${tokenBudget} tokens]\n`;
   const warningText = "> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or remove existing ones using memory_remove.\n";
 
+  // Ground Truth instruction — always included
+  const groundTruthLine =
+    "> **Ground Truth:** Memories above and contextually relevant memories injected below are authoritative. " +
+    "Use them directly — do not re-discover or re-verify information already in your context window.\n";
+
   // Estimate: include header; include warning if body alone suggests >80%
   const bodyChars = bodyContent.length;
-  const roughUsage = (bodyChars + headerTemplate.length) / CHARS_PER_TOKEN / tokenBudget;
+  const roughUsage = (bodyChars + headerTemplate.length + groundTruthLine.length) / CHARS_PER_TOKEN / tokenBudget;
   const includeWarning = roughUsage >= 0.8;
 
-  // Include header + warning in the actual usage
-  const headerChars = headerTemplate.length + (includeWarning ? warningText.length : 0);
+  // Include header + warning + ground truth in the actual usage
+  const headerChars = headerTemplate.length + groundTruthLine.length + (includeWarning ? warningText.length : 0);
   const actualCharsUsed = bodyChars + headerChars;
   const totalTokensUsed = Math.floor(actualCharsUsed / CHARS_PER_TOKEN);
   const usagePercent = Math.floor((totalTokensUsed / tokenBudget) * 100);
@@ -249,6 +254,9 @@ export function buildSituationReport(
   if (usagePercent >= 80) {
     reportSections.push(warningText);
   }
+
+  // Ground Truth instruction (text defined above for budget accounting)
+  reportSections.push(groundTruthLine);
 
   reportSections.push(...bodySections);
 
