@@ -207,7 +207,7 @@ export function pruneStaleRegistry(): void {
     for (const proj of dirs) {
         try {
             const projDir = path.join(projectsDir, proj);
-            if (!fs.statSync(projDir).isDirectory()) continue;
+            if (!fs.lstatSync(projDir).isDirectory()) continue;
             const agentsDir = path.join(projDir, "agents");
             if (!fs.existsSync(agentsDir)) continue;
             for (const file of fs.readdirSync(agentsDir)) {

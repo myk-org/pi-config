@@ -236,6 +236,7 @@ export function registerComsNet(pi: ExtensionAPI) {
         try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms-net] stale cleanup:", e?.message?.slice(0, 100)); }
         if (evt?.reason !== "reload") {
             state.active = false;
+            state.flagValues.delete("auth-token"); // Don't persist auth tokens
             persistState(pi, PERSIST_KEY, state);
         }
     });
