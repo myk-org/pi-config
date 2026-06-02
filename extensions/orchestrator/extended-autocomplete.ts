@@ -314,6 +314,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
     "review-handler": (prefix: string) => {
       const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+      // If 'status' is already selected, no further suggestions (status is standalone)
+      if (tokens.includes("status")) return null;
       const selected = new Set(tokens);
       const lastPart = prefix.endsWith(" ") ? "" : (tokens[tokens.length - 1] || "");
       const all = [
