@@ -214,6 +214,20 @@ Loops until all approve, then runs tests.
 
 ## Customization
 
+### Project Settings
+
+Create `.pi/pi-config-settings.json` in your project to override global defaults:
+
+```json
+{
+  "co_author": true,
+  "use_worktrees": true,
+  "dream_interval_hours": 6
+}
+```
+
+Resolution order: project file → env var → default.
+
 ### Override agents
 
 Place a `.md` file with the same `name` frontmatter in `~/.pi/agent/agents/` (user) or `.pi/agents/` (project) to override a bundled agent.

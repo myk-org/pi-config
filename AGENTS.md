@@ -60,6 +60,7 @@ pi-config/
 │   │   ├── memory-embeddings.ts         # Vector embedding support for semantic memory search (fastembed)
 │   │   ├── memory-tree.ts             # Hierarchical topic-based memory organization
 │   │   ├── preference-extractor.ts    # Auto-extract user preferences from conversation
+│   │   ├── project-settings.ts        # Project-level settings (.pi/pi-config-settings.json)
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities
@@ -137,6 +138,7 @@ pi-config/
 ├── entrypoint.sh                    # Container entrypoint
 ├── README.md                        # Project README
 ├── AGENTS.md                        # This file
+├── pi-config-settings.example.json    # Example project settings file
 ├── package.json                     # Node.js dependencies (extensions)
 └── pyproject.toml                   # Python project config (myk_pi_tools)
 ```
@@ -347,6 +349,20 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Detects "I prefer...", "always use...", "never..." in user messages
 - Auto-adds to memory with explicit cue weight
 - Reinforces existing preferences on repetition
+
+### Project-Level Settings
+
+Settings file: `.pi/pi-config-settings.json` — per-project configuration overriding global env vars.
+
+| Setting | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `co_author` | boolean | disabled | `PI_CO_AUTHOR` | Co-author trailer in commits |
+| `use_worktrees` | boolean | disabled | `PI_USE_WORKTREES` | Force worktree-only workflow |
+| `dream_interval_hours` | number | 3 | `PI_DREAM_INTERVAL_HOURS` | Dream frequency |
+
+Resolution: project file → env var → default.
+
+Module: `extensions/orchestrator/project-settings.ts`
 
 ## Docker / Dockerfile
 
