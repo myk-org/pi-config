@@ -7,7 +7,7 @@
  * 3. Default (only dream_interval_hours has a default of 3)
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -64,11 +64,16 @@ function parseNumEnv(name: string): number | undefined {
 /** Cached settings per cwd */
 let cachedCwd = "";
 let cachedSettings: ProjectSettings = {};
+let cachedMtime = 0;
 
 function getSettings(cwd: string): ProjectSettings {
-  if (cwd === cachedCwd) return cachedSettings;
+  const settingsPath = getSettingsPath(cwd);
+  let mtime = 0;
+  try { if (existsSync(settingsPath)) mtime = lstatSync(settingsPath).mtimeMs; } catch {}
+  if (cwd === cachedCwd && mtime === cachedMtime) return cachedSettings;
   cachedSettings = loadProjectSettings(cwd);
   cachedCwd = cwd;
+  cachedMtime = mtime;
   return cachedSettings;
 }
 
@@ -122,6 +127,15 @@ export function migrateCoAuthorFile(cwd: string): void {
   try {
     const settingsPath = getSettingsPath(cwd);
     const dir = dirname(settingsPath);
+    // Guard against symlink attacks — skip migration if .pi or settings file is a symlink
+    if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
+      console.debug("[project-settings] .pi dir is a symlink — skipping migration");
+      return;
+    }
+    if (existsSync(settingsPath) && lstatSync(settingsPath).isSymbolicLink()) {
+      console.debug("[project-settings] settings file is a symlink — skipping migration");
+      return;
+    }
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     // Read raw JSON to preserve unknown keys
     let raw: Record<string, unknown> = {};

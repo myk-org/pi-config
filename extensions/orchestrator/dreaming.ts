@@ -148,17 +148,22 @@ export function registerDreaming(
 
   let rebuildTimer: ReturnType<typeof setInterval> | null = null;
 
+  let currentIntervalMs = 0;
+
   function startTimer(cwd: string) {
     lastCwd = cwd;
-    if (dreamTimer) return;
 
-    // Override dream interval from project settings if available
-    // getSetting already resolves project > env > default(3), just clamp range
+    // Resolve dream interval from project settings
     const projectHours = getSetting(cwd, "dream_interval_hours");
     const clampedHours = Math.max(0.5, Math.min(24, projectHours));
     const effectiveMs = clampedHours * 60 * 60 * 1000;
 
-    // LLM dreaming — every 3h (expensive, spawns worker agent)
+    // Restart timer if interval changed (or first start)
+    if (dreamTimer && currentIntervalMs === effectiveMs) return;
+    if (dreamTimer) clearInterval(dreamTimer);
+    currentIntervalMs = effectiveMs;
+
+    // LLM dreaming
     dreamTimer = setInterval(() => {
       if (enabled && lastCwd) runDreamAsync(lastCwd);
     }, effectiveMs);
