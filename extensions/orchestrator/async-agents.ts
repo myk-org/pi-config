@@ -379,10 +379,11 @@ export function registerAsyncAgents(
     // Zombie cleanup: scan project dir for dead agents
     try {
       for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
-        if (entry.startsWith("async-results-") || entry.startsWith("cron-") || entry.startsWith("subagent-") || entry.startsWith(".") || entry.endsWith(".json") || entry.endsWith(".log")) continue;
         const jobDir = path.join(PROJECT_TMP_DIR, entry);
+        if (!fs.statSync(jobDir).isDirectory()) continue;
         try {
           const markerPath = path.join(jobDir, "session.json");
+          // Only process dirs that have session.json (agent dirs)
           if (!fs.existsSync(markerPath)) continue;
           const marker = JSON.parse(fs.readFileSync(markerPath, "utf-8"));
           // Skip our own session's agents
