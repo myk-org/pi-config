@@ -230,7 +230,32 @@ export function pruneStaleRegistry(): void {
                                 try { fs.unlinkSync(fp); } catch {}
                                 continue;
                             }
-                            process.kill(data.pid, 0);
+                            // Check socket endpoint — reliable in containers (pid reuse)
+                            const endpoint = data?.endpoint;
+                            if (endpoint && !fs.existsSync(endpoint)) {
+                                // Socket file gone — definitely dead
+                                try { fs.unlinkSync(fp); } catch {}
+                                continue;
+                            }
+                            if (endpoint) {
+                                // Socket exists — try connect to verify
+                                const net = require("net") as typeof import("net");
+                                const sock = net.createConnection(endpoint);
+                                sock.setTimeout(500);
+                                sock.on("connect", () => sock.destroy()); // alive
+                                sock.on("error", () => {
+                                    try { fs.unlinkSync(fp); } catch {}
+                                    try { fs.unlinkSync(endpoint); } catch {}
+                                });
+                                sock.on("timeout", () => {
+                                    sock.destroy();
+                                    try { fs.unlinkSync(fp); } catch {}
+                                    try { fs.unlinkSync(endpoint); } catch {}
+                                });
+                            } else {
+                                // No endpoint — fall back to pid check
+                                process.kill(data.pid, 0);
+                            }
                         } catch (e: any) {
                             if (e?.code === "ESRCH" || e instanceof SyntaxError) {
                                 try { fs.unlinkSync(fp); } catch {}
