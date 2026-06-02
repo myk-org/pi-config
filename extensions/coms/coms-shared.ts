@@ -210,7 +210,8 @@ export function pruneStaleRegistry(): void {
     // Run async to avoid blocking session_start
     setImmediate(() => {
         try {
-            const projectsDir = path.join(os.homedir(), ".pi", "coms", "projects");
+            const comsDir = process.env.PI_COMS_DIR || path.join(os.homedir(), ".pi", "coms");
+            const projectsDir = path.join(comsDir, "projects");
             if (!fs.existsSync(projectsDir)) return;
             let dirs: string[];
             try { dirs = fs.readdirSync(projectsDir); } catch { return; }

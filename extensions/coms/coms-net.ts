@@ -237,6 +237,7 @@ export function registerComsNet(pi: ExtensionAPI) {
         if (evt?.reason !== "reload") {
             state.active = false;
             state.flagValues.delete("auth-token"); // Don't persist auth tokens
+            state.extra = {}; // Clear server flags (serverStartedByUs, activeProject, etc.)
             persistState(pi, PERSIST_KEY, state);
         }
     });
