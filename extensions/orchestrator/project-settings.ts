@@ -65,14 +65,30 @@ function parseNumEnv(name: string): number | undefined {
 let cachedCwd = "";
 let cachedSettings: ProjectSettings = {};
 let cachedMtime = 0;
+let lastMtimeCheck = 0;
+const MTIME_CHECK_INTERVAL_MS = 30_000; // Check file mtime at most every 30s
 
 function getSettings(cwd: string): ProjectSettings {
+  const now = Date.now();
+  // Different cwd — always reload
+  if (cwd !== cachedCwd) {
+    cachedSettings = loadProjectSettings(cwd);
+    cachedCwd = cwd;
+    try {
+      const settingsPath = getSettingsPath(cwd);
+      cachedMtime = existsSync(settingsPath) ? lstatSync(settingsPath).mtimeMs : 0;
+    } catch { cachedMtime = 0; }
+    lastMtimeCheck = now;
+    return cachedSettings;
+  }
+  // Same cwd — throttle mtime checks
+  if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
+  lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
   let mtime = 0;
   try { if (existsSync(settingsPath)) mtime = lstatSync(settingsPath).mtimeMs; } catch {}
-  if (cwd === cachedCwd && mtime === cachedMtime) return cachedSettings;
+  if (mtime === cachedMtime) return cachedSettings;
   cachedSettings = loadProjectSettings(cwd);
-  cachedCwd = cwd;
   cachedMtime = mtime;
   return cachedSettings;
 }
@@ -129,11 +145,13 @@ export function migrateCoAuthorFile(cwd: string): void {
     const dir = dirname(settingsPath);
     // Guard against symlink attacks — skip migration if .pi or settings file is a symlink
     if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
-      console.debug("[project-settings] .pi dir is a symlink — skipping migration");
+      console.debug("[project-settings] .pi dir is a symlink — skipping write, deleting legacy file");
+      try { unlinkSync(legacyPath); } catch {}
       return;
     }
     if (existsSync(settingsPath) && lstatSync(settingsPath).isSymbolicLink()) {
-      console.debug("[project-settings] settings file is a symlink — skipping migration");
+      console.debug("[project-settings] settings file is a symlink — skipping write, deleting legacy file");
+      try { unlinkSync(legacyPath); } catch {}
       return;
     }
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
