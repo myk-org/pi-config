@@ -10,6 +10,7 @@ if [ "$(id -u)" != "0" ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
     # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
+    mkdir -p /tmp/pi-work /tmp/pi-data
     exec entrypoint.sh "$@"
 fi
 
