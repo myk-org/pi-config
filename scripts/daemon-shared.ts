@@ -104,8 +104,17 @@ export function createDaemonServer(opts: DaemonServerOptions) {
       } catch (e: any) { log(`pi message error: ${e.message}`); }
     });
 
-    ws.on("close", () => { if (piClient) onPiClose(piClient); });
-    ws.on("error", () => { if (piClient) (onPiError || onPiClose)(piClient); });
+    let cleanedUp = false;
+    function cleanup(kind: "close" | "error") {
+      if (cleanedUp || !piClient) return;
+      cleanedUp = true;
+      const c = piClient;
+      piClient = null;
+      if (kind === "error") (onPiError || onPiClose)(c);
+      else onPiClose(c);
+    }
+    ws.on("close", () => cleanup("close"));
+    ws.on("error", () => cleanup("error"));
   });
 
   // ── Browser WebSocket ───────────────────────────────────────────
