@@ -856,7 +856,14 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
     # Line number excluded — shifts after rebases, causing false mismatches
     # Type included — prevents cross-type collisions on same file+title
     qodo_type = thread.get("type")
-    if qodo_type in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
+    if qodo_type in (
+        "qodo_bug",
+        "qodo_rule_violation",
+        "qodo_requirement_gap",
+        "qodo_finding",
+        "qodo_ux_issue",
+        "qodo_cross_repo",
+    ):
         path = thread.get("path")
         title = _extract_sticky_title(thread.get("body", ""))
         if path and title:
