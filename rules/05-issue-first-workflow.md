@@ -20,7 +20,7 @@ Before ANY code changes, complete this checklist:
    - Understand the current behavior and why it happens
    - Know what the fix looks like (at least conceptually)
    - If the user's request is based on a misunderstanding, clarify before proceeding
-   - NO → Investigate first. Use read tool and delegate exploration to `scout`.
+   - NO → Investigate first. Use read tool and delegate search/grep to `scout`.
    - YES → Continue
 
 3. **GitHub issue created?**
