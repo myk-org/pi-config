@@ -10,7 +10,15 @@ if [ "$(id -u)" != "0" ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
     # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
-    mkdir -p /tmp/pi-work /tmp/pi-data
+    mkdir -p /tmp/pi-work /tmp/pi-data 2>/dev/null || true
+    # Warn if dirs exist but aren't writable (e.g., root-owned from previous run)
+    for d in /tmp/pi-work /tmp/pi-data; do
+        if [ -d "$d" ] && ! touch "$d/.write-test" 2>/dev/null; then
+            echo "WARNING: $d is not writable by $(whoami) — temp files may fail. Fix with: sudo chown -R $(id -u):$(id -g) $d" >&2
+        else
+            rm -f "$d/.write-test" 2>/dev/null
+        fi
+    done
     exec entrypoint.sh "$@"
 fi
 
@@ -86,7 +94,7 @@ fi
 
 # Ensure temp dirs exist and are owned by node (not root)
 mkdir -p /tmp/pi-work /tmp/pi-data
-chown node:node /tmp/pi-work /tmp/pi-data
+chown -R node:node /tmp/pi-work /tmp/pi-data 2>/dev/null || true
 
 # Drop to node permanently — runuser replaces the process
 exec runuser -m -u node -- entrypoint.sh "$@"
