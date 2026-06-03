@@ -43,7 +43,7 @@ _CODE_REF_RE = re.compile(
 _DESCRIPTION_RE = re.compile(r"<pre>(.*?)</pre>", re.DOTALL)
 
 # Pattern for severity/type code tags
-_TYPE_RE = re.compile(r"<code>([^<]*(?:Bug|Rule violation|Requirement gap)[^<]*)</code>")
+_TYPE_RE = re.compile(r"<code>([^<]*(?:Bug|Rule violation|Requirement gap|UX issue|Cross-repo conflict)[^<]*)</code>")
 _CATEGORY_RE = re.compile(r"<code>([^<]*(?:Correctness|Security|Reliability|Performance|Maintainability)[^<]*)</code>")
 
 # Boundary marking previous review iterations (duplicates of current findings)
@@ -123,7 +123,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
         if codes_str:
             type_match = _TYPE_RE.search(codes_str)
             if type_match:
-                finding_type = re.sub(r"[^\w\s]", "", type_match.group(1)).strip()
+                finding_type = re.sub(r"[^\w\s-]", "", type_match.group(1)).strip()
             cat_match = _CATEGORY_RE.search(codes_str)
             if cat_match:
                 category = re.sub(r"[^\w\s]", "", cat_match.group(1)).strip()

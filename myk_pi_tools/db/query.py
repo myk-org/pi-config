@@ -232,7 +232,8 @@ class ReviewDB:
           ``outside_diff_comment``, ``major_comment``, ``minor_comment``,
           ``nitpick_comment``, ``duplicate_comment``, ``qodo_bug``,
           ``qodo_rule_violation``, ``qodo_requirement_gap``, or
-          ``qodo_finding``.  These types lack a GitHub review thread
+          ``qodo_finding``, ``qodo_ux_issue``, or ``qodo_cross_repo``.
+          These types lack a GitHub review thread
           that can be resolved, so the database is the only mechanism to
           auto-skip them on subsequent fetches.  Normal
           inline thread comments rely on GitHub's ``isResolved`` filter in
@@ -275,7 +276,8 @@ class ReviewDB:
                               'minor_comment', 'nitpick_comment',
                               'duplicate_comment',
                               'qodo_bug', 'qodo_rule_violation',
-                              'qodo_requirement_gap', 'qodo_finding'))
+                              'qodo_requirement_gap', 'qodo_finding',
+                              'qodo_ux_issue', 'qodo_cross_repo'))
                   )
                 ORDER BY c.path, c.line
                 """,

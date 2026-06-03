@@ -553,6 +553,8 @@ def run(json_path: str) -> None:
                 "qodo_rule_violation",
                 "qodo_requirement_gap",
                 "qodo_finding",
+                "qodo_ux_issue",
+                "qodo_cross_repo",
             ):
                 if status == "pending":
                     pending_count += 1
@@ -719,7 +721,14 @@ def run(json_path: str) -> None:
                 nitpick_count += 1
             elif comment_type == "duplicate_comment":
                 duplicate_count += 1
-            elif comment_type in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
+            elif comment_type in (
+                "qodo_bug",
+                "qodo_rule_violation",
+                "qodo_requirement_gap",
+                "qodo_finding",
+                "qodo_ux_issue",
+                "qodo_cross_repo",
+            ):
                 qodo_sticky_count += 1
 
         body_comment_failed = total_body - len(body_updates)

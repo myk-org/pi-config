@@ -28,6 +28,8 @@ _QODO_TYPE_MAP = {
     "Bug": "qodo_bug",
     "Rule violation": "qodo_rule_violation",
     "Requirement gap": "qodo_requirement_gap",
+    "UX issue": "qodo_ux_issue",
+    "Cross-repo conflict": "qodo_cross_repo",
 }
 
 # Known AI reviewer usernames
@@ -678,7 +680,9 @@ def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[di
                 "quality_label": finding.get("category", ""),
                 "type": _QODO_TYPE_MAP.get(finding.get("finding_type", ""), "qodo_finding"),
                 "source": "qodo",
-                "priority": "HIGH" if finding.get("finding_type") in ("Bug", "Rule violation") else "MEDIUM",
+                "priority": "HIGH"
+                if finding.get("finding_type") in ("Bug", "Rule violation", "Cross-repo conflict")
+                else "MEDIUM",
                 "reply": None,
                 "status": "pending",
             }
@@ -852,7 +856,14 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
     # Line number excluded — shifts after rebases, causing false mismatches
     # Type included — prevents cross-type collisions on same file+title
     qodo_type = thread.get("type")
-    if qodo_type in ("qodo_bug", "qodo_rule_violation", "qodo_requirement_gap", "qodo_finding"):
+    if qodo_type in (
+        "qodo_bug",
+        "qodo_rule_violation",
+        "qodo_requirement_gap",
+        "qodo_finding",
+        "qodo_ux_issue",
+        "qodo_cross_repo",
+    ):
         path = thread.get("path")
         title = _extract_sticky_title(thread.get("body", ""))
         if path and title:
