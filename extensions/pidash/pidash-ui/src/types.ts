@@ -1,4 +1,5 @@
-export type { SessionInfo } from "../../../shared/types.ts";
+import type { SessionInfo } from "../../../shared/types.ts";
+export type { SessionInfo };
 
 export interface PiEvent {
   type: string;

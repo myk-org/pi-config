@@ -34,6 +34,39 @@ _RATE_LIMIT_BUFFER_SECONDS = 30
 _POLL_SLEEP_SECONDS = 300  # 5 minutes between cycles when no rate limit
 
 
+def _print_poll_summary(pr_number: str) -> None:
+    """Print a summary line showing total/new/skipped counts after fetch."""
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+    json_path = tmp_base / "pi-work" / f"pr-{pr_number}-reviews.json"
+
+    if not json_path.exists():
+        return
+
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+
+    total = 0
+    new = 0
+    skipped = 0
+    for source in ("human", "qodo", "coderabbit"):
+        for comment in data.get(source, []):
+            total += 1
+            if comment.get("is_auto_skipped"):
+                skipped += 1
+            elif comment.get("status") == "pending":
+                new += 1
+
+    print_stderr(f"[poll] Summary: {total} total, {new} new, {skipped} auto-skipped")
+
+
 def _has_actionable_comments(pr_number: str) -> bool:
     """Check if the fetched reviews JSON has any actionable (non-auto-skipped) comments.
 
@@ -200,6 +233,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
         fetch_result = fetch_run(review_url)
 
         if fetch_result == 0:
+            _print_poll_summary(pr_number)
             has_actionable = _has_actionable_qodo_comments(pr_number)
             if has_actionable:
                 print_stderr("[poll] Found actionable Qodo comments.")
@@ -261,6 +295,7 @@ def run(review_url: str = "", source: str = "coderabbit") -> int:
         fetch_result = fetch_run(review_url)
 
         if fetch_result == 0:
+            _print_poll_summary(pr_number)
             # Check if there are actionable (non-auto-skipped) comments
             # fetch_run saves JSON to a predictable path
             has_actionable = _has_actionable_comments(pr_number)

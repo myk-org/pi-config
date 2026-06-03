@@ -110,8 +110,8 @@ export function createDaemonServer(opts: DaemonServerOptions) {
       cleanedUp = true;
       const c = piClient;
       piClient = null;
-      if (kind === "error") (onPiError || onPiClose)(c);
-      else onPiClose(c);
+      if (kind === "error" && onPiError) onPiError(c);
+      onPiClose(c);
     }
     ws.on("close", () => cleanup("close"));
     ws.on("error", () => cleanup("error"));
