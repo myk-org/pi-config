@@ -18,7 +18,7 @@ import {
   spawnDaemon,
   killDaemon,
   waitForDaemon,
-} from "../pidash/daemon-manager.js";
+} from "../shared/daemon-manager.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 
 const DEFAULT_PORT = 19290;
@@ -92,7 +92,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
   }
 
   function doSpawn(): void {
-    ensureUiBuilt("pidiff-ui", log);
+    ensureUiBuilt(import.meta.url, "pidiff-ui", log);
     const gitBin = findGitBin();
     log(`resolved git for daemon: ${gitBin}`);
     spawnDaemon({

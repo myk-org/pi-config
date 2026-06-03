@@ -13,12 +13,12 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { setupHeartbeat } from "../shared/ws-client.js";
+import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 // Command handler registry — standalone, populated via pi.events from other extensions
 const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
-import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, createLogger } from "./daemon-manager.js";
+import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, createLogger } from "../shared/daemon-manager.js";
 
 const DEFAULT_PORT = 19190;
 const PIDASH_PORT = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
@@ -36,7 +36,7 @@ function isDaemonRunning(): Promise<boolean> {
 }
 
 function spawnDaemon(): void {
-  ensureUiBuilt("pidash-ui", debugLog);
+  ensureUiBuilt(import.meta.url, "pidash-ui", debugLog);
   spawnDaemonGeneric({
     serverScript: "pidash-server.ts",
     logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidash-server.log"),
@@ -715,10 +715,12 @@ export function registerPidash(
   });
 
   // Periodic reconnect — ensures sessions that started before the daemon still connect
-  const reconnectPoller = setInterval(() => {
-    if (!connected && !connecting && !shuttingDown && lastCtx) connect(lastCtx);
-  }, 15000);
-  if (reconnectPoller.unref) reconnectPoller.unref();
+  const cleanupReconnect = setupReconnectPoller({
+    isConnected: () => connected,
+    isConnecting: () => connecting,
+    isShuttingDown: () => shuttingDown,
+    connect: () => { if (lastCtx) connect(lastCtx); },
+  });
 
   // ── Command execution from browser ────────────────────────────────
   //
@@ -876,7 +878,7 @@ export function registerPidash(
       } catch {}
     }
     shuttingDown = true;
-    clearInterval(reconnectPoller);
+    cleanupReconnect();
     if (cleanupHeartbeat) { cleanupHeartbeat(); cleanupHeartbeat = null; }
     if (ws) { try { ws.close(); } catch {} ws = null; }
     connected = false;

@@ -42,9 +42,9 @@ export function checkHealth(port: number): Promise<boolean> {
 
 // ── UI build ────────────────────────────────────────────────────────
 
-export function ensureUiBuilt(uiDirName: string, log: (msg: string) => void): void {
+export function ensureUiBuilt(callerUrl: string, uiDirName: string, log: (msg: string) => void): void {
   const uiDir = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(new URL(callerUrl).pathname),
     uiDirName,
   );
   const distDir = path.join(uiDir, "dist");

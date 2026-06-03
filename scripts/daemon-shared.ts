@@ -56,7 +56,9 @@ export function createDaemonServer(opts: DaemonServerOptions) {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
 
-    res.setHeader("Access-Control-Allow-Origin", req.headers.origin || `http://localhost:${port}`);
+    const origin = req.headers.origin || "";
+    const allowedOrigin = (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ? origin : `http://localhost:${port}`);
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
@@ -126,7 +128,7 @@ export function createDaemonServer(opts: DaemonServerOptions) {
 
   server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
     const origin = req.headers.origin || "";
-    if (origin && !origin.startsWith("http://localhost") && !origin.startsWith("http://127.0.0.1")) {
+    if (origin && !origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
       log(`rejected WebSocket upgrade from origin: ${origin}`);
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
