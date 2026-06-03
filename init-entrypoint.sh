@@ -13,10 +13,10 @@ if [ "$(id -u)" != "0" ]; then
     for d in /tmp/pi-work /tmp/pi-data; do
         if ! mkdir -p "$d" 2>/dev/null; then
             echo "WARNING: failed to create $d — temp files may fail. Fix with: sudo mkdir -p $d && sudo chown $(id -u):$(id -g) $d" >&2
-        elif ! touch "$d/.write-test" 2>/dev/null; then
+        elif _probe="$d/.pi-probe-$$" && ! touch "$_probe" 2>/dev/null; then
             echo "WARNING: $d is not writable by $(whoami) — temp files may fail. Fix with: sudo chown $(id -u):$(id -g) $d" >&2
         else
-            rm -f "$d/.write-test" 2>/dev/null
+            rm -f "$_probe" 2>/dev/null
         fi
     done
     exec entrypoint.sh "$@"
@@ -93,10 +93,17 @@ if [ -S "$DOCKER_SOCK" ]; then
 fi
 
 # Ensure temp dirs exist and are owned by node (not root)
-mkdir -p /tmp/pi-work /tmp/pi-data
-if ! chown node:node /tmp/pi-work /tmp/pi-data 2>/dev/null; then
-    echo "WARNING: could not chown /tmp/pi-work or /tmp/pi-data — temp file writes may fail on mounted volumes" >&2
-fi
+for d in /tmp/pi-work /tmp/pi-data; do
+    # Refuse to operate on symlinks — prevents chown escape
+    if [ -L "$d" ]; then
+        echo "WARNING: $d is a symlink — removing to prevent chown escape" >&2
+        rm -f "$d"
+    fi
+    mkdir -p "$d"
+    if ! chown node:node "$d" 2>/dev/null; then
+        echo "WARNING: could not chown $d — temp file writes may fail on mounted volumes" >&2
+    fi
+done
 
 # Drop to node permanently — runuser replaces the process
 exec runuser -m -u node -- entrypoint.sh "$@"
