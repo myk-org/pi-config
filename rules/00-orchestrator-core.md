@@ -46,5 +46,6 @@ Before ANY code changes, run the pre-implementation checklist:
 
 **Quick check:**
 
+- [ ] Root cause investigated? (read relevant code, understand the problem)
 - [ ] GitHub issue created?
 - [ ] On issue branch (`feat/issue-N-...` or `fix/issue-N-...`)?

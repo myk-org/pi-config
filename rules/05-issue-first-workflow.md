@@ -20,7 +20,7 @@ Before ANY code changes, complete this checklist:
    - Understand the current behavior and why it happens
    - Know what the fix looks like (at least conceptually)
    - If the user's request is based on a misunderstanding, clarify before proceeding
-   - NO → Investigate first. Use read/bash/grep to understand the code.
+   - NO → Investigate first. Use read tool and delegate exploration to worker agent.
    - YES → Continue
 
 3. **GitHub issue created?**
@@ -78,9 +78,17 @@ Should skip workflow? ──YES──→ Do it directly (skip workflow)
      │
     NO
      ↓
+Investigate root cause:
+  - Read relevant source code
+  - Identify affected files/functions
+  - Understand current behavior
+  - Form conceptual fix approach
+     ↓
 Delegate to github-expert to create issue with:
   - Type (fix/feat/refactor/docs)
   - Problem/feature description
+  - Root cause analysis (affected files, functions, why)
+  - Proposed fix approach
   - Requirements
   - Deliverables checklist
      ↓
