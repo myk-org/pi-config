@@ -7,7 +7,7 @@ import path from "node:path";
 // walk up to our node_modules from their directory. Re-root bare
 // imports via a plugin that fires before the default resolver.
 const sharedDir = path.resolve(__dirname, "../../shared/ui");
-const fakeImporter = path.resolve(__dirname, "src/__shared_proxy__.ts");
+const fakeImporter = path.resolve(__dirname, "src/main.tsx");
 
 export default defineConfig({
   plugins: [
