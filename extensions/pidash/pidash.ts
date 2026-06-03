@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
+import { setupHeartbeat } from "../shared/ws-client.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 // Command handler registry — standalone, populated via pi.events from other extensions
@@ -108,6 +109,7 @@ export function registerPidash(
   let shuttingDown = false;
   let spawning = false;
   let lastCtx: any = null;
+  let cleanupHeartbeat: (() => void) | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
 
@@ -290,34 +292,17 @@ export function registerPidash(
           debugLog(`open handler error (likely stale ctx): ${err}`);
         }
 
-        // Respond to pings (keepalive)
-        wsClient.on("ping", () => {
-          try { wsClient.pong(); } catch {}
-        });
-
-        // Send heartbeat every 30s to prevent idle disconnects
-        // Also detect dead connections after suspend/resume
-        let pongReceived = true;
-        wsClient.on("pong", () => { pongReceived = true; });
-        const heartbeat = setInterval(() => {
-          if (wsClient.readyState !== 1) { // Not OPEN
-            clearInterval(heartbeat);
-            return;
-          }
-          if (!pongReceived) {
-            // No pong since last ping — connection is dead
-            debugLog("heartbeat: no pong received — connection dead, forcing reconnect");
-            clearInterval(heartbeat);
-            try { wsClient.terminate(); } catch {}
+        // Keepalive + dead connection detection
+        if (cleanupHeartbeat) cleanupHeartbeat();
+        cleanupHeartbeat = setupHeartbeat({
+          ws: wsClient,
+          log: debugLog,
+          onDead: () => {
             connected = false;
             ws = null;
             if (!shuttingDown && lastCtx) setTimeout(() => connect(lastCtx), 1000);
-            return;
-          }
-          pongReceived = false;
-          try { wsClient.ping(); } catch {}
-        }, 30000);
-        if ((heartbeat as any).unref) (heartbeat as any).unref();
+          },
+        });
 
         // Show status
         try {
@@ -537,50 +522,51 @@ export function registerPidash(
     const origSelect = ctx.ui.select.bind(ctx.ui);
     const origConfirm = ctx.ui.confirm.bind(ctx.ui);
 
-    ctx.ui.select = async (title: string, options: string[], opts?: any) => {
-      const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      if (ws && connected) {
-        ws.send(JSON.stringify({ id: askId, type: "extension_ui_request", method: "select", title, options }));
-      }
+    function raceWithBrowser<T>(
+      askId: string,
+      payload: object,
+      origFn: (...args: any[]) => Promise<T>,
+      origArgs: any[],
+      extractBrowserValue: (r: any) => T,
+      opts?: any,
+    ): Promise<T> {
+      if (ws && connected) ws.send(JSON.stringify({ id: askId, ...payload }));
       const ac = new AbortController();
-      let browserResolve: ((v: string | undefined) => void) | null = null;
+      let browserResolve: ((v: T) => void) | null = null;
       const unsub = pi.events.on("pidash:ui-response", (data: unknown) => {
         const r = data as any;
-        if (r.id === askId && browserResolve) { browserResolve(r.cancelled ? undefined : r.value); ac.abort(); }
+        if (r.id === askId && browserResolve) { browserResolve(extractBrowserValue(r)); ac.abort(); }
       });
-      const result = await Promise.race([
-        origSelect(title, options, { ...opts, signal: opts?.signal || ac.signal }).then((v: any) => {
+      return Promise.race([
+        origFn(...origArgs, { ...opts, signal: opts?.signal || ac.signal }).then((v: T) => {
           browserResolve = null;
           pi.events.emit("pidash:ui-dismiss", { type: "ui-dismiss", id: askId });
           return v;
         }),
-        new Promise<string | undefined>((resolve) => { browserResolve = resolve; }),
-      ]);
-      unsub();
-      return result;
+        new Promise<T>((resolve) => { browserResolve = resolve; }),
+      ]).finally(() => unsub());
+    }
+
+    ctx.ui.select = async (title: string, options: string[], opts?: any) => {
+      const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      return raceWithBrowser<string | undefined>(
+        askId,
+        { type: "extension_ui_request", method: "select", title, options },
+        origSelect, [title, options],
+        (r) => r.cancelled ? undefined : r.value,
+        opts,
+      );
     };
 
     ctx.ui.confirm = async (title: string, message: string, opts?: any) => {
       const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      if (ws && connected) {
-        ws.send(JSON.stringify({ id: askId, type: "extension_ui_request", method: "confirm", title, message }));
-      }
-      const ac = new AbortController();
-      let browserResolve: ((v: boolean) => void) | null = null;
-      const unsub = pi.events.on("pidash:ui-response", (data: unknown) => {
-        const r = data as any;
-        if (r.id === askId && browserResolve) { browserResolve(r.confirmed ?? false); ac.abort(); }
-      });
-      const result = await Promise.race([
-        origConfirm(title, message, { ...opts, signal: opts?.signal || ac.signal }).then((v: any) => {
-          browserResolve = null;
-          pi.events.emit("pidash:ui-dismiss", { type: "ui-dismiss", id: askId });
-          return v;
-        }),
-        new Promise<boolean>((resolve) => { browserResolve = resolve; }),
-      ]);
-      unsub();
-      return result;
+      return raceWithBrowser<boolean>(
+        askId,
+        { type: "extension_ui_request", method: "confirm", title, message },
+        origConfirm, [title, message],
+        (r) => r.confirmed ?? false,
+        opts,
+      );
     };
   };
 
@@ -891,6 +877,7 @@ export function registerPidash(
     }
     shuttingDown = true;
     clearInterval(reconnectPoller);
+    if (cleanupHeartbeat) { cleanupHeartbeat(); cleanupHeartbeat = null; }
     if (ws) { try { ws.close(); } catch {} ws = null; }
     connected = false;
   });

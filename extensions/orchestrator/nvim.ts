@@ -16,7 +16,7 @@ const NVIM_SOCKET = process.env.NVIM;
 /**
  * Check if we're running inside a neovim terminal.
  */
-export function isInsideNvim(): boolean {
+function isInsideNvim(): boolean {
   return !!NVIM_SOCKET;
 }
 

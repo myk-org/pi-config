@@ -381,6 +381,10 @@ browserWss.on("connection", (ws: any) => {
   ws.on("error", () => browserClients.delete(ws));
 });
 
+function getActiveSessions(): SessionInfo[] {
+  return Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
+}
+
 function broadcastToBrowsers(event: object) {
   const data = JSON.stringify(event);
   for (const browser of browserClients) {
@@ -626,7 +630,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
     }
 
     function formatDiscordSessionList(): string {
-      const allSessions = Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
+      const allSessions = getActiveSessions();
       if (allSessions.length === 0) return "No active sessions.";
 
       // Find watched session for any user
@@ -827,7 +831,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
 
       if (cmd === "sessions") {
         try {
-          const allSessions = Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
+          const allSessions = getActiveSessions();
           if (allSessions.length === 0) {
             await safeReply("No active sessions.");
             return;

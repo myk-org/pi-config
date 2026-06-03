@@ -94,7 +94,7 @@ function getSettings(cwd: string): ProjectSettings {
 }
 
 /** Clear cache — call after migration or manual edits */
-export function clearSettingsCache(): void {
+function clearSettingsCache(): void {
   cachedCwd = "";
   cachedSettings = {};
 }
@@ -136,7 +136,7 @@ export function getSetting(cwd: string, key: string): boolean | number {
  * One-time migration: .pi-co-author file → pi-config-settings.json
  * Call on session_start. If .pi-co-author exists, migrate and delete it.
  */
-export function migrateCoAuthorFile(cwd: string): void {
+function migrateCoAuthorFile(cwd: string): void {
   const legacyPath = join(cwd, ".pi-co-author");
   if (!existsSync(legacyPath)) return;
 

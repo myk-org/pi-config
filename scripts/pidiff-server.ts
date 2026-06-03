@@ -168,75 +168,64 @@ interface FileContentsData {
   status: "added" | "modified" | "deleted" | "renamed";
 }
 
+function parseDiffLines(
+  raw: string,
+  getOld: (oldName: string) => string,
+  getNew: (fileName: string) => string,
+): FileContentsData[] {
+  const results: FileContentsData[] = [];
+  for (const line of raw.split("\n").filter(Boolean)) {
+    const parts = line.split("\t");
+    const statusChar = parts[0][0];
+    const fileName = parts.length > 2 ? parts[2] : parts[1];
+    const oldName = parts.length > 2 ? parts[1] : fileName;
+    let status: FileContentsData["status"] = "modified";
+    if (statusChar === "A") status = "added";
+    else if (statusChar === "D") status = "deleted";
+    else if (statusChar === "R") status = "renamed";
+    let oldContents = "";
+    let newContents = "";
+    try { if (status !== "added") oldContents = getOld(oldName); } catch {}
+    try { if (status !== "deleted") newContents = getNew(fileName); } catch {}
+    results.push({ name: fileName, oldContents, newContents, status });
+  }
+  return results;
+}
+
+const gitShowOpts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] as const, maxBuffer: 5 * 1024 * 1024 });
+
 function getChangedFiles(cwd: string, baseRef: string, headRef: string = "HEAD"): FileContentsData[] {
   try {
     const raw = gitExec(["diff", "--name-status", baseRef, headRef], cwd);
     if (!raw) return [];
-    const results: FileContentsData[] = [];
-    for (const line of raw.split("\n").filter(Boolean)) {
-      const parts = line.split("\t");
-      const statusChar = parts[0][0];
-      const fileName = parts.length > 2 ? parts[2] : parts[1];
-      const oldName = parts.length > 2 ? parts[1] : fileName;
-      let status: FileContentsData["status"] = "modified";
-      if (statusChar === "A") status = "added";
-      else if (statusChar === "D") status = "deleted";
-      else if (statusChar === "R") status = "renamed";
-      let oldContents = "";
-      let newContents = "";
-      try { if (status !== "added") oldContents = execFileSync(GIT_BIN, ["show", `${baseRef}:${oldName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
-      try {
-        if (status !== "deleted") {
-          newContents = execFileSync(GIT_BIN, ["show", `${headRef}:${fileName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 });
-        }
-      } catch {}
-      results.push({ name: fileName, oldContents, newContents, status });
-    }
-    return results;
+    const opts = gitShowOpts(cwd);
+    return parseDiffLines(raw,
+      (oldName) => execFileSync(GIT_BIN, ["show", `${baseRef}:${oldName}`], opts),
+      (fileName) => execFileSync(GIT_BIN, ["show", `${headRef}:${fileName}`], opts),
+    );
   } catch (e: any) { log(`getChangedFiles error (base=${baseRef} head=${headRef}): ${e.message}`); return []; }
 }
 
 function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstaged: FileContentsData[] } {
   const staged: FileContentsData[] = [];
   const unstaged: FileContentsData[] = [];
+  const opts = gitShowOpts(cwd);
   try {
     const stagedRaw = gitExec(["diff", "--name-status", "--staged"], cwd);
     if (stagedRaw) {
-      for (const line of stagedRaw.split("\n").filter(Boolean)) {
-        const parts = line.split("\t");
-        const statusChar = parts[0][0];
-        const fileName = parts.length > 2 ? parts[2] : parts[1];
-        const oldName = parts.length > 2 ? parts[1] : fileName;
-        let status: FileContentsData["status"] = "modified";
-        if (statusChar === "A") status = "added";
-        else if (statusChar === "D") status = "deleted";
-        else if (statusChar === "R") status = "renamed";
-        let oldContents = "";
-        let newContents = "";
-        try { if (status !== "added") oldContents = execFileSync(GIT_BIN, ["show", `HEAD:${oldName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
-        try { if (status !== "deleted") newContents = execFileSync(GIT_BIN, ["show", `:${fileName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
-        staged.push({ name: fileName, oldContents, newContents, status });
-      }
+      staged.push(...parseDiffLines(stagedRaw,
+        (oldName) => execFileSync(GIT_BIN, ["show", `HEAD:${oldName}`], opts),
+        (fileName) => execFileSync(GIT_BIN, ["show", `:${fileName}`], opts),
+      ));
     }
   } catch (e: any) { log(`getWorkingTreeFiles staged error: ${e.message}`); }
   try {
     const unstagedRaw = gitExec(["diff", "--name-status"], cwd);
     if (unstagedRaw) {
-      for (const line of unstagedRaw.split("\n").filter(Boolean)) {
-        const parts = line.split("\t");
-        const statusChar = parts[0][0];
-        const fileName = parts.length > 2 ? parts[2] : parts[1];
-        const oldName = parts.length > 2 ? parts[1] : fileName;
-        let status: FileContentsData["status"] = "modified";
-        if (statusChar === "A") status = "added";
-        else if (statusChar === "D") status = "deleted";
-        else if (statusChar === "R") status = "renamed";
-        let oldContents = "";
-        let newContents = "";
-        try { if (status !== "added") oldContents = execFileSync(GIT_BIN, ["show", `:${oldName}`], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024 }); } catch {}
-        try { if (status !== "deleted") newContents = fs.readFileSync(path.join(cwd, fileName), "utf-8"); } catch {}
-        unstaged.push({ name: fileName, oldContents, newContents, status });
-      }
+      unstaged.push(...parseDiffLines(unstagedRaw,
+        (oldName) => execFileSync(GIT_BIN, ["show", `:${oldName}`], opts),
+        (fileName) => fs.readFileSync(path.join(cwd, fileName), "utf-8"),
+      ));
     }
     const untrackedRaw = gitExec(["ls-files", "--others", "--exclude-standard"], cwd);
     if (untrackedRaw) {
