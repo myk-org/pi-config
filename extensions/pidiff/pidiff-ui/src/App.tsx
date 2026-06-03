@@ -5,8 +5,8 @@ import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react
 import { GitBranch, X, Send, Pencil } from "lucide-react";
 import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { Button } from "@ui/button";
+import { Separator } from "@ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "@/types";
@@ -558,22 +558,8 @@ export function App() {
             ) : commits.length === 0 ? (
               <span className="text-xs text-muted-foreground py-1">No commits on this branch</span>
             ) : (<>
-              <div className="flex-1 min-w-0">
-                <label className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">Base (older)</label>
-                <select value={commitFrom} onChange={e => setCommitFrom(e.target.value)}
-                  className="w-full bg-card border border-border rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring">
-                  <option value="">Select commit…</option>
-                  {commits.map(c => <option key={c.hash} value={c.hash}>{c.short} — {c.subject.slice(0, 80)}</option>)}
-                </select>
-              </div>
-              <div className="flex-1 min-w-0">
-                <label className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">Head (newer)</label>
-                <select value={commitTo} onChange={e => setCommitTo(e.target.value)}
-                  className="w-full bg-card border border-border rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring">
-                  <option value="">Select commit…</option>
-                  {commits.map(c => <option key={c.hash} value={c.hash}>{c.short} — {c.subject.slice(0, 80)}</option>)}
-                </select>
-              </div>
+              <CommitSelect label="Base (older)" value={commitFrom} onChange={setCommitFrom} commits={commits} />
+              <CommitSelect label="Head (newer)" value={commitTo} onChange={setCommitTo} commits={commits} />
               <Button size="sm" className="h-8" onClick={compareCommits} disabled={!commitFrom || !commitTo}>Compare</Button>
             </>)}
           </div>
@@ -742,6 +728,23 @@ export function App() {
 
     </div>
     </WorkerPoolContextProvider>
+  );
+}
+
+// ── CommitSelect ────────────────────────────────────────────────────
+
+function CommitSelect({ label, value, onChange, commits }: {
+  label: string; value: string; onChange: (v: string) => void; commits: GitCommit[];
+}) {
+  return (
+    <div className="flex-1 min-w-0">
+      <label className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)}
+        className="w-full bg-card border border-border rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring">
+        <option value="">Select commit…</option>
+        {commits.map(c => <option key={c.hash} value={c.hash}>{c.short} — {c.subject.slice(0, 80)}</option>)}
+      </select>
+    </div>
   );
 }
 

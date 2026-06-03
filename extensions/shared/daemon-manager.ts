@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
@@ -42,9 +43,9 @@ export function checkHealth(port: number): Promise<boolean> {
 
 // ── UI build ────────────────────────────────────────────────────────
 
-export function ensureUiBuilt(uiDirName: string, log: (msg: string) => void): void {
+export function ensureUiBuilt(callerUrl: string, uiDirName: string, log: (msg: string) => void): void {
   const uiDir = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(callerUrl)),
     uiDirName,
   );
   const distDir = path.join(uiDir, "dist");
@@ -69,7 +70,7 @@ export function ensureUiBuilt(uiDirName: string, log: (msg: string) => void): vo
 export function findJitiPath(): string | undefined {
   let jitiPath: string | undefined;
   try {
-    let dir = path.dirname(new URL(import.meta.url).pathname);
+    let dir = path.dirname(fileURLToPath(import.meta.url));
     for (let i = 0; i < 10; i++) {
       const candidate = path.join(dir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
       if (fs.existsSync(candidate)) { jitiPath = candidate; break; }
@@ -85,7 +86,7 @@ export function findJitiPath(): string | undefined {
       );
       if (fs.existsSync(globalCandidate)) jitiPath = globalCandidate;
     }
-  } catch (e: any) { console.debug("[pidiff-daemon] jiti path resolution failed:", e?.message || e); }
+  } catch (e: any) { console.debug("[pidash-daemon] jiti path resolution failed:", e?.message || e); }
   return jitiPath;
 }
 
@@ -106,7 +107,7 @@ export interface SpawnOptions {
 
 export function spawnDaemon(opts: SpawnOptions): void {
   const serverPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    path.dirname(fileURLToPath(import.meta.url)),
     "..", "..", "scripts", opts.serverScript,
   );
 

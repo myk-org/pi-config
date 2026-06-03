@@ -73,15 +73,17 @@ pi-config/
 │   ├── pidash/                      # Live web dashboard extension (standalone)
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidash.ts                # Dashboard logic (connects to pidash daemon, forwards provider response info)
-│   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket)
 │   │   └── pidash-ui/               # React + shadcn/ui web dashboard
 │   │       ├── src/                 # React source (components, hooks, types)
 │   │       └── dist/               # Built output (generated, gitignored)
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to pidiff daemon)
-│   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
+│   ├── shared/                      # Shared extension utilities
+│   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
+│   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
+│   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
 │   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 │   └── image-gen/                   # Image generation extension (standalone)

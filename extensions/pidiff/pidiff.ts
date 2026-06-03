@@ -18,7 +18,8 @@ import {
   spawnDaemon,
   killDaemon,
   waitForDaemon,
-} from "./daemon-manager.js";
+} from "../shared/daemon-manager.js";
+import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 
 const DEFAULT_PORT = 19290;
 const PIDIFF_PORT = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
@@ -71,6 +72,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
   let shuttingDown = false;
   let spawning = false;
   let lastCtx: any = null;
+  let cleanupHeartbeat: (() => void) | null = null;
 
   function setStatus(ctx: any): void {
     try {
@@ -90,7 +92,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
   }
 
   function doSpawn(): void {
-    ensureUiBuilt("pidiff-ui", log);
+    ensureUiBuilt(import.meta.url, "pidiff-ui", log);
     const gitBin = findGitBin();
     log(`resolved git for daemon: ${gitBin}`);
     spawnDaemon({
@@ -149,24 +151,16 @@ export function registerPidiff(pi: ExtensionAPI): void {
           log("skipped registration — ctx is stale");
         }
 
-        // Keepalive
-        wsClient.on("ping", () => { try { wsClient.pong(); } catch {} });
-        let pongReceived = true;
-        wsClient.on("pong", () => { pongReceived = true; });
-        const heartbeat = setInterval(() => {
-          if (wsClient.readyState !== 1) { clearInterval(heartbeat); return; }
-          if (!pongReceived) {
-            log("heartbeat: no pong — reconnecting");
-            clearInterval(heartbeat);
-            try { wsClient.terminate(); } catch {}
+        // Keepalive + dead connection detection
+        if (cleanupHeartbeat) cleanupHeartbeat();
+        cleanupHeartbeat = setupHeartbeat({
+          ws: wsClient,
+          log,
+          onDead: () => {
             connected = false; ws = null;
             if (!shuttingDown && lastCtx) setTimeout(() => connect(lastCtx), 1000);
-            return;
-          }
-          pongReceived = false;
-          try { wsClient.ping(); } catch {}
-        }, 30000);
-        if ((heartbeat as any).unref) (heartbeat as any).unref();
+          },
+        });
       });
 
       wsClient.on("message", (data: Buffer) => {
@@ -290,14 +284,17 @@ export function registerPidiff(pi: ExtensionAPI): void {
     if (!connected && !shuttingDown) connect(ctx);
   });
 
-  const reconnectPoller = setInterval(() => {
-    if (!connected && !connecting && !shuttingDown && lastCtx) connect(lastCtx);
-  }, 15000);
-  if (reconnectPoller.unref) reconnectPoller.unref();
+  const cleanupReconnect = setupReconnectPoller({
+    isConnected: () => connected,
+    isConnecting: () => connecting,
+    isShuttingDown: () => shuttingDown,
+    connect: () => { if (lastCtx) connect(lastCtx); },
+  });
 
   pi.on("session_shutdown", () => {
     shuttingDown = true;
-    clearInterval(reconnectPoller);
+    cleanupReconnect();
+    if (cleanupHeartbeat) { cleanupHeartbeat(); cleanupHeartbeat = null; }
     if (ws) { try { ws.close(); } catch {} ws = null; }
     connected = false;
   });

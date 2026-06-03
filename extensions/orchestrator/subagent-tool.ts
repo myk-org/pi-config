@@ -153,14 +153,14 @@ export type DisplayItem =
 
 // ── Helper functions ─────────────────────────────────────────────────────
 
-export function formatTokens(count: number): string {
+function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
   if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
   if (count < 1000000) return `${Math.round(count / 1000)}k`;
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
-export function formatUsageStats(
+function formatUsageStats(
   usage: {
     input: number;
     output: number;
@@ -193,7 +193,7 @@ export function formatUsageStats(
   return parts.join(" ");
 }
 
-export function formatToolCall(
+function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
   fg: (c: any, t: string) => string,
@@ -259,7 +259,7 @@ export function formatToolCall(
   }
 }
 
-export function getFinalOutput(messages: Message[]): string {
+function getFinalOutput(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role === "assistant")
@@ -268,7 +268,7 @@ export function getFinalOutput(messages: Message[]): string {
   return "";
 }
 
-export function getDisplayItems(messages: Message[]): DisplayItem[] {
+function getDisplayItems(messages: Message[]): DisplayItem[] {
   const items: DisplayItem[] = [];
   for (const m of messages)
     if (m.role === "assistant")
