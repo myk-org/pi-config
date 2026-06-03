@@ -5,8 +5,8 @@ import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react
 import { GitBranch, X, Send, Pencil } from "lucide-react";
 import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { Button } from "@ui/button";
+import { Separator } from "@ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "@/types";

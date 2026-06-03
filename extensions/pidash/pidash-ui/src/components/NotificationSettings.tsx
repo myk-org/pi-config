@@ -1,5 +1,5 @@
 import { Bell, BellOff } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@ui/popover";
 import { cn } from "@/lib/utils";
 import type { NotificationPreferences } from "@/types";
 

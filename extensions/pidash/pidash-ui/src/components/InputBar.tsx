@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@ui/button";
 import { Send, Square, Paperclip } from "lucide-react";
 
 interface Props {

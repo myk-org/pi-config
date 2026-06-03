@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@ui/badge";
+import { Button } from "@ui/button";
+import { ScrollArea } from "@ui/scroll-area";
 import { NotificationSettings } from "@/components/NotificationSettings";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, NotificationPreferences } from "@/types";

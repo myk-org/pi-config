@@ -12,7 +12,8 @@
     "jsx": "react-jsx",
     "strict": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@ui/*": ["../../shared/ui/*"]
     }
   },
   "include": ["src"]

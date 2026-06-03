@@ -9,12 +9,10 @@
  * The server runs git commands for the selected session's cwd.
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createRequire } from "node:module";
-import { serveUi } from "./serve-ui.ts";
+import { createDaemonServer } from "./daemon-shared.ts";
 
 const DEFAULT_PORT = 19290;
 const port = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
@@ -285,244 +283,146 @@ interface PiClient {
   session: SessionInfo;
 }
 
-const piClients = new Map<string, PiClient>();
-const browserClients = new Set<any>();
 const browserWatchMap = new WeakMap<any, { sessionId: string | null; worktreePath: string | null }>();
 
-// ── HTTP Server ─────────────────────────────────────────────────────
+const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonServer({
+  port,
+  uiDir: path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidiff", "pidiff-ui", "dist"),
+  uiName: "pidiff-ui",
+  log,
+  listenAddress: "127.0.0.1",
 
-const UI_DIR = path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidiff", "pidiff-ui", "dist");
-
-const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-  const url = new URL(req.url || "/", `http://localhost`);
-
-  res.setHeader("Access-Control-Allow-Origin", `http://localhost:${port}`);
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
-
-  if (url.pathname === "/api/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", port, sessions: piClients.size }));
-    return;
-  }
-
-  if (url.pathname === "/api/sessions") {
-    const sessions = Array.from(piClients.values()).map(c => c.session);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(sessions));
-    return;
-  }
-
-  serveUi(url.pathname, res, { uiDir: UI_DIR, name: "pidiff-ui", log });
-});
-
-// ── WebSocket ───────────────────────────────────────────────────────
-
-const _require = createRequire(import.meta.url);
-const WebSocket = _require("ws");
-
-// Pi session clients
-const piWss = new WebSocket.Server({ noServer: true });
-piWss.on("connection", (ws: any) => {
-  let piClient: PiClient | null = null;
-
-  ws.on("message", (data: Buffer) => {
-    try {
-      const parsed = JSON.parse(data.toString());
-
-      if (parsed.type === "register") {
-        const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
-        const cwd = parsed.cwd || "";
-        if (!cwd) {
-          log(`register rejected: empty cwd from ${sessionId}`);
-          return;
-        }
-        const worktrees = getWorktrees(cwd);
-        const session: SessionInfo = {
-          sessionId,
-          cwd,
-          branch: parsed.branch || "",
-          repo: cwd.split("/").pop() || "",
-          worktrees,
-        };
-        piClient = { ws, session };
-        piClients.set(sessionId, piClient);
-        log(`session registered: ${sessionId} (${session.repo})`);
-        broadcastToBrowsers({ type: "session_added", session });
-        // Start file watchers for all worktrees
-        for (const wt of session.worktrees) startWatching(sessionId, wt.path);
-        if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
-        return;
-      }
-
-      if (parsed.type === "update_info" && piClient) {
-        const branchChanged = parsed.branch !== undefined && parsed.branch !== piClient.session.branch;
-        if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;
-        broadcastToBrowsers({ type: "session_updated", session: piClient.session });
-        // Trigger diff refresh for browsers watching this session when branch changes
-        if (branchChanged) {
-          log(`branch changed for ${piClient.session.sessionId}: ${parsed.branch}`);
-          notifyWatchingBrowsers(piClient.session.sessionId, [piClient.session.cwd]);
-        }
-        return;
-      }
-    } catch (e: any) { log(`pi message error: ${e.message}`); }
-  });
-
-  ws.on("close", () => {
-    if (piClient) {
-      stopAllWatchers(piClient.session.sessionId);
-      piClients.delete(piClient.session.sessionId);
-      log(`session disconnected: ${piClient.session.sessionId}`);
-      broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
+  onPiMessage: (ws, parsed, getPiClient, setPiClient) => {
+    if (parsed.type === "register") {
+      const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
+      const cwd = parsed.cwd || "";
+      if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }
+      const worktrees = getWorktrees(cwd);
+      const session: SessionInfo = { sessionId, cwd, branch: parsed.branch || "", repo: cwd.split("/").pop() || "", worktrees };
+      const piClient = { ws, session };
+      setPiClient(piClient);
+      piClients.set(sessionId, piClient);
+      log(`session registered: ${sessionId} (${session.repo})`);
+      broadcastToBrowsers({ type: "session_added", session });
+      for (const wt of session.worktrees) startWatching(sessionId, wt.path);
+      if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
+      return;
     }
-  });
 
-  ws.on("error", () => {
-    if (piClient) {
-      stopAllWatchers(piClient.session.sessionId);
-      piClients.delete(piClient.session.sessionId);
-      broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
+    if (parsed.type === "update_info" && getPiClient()) {
+      const piClient = getPiClient();
+      const branchChanged = parsed.branch !== undefined && parsed.branch !== piClient.session.branch;
+      if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;
+      broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+      if (branchChanged) {
+        log(`branch changed for ${piClient.session.sessionId}: ${parsed.branch}`);
+        notifyWatchingBrowsers(piClient.session.sessionId, [piClient.session.cwd]);
+      }
+      return;
     }
-  });
-});
+  },
 
-// Browser clients
-const browserWss = new WebSocket.Server({ noServer: true });
-browserWss.on("connection", (ws: any) => {
-  browserClients.add(ws);
-  browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
-  log(`browser connected (total: ${browserClients.size})`);
+  onPiClose: (piClient) => {
+    stopAllWatchers(piClient.session.sessionId);
+    piClients.delete(piClient.session.sessionId);
+    log(`session disconnected: ${piClient.session.sessionId}`);
+    broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
+  },
 
-  // Send session list
-  const sessions = Array.from(piClients.values()).map(c => c.session);
-  try { ws.send(JSON.stringify({ type: "sessions-list", sessions })); } catch {}
+  onBrowserConnect: (ws) => {
+    browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
+    const sessions = Array.from(piClients.values()).map((c: any) => c.session);
+    try { ws.send(JSON.stringify({ type: "sessions-list", sessions })); } catch {}
+  },
 
-  ws.on("message", (data: Buffer) => {
-    try {
-      const parsed = JSON.parse(data.toString());
+  onBrowserMessage: (ws, parsed) => {
+    // Watch a session
+    if (parsed.type === "watch") {
+      const watchId = parsed.sessionId ?? null;
+      browserWatchMap.set(ws, { sessionId: watchId, worktreePath: null });
+      log(`browser watching: ${watchId}`);
 
-      // Watch a session
-      if (parsed.type === "watch") {
-        const watchId = parsed.sessionId ?? null;
-        browserWatchMap.set(ws, { sessionId: watchId, worktreePath: null });
-        log(`browser watching: ${watchId}`);
-
-        if (watchId) {
-          const client = piClients.get(watchId);
-          if (client) {
-            const payload = buildDiffPayload(client.session.cwd, "branch");
-            try { ws.send(JSON.stringify(payload)); } catch {}
-            const commits = getLog(client.session.cwd, 30);
-            try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
-          }
+      if (watchId) {
+        const client = piClients.get(watchId);
+        if (client) {
+          const payload = buildDiffPayload(client.session.cwd, "branch");
+          try { ws.send(JSON.stringify(payload)); } catch {}
+          const commits = getLog(client.session.cwd, 30);
+          try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
         }
+      }
+      return;
+    }
+
+    // Watch a specific worktree within a session
+    if (parsed.type === "watch-worktree") {
+      const watchInfo = browserWatchMap.get(ws);
+      if (!watchInfo?.sessionId) return;
+      const client = piClients.get(watchInfo.sessionId);
+      if (!client) return;
+
+      const requestedPath = parsed.worktreePath || client.session.cwd;
+      // Validate: only allow known worktree paths or session cwd
+      const allowedPaths = new Set([
+        path.resolve(client.session.cwd),
+        ...client.session.worktrees.map((w: any) => path.resolve(w.path)),
+      ]);
+      const resolvedPath = path.resolve(requestedPath);
+      if (!allowedPaths.has(resolvedPath)) {
+        log(`watch-worktree rejected: ${requestedPath} not in allowed paths for session ${watchInfo.sessionId}`);
         return;
       }
+      const worktreePath = resolvedPath;
+      browserWatchMap.set(ws, { ...watchInfo, worktreePath });
+      log(`browser watching worktree: ${worktreePath}`);
 
-      // Watch a specific worktree within a session
-      if (parsed.type === "watch-worktree") {
-        const watchInfo = browserWatchMap.get(ws);
-        if (!watchInfo?.sessionId) return;
-        const client = piClients.get(watchInfo.sessionId);
-        if (!client) return;
+      const payload = buildDiffPayload(worktreePath, "branch");
+      try { ws.send(JSON.stringify(payload)); } catch {}
+      const commits = getLog(worktreePath, 30);
+      try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+      return;
+    }
 
-        const requestedPath = parsed.worktreePath || client.session.cwd;
-        // Validate: only allow known worktree paths or session cwd
-        const allowedPaths = new Set([
-          path.resolve(client.session.cwd),
-          ...client.session.worktrees.map(w => path.resolve(w.path)),
-        ]);
-        const resolvedPath = path.resolve(requestedPath);
-        if (!allowedPaths.has(resolvedPath)) {
-          log(`watch-worktree rejected: ${requestedPath} not in allowed paths for session ${watchInfo.sessionId}`);
-          return;
-        }
-        const worktreePath = resolvedPath;
-        browserWatchMap.set(ws, { ...watchInfo, worktreePath });
-        log(`browser watching worktree: ${worktreePath}`);
+    // Request diffs for watched session
+    if (parsed.type === "request-diffs") {
+      const watchInfo = browserWatchMap.get(ws);
+      if (!watchInfo?.sessionId) return;
+      const client = piClients.get(watchInfo.sessionId);
+      if (!client) return;
 
-        const payload = buildDiffPayload(worktreePath, "branch");
-        try { ws.send(JSON.stringify(payload)); } catch {}
-        const commits = getLog(worktreePath, 30);
-        try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
-        return;
+      const cwd = watchInfo.worktreePath || client.session.cwd;
+      const mode: DiffMode = parsed.mode || "branch";
+      const refs = parsed.fromRef && parsed.toRef ? { from: parsed.fromRef, to: parsed.toRef } : undefined;
+      const payload = buildDiffPayload(cwd, mode, refs);
+      try { ws.send(JSON.stringify(payload)); } catch {}
+      return;
+    }
+
+    // Request commits
+    if (parsed.type === "request-commits") {
+      const watchInfo = browserWatchMap.get(ws);
+      if (!watchInfo?.sessionId) return;
+      const client = piClients.get(watchInfo.sessionId);
+      if (!client) return;
+
+      const cwd = watchInfo.worktreePath || client.session.cwd;
+      const commits = getLog(cwd, 30);
+      try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+      return;
+    }
+
+    // Publish review comments → forward to the watched pi session
+    if (parsed.type === "publish-review") {
+      const watchInfo = browserWatchMap.get(ws);
+      if (!watchInfo?.sessionId) return;
+      const client = piClients.get(watchInfo.sessionId);
+      if (client?.ws) {
+        log(`review published for ${watchInfo.sessionId}: ${parsed.comments?.length || 0} comments`);
+        try { client.ws.send(JSON.stringify(parsed)); } catch {}
       }
-
-      // Request diffs for watched session
-      if (parsed.type === "request-diffs") {
-        const watchInfo = browserWatchMap.get(ws);
-        if (!watchInfo?.sessionId) return;
-        const client = piClients.get(watchInfo.sessionId);
-        if (!client) return;
-
-        const cwd = watchInfo.worktreePath || client.session.cwd;
-        const mode: DiffMode = parsed.mode || "branch";
-        const refs = parsed.fromRef && parsed.toRef ? { from: parsed.fromRef, to: parsed.toRef } : undefined;
-        const payload = buildDiffPayload(cwd, mode, refs);
-        try { ws.send(JSON.stringify(payload)); } catch {}
-        return;
-      }
-
-      // Request commits
-      if (parsed.type === "request-commits") {
-        const watchInfo = browserWatchMap.get(ws);
-        if (!watchInfo?.sessionId) return;
-        const client = piClients.get(watchInfo.sessionId);
-        if (!client) return;
-
-        const cwd = watchInfo.worktreePath || client.session.cwd;
-        const commits = getLog(cwd, 30);
-        try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
-        return;
-      }
-
-      // Publish review comments → forward to the watched pi session
-      if (parsed.type === "publish-review") {
-        const watchInfo = browserWatchMap.get(ws);
-        if (!watchInfo?.sessionId) return;
-        const client = piClients.get(watchInfo.sessionId);
-        if (client?.ws) {
-          log(`review published for ${watchInfo.sessionId}: ${parsed.comments?.length || 0} comments`);
-          try { client.ws.send(JSON.stringify(parsed)); } catch {}
-        }
-        return;
-      }
-    } catch (e: any) { log(`browser message error: ${e.message}`); }
-  });
-
-  ws.on("close", () => {
-    browserClients.delete(ws);
-    log(`browser disconnected (total: ${browserClients.size})`);
-  });
-  ws.on("error", () => browserClients.delete(ws));
-});
-
-function broadcastToBrowsers(event: object) {
-  const data = JSON.stringify(event);
-  for (const browser of browserClients) {
-    try { browser.send(data); } catch { browserClients.delete(browser); }
-  }
-}
-
-// Route WebSocket upgrades
-server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
-  // Validate Origin — only allow localhost connections
-  const origin = req.headers.origin || "";
-  if (origin && !origin.startsWith("http://localhost") && !origin.startsWith("http://127.0.0.1")) {
-    log(`rejected WebSocket upgrade from origin: ${origin}`);
-    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-  const url = new URL(req.url || "/", `http://localhost`);
-  if (url.pathname === "/ws/browser") {
-    browserWss.handleUpgrade(req, socket, head, (ws: any) => browserWss.emit("connection", ws, req));
-  } else if (url.pathname === "/ws/pi") {
-    piWss.handleUpgrade(req, socket, head, (ws: any) => piWss.emit("connection", ws, req));
-  } else {
-    socket.destroy();
-  }
+      return;
+    }
+  },
 });
 
 // ── Change detection — notify browsers ──────────────────────────────
@@ -637,30 +537,6 @@ const worktreeRefreshInterval = setInterval(() => {
 }, 10000);
 if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
 
-// Ping pi clients
-const pingInterval = setInterval(() => {
-  for (const [, client] of piClients) {
-    if (client.ws) { try { client.ws.ping(); } catch {} }
-  }
-}, 30000);
-if (pingInterval.unref) pingInterval.unref();
-
 // ── Start ───────────────────────────────────────────────────────────
 
-server.listen(port, "127.0.0.1", () => {
-  log(`listening on http://127.0.0.1:${port}`);
-  console.log(`http://127.0.0.1:${port}`);
-});
-
-server.on("error", (err: any) => {
-  if (err.code === "EADDRINUSE") {
-    log(`port ${port} already in use — daemon likely already running`);
-    process.exit(0);
-  }
-  log(`server error: ${err.message}`);
-  process.exit(1);
-});
-
-process.on("SIGHUP", () => {});
-process.on("SIGTERM", () => { server.close(); process.exit(0); });
-process.on("SIGINT", () => { server.close(); process.exit(0); });
+start();
