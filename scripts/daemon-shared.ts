@@ -34,6 +34,8 @@ export interface DaemonServerOptions {
   extraUpgrades?: (pathname: string, req: IncomingMessage, socket: any, head: Buffer) => boolean;
   /** Listen address (default "127.0.0.1") */
   listenAddress?: string;
+  /** Custom origin validation regex (default: localhost/127.0.0.1 only) */
+  originPattern?: RegExp;
 }
 
 // ── Server factory ──────────────────────────────────────────────────
@@ -46,6 +48,7 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     onBrowserConnect, onBrowserMessage,
     extraUpgrades,
     listenAddress = "127.0.0.1",
+    originPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,
   } = opts;
 
   const piClients = new Map<string, any>();
@@ -57,7 +60,7 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
 
     const origin = req.headers.origin || "";
-    const allowedOrigin = (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ? origin : `http://localhost:${port}`);
+    const allowedOrigin = (origin.match(originPattern) ? origin : `http://localhost:${port}`);
     res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -128,7 +131,7 @@ export function createDaemonServer(opts: DaemonServerOptions) {
 
   server.on("upgrade", (req: IncomingMessage, socket: any, head: Buffer) => {
     const origin = req.headers.origin || "";
-    if (origin && !origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
+    if (origin && !origin.match(originPattern)) {
       log(`rejected WebSocket upgrade from origin: ${origin}`);
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();

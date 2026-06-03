@@ -82,6 +82,8 @@ const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonSe
   uiName: "pidash-ui",
   log,
   listenAddress: "0.0.0.0",
+  // Pidash binds to 0.0.0.0 — accept any localhost-like origin (LAN IP, hostname, etc.)
+  originPattern: /^https?:\/\/.+(:\d+)?$/,
 
   onPiMessage: (ws, parsed, getPiClient, setPiClient) => {
     if (parsed.type === "register") {
