@@ -283,9 +283,7 @@ interface PiClient {
   session: SessionInfo;
 }
 
-const browserWatchMap = new WeakMap<any, { sessionId: string | null; worktreePath: string | null }>();
-
-const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonServer({
+const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start } = createDaemonServer({
   port,
   uiDir: path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidiff", "pidiff-ui", "dist"),
   uiName: "pidiff-ui",
@@ -329,6 +327,16 @@ const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonSe
     broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
   },
 
+  onBrowserWatch: (ws, watchId, client) => {
+    if (client) {
+      const payload = buildDiffPayload(client.session.cwd, "branch");
+      try { ws.send(JSON.stringify(payload)); } catch {}
+      const commits = getLog(client.session.cwd, 30);
+      try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+    }
+    return { sessionId: watchId, worktreePath: null };  // pidiff stores {sessionId, worktreePath}
+  },
+
   onBrowserConnect: (ws) => {
     browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
     const sessions = Array.from(piClients.values()).map((c: any) => c.session);
@@ -336,24 +344,6 @@ const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonSe
   },
 
   onBrowserMessage: (ws, parsed) => {
-    // Watch a session
-    if (parsed.type === "watch") {
-      const watchId = parsed.sessionId ?? null;
-      browserWatchMap.set(ws, { sessionId: watchId, worktreePath: null });
-      log(`browser watching: ${watchId}`);
-
-      if (watchId) {
-        const client = piClients.get(watchId);
-        if (client) {
-          const payload = buildDiffPayload(client.session.cwd, "branch");
-          try { ws.send(JSON.stringify(payload)); } catch {}
-          const commits = getLog(client.session.cwd, 30);
-          try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
-        }
-      }
-      return;
-    }
-
     // Watch a specific worktree within a session
     if (parsed.type === "watch-worktree") {
       const watchInfo = browserWatchMap.get(ws);

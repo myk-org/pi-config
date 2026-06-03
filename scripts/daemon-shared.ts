@@ -30,6 +30,8 @@ export interface DaemonServerOptions {
   onBrowserConnect?: (ws: any) => void;
   /** Called when a browser WebSocket sends a message */
   onBrowserMessage?: (ws: any, parsed: any) => void;
+  /** Called when a browser sends a "watch" message. Receives the ws, sessionId, and the piClient (if found). Return value is stored in browserWatchMap. */
+  onBrowserWatch?: (ws: any, sessionId: string | null, piClient: any | null) => any;
   /** Extra WebSocket upgrade paths beyond /ws/pi and /ws/browser */
   extraUpgrades?: (pathname: string, req: IncomingMessage, socket: any, head: Buffer) => boolean;
   /** Listen address (default "127.0.0.1") */
@@ -45,7 +47,7 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     port, uiDir, uiName, log,
     extraApiRoutes,
     onPiMessage, onPiClose, onPiError,
-    onBrowserConnect, onBrowserMessage,
+    onBrowserConnect, onBrowserMessage, onBrowserWatch,
     extraUpgrades,
     listenAddress = "127.0.0.1",
     originPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,
@@ -53,6 +55,7 @@ export function createDaemonServer(opts: DaemonServerOptions) {
 
   const piClients = new Map<string, any>();
   const browserClients = new Set<any>();
+  const browserWatchMap = new WeakMap<any, any>();
 
   // ── HTTP Server ─────────────────────────────────────────────────
 
@@ -116,6 +119,14 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     ws.on("message", (data: Buffer) => {
       try {
         const parsed = JSON.parse(data.toString());
+        if (parsed.type === "watch") {
+          const watchId = parsed.sessionId ?? null;
+          const client = watchId ? piClients.get(watchId) : null;
+          const watchData = onBrowserWatch ? onBrowserWatch(ws, watchId, client) : watchId;
+          browserWatchMap.set(ws, watchData);
+          log(`browser watching: ${watchId}`);
+          return;
+        }
         if (onBrowserMessage) onBrowserMessage(ws, parsed);
       } catch (e: any) { log(`browser message error: ${e.message}`); }
     });
@@ -188,5 +199,5 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     process.on("SIGINT", () => { server.close(); process.exit(0); });
   }
 
-  return { server, piClients, browserClients, broadcastToBrowsers, piWss, browserWss, start };
+  return { server, piClients, browserClients, browserWatchMap, broadcastToBrowsers, piWss, browserWss, start };
 }

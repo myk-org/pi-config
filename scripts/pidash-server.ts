@@ -55,7 +55,7 @@ interface PiClient {
   replaying: boolean;
 }
 
-const browserWatchMap = new WeakMap<any, string | null>();
+
 
 // Async agent state (managed outside daemon-shared — uses its own WebSocket server)
 const _require = createRequire(import.meta.url);
@@ -76,7 +76,7 @@ function sendToWatchers(sessionId: string, event: object) {
   }
 }
 
-const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonServer({
+const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start } = createDaemonServer({
   port,
   uiDir: path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidash", "pidash-ui", "dist"),
   uiName: "pidash-ui",
@@ -275,28 +275,22 @@ const { piClients, browserClients, broadcastToBrowsers, start } = createDaemonSe
     piClient.ws = null;
   },
 
+  onBrowserWatch: (ws, watchId, client) => {
+    // Replay buffered events
+    if (client) {
+      for (const event of client.eventBuffer) {
+        try { ws.send(event); } catch {}
+      }
+      log(`replayed ${client.eventBuffer.length} events for ${watchId}`);
+    }
+    return watchId;  // pidash stores just the sessionId string
+  },
+
   onBrowserConnect: (ws) => {
     browserWatchMap.set(ws, null);
   },
 
   onBrowserMessage: (ws, parsed) => {
-    if (parsed.type === "watch") {
-      const watchId = parsed.sessionId ?? null;
-      browserWatchMap.set(ws, watchId);
-      log(`browser watching: ${watchId}`);
-      // Replay buffered events
-      if (watchId) {
-        const client = piClients.get(watchId);
-        if (client) {
-          for (const event of client.eventBuffer) {
-            try { ws.send(event); } catch {}
-          }
-          log(`replayed ${client.eventBuffer.length} events for ${watchId}`);
-        }
-      }
-      return;
-    }
-
     if (parsed.type === "prompt" && (parsed.text || parsed.images) && parsed.sessionId) {
       const piClient = piClients.get(parsed.sessionId);
       if (piClient && piClient.ws) {
