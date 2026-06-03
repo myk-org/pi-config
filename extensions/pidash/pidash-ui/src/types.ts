@@ -1,21 +1,4 @@
-export interface SessionInfo {
-  sessionId: string;
-  pid: number;
-  cwd: string;
-  branch: string;
-  model: string;
-  startedAt: string;
-  lastActivity: number;
-  active: boolean;
-  sessionFile?: string;
-  gitDirty?: boolean;
-  gitChanges?: number;
-  container?: boolean;
-  contextWindow?: number;
-  thinkingLevel?: string;
-  diffPort?: number | null;
-  working?: boolean;
-}
+export type { SessionInfo } from "../../../shared/types.ts";
 
 export interface PiEvent {
   type: string;

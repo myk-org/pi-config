@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { createDaemonServer } from "./daemon-shared.ts";
+import type { SessionInfo } from "../extensions/shared/types.ts";
 
 const DEFAULT_PORT = 19190;
 const port = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
@@ -28,25 +29,6 @@ function log(msg: string) {
 const piEventHooks: Array<(sessionId: string, event: any) => void> = [];
 
 // ── Session state ───────────────────────────────────────────────────
-
-interface SessionInfo {
-  sessionId: string;
-  pid: number;
-  cwd: string;
-  branch: string;
-  model: string;
-  startedAt: string;
-  lastActivity: number;
-  active: boolean;
-  sessionFile?: string;
-  gitDirty?: boolean;
-  gitChanges?: number;
-  container?: boolean;
-  contextWindow?: number;
-  diffPort?: number | null;
-  thinkingLevel?: string;
-  working?: boolean;
-}
 
 interface PiClient {
   ws: any;
