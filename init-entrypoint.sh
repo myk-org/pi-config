@@ -10,11 +10,11 @@ if [ "$(id -u)" != "0" ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
     # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
-    mkdir -p /tmp/pi-work /tmp/pi-data 2>/dev/null || true
-    # Warn if dirs exist but aren't writable (e.g., root-owned from previous run)
     for d in /tmp/pi-work /tmp/pi-data; do
-        if [ -d "$d" ] && ! touch "$d/.write-test" 2>/dev/null; then
-            echo "WARNING: $d is not writable by $(whoami) — temp files may fail. Fix with: sudo chown -R $(id -u):$(id -g) $d" >&2
+        if ! mkdir -p "$d" 2>/dev/null; then
+            echo "WARNING: failed to create $d — temp files may fail. Fix with: sudo mkdir -p $d && sudo chown $(id -u):$(id -g) $d" >&2
+        elif ! touch "$d/.write-test" 2>/dev/null; then
+            echo "WARNING: $d is not writable by $(whoami) — temp files may fail. Fix with: sudo chown $(id -u):$(id -g) $d" >&2
         else
             rm -f "$d/.write-test" 2>/dev/null
         fi
@@ -94,7 +94,9 @@ fi
 
 # Ensure temp dirs exist and are owned by node (not root)
 mkdir -p /tmp/pi-work /tmp/pi-data
-chown -R node:node /tmp/pi-work /tmp/pi-data 2>/dev/null || true
+if ! chown node:node /tmp/pi-work /tmp/pi-data 2>/dev/null; then
+    echo "WARNING: could not chown /tmp/pi-work or /tmp/pi-data — temp file writes may fail on mounted volumes" >&2
+fi
 
 # Drop to node permanently — runuser replaces the process
 exec runuser -m -u node -- entrypoint.sh "$@"
