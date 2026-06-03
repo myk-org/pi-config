@@ -20,7 +20,7 @@ Before ANY code changes, complete this checklist:
    - Understand the current behavior and why it happens
    - Know what the fix looks like (at least conceptually)
    - If the user's request is based on a misunderstanding, clarify before proceeding
-   - NO → Investigate first. Use read tool and delegate exploration to worker agent.
+   - NO → Investigate first. Use read tool and delegate exploration to scout agent.
    - YES → Continue
 
 3. **GitHub issue created?**
@@ -87,7 +87,7 @@ Investigate root cause:
 Delegate to github-expert to create issue with:
   - Type (fix/feat/refactor/docs)
   - Problem/feature description
-  - Root cause analysis (affected files, functions, why)
+  - Root cause analysis (for bugs/fixes — affected files, functions, why)
   - Proposed fix approach
   - Requirements
   - Deliverables checklist
@@ -132,7 +132,7 @@ The `github-expert` agent handles issue formatting. When delegating issue creati
 
 - Type (fix/feat/refactor/docs)
 - Problem/feature description
-- Root cause analysis (for bugs) — affected files, functions, and why it happens
+- Root cause analysis (for bugs/fixes) — affected files, functions, and why it happens
 - Proposed fix approach
 - Requirements list
 - **Deliverables checklist (MANDATORY)** — every issue MUST have a `## Done` section with checkboxes
