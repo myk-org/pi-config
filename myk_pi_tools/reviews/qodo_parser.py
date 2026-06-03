@@ -43,7 +43,7 @@ _CODE_REF_RE = re.compile(
 _DESCRIPTION_RE = re.compile(r"<pre>(.*?)</pre>", re.DOTALL)
 
 # Pattern for severity/type code tags
-_TYPE_RE = re.compile(r"<code>([^<]*(?:Bug|Rule violation|Requirement gap)[^<]*)</code>")
+_TYPE_RE = re.compile(r"<code>([^<]*(?:Bug|Rule violation|Requirement gap|UX issue|Cross-repo conflict)[^<]*)</code>")
 _CATEGORY_RE = re.compile(r"<code>([^<]*(?:Correctness|Security|Reliability|Performance|Maintainability)[^<]*)</code>")
 
 # Boundary marking previous review iterations (duplicates of current findings)

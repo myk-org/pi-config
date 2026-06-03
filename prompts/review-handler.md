@@ -142,6 +142,8 @@ Returns JSON with:
 >    - `qodo_bug` → **MUST address.** Fix the code. No skip allowed.
 >    - `qodo_rule_violation` → **MUST address.** Fix the code. No skip allowed.
 >    - `qodo_requirement_gap` → **MUST address.** Either fix the code OR update the issue requirements to document the design decision. No skip allowed.
+>    - `qodo_ux_issue` → **MUST address.** Either fix the UX concern OR update the issue requirements to document the design decision. No skip allowed.
+>    - `qodo_cross_repo` → **MUST address.** Fix the code to avoid cross-repo breakage. No skip allowed.
 >    - `qodo_finding` (other) → **MUST address.** Either fix the code OR update the issue requirements. No skip allowed.
 >
 >    **No finding type is optional. Every finding gets a code fix or an issue update.**
