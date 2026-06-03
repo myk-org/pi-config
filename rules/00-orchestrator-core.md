@@ -44,7 +44,7 @@ Before ANY code changes, run the pre-implementation checklist:
 
 → **See the "Pre-Implementation Checklist" section below** - Do NOT skip this step.
 
-**Quick check** (when issue-first workflow applies — see skip conditions below):
+**Quick check** (when issue-first workflow applies — see `rules/05-issue-first-workflow.md` for skip conditions):
 
 - [ ] Root cause investigated? (read relevant code, understand the problem)
 - [ ] GitHub issue created?
