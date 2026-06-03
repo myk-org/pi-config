@@ -15,17 +15,35 @@ Before ANY code changes, complete this checklist:
    - YES → Do directly, skip remaining steps
    - NO → Continue checklist
 
-2. **GitHub issue created?**
+2. **Root cause investigated?**
+   - Read the relevant source code — identify files, functions, and lines involved
+   - Understand the current behavior and why it happens
+   - Know what the fix looks like (at least conceptually)
+   - If the user's request is based on a misunderstanding, clarify before proceeding
+   - NO → Investigate first. Use read/bash/grep to understand the code.
+   - YES → Continue
+
+3. **GitHub issue created?**
    - NO → Create issue first (delegate to `github-expert`)
    - YES → Continue
 
-3. **On correct branch?** (`feat/issue-N-...` or `fix/issue-N-...`)
+4. **On correct branch?** (`feat/issue-N-...` or `fix/issue-N-...`)
    - NO → Create branch from origin/main (delegate to `git-expert`)
    - YES → Continue
 
-4. **User confirmed "work on it now"?**
+5. **User confirmed "work on it now"?**
    - NO → Ask user
    - YES → Proceed with implementation
+
+🚨 **NEVER create issues blindly from user requests.** Before creating ANY issue:
+
+- Read and understand the relevant code
+- Verify the problem exists (don't take the user's word — check the code)
+- Know what files/functions are involved
+- Have a conceptual fix in mind
+- If a fix PR already exists, link to it instead of creating a duplicate issue
+
+An issue without root cause analysis is a TODO, not a useful issue.
 
 ---
 
@@ -106,6 +124,8 @@ The `github-expert` agent handles issue formatting. When delegating issue creati
 
 - Type (fix/feat/refactor/docs)
 - Problem/feature description
+- Root cause analysis (for bugs) — affected files, functions, and why it happens
+- Proposed fix approach
 - Requirements list
 - **Deliverables checklist (MANDATORY)** — every issue MUST have a `## Done` section with checkboxes
 
