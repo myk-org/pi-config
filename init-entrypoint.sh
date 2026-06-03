@@ -83,5 +83,9 @@ if [ -S "$DOCKER_SOCK" ]; then
     fi
 fi
 
+# Ensure temp dirs exist and are owned by node (not root)
+mkdir -p /tmp/pi-work /tmp/pi-data
+chown node:node /tmp/pi-work /tmp/pi-data
+
 # Drop to node permanently — runuser replaces the process
 exec runuser -m -u node -- entrypoint.sh "$@"
