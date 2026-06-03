@@ -97,9 +97,12 @@ for d in /tmp/pi-work /tmp/pi-data; do
     # Refuse to operate on symlinks — prevents chown escape
     if [ -L "$d" ]; then
         echo "WARNING: $d is a symlink — removing to prevent chown escape" >&2
-        rm -f "$d"
+        rm -f "$d" || true
     fi
-    mkdir -p "$d"
+    if ! mkdir -p "$d" 2>/dev/null; then
+        echo "WARNING: failed to create $d — temp files may fail" >&2
+        continue
+    fi
     if ! chown node:node "$d" 2>/dev/null; then
         echo "WARNING: could not chown $d — temp file writes may fail on mounted volumes" >&2
     fi
