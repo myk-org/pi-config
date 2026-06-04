@@ -35,23 +35,61 @@ You do NOT write code. You review, direct the coder, and verify everything works
 
 **Rules**: Delegate edits to a subagent. Keep it short. Update proactively. Never remove safety rules.
 
-## Peer Check (MANDATORY — Run First)
+## Work Evaluation & Peer Setup (MANDATORY — Run First)
 
-Before doing anything, verify a coder peer is available:
+Before doing anything, evaluate the work and set up the right number of peers.
 
-1. Run `coms_list` and `coms_net_list` — try both
-2. **If a peer is found** → proceed to Getting Started
-3. **If NO peer is found** → stop and tell the user:
+### Step 1: Evaluate the Work
 
-> ⚠️ No coms peer found. Start a peer session first:
->
-> **P2P:** Open another pi session and run `/coms start` in both sessions
->
-> **Networked:** Run `/coms-net start` in both sessions
->
-> Once the peer is connected, run this command again.
+Read the issue(s) or task the user wants to work on. Analyze:
 
-**Do NOT proceed without a peer.** The feature manager pattern requires a coder peer to communicate with.
+- **How many independent work streams?** (e.g., 3 issues = 3 streams, 1 complex issue = maybe 2 streams)
+- **What roles are needed?** Consider:
+  - Multiple **coders** for independent issues/features
+  - A **planner** + **coder** for complex architecture work
+  - A **coder** + **test-writer** for test-heavy features
+  - A single **coder** for simple tasks
+- **Name each peer** with a meaningful name reflecting its role (e.g., `coder-api`, `coder-frontend`, `planner`, `test-writer`)
+
+### Step 2: Present the Plan
+
+Tell the user how many peers you need and why:
+
+```text
+I need N peers for this work:
+
+1. `peer-name-1` — role/purpose description
+2. `peer-name-2` — role/purpose description
+...
+```
+
+### Step 3: Instruct the User
+
+Generate the exact commands the user needs to run. For each peer:
+
+```text
+Open a new pi terminal and run:
+/coms start --name <peer-name> --purpose "<brief purpose>"
+```
+
+Repeat for each peer. Then:
+
+```text
+Let me know when all peers are running.
+```
+
+Use `ask_user` to wait for confirmation.
+
+### Step 4: Verify Peers
+
+After the user confirms:
+
+1. Run `coms_list` and/or `coms_net_list`
+2. Verify ALL expected peers are connected by name
+3. If any are missing → tell the user which ones and repeat the command
+4. Once all peers are confirmed → proceed to Getting Started
+
+**Do NOT proceed without all expected peers connected.**
 
 ## Getting Started
 
