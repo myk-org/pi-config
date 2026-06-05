@@ -28,6 +28,7 @@ Single extension that provides:
 | **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
+| **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges ([@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks)) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Inter-agent communication** | P2P (`/coms`) and networked (`/coms-net`) agent communication — on-demand activation via slash commands |
 | **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net` — with autocomplete argument hints |

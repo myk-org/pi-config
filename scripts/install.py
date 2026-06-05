@@ -162,11 +162,15 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     pi_dis = "" if has["pi"] else "requires pi"
     pi_cfg = (HOME / ".pi/agent/git/github.com/myk-org/pi-config").exists()
     pi_vtx = (HOME / ".pi/agent/git/github.com/myk-org/pi-vertex-claude").exists()
-    pi_web = False
-    try:
-        pi_web = "pi-web-access" in (HOME / ".pi/agent/settings.json").read_text()
-    except Exception:
-        pass
+
+    def _is_pi_pkg_installed(name: str) -> bool:
+        try:
+            return name in (HOME / ".pi/agent/settings.json").read_text()
+        except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
+            return False
+
+    pi_web = _is_pi_pkg_installed("pi-web-access")
+    pi_tasks = _is_pi_pkg_installed("pi-tasks")
 
     step1 = Step(
         "📦",
@@ -193,6 +197,13 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=pi_web,
                 disabled=pi_dis,
                 install_cmd="pi install npm:pi-web-access",
+            ),
+            Tool(
+                "pi-tasks",
+                "Task tracking for multi-step workflows",
+                installed=pi_tasks,
+                disabled=pi_dis,
+                install_cmd="pi install npm:@tintinweb/pi-tasks",
             ),
             Tool(
                 "myk-pi-tools",
@@ -279,11 +290,12 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     # ── Step 6: Environment Setup ────────────────────────────────────────
     gd = "" if has["git"] else "requires git"
     gi = _gitignore_path()
-    mem_inst = wt_inst = False
+    mem_inst = wt_inst = tasks_inst = False
     try:
         content = Path(gi).read_text()
         mem_inst = ".pi/memory/" in content
         wt_inst = ".worktrees/" in content
+        tasks_inst = ".pi/tasks/" in content
     except Exception:
         pass
 
@@ -321,6 +333,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=wt_inst,
                 disabled=gd,
                 install_fn=lambda: _add_to_gitignore(".worktrees/"),
+                installed_label="configured",
+            ),
+            Tool(
+                ".pi/tasks/ in gitignore",
+                "Prevent task state files from being committed",
+                installed=tasks_inst,
+                disabled=gd,
+                install_fn=lambda: _add_to_gitignore(".pi/tasks/"),
                 installed_label="configured",
             ),
         ],
@@ -386,9 +406,11 @@ def run_step(step_idx: int, step: Step) -> list[Tool]:
         print(f"  {DIM}Cancelled.{RESET}")
         sys.exit(1)
 
-    # Map selected labels back to Tool objects
+    # Map selected labels back to Tool objects (skip already installed/disabled)
     selected: list[Tool] = []
     for tool in step.tools:
+        if tool.installed or tool.disabled:
+            continue
         label = f"{tool.name} — {tool.description}"
 
         if label in result:
@@ -472,6 +494,37 @@ def install_all(selections: list[Tool]) -> tuple[int, int, list[Tool]]:
     return installed, failed, failed_tools
 
 
+# ── Update ─────────────────────────────────────────────────────────────────
+
+
+def update_pi(prereqs: dict[str, bool]) -> None:
+    """Run pi update to update pi itself and all installed packages."""
+    if not prereqs.get("pi"):
+        return
+
+    print()
+    print("  ⏳ Updating pi and packages...", end="", flush=True)
+    try:
+        result = subprocess.run(
+            "pi update",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode == 0:
+            print(f"\r\033[2K  {GREEN}✓{RESET} pi and packages updated")
+        else:
+            print(f"\r\033[2K  {RED}✗{RESET} pi update failed")
+            if result.stderr:
+                for line in result.stderr.strip().splitlines()[-2:]:
+                    print(f"    {DIM}{line}{RESET}")
+    except subprocess.TimeoutExpired:
+        print(f"\r\033[2K  {RED}✗{RESET} pi update timed out (5m)")
+    except Exception as exc:
+        print(f"\r\033[2K  {RED}✗{RESET} pi update — {exc}")
+
+
 # ── Summary ────────────────────────────────────────────────────────────────
 
 
@@ -535,6 +588,8 @@ def main() -> None:
     if not selections:
         print()
         print("  Nothing to install.")
+        # Still update pi and existing packages
+        update_pi(prereqs)
         print()
         return
 
@@ -549,12 +604,12 @@ def main() -> None:
             print(f"  {DIM}Cancelled.{RESET}")
             sys.exit(1)
 
-    # Count skipped (installed+disabled that weren't selected)
-    total_tools = sum(len(step.tools) for step in steps)
-    skipped = total_tools - len(selections)
-
     # Install
+    total_tools = sum(len(step.tools) for step in steps)
     installed, failed, failed_tools = install_all(selections)
+
+    # Update pi and all packages
+    update_pi(prereqs)
 
     # Adjust skipped to account for failures
     skipped = total_tools - installed - failed

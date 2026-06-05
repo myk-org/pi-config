@@ -72,9 +72,9 @@ RUN DOCKER_VERSION=$(curl -fsSL https://download.docker.com/linux/static/stable/
 # Copy docker-safe wrapper
 COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
+# Install acpx, agent-browser, pi-web-access, gemini-cli, pi-tasks (pi itself is installed at runtime in entrypoint.sh)
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli
+  npm install -g acpx agent-browser pi-web-access @google/gemini-cli @tintinweb/pi-tasks
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)

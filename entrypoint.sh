@@ -24,11 +24,16 @@ else
     pi update git:github.com/myk-org/pi-vertex-claude
 fi
 
-# pi-web-access: register in pi settings if not already present
-# (installed globally in Docker image, just needs pi to know about it)
-if ! grep -q 'pi-web-access' "$HOME/.pi/agent/settings.json" 2>/dev/null; then
-    pi install npm:pi-web-access 2>/dev/null || true
-fi
+# Register pi packages if not already present
+# (installed globally in Docker image, just need pi to know about them)
+register_pi_pkg() {
+    local name="$1" source="$2"
+    if ! grep -q "$name" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
+        pi install "npm:$source" 2>/dev/null || true
+    fi
+}
+register_pi_pkg pi-web-access pi-web-access
+register_pi_pkg pi-tasks @tintinweb/pi-tasks
 
 
 
@@ -52,6 +57,9 @@ if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/memory/' "$GITIGNORE_FILE" 2>/dev
 fi
 if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.worktrees/' "$GITIGNORE_FILE" 2>/dev/null; then
     echo '.worktrees/' >> "$GITIGNORE_FILE"
+fi
+if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/tasks/' "$GITIGNORE_FILE" 2>/dev/null; then
+    echo '.pi/tasks/' >> "$GITIGNORE_FILE"
 fi
 
 
