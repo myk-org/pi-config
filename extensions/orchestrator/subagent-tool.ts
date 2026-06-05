@@ -47,9 +47,6 @@ const ASYNC_ONLY_AGENTS = new Set([
   "code-reviewer-guidelines",
   "code-reviewer-security",
 ]);
-const ASYNC_ONLY_ERROR = (names: string[]) =>
-  `These agents MUST use async: true: ${names.join(", ")}. Review agents run in the background — never block the session waiting for them.`;
-
 // ── Schemas ──────────────────────────────────────────────────────────────
 
 const TaskItem = Type.Object({
@@ -603,11 +600,7 @@ export function registerSubagentTool(
             };
           }
           if (params.async !== true) {
-            return {
-              content: [{ type: "text", text: ASYNC_ONLY_ERROR(violators) }],
-              details: mkd("single")([]),
-              isError: true,
-            };
+            params.async = true;
           }
         }
       }

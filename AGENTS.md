@@ -116,7 +116,9 @@ pi-config/
 │   ├── 35-memory.md
 │   ├── 40-critical-rules.md
 │   ├── 45-file-preview.md
-│   └── 50-agent-bug-reporting.md
+│   ├── 50-agent-bug-reporting.md
+│   ├── 55-coms-protocol.md
+│   └── 60-task-tracking.md
 ├── myk_pi_tools/                    # Python CLI tooling package
 │   ├── __init__.py
 │   ├── ai_cli/
@@ -184,8 +186,8 @@ pi-config/
 
 ### Async-Only Agents
 
-Some agents are enforced to only run with `async: true` — sync calls are rejected
-by `subagent-tool.ts` with an error. This prevents the LLM from blocking the session
+Some agents are enforced to only run with `async: true` — sync calls are automatically
+promoted to async by `subagent-tool.ts`. This prevents the LLM from blocking the session
 waiting for long-running agents.
 
 **Currently enforced:**
@@ -394,6 +396,15 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 Resolution: project file → env var → default.
 
 Module: `extensions/orchestrator/project-settings.ts`
+
+## Companion Packages
+
+These npm packages are installed alongside pi-config (via Dockerfile + `entrypoint.sh` for containers, `scripts/install.py` for native):
+
+| Package | Purpose |
+|---------|--------|
+| [`pi-web-access`](https://github.com/pinkpixel/pi-web-access) | Web search, fetch, librarian skills |
+| [`@tintinweb/pi-tasks`](https://github.com/tintinweb/pi-tasks) | Task tracking for multi-step workflows — live widget, reminder cadence, dependency management |
 
 ## Docker / Dockerfile
 

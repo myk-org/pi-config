@@ -193,10 +193,9 @@ export function registerAsyncAgents(
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
-        const RESUME_REMINDER = "\n\n---\n⚠️ **Resume check:** Were you in the middle of a workflow before this result arrived? If yes, handle this result and then resume the workflow from the next pending step.";
         pi.sendMessage({
           customType: "async-agent-result",
-          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${RESUME_REMINDER}`,
+          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
