@@ -601,6 +601,15 @@ export function registerSubagentTool(
           }
           if (params.async !== true) {
             params.async = true;
+            // Set default name(s) for async display — async path requires names
+            if (params.agent && !params.name) {
+              params.name = params.agent;
+            }
+            if (params.tasks) {
+              for (const t of params.tasks) {
+                if (!(t as any).name) (t as any).name = t.agent;
+              }
+            }
           }
         }
       }

@@ -166,7 +166,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     def _is_pi_pkg_installed(name: str) -> bool:
         try:
             return name in (HOME / ".pi/agent/settings.json").read_text()
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
             return False
 
     pi_web = _is_pi_pkg_installed("pi-web-access")
@@ -290,11 +290,12 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     # ── Step 6: Environment Setup ────────────────────────────────────────
     gd = "" if has["git"] else "requires git"
     gi = _gitignore_path()
-    mem_inst = wt_inst = False
+    mem_inst = wt_inst = tasks_inst = False
     try:
         content = Path(gi).read_text()
         mem_inst = ".pi/memory/" in content
         wt_inst = ".worktrees/" in content
+        tasks_inst = ".pi/tasks/" in content
     except Exception:
         pass
 
@@ -332,6 +333,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=wt_inst,
                 disabled=gd,
                 install_fn=lambda: _add_to_gitignore(".worktrees/"),
+                installed_label="configured",
+            ),
+            Tool(
+                ".pi/tasks/ in gitignore",
+                "Prevent task state files from being committed",
+                installed=tasks_inst,
+                disabled=gd,
+                install_fn=lambda: _add_to_gitignore(".pi/tasks/"),
                 installed_label="configured",
             ),
         ],
