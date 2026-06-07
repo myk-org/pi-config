@@ -274,8 +274,10 @@ export function estimateMemoryBudget(systemPromptLength: number, totalBudget: nu
   // Memory competes with rules, context files, skills, etc.
   const systemPromptTokens = Math.ceil(systemPromptLength / CHARS_PER_TOKEN);
   const remaining = totalBudget - systemPromptTokens;
-  // Clamp between 500 (minimum useful) and DEFAULT_TOKEN_BUDGET (maximum)
-  return Math.max(500, Math.min(DEFAULT_TOKEN_BUDGET, remaining));
+  // No budget left — skip memory injection entirely
+  if (remaining <= 0) return 0;
+  // Clamp to DEFAULT_TOKEN_BUDGET maximum
+  return Math.min(DEFAULT_TOKEN_BUDGET, remaining);
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
