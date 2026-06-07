@@ -425,7 +425,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     }
 
-    if (!ctx.hasUI) return;
+    if (ctx.mode !== "tui") return;
 
     ctx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({
       async getSuggestions(

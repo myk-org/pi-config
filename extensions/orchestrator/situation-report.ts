@@ -263,6 +263,23 @@ export function buildSituationReport(
   return reportSections.join("\n");
 }
 
+/** Approximate total token budget for the system prompt (rules + context + memory). */
+const SYSTEM_PROMPT_TOKEN_BUDGET = 8000;
+
+/**
+ * Estimate available token budget for memory based on system prompt size.
+ * Shrinks memory budget when the system prompt is already large.
+ */
+export function estimateMemoryBudget(systemPromptLength: number, totalBudget: number = SYSTEM_PROMPT_TOKEN_BUDGET): number {
+  // Memory competes with rules, context files, skills, etc.
+  const systemPromptTokens = Math.ceil(systemPromptLength / CHARS_PER_TOKEN);
+  const remaining = totalBudget - systemPromptTokens;
+  // No budget left — skip memory injection entirely
+  if (remaining <= 0) return 0;
+  // Clamp to DEFAULT_TOKEN_BUDGET maximum
+  return Math.min(DEFAULT_TOKEN_BUDGET, remaining);
+}
+
 // ── Formatting ─────────────────────────────────────────────────────────────
 
 function formatSection(name: string, entries: MemoryEntryWithText[]): string {

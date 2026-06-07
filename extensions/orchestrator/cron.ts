@@ -194,6 +194,8 @@ export function registerCron(
     lastCtx = ctx;
     CRON_FILE = path.join(getProjectTmpDir(ctx.cwd), `cron-${process.pid}.json`);
     cleanupOrphanedCronFiles();
+    // Skip cron scheduling in one-shot modes
+    if (ctx.mode === "print" || ctx.mode === "json") return;
 
     // Restore from persistence (after /reload or /new)
     const restored = loadCrons();
@@ -268,6 +270,10 @@ export function registerCron(
       const action = params.action as string;
 
       if (action === "add") {
+        // Block scheduling in one-shot modes
+        if (lastCtx?.mode === "print" || lastCtx?.mode === "json") {
+          return { content: [{ type: "text", text: "Error: cron scheduling is not available in one-shot modes (print/json)" }] };
+        }
         if (!params.task) {
           return { content: [{ type: "text", text: "Error: 'task' is required for add action" }] };
         }

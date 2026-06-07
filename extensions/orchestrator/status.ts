@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { tryGetSystemPromptOptions } from "./utils.js";
 import type { AsyncJob } from "./async-agents.js";
 import type { CronTask } from "./cron.js";
 import { getCurrentBranch, runGit } from "./git-helpers.js";
@@ -89,6 +90,18 @@ export function registerStatus(
       // ── Container ──────────────────────────────────────────────────
       if (inContainer) {
         lines.push("📦 Running in container");
+      }
+
+      // ── System prompt resources ────────────────────────────────────
+      const opts = tryGetSystemPromptOptions(ctx);
+      if (opts) {
+        const contextFiles = opts.contextFiles?.length ?? 0;
+        const skills = opts.skills?.length ?? 0;
+        const tools = opts.selectedTools?.length ?? 0;
+        const guidelines = opts.promptGuidelines?.length ?? 0;
+        if (contextFiles + skills + tools + guidelines > 0) {
+          lines.push(`📋 Loaded: ${contextFiles} context files, ${skills} skills, ${tools} tools, ${guidelines} guidelines`);
+        }
       }
 
       ctx.ui.notify(lines.join("\n"), "info");
