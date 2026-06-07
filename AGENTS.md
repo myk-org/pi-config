@@ -63,7 +63,7 @@ pi-config/
 │   │   ├── project-settings.ts        # Project-level settings (.pi/pi-config-settings.json)
 │   │   ├── situation-report.ts        # Token-budgeted memory context for system prompts
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
-│   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, etc.)
+│   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, tryGetSystemPromptOptions, etc.)
 │   ├── coms/                        # Inter-agent communication extension (standalone)
 │   │   ├── index.ts                 # Entry point — registers coms and coms-net
 │   │   ├── coms.ts                  # P2P agent communication wrapper (on-demand /coms command)
@@ -229,6 +229,21 @@ Checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` fie
 Dead parent = zombie = delete.
 
 **Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — creates dir if missing, returns path.
+
+### Mode-Aware Guards (`ctx.mode`)
+
+Pi runs in four modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured output), `"print"` (one-shot).
+Use `ctx.mode` to skip features that only make sense in interactive mode:
+
+| Feature | Guard | Reason |
+|---------|-------|--------|
+| Daemon connections (pidash, pidiff) | `ctx.mode === "tui"` | No UI to display |
+| Autocomplete providers | `ctx.mode === "tui"` | No editor input |
+| Cron scheduling | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no timers |
+| Dreaming (auto-dream timer) | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no background work |
+
+**Keep `ctx.hasUI`** for simple UI guard checks (`notify`, `select`, `confirm`) — these work in both TUI and RPC modes.
+**Use `ctx.mode`** when the distinction between interactive and one-shot matters.
 
 ### Adding an Extension Command
 

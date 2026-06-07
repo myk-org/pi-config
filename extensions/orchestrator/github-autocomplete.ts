@@ -137,7 +137,7 @@ export function registerGithubAutocomplete(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   pi.on("session_start", async (_event, ctx) => {
-    if (!ctx.hasUI) return;
+    if (ctx.mode !== "tui") return;
 
     // Resolve GitHub repo from git remote
     const remoteResult = await pi.exec("git", ["remote", "-v"], {

@@ -272,7 +272,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx;
     if (!isGitRepo(ctx.cwd)) return;
-    if (!connected) connect(ctx);
+    if (!connected && ctx.mode === "tui") connect(ctx);
   });
 
   pi.on("agent_end", (_event, ctx) => {
@@ -281,14 +281,14 @@ export function registerPidiff(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", (_event, ctx) => {
-    if (!connected && !shuttingDown) connect(ctx);
+    if (!connected && !shuttingDown && ctx.mode === "tui") connect(ctx);
   });
 
   const cleanupReconnect = setupReconnectPoller({
     isConnected: () => connected,
     isConnecting: () => connecting,
     isShuttingDown: () => shuttingDown,
-    connect: () => { if (lastCtx) connect(lastCtx); },
+    connect: () => { if (lastCtx?.mode === "tui") connect(lastCtx); },
   });
 
   pi.on("session_shutdown", () => {

@@ -247,6 +247,8 @@ export function registerDreaming(
     lastCtx = ctx;
     if (activePollInterval) { clearInterval(activePollInterval); activePollInterval = null; }
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
+    // Skip dreaming in one-shot modes (print/json)
+    if (ctx.mode === "print" || ctx.mode === "json") return;
     updateDreamStatus();
     if (enabled) startTimer(ctx.cwd);
   });

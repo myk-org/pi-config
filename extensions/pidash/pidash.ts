@@ -693,7 +693,7 @@ export function registerPidash(
     // when the user types their first prompt (via before_agent_start triggering
     // the input pipeline). For now, this at least initializes the connection.
     // Session switching requires the user to have typed at least one slash command.
-    if (!connected) {
+    if (!connected && ctx.mode === "tui") {
       connect(ctx);
     } else if (ws) {
       // Already connected — session switched (e.g., /resume, /new)
@@ -711,7 +711,7 @@ export function registerPidash(
 
   // Fallback for /reload — connect on first tool_result if not connected
   pi.on("tool_result", (_event, ctx) => {
-    if (!connected && !shuttingDown) connect(ctx);
+    if (!connected && !shuttingDown && ctx.mode === "tui") connect(ctx);
   });
 
   // Periodic reconnect — ensures sessions that started before the daemon still connect
@@ -719,7 +719,7 @@ export function registerPidash(
     isConnected: () => connected,
     isConnecting: () => connecting,
     isShuttingDown: () => shuttingDown,
-    connect: () => { if (lastCtx) connect(lastCtx); },
+    connect: () => { if (lastCtx?.mode === "tui") connect(lastCtx); },
   });
 
   // ── Command execution from browser ────────────────────────────────

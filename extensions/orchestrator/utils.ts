@@ -76,3 +76,13 @@ export function getProjectTmpDir(cwd: string): string {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+/** Safely call ctx.getSystemPromptOptions() — returns null if unavailable. */
+export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; skills?: any[]; selectedTools?: any[]; promptGuidelines?: any[] } | null {
+  try {
+    return ctx.getSystemPromptOptions?.() ?? null;
+  } catch (e: any) {
+    console.debug("[utils] getSystemPromptOptions failed:", e?.message);
+    return null;
+  }
+}

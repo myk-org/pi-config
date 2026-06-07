@@ -4,6 +4,7 @@
 
 import { complete, type UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { tryGetSystemPromptOptions } from "./utils.js";
 import {
   BorderedLoader,
   convertToLlm,
@@ -42,12 +43,24 @@ export function registerBtw(pi: ExtensionAPI): void {
         conversationText = serializeConversation(llmMessages);
       }
 
+      // Build context-aware system prompt using loaded resources
+      let projectContext = "";
+      const opts = tryGetSystemPromptOptions(ctx);
+      if (opts?.contextFiles?.length) {
+        const names = opts.contextFiles.map((f: any) => f.path?.split("/").pop() || f.path || "(unknown)").join(", ");
+        projectContext = `\n- Project context files loaded: ${names}`;
+      }
+      if (opts?.skills?.length) {
+        const names = opts.skills.map((s: any) => s.name || s).join(", ");
+        projectContext += `\n- Available skills: ${names}`;
+      }
+
       const systemPrompt = `You are answering a quick "by the way" side question during a coding session.
 
 Rules:
 - Answer concisely and directly based on the conversation context provided.
 - You have NO tool access — you cannot read files, run commands, or make changes.
-- Only answer based on information already present in the conversation.
+- Only answer based on the conversation and loaded project context.${projectContext}
 - Keep your response brief and to the point.
 - Use markdown formatting where helpful (code blocks, lists, bold).
 - If the conversation context doesn't contain enough information to answer, say so honestly.`;

@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
-import { buildSituationReport, rebuildAndOrganize } from "./situation-report.js";
+import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
 
 /** Social closer gate — skip expensive vector search for trivial messages */
 const SOCIAL_CLOSERS = new Set([
@@ -142,7 +142,9 @@ export function registerRules(
     }
 
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
-    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent);
+    // systemPrompt.length is chars; estimateMemoryBudget converts internally
+    const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0);
+    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
     const shouldSearch = !isSubagent && !!event.prompt && !isSocialCloser(event.prompt);
@@ -278,9 +280,9 @@ export function registerRules(
 }
 
 // Loads memories using situation report (scored, token-budgeted) from topic files
-function loadMemoriesWithScoring(cwd: string, isSubagent: boolean): string {
+function loadMemoriesWithScoring(cwd: string, isSubagent: boolean, tokenBudget?: number): string {
   try {
-    const report = buildSituationReport(cwd);
+    const report = buildSituationReport(cwd, tokenBudget);
     if (report) {
       let result = "\n" + report + "\n";
       if (isSubagent) {
