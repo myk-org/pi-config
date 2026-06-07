@@ -1,349 +1,357 @@
 # Common Workflow Recipes
 
-Copy-paste patterns for everyday tasks. Each recipe is self-contained — paste it into your pi session and go.
+Copy-paste patterns for the most common pi workflows. Each recipe is self-contained — run exactly as shown.
 
-For full workflow explanations, see Orchestrator Workflows. For agent details, see Specialist Agents Reference.
+> **Note:** All recipes assume `myk-pi-tools` is installed. If not, run `uv tool install myk-pi-tools` first. See [Installing and Starting Your First Session](quickstart.html) for full setup.
 
 ---
 
 ## Implement a Feature End-to-End
 
-Scouts the codebase, plans, and implements — all in one command.
+The most common workflow: scout the codebase, plan changes, and implement in one command.
 
-```text
-/implement add retry logic with exponential backoff to the HTTP client in src/api.py
+```
+/implement add pagination to the /api/users endpoint
 ```
 
-The orchestrator chains three agents: **scout** explores the codebase for relevant files, **planner** creates a step-by-step implementation plan, and **worker** makes all the code changes. The code review loop runs automatically after implementation.
+This chains three agents sequentially: **scout** explores the codebase to find relevant files and dependencies, **planner** creates a detailed implementation plan, and **worker** executes the plan. Use this when you know what you want built and want pi to handle the full cycle.
 
-- For planning without implementing, use `/scout-and-plan <task>` instead
-- For implementation without the scout/plan phase, use `/implement-and-review <task>`
+- For tasks where you want to review the plan before coding, use `/scout-and-plan` instead (see below)
+- The orchestrator will follow the [code review loop](code-review-loop.html) automatically after implementation
 
 ---
 
-## Implement and Review in a Loop
+## Implement with Automatic Code Review
 
-Writes code and runs three parallel reviewers until all approve, then runs tests.
+Implement a change and immediately run the three parallel code reviewers, then auto-fix any findings.
 
-```text
-/implement-and-review add input validation to the /users API endpoint
+```
+/implement-and-review refactor the database connection pool to use async context managers
 ```
 
-The **worker** implements the task, then three review agents run in parallel: **code-reviewer-quality** (readability, DRY), **code-reviewer-guidelines** (project style), and **code-reviewer-security** (bugs, vulnerabilities). If any reviewer has comments, the worker fixes and re-reviews. The loop ends only when all three approve and tests pass.
+This chains: **worker** implements the task → three review agents (**code-reviewer-quality**, **code-reviewer-guidelines**, **code-reviewer-security**) run in parallel → **worker** fixes all findings. Use this when you want a single-command implement-and-polish cycle without manual intervention.
 
-> **Tip:** This is the fastest path when you already know what needs to change. Skip the scout/plan overhead.
+- Reviewers are enforced as async subagents — they run in the background without blocking your session
+- See [Running the Automated Code Review Loop](code-review-loop.html) for details on how the three reviewers work
+
+---
+
+## Scout and Plan Without Implementing
+
+Explore the codebase and get a detailed plan before committing to changes.
+
+```
+/scout-and-plan migrate the authentication module from JWT to session-based auth
+```
+
+This chains two agents: **scout** maps out relevant files, functions, and dependencies, then **planner** produces a step-by-step implementation plan with edge cases and testing approach. Use this when you want to understand the scope of a change before writing any code.
+
+- The plan output includes specific file paths, function names, and line numbers
+- After reviewing the plan, you can run `/implement` with the plan as context
 
 ---
 
 ## Review a GitHub PR
 
-Fetches a PR diff, runs three parallel reviewers, and posts inline comments.
+Review an open PR and optionally post inline comments on GitHub.
 
-```text
+```
 /pr-review 42
 ```
 
-Or auto-detect from the current branch:
+Or let pi auto-detect the PR from your current branch:
 
-```text
+```
 /pr-review
 ```
 
 Or use a full URL:
 
-```text
-/pr-review https://github.com/your-org/your-repo/pull/42
+```
+/pr-review https://github.com/owner/repo/pull/42
 ```
 
-Three review agents analyze the diff in parallel. Findings are merged, deduplicated, and grouped by severity (CRITICAL, WARNING, SUGGESTION). You choose which to post as inline PR comments.
+This fetches the PR diff and the project's AGENTS.md, then sends both to all three code review agents in parallel. After analysis, pi presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION) and lets you choose which to post as inline GitHub comments.
 
-> **Note:** Requires `myk-pi-tools`. Install with `uv tool install myk-pi-tools` if not available.
+- Requires `gh` CLI to be authenticated
+- See [Using Slash Commands and Prompt Templates](slash-commands.html) for all command variants
 
 ---
 
-## Fix All Review Comments on a PR
+## Review Local Uncommitted Changes
 
-Processes review comments from all sources — human reviewers, Qodo, and CodeRabbit — and fixes them.
-
-```text
-/review-handler
-```
-
-Or with a specific review URL:
-
-```text
-/review-handler https://github.com/your-org/your-repo/pull/42#pullrequestreview-456
-```
-
-Fetches all review threads, presents them grouped by source and priority, then lets you approve or skip each one. Approved items are delegated to specialist agents for fixing. After fixes, tests run, changes are committed, and replies are posted to GitHub.
-
----
-
-## Auto-Fix CodeRabbit Comments in a Loop
-
-Automatically addresses CodeRabbit review comments and polls until CodeRabbit approves.
-
-```text
-/review-handler --autorabbit
-```
-
-All CodeRabbit comments are auto-approved and fixed without prompting. Human and Qodo comments still require your input. After fixing, the loop polls for new CodeRabbit comments every 5 minutes and processes them automatically. The loop exits only when CodeRabbit approves or you explicitly stop it.
-
-> **Tip:** This runs as a background polling loop — you can continue working in the same session while it waits.
-
----
-
-## Review Local Changes Before Pushing
-
-Reviews uncommitted changes or a branch diff without creating a PR.
+Run the three-reviewer code review on local changes without creating a PR.
 
 Review uncommitted changes (staged + unstaged):
 
-```text
+```
 /review-local
 ```
 
-Review all changes compared to a branch:
+Review changes compared to a specific branch:
 
-```text
+```
 /review-local main
 ```
 
-Three review agents analyze the diff in parallel, just like `/pr-review`, but against local changes. Findings are grouped by severity: critical, warnings, and suggestions.
+This runs all three code review agents in parallel against your local diff. Findings are grouped by severity. Use this as a pre-commit quality check before pushing.
 
 ---
 
-## Handle Multiple PRs Simultaneously
+## Handle PR Reviews (Human, CodeRabbit, Qodo)
 
-Uses git worktrees to work on multiple PRs without branch conflicts.
+Process and respond to all review comments on your current branch's PR.
 
-```bash
-# Create isolated worktrees for each PR
-git worktree add .worktrees/pr-42 origin/fix/issue-42
-git worktree add .worktrees/pr-43 origin/feat/issue-43
-
-# Run review-handler in each worktree
-# (delegate as subagents with cwd set to each worktree)
-
-# Clean up when done
-git worktree remove .worktrees/pr-42
-git worktree remove .worktrees/pr-43
+```
+/review-handler
 ```
 
-Never switch branches in the main worktree when working on multiple PRs — it corrupts parallel agent work. Each worktree gets its own isolated directory. The `.worktrees/` directory is gitignored by default.
+This fetches review comments from all sources (human reviewers, CodeRabbit, Qodo), presents them in a table grouped by source and priority, and lets you decide which to address. For each approved comment, pi delegates to the appropriate specialist agent, runs tests, commits fixes (always as new commits — never amends), and posts replies on GitHub.
 
-> **Warning:** Branch switching in the main worktree while agents are running causes agents to see the wrong branch, producing wrong diffs and wrong commits.
+> **Tip:** You can also target a specific review URL:
+> ```
+> /review-handler https://github.com/owner/repo/pull/42#pullrequestreview-789
+> ```
 
 ---
 
-## Save a Memory for Future Sessions
+## Auto-Fix CodeRabbit Comments
 
-Persists a fact, preference, or lesson that pi will remember across sessions.
+Automatically address all CodeRabbit comments in a polling loop — no manual approval needed.
 
-```text
-/remember always use uv run, never python directly
+```
+/review-handler --autorabbit
 ```
 
-This saves a **pinned** memory that dreaming will never auto-remove. Pinned memories are user-controlled and permanent. Available categories: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`.
+This skips the manual decision phase for CodeRabbit comments, auto-approving all of them. After fixing and pushing, pi enters a polling loop that watches for new CodeRabbit comments triggered by your push. The loop runs until CodeRabbit approves the PR or you explicitly stop it.
 
-For programmatic use:
-
-```bash
-uv run myk-pi-tools memory add -c preference -s "always use uv run, never python directly" --pinned
-```
+- Human review comments are still presented for manual decision
+- The session remains interactive while the polling loop runs in the background
 
 ---
 
-## Run Memory Consolidation Manually
+## Auto-Fix Qodo Comments
 
-Triggers background memory dreaming — extracts lessons from the current session and cleans up stale entries.
+Automatically address all Qodo review findings — every finding gets a code fix or an issue spec update.
 
-```text
-/dream
+```
+/review-handler --autoqodo
 ```
 
-Dreaming runs as a fire-and-forget background agent. It reads the session, extracts lessons, preferences, mistakes, and patterns, deduplicates entries, removes stale items, and keeps the memory file under 50 entries. Pinned memories are never touched.
+Every Qodo finding type (`qodo_bug`, `qodo_rule_violation`, `qodo_requirement_gap`, etc.) must be addressed — none are optional. Findings result in either a code fix or a GitHub issue spec update via `gh issue edit`.
 
-- Dreaming also runs automatically every 3 hours (configurable via `PI_DREAM_INTERVAL_HOURS`)
-- Toggle auto-dreaming with `/dream-auto on` or `/dream-auto off`
+- Combine both automated reviewers: `/review-handler --autorabbit --autoqodo`
+- Human comments are always presented for manual decision, even in auto modes
 
-> **Tip:** Run `/dream` before ending a long session to capture what you learned.
+> **Warning:** `--autorabbit` and `--autoqodo` are command-level flags for pi — they are never passed to the `myk-pi-tools` CLI.
+
+---
+
+## Check Review Handler Status
+
+See the live state of running autorabbit/autoqodo review agents.
+
+```
+/review-handler-status
+```
+
+This checks `/async-status` for agents running `reviews poll`, then generates an HTML status report for each active PR. Use this to monitor long-running auto-fix loops.
 
 ---
 
 ## Create a GitHub Release
 
-Generates a changelog from conventional commits and creates a release.
+Generate a changelog from conventional commits and create a GitHub release.
 
-Preview without creating:
+Auto-detect version bump from commit types:
 
-```text
-/release --dry-run
 ```
-
-Create a release (auto-detects version bump from commits):
-
-```text
 /release
 ```
 
-Create with an explicit version:
+Release with an explicit version (skips approval):
 
-```text
+```
 /release 2.1.0
 ```
 
-Create a prerelease or draft:
+Preview without creating:
 
-```text
-/release --prerelease
-/release --draft
+```
+/release --dry-run
 ```
 
-The command validates branch state, detects version files, categorizes commits into a changelog, bumps version files, creates a PR for the version bump, and publishes the release.
+This analyzes commits since the last tag, categorizes them by conventional commit type (`feat:` → MINOR, `fix:` → PATCH, breaking changes → MAJOR), generates a formatted changelog with emoji section headers, and creates the GitHub release. If version files are detected (e.g., `pyproject.toml`, `package.json`), pi bumps them via a PR before creating the release.
+
+- Use `--prerelease` for pre-release versions or `--draft` for draft releases
+- Use `--target <branch>` to release from a branch other than the default
+- See [Slash Commands and Extension Commands Reference](commands-reference.html) for all flags
 
 ---
 
-## Schedule a Recurring Task
+## Refine Pending PR Review Comments
 
-Sets up a cron-like scheduled task that runs within the pi session.
+Polish your in-progress GitHub review comments with AI before submitting.
 
-```text
-/cron add "every 30m" /review-handler --autorabbit
+```
+/refine-review https://github.com/owner/repo/pull/42
 ```
 
-```text
-/cron add "daily at 09:00" /dream
-```
+This fetches your pending (unsubmitted) review comments from the PR, uses the diff context to generate refined versions that are clearer and more actionable, presents original vs. refined side-by-side, and lets you accept, reject, or customize each refinement. Optionally submits the review as "Request Changes".
 
-Manage scheduled tasks:
-
-```text
-/cron list
-/cron remove <id>
-```
-
-Cron tasks run as async agents within the current pi process. They survive `/reload` but stop when pi exits. Tasks can be slash commands or free-text prompts.
+- You must have a pending review on the PR (started via GitHub UI but not yet submitted)
+- You can provide custom replacement text for any comment during the approval step
 
 ---
 
-## Run a Prompt via an External AI Agent
+## Query the Review Database
 
-Delegates a prompt to Codex, Cursor, Gemini, or other ACP-compatible agents via acpx.
+Analyze your PR review history with built-in analytics queries.
 
-```text
-/acpx-prompt codex review the error handling in src/api.py
+Stats by review source (human, CodeRabbit, Qodo):
+
+```
+/query-db stats --by-source
 ```
 
-With a specific model:
+Stats by individual reviewer:
 
-```text
-/acpx-prompt codex:o3-pro review the architecture
+```
+/query-db stats --by-reviewer
 ```
 
-Send to multiple agents in parallel:
+Find recurring dismissed suggestions:
 
-```text
-/acpx-prompt cursor,gemini analyze the test coverage gaps
+```
+/query-db patterns --min 2
 ```
 
-The external agent runs in read-only mode by default. Use `--fix` to allow file modifications, or `--peer` for an AI-to-AI debate loop.
+Run a custom SQL query (read-only):
 
-> **Note:** Requires `acpx` (`npm install -g acpx@latest`) and the underlying agent CLI to be installed.
+```
+/query-db query "SELECT source, status, COUNT(*) as cnt FROM comments GROUP BY source, status ORDER BY cnt DESC"
+```
+
+Find comments similar to previously dismissed ones:
+
+```
+/query-db find-similar < comments.json
+```
+
+The review database stores all processed review comments with their status, source, priority, and replies. Only `SELECT` statements and CTEs are allowed — the database is read-only for queries. See [myk-pi-tools CLI Reference](cli-reference.html) for all `db` subcommands.
 
 ---
 
-## Fix Code with an External Agent
+## Handle a CodeRabbit Rate Limit
 
-Lets an external AI agent modify files directly, then shows you the diff.
+Automatically wait out a CodeRabbit rate limit and re-trigger the review.
 
-```text
-/acpx-prompt codex --fix fix the failing tests in tests/test_api.py
 ```
-
-The agent runs with full write permissions. After it completes, pi shows a diff summary of all changes and suggests verification steps. A checkpoint commit is recommended before running fix mode.
-
----
-
-## Peer Review with External AI Agents
-
-Runs an AI-to-AI debate loop where external agents review and Claude fixes until convergence.
-
-```text
-/acpx-prompt gemini --peer review the authentication middleware
-```
-
-Multi-agent peer review:
-
-```text
-/acpx-prompt cursor,codex --peer review the database migration safety
-```
-
-Claude and the external agent(s) go back and forth: the agent reviews, Claude fixes or pushes back with technical reasoning, the agent re-reviews. The loop exits only when all peer agents confirm no remaining issues. A summary table shows addressed findings, agreements reached after debate, and any unresolved disagreements.
-
----
-
-## Check Background Agent Status
-
-Shows the status of all running async agents.
-
-```text
-/async-status
-```
-
-Lists all background agents with their current state: running, completed, or failed. Results from completed agents are delivered to the session automatically.
-
----
-
-## Handle CodeRabbit Rate Limits
-
-Waits for the rate limit to expire and re-triggers the CodeRabbit review automatically.
-
-```text
 /coderabbit-rate-limit
 ```
 
-Or for a specific PR:
+Or target a specific PR:
 
-```text
+```
 /coderabbit-rate-limit 42
 ```
 
-Checks whether the PR is rate-limited, waits for the cooldown (plus a 30-second buffer), posts `@coderabbitai review` to re-trigger, and polls until the review starts.
+This checks if the PR is currently rate-limited by CodeRabbit, waits for the cooldown period (plus a 30-second buffer), then posts `@coderabbitai review` to re-trigger. It polls until the review starts. Use this when CodeRabbit hits its hourly limit during active development.
 
 ---
 
-## View Session Status
+## Save a Memory for Future Sessions
 
-Gets a unified snapshot of the current session.
+Persist a lesson, preference, or decision so pi remembers it across sessions.
 
-```text
-/status
+```
+/remember always use ruff instead of flake8 for Python linting
 ```
 
-Shows git status, active async agents, cron tasks, and session metadata in one view.
+```
+/remember the payment service uses idempotency keys — never retry without checking
+```
+
+This saves the text as a **pinned** memory entry, automatically categorized (lesson, preference, decision, mistake, pattern, or done). Pinned memories resist decay and are injected into future session context. See [Working with Project Memory](memory-system.html) for the full memory system.
 
 ---
 
-## Quick Reference: Workflow Cheat Sheet
+## Route a Task to an External AI Agent
 
-| Task | Command |
-|------|---------|
-| Full feature (scout + plan + implement) | `/implement <task>` |
-| Implement with review loop | `/implement-and-review <task>` |
-| Plan without implementing | `/scout-and-plan <task>` |
-| Review a GitHub PR | `/pr-review [number\|url]` |
-| Review local changes | `/review-local [branch]` |
-| Fix all review comments | `/review-handler` |
-| Auto-fix CodeRabbit loop | `/review-handler --autorabbit` |
-| Create a release | `/release [version]` |
-| Save a memory | `/remember <what>` |
-| Run memory consolidation | `/dream` |
-| Schedule a task | `/cron add "<schedule>" <command>` |
-| External agent prompt | `/acpx-prompt <agent> <prompt>` |
-| External agent fix | `/acpx-prompt <agent> --fix <prompt>` |
-| External agent peer review | `/acpx-prompt <agent> --peer <prompt>` |
-| Check async agents | `/async-status` |
-| Session overview | `/status` |
+Send a prompt to Cursor, Claude, or Gemini CLI for a second opinion or peer review.
 
-For configuration and environment variables, see Configuration Reference. For the dashboard and diff viewer, see Dashboard and Monitoring.
+Read-only review (no file changes):
+
+```
+/external-ai cursor review the error handling in src/api/
+```
+
+Fix mode (agent can modify files):
+
+```
+/external-ai claude --fix refactor the retry logic in src/client.py
+```
+
+AI-to-AI peer review loop:
+
+```
+/external-ai cursor --peer review the authentication module
+```
+
+Multi-agent review:
+
+```
+/external-ai cursor,claude review the database migration
+```
+
+Select a specific model:
+
+```
+/external-ai cursor --model gpt-5.4-high review the architecture
+```
+
+This runs your prompt through [ai-cli-runner](https://github.com/myk-org/ai-cli-runner), which calls the AI CLI tool as a subprocess. In `--peer` mode, pi orchestrates an iterative debate loop where the external agent reviews code, pi fixes findings, and the agent re-reviews until convergence. See [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html) for the full guide.
+
+> **Tip:** Your last-used agent and model are saved to `.pi/external-ai-config.json`. Run `/external-ai` without an agent name to reuse them.
+
+---
+
+## Handle Reviews for Multiple PRs
+
+Use git worktrees to process reviews for multiple PRs in parallel without branch switching.
+
+```
+git worktree add .worktrees/pr-42 origin/fix/issue-42
+git worktree add .worktrees/pr-43 origin/feat/issue-43
+```
+
+Then run `/review-handler` in each worktree directory. When done:
+
+```
+git worktree remove .worktrees/pr-42
+git worktree remove .worktrees/pr-43
+```
+
+Branch switching in the main worktree corrupts parallel agent work. Always use `.worktrees/` — it's in the global gitignore. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for more on parallel agent patterns.
+
+---
+
+## Save a Reusable Skill from a Workflow
+
+Turn a successful workflow into a reusable skill that pi can apply in future sessions.
+
+```
+/create-skill debug-container-build
+```
+
+This analyzes the current conversation, extracts the steps you followed (commands, pitfalls, verification), and writes a `SKILL.md` file. You choose whether the skill is **global** (`~/.agents/skills/`) or **project-scoped** (`.pi/skills/`). See [Customization and Extension Recipes](customization-recipes.html) for more on extending pi.
+
+> **Tip:** Skills are matched to tasks by their one-line description. Make it specific: "Debug Docker build failures caused by missing system dependencies" beats "Debug Docker".
+
+## Related Pages
+
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Running the Automated Code Review Loop](code-review-loop.html)
+- [Your First Coding Workflow](first-workflow.html)
+- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
+- [Working with Project Memory](memory-system.html)

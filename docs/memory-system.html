@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Working with Project Memory - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agent-routing.html"
+                           class="nav-link">
+                            Understanding Agent Routing and Delegation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="code-review-loop.html"
+                           class="nav-link">
+                            Running the Automated Code Review Loop
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link">
+                            Using Slash Commands and Prompt Templates
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-system.html"
+                           class="nav-link active" aria-current="page">
+                            Working with Project Memory
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Communicating Between Pi Sessions
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk-pi-tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration-reference.html"
+                           class="nav-link">
+                            Configuration and Environment Variables Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-reference.html"
+                           class="nav-link">
+                            Orchestrator Rules Reference
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-architecture.html"
+                           class="nav-link">
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="working-with-project-memory">Working with Project Memory</h1>
+<p>Teach pi what matters in your project — your preferences, lessons learned, and conventions — so it remembers across sessions and gets smarter over time.</p>
+<ul>
+<li>You need a pi session running in a git repository (pi stores memory under <code>.pi/memory/</code>)</li>
+<li>Memory works automatically once you start talking — but knowing the tools gives you full control</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>Tell pi to remember something, and it persists across sessions:</p>
+<div class="highlight"><pre><span></span><code>/remember Always run tests with --no-cache flag
+</code></pre></div>
+
+<p>Or say it naturally in conversation — pi detects preference statements automatically:</p>
+<div class="highlight"><pre><span></span><code>I prefer using pnpm over npm for this project
+</code></pre></div>
+
+<p>Both approaches create memory entries that pi recalls in future sessions.</p>
+<h2 id="how-memory-categories-work">How Memory Categories Work</h2>
+<p>Every memory entry belongs to one of six categories:</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>What it stores</th>
+<th>How long it lasts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preference</code></td>
+<td>How you like things done</td>
+<td>90 days (slow decay)</td>
+</tr>
+<tr>
+<td><code>lesson</code></td>
+<td>Gotchas, tips, how things work</td>
+<td>60 days</td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td>Recurring approaches, conventions</td>
+<td>30 days</td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td>Architectural or design choices</td>
+<td>30 days</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>Completed tasks, merged PRs</td>
+<td>14 days (fast decay)</td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td>Things that went wrong</td>
+<td>14 days</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Decay doesn't mean deletion — it means lower priority. Memories you reinforce stay strong. Pinned memories never decay.</p>
+</blockquote>
+<h2 id="searching-and-recalling-memories">Searching and Recalling Memories</h2>
+<p>Pi automatically recalls relevant memories before every response. You can also ask it directly:</p>
+<div class="highlight"><pre><span></span><code>What do you remember about our Docker setup?
+</code></pre></div>
+
+<p>Pi will use <code>memory_search</code> behind the scenes to find matching entries. Results combine keyword matching and semantic (vector) similarity search — so even paraphrased queries find the right memories.</p>
+<p>You can search by category too:</p>
+<div class="highlight"><pre><span></span><code>Search my memories for lessons about CI/CD
+</code></pre></div>
+
+<h2 id="adding-memories">Adding Memories</h2>
+<h3 id="explicit-you-tell-pi-to-remember">Explicit — You Tell Pi to Remember</h3>
+<p>Use the <code>/remember</code> command for important things you never want pi to forget:</p>
+<div class="highlight"><pre><span></span><code>/remember Use port 8443 for the dev server, not 8080
+</code></pre></div>
+
+<p>This creates a <strong>pinned</strong> entry that never decays and is protected from automatic cleanup.</p>
+<h3 id="proactive-pi-remembers-on-its-own">Proactive — Pi Remembers on Its Own</h3>
+<p>Pi adds memories automatically when it notices something worth saving:</p>
+<table>
+<thead>
+<tr>
+<th>What happens</th>
+<th>Category pi uses</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>You correct pi</td>
+<td><code>lesson</code></td>
+</tr>
+<tr>
+<td>A fix attempt fails</td>
+<td><code>mistake</code></td>
+</tr>
+<tr>
+<td>You say "don't do X" or "always do Y"</td>
+<td><code>preference</code></td>
+</tr>
+<tr>
+<td>A PR gets merged</td>
+<td><code>done</code></td>
+</tr>
+<tr>
+<td>Pi notices a recurring pattern</td>
+<td><code>pattern</code></td>
+</tr>
+<tr>
+<td>An architectural decision is made</td>
+<td><code>decision</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="auto-extraction-pi-detects-your-preferences">Auto-extraction — Pi Detects Your Preferences</h3>
+<p>When you say things like "I prefer...", "always use...", "never...", or "from now on...", pi automatically extracts and saves them as preferences. No explicit command needed.</p>
+<h3 id="cli-manage-memory-from-the-terminal">CLI — Manage Memory from the Terminal</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Add a memory</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R breaks cache mounts&quot;</span>
+
+<span class="c1"># Add a pinned memory</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Always use uv run&quot;</span><span class="w"> </span>--pinned
+
+<span class="c1"># Remove a memory</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R breaks cache mounts&quot;</span>
+
+<span class="c1"># Show all memories</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
+
+<span class="c1"># Print the memory directory path</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>path
+</code></pre></div>
+
+<h2 id="where-memories-are-stored">Where Memories Are Stored</h2>
+<p>Memories live in your project under <code>.pi/memory/topics/</code> as simple Markdown files:</p>
+<div class="highlight"><pre><span></span><code>.pi/memory/
+├── memory-scores.json          # Scoring data (auto-managed)
+├── embeddings.json             # Vector embeddings (auto-managed)
+└── topics/
+    ├── preferences.md          # [preference] entries
+    ├── lessons.md              # [lesson] entries
+    ├── patterns.md             # [pattern] entries
+    ├── decisions.md            # [decision] entries
+    ├── completions.md          # [done] entries
+    └── mistakes.md             # [mistake] entries
+</code></pre></div>
+
+<p>Each topic file is human-readable Markdown:</p>
+<div class="highlight"><pre><span></span><code><span class="gh"># Preferences</span>
+
+<span class="k">-</span><span class="w"> </span>[preference] Always use pnpm over npm <span class="ge">*(pinned)*</span>
+<span class="k">-</span><span class="w"> </span>[preference] Prefers concise responses
+</code></pre></div>
+
+<blockquote>
+<p><strong>Tip:</strong> You can edit these files directly — pi reads them as the source of truth on every session start.</p>
+</blockquote>
+<h2 id="memory-scoring-and-decay">Memory Scoring and Decay</h2>
+<p>Every memory has a stability score that determines whether it appears in pi's context. The score decays over time unless reinforced.</p>
+<p><strong>What keeps memories alive:</strong></p>
+<ul>
+<li><strong>Reinforcement</strong> — when pi notices a memory is relevant to the current task, it bumps the evidence count, resetting the decay clock</li>
+<li><strong>Pinning</strong> — pinned entries have a fixed score of 9999 and never decay</li>
+<li><strong>Repetition</strong> — if you state a preference that already exists, pi reinforces it automatically</li>
+</ul>
+<p><strong>Lifecycle states:</strong></p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>What it means</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>active</code></td>
+<td>Included in pi's context every turn</td>
+</tr>
+<tr>
+<td><code>provisional</code></td>
+<td>Overflow — included only when budget allows</td>
+</tr>
+<tr>
+<td><code>candidate</code></td>
+<td>Low priority — at risk of being dropped</td>
+</tr>
+<tr>
+<td><code>dropped</code></td>
+<td>No longer injected into context</td>
+</tr>
+</tbody>
+</table>
+<p>Per-category budgets keep memory focused: 8 entries max for preferences and lessons, 6 for patterns, 4 each for decisions, completions, and mistakes. A total cap of 40 active entries prevents context overload.</p>
+<h2 id="dreaming-background-memory-consolidation">Dreaming — Background Memory Consolidation</h2>
+<p>Dreaming is pi's way of processing memories in the background — deduplicating entries, removing stale information, and extracting new knowledge from past sessions.</p>
+<h3 id="when-dreaming-runs">When Dreaming Runs</h3>
+<ul>
+<li><strong>Automatically</strong> every 3 hours (configurable)</li>
+<li><strong>On session shutdown</strong> when you quit pi</li>
+<li><strong>On demand</strong> with the <code>/dream</code> command</li>
+</ul>
+<h3 id="manual-trigger">Manual Trigger</h3>
+<div class="highlight"><pre><span></span><code>/dream
+</code></pre></div>
+
+<p>This runs memory consolidation as a background agent — it never blocks your session.</p>
+<h3 id="toggle-auto-dreaming">Toggle Auto-Dreaming</h3>
+<div class="highlight"><pre><span></span><code>/dream-auto off    # Disable automatic dreaming
+/dream-auto on     # Re-enable it
+/dream-auto        # Check current status
+</code></pre></div>
+
+<h3 id="what-dreaming-does">What Dreaming Does</h3>
+<ol>
+<li>Reads session transcripts and extracts durable knowledge</li>
+<li>Adds new entries to the appropriate topic files</li>
+<li>Deduplicates and removes stale entries</li>
+<li>Generates reusable skills from recurring multi-step workflows</li>
+<li><strong>Never</strong> touches pinned entries</li>
+</ol>
+<h3 id="configuring-the-dream-interval">Configuring the Dream Interval</h3>
+<p>Set the interval in <code>.pi/pi-config-settings.json</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;dream_interval_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Or via environment variable:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_DREAM_INTERVAL_HOURS</span><span class="o">=</span><span class="m">6</span>
+</code></pre></div>
+
+<p>Valid range: 0.5 to 24 hours. Default: 3 hours.</p>
+<blockquote>
+<p><strong>Note:</strong> Project settings take priority over environment variables. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for all settings.</p>
+</blockquote>
+<h2 id="capacity-management">Capacity Management</h2>
+<p>The situation report header shows your current memory usage:</p>
+<div class="highlight"><pre><span></span><code># Project Memory [72% — 1,224/1,700 tokens]
+</code></pre></div>
+
+<p>The total budget is 1,700 tokens by default, dynamically adjusted based on how much of the system prompt is used by rules and other context.</p>
+<h3 id="when-memory-gets-full">When Memory Gets Full</h3>
+<p>When usage exceeds 80%, pi shows a warning:</p>
+<div class="highlight"><pre><span></span><code>&gt; ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or
+&gt; remove existing ones using memory_remove.
+</code></pre></div>
+
+<p><strong>To free up space:</strong></p>
+<ol>
+<li>
+<p>Ask pi to consolidate memories:
+   <code>Consolidate my project memory — find duplicates and remove stale entries</code></p>
+</li>
+<li>
+<p>Remove specific outdated entries:
+   <code>Remove the memory about Python 3.11, we upgraded to 3.12</code></p>
+</li>
+<li>
+<p>Run dreaming to auto-clean:
+   <code>/dream</code></p>
+</li>
+</ol>
+<h3 id="topic-file-size-limits">Topic File Size Limits</h3>
+<p>Each topic file is capped at ~3,000 tokens (12,000 characters). If you hit this limit on a specific category, pi will prompt you to consolidate or remove entries before adding new ones.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="memory-editing">Memory Editing</h3>
+<p>Pi can update memories in place without losing scoring history:</p>
+<div class="highlight"><pre><span></span><code>Update my memory about the dev server port — it changed from 8443 to 9090
+</code></pre></div>
+
+<p>This preserves the evidence count and reinforcement history of the original entry, unlike a remove-then-add which starts fresh.</p>
+<p>Pi can also invalidate superseded memories:</p>
+<div class="highlight"><pre><span></span><code>The memory about using webpack is outdated — we switched to vite
+</code></pre></div>
+
+<h3 id="memory-reflection">Memory Reflection</h3>
+<p>Ask pi to synthesize an answer from its memories rather than returning raw entries:</p>
+<div class="highlight"><pre><span></span><code>What do you remember about how our deployment pipeline works?
+</code></pre></div>
+
+<p>Pi searches across all topic files using both keyword and vector similarity, then composes a coherent answer from the matching entries.</p>
+<h3 id="session-history-search">Session History Search</h3>
+<p>Beyond topic-based memory, pi indexes summaries of past conversations. When you reference something from a previous session, pi automatically searches these summaries and injects relevant snippets — at zero LLM cost.</p>
+<p>You can also search explicitly:</p>
+<div class="highlight"><pre><span></span><code>What did we discuss about the database migration last week?
+</code></pre></div>
+
+<p>Session summaries are stored in <code>.pi/data/session-search.json</code> and indexed on session shutdown.</p>
+<h3 id="contextual-memory-auto-injection">Contextual Memory Auto-Injection</h3>
+<p>Three mechanisms inject memory into pi's context automatically on every turn:</p>
+<ol>
+<li><strong>Situation Report</strong> — a token-budgeted summary of scored memories, always present at the top of pi's context</li>
+<li><strong>Contextual Memory Recall</strong> — vector similarity search against your current message, injecting entries with similarity &gt; 0.65</li>
+<li><strong>File-Change Reminders</strong> — after pi modifies files, it searches for memories related to those file paths and surfaces relevant ones</li>
+</ol>
+<blockquote>
+<p><strong>Tip:</strong> Trivial messages like "ok", "thanks", or emoji skip vector search to avoid wasted computation.</p>
+</blockquote>
+<h3 id="vector-embeddings">Vector Embeddings</h3>
+<p>Memory search uses a local embedding model (<code>Xenova/bge-small-en-v1.5</code>, 384 dimensions) that runs entirely in-process — no API keys needed, no network calls. The model downloads automatically on first use (~50MB).</p>
+<p>Embeddings are stored in <code>.pi/memory/embeddings.json</code> and created automatically when memories are added. On first search after upgrading, pi migrates existing entries that don't have embeddings yet.</p>
+<h3 id="retrieval-telemetry">Retrieval Telemetry</h3>
+<p>Pi logs which memories were injected and whether they were actually used in the response. This data lives in <code>.pi/data/memory-telemetry.jsonl</code> and helps track memory effectiveness over time.</p>
+<h3 id="cold-topic-archival">Cold Topic Archival</h3>
+<p>Topics that haven't been reinforced for 2× their half-life are archived automatically (deleted). For example, a completions topic with no reinforcement for 28 days is removed. Pinned entries are never archived.</p>
+<h3 id="writing-good-memory-entries">Writing Good Memory Entries</h3>
+<table>
+<thead>
+<tr>
+<th>❌ Avoid</th>
+<th>✅ Prefer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"We had issues with Docker caching"</td>
+<td>"buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid"</td>
+</tr>
+<tr>
+<td>"The integration was incomplete"</td>
+<td>"Never close issues with unchecked deliverables in Done section"</td>
+</tr>
+<tr>
+<td>"User prefers a certain approach"</td>
+<td>"Attach child processes to pi (no detached:true) — kills on exit"</td>
+</tr>
+</tbody>
+</table>
+<p>Rules of thumb:</p>
+<ul>
+<li><strong>One line only</strong> — max ~100 characters</li>
+<li><strong>Specific and actionable</strong> — concrete "do X" or "don't do Y"</li>
+<li><strong>No fluff</strong> — no context, background, or explanation</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>Memories aren't showing up in pi's context</strong></p>
+<ul>
+<li>Check capacity: if memory is at 100%, lower-priority entries are dropped. Remove or consolidate entries.</li>
+<li>Verify the entry exists: <code>uv run myk-pi-tools memory show</code></li>
+<li>The entry may have decayed to <code>dropped</code> state — reinforce it by asking pi about the topic.</li>
+</ul>
+<p><strong>Vector search isn't finding relevant memories</strong></p>
+<ul>
+<li>On first run, the embedding model downloads (~50MB). If it fails, pi falls back to keyword-only search.</li>
+<li>Check that <code>.pi/memory/embeddings.json</code> exists. If corrupted, delete it — pi rebuilds it on next search.</li>
+</ul>
+<p><strong>Dreaming isn't running</strong></p>
+<ul>
+<li>Check status: <code>/dream-auto</code> (shows enabled/disabled)</li>
+<li>Dreaming is disabled in one-shot modes (<code>print</code>, <code>json</code>) — it only runs in interactive sessions.</li>
+<li>The dream interval may be too long. Check <code>.pi/pi-config-settings.json</code> or set <code>PI_DREAM_INTERVAL_HOURS</code>.</li>
+</ul>
+<p><strong>Memory entries seem duplicated</strong></p>
+<ul>
+<li>Run <code>/dream</code> to trigger consolidation, which deduplicates entries.</li>
+<li>Or ask pi directly: "Consolidate my project memory — find and merge duplicates."</li>
+</ul>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
+<li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
+<li><a href="cli-reference.html">myk-pi-tools CLI Reference</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="slash-commands.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Using Slash Commands and Prompt Templates</span>
+                </a>
+
+
+                <a href="async-agents-and-cron.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Running Background Agents and Scheduled Tasks</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#how-memory-categories-work">How Memory Categories Work</a></li>
+<li><a href="#searching-and-recalling-memories">Searching and Recalling Memories</a></li>
+<li><a href="#adding-memories">Adding Memories</a><ul>
+<li><a href="#explicit-you-tell-pi-to-remember">Explicit — You Tell Pi to Remember</a></li>
+<li><a href="#proactive-pi-remembers-on-its-own">Proactive — Pi Remembers on Its Own</a></li>
+<li><a href="#auto-extraction-pi-detects-your-preferences">Auto-extraction — Pi Detects Your Preferences</a></li>
+<li><a href="#cli-manage-memory-from-the-terminal">CLI — Manage Memory from the Terminal</a></li>
+</ul>
+</li>
+<li><a href="#where-memories-are-stored">Where Memories Are Stored</a></li>
+<li><a href="#memory-scoring-and-decay">Memory Scoring and Decay</a></li>
+<li><a href="#dreaming-background-memory-consolidation">Dreaming — Background Memory Consolidation</a><ul>
+<li><a href="#when-dreaming-runs">When Dreaming Runs</a></li>
+<li><a href="#manual-trigger">Manual Trigger</a></li>
+<li><a href="#toggle-auto-dreaming">Toggle Auto-Dreaming</a></li>
+<li><a href="#what-dreaming-does">What Dreaming Does</a></li>
+<li><a href="#configuring-the-dream-interval">Configuring the Dream Interval</a></li>
+</ul>
+</li>
+<li><a href="#capacity-management">Capacity Management</a><ul>
+<li><a href="#when-memory-gets-full">When Memory Gets Full</a></li>
+<li><a href="#topic-file-size-limits">Topic File Size Limits</a></li>
+</ul>
+</li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#memory-editing">Memory Editing</a></li>
+<li><a href="#memory-reflection">Memory Reflection</a></li>
+<li><a href="#session-history-search">Session History Search</a></li>
+<li><a href="#contextual-memory-auto-injection">Contextual Memory Auto-Injection</a></li>
+<li><a href="#vector-embeddings">Vector Embeddings</a></li>
+<li><a href="#retrieval-telemetry">Retrieval Telemetry</a></li>
+<li><a href="#cold-topic-archival">Cold Topic Archival</a></li>
+<li><a href="#writing-good-memory-entries">Writing Good Memory Entries</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

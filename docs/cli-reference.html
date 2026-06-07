@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CLI Command Reference - pi-config</title>
-    <meta name="description" content="Orchestrate specialist AI agents to automatically review, implement, and release your code">
+    <title>myk-pi-tools CLI Reference - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Orchestrate specialist AI agents to automatically review, implement, and release your code</p>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,7 +31,14 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Quickstart
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
                         </a>
                     </li>
 
@@ -43,51 +50,65 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="delegating-tasks.html"
+                        <a href="agent-routing.html"
                            class="nav-link">
-                            Delegating Tasks to Specialist Agents
+                            Understanding Agent Routing and Delegation
                         </a>
                     </li>
 
                     <li>
-                        <a href="reviewing-code.html"
+                        <a href="code-review-loop.html"
                            class="nav-link">
-                            Reviewing Code with Parallel Agents
+                            Running the Automated Code Review Loop
                         </a>
                     </li>
 
                     <li>
-                        <a href="managing-releases.html"
+                        <a href="slash-commands.html"
                            class="nav-link">
-                            Managing Releases and Versioning
+                            Using Slash Commands and Prompt Templates
                         </a>
                     </li>
 
                     <li>
-                        <a href="using-dashboard.html"
+                        <a href="memory-system.html"
                            class="nav-link">
-                            Monitoring Sessions with the Web Dashboard
+                            Working with Project Memory
                         </a>
                     </li>
 
                     <li>
-                        <a href="working-with-memory.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Saving and Recalling Project Knowledge
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="running-in-docker.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Running pi-config in Docker
+                            Communicating Between Pi Sessions
                         </a>
                     </li>
 
                     <li>
-                        <a href="querying-reviews.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Querying the Review Database
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
                         </a>
                     </li>
 
@@ -105,6 +126,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -113,30 +141,37 @@
                 <ul class="nav-group-pages">
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="cli-reference.html"
                            class="nav-link active" aria-current="page">
-                            CLI Command Reference
+                            myk-pi-tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="configuration-reference.html"
                            class="nav-link">
-                            Slash Commands Reference
+                            Configuration and Environment Variables Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="specialist-agents.html"
+                        <a href="rules-reference.html"
                            class="nav-link">
-                            Specialist Agent Catalog
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="environment-variables.html"
-                           class="nav-link">
-                            Environment Variables
+                            Orchestrator Rules Reference
                         </a>
                     </li>
 
@@ -148,9 +183,65 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="architecture.html"
+                        <a href="extension-architecture.html"
                            class="nav-link">
-                            Orchestrator Architecture
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
                         </a>
                     </li>
 
@@ -203,311 +294,63 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="cli-command-reference">CLI Command Reference</h1>
-<p>The <code>myk-pi-tools</code> CLI provides subcommands for PR review management, GitHub releases, project memory, CodeRabbit integration, and review database analytics.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools [OPTIONS] COMMAND [SUBCOMMAND] [OPTIONS]
+                    <h1 id="myk-pi-tools-cli-reference">myk-pi-tools CLI Reference</h1>
+<p><code>myk-pi-tools</code> is the Python CLI package that provides tooling for the pi orchestrator. It wraps GitHub API operations, review handling, release management, memory persistence, and external AI CLI integration.</p>
+<p><strong>Version:</strong> 3.6.2
+<strong>Install:</strong> <code>pip install myk-pi-tools</code> (included in pi-config Docker image and native install)
+<strong>Entry point:</strong> <code>myk-pi-tools</code>
+<strong>Requires:</strong> Python ≥ 3.12, GitHub CLI (<code>gh</code>) for most commands</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>--version
+myk-pi-tools<span class="w"> </span>--help
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--version</code></td>
-<td>Show the CLI version and exit</td>
-</tr>
-<tr>
-<td><code>--help</code></td>
-<td>Show help message and exit</td>
-</tr>
-</tbody>
-</table>
 <blockquote>
-<p><strong>Note:</strong> Most commands that interact with GitHub require the GitHub CLI (<code>gh</code>) to be installed and authenticated. See Installation &amp; Setup for prerequisites.</p>
+<p><strong>Note:</strong> Most subcommands that interact with GitHub require the <code>gh</code> CLI to be installed and authenticated. See <a href="quickstart.html">Installing and Starting Your First Session</a> for setup.</p>
 </blockquote>
 <hr />
-<h2 id="db">db</h2>
-<p>Review database query commands. All subcommands read from a SQLite database stored at <code>&lt;git-root&gt;/.pi/data/reviews.db</code>.</p>
-<h3 id="db-stats">db stats</h3>
-<p>Get review statistics grouped by source or reviewer.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools db stats [OPTIONS]
-</code></pre></div>
-
+<h2 id="subcommand-overview">Subcommand Overview</h2>
 <table>
 <thead>
 <tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
+<th>Subcommand</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>--by-source</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>Group statistics by source (human/qodo/coderabbit)</td>
+<td><a href="#memory"><code>memory</code></a></td>
+<td>Project memory commands — persistent per-repo learning</td>
 </tr>
 <tr>
-<td><code>--by-reviewer</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>Group statistics by reviewer author</td>
+<td><a href="#pr"><code>pr</code></a></td>
+<td>PR review and management commands</td>
 </tr>
 <tr>
-<td><code>--json</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>Output as JSON instead of formatted table</td>
+<td><a href="#release"><code>release</code></a></td>
+<td>GitHub release commands</td>
 </tr>
 <tr>
-<td><code>--db-path</code></td>
-<td>string</td>
-<td>auto-detect</td>
-<td>Path to database file</td>
+<td><a href="#reviews"><code>reviews</code></a></td>
+<td>Review handling commands (fetch, poll, post, store)</td>
+</tr>
+<tr>
+<td><a href="#db"><code>db</code></a></td>
+<td>Review database query commands</td>
+</tr>
+<tr>
+<td><a href="#coderabbit"><code>coderabbit</code></a></td>
+<td>CodeRabbit rate limit and trigger commands</td>
+</tr>
+<tr>
+<td><a href="#ai-cli"><code>ai-cli</code></a></td>
+<td>AI CLI commands (cursor, claude, gemini)</td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Note:</strong> If neither <code>--by-source</code> nor <code>--by-reviewer</code> is specified, defaults to <code>--by-source</code>. Specifying both is an error.</p>
-</blockquote>
-<div class="highlight"><pre><span></span><code><span class="c1"># Stats by source (default)</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats
-
-<span class="c1"># Stats by reviewer</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="w"> </span>--by-reviewer
-
-<span class="c1"># JSON output</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="w"> </span>--by-source<span class="w"> </span>--json
-</code></pre></div>
-
-<h3 id="db-patterns">db patterns</h3>
-<p>Find recurring dismissed patterns in review comments. Identifies comments that appear multiple times with similar content, suggesting candidates for auto-skip rules.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools db patterns [OPTIONS]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--min</code></td>
-<td>integer</td>
-<td><code>2</code></td>
-<td>Minimum occurrences to report</td>
-</tr>
-<tr>
-<td><code>--json</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>Output as JSON</td>
-</tr>
-<tr>
-<td><code>--db-path</code></td>
-<td>string</td>
-<td>auto-detect</td>
-<td>Path to database file</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Find patterns with at least 2 occurrences (default)</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns
-
-<span class="c1"># Find patterns with at least 3 occurrences</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--min<span class="w"> </span><span class="m">3</span>
-
-<span class="c1"># JSON output</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--json
-</code></pre></div>
-
-<h3 id="db-dismissed">db dismissed</h3>
-<p>Get all dismissed (not_addressed or skipped) comments for a specific repository.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools db dismissed --owner OWNER --repo REPO [OPTIONS]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--owner</code></td>
-<td>string</td>
-<td>—</td>
-<td>yes</td>
-<td>Repository owner (org or user)</td>
-</tr>
-<tr>
-<td><code>--repo</code></td>
-<td>string</td>
-<td>—</td>
-<td>yes</td>
-<td>Repository name</td>
-</tr>
-<tr>
-<td><code>--json</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>no</td>
-<td>Output as JSON</td>
-</tr>
-<tr>
-<td><code>--db-path</code></td>
-<td>string</td>
-<td>auto-detect</td>
-<td>no</td>
-<td>Path to database file</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Get dismissed comments</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config
-
-<span class="c1"># JSON output</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
-</code></pre></div>
-
-<h3 id="db-query">db query</h3>
-<p>Run a raw SQL query on the review database. Only <code>SELECT</code> statements are allowed.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools db query SQL [OPTIONS]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Argument</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>SQL</code></td>
-<td>string</td>
-<td>yes</td>
-<td>SQL query string (SELECT only)</td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--json</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>Output as JSON</td>
-</tr>
-<tr>
-<td><code>--db-path</code></td>
-<td>string</td>
-<td>auto-detect</td>
-<td>Path to database file</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Get all skipped comments</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT * FROM comments WHERE status = &#39;skipped&#39;&quot;</span>
-
-<span class="c1"># Count by status</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT status, COUNT(*) as cnt FROM comments GROUP BY status&quot;</span>
-
-<span class="c1"># JSON output</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT * FROM comments LIMIT 5&quot;</span><span class="w"> </span>--json
-</code></pre></div>
-
-<h3 id="db-find-similar">db find-similar</h3>
-<p>Find a previously dismissed comment matching path and body similarity. Reads JSON input from stdin.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools db find-similar --owner OWNER --repo REPO [OPTIONS] &lt; input.json
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--owner</code></td>
-<td>string</td>
-<td>—</td>
-<td>yes</td>
-<td>Repository owner (org or user)</td>
-</tr>
-<tr>
-<td><code>--repo</code></td>
-<td>string</td>
-<td>—</td>
-<td>yes</td>
-<td>Repository name</td>
-</tr>
-<tr>
-<td><code>--threshold</code></td>
-<td>float</td>
-<td><code>0.6</code></td>
-<td>no</td>
-<td>Minimum similarity threshold (0.0–1.0)</td>
-</tr>
-<tr>
-<td><code>--json</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>no</td>
-<td>Output as JSON</td>
-</tr>
-<tr>
-<td><code>--db-path</code></td>
-<td>string</td>
-<td>auto-detect</td>
-<td>no</td>
-<td>Path to database file</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Stdin input format:</strong></p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;foo.py&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;body&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Add error handling...&quot;</span><span class="p">}</span>
-</code></pre></div>
-
-<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{&quot;path&quot;: &quot;foo.py&quot;, &quot;body&quot;: &quot;Add error handling...&quot;}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>find-similar<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
-</code></pre></div>
-
 <hr />
-<h2 id="memory">memory</h2>
-<p>Project memory commands for persistent per-repo learning. The memory file is a Markdown file stored at <code>&lt;git-root&gt;/.pi/memory/memory.md</code> by default.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools memory [OPTIONS] SUBCOMMAND
-</code></pre></div>
-
+<h2 id="memory"><code>memory</code></h2>
+<p>Project memory commands — persistent per-repo learning. Stores entries as Markdown topic files under <code>.pi/memory/topics/</code>.</p>
+<p><strong>Group option:</strong></p>
 <table>
 <thead>
 <tr>
@@ -521,22 +364,104 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <tr>
 <td><code>--file-path</code></td>
 <td>string</td>
-<td>auto-detect</td>
-<td>Path to memory file</td>
+<td><code>.pi/memory/topics/</code> (auto-detected from git root)</td>
+<td>Path to memory topics directory</td>
 </tr>
 </tbody>
 </table>
-<h3 id="memory-add">memory add</h3>
-<p>Add a memory entry to the Learned or Pinned section.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools memory add -c CATEGORY -s SUMMARY [OPTIONS]
-</code></pre></div>
-
+<p>See <a href="memory-system.html">Working with Project Memory</a> for how memory integrates with the orchestrator.</p>
+<h3 id="memory-add"><code>memory add</code></h3>
+<p>Add a memory entry to the appropriate topic file.</p>
 <table>
 <thead>
 <tr>
 <th>Option</th>
 <th>Type</th>
+<th>Required</th>
 <th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-c</code>, <code>--category</code></td>
+<td>choice</td>
+<td>yes</td>
+<td>—</td>
+<td>Memory category: <code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, <code>preference</code></td>
+</tr>
+<tr>
+<td><code>-s</code>, <code>--summary</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>Short description (one line)</td>
+</tr>
+<tr>
+<td><code>--pinned</code></td>
+<td>flag</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Add to Pinned section (protected from dreaming)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Category-to-file mapping:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Topic File</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preference</code></td>
+<td><code>preferences.md</code></td>
+</tr>
+<tr>
+<td><code>lesson</code></td>
+<td><code>lessons.md</code></td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td><code>patterns.md</code></td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td><code>decisions.md</code></td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td><code>completions.md</code></td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td><code>mistakes.md</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="c1"># Add a learned memory</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R skips target dir&quot;</span>
+
+<span class="c1"># Add a pinned memory (user-requested, never auto-removed)</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Always use uv run&quot;</span><span class="w"> </span>--pinned
+</code></pre></div>
+
+<p><strong>Effect:</strong> Appends a line to the topic file. Pinned entries are marked with <code>*(pinned)*</code> and are protected from dreaming consolidation.</p>
+<h3 id="memory-show"><code>memory show</code></h3>
+<p>Show all memory entries across all topic files.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
+</code></pre></div>
+
+<p><strong>Output:</strong> Combined contents of all <code>.md</code> files in the topics directory, sorted alphabetically, printed to stdout.</p>
+<h3 id="memory-forget"><code>memory forget</code></h3>
+<p>Remove a memory entry from its topic file and clean up the corresponding entry in <code>memory-scores.json</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
 <th>Required</th>
 <th>Description</th>
 </tr>
@@ -545,80 +470,71 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <tr>
 <td><code>-c</code>, <code>--category</code></td>
 <td>choice</td>
-<td>—</td>
 <td>yes</td>
 <td>Memory category: <code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, <code>preference</code></td>
 </tr>
 <tr>
 <td><code>-s</code>, <code>--summary</code></td>
 <td>string</td>
-<td>—</td>
 <td>yes</td>
-<td>Short one-line description</td>
-</tr>
-<tr>
-<td><code>--pinned</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>no</td>
-<td>Add to Pinned section (protected from auto-removal)</td>
+<td>Entry text to forget (must match exactly)</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Add a learned memory</span>
-myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R skips target dir&quot;</span>
-
-<span class="c1"># Add a pinned memory (never auto-removed)</span>
-myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Always use uv run&quot;</span><span class="w"> </span>--pinned
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R skips target dir&quot;</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>pattern<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Container build monitor: old pattern&quot;</span>
 </code></pre></div>
 
-<h3 id="memory-show">memory show</h3>
-<p>Display the memory file contents.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools memory show
+<p><strong>Effect:</strong> Removes the matching line from the topic file. Also removes the corresponding hash entry from <code>.pi/memory/memory-scores.json</code> if present. Outputs confirmation or "Not found" to stderr.</p>
+<h3 id="memory-migrate"><code>memory migrate</code></h3>
+<p>One-time migration from legacy SQLite database to topic files.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>migrate
 </code></pre></div>
 
-<h3 id="memory-migrate">memory migrate</h3>
-<p>One-time migration from SQLite database to memory.md. Reads all memories from <code>memories.db</code>, writes them to <code>memory.md</code>, then deletes the database.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools memory migrate
-</code></pre></div>
-
-<h3 id="memory-path">memory path</h3>
-<p>Print the resolved memory file path.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools memory path
+<p><strong>Effect:</strong> Reads all memories from <code>.pi/memory/memories.db</code>, writes them as learned entries to topic files, then deletes <code>memories.db</code>, <code>dreams.md</code>, and <code>dreams.lock</code>.</p>
+<h3 id="memory-path"><code>memory path</code></h3>
+<p>Print the memory topics directory path.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>path
+<span class="c1"># Output: /home/user/project/.pi/memory/topics</span>
 </code></pre></div>
 
 <hr />
-<h2 id="pr">pr</h2>
-<p>PR review and management commands.</p>
-<h3 id="pr-diff">pr diff</h3>
-<p>Fetch PR diff and metadata as JSON.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools pr diff [ARGS]
-</code></pre></div>
-
-<p>Accepts three input forms:</p>
+<h2 id="pr"><code>pr</code></h2>
+<p>PR review and management commands. All subcommands accept PR references in multiple formats.</p>
+<p><strong>Argument formats (shared across <code>pr diff</code> and <code>pr claude-md</code>):</strong></p>
 <table>
 <thead>
 <tr>
-<th>Form</th>
+<th>Format</th>
 <th>Example</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Owner/repo + PR number</td>
-<td><code>pr diff myk-org/pi-config 42</code></td>
+<td><code>&lt;owner/repo&gt; &lt;pr_number&gt;</code></td>
+<td><code>myk-org/pi-config 42</code></td>
 </tr>
 <tr>
-<td>GitHub URL</td>
-<td><code>pr diff https://github.com/myk-org/pi-config/pull/42</code></td>
+<td><code>&lt;github_url&gt;</code></td>
+<td><code>https://github.com/myk-org/pi-config/pull/42</code></td>
 </tr>
 <tr>
-<td>PR number (from git context)</td>
-<td><code>pr diff 42</code></td>
+<td><code>&lt;pr_number&gt;</code> (auto-detect repo)</td>
+<td><code>42</code></td>
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong> JSON object with <code>metadata</code>, <code>diff</code>, and <code>files</code> fields.</p>
+<blockquote>
+<p><strong>Note:</strong> The <code>&lt;pr_number&gt;</code> format requires running from within a git repository with <code>gh</code> configured.</p>
+</blockquote>
+<h3 id="pr-diff"><code>pr diff</code></h3>
+<p>Fetch PR diff and metadata. Outputs JSON to stdout.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>diff<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
+myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>diff<span class="w"> </span>https://github.com/myk-org/pi-config/pull/42
+myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>diff<span class="w"> </span><span class="m">42</span>
+</code></pre></div>
+
+<p><strong>Output:</strong> JSON object with structure:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;metadata&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;owner&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;myk-org&quot;</span><span class="p">,</span>
@@ -626,7 +542,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <span class="w">    </span><span class="nt">&quot;pr_number&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;42&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;head_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;abc123...&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;base_ref&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;main&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;title&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Add feature X&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;title&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PR title&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;state&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;open&quot;</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="w">  </span><span class="nt">&quot;diff&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
@@ -642,31 +558,43 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <span class="p">}</span>
 </code></pre></div>
 
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>diff<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
-</code></pre></div>
-
-<h3 id="pr-claude-md">pr claude-md</h3>
-<p>Fetch CLAUDE.md and AGENTS.md content from a PR's repository. Checks both root and config directories (<code>.claude/</code>, <code>.agents/</code>) locally and via the GitHub API.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools pr claude-md [ARGS]
-</code></pre></div>
-
-<p>Accepts the same input forms as <code>pr diff</code>.</p>
-<p><strong>Searched locations (in order):</strong></p>
-<ol>
-<li><code>./CLAUDE.md</code></li>
-<li><code>./.claude/CLAUDE.md</code></li>
-<li><code>./AGENTS.md</code></li>
-<li><code>./.agents/AGENTS.md</code></li>
-<li>Remote equivalents via GitHub API</li>
-</ol>
+<h3 id="pr-claude-md"><code>pr claude-md</code></h3>
+<p>Fetch <code>CLAUDE.md</code> and <code>AGENTS.md</code> content for a PR's repository.</p>
+<p>Checks local files first (if current repo matches target), then falls back to GitHub API.</p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>claude-md<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
+myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>claude-md<span class="w"> </span>https://github.com/myk-org/pi-config/pull/42
 </code></pre></div>
 
-<h3 id="pr-post-comment">pr post-comment</h3>
+<p><strong>Files checked:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Local Path</th>
+<th>Remote Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>./CLAUDE.md</code></td>
+<td><code>CLAUDE.md</code></td>
+</tr>
+<tr>
+<td><code>./.claude/CLAUDE.md</code></td>
+<td><code>.claude/CLAUDE.md</code></td>
+</tr>
+<tr>
+<td><code>./AGENTS.md</code></td>
+<td><code>AGENTS.md</code></td>
+</tr>
+<tr>
+<td><code>./.agents/AGENTS.md</code></td>
+<td><code>.agents/AGENTS.md</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> Combined content of all found files to stdout. Empty string if none found.</p>
+<h3 id="pr-post-comment"><code>pr post-comment</code></h3>
 <p>Post inline comments to a PR as a single GitHub review with a summary table.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools pr post-comment OWNER_REPO PR_NUMBER COMMIT_SHA JSON_FILE
-</code></pre></div>
-
 <table>
 <thead>
 <tr>
@@ -693,17 +621,21 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <td><code>COMMIT_SHA</code></td>
 <td>string</td>
 <td>yes</td>
-<td>Full 40-character SHA of the commit to comment on</td>
+<td>The 40-character SHA of the commit to comment on</td>
 </tr>
 <tr>
 <td><code>JSON_FILE</code></td>
 <td>string</td>
 <td>yes</td>
-<td>Path to JSON file, or <code>-</code> for stdin</td>
+<td>Path to JSON file with comments, or <code>"-"</code> for stdin</td>
 </tr>
 </tbody>
 </table>
-<p><strong>JSON input format:</strong></p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>post-comment<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span>abc123def456...<span class="w"> </span>comments.json
+cat<span class="w"> </span>comments.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>post-comment<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span>abc123def456...<span class="w"> </span>-
+</code></pre></div>
+
+<p><strong>Input JSON format:</strong></p>
 <div class="highlight"><pre><span></span><code><span class="p">[</span>
 <span class="w">  </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;src/main.py&quot;</span><span class="p">,</span>
@@ -718,47 +650,38 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <span class="p">]</span>
 </code></pre></div>
 
-<p><strong>Severity markers</strong> (parsed from comment body):</p>
+<p><strong>Severity markers:</strong> The review summary table auto-categorizes comments by severity prefix in the <code>body</code>:</p>
 <table>
 <thead>
 <tr>
-<th>Marker</th>
-<th>Meaning</th>
+<th>Prefix</th>
+<th>Severity</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>### [CRITICAL] Title</code></td>
-<td>Critical security or functionality issues</td>
+<td><code>### [CRITICAL]</code></td>
+<td>Critical issue</td>
 </tr>
 <tr>
-<td><code>### [WARNING] Title</code></td>
-<td>Important but non-critical issues</td>
+<td><code>### [WARNING]</code></td>
+<td>Warning</td>
 </tr>
 <tr>
-<td><code>### [SUGGESTION] Title</code></td>
-<td>Code improvements (default if no marker)</td>
+<td><code>### [SUGGESTION]</code></td>
+<td>Suggestion (default)</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong> JSON with <code>status</code>, <code>comment_count</code>, <code>posted</code>, <code>failed</code>, and optionally <code>error</code>.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>post-comment<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span>abc123def456...<span class="w"> </span>comments.json
-
-<span class="c1"># From stdin</span>
-cat<span class="w"> </span>comments.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>myk-pi-tools<span class="w"> </span>pr<span class="w"> </span>post-comment<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span>abc123def456...<span class="w"> </span>-
-</code></pre></div>
-
+<p><strong>Output:</strong> JSON result with <code>status</code>, <code>comment_count</code>, <code>posted</code>, and <code>failed</code> arrays.</p>
 <blockquote>
-<p><strong>Warning:</strong> Only lines that were modified or added in the PR diff can receive inline comments. The commit SHA must be the HEAD of the PR.</p>
+<p><strong>Tip:</strong> Only lines that were modified or added in the PR can receive inline comments. Comments on unchanged lines will fail.</p>
 </blockquote>
 <hr />
-<h2 id="release">release</h2>
-<p>GitHub release commands for version management and release creation.</p>
-<h3 id="release-info">release info</h3>
-<p>Fetch release validation info and commits since the last tag. Auto-detects repository from git context.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools release info [OPTIONS]
-</code></pre></div>
-
+<h2 id="release"><code>release</code></h2>
+<p>GitHub release commands. See <a href="workflow-recipes.html">Common Workflow Recipes</a> for end-to-end release workflows.</p>
+<h3 id="release-info"><code>release info</code></h3>
+<p>Fetch release validation info and commits since last tag. Outputs JSON to stdout.</p>
 <table>
 <thead>
 <tr>
@@ -772,235 +695,195 @@ cat<span class="w"> </span>comments.json<span class="w"> </span><span class="p">
 <tr>
 <td><code>--repo</code></td>
 <td>string</td>
-<td>auto-detect</td>
+<td>auto-detected from git context</td>
 <td>Repository in <code>owner/repo</code> format</td>
 </tr>
 <tr>
 <td><code>--target</code></td>
 <td>string</td>
-<td>auto-detect</td>
+<td>auto-detected default branch</td>
 <td>Target branch for release</td>
 </tr>
 <tr>
 <td><code>--tag-match</code></td>
 <td>string</td>
-<td>auto-detect</td>
+<td>none</td>
 <td>Glob pattern to filter tags (e.g., <code>v2.10.*</code>)</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Validations performed:</strong></p>
-<ul>
-<li>On target branch</li>
-<li>Clean working tree</li>
-<li>Synced with remote (no unpushed or behind commits)</li>
-</ul>
-<p><strong>Output:</strong> JSON with <code>metadata</code>, <code>validations</code>, <code>last_tag</code>, <code>all_tags</code>, <code>commits</code>, <code>commit_count</code>, <code>is_first_release</code>, <code>target_branch</code>, and <code>tag_match</code>.</p>
-<blockquote>
-<p><strong>Tip:</strong> On a version branch like <code>v2.10</code>, the command auto-detects <code>--target v2.10</code> and <code>--tag-match v2.10.*</code>.</p>
-</blockquote>
-<p><strong>Commit filtering:</strong> The following are excluded from the commit list:</p>
-<ul>
-<li>Merge commits</li>
-<li>CodeRabbit-related commits</li>
-<li>Checkpoint and version bump chores</li>
-<li>Doc regeneration and pre-commit autoupdates</li>
-</ul>
-<div class="highlight"><pre><span></span><code><span class="c1"># Auto-detect everything from git context</span>
+<div class="highlight"><pre><span></span><code><span class="c1"># Auto-detect everything</span>
 myk-pi-tools<span class="w"> </span>release<span class="w"> </span>info
 
-<span class="c1"># Explicit repository and target</span>
-myk-pi-tools<span class="w"> </span>release<span class="w"> </span>info<span class="w"> </span>--repo<span class="w"> </span>myk-org/pi-config<span class="w"> </span>--target<span class="w"> </span>main
+<span class="c1"># Specify repo</span>
+myk-pi-tools<span class="w"> </span>release<span class="w"> </span>info<span class="w"> </span>--repo<span class="w"> </span>myk-org/pi-config
 
-<span class="c1"># Filter tags for a specific version line</span>
-myk-pi-tools<span class="w"> </span>release<span class="w"> </span>info<span class="w"> </span>--tag-match<span class="w"> </span><span class="s2">&quot;v2.10.*&quot;</span>
+<span class="c1"># Filter tags for a version branch</span>
+myk-pi-tools<span class="w"> </span>release<span class="w"> </span>info<span class="w"> </span>--target<span class="w"> </span>v2.10<span class="w"> </span>--tag-match<span class="w"> </span><span class="s2">&quot;v2.10.*&quot;</span>
 </code></pre></div>
 
-<h3 id="release-create">release create</h3>
+<p><strong>Validations performed:</strong></p>
+<ul>
+<li>On target branch check</li>
+<li>Clean working tree check</li>
+<li>Remote sync check (fetch, unpushed/behind counts)</li>
+</ul>
+<p><strong>Version branch auto-detection:</strong> If the current branch matches <code>vMAJOR.MINOR</code> (e.g., <code>v2.10</code>), the command automatically sets the target and tag-match pattern.</p>
+<p><strong>Commit filtering:</strong> Merge commits, "address review" commits, "chore: checkpoint/bump version" commits, and similar noise are automatically excluded from the output.</p>
+<p><strong>Output:</strong> JSON with <code>metadata</code>, <code>validations</code>, <code>last_tag</code>, <code>all_tags</code>, <code>commits</code>, <code>commit_count</code>, <code>is_first_release</code>, <code>target_branch</code>, and <code>tag_match</code>.</p>
+<h3 id="release-create"><code>release create</code></h3>
 <p>Create a GitHub release.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools release create OWNER_REPO TAG CHANGELOG_FILE [OPTIONS]
-</code></pre></div>
-
 <table>
 <thead>
 <tr>
-<th>Argument</th>
+<th>Argument/Option</th>
 <th>Type</th>
 <th>Required</th>
+<th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>OWNER_REPO</code></td>
-<td>string</td>
+<td>argument</td>
 <td>yes</td>
+<td>—</td>
 <td>Repository in <code>owner/repo</code> format</td>
 </tr>
 <tr>
 <td><code>TAG</code></td>
-<td>string</td>
+<td>argument</td>
 <td>yes</td>
+<td>—</td>
 <td>Release tag (e.g., <code>v1.3.0</code>)</td>
 </tr>
 <tr>
 <td><code>CHANGELOG_FILE</code></td>
-<td>string</td>
+<td>argument</td>
 <td>yes</td>
+<td>—</td>
 <td>Path to file containing release notes</td>
 </tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
 <tr>
 <td><code>--prerelease</code></td>
 <td>flag</td>
+<td>no</td>
 <td><code>false</code></td>
 <td>Mark as pre-release</td>
 </tr>
 <tr>
 <td><code>--draft</code></td>
 <td>flag</td>
+<td>no</td>
 <td><code>false</code></td>
-<td>Create as draft release</td>
+<td>Create as draft</td>
 </tr>
 <tr>
 <td><code>--target</code></td>
 <td>string</td>
+<td>no</td>
 <td>—</td>
 <td>Target branch for the release</td>
 </tr>
 <tr>
 <td><code>--title</code></td>
 <td>string</td>
+<td>no</td>
 <td>tag name</td>
 <td>Release title</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong> JSON with <code>status</code>, <code>tag</code>, <code>url</code>, <code>prerelease</code>, and <code>draft</code> on success; <code>status</code> and <code>error</code> on failure.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>release<span class="w"> </span>create<span class="w"> </span>myk-org/pi-config<span class="w"> </span>v1.3.0<span class="w"> </span>CHANGELOG.md
+myk-pi-tools<span class="w"> </span>release<span class="w"> </span>create<span class="w"> </span>myk-org/pi-config<span class="w"> </span>v2.0.0-rc1<span class="w"> </span>notes.md<span class="w"> </span>--prerelease<span class="w"> </span>--draft
+myk-pi-tools<span class="w"> </span>release<span class="w"> </span>create<span class="w"> </span>myk-org/pi-config<span class="w"> </span>v1.3.0<span class="w"> </span>CHANGELOG.md<span class="w"> </span>--target<span class="w"> </span>main<span class="w"> </span>--title<span class="w"> </span><span class="s2">&quot;Release 1.3.0&quot;</span>
+</code></pre></div>
+
+<p><strong>Output:</strong> JSON with <code>status</code>, <code>tag</code>, <code>url</code>, <code>prerelease</code>, and <code>draft</code> on success. JSON with <code>status</code> and <code>error</code> on failure.</p>
 <blockquote>
-<p><strong>Note:</strong> A warning is emitted to stderr if the tag does not follow semantic versioning format (<code>vX.Y.Z</code>).</p>
+<p><strong>Warning:</strong> Tags that don't follow semantic versioning (<code>vX.Y.Z</code>) trigger a warning but are still accepted.</p>
 </blockquote>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>release<span class="w"> </span>create<span class="w"> </span>myk-org/pi-config<span class="w"> </span>v1.3.0<span class="w"> </span>changelog.md
-
-myk-pi-tools<span class="w"> </span>release<span class="w"> </span>create<span class="w"> </span>myk-org/pi-config<span class="w"> </span>v2.0.0-rc1<span class="w"> </span>notes.md<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--prerelease<span class="w"> </span>--target<span class="w"> </span>release/v2
+<h3 id="release-detect-versions"><code>release detect-versions</code></h3>
+<p>Detect version files in the current repository. Scans for well-known version file patterns.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>release<span class="w"> </span>detect-versions
 </code></pre></div>
 
-<h3 id="release-detect-versions">release detect-versions</h3>
-<p>Detect version files in the current repository across multiple ecosystems.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools release detect-versions
-</code></pre></div>
-
-<p><strong>Detected file types:</strong></p>
+<p><strong>Supported file types:</strong></p>
 <table>
 <thead>
 <tr>
 <th>File</th>
-<th>Ecosystem</th>
-<th>Type key</th>
+<th>Type Key</th>
+<th>Parser</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>pyproject.toml</code></td>
-<td>Python</td>
 <td><code>pyproject</code></td>
+<td><code>[project].version</code></td>
 </tr>
 <tr>
 <td><code>package.json</code></td>
-<td>Node.js</td>
 <td><code>package_json</code></td>
+<td><code>version</code> field</td>
 </tr>
 <tr>
 <td><code>setup.cfg</code></td>
-<td>Python</td>
 <td><code>setup_cfg</code></td>
+<td><code>[metadata].version</code></td>
 </tr>
 <tr>
 <td><code>Cargo.toml</code></td>
-<td>Rust</td>
 <td><code>cargo</code></td>
+<td><code>[package].version</code></td>
 </tr>
 <tr>
 <td><code>build.gradle</code> / <code>build.gradle.kts</code></td>
-<td>JVM</td>
 <td><code>gradle</code></td>
+<td><code>version = "..."</code></td>
 </tr>
 <tr>
-<td><code>__init__.py</code> / <code>version.py</code> with <code>__version__</code></td>
-<td>Python</td>
+<td><code>*/__init__.py</code>, <code>*/version.py</code></td>
 <td><code>python_version</code></td>
+<td><code>__version__ = "..."</code></td>
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong></p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;version_files&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="p">{</span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pyproject.toml&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;current_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2.2.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pyproject&quot;</span><span class="p">}</span>
-<span class="w">  </span><span class="p">],</span>
-<span class="w">  </span><span class="nt">&quot;count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span>
-<span class="p">}</span>
-</code></pre></div>
-
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>release<span class="w"> </span>detect-versions
-</code></pre></div>
-
-<h3 id="release-bump-version">release bump-version</h3>
-<p>Update version strings in detected version files. Uses atomic writes to prevent file corruption.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools release bump-version VERSION [OPTIONS]
-</code></pre></div>
-
+<p><strong>Output:</strong> JSON with <code>version_files</code> array (each with <code>path</code>, <code>current_version</code>, <code>type</code>) and <code>count</code>.</p>
+<blockquote>
+<p><strong>Note:</strong> Directories like <code>.git</code>, <code>node_modules</code>, <code>.venv</code>, <code>__pycache__</code>, <code>dist</code>, <code>build</code>, and others are automatically excluded from scanning.</p>
+</blockquote>
+<h3 id="release-bump-version"><code>release bump-version</code></h3>
+<p>Update version strings in detected version files. Does not perform any git operations.</p>
 <table>
 <thead>
 <tr>
-<th>Argument</th>
+<th>Argument/Option</th>
 <th>Type</th>
 <th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>VERSION</code></td>
-<td>string</td>
-<td>yes</td>
-<td>New version string (e.g., <code>1.2.0</code>)</td>
-</tr>
-</tbody>
-</table>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
 <th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
+<td><code>VERSION</code></td>
+<td>argument</td>
+<td>yes</td>
+<td>—</td>
+<td>New version string (e.g., <code>1.2.0</code>)</td>
+</tr>
+<tr>
 <td><code>--files</code></td>
-<td>string (multiple)</td>
+<td>string (repeatable)</td>
+<td>no</td>
 <td>all detected</td>
-<td>Specific files to update (can be repeated)</td>
+<td>Specific files to update</td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Warning:</strong> The version must not start with <code>v</code>. Use <code>1.2.0</code>, not <code>v1.2.0</code>.</p>
-</blockquote>
-<p><strong>Output:</strong> JSON with <code>status</code>, <code>version</code>, <code>updated</code> (list of <code>{path, old_version, new_version}</code>), and <code>skipped</code> (list of <code>{path, reason}</code>).</p>
 <div class="highlight"><pre><span></span><code><span class="c1"># Update all detected version files</span>
 myk-pi-tools<span class="w"> </span>release<span class="w"> </span>bump-version<span class="w"> </span><span class="m">1</span>.3.0
 
@@ -1008,21 +891,23 @@ myk-pi-tools<span class="w"> </span>release<span class="w"> </span>bump-version<
 myk-pi-tools<span class="w"> </span>release<span class="w"> </span>bump-version<span class="w"> </span><span class="m">1</span>.3.0<span class="w"> </span>--files<span class="w"> </span>pyproject.toml<span class="w"> </span>--files<span class="w"> </span>package.json
 </code></pre></div>
 
+<blockquote>
+<p><strong>Warning:</strong> The version must NOT start with <code>v</code> or <code>V</code>. Use <code>1.3.0</code>, not <code>v1.3.0</code>.</p>
+</blockquote>
+<p><strong>Output:</strong> JSON with <code>status</code>, <code>version</code>, <code>updated</code> array (with <code>path</code>, <code>old_version</code>, <code>new_version</code>), and <code>skipped</code> array.</p>
+<p><strong>Effect:</strong> Writes are atomic (temp file + rename) to prevent corruption.</p>
 <hr />
-<h2 id="reviews">reviews</h2>
-<p>Review handling commands for fetching, responding to, and storing PR review threads.</p>
-<h3 id="reviews-fetch">reviews fetch</h3>
-<p>Fetch all unresolved review threads from the current branch's PR. Categorizes comments by source (human, qodo, coderabbit) and classifies priority.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools reviews fetch [REVIEW_URL]
-</code></pre></div>
-
+<h2 id="reviews"><code>reviews</code></h2>
+<p>Review handling commands for the automated review workflow. See <a href="code-review-loop.html">Running the Automated Code Review Loop</a> for the full workflow.</p>
+<h3 id="reviews-fetch"><code>reviews fetch</code></h3>
+<p>Fetch unresolved review threads from the current branch's PR.</p>
 <table>
 <thead>
 <tr>
 <th>Argument</th>
 <th>Type</th>
-<th>Default</th>
 <th>Required</th>
+<th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
@@ -1030,32 +915,36 @@ myk-pi-tools<span class="w"> </span>release<span class="w"> </span>bump-version<
 <tr>
 <td><code>REVIEW_URL</code></td>
 <td>string</td>
-<td><code>""</code></td>
 <td>no</td>
-<td>Specific review URL for context (e.g., <code>#pullrequestreview-XXX</code> or <code>#discussion_rXXX</code>)</td>
+<td><code>""</code></td>
+<td>Specific review URL for context (e.g., <code>#pullrequestreview-XXX</code>)</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong> Saved to <code>/tmp/pi-work/pr-&lt;number&gt;-reviews.json</code>.</p>
-<div class="highlight"><pre><span></span><code><span class="c1"># Fetch all unresolved reviews</span>
-myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch
-
-<span class="c1"># Fetch with a specific review URL context</span>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch
 myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span class="w"> </span><span class="s2">&quot;#pullrequestreview-12345&quot;</span>
 </code></pre></div>
 
-<h3 id="reviews-poll">reviews poll</h3>
-<p>Poll for reviews with automatic CodeRabbit rate limit handling. Combines rate limit check, trigger, and fetch into a single atomic operation. Loops internally until actionable comments are found.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools reviews poll [REVIEW_URL]
+<p><strong>Output:</strong> JSON saved to <code>/tmp/pi-work/pr-&lt;number&gt;-reviews.json</code> with structure:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;metadata&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;owner&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;repo&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;pr_number&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;human&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;qodo&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;coderabbit&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">]</span>
+<span class="p">}</span>
 </code></pre></div>
 
+<p>Comments are auto-categorized by source based on author username. Each comment includes <code>thread_id</code>, <code>node_id</code>, <code>comment_id</code>, <code>path</code>, <code>line</code>, <code>body</code>, and <code>priority</code>.</p>
+<p><strong>Exit codes:</strong> <code>0</code> = success, non-zero = failure.</p>
+<h3 id="reviews-poll"><code>reviews poll</code></h3>
+<p>Poll for reviews until new actionable comments appear. Loops internally — does not return on "no new comments."</p>
 <table>
 <thead>
 <tr>
-<th>Argument</th>
+<th>Argument/Option</th>
 <th>Type</th>
-<th>Default</th>
 <th>Required</th>
+<th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
@@ -1063,21 +952,46 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span cl
 <tr>
 <td><code>REVIEW_URL</code></td>
 <td>string</td>
-<td><code>""</code></td>
 <td>no</td>
+<td><code>""</code></td>
 <td>Specific review URL for context</td>
+</tr>
+<tr>
+<td><code>--source</code></td>
+<td>choice</td>
+<td>no</td>
+<td><code>coderabbit</code></td>
+<td>Which reviewer to poll for: <code>coderabbit</code> or <code>qodo</code></td>
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong> Same format as <code>reviews fetch</code> (saved to <code>/tmp/pi-work/pr-&lt;number&gt;-reviews.json</code>).</p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--source<span class="w"> </span>qodo
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span><span class="s2">&quot;#pullrequestreview-12345&quot;</span><span class="w"> </span>--source<span class="w"> </span>coderabbit
 </code></pre></div>
 
-<h3 id="reviews-post">reviews post</h3>
-<p>Post replies to review threads and resolve them based on status.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools reviews post JSON_PATH
-</code></pre></div>
-
+<p><strong>Behavior by source:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coderabbit</code></td>
+<td>Checks approval status, handles rate limits (auto-waits + re-triggers), polls until actionable comments appear</td>
+</tr>
+<tr>
+<td><code>qodo</code></td>
+<td>Fetches and checks for new Qodo comments (no rate limit handling)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> Returns <code>{"approved": true}</code> if CodeRabbit approved the PR, otherwise returns the fetch JSON.</p>
+<h3 id="reviews-post"><code>reviews post</code></h3>
+<p>Post replies and resolve review threads from a processed JSON file.</p>
 <table>
 <thead>
 <tr>
@@ -1092,19 +1006,47 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span cl
 <td><code>JSON_PATH</code></td>
 <td>string</td>
 <td>yes</td>
-<td>Path to JSON file created by <code>reviews fetch</code> (processed by AI handler)</td>
+<td>Path to JSON file with review data (created by <code>fetch</code>, processed by AI)</td>
 </tr>
 </tbody>
 </table>
-<p>Updates the JSON file with <code>posted_at</code> timestamps after posting.</p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>post<span class="w"> </span>/tmp/pi-work/pr-42-reviews.json
 </code></pre></div>
 
-<h3 id="reviews-pending-fetch">reviews pending-fetch</h3>
-<p>Fetch the authenticated user's pending (unpublished) review comments from a PR.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools reviews pending-fetch PR_URL
-</code></pre></div>
-
+<p><strong>Status handling:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>addressed</code></td>
+<td>Post reply and resolve thread</td>
+</tr>
+<tr>
+<td><code>not_addressed</code></td>
+<td>Post reply and resolve thread</td>
+</tr>
+<tr>
+<td><code>skipped</code></td>
+<td>Post reply with skip reason, resolve thread (bot sources only; human threads are not resolved)</td>
+</tr>
+<tr>
+<td><code>pending</code></td>
+<td>Skip (not processed yet)</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>Retry posting</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Effect:</strong> Updates the JSON file with <code>posted_at</code> timestamps after successful posting.</p>
+<h3 id="reviews-pending-fetch"><code>reviews pending-fetch</code></h3>
+<p>Fetch the authenticated user's pending (unsubmitted) review comments from a PR.</p>
 <table>
 <thead>
 <tr>
@@ -1123,33 +1065,54 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span cl
 </tr>
 </tbody>
 </table>
-<p><strong>Output:</strong> Saved to <code>/tmp/pi-work/pr-&lt;number&gt;-pending-review.json</code>.</p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-fetch<span class="w"> </span>https://github.com/myk-org/pi-config/pull/42
 </code></pre></div>
 
-<h3 id="reviews-pending-update">reviews pending-update</h3>
+<p><strong>Output:</strong> JSON saved to <code>/tmp/pi-work/pr-&lt;number&gt;-pending-review.json</code> with <code>metadata</code> and <code>comments</code> arrays.</p>
+<h3 id="reviews-pending-update"><code>reviews pending-update</code></h3>
 <p>Update pending review comment bodies and optionally submit the review.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools reviews pending-update JSON_PATH [OPTIONS]
-</code></pre></div>
-
 <table>
 <thead>
 <tr>
-<th>Argument</th>
+<th>Argument/Option</th>
 <th>Type</th>
 <th>Required</th>
+<th>Default</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>JSON_PATH</code></td>
-<td>string</td>
+<td>argument</td>
 <td>yes</td>
-<td>Path to JSON file created by <code>reviews pending-fetch</code></td>
+<td>—</td>
+<td>Path to JSON file with pending review data</td>
+</tr>
+<tr>
+<td><code>--submit</code></td>
+<td>flag</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Submit the review after updating comments</td>
 </tr>
 </tbody>
 </table>
+<div class="highlight"><pre><span></span><code><span class="c1"># Update comment bodies only</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>/tmp/pi-work/pr-42-pending-review.json
+
+<span class="c1"># Update and submit</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>/tmp/pi-work/pr-42-pending-review.json<span class="w"> </span>--submit
+</code></pre></div>
+
+<p><strong>Comment status handling:</strong></p>
+<ul>
+<li><code>accepted</code>: Update comment body with <code>refined_body</code></li>
+<li>Other statuses: Skip (no update)</li>
+</ul>
+<p><strong>Submit action:</strong> When <code>--submit</code> is set, uses the <code>submit_action</code> field from the JSON metadata (<code>COMMENT</code>, <code>APPROVE</code>, or <code>REQUEST_CHANGES</code>).</p>
+<h3 id="reviews-status"><code>reviews status</code></h3>
+<p>Show review status for the current PR. Queries the reviews database and displays all comments across all review cycles.</p>
 <table>
 <thead>
 <tr>
@@ -1161,25 +1124,20 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span cl
 </thead>
 <tbody>
 <tr>
-<td><code>--submit</code></td>
-<td>flag</td>
-<td><code>false</code></td>
-<td>Submit the review after updating comments</td>
+<td><code>--pr</code></td>
+<td>integer</td>
+<td>auto-detected from current branch</td>
+<td>PR number</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Update comments only</span>
-myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>/tmp/pi-work/pr-42-pending-review.json
-
-<span class="c1"># Update and submit</span>
-myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>/tmp/pi-work/pr-42-pending-review.json<span class="w"> </span>--submit
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span>
 </code></pre></div>
 
-<h3 id="reviews-store">reviews store</h3>
-<p>Store a completed review to the SQLite database for analytics. Deletes the JSON file after successful storage.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools reviews store JSON_PATH
-</code></pre></div>
-
+<p><strong>Output:</strong> TUI table to stdout and an HTML report saved to <code>/tmp/pi-work/&lt;project&gt;/review-status-&lt;pr&gt;.html</code>.</p>
+<h3 id="reviews-store"><code>reviews store</code></h3>
+<p>Store a completed review JSON to the SQLite database for analytics.</p>
 <table>
 <thead>
 <tr>
@@ -1198,84 +1156,17 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-updat
 </tr>
 </tbody>
 </table>
-<p><strong>Database location:</strong> <code>&lt;git-root&gt;/.pi/data/reviews.db</code></p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>store<span class="w"> </span>/tmp/pi-work/pr-42-reviews.json
 </code></pre></div>
 
-<blockquote>
-<p><strong>Tip:</strong> Use <code>db stats</code> and <code>db patterns</code> to analyze data stored by this command. See Review Database &amp; Analytics for details.</p>
-</blockquote>
+<p><strong>Effect:</strong> Inserts the review and all comments into <code>.pi/data/reviews.db</code>. The JSON file is deleted after successful storage.</p>
+<p><strong>Database schema:</strong> Two tables — <code>reviews</code> (PR metadata) and <code>comments</code> (individual review comments with source, status, reply, priority, timestamps).</p>
 <hr />
-<h2 id="coderabbit">coderabbit</h2>
-<p>Commands for managing CodeRabbit automated reviews.</p>
-<h3 id="coderabbit-check">coderabbit check</h3>
-<p>Check if CodeRabbit is rate limited on a PR.</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools coderabbit check OWNER_REPO PR_NUMBER
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Argument</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>OWNER_REPO</code></td>
-<td>string</td>
-<td>yes</td>
-<td>Repository in <code>owner/repo</code> format</td>
-</tr>
-<tr>
-<td><code>PR_NUMBER</code></td>
-<td>integer</td>
-<td>yes</td>
-<td>Pull request number</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Output:</strong> JSON with rate limit status.</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;rate_limited&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">}</span>
-</code></pre></div>
-
-<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;rate_limited&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;wait_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">90</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;comment_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12345</span><span class="p">}</span>
-</code></pre></div>
-
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>check<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
-</code></pre></div>
-
-<h3 id="coderabbit-trigger">coderabbit trigger</h3>
-<p>Wait an optional duration, then trigger a CodeRabbit review on a PR by posting <code>@coderabbitai review</code>. Polls until the review starts (max 10 minutes, 60-second intervals).</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools coderabbit trigger OWNER_REPO PR_NUMBER [OPTIONS]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Argument</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>OWNER_REPO</code></td>
-<td>string</td>
-<td>yes</td>
-<td>Repository in <code>owner/repo</code> format</td>
-</tr>
-<tr>
-<td><code>PR_NUMBER</code></td>
-<td>integer</td>
-<td>yes</td>
-<td>Pull request number</td>
-</tr>
-</tbody>
-</table>
+<h2 id="db"><code>db</code></h2>
+<p>Review database query commands. Operates on the SQLite database at <code>&lt;git-root&gt;/.pi/data/reviews.db</code>.</p>
+<p>All subcommands support <code>--db-path</code> to override the default database location and <code>--json</code> for JSON output.</p>
+<h3 id="db-stats"><code>db stats</code></h3>
+<p>Get review statistics.</p>
 <table>
 <thead>
 <tr>
@@ -1287,23 +1178,467 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-updat
 </thead>
 <tbody>
 <tr>
-<td><code>--wait</code></td>
-<td>integer</td>
-<td><code>0</code></td>
-<td>Seconds to wait before posting the review trigger</td>
+<td><code>--by-source</code></td>
+<td>flag</td>
+<td><code>true</code> (default when neither flag set)</td>
+<td>Group by source (human/qodo/coderabbit)</td>
+</tr>
+<tr>
+<td><code>--by-reviewer</code></td>
+<td>flag</td>
+<td><code>false</code></td>
+<td>Group by reviewer author</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>flag</td>
+<td><code>false</code></td>
+<td>Output as JSON</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>string</td>
+<td>auto-detected</td>
+<td>Path to database file</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Trigger immediately</span>
-myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
-
-<span class="c1"># Wait 90 seconds then trigger</span>
-myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span>--wait<span class="w"> </span><span class="m">90</span>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="w"> </span>--by-reviewer
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="w"> </span>--by-source<span class="w"> </span>--json
 </code></pre></div>
 
+<blockquote>
+<p><strong>Warning:</strong> <code>--by-source</code> and <code>--by-reviewer</code> are mutually exclusive.</p>
+</blockquote>
+<p><strong>Output columns (by-source):</strong> <code>source</code>, <code>total</code>, <code>addressed</code>, <code>not_addressed</code>, <code>skipped</code>, <code>addressed_rate</code>
+<strong>Output columns (by-reviewer):</strong> <code>author</code>, <code>total</code>, <code>addressed</code>, <code>not_addressed</code>, <code>skipped</code></p>
+<h3 id="db-patterns"><code>db patterns</code></h3>
+<p>Find recurring dismissed patterns. Identifies comments that appear multiple times with similar content.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--min</code></td>
+<td>integer</td>
+<td><code>2</code></td>
+<td>Minimum occurrences to report</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>flag</td>
+<td><code>false</code></td>
+<td>Output as JSON</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>string</td>
+<td>auto-detected</td>
+<td>Path to database file</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--min<span class="w"> </span><span class="m">3</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--json
+</code></pre></div>
+
+<p><strong>Output columns:</strong> <code>path</code>, <code>occurrences</code>, <code>reason</code>, <code>body_sample</code></p>
+<h3 id="db-dismissed"><code>db dismissed</code></h3>
+<p>Get dismissed comments for a repository.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--owner</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>Repository owner (org or user)</td>
+</tr>
+<tr>
+<td><code>--repo</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>Repository name</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>flag</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Output as JSON</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>string</td>
+<td>no</td>
+<td>auto-detected</td>
+<td>Path to database file</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
+</code></pre></div>
+
+<p><strong>Output columns:</strong> <code>path</code>, <code>line</code>, <code>status</code>, <code>reply</code>, <code>author</code></p>
+<h3 id="db-query"><code>db query</code></h3>
+<p>Run a raw SELECT query against the reviews database.</p>
+<table>
+<thead>
+<tr>
+<th>Argument/Option</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SQL</code></td>
+<td>argument</td>
+<td>yes</td>
+<td>—</td>
+<td>SQL SELECT statement</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>flag</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Output as JSON</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>string</td>
+<td>no</td>
+<td>auto-detected</td>
+<td>Path to database file</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Only <code>SELECT</code> statements are allowed. Other SQL statements are rejected.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT * FROM comments WHERE status = &#39;skipped&#39;&quot;</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT status, COUNT(*) as cnt FROM comments GROUP BY status&quot;</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT * FROM comments LIMIT 5&quot;</span><span class="w"> </span>--json
+</code></pre></div>
+
+<h3 id="db-find-similar"><code>db find-similar</code></h3>
+<p>Find a previously dismissed comment matching a path and body. Uses exact path match combined with body similarity (Jaccard word overlap). Reads JSON from stdin.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--owner</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>Repository owner</td>
+</tr>
+<tr>
+<td><code>--repo</code></td>
+<td>string</td>
+<td>yes</td>
+<td>—</td>
+<td>Repository name</td>
+</tr>
+<tr>
+<td><code>--threshold</code></td>
+<td>float</td>
+<td>no</td>
+<td><code>0.6</code></td>
+<td>Minimum similarity threshold (0.0–1.0)</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>flag</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Output as JSON</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>string</td>
+<td>no</td>
+<td>auto-detected</td>
+<td>Path to database file</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Input:</strong> JSON from stdin with <code>path</code> and <code>body</code> fields.</p>
+<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{&quot;path&quot;: &quot;foo.py&quot;, &quot;body&quot;: &quot;Add error handling...&quot;}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>find-similar<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
+</code></pre></div>
+
+<p><strong>Output:</strong> Matching comment with <code>similarity</code> score, <code>path</code>, <code>line</code>, <code>status</code>, <code>reply</code>, and <code>body</code>; or "No similar comment found."</p>
+<hr />
+<h2 id="coderabbit"><code>coderabbit</code></h2>
+<p>CodeRabbit rate limit and review trigger commands.</p>
+<h3 id="coderabbit-check"><code>coderabbit check</code></h3>
+<p>Check if CodeRabbit is rate-limited on a PR.</p>
+<table>
+<thead>
+<tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OWNER_REPO</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Repository in <code>owner/repo</code> format</td>
+</tr>
+<tr>
+<td><code>PR_NUMBER</code></td>
+<td>integer</td>
+<td>yes</td>
+<td>Pull request number</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>check<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
+</code></pre></div>
+
+<p><strong>Output:</strong> JSON with rate limit status and wait time.</p>
+<h3 id="coderabbit-trigger"><code>coderabbit trigger</code></h3>
+<p>Wait and trigger a CodeRabbit review on a PR. Posts <code>@coderabbitai review</code> and polls until the review starts (max 10 minutes).</p>
+<table>
+<thead>
+<tr>
+<th>Argument/Option</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OWNER_REPO</code></td>
+<td>argument</td>
+<td>yes</td>
+<td>—</td>
+<td>Repository in <code>owner/repo</code> format</td>
+</tr>
+<tr>
+<td><code>PR_NUMBER</code></td>
+<td>integer</td>
+<td>yes</td>
+<td>—</td>
+<td>Pull request number</td>
+</tr>
+<tr>
+<td><code>--wait</code></td>
+<td>integer</td>
+<td>no</td>
+<td><code>0</code></td>
+<td>Seconds to wait before posting review trigger</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span>
+myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span>--wait<span class="w"> </span><span class="m">120</span>
+</code></pre></div>
+
+<p><strong>Effect:</strong> Optionally waits the specified seconds, then posts a <code>@coderabbitai review</code> comment. Polls every 60 seconds (up to 10 attempts) until the review begins.</p>
+<hr />
+<h2 id="ai-cli"><code>ai-cli</code></h2>
+<p>AI CLI commands for routing prompts to external AI agents (Cursor, Claude, Gemini). Wraps the <a href="https://pypi.org/project/ai-cli-runner/"><code>ai-cli-runner</code></a> package. See <a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a> for workflows.</p>
+<h3 id="ai-cli-run"><code>ai-cli run</code></h3>
+<p>Run a prompt via an external AI CLI provider.</p>
+<table>
+<thead>
+<tr>
+<th>Argument/Option</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PROMPT</code></td>
+<td>argument</td>
+<td>yes</td>
+<td>—</td>
+<td>The prompt text to send</td>
+</tr>
+<tr>
+<td><code>-p</code>, <code>--provider</code></td>
+<td>choice</td>
+<td>yes</td>
+<td>—</td>
+<td>AI provider: <code>cursor</code>, <code>claude</code>, <code>gemini</code></td>
+</tr>
+<tr>
+<td><code>-m</code>, <code>--model</code></td>
+<td>string</td>
+<td>no</td>
+<td>provider default</td>
+<td>Model name (e.g., <code>gpt-5.4-high</code>)</td>
+</tr>
+<tr>
+<td><code>--resume</code></td>
+<td>flag</td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Continue the most recent session</td>
+</tr>
+<tr>
+<td><code>--session-id</code></td>
+<td>string</td>
+<td>no</td>
+<td>—</td>
+<td>Resume a specific session by ID</td>
+</tr>
+<tr>
+<td><code>--cwd</code></td>
+<td>string</td>
+<td>no</td>
+<td>current directory</td>
+<td>Working directory</td>
+</tr>
+<tr>
+<td><code>--cli-flags</code></td>
+<td>string (repeatable)</td>
+<td>no</td>
+<td>—</td>
+<td>Extra CLI flags (e.g., <code>--cli-flags=--trust</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default models per provider:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Default Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cursor</code></td>
+<td><code>composer-2-fast</code></td>
+</tr>
+<tr>
+<td><code>claude</code></td>
+<td><code>claude-sonnet-4-6</code></td>
+</tr>
+<tr>
+<td><code>gemini</code></td>
+<td><code>gemini-2.5-flash</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> <code>--session-id</code> and <code>--resume</code> are mutually exclusive.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Review this code for bugs&quot;</span><span class="w"> </span>-p<span class="w"> </span>claude
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Refactor the auth module&quot;</span><span class="w"> </span>-p<span class="w"> </span>cursor<span class="w"> </span>-m<span class="w"> </span>gpt-5.4-high
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Continue the previous task&quot;</span><span class="w"> </span>-p<span class="w"> </span>gemini<span class="w"> </span>--resume
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Fix tests&quot;</span><span class="w"> </span>-p<span class="w"> </span>claude<span class="w"> </span>--session-id<span class="w"> </span>abc123
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Review code&quot;</span><span class="w"> </span>-p<span class="w"> </span>cursor<span class="w"> </span>--cli-flags<span class="o">=</span>--trust<span class="w"> </span>--cli-flags<span class="o">=</span>--verbose
+</code></pre></div>
+
+<p><strong>Output:</strong> JSON to stdout with <code>success</code>, <code>provider</code>, <code>model</code>, <code>text</code> (response), <code>session_id</code>, and <code>usage</code> (token counts, cost). On failure: <code>success: false</code> with <code>error</code> field.</p>
+<h3 id="ai-cli-save-config"><code>ai-cli save-config</code></h3>
+<p>Save agent/peer configuration for the <code>/external-ai</code> slash command. Persists to <code>.pi/external-ai-config.json</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--agents</code></td>
+<td>string</td>
+<td>no*</td>
+<td>—</td>
+<td>Save <code>lastAgents</code> value (e.g., <code>cursor --model gpt-5.4-high</code>)</td>
+</tr>
+<tr>
+<td><code>--peers</code></td>
+<td>string</td>
+<td>no*</td>
+<td>—</td>
+<td>Save <code>lastPeers</code> value (e.g., <code>cursor,claude</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>*At least one of <code>--agents</code> or <code>--peers</code> must be provided.</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<span class="w"> </span>--agents<span class="w"> </span><span class="s2">&quot;cursor --model gpt-5.4-high&quot;</span>
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<span class="w"> </span>--peers<span class="w"> </span><span class="s2">&quot;cursor,claude&quot;</span>
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<span class="w"> </span>--agents<span class="w"> </span><span class="s2">&quot;gemini&quot;</span><span class="w"> </span>--peers<span class="w"> </span><span class="s2">&quot;cursor,claude&quot;</span>
+</code></pre></div>
+
+<p><strong>Effect:</strong> Merges into <code>.pi/external-ai-config.json</code>. Each option updates only its field — the other is preserved. Outputs the saved config JSON to stdout.</p>
+<h3 id="ai-cli-models"><code>ai-cli models</code></h3>
+<p>List available models for a provider.</p>
+<table>
+<thead>
+<tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PROVIDER</code></td>
+<td>choice</td>
+<td>yes</td>
+<td>AI provider: <code>cursor</code>, <code>claude</code>, <code>gemini</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>models<span class="w"> </span>cursor
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>models<span class="w"> </span>claude
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>models<span class="w"> </span>gemini
+</code></pre></div>
+
+<p><strong>Output:</strong> JSON array of model name strings to stdout.</p>
 <hr />
 <h2 id="exit-codes">Exit Codes</h2>
-<p>All commands use the following exit code conventions:</p>
+<p>All subcommands follow a consistent pattern:</p>
 <table>
 <thead>
 <tr>
@@ -1318,45 +1653,63 @@ myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<sp
 </tr>
 <tr>
 <td><code>1</code></td>
-<td>Error (invalid input, API failure, missing dependencies)</td>
+<td>Error (missing dependencies, invalid arguments, API failure)</td>
 </tr>
 </tbody>
 </table>
-<p>Error details are printed to stderr. JSON output goes to stdout.</p>
+<p>Commands that output JSON include a <code>status</code> or <code>success</code> field in the response that mirrors the exit code.</p>
 <hr />
-<h2 id="environment-and-dependencies">Environment and Dependencies</h2>
+<h2 id="environment-and-prerequisites">Environment and Prerequisites</h2>
 <table>
 <thead>
 <tr>
 <th>Dependency</th>
-<th>Required for</th>
+<th>Required By</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>gh</code> (GitHub CLI)</td>
-<td>All commands that interact with GitHub (pr, release, reviews, coderabbit)</td>
+<td><code>pr</code>, <code>release</code>, <code>reviews</code>, <code>coderabbit</code>, <code>db</code></td>
+<td>GitHub API access</td>
 </tr>
 <tr>
 <td><code>git</code></td>
-<td>Repository detection, branch info, commit history, release validation</td>
+<td><code>release info</code>, <code>memory</code>, <code>db</code></td>
+<td>Repository context detection</td>
+</tr>
+<tr>
+<td><code>ai-cli-runner</code></td>
+<td><code>ai-cli</code></td>
+<td>External AI CLI abstraction</td>
 </tr>
 </tbody>
 </table>
-<p>See Installation &amp; Setup for installation instructions.</p>
+<blockquote>
+<p><strong>Tip:</strong> All dependencies are pre-installed in the pi-config Docker image. See <a href="docker-deployment.html">Running Pi in a Docker Container</a> for details.</p>
+</blockquote>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
+<li><a href="workflow-recipes.html">Common Workflow Recipes</a></li>
+<li><a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a></li>
+<li><a href="memory-system.html">Working with Project Memory</a></li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+</ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="workflow-recipes.html" class="page-nav-link page-nav-prev">
+                <a href="commands-reference.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Common Workflow Recipes</span>
+                    <span class="page-nav-title">Slash Commands and Extension Commands Reference</span>
                 </a>
 
 
-                <a href="slash-commands.html" class="page-nav-link page-nav-next">
+                <a href="configuration-reference.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Slash Commands Reference</span>
+                    <span class="page-nav-title">Configuration and Environment Variables Reference</span>
                 </a>
 
             </nav>
@@ -1366,17 +1719,11 @@ myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<sp
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#db">db</a><ul>
-<li><a href="#db-stats">db stats</a></li>
-<li><a href="#db-patterns">db patterns</a></li>
-<li><a href="#db-dismissed">db dismissed</a></li>
-<li><a href="#db-query">db query</a></li>
-<li><a href="#db-find-similar">db find-similar</a></li>
-</ul>
-</li>
+<li><a href="#subcommand-overview">Subcommand Overview</a></li>
 <li><a href="#memory">memory</a><ul>
 <li><a href="#memory-add">memory add</a></li>
 <li><a href="#memory-show">memory show</a></li>
+<li><a href="#memory-forget">memory forget</a></li>
 <li><a href="#memory-migrate">memory migrate</a></li>
 <li><a href="#memory-path">memory path</a></li>
 </ul>
@@ -1400,7 +1747,16 @@ myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<sp
 <li><a href="#reviews-post">reviews post</a></li>
 <li><a href="#reviews-pending-fetch">reviews pending-fetch</a></li>
 <li><a href="#reviews-pending-update">reviews pending-update</a></li>
+<li><a href="#reviews-status">reviews status</a></li>
 <li><a href="#reviews-store">reviews store</a></li>
+</ul>
+</li>
+<li><a href="#db">db</a><ul>
+<li><a href="#db-stats">db stats</a></li>
+<li><a href="#db-patterns">db patterns</a></li>
+<li><a href="#db-dismissed">db dismissed</a></li>
+<li><a href="#db-query">db query</a></li>
+<li><a href="#db-find-similar">db find-similar</a></li>
 </ul>
 </li>
 <li><a href="#coderabbit">coderabbit</a><ul>
@@ -1408,8 +1764,15 @@ myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<sp
 <li><a href="#coderabbit-trigger">coderabbit trigger</a></li>
 </ul>
 </li>
+<li><a href="#ai-cli">ai-cli</a><ul>
+<li><a href="#ai-cli-run">ai-cli run</a></li>
+<li><a href="#ai-cli-save-config">ai-cli save-config</a></li>
+<li><a href="#ai-cli-models">ai-cli models</a></li>
+</ul>
+</li>
 <li><a href="#exit-codes">Exit Codes</a></li>
-<li><a href="#environment-and-dependencies">Environment and Dependencies</a></li>
+<li><a href="#environment-and-prerequisites">Environment and Prerequisites</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
 
@@ -1421,7 +1784,7 @@ myk-pi-tools<span class="w"> </span>coderabbit<span class="w"> </span>trigger<sp
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 2.2.0</span>
+            <span class="footer-version">Generated from version 3.6.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

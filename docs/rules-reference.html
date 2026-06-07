@@ -1,0 +1,1909 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orchestrator Rules Reference - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agent-routing.html"
+                           class="nav-link">
+                            Understanding Agent Routing and Delegation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="code-review-loop.html"
+                           class="nav-link">
+                            Running the Automated Code Review Loop
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link">
+                            Using Slash Commands and Prompt Templates
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-system.html"
+                           class="nav-link">
+                            Working with Project Memory
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Communicating Between Pi Sessions
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk-pi-tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration-reference.html"
+                           class="nav-link">
+                            Configuration and Environment Variables Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-reference.html"
+                           class="nav-link active" aria-current="page">
+                            Orchestrator Rules Reference
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-architecture.html"
+                           class="nav-link">
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="orchestrator-rules-reference">Orchestrator Rules Reference</h1>
+<p>Rules in <code>rules/</code> are the orchestrator's behavioral contract. They load automatically in <strong>alphabetical order</strong> (by numeric prefix) at session start and inject into the orchestrator's system prompt via the <code>before_agent_start</code> hook. Specialist agents <strong>never</strong> see these rules — they are scoped to the orchestrator only.</p>
+<blockquote>
+<p><strong>Note:</strong> Rules take effect on the <strong>next pi session</strong>. Running sessions are not affected by rule file changes. See <a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a> for details on the injection mechanism.</p>
+</blockquote>
+<hr />
+<h2 id="loading-mechanism">Loading Mechanism</h2>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source directory</td>
+<td><code>rules/</code></td>
+</tr>
+<tr>
+<td>File format</td>
+<td>Markdown (<code>.md</code>)</td>
+</tr>
+<tr>
+<td>Load order</td>
+<td>Alphabetical (numeric prefix: <code>00</code>, <code>05</code>, <code>10</code>, … <code>60</code>)</td>
+</tr>
+<tr>
+<td>Injection point</td>
+<td><code>before_agent_start</code> event (orchestrator only)</td>
+</tr>
+<tr>
+<td>Skipped for</td>
+<td>All specialist subagents (<code>PI_SUBAGENT_CHILD=1</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>The extension reads all <code>.md</code> files from the <code>rules/</code> directory, sorts them, concatenates their contents, and appends the result to the orchestrator's system prompt.</p>
+<hr />
+<h2 id="00-orchestrator-core">00 — Orchestrator Core</h2>
+<p><strong>File:</strong> <code>rules/00-orchestrator-core.md</code></p>
+<p>Defines the orchestrator's fundamental role: it is a <strong>manager</strong> that delegates work to specialist agents and never performs direct edits.</p>
+<h3 id="forbidden-actions">Forbidden Actions</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>edit</code>, <code>write</code>, <code>bash</code> (except <code>mcpl</code>)</td>
+<td>❌ Forbidden</td>
+</tr>
+<tr>
+<td>Delegating slash commands to agents</td>
+<td>❌ Forbidden</td>
+</tr>
+<tr>
+<td><code>read</code> (single files)</td>
+<td>✅ Allowed</td>
+</tr>
+<tr>
+<td><code>bash</code> for <code>mcpl</code> only</td>
+<td>✅ Allowed</td>
+</tr>
+<tr>
+<td>Ask clarifying questions</td>
+<td>✅ Allowed</td>
+</tr>
+<tr>
+<td>Analyze, plan, route via <code>subagent</code></td>
+<td>✅ Allowed</td>
+</tr>
+<tr>
+<td>Execute slash commands directly</td>
+<td>✅ Allowed</td>
+</tr>
+</tbody>
+</table>
+<h3 id="delegation-targets">Delegation Targets</h3>
+<table>
+<thead>
+<tr>
+<th>Work type</th>
+<th>Delegate to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>edit</code> / <code>write</code></td>
+<td>Language specialist via <code>subagent</code></td>
+</tr>
+<tr>
+<td>Git commands</td>
+<td><code>git-expert</code> via <code>subagent</code></td>
+</tr>
+<tr>
+<td>MCP tools</td>
+<td>Manager agents via <code>subagent</code></td>
+</tr>
+<tr>
+<td>Multi-file exploration</td>
+<td><code>worker</code> agent via <code>subagent</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="pre-implementation-checklist">Pre-Implementation Checklist</h3>
+<p>Before any code change, the orchestrator verifies:</p>
+<ol>
+<li>Root cause investigated (read relevant code, understand the problem)</li>
+<li>GitHub issue created (when issue-first workflow applies)</li>
+<li>On issue branch (<code>feat/issue-N-...</code> or <code>fix/issue-N-...</code>)</li>
+</ol>
+<blockquote>
+<p><strong>Tip:</strong> The checklist is skipped when the issue-first workflow does not apply. See <a href="#05--issue-first-workflow">rule 05</a> for skip conditions.</p>
+</blockquote>
+<hr />
+<h2 id="05-issue-first-workflow">05 — Issue-First Workflow</h2>
+<p><strong>File:</strong> <code>rules/05-issue-first-workflow.md</code></p>
+<p>Requires creating a GitHub issue and a dedicated branch before code changes. See <a href="first-workflow.html">Your First Coding Workflow</a> for a guided walkthrough.</p>
+<h3 id="workflow-steps">Workflow Steps</h3>
+<ol>
+<li>Analyze the user's request</li>
+<li>Check skip conditions (see below)</li>
+<li>Investigate root cause — read source, identify files, verify the problem exists</li>
+<li>Delegate issue creation to <code>github-expert</code></li>
+<li>Ask user: "Issue #N created. Do you want to work on it now?"</li>
+<li>On confirmation, delegate branch creation to <code>git-expert</code></li>
+<li>Proceed with implementation</li>
+</ol>
+<h3 id="skip-conditions">Skip Conditions</h3>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trivial fix (typo, single-line change)</td>
+<td>Skip entire workflow</td>
+</tr>
+<tr>
+<td>Question or explanation (no code changes)</td>
+<td>Skip</td>
+</tr>
+<tr>
+<td>Exploration or research</td>
+<td>Skip</td>
+</tr>
+<tr>
+<td>User says "just do it" or "quick fix"</td>
+<td>Skip</td>
+</tr>
+<tr>
+<td>Urgent hotfix with time pressure</td>
+<td>Skip</td>
+</tr>
+</tbody>
+</table>
+<h3 id="branch-naming">Branch Naming</h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Pattern</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Feature</td>
+<td><code>feat/issue-N-description</code></td>
+<td><code>feat/issue-70-issue-first-workflow</code></td>
+</tr>
+<tr>
+<td>Bug fix</td>
+<td><code>fix/issue-N-description</code></td>
+<td><code>fix/issue-42-memory-leak</code></td>
+</tr>
+<tr>
+<td>Refactor</td>
+<td><code>refactor/issue-N-description</code></td>
+<td><code>refactor/issue-99-cleanup-utils</code></td>
+</tr>
+<tr>
+<td>Docs</td>
+<td><code>docs/issue-N-description</code></td>
+<td><code>docs/issue-15-update-readme</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="issue-requirements">Issue Requirements</h3>
+<p>Every issue <strong>must</strong> include:</p>
+<ul>
+<li>Type (fix/feat/refactor/docs)</li>
+<li>Problem or feature description</li>
+<li>Root cause analysis (for bugs — affected files, functions, why)</li>
+<li>Proposed fix approach</li>
+<li><strong><code>## Done</code> section with checkboxes</strong> — these define the completion contract</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="gu">## Done</span>
+
+<span class="k">- [ ]</span> Deliverable 1
+<span class="k">- [ ]</span> Deliverable 2
+<span class="k">- [ ]</span> Deliverable 3
+</code></pre></div>
+
+<h3 id="edge-cases">Edge Cases</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>User says "just fix it"</td>
+<td>Skip workflow, do directly</td>
+</tr>
+<tr>
+<td>Partial requirements provided</td>
+<td>Ask clarifying questions, then create issue</td>
+</tr>
+<tr>
+<td>Issue already exists</td>
+<td>Ask if user wants to continue existing issue</td>
+</tr>
+<tr>
+<td>Urgent/hotfix request</td>
+<td>Skip workflow, note in commit message</td>
+</tr>
+<tr>
+<td>Multiple unrelated requests</td>
+<td>Create separate issues for each</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Issues are never closed until <strong>all</strong> checkboxes in the <code>## Done</code> section are checked. Unchecked deliverables that are no longer needed must be explicitly removed or marked N/A.</p>
+</blockquote>
+<hr />
+<h2 id="10-agent-routing">10 — Agent Routing</h2>
+<p><strong>File:</strong> <code>rules/10-agent-routing.md</code></p>
+<p>Maps task domains to specialist agents. For the full agent list, see <a href="agents-reference.html">Specialist Agents Reference</a>.</p>
+<h3 id="routing-table">Routing Table</h3>
+<table>
+<thead>
+<tr>
+<th>Domain</th>
+<th>Agent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python (<code>.py</code>)</td>
+<td><code>python-expert</code></td>
+</tr>
+<tr>
+<td>Go (<code>.go</code>)</td>
+<td><code>go-expert</code></td>
+</tr>
+<tr>
+<td>Frontend (JS/TS/React/Vue/Angular)</td>
+<td><code>ts-expert</code></td>
+</tr>
+<tr>
+<td>Java (<code>.java</code>)</td>
+<td><code>java-expert</code></td>
+</tr>
+<tr>
+<td>Shell scripts (<code>.sh</code>)</td>
+<td><code>bash-expert</code></td>
+</tr>
+<tr>
+<td>Markdown (<code>.md</code>)</td>
+<td><code>technical-documentation-writer</code></td>
+</tr>
+<tr>
+<td>Docker</td>
+<td><code>docker-expert</code></td>
+</tr>
+<tr>
+<td>Kubernetes / OpenShift</td>
+<td><code>kubernetes-expert</code></td>
+</tr>
+<tr>
+<td>Jenkins / CI / Groovy</td>
+<td><code>jenkins-expert</code></td>
+</tr>
+<tr>
+<td>Git operations (local)</td>
+<td><code>git-expert</code></td>
+</tr>
+<tr>
+<td>GitHub (PRs, issues, releases, workflows)</td>
+<td><code>github-expert</code></td>
+</tr>
+<tr>
+<td>Tests</td>
+<td><code>test-automator</code></td>
+</tr>
+<tr>
+<td>Debugging</td>
+<td><code>debugger</code></td>
+</tr>
+<tr>
+<td>API docs</td>
+<td><code>api-documenter</code></td>
+</tr>
+<tr>
+<td>External repo security audit</td>
+<td><code>security-auditor</code></td>
+</tr>
+<tr>
+<td>External AI agents</td>
+<td><code>/acpx-prompt</code></td>
+</tr>
+<tr>
+<td>External library/framework docs</td>
+<td><code>docs-fetcher</code></td>
+</tr>
+<tr>
+<td>No specialist match</td>
+<td><code>worker</code> (fallback)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="routing-principle-intent-over-tool">Routing Principle: Intent over Tool</h3>
+<p>Route based on <strong>what the task is</strong>, not which CLI tool is involved.</p>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Correct Route</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Running Python tests</td>
+<td><code>python-expert</code></td>
+<td>Intent is testing Python code</td>
+</tr>
+<tr>
+<td>Editing Python files with sed</td>
+<td><code>python-expert</code></td>
+<td>Intent is Python file modification</td>
+</tr>
+<tr>
+<td>Creating a PR</td>
+<td><code>github-expert</code></td>
+<td>Intent is GitHub interaction</td>
+</tr>
+<tr>
+<td>Committing changes</td>
+<td><code>git-expert</code></td>
+<td>Intent is local git operation</td>
+</tr>
+<tr>
+<td>Shell script creation</td>
+<td><code>bash-expert</code></td>
+<td>Intent is shell scripting</td>
+</tr>
+</tbody>
+</table>
+<h3 id="documentation-routing">Documentation Routing</h3>
+<p>External library/framework documentation (React, FastAPI, Django, Oh My Posh, etc.) <strong>must</strong> go through <code>docs-fetcher</code>. The orchestrator is forbidden from calling <code>fetch_content</code> on external docs directly.</p>
+<div class="highlight"><pre><span></span><code># Correct
+subagent(agent=&quot;docs-fetcher&quot;, task=&quot;Fetch React hooks documentation...&quot;)
+
+# Forbidden
+fetch_content(https://react.dev/...)
+</code></pre></div>
+
+<p><code>docs-fetcher</code> tries <code>llms.txt</code> first (LLM-optimized format) and extracts only relevant sections.</p>
+<hr />
+<h2 id="15-mcp-launchpad">15 — MCP Launchpad</h2>
+<p><strong>File:</strong> <code>rules/15-mcp-launchpad.md</code></p>
+<p>Governs MCP (Model Context Protocol) server interaction via the <code>mcpl</code> CLI. See <a href="customization-recipes.html">Customization and Extension Recipes</a> for MCP server setup.</p>
+<h3 id="command-reference">Command Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mcpl search "&lt;query&gt;"</code></td>
+<td>Search all tools (5 results default)</td>
+</tr>
+<tr>
+<td><code>mcpl search "&lt;query&gt;" --limit N</code></td>
+<td>Search with custom result count</td>
+</tr>
+<tr>
+<td><code>mcpl list</code></td>
+<td>List all MCP servers</td>
+</tr>
+<tr>
+<td><code>mcpl list &lt;server&gt;</code></td>
+<td>List tools for a specific server</td>
+</tr>
+<tr>
+<td><code>mcpl list --refresh</code></td>
+<td>Refresh and list all servers</td>
+</tr>
+<tr>
+<td><code>mcpl inspect &lt;server&gt; &lt;tool&gt;</code></td>
+<td>Get full tool schema</td>
+</tr>
+<tr>
+<td><code>mcpl inspect &lt;server&gt; &lt;tool&gt; --example</code></td>
+<td>Get schema with example call</td>
+</tr>
+<tr>
+<td><code>mcpl call &lt;server&gt; &lt;tool&gt; '{}'</code></td>
+<td>Execute tool (no arguments)</td>
+</tr>
+<tr>
+<td><code>mcpl call &lt;server&gt; &lt;tool&gt; '{"param": "v"}'</code></td>
+<td>Execute tool with arguments</td>
+</tr>
+<tr>
+<td><code>mcpl verify</code></td>
+<td>Test all server connections</td>
+</tr>
+</tbody>
+</table>
+<h3 id="workflow">Workflow</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># 1. Search for the right tool</span>
+mcpl<span class="w"> </span>search<span class="w"> </span><span class="s2">&quot;list projects&quot;</span>
+
+<span class="c1"># 2. Get example for complex tools</span>
+mcpl<span class="w"> </span>inspect<span class="w"> </span>sentry<span class="w"> </span>search_issues<span class="w"> </span>--example
+
+<span class="c1"># 3. Call with required params</span>
+mcpl<span class="w"> </span>call<span class="w"> </span>vercel<span class="w"> </span>list_projects<span class="w"> </span><span class="s1">&#39;{&quot;teamId&quot;: &quot;team_xxx&quot;}&#39;</span>
+</code></pre></div>
+
+<h3 id="orchestrator-vs-agent-usage">Orchestrator vs Agent Usage</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Allowed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Orchestrator</td>
+<td><code>mcpl search</code>, <code>mcpl list</code> (discovery only)</td>
+</tr>
+<tr>
+<td>Specialist agents</td>
+<td>Full <code>mcpl</code> workflow including <code>mcpl call</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="troubleshooting-commands">Troubleshooting Commands</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mcpl verify</code></td>
+<td>Test all server connections</td>
+</tr>
+<tr>
+<td><code>mcpl session status</code></td>
+<td>Check daemon and connection status</td>
+</tr>
+<tr>
+<td><code>mcpl session stop</code></td>
+<td>Restart daemon</td>
+</tr>
+<tr>
+<td><code>mcpl config</code></td>
+<td>Show current configuration</td>
+</tr>
+<tr>
+<td><code>mcpl call &lt;server&gt; &lt;tool&gt; '{}' --no-daemon</code></td>
+<td>Bypass daemon for debugging</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="20-code-review-loop">20 — Code Review Loop</h2>
+<p><strong>File:</strong> <code>rules/20-code-review-loop.md</code></p>
+<p>Mandatory review cycle after every code change. See <a href="code-review-loop.html">Running the Automated Code Review Loop</a> for usage guidance.</p>
+<h3 id="review-agents">Review Agents</h3>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Focus Area</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>code-reviewer-quality</code></td>
+<td>General code quality and maintainability</td>
+</tr>
+<tr>
+<td><code>code-reviewer-guidelines</code></td>
+<td>Project guidelines and style (AGENTS.md)</td>
+</tr>
+<tr>
+<td><code>code-reviewer-security</code></td>
+<td>Bugs, logic errors, security vulnerabilities</td>
+</tr>
+</tbody>
+</table>
+<p>All three run as <strong>async subagents</strong> (<code>async: true</code>) in a single assistant turn. They execute in parallel — the orchestrator does not block waiting for results.</p>
+<h3 id="standard-loop-manual-reviews">Standard Loop (Manual Reviews)</h3>
+<ol>
+<li>Specialist writes or modifies code</li>
+<li>All 3 reviewers launch in parallel (<code>async: true</code>)</li>
+<li>Merge and deduplicate findings from all reviewers</li>
+<li>If any reviewer has comments → fix code → go to step 2</li>
+<li>Run <code>test-automator</code></li>
+<li>Tests pass? → <strong>Done</strong>. Tests fail? → Fix code, then:</li>
+<li>Minor fix (test/config only) → re-run tests (step 5)</li>
+<li>Substantive code change → full re-review (step 2)</li>
+</ol>
+<h3 id="deduplication-criteria">Deduplication Criteria</h3>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Same file/line + same issue type</td>
+<td>Keep most actionable version</td>
+</tr>
+<tr>
+<td>Conflicting suggestions</td>
+<td>Priority: security &gt; correctness &gt; performance &gt; style</td>
+</tr>
+<tr>
+<td>Complementary findings (different types, same code)</td>
+<td>Keep both</td>
+</tr>
+</tbody>
+</table>
+<h3 id="staged-review-mode-automated-workflows">Staged Review Mode (Automated Workflows)</h3>
+<p>Used by automated flows (autorabbit, autoqodo) instead of parallel review:</p>
+<ul>
+<li><strong>Stage 1 — Spec Compliance:</strong> Does the code meet requirements? All deliverables implemented? No scope creep?</li>
+<li><strong>Stage 2 — Code Quality:</strong> Quality, security, and guidelines checks (only after Stage 1 passes)</li>
+</ul>
+<h3 id="baseline-test-comparison">Baseline Test Comparison</h3>
+<p>Before declaring test failures as blockers, the rule compares against a clean baseline:</p>
+<ol>
+<li>Save all changes (staged, unstaged, untracked)</li>
+<li>Reset to <code>HEAD</code>, run tests → baseline failure count</li>
+<li>Restore changes, run tests → current failure count</li>
+<li>Only <strong>new failures</strong> (current minus baseline) block the review</li>
+</ol>
+<blockquote>
+<p><strong>Note:</strong> Pre-existing failures are noted but do not block. If <code>git apply</code> fails, baseline comparison is skipped.</p>
+</blockquote>
+<hr />
+<h2 id="25-documentation-updates">25 — Documentation Updates</h2>
+<p><strong>File:</strong> <code>rules/25-documentation-updates.md</code></p>
+<p>Mandatory documentation check after any code addition, change, or removal.</p>
+<h3 id="update-matrix">Update Matrix</h3>
+<table>
+<thead>
+<tr>
+<th>Change Type</th>
+<th>Files to Check</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New feature/command/tool</td>
+<td><code>README.md</code> (feature table, usage examples)</td>
+</tr>
+<tr>
+<td>New or modified extension module</td>
+<td><code>AGENTS.md</code> (repository structure)</td>
+</tr>
+<tr>
+<td>New agent added/removed</td>
+<td><code>AGENTS.md</code>, <code>rules/10-agent-routing.md</code>, <code>rules/50-agent-bug-reporting.md</code></td>
+</tr>
+<tr>
+<td>New prompt template</td>
+<td><code>README.md</code> (prompt templates table)</td>
+</tr>
+<tr>
+<td>Docker/container changes</td>
+<td><code>README.md</code> (Docker section), <code>Dockerfile</code></td>
+</tr>
+<tr>
+<td>New CLI tool or dependency</td>
+<td><code>README.md</code> (tools table), <code>Dockerfile</code></td>
+</tr>
+<tr>
+<td>Dev workflow changes</td>
+<td><code>DEVELOPMENT.md</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Documentation drift is treated as a bug. This step is never skipped.</p>
+</blockquote>
+<hr />
+<h2 id="30-prompt-templates">30 — Prompt Templates</h2>
+<p><strong>File:</strong> <code>rules/30-prompt-templates.md</code></p>
+<p>Governs how the orchestrator executes slash commands backed by prompt templates (files in <code>prompts/</code>). See <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a> for the full command reference.</p>
+<h3 id="execution-rules">Execution Rules</h3>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Template is authority</td>
+<td>Follow the template's instructions exactly</td>
+</tr>
+<tr>
+<td>Never delegate the command itself</td>
+<td>The orchestrator executes the prompt, not an agent</td>
+</tr>
+<tr>
+<td>Template decides delegation</td>
+<td>If the template says "delegate to X", delegate. Otherwise, follow normal rules.</td>
+</tr>
+<tr>
+<td>Template overrides general rules</td>
+<td>Template instructions take priority over general delegation rules when they conflict</td>
+</tr>
+</tbody>
+</table>
+<h3 id="correct-execution-pattern">Correct Execution Pattern</h3>
+<div class="highlight"><pre><span></span><code># WRONG — delegating the entire command
+/mycommand → subagent(agent=&quot;worker&quot;, task=&quot;/mycommand ...&quot;)
+
+# RIGHT — orchestrator runs the command, delegates sub-tasks
+/mycommand → orchestrator follows prompt → delegates sub-tasks as instructed
+</code></pre></div>
+
+<hr />
+<h2 id="35-memory">35 — Memory</h2>
+<p><strong>File:</strong> <code>rules/35-memory.md</code></p>
+<p>Defines the orchestrator's memory usage obligations. See <a href="memory-system.html">Working with Project Memory</a> for user-facing guidance and <a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a> for implementation details.</p>
+<h3 id="memory-tools">Memory Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Mandatory Usage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>memory_search</code></td>
+<td>Hybrid keyword + vector search</td>
+<td>Before answering questions about prior sessions, preferences, past decisions</td>
+</tr>
+<tr>
+<td><code>memory_reinforce</code></td>
+<td>Bump evidence count, prevent decay</td>
+<td>When a memory is relevant to the current task</td>
+</tr>
+<tr>
+<td><code>memory_add</code></td>
+<td>Write new memory entry</td>
+<td>When learning something worth remembering</td>
+</tr>
+<tr>
+<td><code>memory_remove</code></td>
+<td>Delete outdated entry</td>
+<td>When information is outdated, wrong, or superseded</td>
+</tr>
+<tr>
+<td><code>memory_topics</code></td>
+<td>List topic files with hotness scores</td>
+<td>Inspection and organization</td>
+</tr>
+<tr>
+<td><code>session_search</code></td>
+<td>Search past conversation summaries</td>
+<td>When user references something from a prior session</td>
+</tr>
+</tbody>
+</table>
+<h3 id="memory-categories">Memory Categories</h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Storage File</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preference</code></td>
+<td><code>topics/preferences.md</code></td>
+</tr>
+<tr>
+<td><code>lesson</code></td>
+<td><code>topics/lessons.md</code></td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td><code>topics/patterns.md</code></td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td><code>topics/decisions.md</code></td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td><code>topics/completions.md</code></td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td><code>topics/mistakes.md</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="auto-injection-pipeline">Auto-Injection Pipeline</h3>
+<p>Three mechanisms inject memories automatically — no tool calls needed:</p>
+<ol>
+<li><strong>Situation Report</strong> — token-budgeted summary of scored memories (always present)</li>
+<li><strong>Contextual Memory Recall</strong> — vector similarity search (threshold &gt; 0.65) against the current message</li>
+<li><strong>Session History Recall</strong> — keyword search against past conversation summaries</li>
+</ol>
+<blockquote>
+<p><strong>Note:</strong> Trivial messages ("ok", "thanks", "yes", messages &lt; 6 chars) skip vector and session search.</p>
+</blockquote>
+<h3 id="entry-quality-rules">Entry Quality Rules</h3>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One line only (~100 chars max)</td>
+<td><code>"buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid"</code></td>
+</tr>
+<tr>
+<td>Specific and actionable</td>
+<td><code>"Attach child processes to pi (no detached:true) — kills on exit"</code></td>
+</tr>
+<tr>
+<td>No fluff, no context, no explanation</td>
+<td>❌ <code>"We had issues with buildah and Docker caching and tried several approaches"</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-turn-self-improvement-triggers">Per-Turn Self-Improvement Triggers</h3>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>User corrected you</td>
+<td><code>memory_add(category: "lesson")</code></td>
+</tr>
+<tr>
+<td>Something failed</td>
+<td><code>memory_add(category: "mistake")</code></td>
+</tr>
+<tr>
+<td>User said "don't do X" / "always do Y"</td>
+<td><code>memory_add(category: "preference")</code></td>
+</tr>
+<tr>
+<td>PR merged</td>
+<td><code>memory_add(category: "done")</code></td>
+</tr>
+<tr>
+<td>Non-obvious pattern discovered</td>
+<td><code>memory_add(category: "pattern")</code></td>
+</tr>
+<tr>
+<td>Technical decision made</td>
+<td><code>memory_add(category: "decision")</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="capacity-signal">Capacity Signal</h3>
+<p>The situation report header shows usage:</p>
+<div class="highlight"><pre><span></span><code># Project Memory [72% — 1,224/1,700 tokens]
+</code></pre></div>
+
+<ul>
+<li><strong>Below 80%</strong> — add freely</li>
+<li><strong>Above 80%</strong> — consolidate first (merge related, remove outdated)</li>
+</ul>
+<h3 id="dreaming-background-consolidation">Dreaming (Background Consolidation)</h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trigger</td>
+<td><code>/dream</code> command or session shutdown</td>
+</tr>
+<tr>
+<td>Execution</td>
+<td>Async + fireAndForget (never blocks session)</td>
+</tr>
+<tr>
+<td>Actions</td>
+<td>Extract memories, deduplicate, reorganize, remove stale</td>
+</tr>
+<tr>
+<td>Restriction</td>
+<td>Never removes or modifies <strong>pinned</strong> entries</td>
+</tr>
+</tbody>
+</table>
+<h3 id="skill-creation">Skill Creation</h3>
+<p>Multi-step workflows (3+ steps, trial-and-error, non-obvious commands) are saved as reusable skills via <code>/create-skill &lt;name&gt;</code>. Skills are stored at <code>~/.agents/skills/&lt;name&gt;/SKILL.md</code>.</p>
+<hr />
+<h2 id="40-critical-rules">40 — Critical Rules</h2>
+<p><strong>File:</strong> <code>rules/40-critical-rules.md</code></p>
+<p>Mandatory behavioral constraints enforced across all orchestrator actions. Several of these rules are backed by code-level enforcement in <code>extensions/orchestrator/enforcement.ts</code>.</p>
+<h3 id="questions-are-not-instructions">Questions Are Not Instructions</h3>
+<p>When the user asks a question (contains <code>?</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Allowed</th>
+<th>Forbidden</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Answer the question</td>
+<td>Modify, create, or delete files</td>
+</tr>
+<tr>
+<td>Use read-only commands (<code>read</code>, <code>grep</code>, <code>ls</code>, <code>cat</code>)</td>
+<td>Run state-changing commands (<code>git commit</code>, <code>rm</code>, <code>write</code>)</td>
+</tr>
+<tr>
+<td>Search memory (<code>memory_search</code>)</td>
+<td>Create branches, PRs, issues</td>
+</tr>
+<tr>
+<td>Ask for confirmation before acting</td>
+<td>"Fix" something noticed while answering</td>
+</tr>
+</tbody>
+</table>
+<h3 id="task-focus">Task Focus</h3>
+<p>During multi-step workflows:</p>
+<ul>
+<li>Side questions do <strong>not</strong> end the workflow — answer, then resume</li>
+<li>The workflow completes only when all steps are done (e.g., PR created, issue closed)</li>
+</ul>
+<h3 id="parallel-execution">Parallel Execution</h3>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default mode</td>
+<td>Maximize parallelism — all independent operations in one message</td>
+</tr>
+<tr>
+<td>Sequential only when</td>
+<td>There is a proven dependency between operations</td>
+</tr>
+<tr>
+<td>Async required when</td>
+<td>Task is independent AND does not need immediate result</td>
+</tr>
+<tr>
+<td>Kill unused agents</td>
+<td>Immediately kill async agents whose results are no longer needed</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sync-agent-time-estimates">Sync Agent Time Estimates</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th><code>estimatedSeconds</code> Requirement</th>
+<th>Threshold</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single sync</td>
+<td>Required on top-level params</td>
+<td>Must be &lt; 30s</td>
+</tr>
+<tr>
+<td>Parallel sync</td>
+<td>Required on each task</td>
+<td>Max must be &lt; 30s</td>
+</tr>
+<tr>
+<td>Chain sync</td>
+<td>Required on each step</td>
+<td>Sum must be &lt; 30s</td>
+</tr>
+<tr>
+<td>Async</td>
+<td>Not required</td>
+<td>N/A</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Calls ≥ 30s without <code>async: true</code> are rejected by the tool.</p>
+</blockquote>
+<h3 id="subagent-cwd">Subagent <code>cwd</code></h3>
+<p><strong>Always</strong> pass <code>cwd</code> when delegating to subagents — in all modes (single, parallel, chain, async). Omitting <code>cwd</code> causes enforcement checks to run against the wrong repository.</p>
+<h3 id="multi-pr-multi-branch-work">Multi-PR / Multi-Branch Work</h3>
+<p>When working on multiple PRs or branches simultaneously, <strong>always</strong> use <code>git worktree</code>:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/pr-42<span class="w"> </span>origin/fix/issue-42
+git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/pr-43<span class="w"> </span>origin/feat/issue-43
+</code></pre></div>
+
+<blockquote>
+<p><strong>Warning:</strong> Branch switching in the main worktree corrupts parallel agent work. The <code>use_worktrees</code> project setting enforces this by blocking <code>git checkout</code> and <code>git switch</code>. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>.</p>
+</blockquote>
+<h3 id="user-interaction">User Interaction</h3>
+<p><strong>Always</strong> use the <code>ask_user</code> tool for approvals, selections, and confirmations. Never ask questions via plain text in the response.</p>
+<h3 id="technical-honesty">Technical Honesty</h3>
+<p>When the user proposes an approach:</p>
+<ol>
+<li>Evaluate critically</li>
+<li>Present alternatives with tradeoffs (if they exist)</li>
+<li>Let the user decide</li>
+</ol>
+<h3 id="web-access">Web Access</h3>
+<table>
+<thead>
+<tr>
+<th>Use case</th>
+<th>Tool</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Research and search queries</td>
+<td><code>web_search</code></td>
+</tr>
+<tr>
+<td>Extracting content from URLs, YouTube, GitHub repos</td>
+<td><code>fetch_content</code></td>
+</tr>
+<tr>
+<td>Interactive pages (clicks, forms, screenshots)</td>
+<td><code>agent-browser</code> CLI</td>
+</tr>
+<tr>
+<td>❌ Never use</td>
+<td><code>curl</code> for reading web pages, SearXNG MCP</td>
+</tr>
+</tbody>
+</table>
+<h3 id="external-code-security-audit">External Code Security Audit</h3>
+<p>Before adopting external code from untrusted sources, delegate to <code>security-auditor</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Audit approach</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Git repos</td>
+<td>Clone to <code>/tmp/pi-work/</code>, run <code>security-auditor</code></td>
+</tr>
+<tr>
+<td>Pi skills</td>
+<td>Clone/download source, run <code>security-auditor</code></td>
+</tr>
+<tr>
+<td>PyPI packages</td>
+<td>Clone source repo, check install hooks, scan code</td>
+</tr>
+<tr>
+<td>npm packages</td>
+<td>Download source, check <code>postinstall</code>, scan code</td>
+</tr>
+<tr>
+<td>MCP servers</td>
+<td>Audit server source before adding config</td>
+</tr>
+<tr>
+<td>Docker images</td>
+<td>Inspect Dockerfile, check base image provenance</td>
+</tr>
+<tr>
+<td>Remote scripts (<code>curl \| bash</code>)</td>
+<td><strong>Always block</strong> — download first, audit, then run</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Skip when:</strong> User says "skip audit", source previously approved, or well-known package (e.g., <code>requests</code>, <code>react</code>).</p>
+<h3 id="temp-files">Temp Files</h3>
+<p>All temp files go to <code>/tmp/pi-work/&lt;cwd-basename&gt;/</code>. Never create temp files in the project directory.</p>
+<h3 id="python-execution">Python Execution</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Correct</span>
+uv<span class="w"> </span>run<span class="w"> </span>--with<span class="w"> </span>requests<span class="w"> </span>script.py
+uv<span class="w"> </span>run<span class="w"> </span>--with<span class="w"> </span>requests<span class="w"> </span>--with<span class="w"> </span>pandas<span class="w"> </span>script.py
+
+<span class="c1"># Forbidden</span>
+uv<span class="w"> </span>run<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>requests
+python3<span class="w"> </span>script.py
+pip<span class="w"> </span>install<span class="w"> </span>requests
+</code></pre></div>
+
+<h3 id="external-git-repository-exploration">External Git Repository Exploration</h3>
+<p>Clone to <code>/tmp/pi-work/</code> with <code>--depth 1</code> for shallow clone. Never use <code>fetch_content</code> to browse repository files.</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>https://github.com/org/repo.git<span class="w"> </span>/tmp/pi-work/repo
+</code></pre></div>
+
+<h3 id="code-level-enforcement">Code-Level Enforcement</h3>
+<p>The <code>enforcement.ts</code> module backs several critical rules with <code>tool_call</code> event blocks:</p>
+<table>
+<thead>
+<tr>
+<th>Enforced Rule</th>
+<th>Block Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python/pip restriction</td>
+<td>Direct <code>python3</code> / <code>pip</code> outside <code>uv</code></td>
+</tr>
+<tr>
+<td>Pre-commit restriction</td>
+<td>Direct <code>pre-commit</code> (must use <code>prek</code>)</td>
+</tr>
+<tr>
+<td>Git commit/push</td>
+<td>Outside <code>git-expert</code> agent</td>
+</tr>
+<tr>
+<td>Protected branch commits</td>
+<td>Commit to <code>main</code> or other protected branches</td>
+</tr>
+<tr>
+<td>Protected branch pushes</td>
+<td>Push to protected branches</td>
+</tr>
+<tr>
+<td><code>git add .</code> / <code>git add -A</code></td>
+<td>Blanket staging forbidden — stage specific files</td>
+</tr>
+<tr>
+<td>Staging gitignored files</td>
+<td><code>git check-ignore</code> blocks ignored files</td>
+</tr>
+<tr>
+<td>Git hooks bypass</td>
+<td><code>--no-verify</code> and <code>core.hooksPath=/dev/null</code> forbidden</td>
+</tr>
+<tr>
+<td>Merged branch commits</td>
+<td>Commit to branches with merged PRs</td>
+</tr>
+<tr>
+<td>Remote script execution</td>
+<td><code>curl \| bash</code>, <code>wget \| sh</code>, process substitution patterns</td>
+</tr>
+<tr>
+<td>Repeat command spam</td>
+<td>Same command ≥ 3 times in a row</td>
+</tr>
+<tr>
+<td>Sleep in loops</td>
+<td><code>sleep &gt; 5s</code> inside loops</td>
+</tr>
+<tr>
+<td>Standalone sleep</td>
+<td><code>sleep &gt; 30s</code> outside loops</td>
+</tr>
+<tr>
+<td><code>mktemp</code> location</td>
+<td>Must use <code>/tmp/pi-work/</code> prefix</td>
+</tr>
+<tr>
+<td>Docker/podman in container</td>
+<td>Must use <code>docker-safe</code> wrapper</td>
+</tr>
+<tr>
+<td>Memory writes by specialists</td>
+<td>Only orchestrator can write memories</td>
+</tr>
+<tr>
+<td>Worktree enforcement</td>
+<td><code>git checkout</code>/<code>switch</code> blocked when <code>use_worktrees</code> is enabled</td>
+</tr>
+<tr>
+<td>Dangerous commands</td>
+<td>User confirmation required (via <code>ctx.ui.select</code>)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="45-file-preview">45 — File Preview</h2>
+<p><strong>File:</strong> <code>rules/45-file-preview.md</code></p>
+<p>Serves generated HTML or browser-viewable files via a local HTTP server for user preview.</p>
+<h3 id="server-launch-sequence">Server Launch Sequence</h3>
+<div class="highlight"><pre><span></span><code><span class="nv">HTTPD</span><span class="o">=</span>~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
+<span class="nv">PORT</span><span class="o">=</span><span class="k">$(</span>uv<span class="w"> </span>run<span class="w"> </span>python3<span class="w"> </span><span class="nv">$HTTPD</span><span class="w"> </span>--find-port<span class="k">)</span>
+nohup<span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>python3<span class="w"> </span><span class="nv">$HTTPD</span><span class="w"> </span>--port<span class="w"> </span><span class="nv">$PORT</span><span class="w"> </span>--dir<span class="w"> </span>/path/to/serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>&gt;<span class="w"> </span>/tmp/pi-work/<span class="k">$(</span>basename<span class="w"> </span><span class="nv">$PWD</span><span class="k">)</span>/httpd-<span class="nv">$PORT</span>.log<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">&amp;</span>
+<span class="nb">disown</span>
+sleep<span class="w"> </span><span class="m">0</span>.5
+<span class="k">if</span><span class="w"> </span>!<span class="w"> </span><span class="nb">kill</span><span class="w"> </span>-0<span class="w"> </span><span class="nv">$!</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">  </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;Server failed to start:&quot;</span>
+<span class="w">  </span>cat<span class="w"> </span>/tmp/pi-work/<span class="k">$(</span>basename<span class="w"> </span><span class="nv">$PWD</span><span class="k">)</span>/httpd-<span class="nv">$PORT</span>.log
+<span class="k">fi</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--find-port</code></td>
+<td>Returns a free port number</td>
+</tr>
+<tr>
+<td><code>--port PORT</code></td>
+<td>Port to listen on</td>
+</tr>
+<tr>
+<td><code>--dir PATH</code></td>
+<td>Directory to serve files from</td>
+</tr>
+</tbody>
+</table>
+<p>After launch, the orchestrator tells the user:</p>
+<blockquote>
+<p>File is being served at <code>http://localhost:&lt;port&gt;/&lt;filename&gt;</code> — open this URL in your browser.</p>
+<p><strong>Note:</strong> <code>nohup</code> + <code>disown</code> are required because <code>uv run</code> creates a parent process chain. Without them, bash cleanup kills the <code>uv</code> parent and terminates the server.</p>
+</blockquote>
+<hr />
+<h2 id="50-agent-bug-reporting">50 — Agent Bug Reporting</h2>
+<p><strong>File:</strong> <code>rules/50-agent-bug-reporting.md</code></p>
+<p>Defines the process when the orchestrator discovers a logic flaw in an agent's configuration (files in <code>agents/</code>).</p>
+<h3 id="covered-agents">Covered Agents</h3>
+<p>All 24 agents defined in the <code>agents/</code> directory:</p>
+<p><code>api-documenter</code>, <code>bash-expert</code>, <code>code-reviewer-quality</code>, <code>code-reviewer-guidelines</code>, <code>code-reviewer-security</code>, <code>debugger</code>, <code>docs-fetcher</code>, <code>docker-expert</code>, <code>ts-expert</code>, <code>git-expert</code>, <code>github-expert</code>, <code>go-expert</code>, <code>java-expert</code>, <code>jenkins-expert</code>, <code>kubernetes-expert</code>, <code>planner</code>, <code>python-expert</code>, <code>reviewer</code>, <code>scout</code>, <code>security-auditor</code>, <code>technical-documentation-writer</code>, <code>test-automator</code>, <code>test-runner</code>, <code>worker</code></p>
+<blockquote>
+<p><strong>Note:</strong> Built-in pi agents and agents from other sources are <strong>not</strong> covered.</p>
+</blockquote>
+<h3 id="trigger-conditions">Trigger Conditions</h3>
+<table>
+<thead>
+<tr>
+<th>Trigger</th>
+<th>Not a Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Flawed logic in agent instructions</td>
+<td>Runtime errors (network, missing files)</td>
+</tr>
+<tr>
+<td>Agent producing incorrect results from its config</td>
+<td>External tool failures</td>
+</tr>
+<tr>
+<td>Agent behavior contradicts its purpose</td>
+<td>User code bugs</td>
+</tr>
+<tr>
+<td>Instructions causing systematic errors</td>
+<td>Expected behavior user disagrees with</td>
+</tr>
+</tbody>
+</table>
+<h3 id="workflow_1">Workflow</h3>
+<ol>
+<li>Orchestrator discovers agent logic bug</li>
+<li><strong>Ask user:</strong> "I found a logic bug in [agent]. Do you want me to create a GitHub issue?"</li>
+<li>If yes → delegate to <code>github-expert</code> to create issue in <code>myk-org/pi-config</code></li>
+<li>Continue with original task</li>
+</ol>
+<h3 id="issue-format">Issue Format</h3>
+<ul>
+<li><strong>Title:</strong> <code>bug(agents): [agent-name] - brief description</code></li>
+<li><strong>Repository:</strong> <code>myk-org/pi-config</code></li>
+<li><strong>Body sections:</strong> Agent, Bug Description, Expected Behavior, Actual Behavior, Impact, Suggested Fix, Context</li>
+</ul>
+<hr />
+<h2 id="55-coms-protocol">55 — Coms Protocol</h2>
+<p><strong>File:</strong> <code>rules/55-coms-protocol.md</code></p>
+<p>Inter-agent communication protocol for talking to other pi sessions. See <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a> for setup and usage.</p>
+<h3 id="systems">Systems</h3>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th>Activation</th>
+<th>Tool Prefix</th>
+<th>Transport</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P2P</td>
+<td><code>/coms start</code></td>
+<td><code>coms_</code></td>
+<td>Direct peer-to-peer</td>
+</tr>
+<tr>
+<td>Networked</td>
+<td><code>/coms-net start</code></td>
+<td><code>coms_net_</code></td>
+<td>Hub server relay</td>
+</tr>
+</tbody>
+</table>
+<p>Both systems can be active simultaneously.</p>
+<h3 id="tool-reference">Tool Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>P2P Tool</th>
+<th>Networked Tool</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List peers</td>
+<td><code>coms_list</code></td>
+<td><code>coms_net_list</code></td>
+</tr>
+<tr>
+<td>Send message</td>
+<td><code>coms_send</code></td>
+<td><code>coms_net_send</code></td>
+</tr>
+<tr>
+<td>Poll for response</td>
+<td><code>coms_get</code></td>
+<td><code>coms_net_get</code></td>
+</tr>
+<tr>
+<td>Block until response</td>
+<td><code>coms_await</code></td>
+<td><code>coms_net_await</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="inbound-messages-replying">Inbound Messages (Replying)</h3>
+<p>Inbound messages appear as <code>[from &lt;peer&gt; @ &lt;cwd&gt;] &lt;message&gt;</code>. The orchestrator's assistant text <strong>is</strong> the reply — it is captured automatically by the <code>agent_end</code> hook.</p>
+<div class="highlight"><pre><span></span><code># WRONG — creates a new conversation instead of replying
+Receive inbound → coms_send(peer=&quot;pi-2&quot;, msg=&quot;reply text&quot;)
+
+# RIGHT — assistant text is the reply
+Receive inbound → write answer as normal assistant text
+</code></pre></div>
+
+<h3 id="outbound-messages-initiating">Outbound Messages (Initiating)</h3>
+<div class="highlight"><pre><span></span><code>1. coms_list                          # Find peers
+2. coms_send(peer=&quot;pi-2&quot;, msg=&quot;...&quot;)  # Send question
+3. coms_await                         # Wait for response (ESC to cancel)
+</code></pre></div>
+
+<h3 id="key-rules">Key Rules</h3>
+<ul>
+<li><code>coms_await</code> / <code>coms_net_await</code> are interruptible (user can press ESC)</li>
+<li>Never use send tools to reply to inbound messages</li>
+<li>Always check peers (<code>list</code>) before sending</li>
+<li>When system is unspecified, try both <code>coms_</code> and <code>coms_net_</code></li>
+</ul>
+<hr />
+<h2 id="60-task-tracking">60 — Task Tracking</h2>
+<p><strong>File:</strong> <code>rules/60-task-tracking.md</code></p>
+<p>Mandatory task tracking for multi-step workflows (3+ steps). See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for related async agent management.</p>
+<h3 id="when-to-create-tasks">When to Create Tasks</h3>
+<table>
+<thead>
+<tr>
+<th>Use tasks for</th>
+<th>Skip tasks for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Feature implementation</td>
+<td>Single-step actions</td>
+</tr>
+<tr>
+<td>Bug fixes with multiple files</td>
+<td>Questions or explanations</td>
+</tr>
+<tr>
+<td>Issue-first or code-review workflows</td>
+<td><code>/btw</code> side questions</td>
+</tr>
+<tr>
+<td>Multi-file refactoring</td>
+<td>Trivial fixes (typos)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="task-granularity">Task Granularity</h3>
+<div class="highlight"><pre><span></span><code># BAD — too vague
+- Implement the fix
+- Review code
+- Create PR
+
+# GOOD — specific and actionable
+- Investigate root cause in extensions/orchestrator/utils.ts
+- Create GitHub issue with root cause analysis
+- Create branch fix/issue-N-description from origin/main
+- Edit extensions/orchestrator/utils.ts — add timeout parameter
+- Run code review loop (3 async reviewers)
+- Fix review findings (if any)
+- Run test-automator
+- Commit changes
+- Push branch to origin
+- Create PR with description
+</code></pre></div>
+
+<h3 id="task-lifecycle">Task Lifecycle</h3>
+<ol>
+<li><strong>Create</strong> all tasks via <code>TaskCreate</code> before starting work</li>
+<li><strong>Mark <code>in_progress</code></strong> via <code>TaskUpdate</code> before starting each task</li>
+<li><strong>Mark <code>completed</code></strong> via <code>TaskUpdate</code> immediately after finishing each task</li>
+<li>Work through tasks in order — do not skip</li>
+<li>Do not start new work while unchecked tasks exist (unless user explicitly pivots)</li>
+</ol>
+<h3 id="side-question-handling">Side Question Handling</h3>
+<p>When the user asks a side question while tasks are active:</p>
+<ol>
+<li>Answer the question</li>
+<li>Resume the next unchecked task immediately</li>
+</ol>
+<h3 id="enforcement">Enforcement</h3>
+<p>The extension injects reminders if tasks are ignored for <strong>4+ turns</strong>. Obsolete tasks are removed via <code>TaskUpdate</code> with <code>status: "deleted"</code>.</p>
+<h3 id="integration">Integration</h3>
+<p>Task tracking works alongside other workflow rules:</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Integration</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>05 — Issue-first workflow</td>
+<td>Create tasks for the full issue workflow</td>
+</tr>
+<tr>
+<td>20 — Code review loop</td>
+<td>Include review steps as individual tasks</td>
+</tr>
+<tr>
+<td>25 — Documentation updates</td>
+<td>Include doc updates as tasks when applicable</td>
+</tr>
+</tbody>
+</table>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="agents-reference.html">Specialist Agents Reference</a></li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+<li><a href="command-enforcement.html">Command Safety Guards and Enforcement</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="configuration-reference.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Configuration and Environment Variables Reference</span>
+                </a>
+
+
+                <a href="extension-architecture.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Extension Architecture and Lifecycle Hooks</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#loading-mechanism">Loading Mechanism</a></li>
+<li><a href="#00-orchestrator-core">00 — Orchestrator Core</a><ul>
+<li><a href="#forbidden-actions">Forbidden Actions</a></li>
+<li><a href="#delegation-targets">Delegation Targets</a></li>
+<li><a href="#pre-implementation-checklist">Pre-Implementation Checklist</a></li>
+</ul>
+</li>
+<li><a href="#05-issue-first-workflow">05 — Issue-First Workflow</a><ul>
+<li><a href="#workflow-steps">Workflow Steps</a></li>
+<li><a href="#skip-conditions">Skip Conditions</a></li>
+<li><a href="#branch-naming">Branch Naming</a></li>
+<li><a href="#issue-requirements">Issue Requirements</a></li>
+<li><a href="#edge-cases">Edge Cases</a></li>
+</ul>
+</li>
+<li><a href="#10-agent-routing">10 — Agent Routing</a><ul>
+<li><a href="#routing-table">Routing Table</a></li>
+<li><a href="#routing-principle-intent-over-tool">Routing Principle: Intent over Tool</a></li>
+<li><a href="#documentation-routing">Documentation Routing</a></li>
+</ul>
+</li>
+<li><a href="#15-mcp-launchpad">15 — MCP Launchpad</a><ul>
+<li><a href="#command-reference">Command Reference</a></li>
+<li><a href="#workflow">Workflow</a></li>
+<li><a href="#orchestrator-vs-agent-usage">Orchestrator vs Agent Usage</a></li>
+<li><a href="#troubleshooting-commands">Troubleshooting Commands</a></li>
+</ul>
+</li>
+<li><a href="#20-code-review-loop">20 — Code Review Loop</a><ul>
+<li><a href="#review-agents">Review Agents</a></li>
+<li><a href="#standard-loop-manual-reviews">Standard Loop (Manual Reviews)</a></li>
+<li><a href="#deduplication-criteria">Deduplication Criteria</a></li>
+<li><a href="#staged-review-mode-automated-workflows">Staged Review Mode (Automated Workflows)</a></li>
+<li><a href="#baseline-test-comparison">Baseline Test Comparison</a></li>
+</ul>
+</li>
+<li><a href="#25-documentation-updates">25 — Documentation Updates</a><ul>
+<li><a href="#update-matrix">Update Matrix</a></li>
+</ul>
+</li>
+<li><a href="#30-prompt-templates">30 — Prompt Templates</a><ul>
+<li><a href="#execution-rules">Execution Rules</a></li>
+<li><a href="#correct-execution-pattern">Correct Execution Pattern</a></li>
+</ul>
+</li>
+<li><a href="#35-memory">35 — Memory</a><ul>
+<li><a href="#memory-tools">Memory Tools</a></li>
+<li><a href="#memory-categories">Memory Categories</a></li>
+<li><a href="#auto-injection-pipeline">Auto-Injection Pipeline</a></li>
+<li><a href="#entry-quality-rules">Entry Quality Rules</a></li>
+<li><a href="#per-turn-self-improvement-triggers">Per-Turn Self-Improvement Triggers</a></li>
+<li><a href="#capacity-signal">Capacity Signal</a></li>
+<li><a href="#dreaming-background-consolidation">Dreaming (Background Consolidation)</a></li>
+<li><a href="#skill-creation">Skill Creation</a></li>
+</ul>
+</li>
+<li><a href="#40-critical-rules">40 — Critical Rules</a><ul>
+<li><a href="#questions-are-not-instructions">Questions Are Not Instructions</a></li>
+<li><a href="#task-focus">Task Focus</a></li>
+<li><a href="#parallel-execution">Parallel Execution</a></li>
+<li><a href="#sync-agent-time-estimates">Sync Agent Time Estimates</a></li>
+<li><a href="#subagent-cwd">Subagent cwd</a></li>
+<li><a href="#multi-pr-multi-branch-work">Multi-PR / Multi-Branch Work</a></li>
+<li><a href="#user-interaction">User Interaction</a></li>
+<li><a href="#technical-honesty">Technical Honesty</a></li>
+<li><a href="#web-access">Web Access</a></li>
+<li><a href="#external-code-security-audit">External Code Security Audit</a></li>
+<li><a href="#temp-files">Temp Files</a></li>
+<li><a href="#python-execution">Python Execution</a></li>
+<li><a href="#external-git-repository-exploration">External Git Repository Exploration</a></li>
+<li><a href="#code-level-enforcement">Code-Level Enforcement</a></li>
+</ul>
+</li>
+<li><a href="#45-file-preview">45 — File Preview</a><ul>
+<li><a href="#server-launch-sequence">Server Launch Sequence</a></li>
+</ul>
+</li>
+<li><a href="#50-agent-bug-reporting">50 — Agent Bug Reporting</a><ul>
+<li><a href="#covered-agents">Covered Agents</a></li>
+<li><a href="#trigger-conditions">Trigger Conditions</a></li>
+<li><a href="#workflow_1">Workflow</a></li>
+<li><a href="#issue-format">Issue Format</a></li>
+</ul>
+</li>
+<li><a href="#55-coms-protocol">55 — Coms Protocol</a><ul>
+<li><a href="#systems">Systems</a></li>
+<li><a href="#tool-reference">Tool Reference</a></li>
+<li><a href="#inbound-messages-replying">Inbound Messages (Replying)</a></li>
+<li><a href="#outbound-messages-initiating">Outbound Messages (Initiating)</a></li>
+<li><a href="#key-rules">Key Rules</a></li>
+</ul>
+</li>
+<li><a href="#60-task-tracking">60 — Task Tracking</a><ul>
+<li><a href="#when-to-create-tasks">When to Create Tasks</a></li>
+<li><a href="#task-granularity">Task Granularity</a></li>
+<li><a href="#task-lifecycle">Task Lifecycle</a></li>
+<li><a href="#side-question-handling">Side Question Handling</a></li>
+<li><a href="#enforcement">Enforcement</a></li>
+<li><a href="#integration">Integration</a></li>
+</ul>
+</li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

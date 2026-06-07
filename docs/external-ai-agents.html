@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>pi-config</title>
+    <title>Using External AI Agents (Cursor, Claude, Gemini) - pi-config</title>
     <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -93,7 +93,7 @@
 
                     <li>
                         <a href="external-ai-agents.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Using External AI Agents (Cursor, Claude, Gemini)
                         </a>
                     </li>
@@ -288,293 +288,276 @@
 
         <main class="content">
 
-            <section class="index-header">
-                <h1 class="index-title">pi-config</h1>
-                <p class="index-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="using-external-ai-agents-cursor-claude-gemini">Using External AI Agents (Cursor, Claude, Gemini)</h1>
+<p>Get a second opinion from another AI by routing prompts to Cursor, Claude, or Gemini CLIs directly from your pi session. Use <code>/external-ai</code> for peer reviews, code generation, multi-agent debates, and any task where you want a different model's perspective.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li><strong>AI CLI binaries installed:</strong> At least one of <code>cursor</code> (agent CLI), <code>claude</code>, or <code>gemini</code> must be available on your system and authenticated.</li>
+<li><strong>myk-pi-tools installed:</strong> The CLI that wraps the AI calls. Install with <code>uv tool install myk-pi-tools</code> if not already present.</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>Ask Claude to review your code (read-only by default):</p>
+<div class="highlight"><pre><span></span><code>/external-ai claude review the error handling in this module
+</code></pre></div>
+
+<p>Ask Cursor to fix test failures (with file modification enabled):</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor --fix fix the failing tests
+</code></pre></div>
+
+<p>Run a peer review debate between pi and Gemini:</p>
+<div class="highlight"><pre><span></span><code>/external-ai gemini --peer review this code for correctness and edge cases
+</code></pre></div>
+
+<h2 id="step-by-step-read-only-review">Step-by-Step: Read-Only Review</h2>
+<p>The most common use case is getting a second opinion on code without modifying any files.</p>
+<ol>
+<li><strong>Pick a provider and write your prompt:</strong></li>
+</ol>
+<p><code>/external-ai cursor explain why this function is slow and suggest improvements</code></p>
+<ol>
+<li>
+<p><strong>Pi runs the prompt</strong> through the selected provider's CLI. The agent is explicitly told not to modify any files.</p>
+</li>
+<li>
+<p><strong>View the results.</strong> Pi displays the agent's response along with a usage summary showing tokens consumed, cost, and duration.</p>
+</li>
+</ol>
+<p>That's it. The external agent reads your project files, analyzes them, and reports back — all within your pi session.</p>
+<h2 id="choosing-a-provider-and-model">Choosing a Provider and Model</h2>
+<p>Three providers are supported:</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>CLI Binary</th>
+<th>Default Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cursor</code></td>
+<td><code>agent</code></td>
+<td><code>composer-2-fast</code></td>
+</tr>
+<tr>
+<td><code>claude</code></td>
+<td><code>claude</code></td>
+<td><code>claude-sonnet-4-6</code></td>
+</tr>
+<tr>
+<td><code>gemini</code></td>
+<td><code>gemini</code></td>
+<td><code>gemini-2.5-flash</code></td>
+</tr>
+</tbody>
+</table>
+<p>Override the model with <code>--model</code>:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor --model gpt-5.4-high review the architecture
+</code></pre></div>
+
+<p>Use Tab completion after <code>/external-ai</code> to browse available providers, and after <code>--model</code> to browse available models for each provider. If models seem stale, run <code>/external-ai-models-refresh</code> to update the cache.</p>
+<blockquote>
+<p><strong>Tip:</strong> If you omit the provider name entirely, pi checks your saved config from the last run and asks whether to reuse it.</p>
+</blockquote>
+<h2 id="modes-of-operation">Modes of Operation</h2>
+<h3 id="read-only-default">Read-Only (Default)</h3>
+<p>The external agent can read your files but cannot modify anything. Use this for reviews, explanations, and analysis.</p>
+<div class="highlight"><pre><span></span><code>/external-ai gemini explain the authentication flow in this project
+</code></pre></div>
+
+<h3 id="fix-mode-fix">Fix Mode (<code>--fix</code>)</h3>
+<p>Enable file modifications so the agent can directly edit your code.</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor --fix fix the code quality issues
+</code></pre></div>
+
+<p>Before running in fix mode, pi checks your Git workspace state and offers to create a checkpoint commit so you can easily roll back. After the agent finishes, pi shows a diff summary of all changes made.</p>
+<h3 id="peer-review-mode-peer">Peer Review Mode (<code>--peer</code>)</h3>
+<p>Start an AI-to-AI debate loop where the external agent reviews your code and pi acts on the findings — fixing agreed issues, pushing back on disagreements, and sending changes back for re-review until both sides converge.</p>
+<div class="highlight"><pre><span></span><code>/external-ai claude --peer review this module for bugs and design issues
+</code></pre></div>
+
+<p>The loop works like this:</p>
+<ol>
+<li>The external agent reviews the code and reports findings.</li>
+<li>Pi evaluates each finding — fixing valid issues and preparing counter-arguments for disagreements.</li>
+<li>Pi sends the fixes and counter-arguments back to the external agent.</li>
+<li>The agent re-reviews, confirms fixes, and raises new issues or concedes points.</li>
+<li>Steps 2–4 repeat until the agent reports no remaining issues.</li>
+</ol>
+<blockquote>
+<p><strong>Note:</strong> Only the peer agent can end the loop. Pi fixing code doesn't count as convergence — the agent must verify the fixes are correct.</p>
+</blockquote>
+<p>After convergence, pi displays a structured summary showing addressed findings, agreements reached after debate, unresolved disagreements, and per-round usage/cost tracking.</p>
+<h3 id="multi-agent-reviews">Multi-Agent Reviews</h3>
+<p>Specify multiple providers separated by commas:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor,claude review this code
+</code></pre></div>
+
+<p>Both agents run in parallel and their findings are collected. In peer mode, each agent gets full visibility into what the others said (group context), enabling a true multi-agent discussion:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor,gemini --peer review the error handling strategy
+</code></pre></div>
+
+<h2 id="session-management">Session Management</h2>
+<p>By default, each <code>/external-ai</code> call starts a fresh conversation. Use <code>--resume</code> to continue where you left off:</p>
+<div class="highlight"><pre><span></span><code>/external-ai claude --resume what about the edge cases we discussed?
+</code></pre></div>
+
+<p>For precise session targeting, use <code>--session-id</code>:</p>
+<div class="highlight"><pre><span></span><code>/external-ai claude --session-id abc123 continue reviewing the auth module
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(none)</em></td>
+<td>Fresh session each time</td>
+</tr>
+<tr>
+<td><code>--resume</code></td>
+<td>Continue the most recent session</td>
+</tr>
+<tr>
+<td><code>--session-id &lt;id&gt;</code></td>
+<td>Resume a specific session by ID</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> <code>--resume</code> and <code>--peer</code> cannot be combined — peer mode manages sessions automatically across rounds.</p>
+</blockquote>
+<h2 id="combining-flags">Combining Flags</h2>
+<p>Flags can be combined where it makes sense:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor --model gpt-5.4-high --fix fix the code
+/external-ai cursor --fix --resume continue fixing from where we left off
+</code></pre></div>
+
+<p>These combinations are <strong>not allowed:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Combination</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--fix</code> + <code>--peer</code></td>
+<td>Mutually exclusive modes</td>
+</tr>
+<tr>
+<td><code>--resume</code> + <code>--peer</code></td>
+<td>Peer mode manages sessions automatically</td>
+</tr>
+<tr>
+<td><code>--fix</code> + multiple agents</td>
+<td>Fix mode only works with a single agent</td>
+</tr>
+</tbody>
+</table>
+<h2 id="saved-configuration">Saved Configuration</h2>
+<p>After each successful run, pi saves your provider and model choices to <code>.pi/external-ai-config.json</code>. Next time you run <code>/external-ai</code> without specifying a provider, pi offers to reuse your last selection:</p>
+<div class="highlight"><pre><span></span><code>/external-ai review this code
+</code></pre></div>
+
+<p>Pi will prompt: <em>"Last used: cursor. Use this?"</em> with options to accept, change, or cancel.</p>
+<p>Peer mode saves its own config separately, so <code>/external-ai --peer review this</code> remembers your last peer providers independently.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="passing-extra-cli-flags">Passing Extra CLI Flags</h3>
+<p>Send additional flags directly to the underlying AI CLI binary with <code>--cli-flags</code>:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor --cli-flags=--trust review the security model
+</code></pre></div>
+
+<p>This is useful for provider-specific options that aren't exposed through <code>/external-ai</code> directly.</p>
+<h3 id="using-custom-models-for-multi-agent-peer-reviews">Using Custom Models for Multi-Agent Peer Reviews</h3>
+<p>When running multi-agent peer reviews, you can specify different models for each provider using <code>--model</code>:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor --model gpt-5.4-high --peer review the architecture
+</code></pre></div>
+
+<p>The usage summary at the end breaks down token usage and cost per provider, per round, and in aggregate — so you can see exactly what each agent contributed.</p>
+<h3 id="agentsmd-aware-reviews">AGENTS.md-Aware Reviews</h3>
+<p>If your project has an <code>AGENTS.md</code> file with coding conventions and guidelines, the peer review framing automatically instructs the external agent to read it and flag any violations. No extra configuration needed.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>"Unknown provider" error</strong>
+Only <code>cursor</code>, <code>claude</code>, and <code>gemini</code> are supported by <code>/external-ai</code>. For other AI agents (codex, copilot, droid, kiro, etc.), use the <code>/acpx-prompt</code> command instead.</p>
+<p><strong>Agent tries to modify files in read-only mode</strong>
+Pi automatically retries with a stricter read-only instruction. If it fails twice, the error is shown. Consider using <code>--fix</code> if you actually want modifications.</p>
+<p><strong>"myk-pi-tools not found"</strong>
+Install it with <code>uv tool install myk-pi-tools</code>. See <a href="quickstart.html">Installing and Starting Your First Session</a> for full setup instructions.</p>
+<p><strong>Model autocomplete not showing results</strong>
+Run <code>/external-ai-models-refresh</code> to rebuild the model cache. The cache refreshes automatically every 5 minutes, but a manual refresh is useful after installing a new CLI or updating provider credentials.</p>
+<p><strong>Long-running prompts</strong>
+External agents can take several minutes for complex tasks (reading many files, multi-step tool calls). There is no timeout — the command runs until the agent finishes. This is by design.</p>
+<p>For the full list of flags and argument syntax, see <a href="commands-reference.html">Slash Commands and Extension Commands Reference</a>. For CLI details on the underlying <code>myk-pi-tools ai-cli</code> subcommands, see <a href="cli-reference.html">myk-pi-tools CLI Reference</a>.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="acpx-provider.html">Using ACPX Provider for External Agent Models</a></li>
+<li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
+<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
+<li><a href="cli-reference.html">myk-pi-tools CLI Reference</a></li>
+<li><a href="workflow-recipes.html">Common Workflow Recipes</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="inter-agent-communication.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Communicating Between Pi Sessions</span>
+                </a>
 
 
+                <a href="docker-deployment.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Running Pi in a Docker Container</span>
+                </a>
 
+            </nav>
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                <a href="quickstart.html" class="index-cta">Get Started →</a>
-
-            </section>
-
-            <section class="card-grid">
-
-                <div class="card">
-                    <h3 class="card-title">Getting Started</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="quickstart.html">Installing and Starting Your First Session</a>
-
-                            <p class="card-page-desc">Install pi-config via Docker container or the native installer script, configure prerequisites (GitHub CLI, API keys), and run your first pi session with the orchestrator</p>
-
-                        </li>
-
-                        <li>
-                            <a href="first-workflow.html">Your First Coding Workflow</a>
-
-                            <p class="card-page-desc">Walk through a complete feature implementation: ask pi to make a change, watch the orchestrator delegate to specialist agents, go through the code review loop, and create a PR</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="quickstart.html" class="card-link">Explore →</a>
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step-read-only-review">Step-by-Step: Read-Only Review</a></li>
+<li><a href="#choosing-a-provider-and-model">Choosing a Provider and Model</a></li>
+<li><a href="#modes-of-operation">Modes of Operation</a><ul>
+<li><a href="#read-only-default">Read-Only (Default)</a></li>
+<li><a href="#fix-mode-fix">Fix Mode (--fix)</a></li>
+<li><a href="#peer-review-mode-peer">Peer Review Mode (--peer)</a></li>
+<li><a href="#multi-agent-reviews">Multi-Agent Reviews</a></li>
+</ul>
+</li>
+<li><a href="#session-management">Session Management</a></li>
+<li><a href="#combining-flags">Combining Flags</a></li>
+<li><a href="#saved-configuration">Saved Configuration</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#passing-extra-cli-flags">Passing Extra CLI Flags</a></li>
+<li><a href="#using-custom-models-for-multi-agent-peer-reviews">Using Custom Models for Multi-Agent Peer Reviews</a></li>
+<li><a href="#agentsmd-aware-reviews">AGENTS.md-Aware Reviews</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
 
                 </div>
+            </aside>
 
-                <div class="card">
-                    <h3 class="card-title">User Guides</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="agent-routing.html">Understanding Agent Routing and Delegation</a>
-
-                            <p class="card-page-desc">Learn how the orchestrator automatically routes tasks to the right specialist agent (python-expert, git-expert, github-expert, etc.) and when to override routing</p>
-
-                        </li>
-
-                        <li>
-                            <a href="code-review-loop.html">Running the Automated Code Review Loop</a>
-
-                            <p class="card-page-desc">Use the 3-reviewer parallel code review system (quality, guidelines, security), handle review findings, and iterate until all reviewers approve</p>
-
-                        </li>
-
-                        <li>
-                            <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a>
-
-                            <p class="card-page-desc">Master the built-in slash commands (/implement, /pr-review, /review-local, /release, /external-ai, /scout-and-plan, /btw, /status) and understand how prompt templates work</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-system.html">Working with Project Memory</a>
-
-                            <p class="card-page-desc">Use the scored memory system to teach pi your preferences, lessons learned, and project conventions — including memory tools, dreaming consolidation, auto-extraction, and capacity management</p>
-
-                        </li>
-
-                        <li>
-                            <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>
-
-                            <p class="card-page-desc">Spawn async agents for long-running tasks, monitor their status with /async-status, set up recurring tasks with /cron, and understand fire-and-forget vs tracked agents</p>
-
-                        </li>
-
-                        <li>
-                            <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a>
-
-                            <p class="card-page-desc">Set up P2P (/coms) and networked (/coms-net) communication between multiple pi sessions for collaborative multi-agent workflows</p>
-
-                        </li>
-
-                        <li>
-                            <a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a>
-
-                            <p class="card-page-desc">Route prompts to external AI CLIs via /external-ai for peer reviews, code generation, and multi-agent debates using ai-cli-runner</p>
-
-                        </li>
-
-                        <li>
-                            <a href="docker-deployment.html">Running Pi in a Docker Container</a>
-
-                            <p class="card-page-desc">Deploy pi-config in a sandboxed Docker container with proper volume mounts, environment variables, host user mapping, and Docker socket access</p>
-
-                        </li>
-
-                        <li>
-                            <a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a>
-
-                            <p class="card-page-desc">Launch the pidash web dashboard to monitor sessions from a browser and use pidiff to view diffs with review comments in a rich UI</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="agent-routing.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Recipes</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="workflow-recipes.html">Common Workflow Recipes</a>
-
-                            <p class="card-page-desc">Copy-paste patterns for PR reviews, GitHub releases, review handling (autorabbit/autoqodo), implementing with review, scouting and planning, querying the review database, and refining pending reviews</p>
-
-                        </li>
-
-                        <li>
-                            <a href="customization-recipes.html">Customization and Extension Recipes</a>
-
-                            <p class="card-page-desc">Add a new specialist agent, create custom prompt templates, write reusable skills with /create-skill, configure project settings (.pi/pi-config-settings.json), and set up MCP servers via mcpl</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="workflow-recipes.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Reference</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="agents-reference.html">Specialist Agents Reference</a>
-
-                            <p class="card-page-desc">Complete list of all 24 specialist agents with their names, descriptions, tools, model overrides, and when each is invoked</p>
-
-                        </li>
-
-                        <li>
-                            <a href="commands-reference.html">Slash Commands and Extension Commands Reference</a>
-
-                            <p class="card-page-desc">Full reference for all slash commands (/implement, /pr-review, /release, /review-handler, /external-ai, /btw, /status, /cron, /dream, /coms, /pidash, /pidiff, /repair) with arguments and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="cli-reference.html">myk-pi-tools CLI Reference</a>
-
-                            <p class="card-page-desc">Complete reference for the myk-pi-tools Python CLI: memory, pr, release, reviews, db, coderabbit, and ai-cli subcommands with all flags and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>
-
-                            <p class="card-page-desc">All configuration options: pi-config-settings.json fields, environment variables (PI_CO_AUTHOR, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, ACPX_AGENTS, GEMINI_API_KEY), rules loading order, and .coderabbit.yaml setup</p>
-
-                        </li>
-
-                        <li>
-                            <a href="rules-reference.html">Orchestrator Rules Reference</a>
-
-                            <p class="card-page-desc">Reference for all 13 orchestrator rules (00-60): core behavior, issue-first workflow, agent routing, MCP launchpad, code review loop, documentation updates, prompt templates, memory, critical rules, file preview, bug reporting, coms protocol, and task tracking</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="agents-reference.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Internals</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a>
-
-                            <p class="card-page-desc">How the orchestrator extension registers tools, commands, and event hooks (session_start, before_agent_start, turn_end, input) — essential knowledge for writing new extensions or modifying existing ones</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a>
-
-                            <p class="card-page-desc">Deep dive into the stability-based scoring formula, vector embeddings (bge-small-en-v1.5), topic tree organization, situation report budget allocation, and the auto-injection pipeline</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="extension-architecture.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Guides</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="acpx-provider.html">Using ACPX Provider for External Agent Models</a>
-
-                            <p class="card-page-desc">How to configure and use the ACPX provider extension to route pi&#39;s LLM requests through external agents (Cursor, Claude, Gemini, Copilot). Covers ACPX_AGENTS configuration, model discovery, session management, and how ACPX provider differs from /external-ai. Includes setup prerequisites (acpx runtime), available models per agent, and troubleshooting.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="discord-bot.html">Controlling Pi Sessions from Discord</a>
-
-                            <p class="card-page-desc">Set up and use the Discord bot built into the pidash server to remotely control pi sessions. Covers DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS configuration, slash commands (/sessions, /status, /prompt, /stop), watching sessions, sending prompts and images via DM, receiving real-time output and ask_user prompts, and security considerations for allowed users.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="neovim-integration.html">Neovim Integration and Quickfix Support</a>
-
-                            <p class="card-page-desc">Using pi inside Neovim terminal: automatic detection via NVIM environment variable, /nvim-changed-files command to send git changed files to the quickfix list, how pi communicates with the parent Neovim instance via RPC, and quickfix workflow for navigating review findings or changed files.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="image-generation.html">Generating Images with the generate_image Tool</a>
-
-                            <p class="card-page-desc">How to use pi&#39;s generate_image tool powered by the Gemini API. Covers setup (PI_IMAGE_MODEL and GEMINI_API_KEY environment variables), available parameters (subject, action, scene, composition, lighting, style, text, aspect_ratio), supported aspect ratios, automatic HTTP preview server in containers, and example prompts for different image styles.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="acpx-provider.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Concepts</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="command-enforcement.html">Command Safety Guards and Enforcement</a>
-
-                            <p class="card-page-desc">How pi&#39;s enforcement system protects your environment: blocked commands (direct python/pip, git add ., remote script piping), git branch protection (protected branches, merged branch detection, detached HEAD), dangerous command confirmation prompts, repeat command detection, worktree enforcement, docker-safe wrapper in containers, and memory write restrictions for subagents. What to do when a command is blocked and how to work with the guardrails.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="command-enforcement.html" class="card-link">Explore →</a>
-
-                </div>
-
-            </section>
-
-            <div class="llm-docs-banner">
-                <div class="llm-docs-icon">🤖</div>
-                <div class="llm-docs-content">
-                    <strong>AI-friendly documentation</strong>
-                    <p>This documentation is optimized for AI consumption.</p>
-                    <div class="llm-docs-links">
-                        <a href="llms.txt">llms.txt</a> — structured index
-                        <span class="llm-docs-sep">·</span>
-                        <a href="llms-full.txt">llms-full.txt</a> — complete docs in one file
-                    </div>
-                </div>
-            </div>
 
         </main>
 

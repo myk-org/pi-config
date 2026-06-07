@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Command Safety Guards and Enforcement - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agent-routing.html"
+                           class="nav-link">
+                            Understanding Agent Routing and Delegation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="code-review-loop.html"
+                           class="nav-link">
+                            Running the Automated Code Review Loop
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link">
+                            Using Slash Commands and Prompt Templates
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-system.html"
+                           class="nav-link">
+                            Working with Project Memory
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Communicating Between Pi Sessions
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk-pi-tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration-reference.html"
+                           class="nav-link">
+                            Configuration and Environment Variables Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-reference.html"
+                           class="nav-link">
+                            Orchestrator Rules Reference
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-architecture.html"
+                           class="nav-link">
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link active" aria-current="page">
+                            Command Safety Guards and Enforcement
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="command-safety-guards-and-enforcement">Command Safety Guards and Enforcement</h1>
+<p>Pi's enforcement system intercepts every <code>bash</code> tool call before execution, applying a layered set of safety guards that protect your environment from accidental damage, security risks, and workflow anti-patterns. Whether you're running pi in a container or natively, these guards prevent common mistakes — staging the wrong files, committing to protected branches, executing remote scripts, or running destructive commands without confirmation.</p>
+<p>Understanding these guardrails helps you work <em>with</em> the system rather than against it. When a command is blocked, pi tells you exactly why and what to do instead.</p>
+<h2 id="how-enforcement-works">How Enforcement Works</h2>
+<p>The enforcement system is registered as a <code>tool_call</code> event handler in the orchestrator extension. Every time pi (or a specialist agent) attempts to run a bash command, the handler inspects the command string and either:</p>
+<ul>
+<li><strong>Allows</strong> it — execution proceeds normally</li>
+<li><strong>Blocks</strong> it — returns an error message explaining why and what to do instead</li>
+<li><strong>Prompts for confirmation</strong> — asks the user before proceeding (dangerous commands only)</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>What Happens</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. Command intercepted</td>
+<td><code>tool_call</code> event fires for every <code>bash</code> invocation</td>
+<td><code>git add .</code></td>
+</tr>
+<tr>
+<td>2. Guards evaluated</td>
+<td>Each guard checks the command in order</td>
+<td>"Does this match <code>git add .</code>?" → Yes</td>
+</tr>
+<tr>
+<td>3. Decision returned</td>
+<td>Block with reason, prompt user, or allow</td>
+<td><code>⛔ 'git add .' forbidden. Stage specific files.</code></td>
+</tr>
+<tr>
+<td>4. Agent sees result</td>
+<td>The blocked command's reason appears as the tool result</td>
+<td>Agent retries with <code>git add src/file.ts</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Enforcement applies to <strong>all</strong> agents — both the orchestrator and specialist subagents. Some guards are scoped to specific contexts (container-only, orchestrator-only, specialist-only).</p>
+</blockquote>
+<h2 id="blocked-commands">Blocked Commands</h2>
+<h3 id="python-and-pip-direct-execution">Python and pip (Direct Execution)</h3>
+<p>Pi requires all Python execution to go through <code>uv</code>, which provides isolated, reproducible environments.</p>
+<table>
+<thead>
+<tr>
+<th>Blocked</th>
+<th>Use Instead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>python script.py</code></td>
+<td><code>uv run script.py</code></td>
+</tr>
+<tr>
+<td><code>python3 -c "..."</code></td>
+<td><code>uv run python3 -c "..."</code></td>
+</tr>
+<tr>
+<td><code>pip install requests</code></td>
+<td><code>uv add requests</code></td>
+</tr>
+<tr>
+<td><code>pip3 install -r requirements.txt</code></td>
+<td><code>uv sync</code></td>
+</tr>
+<tr>
+<td><code>pre-commit run --all-files</code></td>
+<td><code>prek run --all-files</code></td>
+</tr>
+</tbody>
+</table>
+<p>Commands that already start with <code>uv</code> or <code>uvx</code> are allowed through. The check also catches piped variants like <code>something | python3</code>.</p>
+<h3 id="remote-script-execution">Remote Script Execution</h3>
+<p>Pi blocks all patterns that pipe downloaded content directly into a shell or interpreter. This prevents supply-chain attacks from untrusted sources.</p>
+<p><strong>Blocked patterns:</strong></p>
+<ul>
+<li><strong>Pipe to shell:</strong> <code>curl https://example.com/install.sh | bash</code></li>
+<li><strong>Pipe to interpreter:</strong> <code>wget https://example.com/setup.py | python3</code></li>
+<li><strong>Process substitution:</strong> <code>bash &lt;(curl https://example.com/install.sh)</code></li>
+<li><strong>Command substitution:</strong> <code>sh -c "$(curl https://example.com/install.sh)"</code></li>
+<li><strong>Eval:</strong> <code>eval $(curl https://example.com/script.sh)</code></li>
+<li><strong>Backtick substitution:</strong> <code>`curl https://example.com/script.sh`</code></li>
+</ul>
+<p><strong>What to do instead:</strong> Download the script first, audit it with the <code>security-auditor</code> agent, then run it if safe:</p>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-o<span class="w"> </span>/tmp/pi-work/myproject/install.sh<span class="w"> </span>https://example.com/install.sh
+<span class="c1"># Security audit happens here</span>
+bash<span class="w"> </span>/tmp/pi-work/myproject/install.sh
+</code></pre></div>
+
+<blockquote>
+<p><strong>Tip:</strong> Content inside heredocs (<code>&lt;&lt; 'EOF' ... EOF</code>) is stripped before the remote execution check. So documentation examples containing <code>curl | bash</code> won't trigger false positives.</p>
+</blockquote>
+<h3 id="sleep-and-polling-loops">Sleep and Polling Loops</h3>
+<p>Pi blocks patterns that would tie up the session for extended periods:</p>
+<table>
+<thead>
+<tr>
+<th>Blocked Pattern</th>
+<th>Threshold</th>
+<th>Alternative</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sleep N</code> (standalone)</td>
+<td>N &gt; 30 seconds</td>
+<td>Use a subagent with <code>async: true</code></td>
+</tr>
+<tr>
+<td><code>while ... sleep N ... done</code></td>
+<td>N &gt; 5 seconds</td>
+<td>Use a subagent with <code>async: true</code></td>
+</tr>
+</tbody>
+</table>
+<p>These guards prevent the LLM from implementing naive polling loops that block the entire session. Long-running monitoring belongs in async background agents.</p>
+<h3 id="temp-file-location">Temp File Location</h3>
+<p>All temp files must use the <code>/tmp/pi-work/&lt;project&gt;/</code> prefix (where <code>&lt;project&gt;</code> is the basename of the current working directory). Bare <code>mktemp</code> calls without this prefix are blocked:</p>
+<table>
+<thead>
+<tr>
+<th>Blocked</th>
+<th>Use Instead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mktemp /tmp/XXXXXX</code></td>
+<td><code>mktemp /tmp/pi-work/$(basename $PWD)/XXXXXX</code></td>
+</tr>
+</tbody>
+</table>
+<p>This ensures temp files are organized by project and persist correctly across container restarts when <code>/tmp/pi-work</code> is mounted from the host.</p>
+<h2 id="git-branch-protection">Git Branch Protection</h2>
+<p>Pi enforces a branching workflow that prevents accidental commits to protected branches. Protection checks run against the <strong>effective working directory</strong> — if a command starts with <code>cd /path &amp;&amp; git ...</code> or uses <code>git -C /path</code>, the guard resolves the correct repo.</p>
+<h3 id="protected-branch-detection">Protected Branch Detection</h3>
+<p>Pi determines protected branches in this order:</p>
+<ol>
+<li><strong>GitHub API</strong> — queries <code>gh api repos/{owner}/{repo}/branches</code> for branches with <code>protected: true</code></li>
+<li><strong>Fallback</strong> — always includes <code>main</code> and <code>master</code> regardless of API results</li>
+<li><strong>Cache</strong> — results are cached per repository for the session lifetime (one API call per repo)</li>
+</ol>
+<h3 id="whats-protected">What's Protected</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Guard</th>
+<th>Error Message</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Commit on protected branch</td>
+<td>Blocked</td>
+<td><code>⛔ Cannot commit to 'main' (protected). Create a feature branch.</code></td>
+</tr>
+<tr>
+<td>Push to protected branch</td>
+<td>Blocked</td>
+<td><code>⛔ Cannot push to 'main' (protected). Create a feature branch.</code></td>
+</tr>
+<tr>
+<td>Push explicitly naming a protected branch</td>
+<td>Blocked</td>
+<td><code>⛔ Cannot push to 'main' (protected). Create a feature branch.</code></td>
+</tr>
+<tr>
+<td>Commit in detached HEAD</td>
+<td>Blocked</td>
+<td><code>⛔ Detached HEAD. Create a branch first: git checkout -b my-branch</code></td>
+</tr>
+<tr>
+<td>Commit on already-merged branch</td>
+<td>Blocked</td>
+<td><code>⛔ Branch 'my-feature' already merged into 'main'. Create a new branch.</code></td>
+</tr>
+<tr>
+<td>Commit on branch with merged PR</td>
+<td>Blocked</td>
+<td><code>⛔ PR #42 for 'my-feature' already merged. Create a new branch from main.</code></td>
+</tr>
+<tr>
+<td>Push on already-merged branch</td>
+<td>Blocked</td>
+<td><code>⛔ Branch 'my-feature' already merged into 'main'. Create a new branch.</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> When you combine <code>git checkout</code> and <code>git commit</code> in a single bash call (e.g., <code>git checkout -b feature &amp;&amp; git commit -m "init"</code>), the branch check runs <em>before</em> execution. Split them into separate bash calls so the checkout happens first.</p>
+</blockquote>
+<h3 id="git-staging-guards">Git Staging Guards</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Guard</th>
+<th>Error Message</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>git add .</code> or <code>git add -A</code> or <code>git add --all</code></td>
+<td>Blocked</td>
+<td><code>⛔ 'git add .' / 'git add -A' forbidden. Stage specific files.</code></td>
+</tr>
+<tr>
+<td><code>git add &lt;gitignored-file&gt;</code></td>
+<td>Blocked</td>
+<td><code>⛔ '&lt;file&gt;' is in .gitignore. Do not stage ignored files.</code></td>
+</tr>
+</tbody>
+</table>
+<p>Staging guards force explicit, intentional file selection. This prevents accidentally committing build artifacts, secrets, or other ignored files.</p>
+<h3 id="git-hook-bypass-prevention">Git Hook Bypass Prevention</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Guard</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>git commit --no-verify</code></td>
+<td>Blocked — pre-commit hooks must run</td>
+</tr>
+<tr>
+<td><code>core.hooksPath=/dev/null</code></td>
+<td>Blocked — hook bypass is forbidden</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent-restricted-git-operations">Agent-Restricted Git Operations</h3>
+<p>Git <code>commit</code> and <code>push</code> commands are only allowed from the <code>git-expert</code> agent. If any other agent attempts these operations, the command is blocked with a message to delegate to <code>git-expert</code>.</p>
+<h2 id="worktree-enforcement">Worktree Enforcement</h2>
+<p>When the <code>use_worktrees</code> project setting is enabled (via <code>.pi/pi-config-settings.json</code> or <code>PI_USE_WORKTREES</code> env var), pi blocks branch switching entirely:</p>
+<table>
+<thead>
+<tr>
+<th>Blocked Command</th>
+<th>What to Do Instead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>git checkout &lt;branch&gt;</code></td>
+<td><code>git worktree add .worktrees/&lt;name&gt; -b &lt;branch&gt; main</code></td>
+</tr>
+<tr>
+<td><code>git switch &lt;branch&gt;</code></td>
+<td><code>git worktree add .worktrees/&lt;name&gt; -b &lt;branch&gt; main</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> <code>git checkout -- &lt;file&gt;</code> (restoring file contents, note the <code>--</code>) is still allowed — only branch-switching checkouts are blocked.</p>
+</blockquote>
+<p>This setting is essential for multi-PR workflows where parallel agents work in the same repository. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for how to enable it.</p>
+<h2 id="dangerous-command-confirmation">Dangerous Command Confirmation</h2>
+<p>Some commands are too risky to block outright but require explicit user approval. When pi detects a dangerous command, it presents a confirmation prompt:</p>
+<div class="highlight"><pre><span></span><code>⚠️ Dangerous command:
+
+  rm -rf /tmp/pi-work/old-project
+
+Allow? [Yes / No]
+</code></pre></div>
+
+<p><strong>Commands that trigger confirmation:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rm -rf</code> or <code>rm -r</code></td>
+<td><code>rm -rf build/</code>, <code>rm -r node_modules/</code></td>
+</tr>
+<tr>
+<td><code>sudo</code></td>
+<td><code>sudo apt install ...</code></td>
+</tr>
+<tr>
+<td><code>chmod 777</code> or <code>chown 777</code></td>
+<td><code>chmod 777 script.sh</code></td>
+</tr>
+<tr>
+<td><code>mkfs</code></td>
+<td><code>mkfs.ext4 /dev/sda1</code></td>
+</tr>
+<tr>
+<td><code>dd ... of=/dev/</code></td>
+<td><code>dd if=/dev/zero of=/dev/sda</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> If pi is running without a UI (e.g., in <code>json</code> or <code>print</code> mode), dangerous commands are <strong>blocked entirely</strong> rather than prompted — there's no way to ask for confirmation.</p>
+</blockquote>
+<h2 id="repeat-command-detection">Repeat Command Detection</h2>
+<p>The orchestrator tracks consecutive identical bash commands to prevent polling-by-spam — where the LLM runs the same command over and over hoping for a different result.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Each command is normalized (leading <code>cd ... &amp;&amp;</code> prefixes stripped, whitespace collapsed)</li>
+<li>The normalized command is compared against the last command via a per-process temp file</li>
+<li>On the 3rd consecutive identical execution, the command is blocked</li>
+</ol>
+<p><strong>Block message:</strong> <code>⛔ Same command executed 3 times in a row. Use a subagent with async: true for polling/monitoring instead of repeating the command.</code></p>
+<blockquote>
+<p><strong>Note:</strong> Repeat detection only applies to the <strong>orchestrator</strong>. Specialist subagents (which set <code>PI_SUBAGENT_CHILD=1</code>) are exempt, since they may legitimately retry commands.</p>
+</blockquote>
+<h2 id="docker-safe-wrapper-container-only">Docker-Safe Wrapper (Container Only)</h2>
+<p>When pi runs inside a Docker or Podman container, direct <code>docker</code> and <code>podman</code> CLI commands are blocked. Instead, pi provides the <code>docker-safe</code> wrapper script that only allows <strong>read-only inspection commands</strong>.</p>
+<p><strong>Allowed commands through <code>docker-safe</code>:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>docker-safe ps</code></td>
+<td>List containers</td>
+</tr>
+<tr>
+<td><code>docker-safe logs</code></td>
+<td>View container logs</td>
+</tr>
+<tr>
+<td><code>docker-safe inspect</code></td>
+<td>Inspect container or image metadata</td>
+</tr>
+<tr>
+<td><code>docker-safe top</code></td>
+<td>Display running processes in a container</td>
+</tr>
+<tr>
+<td><code>docker-safe stats</code></td>
+<td>Show resource usage statistics</td>
+</tr>
+<tr>
+<td><code>docker-safe port</code></td>
+<td>List port mappings</td>
+</tr>
+<tr>
+<td><code>docker-safe diff</code></td>
+<td>Show filesystem changes in a container</td>
+</tr>
+<tr>
+<td><code>docker-safe images</code></td>
+<td>List images</td>
+</tr>
+<tr>
+<td><code>docker-safe version</code></td>
+<td>Show Docker/Podman version</td>
+</tr>
+<tr>
+<td><code>docker-safe info</code></td>
+<td>Show system-wide information</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Everything else</strong> (<code>exec</code>, <code>run</code>, <code>rm</code>, <code>cp</code>, <code>build</code>, etc.) is blocked.</p>
+<p>To use Podman instead of Docker, pass <code>--runtime podman</code> or set <code>DOCKER_SAFE_RUNTIME=podman</code>.</p>
+<blockquote>
+<p><strong>Tip:</strong> Container detection uses filesystem checks (<code>/.dockerenv</code>, <code>/run/.containerenv</code>) and cgroup inspection. This guard only activates when pi detects it's running inside a container.</p>
+</blockquote>
+<h2 id="memory-write-restrictions-for-subagents">Memory Write Restrictions for Subagents</h2>
+<p>Specialist agents cannot modify pi's memory system. Any <code>myk-pi-tools memory add</code> or <code>myk-pi-tools memory delete</code> command from a subagent is blocked:</p>
+<div class="highlight"><pre><span></span><code>Memory writes are restricted to the orchestrator. Specialists can only search/list memories.
+</code></pre></div>
+
+<p>This ensures memory consistency — only the orchestrator (which has full context of the conversation) can add or remove memories. Specialist agents can still <strong>search</strong> memories via <code>memory_search</code>. See <a href="memory-system.html">Working with Project Memory</a> for how the memory system works.</p>
+<h2 id="async-only-agents">Async-Only Agents</h2>
+<p>Some agents are enforced to always run asynchronously. If the LLM attempts to call them synchronously, the system auto-promotes them to <code>async: true</code>. If they appear in a chain, the call is rejected entirely (chains are inherently synchronous).</p>
+<p><strong>Currently enforced async-only agents:</strong></p>
+<ul>
+<li><code>code-reviewer-quality</code></li>
+<li><code>code-reviewer-guidelines</code></li>
+<li><code>code-reviewer-security</code></li>
+</ul>
+<p>This prevents code reviews from blocking the session — they can take minutes to complete and the user should be able to continue working.</p>
+<blockquote>
+<p><strong>Note:</strong> The <code>ASYNC_ONLY_AGENTS</code> set is defined in <code>extensions/orchestrator/subagent-tool.ts</code>. Changes to this list should be kept in sync with <code>rules/20-code-review-loop.md</code>.</p>
+</blockquote>
+<h2 id="timeout-stripping">Timeout Stripping</h2>
+<p>For known long-running commands (specifically <code>myk-pi-tools reviews poll</code>), pi silently removes any <code>timeout</code> parameter the LLM sets. These poll commands can run for 30+ minutes waiting for rate limits to clear. Rather than blocking the command (which causes retry loops), the timeout is simply deleted so the command runs to completion.</p>
+<h2 id="co-author-trailer-injection">Co-Author Trailer Injection</h2>
+<p>While not a safety guard per se, the enforcement handler also manages automatic co-author trailer injection. When the <code>co_author</code> setting is enabled and a <code>git commit</code> command doesn't already include a <code>Co-authored-by:</code> trailer, enforcement automatically appends one with the current model ID. This works for both <code>-m "message"</code> style commits and <code>echo "message" | git commit -F -</code> piped commits.</p>
+<h2 id="what-to-do-when-a-command-is-blocked">What to Do When a Command Is Blocked</h2>
+<p>Every block message includes three things:</p>
+<ol>
+<li><strong>What was blocked</strong> — the exact command or pattern that triggered the guard</li>
+<li><strong>Why it was blocked</strong> — the safety reason</li>
+<li><strong>What to do instead</strong> — the correct alternative command or approach</li>
+</ol>
+<p>The agent (or orchestrator) automatically retries using the suggested alternative in most cases. If you see repeated blocks, check that:</p>
+<ul>
+<li>You're on a feature branch, not <code>main</code> or <code>master</code></li>
+<li>You're staging specific files, not using <code>git add .</code></li>
+<li>Your worktree setting matches your workflow (see <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>)</li>
+<li>Long-running tasks are dispatched as async agents</li>
+</ul>
+<h2 id="extending-the-enforcement-system">Extending the Enforcement System</h2>
+<p>The enforcement handler is a single <code>tool_call</code> event listener registered in <code>extensions/orchestrator/enforcement.ts</code>. To add a new guard:</p>
+<ol>
+<li><strong>Add your check</strong> inside the <code>pi.on("tool_call", ...)</code> callback, after the existing guards</li>
+<li><strong>Return a block object</strong> with <code>{ block: true, reason: "..." }</code> to prevent execution</li>
+<li><strong>Return <code>undefined</code></strong> to allow the command through</li>
+<li><strong>For confirmation prompts</strong>, use <code>ctx.ui.select()</code> — check <code>ctx.hasUI</code> first to handle headless mode</li>
+</ol>
+<p>The handler receives the full <code>event.input.command</code> string and the <code>ctx</code> object with <code>cwd</code>, <code>hasUI</code>, <code>ui</code>, and <code>model</code> properties. You can also <strong>modify</strong> the command in-place by reassigning <code>event.input.command</code> (as co-author trailer injection does).</p>
+<p><strong>Hook signature:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="nx">pi</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">&quot;tool_call&quot;</span><span class="p">,</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="p">(</span><span class="nx">event</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">isToolCallEventType</span><span class="p">(</span><span class="s2">&quot;bash&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">event</span><span class="p">))</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="kc">undefined</span><span class="p">;</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">event</span><span class="p">.</span><span class="nx">input</span><span class="p">.</span><span class="nx">command</span><span class="p">;</span>
+
+<span class="w">  </span><span class="c1">// Your guard logic here</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">shouldBlock</span><span class="p">(</span><span class="nx">command</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">block</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w"> </span><span class="nx">reason</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Explanation and alternative&quot;</span><span class="w"> </span><span class="p">};</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="kc">undefined</span><span class="p">;</span><span class="w"> </span><span class="c1">// Allow</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<p>Git helper functions (<code>getCurrentBranch</code>, <code>getMainBranch</code>, <code>getProtectedBranches</code>, <code>hasGitSub</code>, <code>isBranchMerged</code>, etc.) are exported from <code>extensions/orchestrator/git-helpers.ts</code> for use in enforcement checks. The <code>DANGEROUS</code> regex array is also exported from there.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a> — how <code>tool_call</code> event handlers fit into pi's extension lifecycle</li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a> — async-only enforcement for review agents in practice</li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> — using async agents instead of blocked polling loops</li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a> — <code>use_worktrees</code>, <code>co_author</code>, and other settings that affect enforcement</li>
+<li><a href="docker-deployment.html">Running Pi in a Docker Container</a> — container setup and the <code>docker-safe</code> wrapper</li>
+<li><a href="memory-system.html">Working with Project Memory</a> — memory write restrictions and the orchestrator-only policy</li>
+<li><a href="rules-reference.html">Orchestrator Rules Reference</a> — the rule files that complement enforcement with behavioral guidance</li>
+</ul>
+<h2 id="related-pages_1">Related Pages</h2>
+<ul>
+<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
+<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="image-generation.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Generating Images with the generate_image Tool</span>
+                </a>
+
+
+                <div></div>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#how-enforcement-works">How Enforcement Works</a></li>
+<li><a href="#blocked-commands">Blocked Commands</a><ul>
+<li><a href="#python-and-pip-direct-execution">Python and pip (Direct Execution)</a></li>
+<li><a href="#remote-script-execution">Remote Script Execution</a></li>
+<li><a href="#sleep-and-polling-loops">Sleep and Polling Loops</a></li>
+<li><a href="#temp-file-location">Temp File Location</a></li>
+</ul>
+</li>
+<li><a href="#git-branch-protection">Git Branch Protection</a><ul>
+<li><a href="#protected-branch-detection">Protected Branch Detection</a></li>
+<li><a href="#whats-protected">What's Protected</a></li>
+<li><a href="#git-staging-guards">Git Staging Guards</a></li>
+<li><a href="#git-hook-bypass-prevention">Git Hook Bypass Prevention</a></li>
+<li><a href="#agent-restricted-git-operations">Agent-Restricted Git Operations</a></li>
+</ul>
+</li>
+<li><a href="#worktree-enforcement">Worktree Enforcement</a></li>
+<li><a href="#dangerous-command-confirmation">Dangerous Command Confirmation</a></li>
+<li><a href="#repeat-command-detection">Repeat Command Detection</a></li>
+<li><a href="#docker-safe-wrapper-container-only">Docker-Safe Wrapper (Container Only)</a></li>
+<li><a href="#memory-write-restrictions-for-subagents">Memory Write Restrictions for Subagents</a></li>
+<li><a href="#async-only-agents">Async-Only Agents</a></li>
+<li><a href="#timeout-stripping">Timeout Stripping</a></li>
+<li><a href="#co-author-trailer-injection">Co-Author Trailer Injection</a></li>
+<li><a href="#what-to-do-when-a-command-is-blocked">What to Do When a Command Is Blocked</a></li>
+<li><a href="#extending-the-enforcement-system">Extending the Enforcement System</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+<li><a href="#related-pages_1">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

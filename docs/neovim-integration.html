@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>pi-config</title>
+    <title>Neovim Integration and Quickfix Support - pi-config</title>
     <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -219,7 +219,7 @@
 
                     <li>
                         <a href="neovim-integration.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Neovim Integration and Quickfix Support
                         </a>
                     </li>
@@ -288,293 +288,200 @@
 
         <main class="content">
 
-            <section class="index-header">
-                <h1 class="index-title">pi-config</h1>
-                <p class="index-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="neovim-integration-and-quickfix-support">Neovim Integration and Quickfix Support</h1>
+<p>When you run pi inside a Neovim <code>:terminal</code> buffer, it automatically detects the parent Neovim instance and unlocks the ability to send file lists directly to Neovim's quickfix window — letting you jump between changed files without leaving your editor.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>Neovim 0.5+ with the <code>--remote-expr</code> server feature (included in all modern builds)</li>
+<li>Pi must be started from a Neovim <code>:terminal</code> buffer (not an external terminal)</li>
+<li>A git repository with changed files (for <code>/nvim-changed-files</code>)</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>Open a terminal inside Neovim and start pi:</p>
+<div class="highlight"><pre><span></span><code><span class="p">:</span>terminal <span class="nb">pi</span>
+</code></pre></div>
+
+<p>Then, inside the pi session, run:</p>
+<div class="highlight"><pre><span></span><code>/nvim-changed-files
+</code></pre></div>
+
+<p>Your quickfix window opens instantly with every file changed on your branch. Press <code>Enter</code> on any entry to jump to that file.</p>
+<h2 id="how-automatic-detection-works">How Automatic Detection Works</h2>
+<p>Pi checks for the <code>NVIM</code> environment variable, which Neovim sets automatically in every <code>:terminal</code> buffer. If <code>NVIM</code> is present, pi registers the Neovim integration commands. If it's absent (you're running pi in a regular terminal), the commands simply don't appear — no configuration needed.</p>
+<blockquote>
+<p><strong>Note:</strong> The integration only activates for the main pi session, not for background subagents. This prevents background tasks from interfering with your quickfix list.</p>
+</blockquote>
+<h2 id="sending-changed-files-to-quickfix">Sending Changed Files to Quickfix</h2>
+<p>The <code>/nvim-changed-files</code> command collects all files that differ from the default branch and sends them to your quickfix list.</p>
+<h3 id="what-it-detects">What It Detects</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Files Shown</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>On a feature branch</td>
+<td>All committed changes vs <code>origin/main</code> (or <code>origin/master</code>) <strong>plus</strong> any uncommitted working tree changes</td>
+</tr>
+<tr>
+<td>On <code>main</code> or <code>master</code></td>
+<td>Uncommitted changes only (working tree diff against <code>HEAD</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Each quickfix entry shows the file path and its git status — <code>modified</code>, <code>added</code>, <code>deleted</code>, <code>renamed</code>, or <code>copied</code>.</p>
+<h3 id="navigating-the-quickfix-list">Navigating the Quickfix List</h3>
+<p>Once <code>/nvim-changed-files</code> populates the quickfix window, use standard Neovim quickfix commands:</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>:cnext</code> / <code>:cprev</code></td>
+<td>Jump to the next / previous file</td>
+</tr>
+<tr>
+<td><code>:cfirst</code> / <code>:clast</code></td>
+<td>Jump to the first / last file</td>
+</tr>
+<tr>
+<td><code>:copen</code></td>
+<td>Reopen the quickfix window if you closed it</td>
+</tr>
+<tr>
+<td><code>:cclose</code></td>
+<td>Close the quickfix window</td>
+</tr>
+<tr>
+<td><code>Enter</code> (in quickfix window)</td>
+<td>Open the file under the cursor</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Tip:</strong> Map <code>:cnext</code> and <code>:cprev</code> to convenient keybindings for fast navigation. For example, add to your Neovim config:
+<code>vim
+nnoremap ]q :cnext&lt;CR&gt;
+nnoremap [q :cprev&lt;CR&gt;</code></p>
+</blockquote>
+<h2 id="typical-workflow">Typical Workflow</h2>
+<ol>
+<li>Start pi in a Neovim terminal: <code>:terminal pi</code></li>
+<li>Ask pi to implement a feature or fix a bug.</li>
+<li>Run <code>/nvim-changed-files</code> to see which files were modified.</li>
+<li>Navigate the quickfix list to review each change in your editor.</li>
+<li>Make manual adjustments if needed, then return to the pi terminal buffer to continue.</li>
+</ol>
+<p>This is especially useful after pi completes a multi-file change — you get an instant overview of every touched file without running <code>git diff --name-only</code> yourself.</p>
+<h2 id="how-pi-communicates-with-neovim">How Pi Communicates with Neovim</h2>
+<p>Pi communicates with the parent Neovim instance using Neovim's built-in RPC mechanism. The <code>NVIM</code> environment variable contains the path to Neovim's Unix domain socket. Pi uses <code>nvim --server &lt;socket&gt; --remote-expr</code> to execute Lua code in the parent Neovim process, which populates the quickfix list via <code>vim.fn.setqflist()</code> and opens it with <code>vim.cmd("copen")</code>.</p>
+<p>All file paths are resolved to absolute paths before being sent, so quickfix entries work correctly regardless of your working directory.</p>
+<blockquote>
+<p><strong>Note:</strong> The RPC call has a 5-second timeout. If Neovim is unresponsive (e.g., running a blocking plugin), pi displays a warning notification and continues without interruption.</p>
+</blockquote>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="combining-with-code-reviews">Combining with Code Reviews</h3>
+<p>After running a code review with pi's review system, use <code>/nvim-changed-files</code> to load all modified files into quickfix. This gives you a checklist-style workflow — open each changed file, review pi's modifications, and move to the next one.</p>
+<p>For details on the review system, see <a href="code-review-loop.html">Running the Automated Code Review Loop</a>.</p>
+<h3 id="using-with-background-agents">Using with Background Agents</h3>
+<p>Background agents (spawned via async delegation) do not interact with your Neovim quickfix list — only the main session has access. After a background agent completes its work, you can run <code>/nvim-changed-files</code> from the main session to see what changed.</p>
+<p>For more on background agents, see <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>.</p>
+<h3 id="running-pi-outside-neovim">Running Pi Outside Neovim</h3>
+<p>If you run pi in a standalone terminal (outside Neovim), the <code>/nvim-changed-files</code> command is not registered. Pi gracefully skips all Neovim integration when the <code>NVIM</code> environment variable is absent — no errors, no warnings, no performance impact.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Solution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/nvim-changed-files</code> doesn't appear as a command</td>
+<td>Verify you started pi from inside a Neovim <code>:terminal</code>. Check that <code>echo $NVIM</code> prints a socket path in your terminal.</td>
+</tr>
+<tr>
+<td>"No changed files found" notification</td>
+<td>You're on the default branch with no uncommitted changes, or git can't detect a diff base. Ensure you're on a feature branch with committed or staged changes.</td>
+</tr>
+<tr>
+<td>"Failed to send quickfix to nvim" warning</td>
+<td>The Neovim RPC call timed out or failed. Check that the parent Neovim instance is still running and responsive. Restarting Neovim and pi resolves most cases.</td>
+</tr>
+<tr>
+<td>Quickfix shows files but paths are wrong</td>
+<td>Make sure pi's working directory matches your project root. Pi resolves all paths to absolute paths, but a mismatched <code>cwd</code> can produce unexpected results.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
+<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
+<li><a href="first-workflow.html">Your First Coding Workflow</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="discord-bot.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Controlling Pi Sessions from Discord</span>
+                </a>
 
 
+                <a href="image-generation.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Generating Images with the generate_image Tool</span>
+                </a>
 
+            </nav>
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                <a href="quickstart.html" class="index-cta">Get Started →</a>
-
-            </section>
-
-            <section class="card-grid">
-
-                <div class="card">
-                    <h3 class="card-title">Getting Started</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="quickstart.html">Installing and Starting Your First Session</a>
-
-                            <p class="card-page-desc">Install pi-config via Docker container or the native installer script, configure prerequisites (GitHub CLI, API keys), and run your first pi session with the orchestrator</p>
-
-                        </li>
-
-                        <li>
-                            <a href="first-workflow.html">Your First Coding Workflow</a>
-
-                            <p class="card-page-desc">Walk through a complete feature implementation: ask pi to make a change, watch the orchestrator delegate to specialist agents, go through the code review loop, and create a PR</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="quickstart.html" class="card-link">Explore →</a>
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#how-automatic-detection-works">How Automatic Detection Works</a></li>
+<li><a href="#sending-changed-files-to-quickfix">Sending Changed Files to Quickfix</a><ul>
+<li><a href="#what-it-detects">What It Detects</a></li>
+<li><a href="#navigating-the-quickfix-list">Navigating the Quickfix List</a></li>
+</ul>
+</li>
+<li><a href="#typical-workflow">Typical Workflow</a></li>
+<li><a href="#how-pi-communicates-with-neovim">How Pi Communicates with Neovim</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#combining-with-code-reviews">Combining with Code Reviews</a></li>
+<li><a href="#using-with-background-agents">Using with Background Agents</a></li>
+<li><a href="#running-pi-outside-neovim">Running Pi Outside Neovim</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
 
                 </div>
+            </aside>
 
-                <div class="card">
-                    <h3 class="card-title">User Guides</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="agent-routing.html">Understanding Agent Routing and Delegation</a>
-
-                            <p class="card-page-desc">Learn how the orchestrator automatically routes tasks to the right specialist agent (python-expert, git-expert, github-expert, etc.) and when to override routing</p>
-
-                        </li>
-
-                        <li>
-                            <a href="code-review-loop.html">Running the Automated Code Review Loop</a>
-
-                            <p class="card-page-desc">Use the 3-reviewer parallel code review system (quality, guidelines, security), handle review findings, and iterate until all reviewers approve</p>
-
-                        </li>
-
-                        <li>
-                            <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a>
-
-                            <p class="card-page-desc">Master the built-in slash commands (/implement, /pr-review, /review-local, /release, /external-ai, /scout-and-plan, /btw, /status) and understand how prompt templates work</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-system.html">Working with Project Memory</a>
-
-                            <p class="card-page-desc">Use the scored memory system to teach pi your preferences, lessons learned, and project conventions — including memory tools, dreaming consolidation, auto-extraction, and capacity management</p>
-
-                        </li>
-
-                        <li>
-                            <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>
-
-                            <p class="card-page-desc">Spawn async agents for long-running tasks, monitor their status with /async-status, set up recurring tasks with /cron, and understand fire-and-forget vs tracked agents</p>
-
-                        </li>
-
-                        <li>
-                            <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a>
-
-                            <p class="card-page-desc">Set up P2P (/coms) and networked (/coms-net) communication between multiple pi sessions for collaborative multi-agent workflows</p>
-
-                        </li>
-
-                        <li>
-                            <a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a>
-
-                            <p class="card-page-desc">Route prompts to external AI CLIs via /external-ai for peer reviews, code generation, and multi-agent debates using ai-cli-runner</p>
-
-                        </li>
-
-                        <li>
-                            <a href="docker-deployment.html">Running Pi in a Docker Container</a>
-
-                            <p class="card-page-desc">Deploy pi-config in a sandboxed Docker container with proper volume mounts, environment variables, host user mapping, and Docker socket access</p>
-
-                        </li>
-
-                        <li>
-                            <a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a>
-
-                            <p class="card-page-desc">Launch the pidash web dashboard to monitor sessions from a browser and use pidiff to view diffs with review comments in a rich UI</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="agent-routing.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Recipes</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="workflow-recipes.html">Common Workflow Recipes</a>
-
-                            <p class="card-page-desc">Copy-paste patterns for PR reviews, GitHub releases, review handling (autorabbit/autoqodo), implementing with review, scouting and planning, querying the review database, and refining pending reviews</p>
-
-                        </li>
-
-                        <li>
-                            <a href="customization-recipes.html">Customization and Extension Recipes</a>
-
-                            <p class="card-page-desc">Add a new specialist agent, create custom prompt templates, write reusable skills with /create-skill, configure project settings (.pi/pi-config-settings.json), and set up MCP servers via mcpl</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="workflow-recipes.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Reference</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="agents-reference.html">Specialist Agents Reference</a>
-
-                            <p class="card-page-desc">Complete list of all 24 specialist agents with their names, descriptions, tools, model overrides, and when each is invoked</p>
-
-                        </li>
-
-                        <li>
-                            <a href="commands-reference.html">Slash Commands and Extension Commands Reference</a>
-
-                            <p class="card-page-desc">Full reference for all slash commands (/implement, /pr-review, /release, /review-handler, /external-ai, /btw, /status, /cron, /dream, /coms, /pidash, /pidiff, /repair) with arguments and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="cli-reference.html">myk-pi-tools CLI Reference</a>
-
-                            <p class="card-page-desc">Complete reference for the myk-pi-tools Python CLI: memory, pr, release, reviews, db, coderabbit, and ai-cli subcommands with all flags and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>
-
-                            <p class="card-page-desc">All configuration options: pi-config-settings.json fields, environment variables (PI_CO_AUTHOR, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, ACPX_AGENTS, GEMINI_API_KEY), rules loading order, and .coderabbit.yaml setup</p>
-
-                        </li>
-
-                        <li>
-                            <a href="rules-reference.html">Orchestrator Rules Reference</a>
-
-                            <p class="card-page-desc">Reference for all 13 orchestrator rules (00-60): core behavior, issue-first workflow, agent routing, MCP launchpad, code review loop, documentation updates, prompt templates, memory, critical rules, file preview, bug reporting, coms protocol, and task tracking</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="agents-reference.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Internals</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a>
-
-                            <p class="card-page-desc">How the orchestrator extension registers tools, commands, and event hooks (session_start, before_agent_start, turn_end, input) — essential knowledge for writing new extensions or modifying existing ones</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a>
-
-                            <p class="card-page-desc">Deep dive into the stability-based scoring formula, vector embeddings (bge-small-en-v1.5), topic tree organization, situation report budget allocation, and the auto-injection pipeline</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="extension-architecture.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Guides</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="acpx-provider.html">Using ACPX Provider for External Agent Models</a>
-
-                            <p class="card-page-desc">How to configure and use the ACPX provider extension to route pi&#39;s LLM requests through external agents (Cursor, Claude, Gemini, Copilot). Covers ACPX_AGENTS configuration, model discovery, session management, and how ACPX provider differs from /external-ai. Includes setup prerequisites (acpx runtime), available models per agent, and troubleshooting.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="discord-bot.html">Controlling Pi Sessions from Discord</a>
-
-                            <p class="card-page-desc">Set up and use the Discord bot built into the pidash server to remotely control pi sessions. Covers DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS configuration, slash commands (/sessions, /status, /prompt, /stop), watching sessions, sending prompts and images via DM, receiving real-time output and ask_user prompts, and security considerations for allowed users.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="neovim-integration.html">Neovim Integration and Quickfix Support</a>
-
-                            <p class="card-page-desc">Using pi inside Neovim terminal: automatic detection via NVIM environment variable, /nvim-changed-files command to send git changed files to the quickfix list, how pi communicates with the parent Neovim instance via RPC, and quickfix workflow for navigating review findings or changed files.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="image-generation.html">Generating Images with the generate_image Tool</a>
-
-                            <p class="card-page-desc">How to use pi&#39;s generate_image tool powered by the Gemini API. Covers setup (PI_IMAGE_MODEL and GEMINI_API_KEY environment variables), available parameters (subject, action, scene, composition, lighting, style, text, aspect_ratio), supported aspect ratios, automatic HTTP preview server in containers, and example prompts for different image styles.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="acpx-provider.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Concepts</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="command-enforcement.html">Command Safety Guards and Enforcement</a>
-
-                            <p class="card-page-desc">How pi&#39;s enforcement system protects your environment: blocked commands (direct python/pip, git add ., remote script piping), git branch protection (protected branches, merged branch detection, detached HEAD), dangerous command confirmation prompts, repeat command detection, worktree enforcement, docker-safe wrapper in containers, and memory write restrictions for subagents. What to do when a command is blocked and how to work with the guardrails.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="command-enforcement.html" class="card-link">Explore →</a>
-
-                </div>
-
-            </section>
-
-            <div class="llm-docs-banner">
-                <div class="llm-docs-icon">🤖</div>
-                <div class="llm-docs-content">
-                    <strong>AI-friendly documentation</strong>
-                    <p>This documentation is optimized for AI consumption.</p>
-                    <div class="llm-docs-links">
-                        <a href="llms.txt">llms.txt</a> — structured index
-                        <span class="llm-docs-sep">·</span>
-                        <a href="llms-full.txt">llms-full.txt</a> — complete docs in one file
-                    </div>
-                </div>
-            </div>
 
         </main>
 

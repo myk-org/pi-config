@@ -1,0 +1,1448 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration and Environment Variables Reference - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agent-routing.html"
+                           class="nav-link">
+                            Understanding Agent Routing and Delegation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="code-review-loop.html"
+                           class="nav-link">
+                            Running the Automated Code Review Loop
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link">
+                            Using Slash Commands and Prompt Templates
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-system.html"
+                           class="nav-link">
+                            Working with Project Memory
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Communicating Between Pi Sessions
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk-pi-tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration-reference.html"
+                           class="nav-link active" aria-current="page">
+                            Configuration and Environment Variables Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-reference.html"
+                           class="nav-link">
+                            Orchestrator Rules Reference
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-architecture.html"
+                           class="nav-link">
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="configuration-and-environment-variables-reference">Configuration and Environment Variables Reference</h1>
+<p>All configuration options for pi-config: project settings, environment variables, rules loading, and CodeRabbit setup.</p>
+<p>For Docker-specific deployment configuration, see <a href="docker-deployment.html">Running Pi in a Docker Container</a>.
+For agent definitions and routing, see <a href="agents-reference.html">Specialist Agents Reference</a>.
+For rule content and behavior, see <a href="rules-reference.html">Orchestrator Rules Reference</a>.</p>
+<hr />
+<h2 id="project-settings-file">Project Settings File</h2>
+<p><strong>Location:</strong> <code>.pi/pi-config-settings.json</code> (relative to project root)</p>
+<p>Project-level settings override environment variables and defaults. The file is loaded once and cached for 30 seconds before re-checking for changes.</p>
+<p><strong>Resolution order:</strong> Project file → Environment variable → Default</p>
+<h3 id="settings-fields">Settings Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Env Var Fallback</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>co_author</code></td>
+<td><code>boolean</code></td>
+<td><code>false</code></td>
+<td><code>PI_CO_AUTHOR</code></td>
+<td>Appends a <code>Co-authored-by: PI (&lt;model&gt;) &lt;noreply@pi.dev&gt;</code> trailer to git commits</td>
+</tr>
+<tr>
+<td><code>use_worktrees</code></td>
+<td><code>boolean</code></td>
+<td><code>false</code></td>
+<td><code>PI_USE_WORKTREES</code></td>
+<td>Blocks <code>git checkout</code> and <code>git switch</code>; forces worktree-only branching workflow</td>
+</tr>
+<tr>
+<td><code>dream_interval_hours</code></td>
+<td><code>number</code></td>
+<td><code>3</code></td>
+<td><code>PI_DREAM_INTERVAL_HOURS</code></td>
+<td>Hours between automatic memory dreaming cycles. Clamped to range <code>0.5</code>–<code>24</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="example-file">Example File</h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;co_author&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;use_worktrees&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;dream_interval_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Note:</strong> Unknown keys in the file are preserved during migration but ignored by the settings loader. Only the three fields above are read.</p>
+</blockquote>
+<h3 id="legacy-migration">Legacy Migration</h3>
+<p>If a <code>.pi-co-author</code> file exists in the project root, the settings module automatically migrates it to <code>pi-config-settings.json</code> with <code>co_author: true</code> on <code>session_start</code>, then deletes the legacy file. Symlink attacks are detected and skipped.</p>
+<hr />
+<h2 id="environment-variables">Environment Variables</h2>
+<h3 id="core-project-settings">Core Project Settings</h3>
+<p>These environment variables serve as fallbacks when the corresponding field is not set in <code>.pi/pi-config-settings.json</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_CO_AUTHOR</code></td>
+<td><code>boolean</code></td>
+<td><code>false</code></td>
+<td>Enable co-author trailers in git commits. Accepted values: <code>true</code>, <code>1</code>, <code>yes</code>, <code>on</code> (case-insensitive)</td>
+</tr>
+<tr>
+<td><code>PI_USE_WORKTREES</code></td>
+<td><code>boolean</code></td>
+<td><code>false</code></td>
+<td>Force worktree-only workflow, blocking <code>git checkout</code> and <code>git switch</code></td>
+</tr>
+<tr>
+<td><code>PI_DREAM_INTERVAL_HOURS</code></td>
+<td><code>number</code></td>
+<td><code>3</code></td>
+<td>Hours between automatic dreaming cycles. Must be between <code>0.5</code> and <code>24</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_CO_AUTHOR</span><span class="o">=</span><span class="nb">true</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_USE_WORKTREES</span><span class="o">=</span><span class="nb">false</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_DREAM_INTERVAL_HOURS</span><span class="o">=</span><span class="m">3</span>
+</code></pre></div>
+
+<h3 id="acpx-provider">ACPX Provider</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ACPX_AGENTS</code></td>
+<td><code>string</code></td>
+<td><code>""</code> (empty)</td>
+<td>Comma-separated list of ACPX agent names to register as LLM providers. Each agent appears as <code>acpx-&lt;name&gt;</code> in the model list</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="c1"># Single agent</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">ACPX_AGENTS</span><span class="o">=</span><span class="s2">&quot;cursor&quot;</span>
+
+<span class="c1"># Multiple agents</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">ACPX_AGENTS</span><span class="o">=</span><span class="s2">&quot;cursor,claude,gemini,copilot&quot;</span>
+</code></pre></div>
+
+<p>Agent names are validated against the pattern <code>/^[a-z0-9_-]+$/i</code>. Invalid names are silently filtered out. Each registered agent creates a provider named <code>acpx-&lt;agent&gt;</code> with models discovered at session start via the ACPX runtime library.</p>
+<blockquote>
+<p><strong>Note:</strong> ACPX providers are skipped entirely in subagent processes (<code>PI_SUBAGENT_CHILD=1</code>). Subagents use the parent session's model via <code>--model</code> flag.</p>
+</blockquote>
+<h3 id="image-generation">Image Generation</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_IMAGE_MODEL</code></td>
+<td><code>string</code></td>
+<td>— (required)</td>
+<td>Gemini model name for image generation (e.g., <code>gemini-2.0-flash-exp</code>)</td>
+</tr>
+<tr>
+<td><code>GEMINI_API_KEY</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Google Gemini API key. Falls back to <code>GOOGLE_API_KEY</code> if unset</td>
+</tr>
+<tr>
+<td><code>GOOGLE_API_KEY</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Fallback API key for Gemini. Used only when <code>GEMINI_API_KEY</code> is not set</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_IMAGE_MODEL</span><span class="o">=</span><span class="s2">&quot;gemini-2.0-flash-exp&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">GEMINI_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-key-here&quot;</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Warning:</strong> Both <code>PI_IMAGE_MODEL</code> and an API key (<code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code>) must be set for the <code>generate_image</code> tool to function. Missing either variable returns an error message to the LLM.</p>
+</blockquote>
+<h3 id="dashboard-and-diff-viewer">Dashboard and Diff Viewer</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_PIDASH_PORT</code></td>
+<td><code>number</code></td>
+<td><code>19190</code></td>
+<td>Port for the pidash web dashboard server</td>
+</tr>
+<tr>
+<td><code>PI_PIDASH_ENABLE</code></td>
+<td><code>string</code></td>
+<td>— (enabled)</td>
+<td>Set to <code>false</code>, <code>0</code>, <code>no</code>, or <code>off</code> to disable pidash entirely</td>
+</tr>
+<tr>
+<td><code>PI_PIDIFF_PORT</code></td>
+<td><code>number</code></td>
+<td><code>19290</code></td>
+<td>Port for the pidiff diff viewer server</td>
+</tr>
+<tr>
+<td><code>PI_PIDIFF_ENABLE</code></td>
+<td><code>string</code></td>
+<td>— (enabled)</td>
+<td>Set to <code>false</code>, <code>0</code>, <code>no</code>, or <code>off</code> to disable pidiff entirely</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_PIDASH_PORT</span><span class="o">=</span><span class="m">19190</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_PIDIFF_PORT</span><span class="o">=</span><span class="m">19290</span>
+
+<span class="c1"># Disable dashboards</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_PIDASH_ENABLE</span><span class="o">=</span><span class="nb">false</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_PIDIFF_ENABLE</span><span class="o">=</span><span class="nb">false</span>
+</code></pre></div>
+
+<p>For more on dashboards, see <a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a>.</p>
+<h3 id="discord-bot-integration">Discord Bot Integration</h3>
+<p>These variables configure the Discord bot embedded in the pidash daemon server.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DISCORD_BOT_TOKEN</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Discord bot token. If unset, the Discord bot is disabled entirely</td>
+</tr>
+<tr>
+<td><code>DISCORD_ALLOWED_USERS</code></td>
+<td><code>string</code></td>
+<td>— (all users)</td>
+<td>Comma-separated list of Discord user IDs allowed to interact with the bot</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">DISCORD_BOT_TOKEN</span><span class="o">=</span><span class="s2">&quot;your-discord-bot-token&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">DISCORD_ALLOWED_USERS</span><span class="o">=</span><span class="s2">&quot;123456789,987654321&quot;</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Warning:</strong> If <code>DISCORD_ALLOWED_USERS</code> is not set, all DMs to the bot are accepted.</p>
+</blockquote>
+<p>Alternatively, credentials can be placed in <code>~/.pi/discord.env</code> as <code>KEY=VALUE</code> lines (one per line). The pidash server reads this file at startup.</p>
+<h3 id="p2p-communication-coms">P2P Communication (Coms)</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_COMS_DIR</code></td>
+<td><code>string</code></td>
+<td><code>~/.pi/coms</code></td>
+<td>Directory for P2P coms registry files</td>
+</tr>
+<tr>
+<td><code>PI_COMS_MAX_HOPS</code></td>
+<td><code>number</code></td>
+<td><code>5</code></td>
+<td>Maximum message relay hops</td>
+</tr>
+<tr>
+<td><code>PI_COMS_TIMEOUT_MS</code></td>
+<td><code>number</code></td>
+<td><code>1800000</code> (30 min)</td>
+<td>Message delivery timeout in milliseconds</td>
+</tr>
+<tr>
+<td><code>PI_COMS_PING_INTERVAL_MS</code></td>
+<td><code>number</code></td>
+<td><code>10000</code> (10s)</td>
+<td>Peer ping interval in milliseconds</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_DIR</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.pi/coms&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_MAX_HOPS</span><span class="o">=</span><span class="m">5</span>
+</code></pre></div>
+
+<p>For more on inter-agent communication, see <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a>.</p>
+<h3 id="networked-communication-coms-net">Networked Communication (Coms-Net)</h3>
+<h4 id="client-variables">Client Variables</h4>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_COMS_NET_SERVER_URL</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Hub server URL for remote connections (auto-discovered from <code>server.json</code> for local)</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_AUTH_TOKEN</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Authentication token for the hub server</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_PROJECT</code></td>
+<td><code>string</code></td>
+<td><code>"default"</code></td>
+<td>Project namespace for agent grouping</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_MAX_HOPS</code></td>
+<td><code>number</code></td>
+<td><code>5</code></td>
+<td>Maximum message relay hops</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_HEARTBEAT_MS</code></td>
+<td><code>number</code></td>
+<td><code>10000</code> (10s)</td>
+<td>Heartbeat interval in milliseconds</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_MESSAGE_TTL_MS</code></td>
+<td><code>number</code></td>
+<td><code>1800000</code> (30 min)</td>
+<td>Message time-to-live in milliseconds</td>
+</tr>
+</tbody>
+</table>
+<h4 id="server-variables">Server Variables</h4>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_COMS_NET_HOST</code></td>
+<td><code>string</code></td>
+<td><code>"127.0.0.1"</code></td>
+<td>Bind address for the hub server</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_PORT</code></td>
+<td><code>number</code></td>
+<td><code>0</code> (auto)</td>
+<td>Listening port (<code>0</code> = OS-assigned)</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_PUBLIC_URL</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Public URL for the server (used when behind a proxy)</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_MAX_INBOX</code></td>
+<td><code>number</code></td>
+<td><code>100</code></td>
+<td>Maximum queued messages per agent</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_STALE_AFTER_MS</code></td>
+<td><code>number</code></td>
+<td><code>30000</code> (30s)</td>
+<td>Time without heartbeat before marking an agent stale</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_OFFLINE_AFTER_MS</code></td>
+<td><code>number</code></td>
+<td><code>60000</code> (60s)</td>
+<td>Time without heartbeat before marking an agent offline</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_LOG_QUIET</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Set to <code>"1"</code> to suppress all log output except startup/shutdown</td>
+</tr>
+<tr>
+<td><code>PI_COMS_NET_LOG_HEARTBEAT</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Set to <code>"1"</code> to include heartbeat events in logs (very verbose)</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="c1"># Local auto-discovery (default)</span>
+<span class="c1"># No env vars needed — client reads ~/.pi/coms-net/server.json</span>
+
+<span class="c1"># Remote connection</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_NET_SERVER_URL</span><span class="o">=</span><span class="s2">&quot;http://hub.example.com:8080&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_NET_AUTH_TOKEN</span><span class="o">=</span><span class="s2">&quot;your-auth-token&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_NET_PROJECT</span><span class="o">=</span><span class="s2">&quot;my-project&quot;</span>
+</code></pre></div>
+
+<h3 id="container-and-docker">Container and Docker</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_HOST_USER</code></td>
+<td><code>string</code></td>
+<td><code>"node"</code></td>
+<td>Host username. Creates <code>/home/&lt;user&gt;</code> inside the container with symlinks so host-mounted paths resolve correctly</td>
+</tr>
+<tr>
+<td><code>AGENT_BROWSER_ARGS</code></td>
+<td><code>string</code></td>
+<td><code>"--no-sandbox,--disable-dev-shm-usage"</code></td>
+<td>Chromium flags for <code>agent-browser</code> (comma-separated). Set in Dockerfile</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_HOST_USER</span><span class="o">=</span>myakove
+</code></pre></div>
+
+<p>When <code>PI_HOST_USER</code> is set to a value other than <code>"node"</code>, the init entrypoint:</p>
+<ol>
+<li>Creates <code>/home/&lt;PI_HOST_USER&gt;</code> with correct ownership</li>
+<li>Symlinks container tool directories (<code>.npm-global</code>, <code>.cache</code>, <code>.local</code>, etc.) into the new HOME</li>
+<li>Creates reverse symlinks in <code>/home/node</code> pointing to mounted content</li>
+<li>Sets <code>HOME</code> and updates <code>PATH</code> to include the new home-based directories</li>
+</ol>
+<h3 id="git-and-ssh">Git and SSH</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GIT_SSH_COMMAND</code></td>
+<td><code>string</code></td>
+<td><code>ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10</code></td>
+<td>SSH command with keepalive and timeout settings. Set automatically by both <code>entrypoint.sh</code> and <code>utils.ts</code> if unset</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> The SSH timeout configuration detects dead connections during git fetch/push/pull. The keepalive sends a probe every 15 seconds, gives up after 3 missed responses (45 seconds total), and fails connections that don't establish within 10 seconds.</p>
+</blockquote>
+<h3 id="debugging-and-internal">Debugging and Internal</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_ASYNC_DEBUG</code></td>
+<td><code>boolean</code></td>
+<td><code>false</code></td>
+<td>Enable debug logging for async agent infrastructure</td>
+</tr>
+<tr>
+<td><code>PI_SUBAGENT_CHILD</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Set to <code>"1"</code> internally when running as a subagent. Disables orchestrator-only features (dreaming, memory writes, autocomplete, ACPX providers, dashboard connections)</td>
+</tr>
+<tr>
+<td><code>PI_AGENT_NAME</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Internal. Set to the current agent's name. Used by enforcement to allow git commit/push only from <code>git-expert</code></td>
+</tr>
+<tr>
+<td><code>PI_PIDASH_PORT</code></td>
+<td><code>number</code></td>
+<td><code>19190</code></td>
+<td>Also used by the async runner to connect to pidash for status updates</td>
+</tr>
+<tr>
+<td><code>NVIM</code></td>
+<td><code>string</code></td>
+<td>—</td>
+<td>Neovim socket path. Automatically set by Neovim when launching pi from within Neovim. Enables the nvim integration (quickfix, changed files)</td>
+</tr>
+<tr>
+<td><code>PI_GIT_BIN</code></td>
+<td><code>string</code></td>
+<td><code>"git"</code></td>
+<td>Custom git binary path for the pidiff server</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Do not set <code>PI_SUBAGENT_CHILD</code> or <code>PI_AGENT_NAME</code> manually — they are managed internally by the subagent spawning system.</p>
+</blockquote>
+<hr />
+<h2 id="rules-loading-order">Rules Loading Order</h2>
+<p>Orchestrator rules are auto-loaded from the <code>rules/</code> directory in <strong>alphabetical order</strong> on every <code>before_agent_start</code> event. Files must end in <code>.md</code>. Numeric prefixes control ordering.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Priority</th>
+<th>Domain</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>00-orchestrator-core.md</code></td>
+<td>0</td>
+<td>Core orchestrator behavior — delegation rules, forbidden actions</td>
+</tr>
+<tr>
+<td><code>05-issue-first-workflow.md</code></td>
+<td>5</td>
+<td>Issue-first development workflow</td>
+</tr>
+<tr>
+<td><code>10-agent-routing.md</code></td>
+<td>10</td>
+<td>Task → agent routing table</td>
+</tr>
+<tr>
+<td><code>15-mcp-launchpad.md</code></td>
+<td>15</td>
+<td>MCP server discovery and connection</td>
+</tr>
+<tr>
+<td><code>20-code-review-loop.md</code></td>
+<td>20</td>
+<td>3-reviewer parallel code review system</td>
+</tr>
+<tr>
+<td><code>25-documentation-updates.md</code></td>
+<td>25</td>
+<td>Documentation update requirements</td>
+</tr>
+<tr>
+<td><code>30-prompt-templates.md</code></td>
+<td>30</td>
+<td>Slash command and prompt template handling</td>
+</tr>
+<tr>
+<td><code>35-memory.md</code></td>
+<td>35</td>
+<td>Memory system usage rules</td>
+</tr>
+<tr>
+<td><code>40-critical-rules.md</code></td>
+<td>40</td>
+<td>Critical safety and behavioral rules</td>
+</tr>
+<tr>
+<td><code>45-file-preview.md</code></td>
+<td>45</td>
+<td>File preview via HTTP server</td>
+</tr>
+<tr>
+<td><code>50-agent-bug-reporting.md</code></td>
+<td>50</td>
+<td>Bug reporting policy for agent errors</td>
+</tr>
+<tr>
+<td><code>55-coms-protocol.md</code></td>
+<td>55</td>
+<td>Inter-agent communication protocol</td>
+</tr>
+<tr>
+<td><code>60-task-tracking.md</code></td>
+<td>60</td>
+<td>Task tracking integration</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> Rules are loaded into the orchestrator system prompt only — specialist agents (subagents) do not receive orchestrator rules. Subagents receive only the memory situation report.</p>
+</blockquote>
+<p>For detailed rule content, see <a href="rules-reference.html">Orchestrator Rules Reference</a>.</p>
+<h3 id="adding-a-custom-rule">Adding a Custom Rule</h3>
+<p>Place a <code>.md</code> file in <code>rules/</code> with a numeric prefix to control ordering:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Loads after agent routing but before code review loop</span>
+rules/12-my-custom-rule.md
+</code></pre></div>
+
+<p>Changes take effect on the <strong>next pi session</strong> — running sessions are not affected.</p>
+<hr />
+<h2 id="agent-discovery-order">Agent Discovery Order</h2>
+<p>Agents are discovered from three sources in priority order (later sources override earlier):</p>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Source</th>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 (lowest)</td>
+<td>Package</td>
+<td><code>&lt;pi-config&gt;/agents/</code></td>
+<td>Bundled agent definitions shipped with pi-config</td>
+</tr>
+<tr>
+<td>2</td>
+<td>User</td>
+<td><code>~/.pi/agent/agents/</code></td>
+<td>User-global custom agents</td>
+</tr>
+<tr>
+<td>3 (highest)</td>
+<td>Project</td>
+<td><code>.pi/agents/</code> (searched up from cwd)</td>
+<td>Project-specific agent overrides</td>
+</tr>
+</tbody>
+</table>
+<p>Agent files use Markdown with YAML frontmatter:</p>
+<div class="highlight"><pre><span></span><code>---
+name: my-agent
+description: What this agent does
+tools: read, write, edit, bash
+<span class="gu">model: optional-model-override</span>
+<span class="gu">---</span>
+
+System prompt instructions here...
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Frontmatter Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td><code>string</code></td>
+<td>Yes</td>
+<td>Agent identifier (used in routing and subagent calls)</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>string</code></td>
+<td>Yes</td>
+<td>One-sentence description of the agent's purpose</td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td><code>string</code></td>
+<td>No</td>
+<td>Comma-separated list of tools the agent can use</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>string</code></td>
+<td>No</td>
+<td>Override the default LLM model for this agent</td>
+</tr>
+</tbody>
+</table>
+<p>For the full list of bundled agents, see <a href="agents-reference.html">Specialist Agents Reference</a>.</p>
+<h3 id="async-only-agents">Async-Only Agents</h3>
+<p>The following agents are enforced to run with <code>async: true</code> only. Synchronous calls are automatically promoted to async by the subagent tool:</p>
+<ul>
+<li><code>code-reviewer-quality</code></li>
+<li><code>code-reviewer-guidelines</code></li>
+<li><code>code-reviewer-security</code></li>
+</ul>
+<p>This list is defined in the <code>ASYNC_ONLY_AGENTS</code> set in <code>extensions/orchestrator/subagent-tool.ts</code>.</p>
+<hr />
+<h2 id="coderabbit-configuration">CodeRabbit Configuration</h2>
+<p><strong>Location:</strong> <code>.coderabbit.yaml</code> (project root)</p>
+<p>Pi-config ships a CodeRabbit configuration for local AI code reviews via the CodeRabbit CLI (<code>cr</code> command).</p>
+<div class="highlight"><pre><span></span><code><span class="nt">language</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">en-US</span>
+<span class="nt">reviews</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assertive</span>
+<span class="w">  </span><span class="nt">poem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">  </span><span class="nt">sequence_diagrams</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">  </span><span class="nt">auto_review</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">  </span><span class="c1"># Uses CLI, not PR auto-review</span>
+</code></pre></div>
+
+<h3 id="enabled-linters">Enabled Linters</h3>
+<table>
+<thead>
+<tr>
+<th>Linter</th>
+<th>Language/Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shellcheck</code></td>
+<td>Shell scripts</td>
+</tr>
+<tr>
+<td><code>ruff</code></td>
+<td>Python</td>
+</tr>
+<tr>
+<td><code>hadolint</code></td>
+<td>Dockerfiles</td>
+</tr>
+<tr>
+<td><code>actionlint</code></td>
+<td>GitHub Actions</td>
+</tr>
+<tr>
+<td><code>markdownlint</code></td>
+<td>Markdown</td>
+</tr>
+<tr>
+<td><code>eslint</code></td>
+<td>JavaScript/TypeScript</td>
+</tr>
+<tr>
+<td><code>biome</code></td>
+<td>JavaScript/TypeScript</td>
+</tr>
+<tr>
+<td><code>gitleaks</code></td>
+<td>Secret detection</td>
+</tr>
+<tr>
+<td><code>trufflehog</code></td>
+<td>Secret detection</td>
+</tr>
+</tbody>
+</table>
+<h3 id="disabled-linters">Disabled Linters</h3>
+<p>PHP (<code>phpstan</code>, <code>phpmd</code>, <code>phpcs</code>), Ruby (<code>rubocop</code>), Swift (<code>swiftlint</code>), Kotlin (<code>detekt</code>), Java (<code>pmd</code>), Protobuf (<code>buf</code>), SQL (<code>sqlfluff</code>), Terraform (<code>tflint</code>), IaC (<code>checkov</code>), Rust (<code>clippy</code>).</p>
+<h3 id="knowledge-base">Knowledge Base</h3>
+<div class="highlight"><pre><span></span><code><span class="nt">knowledge_base</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">code_guidelines</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">  </span><span class="c1"># Auto-picks up AGENTS.md</span>
+</code></pre></div>
+
+<hr />
+<h2 id="memory-system-files">Memory System Files</h2>
+<p>The memory system uses several files under <code>.pi/memory/</code>. These are not directly edited but are referenced by configuration.</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.pi/memory/topics/*.md</code></td>
+<td>Topic files — one per category (preferences, lessons, patterns, decisions, completions, mistakes)</td>
+</tr>
+<tr>
+<td><code>.pi/memory/memory-scores.json</code></td>
+<td>Stability scores for all memory entries</td>
+</tr>
+<tr>
+<td><code>.pi/memory/embeddings.json</code></td>
+<td>Vector embeddings for semantic memory search</td>
+</tr>
+<tr>
+<td><code>.pi/memory/.dream-watermark</code></td>
+<td>Timestamp of last dreaming cycle processed</td>
+</tr>
+<tr>
+<td><code>.pi/data/memory-telemetry.jsonl</code></td>
+<td>Retrieval telemetry log (capped at 500KB)</td>
+</tr>
+<tr>
+<td><code>.pi/data/session-search.json</code></td>
+<td>Past session summaries index for keyword search</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Tip:</strong> Add <code>.pi/memory/</code> to your global gitignore to prevent committing memory data. The container entrypoint does this automatically.</p>
+</blockquote>
+<p>For memory system internals, see <a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a>.</p>
+<hr />
+<h2 id="temp-directory-structure">Temp Directory Structure</h2>
+<p>All runtime data lives under project-scoped temp directories.</p>
+<p><strong>Base path:</strong> <code>/tmp/pi-data/&lt;project&gt;/</code></p>
+<p>Project name format: cwd with <code>/</code> replaced by <code>__</code> (e.g., <code>home__user__git__my-project</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>debug.log</code></td>
+<td>Async debug log</td>
+</tr>
+<tr>
+<td><code>cron-&lt;pid&gt;.json</code></td>
+<td>Cron task state (per-process)</td>
+</tr>
+<tr>
+<td><code>.repeat-&lt;pid&gt;.json</code></td>
+<td>Repeat command detection state</td>
+</tr>
+<tr>
+<td><code>async-results-pid-&lt;pid&gt;/</code></td>
+<td>Async agent completion results</td>
+</tr>
+<tr>
+<td><code>worker-&lt;id&gt;/</code></td>
+<td>Async agent working directory</td>
+</tr>
+<tr>
+<td><code>worker-&lt;id&gt;/status.json</code></td>
+<td>Agent state (<code>running</code> / <code>complete</code> / <code>failed</code>)</td>
+</tr>
+<tr>
+<td><code>worker-&lt;id&gt;/output.log</code></td>
+<td>Agent output</td>
+</tr>
+<tr>
+<td><code>worker-&lt;id&gt;/system-prompt.md</code></td>
+<td>Agent system prompt</td>
+</tr>
+</tbody>
+</table>
+<p>The helper function <code>getProjectTmpDir(cwd)</code> in <code>extensions/orchestrator/utils.ts</code> creates and returns the project temp directory.</p>
+<hr />
+<h2 id="mode-aware-feature-guards">Mode-Aware Feature Guards</h2>
+<p>Pi operates in four modes. Extensions use <code>ctx.mode</code> to conditionally enable features.</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"tui"</code></td>
+<td>Interactive terminal UI</td>
+</tr>
+<tr>
+<td><code>"rpc"</code></td>
+<td>Programmatic/API access</td>
+</tr>
+<tr>
+<td><code>"json"</code></td>
+<td>Structured JSON output (one-shot)</td>
+</tr>
+<tr>
+<td><code>"print"</code></td>
+<td>Plain text output (one-shot)</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Active Modes</th>
+<th>Guard</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Daemon connections (pidash, pidiff)</td>
+<td><code>tui</code> only</td>
+<td><code>ctx.mode === "tui"</code></td>
+</tr>
+<tr>
+<td>Autocomplete providers</td>
+<td><code>tui</code> only</td>
+<td><code>ctx.mode === "tui"</code></td>
+</tr>
+<tr>
+<td>Cron scheduling</td>
+<td><code>tui</code>, <code>rpc</code></td>
+<td><code>ctx.mode !== "print" &amp;&amp; ctx.mode !== "json"</code></td>
+</tr>
+<tr>
+<td>Dreaming (auto timer)</td>
+<td><code>tui</code>, <code>rpc</code></td>
+<td><code>ctx.mode !== "print" &amp;&amp; ctx.mode !== "json"</code></td>
+</tr>
+<tr>
+<td>UI notifications</td>
+<td><code>tui</code>, <code>rpc</code></td>
+<td><code>ctx.hasUI</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="extension-registration-order">Extension Registration Order</h2>
+<p>The orchestrator extension (<code>extensions/orchestrator/index.ts</code>) registers modules in a specific order. Some modules depend on others being registered first.</p>
+<ol>
+<li><code>registerExtendedAutocomplete</code> — Must be first (wraps <code>registerCommand</code> for completions)</li>
+<li><code>registerAskUser</code> — <code>ask_user</code> tool</li>
+<li><code>registerAsyncAgents</code> — Background agent infrastructure (provides <code>spawnAsyncAgent</code>)</li>
+<li><code>registerSubagentTool</code> — Subagent tool (depends on async agents)</li>
+<li><code>registerProjectSettings</code> — Settings migration and cache</li>
+<li><code>registerEnforcement</code> — Command blocking rules</li>
+<li><code>registerRules</code> — Rule injection and memory loading (depends on async agent job list)</li>
+<li><code>registerStatusLine</code> — Git status, container indicator</li>
+<li><code>registerBtw</code> — <code>/btw</code> side questions</li>
+<li><code>registerDreaming</code> — Memory consolidation (depends on <code>spawnAsyncAgent</code>)</li>
+<li><code>registerCron</code> — Scheduled tasks (depends on <code>spawnAsyncAgent</code>)</li>
+<li><code>registerSessionValidation</code> — Tool checks, upgrade notifications</li>
+<li><code>registerGithubAutocomplete</code> — GitHub issue <code>#</code> autocomplete</li>
+<li><code>registerStatus</code> — <code>/status</code> command</li>
+<li><code>registerNvim</code> — Neovim integration</li>
+<li><code>registerPreferenceExtractor</code> — Auto-extract user preferences</li>
+<li><code>registerMemoryTools</code> — AI-accessible memory tools</li>
+<li><code>registerSessionSearch</code> — Session history keyword search</li>
+</ol>
+<hr />
+<h2 id="required-and-optional-cli-tools">Required and Optional CLI Tools</h2>
+<p>Checked on <code>session_start</code> by the session validation module.</p>
+<h3 id="required">Required</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Install</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uv</code></td>
+<td>Python package/runtime management</td>
+<td><a href="https://docs.astral.sh/uv/">docs.astral.sh/uv</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="optional">Optional</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Install</th>
+<th>Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gh</code></td>
+<td>GitHub CLI</td>
+<td><a href="https://cli.github.com/">cli.github.com</a></td>
+<td>Always checked</td>
+</tr>
+<tr>
+<td><code>mcpl</code></td>
+<td>MCP Launchpad</td>
+<td><a href="https://github.com/kenneth-liao/mcp-launchpad">mcp-launchpad</a></td>
+<td>Always checked</td>
+</tr>
+<tr>
+<td><code>myk-pi-tools</code></td>
+<td>PR/release/review CLI</td>
+<td><code>uv tool install git+https://github.com/myk-org/pi-config</code></td>
+<td>Always checked</td>
+</tr>
+<tr>
+<td><code>prek</code></td>
+<td>Pre-commit wrapper</td>
+<td><a href="https://github.com/j178/prek">github.com/j178/prek</a></td>
+<td>Only if <code>.pre-commit-config.yaml</code> exists</td>
+</tr>
+<tr>
+<td><code>agent-browser</code> skill</td>
+<td>Browser automation</td>
+<td><code>npx skills add vercel-labs/agent-browser@agent-browser -g -y</code></td>
+<td>Checks <code>~/.agents/skills/agent-browser/SKILL.md</code> or <code>~/.pi/agent/skills/agent-browser/SKILL.md</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
+<li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
+<li><a href="memory-system.html">Working with Project Memory</a></li>
+<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
+<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="cli-reference.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">myk-pi-tools CLI Reference</span>
+                </a>
+
+
+                <a href="rules-reference.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Orchestrator Rules Reference</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#project-settings-file">Project Settings File</a><ul>
+<li><a href="#settings-fields">Settings Fields</a></li>
+<li><a href="#example-file">Example File</a></li>
+<li><a href="#legacy-migration">Legacy Migration</a></li>
+</ul>
+</li>
+<li><a href="#environment-variables">Environment Variables</a><ul>
+<li><a href="#core-project-settings">Core Project Settings</a></li>
+<li><a href="#acpx-provider">ACPX Provider</a></li>
+<li><a href="#image-generation">Image Generation</a></li>
+<li><a href="#dashboard-and-diff-viewer">Dashboard and Diff Viewer</a></li>
+<li><a href="#discord-bot-integration">Discord Bot Integration</a></li>
+<li><a href="#p2p-communication-coms">P2P Communication (Coms)</a></li>
+<li><a href="#networked-communication-coms-net">Networked Communication (Coms-Net)</a></li>
+<li><a href="#container-and-docker">Container and Docker</a></li>
+<li><a href="#git-and-ssh">Git and SSH</a></li>
+<li><a href="#debugging-and-internal">Debugging and Internal</a></li>
+</ul>
+</li>
+<li><a href="#rules-loading-order">Rules Loading Order</a><ul>
+<li><a href="#adding-a-custom-rule">Adding a Custom Rule</a></li>
+</ul>
+</li>
+<li><a href="#agent-discovery-order">Agent Discovery Order</a><ul>
+<li><a href="#async-only-agents">Async-Only Agents</a></li>
+</ul>
+</li>
+<li><a href="#coderabbit-configuration">CodeRabbit Configuration</a><ul>
+<li><a href="#enabled-linters">Enabled Linters</a></li>
+<li><a href="#disabled-linters">Disabled Linters</a></li>
+<li><a href="#knowledge-base">Knowledge Base</a></li>
+</ul>
+</li>
+<li><a href="#memory-system-files">Memory System Files</a></li>
+<li><a href="#temp-directory-structure">Temp Directory Structure</a></li>
+<li><a href="#mode-aware-feature-guards">Mode-Aware Feature Guards</a></li>
+<li><a href="#extension-registration-order">Extension Registration Order</a></li>
+<li><a href="#required-and-optional-cli-tools">Required and Optional CLI Tools</a><ul>
+<li><a href="#required">Required</a></li>
+<li><a href="#optional">Optional</a></li>
+</ul>
+</li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>
