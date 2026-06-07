@@ -1,755 +1,523 @@
-# Slash Commands Reference
+# Using Slash Commands and Prompt Templates
 
-## Overview
+Slash commands let you trigger multi-step workflows in a single line — from implementing features to creating GitHub releases. This guide shows you how to use every built-in command and how prompt templates work under the hood.
 
-Pi provides two types of slash commands:
+## Prerequisites
 
-- **Prompt template commands** — defined in the `prompts/` directory, executed by the orchestrator, and may delegate to specialist agents.
-- **Extension commands** — defined in TypeScript under `extensions/orchestrator/`, executed directly without an AI roundtrip (unless noted).
+- A running pi session (see [Installing and Starting Your First Session](quickstart.html))
+- `myk-pi-tools` installed (`uv tool install myk-pi-tools`) — required by most commands
+- GitHub CLI (`gh`) authenticated — needed for PR and release commands
 
-All commands support Tab completion for arguments. Completions are cached for 5 minutes.
+## Quick Example
 
----
-
-## Implementation Commands
-
-### `/implement`
-
-Runs a scout, planner, and worker agent chain to explore the codebase, plan changes, and implement them.
+Type a slash command directly in your pi session:
 
 ```
-/implement <task>
+/implement add a retry mechanism to the HTTP client
 ```
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task` | string | Yes | Description of the task to implement |
+Pi scouts the codebase, creates a plan, and implements the change — all in one step.
 
-The command executes three agents in sequence:
+## Prompt Template Commands
 
-1. **scout** — explores the codebase and returns a summary of file locations, key functions, and dependencies.
-2. **planner** — creates a detailed implementation plan: files to modify, step-by-step changes, edge cases, testing approach.
-3. **worker** — implements the plan, making all code changes following project conventions.
+Prompt templates are markdown files that define multi-step workflows. When you type a `/command`, pi loads the matching template and follows its instructions. Arguments you pass replace the `$ARGUMENTS` placeholder in the template.
 
-```
-/implement add pagination to the /users API endpoint
-```
+### /implement — Scout, Plan, and Build
 
----
-
-### `/scout-and-plan`
-
-Runs the scout and planner agents without implementing. Useful for reviewing a plan before committing to changes.
+Chains three specialist agents in sequence: scout → planner → worker.
 
 ```
-/scout-and-plan <task>
+/implement <task description>
 ```
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task` | string | Yes | Description of the task to plan |
-
-The command executes two agents in sequence:
-
-1. **scout** — explores the codebase and returns a summary of relevant code.
-2. **planner** — creates a detailed implementation plan with files, steps, edge cases, and testing approach.
+**Examples:**
 
 ```
-/scout-and-plan migrate the auth middleware to use JWT tokens
+/implement add pagination to the users API endpoint
+/implement refactor the auth middleware to support JWT
 ```
 
----
+The scout explores relevant code, the planner creates a step-by-step plan, and the worker implements it.
 
-### `/implement-and-review`
+### /scout-and-plan — Explore Without Changing Code
 
-Implements a task, runs three parallel code reviewers, then fixes all issues found.
-
-```
-/implement-and-review <task>
-```
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `task` | string | Yes | Description of the task to implement and review |
-
-The command executes agents in this sequence:
-
-1. **worker** — implements the task.
-2. Three review agents run **in parallel**:
-   - **code-reviewer-quality** — code quality review
-   - **code-reviewer-guidelines** — guideline adherence review
-   - **code-reviewer-security** — bugs and security review
-3. **worker** — fixes all issues found by reviewers and reports what was fixed.
+Like `/implement` but stops after planning — no code changes are made.
 
 ```
-/implement-and-review add rate limiting to the API gateway
+/scout-and-plan <task description>
 ```
 
----
-
-## Code Review Commands
-
-### `/pr-review`
-
-Reviews a GitHub PR using three parallel review agents and posts inline comments.
+**Examples:**
 
 ```
-/pr-review [PR number or URL]
+/scout-and-plan migrate the database layer to async
+/scout-and-plan what would it take to add WebSocket support
 ```
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `PR number or URL` | string | No | Auto-detect from current branch | PR number, full URL, or omit for auto-detection |
+Use this when you want to understand the scope of a change before committing to it.
 
-**Tab completion:** Open PR numbers from the current repository.
+### /implement-and-review — Build With Automated Review
 
-**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
-
-**Workflow phases:**
-
-1. **PR Detection** — resolves the PR from the argument or current branch via `gh pr view`.
-2. **Data Fetching** — fetches the PR diff and project AGENTS.md using `myk-pi-tools pr diff` and `myk-pi-tools pr claude-md`.
-3. **Code Analysis** — delegates to three review agents in parallel (quality, guidelines, security).
-4. **User Selection** — presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION). The user selects which to post.
-5. **Post Comments** — posts selected findings as inline PR comments via `myk-pi-tools pr post-comment`.
-6. **Summary** — displays final counts and links.
+Implements a task, then runs all three code reviewers in parallel, and fixes any issues found.
 
 ```
-/pr-review
-/pr-review 123
+/implement-and-review <task description>
+```
+
+The workflow:
+1. Worker implements the task
+2. Three reviewers run in parallel: quality, guidelines, and security
+3. Worker fixes all review findings
+
+### /pr-review — Review a GitHub PR
+
+Reviews a GitHub PR using three parallel reviewers and posts inline comments.
+
+```
+/pr-review                       # Review PR from current branch
+/pr-review 123                   # Review PR #123
 /pr-review https://github.com/owner/repo/pull/123
 ```
 
----
+**Workflow:**
+1. Fetches the PR diff and project rules (AGENTS.md)
+2. Runs three reviewers in parallel (quality, guidelines, security)
+3. Presents findings grouped by severity (CRITICAL → WARNING → SUGGESTION)
+4. Lets you choose which findings to post as inline comments
 
-### `/review-local`
+> **Tip:** Tab-completion is available — press Tab after `/pr-review` to see open PRs.
 
-Reviews uncommitted changes or branch differences using three parallel review agents.
+### /review-local — Review Uncommitted Changes
 
-```
-/review-local [base branch]
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `base branch` | string | No | `HEAD` (uncommitted changes) | Branch name to compare against |
-
-**Tab completion:** Git branch names (local and remote).
-
-When no argument is provided, reviews all uncommitted changes (staged + unstaged) via `git diff HEAD`. When a branch is specified, compares the current branch against it via `git diff <branch>...HEAD`.
-
-Three review agents run in parallel, analyzing for code quality, guidelines adherence, and security. Results are merged, deduplicated, and presented grouped by severity.
+Reviews your local changes without touching GitHub.
 
 ```
-/review-local
-/review-local main
-/review-local feature/auth-refactor
+/review-local                    # Review uncommitted changes (staged + unstaged)
+/review-local main               # Review changes compared to main branch
+/review-local feature/auth       # Review changes compared to a specific branch
 ```
 
----
+All three reviewers run in parallel and findings are grouped by severity. No comments are posted anywhere — this is purely local feedback.
 
-### `/review-handler`
+> **Tip:** Press Tab after `/review-local` to autocomplete branch names.
 
-Processes all review sources (human, Qodo, CodeRabbit) from the current branch's PR and applies fixes.
+### /release — Create a GitHub Release
 
-```
-/review-handler [--autorabbit] [URL]
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `--autorabbit` | flag | No | Off | Auto-approve and fix CodeRabbit comments in a polling loop |
-| `URL` | string | No | Auto-detect from current branch | Specific review URL |
-
-**Tab completion:** `--autorabbit` flag.
-
-**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
-
-> **Warning:** `--autorabbit` is a command-level flag. It is never passed to `myk-pi-tools` CLI commands.
-
-**Standard workflow:**
-
-1. Fetches reviews from all sources via `myk-pi-tools reviews fetch`.
-2. Presents items in a table grouped by source, with global numbering and priority sorting.
-3. Collects user decisions (yes/no/all/skip per source).
-4. Delegates fixes to appropriate specialist agents.
-5. Runs tests (all must pass before proceeding).
-6. Commits and pushes changes.
-7. Posts replies to GitHub and stores results in the database.
-
-**Autorabbit mode (`--autorabbit`):**
-
-Skips the initial fetch/review cycle and enters a polling loop. CodeRabbit comments are auto-approved without user interaction. The loop runs until CodeRabbit approves the PR or the user explicitly stops it.
+Creates a GitHub release with automatic changelog generation and optional version bumping.
 
 ```
-/review-handler
-/review-handler --autorabbit
-/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456
+/release                         # Auto-detect version bump from commits
+/release 2.1.0                   # Release with explicit version (skips approval)
+/release --dry-run               # Preview without creating
+/release --prerelease            # Create a prerelease
+/release --draft                 # Create a draft release
+/release --target v2.10          # Target a specific branch
 ```
-
----
-
-### `/refine-review`
-
-Refines pending GitHub PR review comments with AI before submitting.
-
-```
-/refine-review <PR URL>
-```
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `PR URL` | string | Yes | Full GitHub PR URL |
-
-**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
 
 **Workflow:**
+1. Validates the branch (must be default or target branch, clean, synced)
+2. Detects version files (pyproject.toml, package.json, Cargo.toml, etc.)
+3. Categorizes commits by conventional commit type and generates a changelog
+4. Asks for approval (unless an explicit version was given)
+5. Bumps version files, creates a PR, merges it
+6. Creates the GitHub release with the changelog
 
-1. Fetches pending review comments via `myk-pi-tools reviews pending-fetch`.
-2. Refines each comment for clarity, conciseness, and actionability.
-3. Presents original and refined versions side-by-side.
-4. User selects which refinements to accept (all, specific numbers, keep originals, or custom text).
-5. User chooses a review action: Comment, Approve, Request Changes, or keep pending.
-6. Submits updates via `myk-pi-tools reviews pending-update`.
+> **Tip:** Tab-completion shows recent git tags and flags like `--dry-run`, `--prerelease`, `--draft`, and `--target`.
+
+### /review-handler — Process All PR Review Comments
+
+Fetches and processes review comments from all sources — human reviewers, Qodo, and CodeRabbit.
+
+```
+/review-handler                              # Process current PR's reviews
+/review-handler --autorabbit                 # Auto-fix CodeRabbit comments in a loop
+/review-handler --autoqodo                   # Auto-fix Qodo comments in a loop
+/review-handler --autorabbit --autoqodo      # Auto-fix both in a loop
+```
+
+In manual mode, each review comment is presented with its severity and you decide which to address. In auto mode (`--autorabbit`/`--autoqodo`), the command enters a polling loop that automatically fixes comments, pushes changes, and waits for the reviewer to re-evaluate — fully unattended.
+
+> **Note:** The `--autorabbit` and `--autoqodo` flags are command-level flags for pi, not CLI arguments. They control the behavior of the polling loop.
+
+For multi-PR scenarios, the command uses `git worktree` to isolate each PR rather than switching branches, which prevents interference with other running agents.
+
+### /external-ai — Run Prompts via External AI CLIs
+
+Sends prompts to external AI agents (Cursor, Claude, Gemini) via ai-cli-runner.
+
+```
+/external-ai cursor review the error handling
+/external-ai claude explain this function
+/external-ai gemini --model gemini-2.5-pro analyze the architecture
+/external-ai cursor --fix fix the failing tests
+/external-ai cursor --peer review this code
+/external-ai cursor,claude review this code          # Multi-agent
+/external-ai cursor --resume explain the last change  # Continue session
+```
+
+**Modes:**
+
+| Flag | Behavior |
+|------|----------|
+| *(none)* | Read-only — agent cannot modify files |
+| `--fix` | Agent can modify, create, and delete files |
+| `--peer` | AI-to-AI debate loop until both agents agree |
+| `--resume` | Continue most recent session context |
+| `--model <name>` | Override the default model |
+
+In **peer mode**, pi orchestrates an iterative review loop: the external agent reviews, pi acts on findings (fixing or counter-arguing), sends results back, and repeats until convergence. With multiple agents (e.g., `cursor,claude`), each agent reviews independently and all must agree before the loop exits.
+
+For a deeper dive, see [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html).
+
+### /refine-review — Polish Pending PR Review Comments
+
+Refines your pending GitHub PR review comments with AI before submitting.
 
 ```
 /refine-review https://github.com/owner/repo/pull/123
 ```
 
----
+Fetches your unsubmitted review comments, generates improved versions, and shows side-by-side comparisons. You pick which refinements to accept, optionally submit with "Request Changes," and the command updates comments on GitHub.
 
-## Release & Integration Commands
+### /query-db — Query the Reviews Database
 
-### `/release`
-
-Creates a GitHub release with automatic changelog generation and optional version file bumping.
-
-```
-/release [version] [flags]
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `version` | string | No | Auto-detected from commits | Explicit version number (e.g., `1.17.1`) |
-| `--dry-run` | flag | No | Off | Preview the release without creating it |
-| `--prerelease` | flag | No | Off | Mark as prerelease |
-| `--draft` | flag | No | Off | Create as draft release |
-| `--target <branch>` | flag | No | Current branch | Target branch for the release |
-| `--tag-match <pattern>` | flag | No | None | Filter tags to a specific pattern |
-
-**Tab completion:** Recent git tags sorted by version.
-
-**Prerequisites:** `myk-pi-tools` must be installed.
-
-**Workflow:**
-
-1. **Validation** — checks branch status, clean working tree, and remote sync via `myk-pi-tools release info`.
-2. **Version Detection** — scans for version files via `myk-pi-tools release detect-versions`.
-3. **Changelog** — categorizes commits by conventional commit type and generates formatted changelog with emoji section headers.
-4. **User Approval** — presents proposed version, version files to update, and changelog preview. Skipped when an explicit version is provided.
-5. **Version Bump** — updates version files via `myk-pi-tools release bump-version`, creates a PR, and merges it.
-6. **Create Release** — creates the GitHub release via `myk-pi-tools release create`.
-
-**Version bump logic:**
-
-| Commit Type | Bump |
-|-------------|------|
-| Breaking changes | MAJOR |
-| `feat:` | MINOR |
-| `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:` | PATCH |
-
-```
-/release
-/release 2.0.0
-/release --dry-run
-/release --prerelease --draft
-```
-
----
-
-### `/coderabbit-rate-limit`
-
-Handles CodeRabbit rate limits by waiting for the cooldown period and re-triggering the review.
-
-```
-/coderabbit-rate-limit [PR number or URL]
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `PR number or URL` | string | No | Auto-detect from current branch | PR number or full URL |
-
-**Tab completion:** Open PR numbers from the current repository.
-
-**Prerequisites:** `uv` and `myk-pi-tools` must be installed.
-
-**Workflow:**
-
-1. Detects the PR from arguments or current branch.
-2. Checks rate limit status via `myk-pi-tools coderabbit check`.
-3. If rate-limited, waits for the cooldown (plus 30-second buffer) and triggers `@coderabbitai review`.
-4. Polls until the review starts (max 10 minutes).
-
-```
-/coderabbit-rate-limit
-/coderabbit-rate-limit 123
-/coderabbit-rate-limit https://github.com/owner/repo/pull/123
-```
-
----
-
-### `/query-db`
-
-Queries the reviews database for analytics and insights about PR review history.
-
-```
-/query-db <command>
-```
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `command` | string | Yes | Query subcommand or raw SQL SELECT |
-
-**Prerequisites:** `myk-pi-tools` must be installed.
-
-**Available subcommands:**
-
-| Subcommand | Description |
-|------------|-------------|
-| `stats --by-source` | Addressed rate by source (human vs AI) |
-| `stats --by-reviewer` | Statistics by individual reviewer |
-| `patterns --min <N>` | Find recurring dismissed suggestions (minimum N occurrences) |
-| `dismissed --owner <X> --repo <Y>` | All dismissed comments for a specific repo |
-| `query "<SQL>"` | Custom SELECT query against the database |
-| `find-similar` | Find comments similar to previously dismissed ones (JSON via stdin) |
-
-> **Note:** Only SELECT statements and CTEs are allowed. Modifying queries (INSERT, UPDATE, DELETE, DROP) are blocked.
-
-The database is located at `<project-root>/.claude/data/reviews.db`.
+Runs analytics queries against your local review history database.
 
 ```
 /query-db stats --by-source
 /query-db stats --by-reviewer
 /query-db patterns --min 2
 /query-db dismissed --owner myorg --repo myrepo
-/query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
+/query-db SELECT * FROM comments WHERE status='skipped' LIMIT 10
 ```
 
----
+The database stores all processed review comments from `/review-handler`, enabling you to find recurring patterns, track addressed rates by source, and run custom SQL queries.
 
-## External Agent Commands
+> **Note:** Only SELECT statements are allowed — the database is read-only for safety.
 
-### `/acpx-prompt`
+### /remember — Save a Memory
 
-Runs a prompt through [acpx](https://github.com/openclaw/acpx) to any ACP-compatible coding agent.
-
-```
-/acpx-prompt [agent[:model]] [--fix|--peer] <prompt>
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `agent` | string | No | Last saved agent from `.pi/acpx-config.json` | Target agent name |
-| `:model` | string | No | Agent default | Model override (e.g., `codex:o3-pro`) |
-| `--fix` | flag | No | Off | Grant the agent file write permissions |
-| `--peer` | flag | No | Off | Run an AI-to-AI peer review loop |
-| `prompt` | string | Yes | — | The prompt to send to the agent |
-
-**Tab completion:** Agent names (`pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `iflow`, `kilocode`, `kimi`, `kiro`, `opencode`, `qwen`) and flags (`--fix`, `--peer`).
-
-**Prerequisites:** `acpx` must be installed (`npm install -g acpx@latest`). The underlying agent CLI must also be installed separately.
-
-**Supported agents:**
-
-| Agent | Wraps |
-|-------|-------|
-| `pi` | Pi Coding Agent |
-| `openclaw` | OpenClaw ACP bridge |
-| `codex` | Codex CLI (OpenAI) |
-| `claude` | Claude Code |
-| `gemini` | Gemini CLI |
-| `cursor` | Cursor CLI |
-| `copilot` | GitHub Copilot CLI |
-| `droid` | Factory Droid |
-| `iflow` | iFlow CLI |
-| `kilocode` | Kilocode |
-| `kimi` | Kimi CLI |
-| `kiro` | Kiro CLI |
-| `opencode` | OpenCode |
-| `qwen` | Qwen Code |
-
-**Modes:**
-
-| Mode | Flag | Permissions |
-|------|------|-------------|
-| Default (read-only) | none | Agent can read files only |
-| Fix | `--fix` | Agent can read and write files |
-| Peer review | `--peer` | AI-to-AI debate loop until convergence |
-
-> **Note:** `--fix` and `--peer` are mutually exclusive. Multiple agents with `--fix` is not supported.
-
-**Peer review mode** runs a multi-round debate loop between Claude and the peer agent(s). Claude fixes code based on findings and sends changes back for re-review. The loop continues until all peer agents confirm no remaining issues. With multiple peers, all must agree independently.
-
-**Configuration persistence:** The last-used agent spec is saved to `.pi/acpx-config.json` after successful runs. Subsequent invocations without an agent name use the saved value.
+Saves a pinned memory for future sessions.
 
 ```
-/acpx-prompt codex review this function
-/acpx-prompt cursor:gpt-4o --fix fix the failing tests
-/acpx-prompt cursor,codex --peer review the architecture
-/acpx-prompt --peer review this code
+/remember always run tests with --verbose flag
+/remember the auth service requires Redis to be running
+/remember we decided to use UTC timestamps everywhere
 ```
 
----
+Pi determines the best category (lesson, decision, mistake, pattern, preference, done) and persists it. See [Working with Project Memory](memory-system.html) for more on the memory system.
 
-## Memory Commands
+### /coderabbit-rate-limit — Handle CodeRabbit Rate Limits
 
-### `/dream`
-
-Runs memory consolidation as a background async agent. Analyzes the current session and maintains the `memory.md` file.
+Waits for a CodeRabbit rate limit to expire and re-triggers the review automatically.
 
 ```
-/dream
+/coderabbit-rate-limit             # Current branch's PR
+/coderabbit-rate-limit 123         # Specific PR number
 ```
 
-This command takes no arguments. It runs as a fire-and-forget background agent and does not block the session.
+### /review-handler-status — Check Running Review Agents
 
-**Operations performed:**
-
-1. Reads the memory file at `<project>/.pi/memory/memory.md`.
-2. Extracts learnable items from the current session (lessons, preferences, mistakes, completed work, patterns).
-3. Deduplicates and removes stale entries from the Learned section.
-4. Keeps the file under 50 entries.
-5. Never modifies entries in the Pinned section.
+Shows the live state of running autoqodo/autorabbit review-handler agents.
 
 ```
-/dream
+/review-handler-status
 ```
 
----
+Looks for active `reviews poll` agents and generates an HTML status report.
 
-### `/remember`
+### /create-skill — Save a Workflow as a Reusable Skill
 
-Saves a pinned project memory for future sessions.
-
-```
-/remember <what to remember>
-```
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `what` | string | Yes | The information to save as a pinned memory |
-
-Automatically categorizes the memory as one of: `lesson`, `decision`, `mistake`, `pattern`, `done`, or `preference`. Saved via `myk-pi-tools memory add --pinned`.
-
-Pinned memories are never auto-removed by the `/dream` consolidation process.
+Captures a successful workflow from the current conversation and saves it as a reusable skill.
 
 ```
-/remember always run uv lock after changing pyproject.toml
-/remember the billing API requires OAuth2 client credentials flow
+/create-skill debug-container-build
+/create-skill                       # Prompts for a name
 ```
 
----
+You choose whether the skill is **global** (`~/.agents/skills/`) or **project-scoped** (`.pi/skills/`). See [Customization and Extension Recipes](customization-recipes.html) for more on creating custom skills.
 
-## Session Utility Commands
+### /create-coms-feature-manager — Generate a Coms Feature Manager
 
-### `/btw`
-
-Asks a quick side question without polluting the conversation history.
+Creates a project-specific coms feature manager prompt for coordinating between a manager agent and a coder agent via inter-agent communication.
 
 ```
-/btw <question>
+/create-coms-feature-manager
 ```
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `question` | string | Yes | The side question to ask |
+See [Communicating Between Pi Sessions](inter-agent-communication.html) for details on the coms system.
 
-Opens an ephemeral overlay that shows the answer. The question and answer are not added to the conversation history. The AI answers based only on existing conversation context with no tool access.
+## Extension Commands
 
-**Overlay controls:**
+Extension commands are registered by the orchestrator extension and execute directly — no prompt template involved. They're faster because they don't need an AI roundtrip.
 
-| Key | Action |
-|-----|--------|
-| `Esc`, `Space`, `q` | Dismiss |
-| `Up` / `k` | Scroll up |
-| `Down` / `j` | Scroll down |
-| `PgUp` | Scroll up 10 lines |
-| `PgDn` | Scroll down 10 lines |
+### /btw — Quick Side Questions
+
+Ask a quick question without disrupting your conversation history.
 
 ```
-/btw what branch am I on?
-/btw what was the name of that function we discussed?
+/btw what was the name of the config file we edited earlier?
+/btw what port is the dev server running on?
 ```
 
----
+The answer appears in a scrollable overlay and disappears when you dismiss it (Esc, Space, or q). Your main conversation context is not affected.
 
-### `/status`
+### /status — Session Status Snapshot
 
-Shows a unified session status snapshot. Executes directly without an AI roundtrip.
+Shows a unified view of your current session state.
 
 ```
 /status
 ```
 
-This command takes no arguments.
+Output includes:
+- **Async agents** — count and status of background agents
+- **Cron tasks** — active scheduled tasks with last run times
+- **Git state** — current branch, dirty file count
+- **Container status** — whether you're running inside a container
+- **Loaded resources** — context files, skills, tools, and guidelines
 
-**Displays:**
+### /async-status — Background Agent Status
 
-- **Async agents** — count and list of running background agents with duration and task preview.
-- **Cron tasks** — count and list of active scheduled tasks with schedule and last run time.
-- **Git** — current branch, clean/dirty state, number of changed files, and repository name.
-- **Container** — whether the session is running inside a container.
-
-```
-/status
-```
-
----
-
-### `/async-status`
-
-Shows the status of background async agents. If running agents exist, presents an interactive selector to view live streaming output.
+Shows the status of all running background agents.
 
 ```
 /async-status
 ```
 
-This command takes no arguments.
+See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for managing async agents.
 
-If all agents are completed, shows a static summary with completion status and duration. If running agents exist, lets you select one to view live output in a scrollable overlay.
+### /cron — Scheduled Tasks
 
-**Live output viewer controls:**
-
-| Key | Action |
-|-----|--------|
-| `Esc`, `Ctrl+C` | Close viewer |
-| `Up` / `Down` | Scroll |
-| `PgUp` / `PgDn` | Scroll 10 lines |
-| `Home` / `End` | Jump to top/bottom |
+Schedule recurring tasks that run on an interval or at specific times.
 
 ```
-/async-status
-```
-
----
-
-### `/async-kill`
-
-Kills running async agent(s) by name, ID prefix, or all at once. Without an argument, presents an interactive selection menu.
-
-```
-/async-kill [name|id|all]
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `target` | string | No | Interactive selection | Agent name, ID prefix, or `all` |
-
-```
-/async-kill all
-/async-kill Dream
-/async-kill worker-1716000000
-```
-
----
-
-### `/dream-auto`
-
-Toggles automatic memory dreaming. When enabled, spawns a worker agent every 3 hours and on session quit to consolidate memories.
-
-```
-/dream-auto [on|off]
-```
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `state` | string | No | Shows current status | `on` to enable, `off` to disable |
-
-**Tab completion:** `on`, `off`.
-
-**Environment variable:** `PI_DREAM_INTERVAL_HOURS` — override the dreaming interval (default: `3`, range: `0.5`–`24`).
-
-Auto-dreaming is enabled by default. On session quit, a final dream runs as a detached process.
-
-```
-/dream-auto
-/dream-auto on
-/dream-auto off
-```
-
----
-
-### `/cron`
-
-Schedules recurring tasks within the pi session. Tasks survive `/reload` and `/new` but are terminated on pi exit.
-
-```
-/cron <subcommand|natural language>
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| `list` | List scheduled tasks in the current session |
-| `list-all` | List cron tasks from all active pi sessions |
-| `remove <id> [id...]` | Remove tasks by ID (aliases: `rm`, `delete`, `kill`) |
-| `<natural language>` | Add a task using natural language (parsed by AI) |
-
-**Tab completion:** Subcommands (`add`, `list`, `list-all`, `remove`), schedule hints (`every`, `at`), and task IDs for removal.
-
-**Schedule types:**
-
-| Type | Format | Example |
-|------|--------|---------|
-| Interval-based | `every <duration>` | `every 2h`, `every 30m` |
-| Time-based | `at <HH:MM>` | `at 12:00`, `at 09:30` |
-
-**Task types:**
-
-| Type | Prefix | Execution |
-|------|--------|-----------|
-| Slash command | `/` | Executed as a command in the session |
-| Prompt | (any text) | Run as an async background agent |
-
-> **Note:** Minimum interval is 10 seconds. Tasks are persisted to a PID-scoped file and restored after `/reload`.
-
-```
+/cron add every 2h run the test suite
+/cron add at 09:00 check for new issues
 /cron list
 /cron list-all
-/cron remove 1 3
-/cron every 2h run /pr-review
-/cron at 09:00 check for new issues
+/cron remove 3
 ```
 
-The `cron_manage` tool is also available for the AI to manage cron tasks programmatically with structured parameters.
+Tasks survive `/reload` and `/new` but stop when pi exits. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 
-**`cron_manage` tool parameters:**
+### /dream — Memory Consolidation
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `action` | `"add"` \| `"list"` \| `"list-all"` \| `"remove"` | Yes | Action to perform |
-| `description` | string | For `add` | Human-readable task description |
-| `task` | string | For `add` | What to execute (prompt or `/command`) |
-| `interval_seconds` | number | For interval `add` | Run every N seconds (minimum 10) |
-| `at_hour` | number (0–23) | For time-based `add` | Hour for daily schedule |
-| `at_minute` | number (0–59) | For time-based `add` | Minute for daily schedule |
-| `id` | number | For `remove` | Task ID to remove |
+Trigger memory consolidation manually, or toggle automatic dreaming.
 
+```
+/dream                  # Run consolidation now
+/dream-auto on          # Enable auto-dreaming (default: every 3h + session end)
+/dream-auto off         # Disable auto-dreaming
+```
+
+See [Working with Project Memory](memory-system.html) for how dreaming fits into the memory lifecycle.
+
+### /coms and /coms-net — Inter-Agent Communication
+
+Manage P2P and networked communication between pi sessions.
+
+```
+/coms start             # Start P2P communication
+/coms-net connect       # Connect to the network hub
+```
+
+See [Communicating Between Pi Sessions](inter-agent-communication.html) for the full guide.
+
+### /pidash and /pidiff — Web Dashboard and Diff Viewer
+
+Manage the web dashboard and diff viewer daemons.
+
+```
+/pidash start           # Launch the web dashboard
+/pidiff start           # Launch the diff viewer
+```
+
+See [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html) for setup and usage.
+
+### /external-ai-models-refresh — Refresh Model Cache
+
+Clears the cached model lists for all AI CLI providers and re-fetches them.
+
+```
+/external-ai-models-refresh
+```
+
+Useful when new models become available and Tab-completion isn't showing them.
+
+## Tab Completion
+
+Most commands support Tab-completion for arguments. Press Tab after the command name to see available options:
+
+| Command | Tab completes |
+|---------|---------------|
+| `/external-ai` | Provider names, flags (`--fix`, `--peer`, `--model`), model IDs |
+| `/pr-review` | Open PR numbers with titles |
+| `/review-local` | Git branch names |
+| `/release` | Recent git tags, flags (`--dry-run`, `--prerelease`, `--draft`, `--target`) |
+| `/review-handler` | `--autorabbit`, `--autoqodo` |
+| `/coderabbit-rate-limit` | Open PR numbers |
+| `/cron` | Subcommands (`add`, `list`, `remove`), task IDs for removal |
+| `/dream-auto` | `on`, `off` |
+
+Completions are cached for 5 minutes. Model lists for `/external-ai` are pre-fetched when the session starts.
+
+## How Prompt Templates Work
+
+Prompt templates are markdown files in the `prompts/` directory with YAML frontmatter. When you type a slash command, pi:
+
+1. Loads the matching `.md` file
+2. Substitutes `$ARGUMENTS` with whatever you typed after the command name
+3. Follows the instructions in the template
+
+The orchestrator **always maintains control** of the prompt workflow. It never delegates the entire command to a specialist agent — only sub-tasks get routed to agents as the template directs.
+
+### Anatomy of a Prompt Template
+
+Every prompt template has this structure:
+
+```markdown
+---
+description: "Short description — /command-name <args>"
+argument-hint: "<task>"
 ---
 
-### `/pidash`
+## Raw Arguments
 
-Manages the pidash web dashboard daemon. Pidash provides a browser-based UI for monitoring pi sessions, viewing conversation history, managing async agents and cron tasks, and switching models.
+‍```text
+$ARGUMENTS
+‍```
 
-```
-/pidash [subcommand]
-```
+> **Bug Reporting Policy:** If you encounter ANY error...
 
-| Subcommand | Description |
-|------------|-------------|
-| `start` | Start the pidash server |
-| `stop` | Stop the pidash server and disconnect |
-| `restart` | Stop and restart the pidash server |
-| `status` | Show server status, port, and connection state (default) |
+# Command Title
 
-**Tab completion:** `start`, `stop`, `restart`, `status`.
-
-**Environment variables:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PI_PIDASH_PORT` | `19190` | Port for the pidash server |
-| `PI_PIDASH_ENABLE` | `true` | Set to `false` to disable pidash |
-
-The dashboard is accessible at `http://localhost:19190` (or the configured port). It connects to pi via WebSocket and supports sending prompts from the browser, switching models, aborting operations, and viewing live streaming output.
-
-```
-/pidash
-/pidash start
-/pidash stop
-/pidash restart
-/pidash status
+Instructions for the orchestrator to follow...
 ```
 
+| Field | Purpose |
+|-------|---------|
+| `description` | Shown in the command list and autocomplete |
+| `argument-hint` | Placeholder text shown in the input bar |
+| `$ARGUMENTS` | Replaced with user input at runtime |
+| Bug Reporting Policy | Standard block ensuring issues are reported, not silently worked around |
+
+### Project-Level Prompt Templates
+
+You can create custom prompt templates in your project's `.pi/prompts/` directory. Any `.md` file with YAML frontmatter automatically registers as a slash command.
+
+For example, creating `.pi/prompts/deploy-staging.md`:
+
+```markdown
+---
+description: "Deploy to staging — /deploy-staging [version]"
+argument-hint: "[version]"
 ---
 
-### `/pidiff`
+## Raw Arguments
 
-Manages the pidiff diff viewer daemon. Pidiff provides a browser-based UI for viewing branch diffs, file trees, and inline review comments.
+‍```text
+$ARGUMENTS
+‍```
 
-```
-/pidiff [subcommand]
-```
+# Deploy to Staging
 
-| Subcommand | Description |
-|------------|-------------|
-| `start` | Start the pidiff server |
-| `stop` | Stop the pidiff server and disconnect |
-| `restart` | Stop and restart the pidiff server |
-| `status` | Show server status, port, and connection state (default) |
-
-**Tab completion:** `start`, `stop`, `restart`, `status`.
-
-**Environment variables:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PI_PIDIFF_PORT` | `19290` | Port for the pidiff server |
-| `PI_PIDIFF_ENABLE` | `true` | Set to `false` to disable pidiff |
-
-Review comments published from the pidiff browser UI are automatically injected into the pi session as follow-up messages.
-
-```
-/pidiff
-/pidiff start
-/pidiff stop
-/pidiff restart
+1. Run `make build`
+2. Run `make deploy-staging VERSION=$ARGUMENTS`
+3. Verify health check at https://staging.example.com/health
 ```
 
----
+After creating the file, run `/reload` to register the new command.
 
-### `/nvim-changed-files`
+> **Tip:** Use `/create-skill` to capture successful workflows as reusable skills, or write prompt templates directly for more complex multi-step commands. See [Customization and Extension Recipes](customization-recipes.html) for guidance on both approaches.
 
-Sends git changed files to Neovim's quickfix list. Only available when pi is running inside a Neovim terminal (the `NVIM` environment variable is set).
+## Advanced Usage
 
-```
-/nvim-changed-files
-```
+### Chaining Commands
 
-This command takes no arguments.
-
-Collects all changed files (committed on the branch vs. `origin/main` plus uncommitted changes) and sends them to the parent Neovim instance's quickfix list via RPC. Opens the quickfix window automatically.
-
-> **Note:** This command is only registered when the `NVIM` environment variable points to a valid Neovim socket.
+You can use the output of one command as context for another:
 
 ```
-/nvim-changed-files
+/scout-and-plan add rate limiting to the API
 ```
 
----
+Review the plan, then:
 
-## Quick Reference
+```
+/implement add rate limiting to the API following the plan above
+```
 
-| Command | Type | Arguments | Description |
-|---------|------|-----------|-------------|
-| `/implement` | Prompt | `<task>` | Scout, plan, and implement |
-| `/scout-and-plan` | Prompt | `<task>` | Scout and plan without implementing |
-| `/implement-and-review` | Prompt | `<task>` | Implement with review and fix cycle |
-| `/pr-review` | Prompt | `[#\|URL]` | Review a GitHub PR |
-| `/review-local` | Prompt | `[branch]` | Review local changes |
-| `/review-handler` | Prompt | `[--autorabbit] [URL]` | Process and fix PR review comments |
-| `/refine-review` | Prompt | `<URL>` | Refine pending review comments |
-| `/release` | Prompt | `[version] [flags]` | Create a GitHub release |
-| `/coderabbit-rate-limit` | Prompt | `[#\|URL]` | Handle CodeRabbit rate limits |
-| `/query-db` | Prompt | `<command>` | Query the reviews database |
-| `/acpx-prompt` | Prompt | `[agent] [flags] <prompt>` | Run prompt via external agent |
-| `/dream` | Prompt | — | Run memory consolidation |
-| `/remember` | Prompt | `<what>` | Save a pinned memory |
-| `/btw` | Extension | `<question>` | Quick side question (ephemeral) |
-| `/status` | Extension | — | Session status snapshot |
-| `/async-status` | Extension | — | Background agent status |
-| `/async-kill` | Extension | `[target]` | Kill background agent(s) |
-| `/dream-auto` | Extension | `[on\|off]` | Toggle automatic dreaming |
-| `/cron` | Extension | `<subcommand\|text>` | Schedule recurring tasks |
-| `/pidash` | Extension | `[subcommand]` | Manage web dashboard |
-| `/pidiff` | Extension | `[subcommand]` | Manage diff viewer |
-| `/nvim-changed-files` | Extension | — | Send changed files to Neovim |
+Or use `/implement-and-review` to combine implementation with automated review in a single step.
+
+### Auto-Mode Review Workflows
+
+For fully unattended review handling, combine `--autorabbit` and `--autoqodo`:
+
+```
+/review-handler --autorabbit --autoqodo
+```
+
+This enters a polling loop that:
+1. Fetches new comments from CodeRabbit and Qodo
+2. Automatically fixes each finding
+3. Commits and pushes changes
+4. Waits for reviewers to re-evaluate
+5. Repeats until all reviewers approve
+
+The loop runs in the background — you can continue working in the same session. It exits only when all automated reviewers approve or you explicitly stop it.
+
+### Peer Review With Multiple Agents
+
+Run a multi-agent peer review debate:
+
+```
+/external-ai cursor,claude --peer review the error handling in src/api/
+```
+
+Each agent reviews independently, pi synthesizes findings, fixes code, and sends results back. The loop continues until all agents agree — with full group context so each agent sees what the others said.
+
+### Release With Version Branch Targeting
+
+For projects using version branches:
+
+```
+/release --target v2.10 --tag-match "v2.10.*"
+```
+
+This targets the `v2.10` branch and filters tags to that version range. On a version branch, automatic detection works without flags:
+
+```
+git checkout v2.10
+/release
+```
+
+## Troubleshooting
+
+**"myk-pi-tools is required" error**
+Most commands need the `myk-pi-tools` CLI. Install it:
+```
+uv tool install myk-pi-tools
+```
+
+**Tab completion not showing results**
+Completions are cached for 5 minutes. Run `/external-ai-models-refresh` to force a refresh of model lists, or wait for the cache to expire for PR and branch lists.
+
+**"Unknown provider" error with /external-ai**
+Only `cursor`, `claude`, and `gemini` are supported. For other agents (Codex, Copilot, Droid, Kiro, etc.), use the ACPX provider instead.
+
+**PR detection fails for /pr-review or /review-handler**
+Ensure you're on a branch with an open PR and `gh` is authenticated:
+```bash
+gh auth status
+gh pr view
+```
+
+For the full command reference with all arguments and options, see [Slash Commands and Extension Commands Reference](commands-reference.html).
+
+## Related Pages
+
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+- [Your First Coding Workflow](first-workflow.html)
+- [Running the Automated Code Review Loop](code-review-loop.html)
+- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)

@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Slash Commands Reference - pi-config</title>
-    <meta name="description" content="Orchestrate specialist AI agents to automatically review, implement, and release your code">
+    <title>Using Slash Commands and Prompt Templates - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Orchestrate specialist AI agents to automatically review, implement, and release your code</p>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,7 +31,14 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Quickstart
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
                         </a>
                     </li>
 
@@ -43,51 +50,65 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="delegating-tasks.html"
+                        <a href="agent-routing.html"
                            class="nav-link">
-                            Delegating Tasks to Specialist Agents
+                            Understanding Agent Routing and Delegation
                         </a>
                     </li>
 
                     <li>
-                        <a href="reviewing-code.html"
+                        <a href="code-review-loop.html"
                            class="nav-link">
-                            Reviewing Code with Parallel Agents
+                            Running the Automated Code Review Loop
                         </a>
                     </li>
 
                     <li>
-                        <a href="managing-releases.html"
-                           class="nav-link">
-                            Managing Releases and Versioning
+                        <a href="slash-commands.html"
+                           class="nav-link active" aria-current="page">
+                            Using Slash Commands and Prompt Templates
                         </a>
                     </li>
 
                     <li>
-                        <a href="using-dashboard.html"
+                        <a href="memory-system.html"
                            class="nav-link">
-                            Monitoring Sessions with the Web Dashboard
+                            Working with Project Memory
                         </a>
                     </li>
 
                     <li>
-                        <a href="working-with-memory.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Saving and Recalling Project Knowledge
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="running-in-docker.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Running pi-config in Docker
+                            Communicating Between Pi Sessions
                         </a>
                     </li>
 
                     <li>
-                        <a href="querying-reviews.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Querying the Review Database
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
                         </a>
                     </li>
 
@@ -105,6 +126,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -113,30 +141,37 @@
                 <ul class="nav-group-pages">
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            CLI Command Reference
+                            myk-pi-tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
-                           class="nav-link active" aria-current="page">
-                            Slash Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="specialist-agents.html"
+                        <a href="configuration-reference.html"
                            class="nav-link">
-                            Specialist Agent Catalog
+                            Configuration and Environment Variables Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="environment-variables.html"
+                        <a href="rules-reference.html"
                            class="nav-link">
-                            Environment Variables
+                            Orchestrator Rules Reference
                         </a>
                     </li>
 
@@ -148,9 +183,65 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="architecture.html"
+                        <a href="extension-architecture.html"
                            class="nav-link">
-                            Orchestrator Architecture
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
                         </a>
                     </li>
 
@@ -203,1335 +294,483 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="slash-commands-reference">Slash Commands Reference</h1>
-<h2 id="overview">Overview</h2>
-<p>Pi provides two types of slash commands:</p>
+                    <h1 id="using-slash-commands-and-prompt-templates">Using Slash Commands and Prompt Templates</h1>
+<p>Slash commands let you trigger multi-step workflows in a single line — from implementing features to creating GitHub releases. This guide shows you how to use every built-in command and how prompt templates work under the hood.</p>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li><strong>Prompt template commands</strong> — defined in the <code>prompts/</code> directory, executed by the orchestrator, and may delegate to specialist agents.</li>
-<li><strong>Extension commands</strong> — defined in TypeScript under <code>extensions/orchestrator/</code>, executed directly without an AI roundtrip (unless noted).</li>
+<li>A running pi session (see <a href="quickstart.html">Installing and Starting Your First Session</a>)</li>
+<li><code>myk-pi-tools</code> installed (<code>uv tool install myk-pi-tools</code>) — required by most commands</li>
+<li>GitHub CLI (<code>gh</code>) authenticated — needed for PR and release commands</li>
 </ul>
-<p>All commands support Tab completion for arguments. Completions are cached for 5 minutes.</p>
-<hr />
-<h2 id="implementation-commands">Implementation Commands</h2>
-<h3 id="implement"><code>/implement</code></h3>
-<p>Runs a scout, planner, and worker agent chain to explore the codebase, plan changes, and implement them.</p>
-<div class="highlight"><pre><span></span><code>/implement &lt;task&gt;
+<h2 id="quick-example">Quick Example</h2>
+<p>Type a slash command directly in your pi session:</p>
+<div class="highlight"><pre><span></span><code>/implement add a retry mechanism to the HTTP client
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>task</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>Description of the task to implement</td>
-</tr>
-</tbody>
-</table>
-<p>The command executes three agents in sequence:</p>
+<p>Pi scouts the codebase, creates a plan, and implements the change — all in one step.</p>
+<h2 id="prompt-template-commands">Prompt Template Commands</h2>
+<p>Prompt templates are markdown files that define multi-step workflows. When you type a <code>/command</code>, pi loads the matching template and follows its instructions. Arguments you pass replace the <code>$ARGUMENTS</code> placeholder in the template.</p>
+<h3 id="implement-scout-plan-and-build">/implement — Scout, Plan, and Build</h3>
+<p>Chains three specialist agents in sequence: scout → planner → worker.</p>
+<div class="highlight"><pre><span></span><code>/implement &lt;task description&gt;
+</code></pre></div>
+
+<p><strong>Examples:</strong></p>
+<div class="highlight"><pre><span></span><code>/implement add pagination to the users API endpoint
+/implement refactor the auth middleware to support JWT
+</code></pre></div>
+
+<p>The scout explores relevant code, the planner creates a step-by-step plan, and the worker implements it.</p>
+<h3 id="scout-and-plan-explore-without-changing-code">/scout-and-plan — Explore Without Changing Code</h3>
+<p>Like <code>/implement</code> but stops after planning — no code changes are made.</p>
+<div class="highlight"><pre><span></span><code>/scout-and-plan &lt;task description&gt;
+</code></pre></div>
+
+<p><strong>Examples:</strong></p>
+<div class="highlight"><pre><span></span><code>/scout-and-plan migrate the database layer to async
+/scout-and-plan what would it take to add WebSocket support
+</code></pre></div>
+
+<p>Use this when you want to understand the scope of a change before committing to it.</p>
+<h3 id="implement-and-review-build-with-automated-review">/implement-and-review — Build With Automated Review</h3>
+<p>Implements a task, then runs all three code reviewers in parallel, and fixes any issues found.</p>
+<div class="highlight"><pre><span></span><code>/implement-and-review &lt;task description&gt;
+</code></pre></div>
+
+<p>The workflow:</p>
 <ol>
-<li><strong>scout</strong> — explores the codebase and returns a summary of file locations, key functions, and dependencies.</li>
-<li><strong>planner</strong> — creates a detailed implementation plan: files to modify, step-by-step changes, edge cases, testing approach.</li>
-<li><strong>worker</strong> — implements the plan, making all code changes following project conventions.</li>
+<li>Worker implements the task</li>
+<li>Three reviewers run in parallel: quality, guidelines, and security</li>
+<li>Worker fixes all review findings</li>
 </ol>
-<div class="highlight"><pre><span></span><code>/implement add pagination to the /users API endpoint
-</code></pre></div>
-
-<hr />
-<h3 id="scout-and-plan"><code>/scout-and-plan</code></h3>
-<p>Runs the scout and planner agents without implementing. Useful for reviewing a plan before committing to changes.</p>
-<div class="highlight"><pre><span></span><code>/scout-and-plan &lt;task&gt;
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>task</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>Description of the task to plan</td>
-</tr>
-</tbody>
-</table>
-<p>The command executes two agents in sequence:</p>
-<ol>
-<li><strong>scout</strong> — explores the codebase and returns a summary of relevant code.</li>
-<li><strong>planner</strong> — creates a detailed implementation plan with files, steps, edge cases, and testing approach.</li>
-</ol>
-<div class="highlight"><pre><span></span><code>/scout-and-plan migrate the auth middleware to use JWT tokens
-</code></pre></div>
-
-<hr />
-<h3 id="implement-and-review"><code>/implement-and-review</code></h3>
-<p>Implements a task, runs three parallel code reviewers, then fixes all issues found.</p>
-<div class="highlight"><pre><span></span><code>/implement-and-review &lt;task&gt;
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>task</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>Description of the task to implement and review</td>
-</tr>
-</tbody>
-</table>
-<p>The command executes agents in this sequence:</p>
-<ol>
-<li><strong>worker</strong> — implements the task.</li>
-<li>Three review agents run <strong>in parallel</strong>:</li>
-<li><strong>code-reviewer-quality</strong> — code quality review</li>
-<li><strong>code-reviewer-guidelines</strong> — guideline adherence review</li>
-<li>
-<p><strong>code-reviewer-security</strong> — bugs and security review</p>
-</li>
-<li>
-<p><strong>worker</strong> — fixes all issues found by reviewers and reports what was fixed.</p>
-</li>
-</ol>
-<div class="highlight"><pre><span></span><code>/implement-and-review add rate limiting to the API gateway
-</code></pre></div>
-
-<hr />
-<h2 id="code-review-commands">Code Review Commands</h2>
-<h3 id="pr-review"><code>/pr-review</code></h3>
-<p>Reviews a GitHub PR using three parallel review agents and posts inline comments.</p>
-<div class="highlight"><pre><span></span><code>/pr-review [PR number or URL]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>PR number or URL</code></td>
-<td>string</td>
-<td>No</td>
-<td>Auto-detect from current branch</td>
-<td>PR number, full URL, or omit for auto-detection</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> Open PR numbers from the current repository.</p>
-<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
-<p><strong>Workflow phases:</strong></p>
-<ol>
-<li><strong>PR Detection</strong> — resolves the PR from the argument or current branch via <code>gh pr view</code>.</li>
-<li><strong>Data Fetching</strong> — fetches the PR diff and project AGENTS.md using <code>myk-pi-tools pr diff</code> and <code>myk-pi-tools pr claude-md</code>.</li>
-<li><strong>Code Analysis</strong> — delegates to three review agents in parallel (quality, guidelines, security).</li>
-<li><strong>User Selection</strong> — presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION). The user selects which to post.</li>
-<li><strong>Post Comments</strong> — posts selected findings as inline PR comments via <code>myk-pi-tools pr post-comment</code>.</li>
-<li><strong>Summary</strong> — displays final counts and links.</li>
-</ol>
-<div class="highlight"><pre><span></span><code>/pr-review
-/pr-review 123
+<h3 id="pr-review-review-a-github-pr">/pr-review — Review a GitHub PR</h3>
+<p>Reviews a GitHub PR using three parallel reviewers and posts inline comments.</p>
+<div class="highlight"><pre><span></span><code>/pr-review                       # Review PR from current branch
+/pr-review 123                   # Review PR #123
 /pr-review https://github.com/owner/repo/pull/123
 </code></pre></div>
 
-<hr />
-<h3 id="review-local"><code>/review-local</code></h3>
-<p>Reviews uncommitted changes or branch differences using three parallel review agents.</p>
-<div class="highlight"><pre><span></span><code>/review-local [base branch]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>base branch</code></td>
-<td>string</td>
-<td>No</td>
-<td><code>HEAD</code> (uncommitted changes)</td>
-<td>Branch name to compare against</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> Git branch names (local and remote).</p>
-<p>When no argument is provided, reviews all uncommitted changes (staged + unstaged) via <code>git diff HEAD</code>. When a branch is specified, compares the current branch against it via <code>git diff &lt;branch&gt;...HEAD</code>.</p>
-<p>Three review agents run in parallel, analyzing for code quality, guidelines adherence, and security. Results are merged, deduplicated, and presented grouped by severity.</p>
-<div class="highlight"><pre><span></span><code>/review-local
-/review-local main
-/review-local feature/auth-refactor
-</code></pre></div>
-
-<hr />
-<h3 id="review-handler"><code>/review-handler</code></h3>
-<p>Processes all review sources (human, Qodo, CodeRabbit) from the current branch's PR and applies fixes.</p>
-<div class="highlight"><pre><span></span><code>/review-handler [--autorabbit] [URL]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--autorabbit</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Off</td>
-<td>Auto-approve and fix CodeRabbit comments in a polling loop</td>
-</tr>
-<tr>
-<td><code>URL</code></td>
-<td>string</td>
-<td>No</td>
-<td>Auto-detect from current branch</td>
-<td>Specific review URL</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> <code>--autorabbit</code> flag.</p>
-<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
+<p><strong>Workflow:</strong></p>
+<ol>
+<li>Fetches the PR diff and project rules (AGENTS.md)</li>
+<li>Runs three reviewers in parallel (quality, guidelines, security)</li>
+<li>Presents findings grouped by severity (CRITICAL → WARNING → SUGGESTION)</li>
+<li>Lets you choose which findings to post as inline comments</li>
+</ol>
 <blockquote>
-<p><strong>Warning:</strong> <code>--autorabbit</code> is a command-level flag. It is never passed to <code>myk-pi-tools</code> CLI commands.</p>
+<p><strong>Tip:</strong> Tab-completion is available — press Tab after <code>/pr-review</code> to see open PRs.</p>
 </blockquote>
-<p><strong>Standard workflow:</strong></p>
-<ol>
-<li>Fetches reviews from all sources via <code>myk-pi-tools reviews fetch</code>.</li>
-<li>Presents items in a table grouped by source, with global numbering and priority sorting.</li>
-<li>Collects user decisions (yes/no/all/skip per source).</li>
-<li>Delegates fixes to appropriate specialist agents.</li>
-<li>Runs tests (all must pass before proceeding).</li>
-<li>Commits and pushes changes.</li>
-<li>Posts replies to GitHub and stores results in the database.</li>
-</ol>
-<p><strong>Autorabbit mode (<code>--autorabbit</code>):</strong></p>
-<p>Skips the initial fetch/review cycle and enters a polling loop. CodeRabbit comments are auto-approved without user interaction. The loop runs until CodeRabbit approves the PR or the user explicitly stops it.</p>
-<div class="highlight"><pre><span></span><code>/review-handler
-/review-handler --autorabbit
-/review-handler https://github.com/owner/repo/pull/123#pullrequestreview-456
+<h3 id="review-local-review-uncommitted-changes">/review-local — Review Uncommitted Changes</h3>
+<p>Reviews your local changes without touching GitHub.</p>
+<div class="highlight"><pre><span></span><code>/review-local                    # Review uncommitted changes (staged + unstaged)
+/review-local main               # Review changes compared to main branch
+/review-local feature/auth       # Review changes compared to a specific branch
 </code></pre></div>
 
-<hr />
-<h3 id="refine-review"><code>/refine-review</code></h3>
-<p>Refines pending GitHub PR review comments with AI before submitting.</p>
-<div class="highlight"><pre><span></span><code>/refine-review &lt;PR URL&gt;
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>PR URL</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>Full GitHub PR URL</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
-<p><strong>Workflow:</strong></p>
-<ol>
-<li>Fetches pending review comments via <code>myk-pi-tools reviews pending-fetch</code>.</li>
-<li>Refines each comment for clarity, conciseness, and actionability.</li>
-<li>Presents original and refined versions side-by-side.</li>
-<li>User selects which refinements to accept (all, specific numbers, keep originals, or custom text).</li>
-<li>User chooses a review action: Comment, Approve, Request Changes, or keep pending.</li>
-<li>Submits updates via <code>myk-pi-tools reviews pending-update</code>.</li>
-</ol>
-<div class="highlight"><pre><span></span><code>/refine-review https://github.com/owner/repo/pull/123
-</code></pre></div>
-
-<hr />
-<h2 id="release-integration-commands">Release &amp; Integration Commands</h2>
-<h3 id="release"><code>/release</code></h3>
-<p>Creates a GitHub release with automatic changelog generation and optional version file bumping.</p>
-<div class="highlight"><pre><span></span><code>/release [version] [flags]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>version</code></td>
-<td>string</td>
-<td>No</td>
-<td>Auto-detected from commits</td>
-<td>Explicit version number (e.g., <code>1.17.1</code>)</td>
-</tr>
-<tr>
-<td><code>--dry-run</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Off</td>
-<td>Preview the release without creating it</td>
-</tr>
-<tr>
-<td><code>--prerelease</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Off</td>
-<td>Mark as prerelease</td>
-</tr>
-<tr>
-<td><code>--draft</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Off</td>
-<td>Create as draft release</td>
-</tr>
-<tr>
-<td><code>--target &lt;branch&gt;</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Current branch</td>
-<td>Target branch for the release</td>
-</tr>
-<tr>
-<td><code>--tag-match &lt;pattern&gt;</code></td>
-<td>flag</td>
-<td>No</td>
-<td>None</td>
-<td>Filter tags to a specific pattern</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> Recent git tags sorted by version.</p>
-<p><strong>Prerequisites:</strong> <code>myk-pi-tools</code> must be installed.</p>
-<p><strong>Workflow:</strong></p>
-<ol>
-<li><strong>Validation</strong> — checks branch status, clean working tree, and remote sync via <code>myk-pi-tools release info</code>.</li>
-<li><strong>Version Detection</strong> — scans for version files via <code>myk-pi-tools release detect-versions</code>.</li>
-<li><strong>Changelog</strong> — categorizes commits by conventional commit type and generates formatted changelog with emoji section headers.</li>
-<li><strong>User Approval</strong> — presents proposed version, version files to update, and changelog preview. Skipped when an explicit version is provided.</li>
-<li><strong>Version Bump</strong> — updates version files via <code>myk-pi-tools release bump-version</code>, creates a PR, and merges it.</li>
-<li><strong>Create Release</strong> — creates the GitHub release via <code>myk-pi-tools release create</code>.</li>
-</ol>
-<p><strong>Version bump logic:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Commit Type</th>
-<th>Bump</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Breaking changes</td>
-<td>MAJOR</td>
-</tr>
-<tr>
-<td><code>feat:</code></td>
-<td>MINOR</td>
-</tr>
-<tr>
-<td><code>fix:</code>, <code>docs:</code>, <code>chore:</code>, <code>refactor:</code>, <code>test:</code>, <code>ci:</code></td>
-<td>PATCH</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code>/release
-/release 2.0.0
-/release --dry-run
-/release --prerelease --draft
-</code></pre></div>
-
-<hr />
-<h3 id="coderabbit-rate-limit"><code>/coderabbit-rate-limit</code></h3>
-<p>Handles CodeRabbit rate limits by waiting for the cooldown period and re-triggering the review.</p>
-<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit [PR number or URL]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>PR number or URL</code></td>
-<td>string</td>
-<td>No</td>
-<td>Auto-detect from current branch</td>
-<td>PR number or full URL</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> Open PR numbers from the current repository.</p>
-<p><strong>Prerequisites:</strong> <code>uv</code> and <code>myk-pi-tools</code> must be installed.</p>
-<p><strong>Workflow:</strong></p>
-<ol>
-<li>Detects the PR from arguments or current branch.</li>
-<li>Checks rate limit status via <code>myk-pi-tools coderabbit check</code>.</li>
-<li>If rate-limited, waits for the cooldown (plus 30-second buffer) and triggers <code>@coderabbitai review</code>.</li>
-<li>Polls until the review starts (max 10 minutes).</li>
-</ol>
-<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit
-/coderabbit-rate-limit 123
-/coderabbit-rate-limit https://github.com/owner/repo/pull/123
-</code></pre></div>
-
-<hr />
-<h3 id="query-db"><code>/query-db</code></h3>
-<p>Queries the reviews database for analytics and insights about PR review history.</p>
-<div class="highlight"><pre><span></span><code>/query-db &lt;command&gt;
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>command</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>Query subcommand or raw SQL SELECT</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Prerequisites:</strong> <code>myk-pi-tools</code> must be installed.</p>
-<p><strong>Available subcommands:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Subcommand</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>stats --by-source</code></td>
-<td>Addressed rate by source (human vs AI)</td>
-</tr>
-<tr>
-<td><code>stats --by-reviewer</code></td>
-<td>Statistics by individual reviewer</td>
-</tr>
-<tr>
-<td><code>patterns --min &lt;N&gt;</code></td>
-<td>Find recurring dismissed suggestions (minimum N occurrences)</td>
-</tr>
-<tr>
-<td><code>dismissed --owner &lt;X&gt; --repo &lt;Y&gt;</code></td>
-<td>All dismissed comments for a specific repo</td>
-</tr>
-<tr>
-<td><code>query "&lt;SQL&gt;"</code></td>
-<td>Custom SELECT query against the database</td>
-</tr>
-<tr>
-<td><code>find-similar</code></td>
-<td>Find comments similar to previously dismissed ones (JSON via stdin)</td>
-</tr>
-</tbody>
-</table>
+<p>All three reviewers run in parallel and findings are grouped by severity. No comments are posted anywhere — this is purely local feedback.</p>
 <blockquote>
-<p><strong>Note:</strong> Only SELECT statements and CTEs are allowed. Modifying queries (INSERT, UPDATE, DELETE, DROP) are blocked.</p>
+<p><strong>Tip:</strong> Press Tab after <code>/review-local</code> to autocomplete branch names.</p>
 </blockquote>
-<p>The database is located at <code>&lt;project-root&gt;/.claude/data/reviews.db</code>.</p>
-<div class="highlight"><pre><span></span><code>/query-db stats --by-source
-/query-db stats --by-reviewer
-/query-db patterns --min 2
-/query-db dismissed --owner myorg --repo myrepo
-/query-db query &quot;SELECT * FROM comments WHERE status=&#39;skipped&#39; LIMIT 10&quot;
+<h3 id="release-create-a-github-release">/release — Create a GitHub Release</h3>
+<p>Creates a GitHub release with automatic changelog generation and optional version bumping.</p>
+<div class="highlight"><pre><span></span><code>/release                         # Auto-detect version bump from commits
+/release 2.1.0                   # Release with explicit version (skips approval)
+/release --dry-run               # Preview without creating
+/release --prerelease            # Create a prerelease
+/release --draft                 # Create a draft release
+/release --target v2.10          # Target a specific branch
 </code></pre></div>
 
-<hr />
-<h2 id="external-agent-commands">External Agent Commands</h2>
-<h3 id="acpx-prompt"><code>/acpx-prompt</code></h3>
-<p>Runs a prompt through <a href="https://github.com/openclaw/acpx">acpx</a> to any ACP-compatible coding agent.</p>
-<div class="highlight"><pre><span></span><code>/acpx-prompt [agent[:model]] [--fix|--peer] &lt;prompt&gt;
+<p><strong>Workflow:</strong></p>
+<ol>
+<li>Validates the branch (must be default or target branch, clean, synced)</li>
+<li>Detects version files (pyproject.toml, package.json, Cargo.toml, etc.)</li>
+<li>Categorizes commits by conventional commit type and generates a changelog</li>
+<li>Asks for approval (unless an explicit version was given)</li>
+<li>Bumps version files, creates a PR, merges it</li>
+<li>Creates the GitHub release with the changelog</li>
+</ol>
+<blockquote>
+<p><strong>Tip:</strong> Tab-completion shows recent git tags and flags like <code>--dry-run</code>, <code>--prerelease</code>, <code>--draft</code>, and <code>--target</code>.</p>
+</blockquote>
+<h3 id="review-handler-process-all-pr-review-comments">/review-handler — Process All PR Review Comments</h3>
+<p>Fetches and processes review comments from all sources — human reviewers, Qodo, and CodeRabbit.</p>
+<div class="highlight"><pre><span></span><code>/review-handler                              # Process current PR&#39;s reviews
+/review-handler --autorabbit                 # Auto-fix CodeRabbit comments in a loop
+/review-handler --autoqodo                   # Auto-fix Qodo comments in a loop
+/review-handler --autorabbit --autoqodo      # Auto-fix both in a loop
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>agent</code></td>
-<td>string</td>
-<td>No</td>
-<td>Last saved agent from <code>.pi/acpx-config.json</code></td>
-<td>Target agent name</td>
-</tr>
-<tr>
-<td><code>:model</code></td>
-<td>string</td>
-<td>No</td>
-<td>Agent default</td>
-<td>Model override (e.g., <code>codex:o3-pro</code>)</td>
-</tr>
-<tr>
-<td><code>--fix</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Off</td>
-<td>Grant the agent file write permissions</td>
-</tr>
-<tr>
-<td><code>--peer</code></td>
-<td>flag</td>
-<td>No</td>
-<td>Off</td>
-<td>Run an AI-to-AI peer review loop</td>
-</tr>
-<tr>
-<td><code>prompt</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>—</td>
-<td>The prompt to send to the agent</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> Agent names (<code>pi</code>, <code>openclaw</code>, <code>codex</code>, <code>claude</code>, <code>gemini</code>, <code>cursor</code>, <code>copilot</code>, <code>droid</code>, <code>iflow</code>, <code>kilocode</code>, <code>kimi</code>, <code>kiro</code>, <code>opencode</code>, <code>qwen</code>) and flags (<code>--fix</code>, <code>--peer</code>).</p>
-<p><strong>Prerequisites:</strong> <code>acpx</code> must be installed (<code>npm install -g acpx@latest</code>). The underlying agent CLI must also be installed separately.</p>
-<p><strong>Supported agents:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Agent</th>
-<th>Wraps</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>pi</code></td>
-<td>Pi Coding Agent</td>
-</tr>
-<tr>
-<td><code>openclaw</code></td>
-<td>OpenClaw ACP bridge</td>
-</tr>
-<tr>
-<td><code>codex</code></td>
-<td>Codex CLI (OpenAI)</td>
-</tr>
-<tr>
-<td><code>claude</code></td>
-<td>Claude Code</td>
-</tr>
-<tr>
-<td><code>gemini</code></td>
-<td>Gemini CLI</td>
-</tr>
-<tr>
-<td><code>cursor</code></td>
-<td>Cursor CLI</td>
-</tr>
-<tr>
-<td><code>copilot</code></td>
-<td>GitHub Copilot CLI</td>
-</tr>
-<tr>
-<td><code>droid</code></td>
-<td>Factory Droid</td>
-</tr>
-<tr>
-<td><code>iflow</code></td>
-<td>iFlow CLI</td>
-</tr>
-<tr>
-<td><code>kilocode</code></td>
-<td>Kilocode</td>
-</tr>
-<tr>
-<td><code>kimi</code></td>
-<td>Kimi CLI</td>
-</tr>
-<tr>
-<td><code>kiro</code></td>
-<td>Kiro CLI</td>
-</tr>
-<tr>
-<td><code>opencode</code></td>
-<td>OpenCode</td>
-</tr>
-<tr>
-<td><code>qwen</code></td>
-<td>Qwen Code</td>
-</tr>
-</tbody>
-</table>
+<p>In manual mode, each review comment is presented with its severity and you decide which to address. In auto mode (<code>--autorabbit</code>/<code>--autoqodo</code>), the command enters a polling loop that automatically fixes comments, pushes changes, and waits for the reviewer to re-evaluate — fully unattended.</p>
+<blockquote>
+<p><strong>Note:</strong> The <code>--autorabbit</code> and <code>--autoqodo</code> flags are command-level flags for pi, not CLI arguments. They control the behavior of the polling loop.</p>
+</blockquote>
+<p>For multi-PR scenarios, the command uses <code>git worktree</code> to isolate each PR rather than switching branches, which prevents interference with other running agents.</p>
+<h3 id="external-ai-run-prompts-via-external-ai-clis">/external-ai — Run Prompts via External AI CLIs</h3>
+<p>Sends prompts to external AI agents (Cursor, Claude, Gemini) via ai-cli-runner.</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor review the error handling
+/external-ai claude explain this function
+/external-ai gemini --model gemini-2.5-pro analyze the architecture
+/external-ai cursor --fix fix the failing tests
+/external-ai cursor --peer review this code
+/external-ai cursor,claude review this code          # Multi-agent
+/external-ai cursor --resume explain the last change  # Continue session
+</code></pre></div>
+
 <p><strong>Modes:</strong></p>
 <table>
 <thead>
 <tr>
-<th>Mode</th>
 <th>Flag</th>
-<th>Permissions</th>
+<th>Behavior</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Default (read-only)</td>
-<td>none</td>
-<td>Agent can read files only</td>
+<td><em>(none)</em></td>
+<td>Read-only — agent cannot modify files</td>
 </tr>
 <tr>
-<td>Fix</td>
 <td><code>--fix</code></td>
-<td>Agent can read and write files</td>
+<td>Agent can modify, create, and delete files</td>
 </tr>
 <tr>
-<td>Peer review</td>
 <td><code>--peer</code></td>
-<td>AI-to-AI debate loop until convergence</td>
+<td>AI-to-AI debate loop until both agents agree</td>
+</tr>
+<tr>
+<td><code>--resume</code></td>
+<td>Continue most recent session context</td>
+</tr>
+<tr>
+<td><code>--model &lt;name&gt;</code></td>
+<td>Override the default model</td>
 </tr>
 </tbody>
 </table>
+<p>In <strong>peer mode</strong>, pi orchestrates an iterative review loop: the external agent reviews, pi acts on findings (fixing or counter-arguing), sends results back, and repeats until convergence. With multiple agents (e.g., <code>cursor,claude</code>), each agent reviews independently and all must agree before the loop exits.</p>
+<p>For a deeper dive, see <a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a>.</p>
+<h3 id="refine-review-polish-pending-pr-review-comments">/refine-review — Polish Pending PR Review Comments</h3>
+<p>Refines your pending GitHub PR review comments with AI before submitting.</p>
+<div class="highlight"><pre><span></span><code>/refine-review https://github.com/owner/repo/pull/123
+</code></pre></div>
+
+<p>Fetches your unsubmitted review comments, generates improved versions, and shows side-by-side comparisons. You pick which refinements to accept, optionally submit with "Request Changes," and the command updates comments on GitHub.</p>
+<h3 id="query-db-query-the-reviews-database">/query-db — Query the Reviews Database</h3>
+<p>Runs analytics queries against your local review history database.</p>
+<div class="highlight"><pre><span></span><code>/query-db stats --by-source
+/query-db stats --by-reviewer
+/query-db patterns --min 2
+/query-db dismissed --owner myorg --repo myrepo
+/query-db SELECT * FROM comments WHERE status=&#39;skipped&#39; LIMIT 10
+</code></pre></div>
+
+<p>The database stores all processed review comments from <code>/review-handler</code>, enabling you to find recurring patterns, track addressed rates by source, and run custom SQL queries.</p>
 <blockquote>
-<p><strong>Note:</strong> <code>--fix</code> and <code>--peer</code> are mutually exclusive. Multiple agents with <code>--fix</code> is not supported.</p>
+<p><strong>Note:</strong> Only SELECT statements are allowed — the database is read-only for safety.</p>
 </blockquote>
-<p><strong>Peer review mode</strong> runs a multi-round debate loop between Claude and the peer agent(s). Claude fixes code based on findings and sends changes back for re-review. The loop continues until all peer agents confirm no remaining issues. With multiple peers, all must agree independently.</p>
-<p><strong>Configuration persistence:</strong> The last-used agent spec is saved to <code>.pi/acpx-config.json</code> after successful runs. Subsequent invocations without an agent name use the saved value.</p>
-<div class="highlight"><pre><span></span><code>/acpx-prompt codex review this function
-/acpx-prompt cursor:gpt-4o --fix fix the failing tests
-/acpx-prompt cursor,codex --peer review the architecture
-/acpx-prompt --peer review this code
+<h3 id="remember-save-a-memory">/remember — Save a Memory</h3>
+<p>Saves a pinned memory for future sessions.</p>
+<div class="highlight"><pre><span></span><code>/remember always run tests with --verbose flag
+/remember the auth service requires Redis to be running
+/remember we decided to use UTC timestamps everywhere
 </code></pre></div>
 
-<hr />
-<h2 id="memory-commands">Memory Commands</h2>
-<h3 id="dream"><code>/dream</code></h3>
-<p>Runs memory consolidation as a background async agent. Analyzes the current session and maintains the <code>memory.md</code> file.</p>
-<div class="highlight"><pre><span></span><code>/dream
+<p>Pi determines the best category (lesson, decision, mistake, pattern, preference, done) and persists it. See <a href="memory-system.html">Working with Project Memory</a> for more on the memory system.</p>
+<h3 id="coderabbit-rate-limit-handle-coderabbit-rate-limits">/coderabbit-rate-limit — Handle CodeRabbit Rate Limits</h3>
+<p>Waits for a CodeRabbit rate limit to expire and re-triggers the review automatically.</p>
+<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit             # Current branch&#39;s PR
+/coderabbit-rate-limit 123         # Specific PR number
 </code></pre></div>
 
-<p>This command takes no arguments. It runs as a fire-and-forget background agent and does not block the session.</p>
-<p><strong>Operations performed:</strong></p>
-<ol>
-<li>Reads the memory file at <code>&lt;project&gt;/.pi/memory/memory.md</code>.</li>
-<li>Extracts learnable items from the current session (lessons, preferences, mistakes, completed work, patterns).</li>
-<li>Deduplicates and removes stale entries from the Learned section.</li>
-<li>Keeps the file under 50 entries.</li>
-<li>Never modifies entries in the Pinned section.</li>
-</ol>
-<div class="highlight"><pre><span></span><code>/dream
+<h3 id="review-handler-status-check-running-review-agents">/review-handler-status — Check Running Review Agents</h3>
+<p>Shows the live state of running autoqodo/autorabbit review-handler agents.</p>
+<div class="highlight"><pre><span></span><code>/review-handler-status
 </code></pre></div>
 
-<hr />
-<h3 id="remember"><code>/remember</code></h3>
-<p>Saves a pinned project memory for future sessions.</p>
-<div class="highlight"><pre><span></span><code>/remember &lt;what to remember&gt;
+<p>Looks for active <code>reviews poll</code> agents and generates an HTML status report.</p>
+<h3 id="create-skill-save-a-workflow-as-a-reusable-skill">/create-skill — Save a Workflow as a Reusable Skill</h3>
+<p>Captures a successful workflow from the current conversation and saves it as a reusable skill.</p>
+<div class="highlight"><pre><span></span><code>/create-skill debug-container-build
+/create-skill                       # Prompts for a name
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>what</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>The information to save as a pinned memory</td>
-</tr>
-</tbody>
-</table>
-<p>Automatically categorizes the memory as one of: <code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, or <code>preference</code>. Saved via <code>myk-pi-tools memory add --pinned</code>.</p>
-<p>Pinned memories are never auto-removed by the <code>/dream</code> consolidation process.</p>
-<div class="highlight"><pre><span></span><code>/remember always run uv lock after changing pyproject.toml
-/remember the billing API requires OAuth2 client credentials flow
+<p>You choose whether the skill is <strong>global</strong> (<code>~/.agents/skills/</code>) or <strong>project-scoped</strong> (<code>.pi/skills/</code>). See <a href="customization-recipes.html">Customization and Extension Recipes</a> for more on creating custom skills.</p>
+<h3 id="create-coms-feature-manager-generate-a-coms-feature-manager">/create-coms-feature-manager — Generate a Coms Feature Manager</h3>
+<p>Creates a project-specific coms feature manager prompt for coordinating between a manager agent and a coder agent via inter-agent communication.</p>
+<div class="highlight"><pre><span></span><code>/create-coms-feature-manager
 </code></pre></div>
 
-<hr />
-<h2 id="session-utility-commands">Session Utility Commands</h2>
-<h3 id="btw"><code>/btw</code></h3>
-<p>Asks a quick side question without polluting the conversation history.</p>
-<div class="highlight"><pre><span></span><code>/btw &lt;question&gt;
+<p>See <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a> for details on the coms system.</p>
+<h2 id="extension-commands">Extension Commands</h2>
+<p>Extension commands are registered by the orchestrator extension and execute directly — no prompt template involved. They're faster because they don't need an AI roundtrip.</p>
+<h3 id="btw-quick-side-questions">/btw — Quick Side Questions</h3>
+<p>Ask a quick question without disrupting your conversation history.</p>
+<div class="highlight"><pre><span></span><code>/btw what was the name of the config file we edited earlier?
+/btw what port is the dev server running on?
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>question</code></td>
-<td>string</td>
-<td>Yes</td>
-<td>The side question to ask</td>
-</tr>
-</tbody>
-</table>
-<p>Opens an ephemeral overlay that shows the answer. The question and answer are not added to the conversation history. The AI answers based only on existing conversation context with no tool access.</p>
-<p><strong>Overlay controls:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Key</th>
-<th>Action</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Esc</code>, <code>Space</code>, <code>q</code></td>
-<td>Dismiss</td>
-</tr>
-<tr>
-<td><code>Up</code> / <code>k</code></td>
-<td>Scroll up</td>
-</tr>
-<tr>
-<td><code>Down</code> / <code>j</code></td>
-<td>Scroll down</td>
-</tr>
-<tr>
-<td><code>PgUp</code></td>
-<td>Scroll up 10 lines</td>
-</tr>
-<tr>
-<td><code>PgDn</code></td>
-<td>Scroll down 10 lines</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code>/btw what branch am I on?
-/btw what was the name of that function we discussed?
-</code></pre></div>
-
-<hr />
-<h3 id="status"><code>/status</code></h3>
-<p>Shows a unified session status snapshot. Executes directly without an AI roundtrip.</p>
+<p>The answer appears in a scrollable overlay and disappears when you dismiss it (Esc, Space, or q). Your main conversation context is not affected.</p>
+<h3 id="status-session-status-snapshot">/status — Session Status Snapshot</h3>
+<p>Shows a unified view of your current session state.</p>
 <div class="highlight"><pre><span></span><code>/status
 </code></pre></div>
 
-<p>This command takes no arguments.</p>
-<p><strong>Displays:</strong></p>
+<p>Output includes:</p>
 <ul>
-<li><strong>Async agents</strong> — count and list of running background agents with duration and task preview.</li>
-<li><strong>Cron tasks</strong> — count and list of active scheduled tasks with schedule and last run time.</li>
-<li><strong>Git</strong> — current branch, clean/dirty state, number of changed files, and repository name.</li>
-<li><strong>Container</strong> — whether the session is running inside a container.</li>
+<li><strong>Async agents</strong> — count and status of background agents</li>
+<li><strong>Cron tasks</strong> — active scheduled tasks with last run times</li>
+<li><strong>Git state</strong> — current branch, dirty file count</li>
+<li><strong>Container status</strong> — whether you're running inside a container</li>
+<li><strong>Loaded resources</strong> — context files, skills, tools, and guidelines</li>
 </ul>
-<div class="highlight"><pre><span></span><code>/status
-</code></pre></div>
-
-<hr />
-<h3 id="async-status"><code>/async-status</code></h3>
-<p>Shows the status of background async agents. If running agents exist, presents an interactive selector to view live streaming output.</p>
+<h3 id="async-status-background-agent-status">/async-status — Background Agent Status</h3>
+<p>Shows the status of all running background agents.</p>
 <div class="highlight"><pre><span></span><code>/async-status
 </code></pre></div>
 
-<p>This command takes no arguments.</p>
-<p>If all agents are completed, shows a static summary with completion status and duration. If running agents exist, lets you select one to view live output in a scrollable overlay.</p>
-<p><strong>Live output viewer controls:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Key</th>
-<th>Action</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Esc</code>, <code>Ctrl+C</code></td>
-<td>Close viewer</td>
-</tr>
-<tr>
-<td><code>Up</code> / <code>Down</code></td>
-<td>Scroll</td>
-</tr>
-<tr>
-<td><code>PgUp</code> / <code>PgDn</code></td>
-<td>Scroll 10 lines</td>
-</tr>
-<tr>
-<td><code>Home</code> / <code>End</code></td>
-<td>Jump to top/bottom</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code>/async-status
-</code></pre></div>
-
-<hr />
-<h3 id="async-kill"><code>/async-kill</code></h3>
-<p>Kills running async agent(s) by name, ID prefix, or all at once. Without an argument, presents an interactive selection menu.</p>
-<div class="highlight"><pre><span></span><code>/async-kill [name|id|all]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>target</code></td>
-<td>string</td>
-<td>No</td>
-<td>Interactive selection</td>
-<td>Agent name, ID prefix, or <code>all</code></td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code>/async-kill all
-/async-kill Dream
-/async-kill worker-1716000000
-</code></pre></div>
-
-<hr />
-<h3 id="dream-auto"><code>/dream-auto</code></h3>
-<p>Toggles automatic memory dreaming. When enabled, spawns a worker agent every 3 hours and on session quit to consolidate memories.</p>
-<div class="highlight"><pre><span></span><code>/dream-auto [on|off]
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>state</code></td>
-<td>string</td>
-<td>No</td>
-<td>Shows current status</td>
-<td><code>on</code> to enable, <code>off</code> to disable</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> <code>on</code>, <code>off</code>.</p>
-<p><strong>Environment variable:</strong> <code>PI_DREAM_INTERVAL_HOURS</code> — override the dreaming interval (default: <code>3</code>, range: <code>0.5</code>–<code>24</code>).</p>
-<p>Auto-dreaming is enabled by default. On session quit, a final dream runs as a detached process.</p>
-<div class="highlight"><pre><span></span><code>/dream-auto
-/dream-auto on
-/dream-auto off
-</code></pre></div>
-
-<hr />
-<h3 id="cron"><code>/cron</code></h3>
-<p>Schedules recurring tasks within the pi session. Tasks survive <code>/reload</code> and <code>/new</code> but are terminated on pi exit.</p>
-<div class="highlight"><pre><span></span><code>/cron &lt;subcommand|natural language&gt;
-</code></pre></div>
-
-<table>
-<thead>
-<tr>
-<th>Subcommand</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>list</code></td>
-<td>List scheduled tasks in the current session</td>
-</tr>
-<tr>
-<td><code>list-all</code></td>
-<td>List cron tasks from all active pi sessions</td>
-</tr>
-<tr>
-<td><code>remove &lt;id&gt; [id...]</code></td>
-<td>Remove tasks by ID (aliases: <code>rm</code>, <code>delete</code>, <code>kill</code>)</td>
-</tr>
-<tr>
-<td><code>&lt;natural language&gt;</code></td>
-<td>Add a task using natural language (parsed by AI)</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> Subcommands (<code>add</code>, <code>list</code>, <code>list-all</code>, <code>remove</code>), schedule hints (<code>every</code>, <code>at</code>), and task IDs for removal.</p>
-<p><strong>Schedule types:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Type</th>
-<th>Format</th>
-<th>Example</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Interval-based</td>
-<td><code>every &lt;duration&gt;</code></td>
-<td><code>every 2h</code>, <code>every 30m</code></td>
-</tr>
-<tr>
-<td>Time-based</td>
-<td><code>at &lt;HH:MM&gt;</code></td>
-<td><code>at 12:00</code>, <code>at 09:30</code></td>
-</tr>
-</tbody>
-</table>
-<p><strong>Task types:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Type</th>
-<th>Prefix</th>
-<th>Execution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Slash command</td>
-<td><code>/</code></td>
-<td>Executed as a command in the session</td>
-</tr>
-<tr>
-<td>Prompt</td>
-<td>(any text)</td>
-<td>Run as an async background agent</td>
-</tr>
-</tbody>
-</table>
-<blockquote>
-<p><strong>Note:</strong> Minimum interval is 10 seconds. Tasks are persisted to a PID-scoped file and restored after <code>/reload</code>.</p>
-</blockquote>
-<div class="highlight"><pre><span></span><code>/cron list
+<p>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for managing async agents.</p>
+<h3 id="cron-scheduled-tasks">/cron — Scheduled Tasks</h3>
+<p>Schedule recurring tasks that run on an interval or at specific times.</p>
+<div class="highlight"><pre><span></span><code>/cron add every 2h run the test suite
+/cron add at 09:00 check for new issues
+/cron list
 /cron list-all
-/cron remove 1 3
-/cron every 2h run /pr-review
-/cron at 09:00 check for new issues
+/cron remove 3
 </code></pre></div>
 
-<p>The <code>cron_manage</code> tool is also available for the AI to manage cron tasks programmatically with structured parameters.</p>
-<p><strong><code>cron_manage</code> tool parameters:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>action</code></td>
-<td><code>"add"</code> | <code>"list"</code> | <code>"list-all"</code> | <code>"remove"</code></td>
-<td>Yes</td>
-<td>Action to perform</td>
-</tr>
-<tr>
-<td><code>description</code></td>
-<td>string</td>
-<td>For <code>add</code></td>
-<td>Human-readable task description</td>
-</tr>
-<tr>
-<td><code>task</code></td>
-<td>string</td>
-<td>For <code>add</code></td>
-<td>What to execute (prompt or <code>/command</code>)</td>
-</tr>
-<tr>
-<td><code>interval_seconds</code></td>
-<td>number</td>
-<td>For interval <code>add</code></td>
-<td>Run every N seconds (minimum 10)</td>
-</tr>
-<tr>
-<td><code>at_hour</code></td>
-<td>number (0–23)</td>
-<td>For time-based <code>add</code></td>
-<td>Hour for daily schedule</td>
-</tr>
-<tr>
-<td><code>at_minute</code></td>
-<td>number (0–59)</td>
-<td>For time-based <code>add</code></td>
-<td>Minute for daily schedule</td>
-</tr>
-<tr>
-<td><code>id</code></td>
-<td>number</td>
-<td>For <code>remove</code></td>
-<td>Task ID to remove</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h3 id="pidash"><code>/pidash</code></h3>
-<p>Manages the pidash web dashboard daemon. Pidash provides a browser-based UI for monitoring pi sessions, viewing conversation history, managing async agents and cron tasks, and switching models.</p>
-<div class="highlight"><pre><span></span><code>/pidash [subcommand]
+<p>Tasks survive <code>/reload</code> and <code>/new</code> but stop when pi exits. See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
+<h3 id="dream-memory-consolidation">/dream — Memory Consolidation</h3>
+<p>Trigger memory consolidation manually, or toggle automatic dreaming.</p>
+<div class="highlight"><pre><span></span><code>/dream                  # Run consolidation now
+/dream-auto on          # Enable auto-dreaming (default: every 3h + session end)
+/dream-auto off         # Disable auto-dreaming
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Subcommand</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>start</code></td>
-<td>Start the pidash server</td>
-</tr>
-<tr>
-<td><code>stop</code></td>
-<td>Stop the pidash server and disconnect</td>
-</tr>
-<tr>
-<td><code>restart</code></td>
-<td>Stop and restart the pidash server</td>
-</tr>
-<tr>
-<td><code>status</code></td>
-<td>Show server status, port, and connection state (default)</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>.</p>
-<p><strong>Environment variables:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Variable</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>PI_PIDASH_PORT</code></td>
-<td><code>19190</code></td>
-<td>Port for the pidash server</td>
-</tr>
-<tr>
-<td><code>PI_PIDASH_ENABLE</code></td>
-<td><code>true</code></td>
-<td>Set to <code>false</code> to disable pidash</td>
-</tr>
-</tbody>
-</table>
-<p>The dashboard is accessible at <code>http://localhost:19190</code> (or the configured port). It connects to pi via WebSocket and supports sending prompts from the browser, switching models, aborting operations, and viewing live streaming output.</p>
-<div class="highlight"><pre><span></span><code>/pidash
-/pidash start
-/pidash stop
-/pidash restart
-/pidash status
+<p>See <a href="memory-system.html">Working with Project Memory</a> for how dreaming fits into the memory lifecycle.</p>
+<h3 id="coms-and-coms-net-inter-agent-communication">/coms and /coms-net — Inter-Agent Communication</h3>
+<p>Manage P2P and networked communication between pi sessions.</p>
+<div class="highlight"><pre><span></span><code>/coms start             # Start P2P communication
+/coms-net connect       # Connect to the network hub
 </code></pre></div>
 
-<hr />
-<h3 id="pidiff"><code>/pidiff</code></h3>
-<p>Manages the pidiff diff viewer daemon. Pidiff provides a browser-based UI for viewing branch diffs, file trees, and inline review comments.</p>
-<div class="highlight"><pre><span></span><code>/pidiff [subcommand]
+<p>See <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a> for the full guide.</p>
+<h3 id="pidash-and-pidiff-web-dashboard-and-diff-viewer">/pidash and /pidiff — Web Dashboard and Diff Viewer</h3>
+<p>Manage the web dashboard and diff viewer daemons.</p>
+<div class="highlight"><pre><span></span><code>/pidash start           # Launch the web dashboard
+/pidiff start           # Launch the diff viewer
 </code></pre></div>
 
-<table>
-<thead>
-<tr>
-<th>Subcommand</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>start</code></td>
-<td>Start the pidiff server</td>
-</tr>
-<tr>
-<td><code>stop</code></td>
-<td>Stop the pidiff server and disconnect</td>
-</tr>
-<tr>
-<td><code>restart</code></td>
-<td>Stop and restart the pidiff server</td>
-</tr>
-<tr>
-<td><code>status</code></td>
-<td>Show server status, port, and connection state (default)</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Tab completion:</strong> <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>.</p>
-<p><strong>Environment variables:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Variable</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>PI_PIDIFF_PORT</code></td>
-<td><code>19290</code></td>
-<td>Port for the pidiff server</td>
-</tr>
-<tr>
-<td><code>PI_PIDIFF_ENABLE</code></td>
-<td><code>true</code></td>
-<td>Set to <code>false</code> to disable pidiff</td>
-</tr>
-</tbody>
-</table>
-<p>Review comments published from the pidiff browser UI are automatically injected into the pi session as follow-up messages.</p>
-<div class="highlight"><pre><span></span><code>/pidiff
-/pidiff start
-/pidiff stop
-/pidiff restart
+<p>See <a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a> for setup and usage.</p>
+<h3 id="external-ai-models-refresh-refresh-model-cache">/external-ai-models-refresh — Refresh Model Cache</h3>
+<p>Clears the cached model lists for all AI CLI providers and re-fetches them.</p>
+<div class="highlight"><pre><span></span><code>/external-ai-models-refresh
 </code></pre></div>
 
-<hr />
-<h3 id="nvim-changed-files"><code>/nvim-changed-files</code></h3>
-<p>Sends git changed files to Neovim's quickfix list. Only available when pi is running inside a Neovim terminal (the <code>NVIM</code> environment variable is set).</p>
-<div class="highlight"><pre><span></span><code>/nvim-changed-files
-</code></pre></div>
-
-<p>This command takes no arguments.</p>
-<p>Collects all changed files (committed on the branch vs. <code>origin/main</code> plus uncommitted changes) and sends them to the parent Neovim instance's quickfix list via RPC. Opens the quickfix window automatically.</p>
-<blockquote>
-<p><strong>Note:</strong> This command is only registered when the <code>NVIM</code> environment variable points to a valid Neovim socket.</p>
-</blockquote>
-<div class="highlight"><pre><span></span><code>/nvim-changed-files
-</code></pre></div>
-
-<hr />
-<h2 id="quick-reference">Quick Reference</h2>
+<p>Useful when new models become available and Tab-completion isn't showing them.</p>
+<h2 id="tab-completion">Tab Completion</h2>
+<p>Most commands support Tab-completion for arguments. Press Tab after the command name to see available options:</p>
 <table>
 <thead>
 <tr>
 <th>Command</th>
-<th>Type</th>
-<th>Arguments</th>
-<th>Description</th>
+<th>Tab completes</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>/implement</code></td>
-<td>Prompt</td>
-<td><code>&lt;task&gt;</code></td>
-<td>Scout, plan, and implement</td>
-</tr>
-<tr>
-<td><code>/scout-and-plan</code></td>
-<td>Prompt</td>
-<td><code>&lt;task&gt;</code></td>
-<td>Scout and plan without implementing</td>
-</tr>
-<tr>
-<td><code>/implement-and-review</code></td>
-<td>Prompt</td>
-<td><code>&lt;task&gt;</code></td>
-<td>Implement with review and fix cycle</td>
+<td><code>/external-ai</code></td>
+<td>Provider names, flags (<code>--fix</code>, <code>--peer</code>, <code>--model</code>), model IDs</td>
 </tr>
 <tr>
 <td><code>/pr-review</code></td>
-<td>Prompt</td>
-<td><code>[#\|URL]</code></td>
-<td>Review a GitHub PR</td>
+<td>Open PR numbers with titles</td>
 </tr>
 <tr>
 <td><code>/review-local</code></td>
-<td>Prompt</td>
-<td><code>[branch]</code></td>
-<td>Review local changes</td>
-</tr>
-<tr>
-<td><code>/review-handler</code></td>
-<td>Prompt</td>
-<td><code>[--autorabbit] [URL]</code></td>
-<td>Process and fix PR review comments</td>
-</tr>
-<tr>
-<td><code>/refine-review</code></td>
-<td>Prompt</td>
-<td><code>&lt;URL&gt;</code></td>
-<td>Refine pending review comments</td>
+<td>Git branch names</td>
 </tr>
 <tr>
 <td><code>/release</code></td>
-<td>Prompt</td>
-<td><code>[version] [flags]</code></td>
-<td>Create a GitHub release</td>
+<td>Recent git tags, flags (<code>--dry-run</code>, <code>--prerelease</code>, <code>--draft</code>, <code>--target</code>)</td>
+</tr>
+<tr>
+<td><code>/review-handler</code></td>
+<td><code>--autorabbit</code>, <code>--autoqodo</code></td>
 </tr>
 <tr>
 <td><code>/coderabbit-rate-limit</code></td>
-<td>Prompt</td>
-<td><code>[#\|URL]</code></td>
-<td>Handle CodeRabbit rate limits</td>
-</tr>
-<tr>
-<td><code>/query-db</code></td>
-<td>Prompt</td>
-<td><code>&lt;command&gt;</code></td>
-<td>Query the reviews database</td>
-</tr>
-<tr>
-<td><code>/acpx-prompt</code></td>
-<td>Prompt</td>
-<td><code>[agent] [flags] &lt;prompt&gt;</code></td>
-<td>Run prompt via external agent</td>
-</tr>
-<tr>
-<td><code>/dream</code></td>
-<td>Prompt</td>
-<td>—</td>
-<td>Run memory consolidation</td>
-</tr>
-<tr>
-<td><code>/remember</code></td>
-<td>Prompt</td>
-<td><code>&lt;what&gt;</code></td>
-<td>Save a pinned memory</td>
-</tr>
-<tr>
-<td><code>/btw</code></td>
-<td>Extension</td>
-<td><code>&lt;question&gt;</code></td>
-<td>Quick side question (ephemeral)</td>
-</tr>
-<tr>
-<td><code>/status</code></td>
-<td>Extension</td>
-<td>—</td>
-<td>Session status snapshot</td>
-</tr>
-<tr>
-<td><code>/async-status</code></td>
-<td>Extension</td>
-<td>—</td>
-<td>Background agent status</td>
-</tr>
-<tr>
-<td><code>/async-kill</code></td>
-<td>Extension</td>
-<td><code>[target]</code></td>
-<td>Kill background agent(s)</td>
-</tr>
-<tr>
-<td><code>/dream-auto</code></td>
-<td>Extension</td>
-<td><code>[on\|off]</code></td>
-<td>Toggle automatic dreaming</td>
+<td>Open PR numbers</td>
 </tr>
 <tr>
 <td><code>/cron</code></td>
-<td>Extension</td>
-<td><code>&lt;subcommand\|text&gt;</code></td>
-<td>Schedule recurring tasks</td>
+<td>Subcommands (<code>add</code>, <code>list</code>, <code>remove</code>), task IDs for removal</td>
 </tr>
 <tr>
-<td><code>/pidash</code></td>
-<td>Extension</td>
-<td><code>[subcommand]</code></td>
-<td>Manage web dashboard</td>
-</tr>
-<tr>
-<td><code>/pidiff</code></td>
-<td>Extension</td>
-<td><code>[subcommand]</code></td>
-<td>Manage diff viewer</td>
-</tr>
-<tr>
-<td><code>/nvim-changed-files</code></td>
-<td>Extension</td>
-<td>—</td>
-<td>Send changed files to Neovim</td>
+<td><code>/dream-auto</code></td>
+<td><code>on</code>, <code>off</code></td>
 </tr>
 </tbody>
 </table>
+<p>Completions are cached for 5 minutes. Model lists for <code>/external-ai</code> are pre-fetched when the session starts.</p>
+<h2 id="how-prompt-templates-work">How Prompt Templates Work</h2>
+<p>Prompt templates are markdown files in the <code>prompts/</code> directory with YAML frontmatter. When you type a slash command, pi:</p>
+<ol>
+<li>Loads the matching <code>.md</code> file</li>
+<li>Substitutes <code>$ARGUMENTS</code> with whatever you typed after the command name</li>
+<li>Follows the instructions in the template</li>
+</ol>
+<p>The orchestrator <strong>always maintains control</strong> of the prompt workflow. It never delegates the entire command to a specialist agent — only sub-tasks get routed to agents as the template directs.</p>
+<h3 id="anatomy-of-a-prompt-template">Anatomy of a Prompt Template</h3>
+<p>Every prompt template has this structure:</p>
+<div class="highlight"><pre><span></span><code>---
+description: &quot;Short description — /command-name &lt;args&gt;&quot;
+<span class="gu">argument-hint: &quot;&lt;task&gt;&quot;</span>
+<span class="gu">---</span>
+
+<span class="gu">## Raw Arguments</span>
+
+‍```text
+$ARGUMENTS
+‍```
+
+<span class="k">&gt; </span><span class="ge">**Bug Reporting Policy:** If you encounter ANY error...</span>
+
+<span class="gh"># Command Title</span>
+
+Instructions for the orchestrator to follow...
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>description</code></td>
+<td>Shown in the command list and autocomplete</td>
+</tr>
+<tr>
+<td><code>argument-hint</code></td>
+<td>Placeholder text shown in the input bar</td>
+</tr>
+<tr>
+<td><code>$ARGUMENTS</code></td>
+<td>Replaced with user input at runtime</td>
+</tr>
+<tr>
+<td>Bug Reporting Policy</td>
+<td>Standard block ensuring issues are reported, not silently worked around</td>
+</tr>
+</tbody>
+</table>
+<h3 id="project-level-prompt-templates">Project-Level Prompt Templates</h3>
+<p>You can create custom prompt templates in your project's <code>.pi/prompts/</code> directory. Any <code>.md</code> file with YAML frontmatter automatically registers as a slash command.</p>
+<p>For example, creating <code>.pi/prompts/deploy-staging.md</code>:</p>
+<div class="highlight"><pre><span></span><code>---
+description: &quot;Deploy to staging — /deploy-staging [version]&quot;
+<span class="gu">argument-hint: &quot;[version]&quot;</span>
+<span class="gu">---</span>
+
+<span class="gu">## Raw Arguments</span>
+
+‍```text
+$ARGUMENTS
+‍```
+
+<span class="gh"># Deploy to Staging</span>
+
+<span class="k">1.</span> Run <span class="sb">`make build`</span>
+<span class="k">2.</span> Run <span class="sb">`make deploy-staging VERSION=$ARGUMENTS`</span>
+<span class="k">3.</span> Verify health check at https://staging.example.com/health
+</code></pre></div>
+
+<p>After creating the file, run <code>/reload</code> to register the new command.</p>
+<blockquote>
+<p><strong>Tip:</strong> Use <code>/create-skill</code> to capture successful workflows as reusable skills, or write prompt templates directly for more complex multi-step commands. See <a href="customization-recipes.html">Customization and Extension Recipes</a> for guidance on both approaches.</p>
+</blockquote>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="chaining-commands">Chaining Commands</h3>
+<p>You can use the output of one command as context for another:</p>
+<div class="highlight"><pre><span></span><code>/scout-and-plan add rate limiting to the API
+</code></pre></div>
+
+<p>Review the plan, then:</p>
+<div class="highlight"><pre><span></span><code>/implement add rate limiting to the API following the plan above
+</code></pre></div>
+
+<p>Or use <code>/implement-and-review</code> to combine implementation with automated review in a single step.</p>
+<h3 id="auto-mode-review-workflows">Auto-Mode Review Workflows</h3>
+<p>For fully unattended review handling, combine <code>--autorabbit</code> and <code>--autoqodo</code>:</p>
+<div class="highlight"><pre><span></span><code>/review-handler --autorabbit --autoqodo
+</code></pre></div>
+
+<p>This enters a polling loop that:</p>
+<ol>
+<li>Fetches new comments from CodeRabbit and Qodo</li>
+<li>Automatically fixes each finding</li>
+<li>Commits and pushes changes</li>
+<li>Waits for reviewers to re-evaluate</li>
+<li>Repeats until all reviewers approve</li>
+</ol>
+<p>The loop runs in the background — you can continue working in the same session. It exits only when all automated reviewers approve or you explicitly stop it.</p>
+<h3 id="peer-review-with-multiple-agents">Peer Review With Multiple Agents</h3>
+<p>Run a multi-agent peer review debate:</p>
+<div class="highlight"><pre><span></span><code>/external-ai cursor,claude --peer review the error handling in src/api/
+</code></pre></div>
+
+<p>Each agent reviews independently, pi synthesizes findings, fixes code, and sends results back. The loop continues until all agents agree — with full group context so each agent sees what the others said.</p>
+<h3 id="release-with-version-branch-targeting">Release With Version Branch Targeting</h3>
+<p>For projects using version branches:</p>
+<div class="highlight"><pre><span></span><code>/release --target v2.10 --tag-match &quot;v2.10.*&quot;
+</code></pre></div>
+
+<p>This targets the <code>v2.10</code> branch and filters tags to that version range. On a version branch, automatic detection works without flags:</p>
+<div class="highlight"><pre><span></span><code>git checkout v2.10
+/release
+</code></pre></div>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>"myk-pi-tools is required" error</strong>
+Most commands need the <code>myk-pi-tools</code> CLI. Install it:</p>
+<div class="highlight"><pre><span></span><code>uv tool install myk-pi-tools
+</code></pre></div>
+
+<p><strong>Tab completion not showing results</strong>
+Completions are cached for 5 minutes. Run <code>/external-ai-models-refresh</code> to force a refresh of model lists, or wait for the cache to expire for PR and branch lists.</p>
+<p><strong>"Unknown provider" error with /external-ai</strong>
+Only <code>cursor</code>, <code>claude</code>, and <code>gemini</code> are supported. For other agents (Codex, Copilot, Droid, Kiro, etc.), use the ACPX provider instead.</p>
+<p><strong>PR detection fails for /pr-review or /review-handler</strong>
+Ensure you're on a branch with an open PR and <code>gh</code> is authenticated:</p>
+<div class="highlight"><pre><span></span><code>gh<span class="w"> </span>auth<span class="w"> </span>status
+gh<span class="w"> </span>pr<span class="w"> </span>view
+</code></pre></div>
+
+<p>For the full command reference with all arguments and options, see <a href="commands-reference.html">Slash Commands and Extension Commands Reference</a>.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
+<li><a href="workflow-recipes.html">Common Workflow Recipes</a></li>
+<li><a href="first-workflow.html">Your First Coding Workflow</a></li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+<li><a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a></li>
+</ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="cli-reference.html" class="page-nav-link page-nav-prev">
+                <a href="code-review-loop.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">CLI Command Reference</span>
+                    <span class="page-nav-title">Running the Automated Code Review Loop</span>
                 </a>
 
 
-                <a href="specialist-agents.html" class="page-nav-link page-nav-next">
+                <a href="memory-system.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Specialist Agent Catalog</span>
+                    <span class="page-nav-title">Working with Project Memory</span>
                 </a>
 
             </nav>
@@ -1541,48 +780,52 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#overview">Overview</a></li>
-<li><a href="#implementation-commands">Implementation Commands</a><ul>
-<li><a href="#implement">/implement</a></li>
-<li><a href="#scout-and-plan">/scout-and-plan</a></li>
-<li><a href="#implement-and-review">/implement-and-review</a></li>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#prompt-template-commands">Prompt Template Commands</a><ul>
+<li><a href="#implement-scout-plan-and-build">/implement — Scout, Plan, and Build</a></li>
+<li><a href="#scout-and-plan-explore-without-changing-code">/scout-and-plan — Explore Without Changing Code</a></li>
+<li><a href="#implement-and-review-build-with-automated-review">/implement-and-review — Build With Automated Review</a></li>
+<li><a href="#pr-review-review-a-github-pr">/pr-review — Review a GitHub PR</a></li>
+<li><a href="#review-local-review-uncommitted-changes">/review-local — Review Uncommitted Changes</a></li>
+<li><a href="#release-create-a-github-release">/release — Create a GitHub Release</a></li>
+<li><a href="#review-handler-process-all-pr-review-comments">/review-handler — Process All PR Review Comments</a></li>
+<li><a href="#external-ai-run-prompts-via-external-ai-clis">/external-ai — Run Prompts via External AI CLIs</a></li>
+<li><a href="#refine-review-polish-pending-pr-review-comments">/refine-review — Polish Pending PR Review Comments</a></li>
+<li><a href="#query-db-query-the-reviews-database">/query-db — Query the Reviews Database</a></li>
+<li><a href="#remember-save-a-memory">/remember — Save a Memory</a></li>
+<li><a href="#coderabbit-rate-limit-handle-coderabbit-rate-limits">/coderabbit-rate-limit — Handle CodeRabbit Rate Limits</a></li>
+<li><a href="#review-handler-status-check-running-review-agents">/review-handler-status — Check Running Review Agents</a></li>
+<li><a href="#create-skill-save-a-workflow-as-a-reusable-skill">/create-skill — Save a Workflow as a Reusable Skill</a></li>
+<li><a href="#create-coms-feature-manager-generate-a-coms-feature-manager">/create-coms-feature-manager — Generate a Coms Feature Manager</a></li>
 </ul>
 </li>
-<li><a href="#code-review-commands">Code Review Commands</a><ul>
-<li><a href="#pr-review">/pr-review</a></li>
-<li><a href="#review-local">/review-local</a></li>
-<li><a href="#review-handler">/review-handler</a></li>
-<li><a href="#refine-review">/refine-review</a></li>
+<li><a href="#extension-commands">Extension Commands</a><ul>
+<li><a href="#btw-quick-side-questions">/btw — Quick Side Questions</a></li>
+<li><a href="#status-session-status-snapshot">/status — Session Status Snapshot</a></li>
+<li><a href="#async-status-background-agent-status">/async-status — Background Agent Status</a></li>
+<li><a href="#cron-scheduled-tasks">/cron — Scheduled Tasks</a></li>
+<li><a href="#dream-memory-consolidation">/dream — Memory Consolidation</a></li>
+<li><a href="#coms-and-coms-net-inter-agent-communication">/coms and /coms-net — Inter-Agent Communication</a></li>
+<li><a href="#pidash-and-pidiff-web-dashboard-and-diff-viewer">/pidash and /pidiff — Web Dashboard and Diff Viewer</a></li>
+<li><a href="#external-ai-models-refresh-refresh-model-cache">/external-ai-models-refresh — Refresh Model Cache</a></li>
 </ul>
 </li>
-<li><a href="#release-integration-commands">Release &amp; Integration Commands</a><ul>
-<li><a href="#release">/release</a></li>
-<li><a href="#coderabbit-rate-limit">/coderabbit-rate-limit</a></li>
-<li><a href="#query-db">/query-db</a></li>
+<li><a href="#tab-completion">Tab Completion</a></li>
+<li><a href="#how-prompt-templates-work">How Prompt Templates Work</a><ul>
+<li><a href="#anatomy-of-a-prompt-template">Anatomy of a Prompt Template</a></li>
+<li><a href="#project-level-prompt-templates">Project-Level Prompt Templates</a></li>
 </ul>
 </li>
-<li><a href="#external-agent-commands">External Agent Commands</a><ul>
-<li><a href="#acpx-prompt">/acpx-prompt</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#chaining-commands">Chaining Commands</a></li>
+<li><a href="#auto-mode-review-workflows">Auto-Mode Review Workflows</a></li>
+<li><a href="#peer-review-with-multiple-agents">Peer Review With Multiple Agents</a></li>
+<li><a href="#release-with-version-branch-targeting">Release With Version Branch Targeting</a></li>
 </ul>
 </li>
-<li><a href="#memory-commands">Memory Commands</a><ul>
-<li><a href="#dream">/dream</a></li>
-<li><a href="#remember">/remember</a></li>
-</ul>
-</li>
-<li><a href="#session-utility-commands">Session Utility Commands</a><ul>
-<li><a href="#btw">/btw</a></li>
-<li><a href="#status">/status</a></li>
-<li><a href="#async-status">/async-status</a></li>
-<li><a href="#async-kill">/async-kill</a></li>
-<li><a href="#dream-auto">/dream-auto</a></li>
-<li><a href="#cron">/cron</a></li>
-<li><a href="#pidash">/pidash</a></li>
-<li><a href="#pidiff">/pidiff</a></li>
-<li><a href="#nvim-changed-files">/nvim-changed-files</a></li>
-</ul>
-</li>
-<li><a href="#quick-reference">Quick Reference</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
 
@@ -1594,7 +837,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 2.2.0</span>
+            <span class="footer-version">Generated from version 3.6.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your First Coding Workflow - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link active" aria-current="page">
+                            Your First Coding Workflow
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agent-routing.html"
+                           class="nav-link">
+                            Understanding Agent Routing and Delegation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="code-review-loop.html"
+                           class="nav-link">
+                            Running the Automated Code Review Loop
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="slash-commands.html"
+                           class="nav-link">
+                            Using Slash Commands and Prompt Templates
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-system.html"
+                           class="nav-link">
+                            Working with Project Memory
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Communicating Between Pi Sessions
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="workflow-recipes.html"
+                           class="nav-link">
+                            Common Workflow Recipes
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk-pi-tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration-reference.html"
+                           class="nav-link">
+                            Configuration and Environment Variables Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-reference.html"
+                           class="nav-link">
+                            Orchestrator Rules Reference
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-architecture.html"
+                           class="nav-link">
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="your-first-coding-workflow">Your First Coding Workflow</h1>
+<p>You want to go from a feature idea to a merged pull request using pi's orchestrator, specialist agents, and automated code review. This guide walks you through the complete cycle so you can see every stage in action.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>A running pi session connected to a Git repository (see <a href="quickstart.html">Installing and Starting Your First Session</a>)</li>
+<li>GitHub CLI (<code>gh</code>) authenticated — pi's <code>github-expert</code> agent uses it for issues and PRs</li>
+<li>At least one commit on a <code>main</code> branch pushed to a remote</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>The fastest way to implement a feature end-to-end:</p>
+<div class="highlight"><pre><span></span><code>You: Add a --verbose flag to the export command
+</code></pre></div>
+
+<p>That single sentence triggers the full workflow: the orchestrator investigates the code, creates a GitHub issue, branches, delegates to the right specialist agent, runs three parallel code reviewers, fixes findings, runs tests, commits, pushes, and opens a PR — all automatically.</p>
+<h2 id="step-by-step-the-full-feature-workflow">Step-by-Step: The Full Feature Workflow</h2>
+<h3 id="step-1-describe-what-you-want">Step 1 — Describe what you want</h3>
+<p>Tell pi what to build in plain language:</p>
+<div class="highlight"><pre><span></span><code>You: Add rate limiting to the /api/users endpoint — max 100 requests per minute per IP
+</code></pre></div>
+
+<p>The orchestrator reads your request and begins the <strong>issue-first workflow</strong>. It will not start writing code immediately.</p>
+<h3 id="step-2-root-cause-investigation">Step 2 — Root cause investigation</h3>
+<p>Before creating anything, the orchestrator reads the relevant source code to understand what exists. It identifies the files, functions, and dependencies involved. This prevents issues based on misunderstandings and ensures the implementation plan is grounded in reality.</p>
+<p>You'll see it delegate to a <strong>scout</strong> agent to explore the codebase:</p>
+<div class="highlight"><pre><span></span><code> scout  Exploring codebase for rate limiting context...
+</code></pre></div>
+
+<h3 id="step-3-issue-creation">Step 3 — Issue creation</h3>
+<p>The orchestrator delegates to the <code>github-expert</code> agent to create a tracked GitHub issue with:</p>
+<ul>
+<li>A clear title (<code>feat: add rate limiting to /api/users</code>)</li>
+<li>Problem description and requirements</li>
+<li>A <strong>Done</strong> checklist — the contract for when the issue can be closed</li>
+</ul>
+<div class="highlight"><pre><span></span><code> github-expert  Creating issue...
+</code></pre></div>
+
+<p>Once created, pi asks for confirmation:</p>
+<div class="highlight"><pre><span></span><code>Issue #42 created: feat: add rate limiting to /api/users
+URL: https://github.com/your-org/your-repo/issues/42
+
+Do you want to work on it now?
+</code></pre></div>
+
+<h3 id="step-4-branch-creation">Step 4 — Branch creation</h3>
+<p>After you confirm, the orchestrator delegates to the <code>git-expert</code> to create an issue branch:</p>
+<div class="highlight"><pre><span></span><code> git-expert  git fetch origin main
+ git-expert  git checkout -b feat/issue-42-rate-limiting origin/main
+</code></pre></div>
+
+<p>Branch names follow the convention <code>&lt;type&gt;/issue-&lt;number&gt;-&lt;short-description&gt;</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Change type</th>
+<th>Branch prefix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New feature</td>
+<td><code>feat/issue-42-...</code></td>
+</tr>
+<tr>
+<td>Bug fix</td>
+<td><code>fix/issue-42-...</code></td>
+</tr>
+<tr>
+<td>Refactoring</td>
+<td><code>refactor/issue-42-...</code></td>
+</tr>
+<tr>
+<td>Documentation</td>
+<td><code>docs/issue-42-...</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="step-5-implementation">Step 5 — Implementation</h3>
+<p>The orchestrator routes the task to the appropriate <strong>specialist agent</strong> based on the files involved. You don't choose the agent — routing is automatic.</p>
+<table>
+<thead>
+<tr>
+<th>File type</th>
+<th>Agent selected</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python (<code>.py</code>)</td>
+<td><code>python-expert</code></td>
+</tr>
+<tr>
+<td>TypeScript/JavaScript</td>
+<td><code>ts-expert</code></td>
+</tr>
+<tr>
+<td>Go (<code>.go</code>)</td>
+<td><code>go-expert</code></td>
+</tr>
+<tr>
+<td>Shell scripts (<code>.sh</code>)</td>
+<td><code>bash-expert</code></td>
+</tr>
+<tr>
+<td>Dockerfile</td>
+<td><code>docker-expert</code></td>
+</tr>
+<tr>
+<td>Markdown (<code>.md</code>)</td>
+<td><code>technical-documentation-writer</code></td>
+</tr>
+</tbody>
+</table>
+<p>If no specialist matches, the <code>worker</code> agent handles it. See <a href="agent-routing.html">Understanding Agent Routing and Delegation</a> for the full routing table.</p>
+<div class="highlight"><pre><span></span><code> python-expert  Adding rate limiter middleware to api/users.py...
+</code></pre></div>
+
+<p>The specialist agent writes code directly — it doesn't explain what it will do first. Agents follow an "execute first, explain after" philosophy.</p>
+<h3 id="step-6-automated-code-review-3-reviewers-in-parallel">Step 6 — Automated code review (3 reviewers in parallel)</h3>
+<p>After implementation, the orchestrator launches <strong>three code review agents simultaneously</strong> as background (async) tasks:</p>
+<table>
+<thead>
+<tr>
+<th>Reviewer</th>
+<th>Focus area</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>code-reviewer-quality</code></td>
+<td>Clean code, DRY, readability, proper abstractions</td>
+</tr>
+<tr>
+<td><code>code-reviewer-guidelines</code></td>
+<td>Project conventions, AGENTS.md compliance, documentation updates</td>
+</tr>
+<tr>
+<td><code>code-reviewer-security</code></td>
+<td>Bugs, logic errors, edge cases, security vulnerabilities</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code> code-reviewer-quality       Reviewing changes (async)...
+ code-reviewer-guidelines    Reviewing changes (async)...
+ code-reviewer-security      Reviewing changes (async)...
+</code></pre></div>
+
+<p>All three run as async agents — they don't block your session. You can continue chatting while they work. Results surface automatically when each reviewer finishes.</p>
+<p>Each reviewer produces findings with severity levels:</p>
+<div class="highlight"><pre><span></span><code>[CRITICAL] api/users.py:45 — Rate limit key uses X-Forwarded-For without validation
+  Risk: Attacker can bypass rate limiting by spoofing the header
+  Suggestion: Validate and sanitize the forwarded IP, fall back to connection IP
+
+[WARNING] api/users.py:62 — Missing error handling for Redis connection failure
+  Suggestion: Add try/except with fallback to in-memory counter
+
+[SUGGESTION] api/users.py:30 — Magic number 100 should be a named constant
+  Suggestion: Extract to RATE_LIMIT_MAX_REQUESTS = 100
+</code></pre></div>
+
+<h3 id="step-7-fix-and-review-loop">Step 7 — Fix-and-review loop</h3>
+<p>If <strong>any</strong> reviewer has findings, the orchestrator delegates fixes to the specialist agent and sends the code through all three reviewers again. This loop continues until every reviewer approves:</p>
+<div class="highlight"><pre><span></span><code>Code change → 3 reviewers in parallel → findings? → fix → 3 reviewers again → approved ✅
+</code></pre></div>
+
+<p>The orchestrator deduplicates findings across reviewers automatically. If two reviewers flag the same issue, only the most actionable version is kept.</p>
+<blockquote>
+<p><strong>Note:</strong> The review loop is mandatory — it cannot be skipped. Code is not considered ready until all three reviewers report "approved."</p>
+</blockquote>
+<h3 id="step-8-test-execution">Step 8 — Test execution</h3>
+<p>Once reviewers approve, the orchestrator delegates to the <code>test-automator</code> agent:</p>
+<div class="highlight"><pre><span></span><code> test-automator  Running test suite...
+</code></pre></div>
+
+<p>The test agent compares results against a <strong>baseline</strong> (tests on the branch before your changes). Only <strong>new failures</strong> introduced by your code block the workflow. Pre-existing failures are noted but don't block.</p>
+<p>If tests fail:</p>
+<ul>
+<li>Minor test/config fixes → re-run tests only (skip re-review)</li>
+<li>Substantive code changes → full re-review from step 6</li>
+</ul>
+<h3 id="step-9-commit-and-push">Step 9 — Commit and push</h3>
+<p>With reviews approved and tests passing, the orchestrator delegates to <code>git-expert</code>:</p>
+<div class="highlight"><pre><span></span><code> git-expert  git add api/users.py api/middleware.py tests/test_rate_limit.py
+ git-expert  git commit -F - (feat: add rate limiting to /api/users endpoint)
+ git-expert  git push -u origin feat/issue-42-rate-limiting
+</code></pre></div>
+
+<p>Commits follow these conventions:</p>
+<ul>
+<li>Specific files are staged individually (never <code>git add .</code>)</li>
+<li>Commit messages use conventional format (<code>feat:</code>, <code>fix:</code>, <code>refactor:</code>)</li>
+<li>No AI attribution in commit messages</li>
+</ul>
+<h3 id="step-10-pull-request-creation">Step 10 — Pull request creation</h3>
+<p>The orchestrator delegates to <code>github-expert</code> to create the PR:</p>
+<div class="highlight"><pre><span></span><code> github-expert  gh pr create --title &quot;feat: add rate limiting to /api/users&quot; --body &quot;...&quot;
+</code></pre></div>
+
+<p>The PR links back to issue #42. When the PR merges, the issue's Done checklist items are checked off and the issue is closed.</p>
+<h2 id="using-slash-commands">Using Slash Commands</h2>
+<p>For common workflows, slash commands provide structured shortcuts instead of free-form prompts.</p>
+<h3 id="implement-scout-plan-and-build"><code>/implement</code> — Scout, plan, and build</h3>
+<div class="highlight"><pre><span></span><code>/implement add rate limiting to the /api/users endpoint
+</code></pre></div>
+
+<p>This runs a three-agent chain automatically:</p>
+<ol>
+<li><strong>scout</strong> — finds relevant files and dependencies</li>
+<li><strong>planner</strong> — creates a detailed implementation plan</li>
+<li><strong>worker</strong> — implements the plan</li>
+</ol>
+<h3 id="implement-and-review-build-with-automatic-review"><code>/implement-and-review</code> — Build with automatic review</h3>
+<div class="highlight"><pre><span></span><code>/implement-and-review add rate limiting to the /api/users endpoint
+</code></pre></div>
+
+<p>Same as <code>/implement</code>, but adds the three parallel reviewers plus a fix pass — the entire code review loop in one command.</p>
+<h3 id="review-local-review-before-committing"><code>/review-local</code> — Review before committing</h3>
+<div class="highlight"><pre><span></span><code>/review-local
+/review-local main
+</code></pre></div>
+
+<p>Reviews your uncommitted changes (or changes vs. a branch) using all three reviewers in parallel. Use this to catch issues before pushing.</p>
+<h3 id="scout-and-plan-explore-without-changing-anything"><code>/scout-and-plan</code> — Explore without changing anything</h3>
+<div class="highlight"><pre><span></span><code>/scout-and-plan add rate limiting to the /api/users endpoint
+</code></pre></div>
+
+<p>Runs only the scout and planner agents — no code is written. Use this when you want to understand the codebase and see a plan before committing to implementation.</p>
+<p>See <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a> for the full command reference.</p>
+<h2 id="monitoring-progress">Monitoring Progress</h2>
+<h3 id="task-tracking">Task tracking</h3>
+<p>For multi-step workflows, the orchestrator creates a task list that persists across turns. You can see exactly where you are:</p>
+<div class="highlight"><pre><span></span><code>✅ Investigate root cause in api/users.py
+✅ Create GitHub issue with root cause analysis
+✅ Create branch feat/issue-42-rate-limiting from origin/main
+✅ Implement rate limiting middleware
+⏳ Run code review loop (3 async reviewers)
+⬚ Fix review findings (if any)
+⬚ Run test-automator
+⬚ Commit and push changes
+⬚ Create PR with description
+</code></pre></div>
+
+<p>If you ask a side question mid-workflow ("What's the Redis connection timeout?"), the orchestrator answers and then <strong>immediately resumes</strong> from the next unchecked task.</p>
+<h3 id="status-session-snapshot"><code>/status</code> — Session snapshot</h3>
+<div class="highlight"><pre><span></span><code>/status
+</code></pre></div>
+
+<p>Shows async agents currently running, cron tasks, git branch, and session context in one view.</p>
+<h3 id="async-status-background-agent-details"><code>/async-status</code> — Background agent details</h3>
+<div class="highlight"><pre><span></span><code>/async-status
+</code></pre></div>
+
+<p>Shows all background agents with elapsed time and task descriptions.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="skipping-the-issue-first-workflow">Skipping the issue-first workflow</h3>
+<p>For quick fixes where tracking overhead isn't needed, tell pi to skip the workflow:</p>
+<div class="highlight"><pre><span></span><code>You: Just fix the typo in README.md — &quot;recieve&quot; should be &quot;receive&quot;
+</code></pre></div>
+
+<p>The orchestrator recognizes signals like "just do it", "quick fix", or single-line trivial changes and skips issue creation, going directly to implementation.</p>
+<h3 id="working-on-an-existing-issue">Working on an existing issue</h3>
+<div class="highlight"><pre><span></span><code>You: Work on issue #42
+</code></pre></div>
+
+<p>The orchestrator picks up the existing issue, creates a branch (if one doesn't exist), and starts working through the Done checklist.</p>
+<h3 id="reviewing-a-github-pr">Reviewing a GitHub PR</h3>
+<div class="highlight"><pre><span></span><code>/pr-review 123
+/pr-review https://github.com/your-org/repo/pull/123
+</code></pre></div>
+
+<p>Reviews an existing PR and optionally posts inline comments. See <a href="code-review-loop.html">Running the Automated Code Review Loop</a> for details.</p>
+<h3 id="handling-review-comments-from-external-reviewers">Handling review comments from external reviewers</h3>
+<div class="highlight"><pre><span></span><code>/review-handler
+/review-handler --autorabbit
+/review-handler --autoqodo
+</code></pre></div>
+
+<p>Processes comments from human reviewers, CodeRabbit, and Qodo on the current PR. The <code>--autorabbit</code> and <code>--autoqodo</code> flags enter a fully automated polling loop that fixes comments, pushes, and re-polls until the reviewer approves.</p>
+<p>See <a href="workflow-recipes.html">Common Workflow Recipes</a> for more patterns.</p>
+<h3 id="creating-a-release-after-merging">Creating a release after merging</h3>
+<div class="highlight"><pre><span></span><code>/release
+/release 2.1.0
+</code></pre></div>
+
+<p>Generates a changelog from conventional commits, optionally bumps version files, and creates a GitHub release. See <a href="workflow-recipes.html">Common Workflow Recipes</a> for release patterns.</p>
+<h3 id="multi-pr-parallel-work">Multi-PR parallel work</h3>
+<p>When handling multiple PRs simultaneously, pi uses git worktrees to avoid branch-switching conflicts:</p>
+<div class="highlight"><pre><span></span><code>You: Handle reviews for PR #42 and PR #43
+</code></pre></div>
+
+<p>Each PR gets its own isolated worktree directory under <code>.worktrees/</code>. Agents working on PR #42 never interfere with agents working on PR #43.</p>
+<h3 id="teaching-pi-your-preferences">Teaching pi your preferences</h3>
+<p>Pi remembers your preferences across sessions. State them naturally and they're auto-extracted:</p>
+<div class="highlight"><pre><span></span><code>You: I always want tests before implementation
+You: Never use print statements for debugging — always use the logging module
+You: I prefer functional style over classes when possible
+</code></pre></div>
+
+<p>These become part of pi's memory and influence future workflows. See <a href="memory-system.html">Working with Project Memory</a> for details.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>The orchestrator is writing code directly instead of delegating.</strong>
+The orchestrator should never use <code>edit</code>, <code>write</code>, or <code>bash</code> (except for <code>mcpl</code>). If this happens, it's a routing issue. Mention the expected agent: "Delegate this to the python-expert."</p>
+<p><strong>Reviews are taking too long.</strong>
+All three reviewers run as async background agents. Check their status with <code>/async-status</code>. If a reviewer is stuck, you can kill it and re-trigger the review.</p>
+<p><strong>Tests fail but they were already failing before my changes.</strong>
+The test runner compares against a baseline. Only <strong>new</strong> failures block the workflow. If you're seeing pre-existing failures blocking, mention it and the orchestrator will re-run the baseline comparison.</p>
+<p><strong>The wrong specialist agent was chosen.</strong>
+Routing is based on task intent, not just file type. If the orchestrator routes incorrectly, tell it directly: "Use the python-expert for this." See <a href="agent-routing.html">Understanding Agent Routing and Delegation</a> for routing details.</p>
+<p><strong>Side question made pi forget what it was doing.</strong>
+Task tracking prevents this — the task list is injected every turn. If tasks exist, the orchestrator resumes automatically after answering. If it doesn't, say "continue with the tasks" to nudge it back.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="quickstart.html">Installing and Starting Your First Session</a></li>
+<li><a href="agent-routing.html">Understanding Agent Routing and Delegation</a></li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+<li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
+<li><a href="memory-system.html">Working with Project Memory</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="quickstart.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Installing and Starting Your First Session</span>
+                </a>
+
+
+                <a href="agent-routing.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Understanding Agent Routing and Delegation</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step-the-full-feature-workflow">Step-by-Step: The Full Feature Workflow</a><ul>
+<li><a href="#step-1-describe-what-you-want">Step 1 — Describe what you want</a></li>
+<li><a href="#step-2-root-cause-investigation">Step 2 — Root cause investigation</a></li>
+<li><a href="#step-3-issue-creation">Step 3 — Issue creation</a></li>
+<li><a href="#step-4-branch-creation">Step 4 — Branch creation</a></li>
+<li><a href="#step-5-implementation">Step 5 — Implementation</a></li>
+<li><a href="#step-6-automated-code-review-3-reviewers-in-parallel">Step 6 — Automated code review (3 reviewers in parallel)</a></li>
+<li><a href="#step-7-fix-and-review-loop">Step 7 — Fix-and-review loop</a></li>
+<li><a href="#step-8-test-execution">Step 8 — Test execution</a></li>
+<li><a href="#step-9-commit-and-push">Step 9 — Commit and push</a></li>
+<li><a href="#step-10-pull-request-creation">Step 10 — Pull request creation</a></li>
+</ul>
+</li>
+<li><a href="#using-slash-commands">Using Slash Commands</a><ul>
+<li><a href="#implement-scout-plan-and-build">/implement — Scout, plan, and build</a></li>
+<li><a href="#implement-and-review-build-with-automatic-review">/implement-and-review — Build with automatic review</a></li>
+<li><a href="#review-local-review-before-committing">/review-local — Review before committing</a></li>
+<li><a href="#scout-and-plan-explore-without-changing-anything">/scout-and-plan — Explore without changing anything</a></li>
+</ul>
+</li>
+<li><a href="#monitoring-progress">Monitoring Progress</a><ul>
+<li><a href="#task-tracking">Task tracking</a></li>
+<li><a href="#status-session-snapshot">/status — Session snapshot</a></li>
+<li><a href="#async-status-background-agent-details">/async-status — Background agent details</a></li>
+</ul>
+</li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#skipping-the-issue-first-workflow">Skipping the issue-first workflow</a></li>
+<li><a href="#working-on-an-existing-issue">Working on an existing issue</a></li>
+<li><a href="#reviewing-a-github-pr">Reviewing a GitHub PR</a></li>
+<li><a href="#handling-review-comments-from-external-reviewers">Handling review comments from external reviewers</a></li>
+<li><a href="#creating-a-release-after-merging">Creating a release after merging</a></li>
+<li><a href="#multi-pr-parallel-work">Multi-PR parallel work</a></li>
+<li><a href="#teaching-pi-your-preferences">Teaching pi your preferences</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

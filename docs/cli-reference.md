@@ -1,238 +1,150 @@
-# CLI Command Reference
+# myk-pi-tools CLI Reference
 
-The `myk-pi-tools` CLI provides subcommands for PR review management, GitHub releases, project memory, CodeRabbit integration, and review database analytics.
+`myk-pi-tools` is the Python CLI package that provides tooling for the pi orchestrator. It wraps GitHub API operations, review handling, release management, memory persistence, and external AI CLI integration.
 
+**Version:** 3.6.2
+**Install:** `pip install myk-pi-tools` (included in pi-config Docker image and native install)
+**Entry point:** `myk-pi-tools`
+**Requires:** Python ≥ 3.12, GitHub CLI (`gh`) for most commands
+
+```bash
+myk-pi-tools --version
+myk-pi-tools --help
 ```
-myk-pi-tools [OPTIONS] COMMAND [SUBCOMMAND] [OPTIONS]
-```
 
-| Option | Description |
-|--------|-------------|
-| `--version` | Show the CLI version and exit |
-| `--help` | Show help message and exit |
-
-> **Note:** Most commands that interact with GitHub require the GitHub CLI (`gh`) to be installed and authenticated. See Installation & Setup for prerequisites.
+> **Note:** Most subcommands that interact with GitHub require the `gh` CLI to be installed and authenticated. See [Installing and Starting Your First Session](quickstart.html) for setup.
 
 ---
 
-## db
+## Subcommand Overview
 
-Review database query commands. All subcommands read from a SQLite database stored at `<git-root>/.pi/data/reviews.db`.
-
-### db stats
-
-Get review statistics grouped by source or reviewer.
-
-```
-myk-pi-tools db stats [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--by-source` | flag | `false` | Group statistics by source (human/qodo/coderabbit) |
-| `--by-reviewer` | flag | `false` | Group statistics by reviewer author |
-| `--json` | flag | `false` | Output as JSON instead of formatted table |
-| `--db-path` | string | auto-detect | Path to database file |
-
-> **Note:** If neither `--by-source` nor `--by-reviewer` is specified, defaults to `--by-source`. Specifying both is an error.
-
-```bash
-# Stats by source (default)
-myk-pi-tools db stats
-
-# Stats by reviewer
-myk-pi-tools db stats --by-reviewer
-
-# JSON output
-myk-pi-tools db stats --by-source --json
-```
-
-### db patterns
-
-Find recurring dismissed patterns in review comments. Identifies comments that appear multiple times with similar content, suggesting candidates for auto-skip rules.
-
-```
-myk-pi-tools db patterns [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--min` | integer | `2` | Minimum occurrences to report |
-| `--json` | flag | `false` | Output as JSON |
-| `--db-path` | string | auto-detect | Path to database file |
-
-```bash
-# Find patterns with at least 2 occurrences (default)
-myk-pi-tools db patterns
-
-# Find patterns with at least 3 occurrences
-myk-pi-tools db patterns --min 3
-
-# JSON output
-myk-pi-tools db patterns --json
-```
-
-### db dismissed
-
-Get all dismissed (not_addressed or skipped) comments for a specific repository.
-
-```
-myk-pi-tools db dismissed --owner OWNER --repo REPO [OPTIONS]
-```
-
-| Option | Type | Default | Required | Description |
-|--------|------|---------|----------|-------------|
-| `--owner` | string | — | yes | Repository owner (org or user) |
-| `--repo` | string | — | yes | Repository name |
-| `--json` | flag | `false` | no | Output as JSON |
-| `--db-path` | string | auto-detect | no | Path to database file |
-
-```bash
-# Get dismissed comments
-myk-pi-tools db dismissed --owner myk-org --repo pi-config
-
-# JSON output
-myk-pi-tools db dismissed --owner myk-org --repo pi-config --json
-```
-
-### db query
-
-Run a raw SQL query on the review database. Only `SELECT` statements are allowed.
-
-```
-myk-pi-tools db query SQL [OPTIONS]
-```
-
-| Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `SQL` | string | yes | SQL query string (SELECT only) |
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--json` | flag | `false` | Output as JSON |
-| `--db-path` | string | auto-detect | Path to database file |
-
-```bash
-# Get all skipped comments
-myk-pi-tools db query "SELECT * FROM comments WHERE status = 'skipped'"
-
-# Count by status
-myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
-
-# JSON output
-myk-pi-tools db query "SELECT * FROM comments LIMIT 5" --json
-```
-
-### db find-similar
-
-Find a previously dismissed comment matching path and body similarity. Reads JSON input from stdin.
-
-```
-myk-pi-tools db find-similar --owner OWNER --repo REPO [OPTIONS] < input.json
-```
-
-| Option | Type | Default | Required | Description |
-|--------|------|---------|----------|-------------|
-| `--owner` | string | — | yes | Repository owner (org or user) |
-| `--repo` | string | — | yes | Repository name |
-| `--threshold` | float | `0.6` | no | Minimum similarity threshold (0.0–1.0) |
-| `--json` | flag | `false` | no | Output as JSON |
-| `--db-path` | string | auto-detect | no | Path to database file |
-
-**Stdin input format:**
-
-```json
-{"path": "foo.py", "body": "Add error handling..."}
-```
-
-```bash
-echo '{"path": "foo.py", "body": "Add error handling..."}' | \
-    myk-pi-tools db find-similar --owner myk-org --repo pi-config --json
-```
+| Subcommand | Description |
+|---|---|
+| [`memory`](#memory) | Project memory commands — persistent per-repo learning |
+| [`pr`](#pr) | PR review and management commands |
+| [`release`](#release) | GitHub release commands |
+| [`reviews`](#reviews) | Review handling commands (fetch, poll, post, store) |
+| [`db`](#db) | Review database query commands |
+| [`coderabbit`](#coderabbit) | CodeRabbit rate limit and trigger commands |
+| [`ai-cli`](#ai-cli) | AI CLI commands (cursor, claude, gemini) |
 
 ---
 
-## memory
+## `memory`
 
-Project memory commands for persistent per-repo learning. The memory file is a Markdown file stored at `<git-root>/.pi/memory/memory.md` by default.
+Project memory commands — persistent per-repo learning. Stores entries as Markdown topic files under `.pi/memory/topics/`.
 
-```
-myk-pi-tools memory [OPTIONS] SUBCOMMAND
-```
+**Group option:**
 
 | Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--file-path` | string | auto-detect | Path to memory file |
+|---|---|---|---|
+| `--file-path` | string | `.pi/memory/topics/` (auto-detected from git root) | Path to memory topics directory |
 
-### memory add
+See [Working with Project Memory](memory-system.html) for how memory integrates with the orchestrator.
 
-Add a memory entry to the Learned or Pinned section.
+### `memory add`
 
-```
-myk-pi-tools memory add -c CATEGORY -s SUMMARY [OPTIONS]
-```
+Add a memory entry to the appropriate topic file.
 
-| Option | Type | Default | Required | Description |
-|--------|------|---------|----------|-------------|
-| `-c`, `--category` | choice | — | yes | Memory category: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference` |
-| `-s`, `--summary` | string | — | yes | Short one-line description |
-| `--pinned` | flag | `false` | no | Add to Pinned section (protected from auto-removal) |
+| Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `-c`, `--category` | choice | yes | — | Memory category: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference` |
+| `-s`, `--summary` | string | yes | — | Short description (one line) |
+| `--pinned` | flag | no | `false` | Add to Pinned section (protected from dreaming) |
+
+**Category-to-file mapping:**
+
+| Category | Topic File |
+|---|---|
+| `preference` | `preferences.md` |
+| `lesson` | `lessons.md` |
+| `pattern` | `patterns.md` |
+| `decision` | `decisions.md` |
+| `done` | `completions.md` |
+| `mistake` | `mistakes.md` |
 
 ```bash
 # Add a learned memory
 myk-pi-tools memory add -c lesson -s "buildah chown -R skips target dir"
 
-# Add a pinned memory (never auto-removed)
+# Add a pinned memory (user-requested, never auto-removed)
 myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
 ```
 
-### memory show
+**Effect:** Appends a line to the topic file. Pinned entries are marked with `*(pinned)*` and are protected from dreaming consolidation.
 
-Display the memory file contents.
+### `memory show`
 
-```
+Show all memory entries across all topic files.
+
+```bash
 myk-pi-tools memory show
 ```
 
-### memory migrate
+**Output:** Combined contents of all `.md` files in the topics directory, sorted alphabetically, printed to stdout.
 
-One-time migration from SQLite database to memory.md. Reads all memories from `memories.db`, writes them to `memory.md`, then deletes the database.
+### `memory forget`
 
+Remove a memory entry from its topic file and clean up the corresponding entry in `memory-scores.json`.
+
+| Option | Type | Required | Description |
+|---|---|---|---|
+| `-c`, `--category` | choice | yes | Memory category: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference` |
+| `-s`, `--summary` | string | yes | Entry text to forget (must match exactly) |
+
+```bash
+myk-pi-tools memory forget -c lesson -s "buildah chown -R skips target dir"
+myk-pi-tools memory forget -c pattern -s "Container build monitor: old pattern"
 ```
+
+**Effect:** Removes the matching line from the topic file. Also removes the corresponding hash entry from `.pi/memory/memory-scores.json` if present. Outputs confirmation or "Not found" to stderr.
+
+### `memory migrate`
+
+One-time migration from legacy SQLite database to topic files.
+
+```bash
 myk-pi-tools memory migrate
 ```
 
-### memory path
+**Effect:** Reads all memories from `.pi/memory/memories.db`, writes them as learned entries to topic files, then deletes `memories.db`, `dreams.md`, and `dreams.lock`.
 
-Print the resolved memory file path.
+### `memory path`
 
-```
+Print the memory topics directory path.
+
+```bash
 myk-pi-tools memory path
+# Output: /home/user/project/.pi/memory/topics
 ```
 
 ---
 
-## pr
+## `pr`
 
-PR review and management commands.
+PR review and management commands. All subcommands accept PR references in multiple formats.
 
-### pr diff
+**Argument formats (shared across `pr diff` and `pr claude-md`):**
 
-Fetch PR diff and metadata as JSON.
+| Format | Example |
+|---|---|
+| `<owner/repo> <pr_number>` | `myk-org/pi-config 42` |
+| `<github_url>` | `https://github.com/myk-org/pi-config/pull/42` |
+| `<pr_number>` (auto-detect repo) | `42` |
 
+> **Note:** The `<pr_number>` format requires running from within a git repository with `gh` configured.
+
+### `pr diff`
+
+Fetch PR diff and metadata. Outputs JSON to stdout.
+
+```bash
+myk-pi-tools pr diff myk-org/pi-config 42
+myk-pi-tools pr diff https://github.com/myk-org/pi-config/pull/42
+myk-pi-tools pr diff 42
 ```
-myk-pi-tools pr diff [ARGS]
-```
 
-Accepts three input forms:
-
-| Form | Example |
-|------|---------|
-| Owner/repo + PR number | `pr diff myk-org/pi-config 42` |
-| GitHub URL | `pr diff https://github.com/myk-org/pi-config/pull/42` |
-| PR number (from git context) | `pr diff 42` |
-
-**Output:** JSON object with `metadata`, `diff`, and `files` fields.
+**Output:** JSON object with structure:
 
 ```json
 {
@@ -242,7 +154,7 @@ Accepts three input forms:
     "pr_number": "42",
     "head_sha": "abc123...",
     "base_ref": "main",
-    "title": "Add feature X",
+    "title": "PR title",
     "state": "open"
   },
   "diff": "...",
@@ -258,47 +170,45 @@ Accepts three input forms:
 }
 ```
 
-```bash
-myk-pi-tools pr diff myk-org/pi-config 42
-```
+### `pr claude-md`
 
-### pr claude-md
+Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository.
 
-Fetch CLAUDE.md and AGENTS.md content from a PR's repository. Checks both root and config directories (`.claude/`, `.agents/`) locally and via the GitHub API.
-
-```
-myk-pi-tools pr claude-md [ARGS]
-```
-
-Accepts the same input forms as `pr diff`.
-
-**Searched locations (in order):**
-1. `./CLAUDE.md`
-2. `./.claude/CLAUDE.md`
-3. `./AGENTS.md`
-4. `./.agents/AGENTS.md`
-5. Remote equivalents via GitHub API
+Checks local files first (if current repo matches target), then falls back to GitHub API.
 
 ```bash
 myk-pi-tools pr claude-md myk-org/pi-config 42
+myk-pi-tools pr claude-md https://github.com/myk-org/pi-config/pull/42
 ```
 
-### pr post-comment
+**Files checked:**
+
+| Local Path | Remote Path |
+|---|---|
+| `./CLAUDE.md` | `CLAUDE.md` |
+| `./.claude/CLAUDE.md` | `.claude/CLAUDE.md` |
+| `./AGENTS.md` | `AGENTS.md` |
+| `./.agents/AGENTS.md` | `.agents/AGENTS.md` |
+
+**Output:** Combined content of all found files to stdout. Empty string if none found.
+
+### `pr post-comment`
 
 Post inline comments to a PR as a single GitHub review with a summary table.
 
-```
-myk-pi-tools pr post-comment OWNER_REPO PR_NUMBER COMMIT_SHA JSON_FILE
-```
-
 | Argument | Type | Required | Description |
-|----------|------|----------|-------------|
+|---|---|---|---|
 | `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
 | `PR_NUMBER` | string | yes | Pull request number |
-| `COMMIT_SHA` | string | yes | Full 40-character SHA of the commit to comment on |
-| `JSON_FILE` | string | yes | Path to JSON file, or `-` for stdin |
+| `COMMIT_SHA` | string | yes | The 40-character SHA of the commit to comment on |
+| `JSON_FILE` | string | yes | Path to JSON file with comments, or `"-"` for stdin |
 
-**JSON input format:**
+```bash
+myk-pi-tools pr post-comment myk-org/pi-config 42 abc123def456... comments.json
+cat comments.json | myk-pi-tools pr post-comment myk-org/pi-config 42 abc123def456... -
+```
+
+**Input JSON format:**
 
 ```json
 [
@@ -315,156 +225,111 @@ myk-pi-tools pr post-comment OWNER_REPO PR_NUMBER COMMIT_SHA JSON_FILE
 ]
 ```
 
-**Severity markers** (parsed from comment body):
+**Severity markers:** The review summary table auto-categorizes comments by severity prefix in the `body`:
 
-| Marker | Meaning |
-|--------|---------|
-| `### [CRITICAL] Title` | Critical security or functionality issues |
-| `### [WARNING] Title` | Important but non-critical issues |
-| `### [SUGGESTION] Title` | Code improvements (default if no marker) |
+| Prefix | Severity |
+|---|---|
+| `### [CRITICAL]` | Critical issue |
+| `### [WARNING]` | Warning |
+| `### [SUGGESTION]` | Suggestion (default) |
 
-**Output:** JSON with `status`, `comment_count`, `posted`, `failed`, and optionally `error`.
+**Output:** JSON result with `status`, `comment_count`, `posted`, and `failed` arrays.
 
-```bash
-myk-pi-tools pr post-comment myk-org/pi-config 42 abc123def456... comments.json
-
-# From stdin
-cat comments.json | myk-pi-tools pr post-comment myk-org/pi-config 42 abc123def456... -
-```
-
-> **Warning:** Only lines that were modified or added in the PR diff can receive inline comments. The commit SHA must be the HEAD of the PR.
+> **Tip:** Only lines that were modified or added in the PR can receive inline comments. Comments on unchanged lines will fail.
 
 ---
 
-## release
+## `release`
 
-GitHub release commands for version management and release creation.
+GitHub release commands. See [Common Workflow Recipes](workflow-recipes.html) for end-to-end release workflows.
 
-### release info
+### `release info`
 
-Fetch release validation info and commits since the last tag. Auto-detects repository from git context.
-
-```
-myk-pi-tools release info [OPTIONS]
-```
+Fetch release validation info and commits since last tag. Outputs JSON to stdout.
 
 | Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--repo` | string | auto-detect | Repository in `owner/repo` format |
-| `--target` | string | auto-detect | Target branch for release |
-| `--tag-match` | string | auto-detect | Glob pattern to filter tags (e.g., `v2.10.*`) |
+|---|---|---|---|
+| `--repo` | string | auto-detected from git context | Repository in `owner/repo` format |
+| `--target` | string | auto-detected default branch | Target branch for release |
+| `--tag-match` | string | none | Glob pattern to filter tags (e.g., `v2.10.*`) |
+
+```bash
+# Auto-detect everything
+myk-pi-tools release info
+
+# Specify repo
+myk-pi-tools release info --repo myk-org/pi-config
+
+# Filter tags for a version branch
+myk-pi-tools release info --target v2.10 --tag-match "v2.10.*"
+```
 
 **Validations performed:**
-- On target branch
-- Clean working tree
-- Synced with remote (no unpushed or behind commits)
+- On target branch check
+- Clean working tree check
+- Remote sync check (fetch, unpushed/behind counts)
+
+**Version branch auto-detection:** If the current branch matches `vMAJOR.MINOR` (e.g., `v2.10`), the command automatically sets the target and tag-match pattern.
+
+**Commit filtering:** Merge commits, "address review" commits, "chore: checkpoint/bump version" commits, and similar noise are automatically excluded from the output.
 
 **Output:** JSON with `metadata`, `validations`, `last_tag`, `all_tags`, `commits`, `commit_count`, `is_first_release`, `target_branch`, and `tag_match`.
 
-> **Tip:** On a version branch like `v2.10`, the command auto-detects `--target v2.10` and `--tag-match v2.10.*`.
-
-**Commit filtering:** The following are excluded from the commit list:
-- Merge commits
-- CodeRabbit-related commits
-- Checkpoint and version bump chores
-- Doc regeneration and pre-commit autoupdates
-
-```bash
-# Auto-detect everything from git context
-myk-pi-tools release info
-
-# Explicit repository and target
-myk-pi-tools release info --repo myk-org/pi-config --target main
-
-# Filter tags for a specific version line
-myk-pi-tools release info --tag-match "v2.10.*"
-```
-
-### release create
+### `release create`
 
 Create a GitHub release.
 
-```
-myk-pi-tools release create OWNER_REPO TAG CHANGELOG_FILE [OPTIONS]
-```
-
-| Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
-| `TAG` | string | yes | Release tag (e.g., `v1.3.0`) |
-| `CHANGELOG_FILE` | string | yes | Path to file containing release notes |
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--prerelease` | flag | `false` | Mark as pre-release |
-| `--draft` | flag | `false` | Create as draft release |
-| `--target` | string | — | Target branch for the release |
-| `--title` | string | tag name | Release title |
-
-**Output:** JSON with `status`, `tag`, `url`, `prerelease`, and `draft` on success; `status` and `error` on failure.
-
-> **Note:** A warning is emitted to stderr if the tag does not follow semantic versioning format (`vX.Y.Z`).
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `OWNER_REPO` | argument | yes | — | Repository in `owner/repo` format |
+| `TAG` | argument | yes | — | Release tag (e.g., `v1.3.0`) |
+| `CHANGELOG_FILE` | argument | yes | — | Path to file containing release notes |
+| `--prerelease` | flag | no | `false` | Mark as pre-release |
+| `--draft` | flag | no | `false` | Create as draft |
+| `--target` | string | no | — | Target branch for the release |
+| `--title` | string | no | tag name | Release title |
 
 ```bash
-myk-pi-tools release create myk-org/pi-config v1.3.0 changelog.md
-
-myk-pi-tools release create myk-org/pi-config v2.0.0-rc1 notes.md \
-    --prerelease --target release/v2
+myk-pi-tools release create myk-org/pi-config v1.3.0 CHANGELOG.md
+myk-pi-tools release create myk-org/pi-config v2.0.0-rc1 notes.md --prerelease --draft
+myk-pi-tools release create myk-org/pi-config v1.3.0 CHANGELOG.md --target main --title "Release 1.3.0"
 ```
 
-### release detect-versions
+**Output:** JSON with `status`, `tag`, `url`, `prerelease`, and `draft` on success. JSON with `status` and `error` on failure.
 
-Detect version files in the current repository across multiple ecosystems.
+> **Warning:** Tags that don't follow semantic versioning (`vX.Y.Z`) trigger a warning but are still accepted.
 
-```
-myk-pi-tools release detect-versions
-```
+### `release detect-versions`
 
-**Detected file types:**
-
-| File | Ecosystem | Type key |
-|------|-----------|----------|
-| `pyproject.toml` | Python | `pyproject` |
-| `package.json` | Node.js | `package_json` |
-| `setup.cfg` | Python | `setup_cfg` |
-| `Cargo.toml` | Rust | `cargo` |
-| `build.gradle` / `build.gradle.kts` | JVM | `gradle` |
-| `__init__.py` / `version.py` with `__version__` | Python | `python_version` |
-
-**Output:**
-
-```json
-{
-  "version_files": [
-    {"path": "pyproject.toml", "current_version": "2.2.0", "type": "pyproject"}
-  ],
-  "count": 1
-}
-```
+Detect version files in the current repository. Scans for well-known version file patterns.
 
 ```bash
 myk-pi-tools release detect-versions
 ```
 
-### release bump-version
+**Supported file types:**
 
-Update version strings in detected version files. Uses atomic writes to prevent file corruption.
+| File | Type Key | Parser |
+|---|---|---|
+| `pyproject.toml` | `pyproject` | `[project].version` |
+| `package.json` | `package_json` | `version` field |
+| `setup.cfg` | `setup_cfg` | `[metadata].version` |
+| `Cargo.toml` | `cargo` | `[package].version` |
+| `build.gradle` / `build.gradle.kts` | `gradle` | `version = "..."` |
+| `*/__init__.py`, `*/version.py` | `python_version` | `__version__ = "..."` |
 
-```
-myk-pi-tools release bump-version VERSION [OPTIONS]
-```
+**Output:** JSON with `version_files` array (each with `path`, `current_version`, `type`) and `count`.
 
-| Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `VERSION` | string | yes | New version string (e.g., `1.2.0`) |
+> **Note:** Directories like `.git`, `node_modules`, `.venv`, `__pycache__`, `dist`, `build`, and others are automatically excluded from scanning.
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--files` | string (multiple) | all detected | Specific files to update (can be repeated) |
+### `release bump-version`
 
-> **Warning:** The version must not start with `v`. Use `1.2.0`, not `v1.2.0`.
+Update version strings in detected version files. Does not perform any git operations.
 
-**Output:** JSON with `status`, `version`, `updated` (list of `{path, old_version, new_version}`), and `skipped` (list of `{path, reason}`).
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `VERSION` | argument | yes | — | New version string (e.g., `1.2.0`) |
+| `--files` | string (repeatable) | no | all detected | Specific files to update |
 
 ```bash
 # Update all detected version files
@@ -474,210 +339,409 @@ myk-pi-tools release bump-version 1.3.0
 myk-pi-tools release bump-version 1.3.0 --files pyproject.toml --files package.json
 ```
 
+> **Warning:** The version must NOT start with `v` or `V`. Use `1.3.0`, not `v1.3.0`.
+
+**Output:** JSON with `status`, `version`, `updated` array (with `path`, `old_version`, `new_version`), and `skipped` array.
+
+**Effect:** Writes are atomic (temp file + rename) to prevent corruption.
+
 ---
 
-## reviews
+## `reviews`
 
-Review handling commands for fetching, responding to, and storing PR review threads.
+Review handling commands for the automated review workflow. See [Running the Automated Code Review Loop](code-review-loop.html) for the full workflow.
 
-### reviews fetch
+### `reviews fetch`
 
-Fetch all unresolved review threads from the current branch's PR. Categorizes comments by source (human, qodo, coderabbit) and classifies priority.
+Fetch unresolved review threads from the current branch's PR.
 
-```
-myk-pi-tools reviews fetch [REVIEW_URL]
-```
-
-| Argument | Type | Default | Required | Description |
-|----------|------|---------|----------|-------------|
-| `REVIEW_URL` | string | `""` | no | Specific review URL for context (e.g., `#pullrequestreview-XXX` or `#discussion_rXXX`) |
-
-**Output:** Saved to `/tmp/pi-work/pr-<number>-reviews.json`.
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `REVIEW_URL` | string | no | `""` | Specific review URL for context (e.g., `#pullrequestreview-XXX`) |
 
 ```bash
-# Fetch all unresolved reviews
 myk-pi-tools reviews fetch
-
-# Fetch with a specific review URL context
 myk-pi-tools reviews fetch "#pullrequestreview-12345"
 ```
 
-### reviews poll
+**Output:** JSON saved to `/tmp/pi-work/pr-<number>-reviews.json` with structure:
 
-Poll for reviews with automatic CodeRabbit rate limit handling. Combines rate limit check, trigger, and fetch into a single atomic operation. Loops internally until actionable comments are found.
-
+```json
+{
+  "metadata": { "owner": "...", "repo": "...", "pr_number": "..." },
+  "human": [ ... ],
+  "qodo": [ ... ],
+  "coderabbit": [ ... ]
+}
 ```
-myk-pi-tools reviews poll [REVIEW_URL]
-```
 
-| Argument | Type | Default | Required | Description |
-|----------|------|---------|----------|-------------|
-| `REVIEW_URL` | string | `""` | no | Specific review URL for context |
+Comments are auto-categorized by source based on author username. Each comment includes `thread_id`, `node_id`, `comment_id`, `path`, `line`, `body`, and `priority`.
 
-**Output:** Same format as `reviews fetch` (saved to `/tmp/pi-work/pr-<number>-reviews.json`).
+**Exit codes:** `0` = success, non-zero = failure.
+
+### `reviews poll`
+
+Poll for reviews until new actionable comments appear. Loops internally — does not return on "no new comments."
+
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `REVIEW_URL` | string | no | `""` | Specific review URL for context |
+| `--source` | choice | no | `coderabbit` | Which reviewer to poll for: `coderabbit` or `qodo` |
 
 ```bash
 myk-pi-tools reviews poll
+myk-pi-tools reviews poll --source qodo
+myk-pi-tools reviews poll "#pullrequestreview-12345" --source coderabbit
 ```
 
-### reviews post
+**Behavior by source:**
 
-Post replies to review threads and resolve them based on status.
+| Source | Behavior |
+|---|---|
+| `coderabbit` | Checks approval status, handles rate limits (auto-waits + re-triggers), polls until actionable comments appear |
+| `qodo` | Fetches and checks for new Qodo comments (no rate limit handling) |
 
-```
-myk-pi-tools reviews post JSON_PATH
-```
+**Output:** Returns `{"approved": true}` if CodeRabbit approved the PR, otherwise returns the fetch JSON.
+
+### `reviews post`
+
+Post replies and resolve review threads from a processed JSON file.
 
 | Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `JSON_PATH` | string | yes | Path to JSON file created by `reviews fetch` (processed by AI handler) |
-
-Updates the JSON file with `posted_at` timestamps after posting.
+|---|---|---|---|
+| `JSON_PATH` | string | yes | Path to JSON file with review data (created by `fetch`, processed by AI) |
 
 ```bash
 myk-pi-tools reviews post /tmp/pi-work/pr-42-reviews.json
 ```
 
-### reviews pending-fetch
+**Status handling:**
 
-Fetch the authenticated user's pending (unpublished) review comments from a PR.
+| Status | Action |
+|---|---|
+| `addressed` | Post reply and resolve thread |
+| `not_addressed` | Post reply and resolve thread |
+| `skipped` | Post reply with skip reason, resolve thread (bot sources only; human threads are not resolved) |
+| `pending` | Skip (not processed yet) |
+| `failed` | Retry posting |
 
-```
-myk-pi-tools reviews pending-fetch PR_URL
-```
+**Effect:** Updates the JSON file with `posted_at` timestamps after successful posting.
+
+### `reviews pending-fetch`
+
+Fetch the authenticated user's pending (unsubmitted) review comments from a PR.
 
 | Argument | Type | Required | Description |
-|----------|------|----------|-------------|
+|---|---|---|---|
 | `PR_URL` | string | yes | GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
-
-**Output:** Saved to `/tmp/pi-work/pr-<number>-pending-review.json`.
 
 ```bash
 myk-pi-tools reviews pending-fetch https://github.com/myk-org/pi-config/pull/42
 ```
 
-### reviews pending-update
+**Output:** JSON saved to `/tmp/pi-work/pr-<number>-pending-review.json` with `metadata` and `comments` arrays.
+
+### `reviews pending-update`
 
 Update pending review comment bodies and optionally submit the review.
 
-```
-myk-pi-tools reviews pending-update JSON_PATH [OPTIONS]
-```
-
-| Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `JSON_PATH` | string | yes | Path to JSON file created by `reviews pending-fetch` |
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--submit` | flag | `false` | Submit the review after updating comments |
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `JSON_PATH` | argument | yes | — | Path to JSON file with pending review data |
+| `--submit` | flag | no | `false` | Submit the review after updating comments |
 
 ```bash
-# Update comments only
+# Update comment bodies only
 myk-pi-tools reviews pending-update /tmp/pi-work/pr-42-pending-review.json
 
 # Update and submit
 myk-pi-tools reviews pending-update /tmp/pi-work/pr-42-pending-review.json --submit
 ```
 
-### reviews store
+**Comment status handling:**
+- `accepted`: Update comment body with `refined_body`
+- Other statuses: Skip (no update)
 
-Store a completed review to the SQLite database for analytics. Deletes the JSON file after successful storage.
+**Submit action:** When `--submit` is set, uses the `submit_action` field from the JSON metadata (`COMMENT`, `APPROVE`, or `REQUEST_CHANGES`).
 
+### `reviews status`
+
+Show review status for the current PR. Queries the reviews database and displays all comments across all review cycles.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--pr` | integer | auto-detected from current branch | PR number |
+
+```bash
+myk-pi-tools reviews status
+myk-pi-tools reviews status --pr 42
 ```
-myk-pi-tools reviews store JSON_PATH
-```
+
+**Output:** TUI table to stdout and an HTML report saved to `/tmp/pi-work/<project>/review-status-<pr>.html`.
+
+### `reviews store`
+
+Store a completed review JSON to the SQLite database for analytics.
 
 | Argument | Type | Required | Description |
-|----------|------|----------|-------------|
+|---|---|---|---|
 | `JSON_PATH` | string | yes | Path to the completed review JSON file |
-
-**Database location:** `<git-root>/.pi/data/reviews.db`
 
 ```bash
 myk-pi-tools reviews store /tmp/pi-work/pr-42-reviews.json
 ```
 
-> **Tip:** Use `db stats` and `db patterns` to analyze data stored by this command. See Review Database & Analytics for details.
+**Effect:** Inserts the review and all comments into `.pi/data/reviews.db`. The JSON file is deleted after successful storage.
+
+**Database schema:** Two tables — `reviews` (PR metadata) and `comments` (individual review comments with source, status, reply, priority, timestamps).
 
 ---
 
-## coderabbit
+## `db`
 
-Commands for managing CodeRabbit automated reviews.
+Review database query commands. Operates on the SQLite database at `<git-root>/.pi/data/reviews.db`.
 
-### coderabbit check
+All subcommands support `--db-path` to override the default database location and `--json` for JSON output.
 
-Check if CodeRabbit is rate limited on a PR.
+### `db stats`
 
+Get review statistics.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--by-source` | flag | `true` (default when neither flag set) | Group by source (human/qodo/coderabbit) |
+| `--by-reviewer` | flag | `false` | Group by reviewer author |
+| `--json` | flag | `false` | Output as JSON |
+| `--db-path` | string | auto-detected | Path to database file |
+
+```bash
+myk-pi-tools db stats
+myk-pi-tools db stats --by-reviewer
+myk-pi-tools db stats --by-source --json
 ```
-myk-pi-tools coderabbit check OWNER_REPO PR_NUMBER
+
+> **Warning:** `--by-source` and `--by-reviewer` are mutually exclusive.
+
+**Output columns (by-source):** `source`, `total`, `addressed`, `not_addressed`, `skipped`, `addressed_rate`
+**Output columns (by-reviewer):** `author`, `total`, `addressed`, `not_addressed`, `skipped`
+
+### `db patterns`
+
+Find recurring dismissed patterns. Identifies comments that appear multiple times with similar content.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--min` | integer | `2` | Minimum occurrences to report |
+| `--json` | flag | `false` | Output as JSON |
+| `--db-path` | string | auto-detected | Path to database file |
+
+```bash
+myk-pi-tools db patterns
+myk-pi-tools db patterns --min 3
+myk-pi-tools db patterns --json
 ```
+
+**Output columns:** `path`, `occurrences`, `reason`, `body_sample`
+
+### `db dismissed`
+
+Get dismissed comments for a repository.
+
+| Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--owner` | string | yes | — | Repository owner (org or user) |
+| `--repo` | string | yes | — | Repository name |
+| `--json` | flag | no | `false` | Output as JSON |
+| `--db-path` | string | no | auto-detected | Path to database file |
+
+```bash
+myk-pi-tools db dismissed --owner myk-org --repo pi-config
+myk-pi-tools db dismissed --owner myk-org --repo pi-config --json
+```
+
+**Output columns:** `path`, `line`, `status`, `reply`, `author`
+
+### `db query`
+
+Run a raw SELECT query against the reviews database.
+
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `SQL` | argument | yes | — | SQL SELECT statement |
+| `--json` | flag | no | `false` | Output as JSON |
+| `--db-path` | string | no | auto-detected | Path to database file |
+
+> **Warning:** Only `SELECT` statements are allowed. Other SQL statements are rejected.
+
+```bash
+myk-pi-tools db query "SELECT * FROM comments WHERE status = 'skipped'"
+myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
+myk-pi-tools db query "SELECT * FROM comments LIMIT 5" --json
+```
+
+### `db find-similar`
+
+Find a previously dismissed comment matching a path and body. Uses exact path match combined with body similarity (Jaccard word overlap). Reads JSON from stdin.
+
+| Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--owner` | string | yes | — | Repository owner |
+| `--repo` | string | yes | — | Repository name |
+| `--threshold` | float | no | `0.6` | Minimum similarity threshold (0.0–1.0) |
+| `--json` | flag | no | `false` | Output as JSON |
+| `--db-path` | string | no | auto-detected | Path to database file |
+
+**Input:** JSON from stdin with `path` and `body` fields.
+
+```bash
+echo '{"path": "foo.py", "body": "Add error handling..."}' | \
+    myk-pi-tools db find-similar --owner myk-org --repo pi-config --json
+```
+
+**Output:** Matching comment with `similarity` score, `path`, `line`, `status`, `reply`, and `body`; or "No similar comment found."
+
+---
+
+## `coderabbit`
+
+CodeRabbit rate limit and review trigger commands.
+
+### `coderabbit check`
+
+Check if CodeRabbit is rate-limited on a PR.
 
 | Argument | Type | Required | Description |
-|----------|------|----------|-------------|
+|---|---|---|---|
 | `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
 | `PR_NUMBER` | integer | yes | Pull request number |
-
-**Output:** JSON with rate limit status.
-
-```json
-{"rate_limited": false}
-```
-
-```json
-{"rate_limited": true, "wait_seconds": 90, "comment_id": 12345}
-```
 
 ```bash
 myk-pi-tools coderabbit check myk-org/pi-config 42
 ```
 
-### coderabbit trigger
+**Output:** JSON with rate limit status and wait time.
 
-Wait an optional duration, then trigger a CodeRabbit review on a PR by posting `@coderabbitai review`. Polls until the review starts (max 10 minutes, 60-second intervals).
+### `coderabbit trigger`
 
-```
-myk-pi-tools coderabbit trigger OWNER_REPO PR_NUMBER [OPTIONS]
-```
+Wait and trigger a CodeRabbit review on a PR. Posts `@coderabbitai review` and polls until the review starts (max 10 minutes).
 
-| Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `OWNER_REPO` | string | yes | Repository in `owner/repo` format |
-| `PR_NUMBER` | integer | yes | Pull request number |
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--wait` | integer | `0` | Seconds to wait before posting the review trigger |
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `OWNER_REPO` | argument | yes | — | Repository in `owner/repo` format |
+| `PR_NUMBER` | integer | yes | — | Pull request number |
+| `--wait` | integer | no | `0` | Seconds to wait before posting review trigger |
 
 ```bash
-# Trigger immediately
 myk-pi-tools coderabbit trigger myk-org/pi-config 42
-
-# Wait 90 seconds then trigger
-myk-pi-tools coderabbit trigger myk-org/pi-config 42 --wait 90
+myk-pi-tools coderabbit trigger myk-org/pi-config 42 --wait 120
 ```
+
+**Effect:** Optionally waits the specified seconds, then posts a `@coderabbitai review` comment. Polls every 60 seconds (up to 10 attempts) until the review begins.
+
+---
+
+## `ai-cli`
+
+AI CLI commands for routing prompts to external AI agents (Cursor, Claude, Gemini). Wraps the [`ai-cli-runner`](https://pypi.org/project/ai-cli-runner/) package. See [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html) for workflows.
+
+### `ai-cli run`
+
+Run a prompt via an external AI CLI provider.
+
+| Argument/Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `PROMPT` | argument | yes | — | The prompt text to send |
+| `-p`, `--provider` | choice | yes | — | AI provider: `cursor`, `claude`, `gemini` |
+| `-m`, `--model` | string | no | provider default | Model name (e.g., `gpt-5.4-high`) |
+| `--resume` | flag | no | `false` | Continue the most recent session |
+| `--session-id` | string | no | — | Resume a specific session by ID |
+| `--cwd` | string | no | current directory | Working directory |
+| `--cli-flags` | string (repeatable) | no | — | Extra CLI flags (e.g., `--cli-flags=--trust`) |
+
+**Default models per provider:**
+
+| Provider | Default Model |
+|---|---|
+| `cursor` | `composer-2-fast` |
+| `claude` | `claude-sonnet-4-6` |
+| `gemini` | `gemini-2.5-flash` |
+
+> **Warning:** `--session-id` and `--resume` are mutually exclusive.
+
+```bash
+myk-pi-tools ai-cli run "Review this code for bugs" -p claude
+myk-pi-tools ai-cli run "Refactor the auth module" -p cursor -m gpt-5.4-high
+myk-pi-tools ai-cli run "Continue the previous task" -p gemini --resume
+myk-pi-tools ai-cli run "Fix tests" -p claude --session-id abc123
+myk-pi-tools ai-cli run "Review code" -p cursor --cli-flags=--trust --cli-flags=--verbose
+```
+
+**Output:** JSON to stdout with `success`, `provider`, `model`, `text` (response), `session_id`, and `usage` (token counts, cost). On failure: `success: false` with `error` field.
+
+### `ai-cli save-config`
+
+Save agent/peer configuration for the `/external-ai` slash command. Persists to `.pi/external-ai-config.json`.
+
+| Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--agents` | string | no* | — | Save `lastAgents` value (e.g., `cursor --model gpt-5.4-high`) |
+| `--peers` | string | no* | — | Save `lastPeers` value (e.g., `cursor,claude`) |
+
+*At least one of `--agents` or `--peers` must be provided.
+
+```bash
+myk-pi-tools ai-cli save-config --agents "cursor --model gpt-5.4-high"
+myk-pi-tools ai-cli save-config --peers "cursor,claude"
+myk-pi-tools ai-cli save-config --agents "gemini" --peers "cursor,claude"
+```
+
+**Effect:** Merges into `.pi/external-ai-config.json`. Each option updates only its field — the other is preserved. Outputs the saved config JSON to stdout.
+
+### `ai-cli models`
+
+List available models for a provider.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `PROVIDER` | choice | yes | AI provider: `cursor`, `claude`, `gemini` |
+
+```bash
+myk-pi-tools ai-cli models cursor
+myk-pi-tools ai-cli models claude
+myk-pi-tools ai-cli models gemini
+```
+
+**Output:** JSON array of model name strings to stdout.
 
 ---
 
 ## Exit Codes
 
-All commands use the following exit code conventions:
+All subcommands follow a consistent pattern:
 
 | Code | Meaning |
-|------|---------|
+|---|---|
 | `0` | Success |
-| `1` | Error (invalid input, API failure, missing dependencies) |
+| `1` | Error (missing dependencies, invalid arguments, API failure) |
 
-Error details are printed to stderr. JSON output goes to stdout.
+Commands that output JSON include a `status` or `success` field in the response that mirrors the exit code.
 
 ---
 
-## Environment and Dependencies
+## Environment and Prerequisites
 
-| Dependency | Required for |
-|------------|-------------|
-| `gh` (GitHub CLI) | All commands that interact with GitHub (pr, release, reviews, coderabbit) |
-| `git` | Repository detection, branch info, commit history, release validation |
+| Dependency | Required By | Purpose |
+|---|---|---|
+| `gh` (GitHub CLI) | `pr`, `release`, `reviews`, `coderabbit`, `db` | GitHub API access |
+| `git` | `release info`, `memory`, `db` | Repository context detection |
+| `ai-cli-runner` | `ai-cli` | External AI CLI abstraction |
 
-See Installation & Setup for installation instructions.
+> **Tip:** All dependencies are pre-installed in the pi-config Docker image. See [Running Pi in a Docker Container](docker-deployment.html) for details.
+
+## Related Pages
+
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
+- [Working with Project Memory](memory-system.html)
+- [Running the Automated Code Review Loop](code-review-loop.html)

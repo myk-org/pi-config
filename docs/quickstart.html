@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Quickstart - pi-config</title>
-    <meta name="description" content="Orchestrate specialist AI agents to automatically review, implement, and release your code">
+    <title>Installing and Starting Your First Session - pi-config</title>
+    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Orchestrate specialist AI agents to automatically review, implement, and release your code</p>
+            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,7 +31,14 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link active" aria-current="page">
-                            Quickstart
+                            Installing and Starting Your First Session
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="first-workflow.html"
+                           class="nav-link">
+                            Your First Coding Workflow
                         </a>
                     </li>
 
@@ -43,51 +50,65 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="delegating-tasks.html"
+                        <a href="agent-routing.html"
                            class="nav-link">
-                            Delegating Tasks to Specialist Agents
+                            Understanding Agent Routing and Delegation
                         </a>
                     </li>
 
                     <li>
-                        <a href="reviewing-code.html"
+                        <a href="code-review-loop.html"
                            class="nav-link">
-                            Reviewing Code with Parallel Agents
+                            Running the Automated Code Review Loop
                         </a>
                     </li>
 
                     <li>
-                        <a href="managing-releases.html"
+                        <a href="slash-commands.html"
                            class="nav-link">
-                            Managing Releases and Versioning
+                            Using Slash Commands and Prompt Templates
                         </a>
                     </li>
 
                     <li>
-                        <a href="using-dashboard.html"
+                        <a href="memory-system.html"
                            class="nav-link">
-                            Monitoring Sessions with the Web Dashboard
+                            Working with Project Memory
                         </a>
                     </li>
 
                     <li>
-                        <a href="working-with-memory.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Saving and Recalling Project Knowledge
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="running-in-docker.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Running pi-config in Docker
+                            Communicating Between Pi Sessions
                         </a>
                     </li>
 
                     <li>
-                        <a href="querying-reviews.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Querying the Review Database
+                            Using External AI Agents (Cursor, Claude, Gemini)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="docker-deployment.html"
+                           class="nav-link">
+                            Running Pi in a Docker Container
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="dashboards-and-diffs.html"
+                           class="nav-link">
+                            Using the Web Dashboard and Diff Viewer
                         </a>
                     </li>
 
@@ -105,6 +126,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="customization-recipes.html"
+                           class="nav-link">
+                            Customization and Extension Recipes
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -113,30 +141,37 @@
                 <ul class="nav-group-pages">
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Specialist Agents Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-reference.html"
+                           class="nav-link">
+                            Slash Commands and Extension Commands Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            CLI Command Reference
+                            myk-pi-tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="configuration-reference.html"
                            class="nav-link">
-                            Slash Commands Reference
+                            Configuration and Environment Variables Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="specialist-agents.html"
+                        <a href="rules-reference.html"
                            class="nav-link">
-                            Specialist Agent Catalog
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="environment-variables.html"
-                           class="nav-link">
-                            Environment Variables
+                            Orchestrator Rules Reference
                         </a>
                     </li>
 
@@ -148,9 +183,65 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="architecture.html"
+                        <a href="extension-architecture.html"
                            class="nav-link">
-                            Orchestrator Architecture
+                            Extension Architecture and Lifecycle Hooks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-internals.html"
+                           class="nav-link">
+                            Memory Scoring, Embeddings, and Situation Reports
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            Using ACPX Provider for External Agent Models
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Controlling Pi Sessions from Discord
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration and Quickfix Support
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Generating Images with the generate_image Tool
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Concepts</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="command-enforcement.html"
+                           class="nav-link">
+                            Command Safety Guards and Enforcement
                         </a>
                     </li>
 
@@ -203,74 +294,64 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="quickstart">Quickstart</h1>
-<p>Get pi-config running on your machine and delegate your first task to a specialist agent in under 5 minutes. pi-config turns pi into an orchestrator that automatically routes your work to 24 domain-specific agents — Python, Docker, Kubernetes, Git, and more.</p>
+                    <h1 id="installing-and-starting-your-first-session">Installing and Starting Your First Session</h1>
+<p>Get pi-config installed and running so you can start delegating coding tasks to an orchestrator backed by 24 specialist agents. Choose between Docker (sandboxed, all dependencies included) or native installation on your own machine.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li><a href="https://github.com/badlogic/pi-mono">pi</a> installed (or Docker if using the container method)</li>
-<li>A GitHub token (<code>GITHUB_TOKEN</code>) if you plan to work with PRs and issues</li>
-<li>An API key for your LLM provider (e.g., Anthropic, Google Cloud Vertex AI)</li>
+<li><strong>Node.js 22+</strong> — required by pi itself (<a href="https://nodejs.org">download</a> or <code>nvm install 22</code>)</li>
+<li><strong>Git</strong> — version control (<code>apt install git</code> / <code>brew install git</code>)</li>
+<li><strong>pi</strong> — the coding agent that pi-config extends (<code>npm install -g @earendil-works/pi-coding-agent</code>)</li>
+<li><strong>An LLM provider</strong> — pi needs an API key for at least one provider (Anthropic, Google Vertex AI, etc.). See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for all supported providers.</li>
 </ul>
-<h2 id="quick-example">Quick Example</h2>
-<div class="highlight"><pre><span></span><code><span class="c1"># Install the pi-config package</span>
-pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-config
+<h2 id="quick-start-docker">Quick Start (Docker)</h2>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/myk-org/pi-config:latest
 
-<span class="c1"># Start a session in your project directory</span>
-<span class="nb">cd</span><span class="w"> </span>/path/to/your/project
-pi
+docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-it<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--name<span class="w"> </span><span class="s2">&quot;pi-session&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--network<span class="w"> </span>host<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ANTHROPIC_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-ant-...&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">&quot;</span>:<span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">&quot;</span>:rw<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.pi&quot;</span>:<span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.pi&quot;</span>:rw<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.gitconfig&quot;</span>:<span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.gitconfig&quot;</span>:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.ssh&quot;</span>:<span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.ssh&quot;</span>:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.config/gh&quot;</span>:<span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.config/gh&quot;</span>:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-w<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ghcr.io/myk-org/pi-config:latest
 </code></pre></div>
 
-<p>Then type a task — pi-config automatically delegates it to the right specialist:</p>
-<div class="highlight"><pre><span></span><code>Add retry logic to the HTTP client in src/api.py
-</code></pre></div>
-
-<p>The orchestrator detects this involves Python and routes it to the <code>python-expert</code> agent, which writes the code, then sends it through three code reviewers in parallel before running tests.</p>
-<h2 id="step-1-install-pi-config">Step 1: Install pi-config</h2>
-<p>Choose one method: Docker (recommended) or native.</p>
-<h3 id="option-a-docker-recommended">Option A: Docker (Recommended)</h3>
-<p>Docker gives you filesystem isolation, consistent tooling, and all dependencies pre-installed in a single image.</p>
+<p>That's it. The container installs pi, pulls pi-config, and drops you into an interactive session. Type a task and the orchestrator takes over.</p>
+<h2 id="installation-methods">Installation Methods</h2>
+<h3 id="option-a-docker-container-recommended">Option A: Docker Container (Recommended)</h3>
+<p>The Docker image ships with every tool pre-installed — GitHub CLI, Python (uv), Go, kubectl, browser automation, and more. Your host filesystem is protected; the agent can only access mounted directories.</p>
+<p><strong>1. Pull the image:</strong></p>
 <div class="highlight"><pre><span></span><code>docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/myk-org/pi-config:latest
 </code></pre></div>
 
-<blockquote>
-<p><strong>Note:</strong> The image is built for <strong>linux/amd64</strong> only. On ARM hosts (e.g., Apple Silicon), Docker will emulate automatically, but you can also build with <code>--platform linux/amd64</code>.</p>
-</blockquote>
-<h3 id="option-b-native">Option B: Native</h3>
-<div class="highlight"><pre><span></span><code><span class="c1"># Core package (orchestrator extension + 24 agents + prompt templates)</span>
-pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-config
-
-<span class="c1"># CLI tools for PR review, releases, and memory management</span>
-uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>git+https://github.com/myk-org/pi-config
-
-<span class="c1"># Recommended companion tools</span>
-npm<span class="w"> </span>install<span class="w"> </span>-g<span class="w"> </span>acpx<span class="w">           </span><span class="c1"># External AI agent proxy</span>
-npm<span class="w"> </span>install<span class="w"> </span>-g<span class="w"> </span>pi-web-access<span class="w">  </span><span class="c1"># Web search/fetch skills</span>
-</code></pre></div>
-
-<h2 id="step-2-configure-your-environment">Step 2: Configure Your Environment</h2>
-<h3 id="native-setup">Native Setup</h3>
-<p>No configuration file is required for basic usage. Just start pi from any project directory.</p>
-<p>For GitHub integration, ensure your <code>gh</code> CLI is authenticated:</p>
-<div class="highlight"><pre><span></span><code>gh<span class="w"> </span>auth<span class="w"> </span>login
-</code></pre></div>
-
-<h3 id="docker-setup">Docker Setup</h3>
-<p>Create a <code>.env</code> file (e.g., at <code>~/.pi/.env</code>):</p>
-<div class="highlight"><pre><span></span><code># Your timezone
+<p><strong>2. Create an environment file</strong> at <code>~/.pi/.env</code>:</p>
+<div class="highlight"><pre><span></span><code># Timezone
 TZ=America/New_York
 
-# Your host username (maps container paths to your host HOME)
-PI_HOST_USER=youruser
+# Host username — maps container home to /home/&lt;user&gt; so host paths resolve
+PI_HOST_USER=your-username
 
-# GitHub authentication
-GITHUB_TOKEN=ghp_your_token_here
-GH_CONFIG_DIR=/home/youruser/.config/gh
+# LLM provider (at least one required)
+# Option A: Anthropic direct
+ANTHROPIC_API_KEY=sk-ant-xxx
+
+# Option B: Google Cloud / Vertex AI
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/your-username/.config/gcloud/application_default_credentials.json
+
+# GitHub (required for PR/issue workflows)
+GITHUB_TOKEN=ghp_xxx
+GH_CONFIG_DIR=/home/your-username/.config/gh
 </code></pre></div>
 
 <blockquote>
-<p><strong>Tip:</strong> The <code>PI_HOST_USER</code> variable creates a symlink inside the container so that mounted host paths (like <code>$HOME/.ssh</code>) resolve correctly.</p>
+<p><strong>Note:</strong> Use your actual home path in the env file — the <code>PI_HOST_USER</code> setting creates a symlink inside the container so these paths resolve correctly.</p>
 </blockquote>
-<p>Run the container from your project directory:</p>
+<p><strong>3. Run the container:</strong></p>
 <div class="highlight"><pre><span></span><code>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-it<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--name<span class="w"> </span><span class="s2">&quot;pi-config-</span><span class="k">$(</span>basename<span class="w"> </span><span class="nv">$PWD</span><span class="k">)</span><span class="s2">-</span><span class="k">$(</span>date<span class="w"> </span>+%s<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--network<span class="w"> </span>host<span class="w"> </span><span class="se">\</span>
@@ -286,236 +367,326 @@ GH_CONFIG_DIR=/home/youruser/.config/gh
 <span class="w">  </span>ghcr.io/myk-org/pi-config:latest
 </code></pre></div>
 
-<p>The container installs/updates pi and pi-config automatically on each start, then drops you into a pi session.</p>
-<h2 id="step-3-delegate-your-first-task">Step 3: Delegate Your First Task</h2>
-<p>Once inside a pi session, describe what you want done in plain language:</p>
-<div class="highlight"><pre><span></span><code>Fix the type errors in src/models.py
-</code></pre></div>
-
-<p>The orchestrator reads your request and routes it to the appropriate specialist agent based on a built-in routing table:</p>
-<table>
-<thead>
-<tr>
-<th>Domain</th>
-<th>Agent</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Python (.py)</td>
-<td><code>python-expert</code></td>
-</tr>
-<tr>
-<td>Go (.go)</td>
-<td><code>go-expert</code></td>
-</tr>
-<tr>
-<td>Frontend (JS/TS/React)</td>
-<td><code>frontend-expert</code></td>
-</tr>
-<tr>
-<td>Docker</td>
-<td><code>docker-expert</code></td>
-</tr>
-<tr>
-<td>Kubernetes/OpenShift</td>
-<td><code>kubernetes-expert</code></td>
-</tr>
-<tr>
-<td>Git (local operations)</td>
-<td><code>git-expert</code></td>
-</tr>
-<tr>
-<td>GitHub (PRs, issues)</td>
-<td><code>github-expert</code></td>
-</tr>
-<tr>
-<td>Tests</td>
-<td><code>test-automator</code></td>
-</tr>
-<tr>
-<td>Shell scripts</td>
-<td><code>bash-expert</code></td>
-</tr>
-</tbody>
-</table>
-<p>You can also name the agent explicitly:</p>
-<div class="highlight"><pre><span></span><code>Use docker-expert to optimize the multi-stage build in the Dockerfile
-</code></pre></div>
-
-<h2 id="step-4-use-workflow-commands">Step 4: Use Workflow Commands</h2>
-<p>For multi-step tasks, use slash commands that chain agents together:</p>
-<div class="highlight"><pre><span></span><code>/implement add Redis caching to the session store
-</code></pre></div>
-
-<p>This runs a three-stage pipeline: <strong>scout</strong> (analyzes the codebase) → <strong>planner</strong> (designs the approach) → <strong>worker</strong> (implements it).</p>
-<p>Other workflow commands:</p>
-<table>
-<thead>
-<tr>
-<th>Command</th>
-<th>What It Does</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>/implement &lt;task&gt;</code></td>
-<td>Scout → planner → worker pipeline</td>
-</tr>
-<tr>
-<td><code>/scout-and-plan &lt;task&gt;</code></td>
-<td>Scout → planner (plan only, no code changes)</td>
-</tr>
-<tr>
-<td><code>/implement-and-review &lt;task&gt;</code></td>
-<td>Worker → 3 reviewers → worker (with review loop)</td>
-</tr>
-<tr>
-<td><code>/pr-review 42</code></td>
-<td>Review PR #42 and post comments</td>
-</tr>
-<tr>
-<td><code>/release</code></td>
-<td>Create a GitHub release with changelog</td>
-</tr>
-<tr>
-<td><code>/review-local main</code></td>
-<td>Review uncommitted changes against a branch</td>
-</tr>
-</tbody>
-</table>
-<h2 id="what-happens-after-code-changes">What Happens After Code Changes</h2>
-<p>Every code change automatically goes through a review loop:</p>
+<p>On first start, the entrypoint automatically:</p>
 <ol>
-<li>The specialist agent writes or modifies code</li>
-<li>Three reviewers run <strong>in parallel</strong>: code quality, project guidelines, and security</li>
-<li>If reviewers find issues, the agent fixes them and reviewers run again</li>
-<li>Once all reviewers approve, tests run via <code>test-automator</code></li>
-<li>Task completes only when tests pass</li>
+<li>Installs/updates pi to the latest version</li>
+<li>Installs pi-config (orchestrator, agents, prompts)</li>
+<li>Installs companion packages (pi-web-access, pi-tasks)</li>
+<li>Installs the myk-pi-tools CLI</li>
+<li>Configures the global gitignore for memory and worktree directories</li>
+<li>Starts an interactive pi session</li>
 </ol>
-<p>You don't need to trigger this — it happens automatically.</p>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="shell-alias-for-docker">Shell Alias for Docker</h3>
-<p>Add this to your <code>~/.bashrc</code> or <code>~/.zshrc</code> to start pi-config with a single command from any project directory:</p>
-<div class="highlight"><pre><span></span><code><span class="nb">alias</span><span class="w"> </span>pi-docker<span class="o">=</span><span class="s1">&#39;docker pull ghcr.io/myk-org/pi-config:latest &amp;&amp; \</span>
-<span class="s1">  docker run --rm -it \</span>
-<span class="s1">  --name &quot;pi-config-$(basename $PWD)-$(date +%s)&quot; \</span>
-<span class="s1">  --network host \</span>
-<span class="s1">  --env-file &quot;$HOME/.pi/.env&quot; \</span>
-<span class="s1">  -v &quot;$PWD&quot;:&quot;$PWD&quot;:rw \</span>
-<span class="s1">  -v &quot;$HOME/.pi&quot;:&quot;$HOME/.pi&quot;:rw \</span>
-<span class="s1">  -v &quot;$HOME/.gitconfig&quot;:&quot;$HOME/.gitconfig&quot;:ro \</span>
-<span class="s1">  -v &quot;$HOME/.gitignore-global&quot;:&quot;$HOME/.gitignore-global&quot;:ro \</span>
-<span class="s1">  -v &quot;$HOME/.ssh&quot;:&quot;$HOME/.ssh&quot;:ro \</span>
-<span class="s1">  -v &quot;$HOME/.config/gh&quot;:&quot;$HOME/.config/gh&quot;:ro \</span>
-<span class="s1">  -v /tmp/pi-work:/tmp/pi-work:rw \</span>
-<span class="s1">  -w &quot;$PWD&quot; \</span>
-<span class="s1">  ghcr.io/myk-org/pi-config:latest&#39;</span>
-</code></pre></div>
-
-<p>Then run <code>pi-docker</code> from any project directory.</p>
-<h3 id="background-agents">Background Agents</h3>
-<p>Spawn agents in the background for long-running tasks. Results surface automatically when complete:</p>
-<div class="highlight"><pre><span></span><code>Run security-auditor in the background to audit the auth module
-</code></pre></div>
-
-<p>Check on background agents anytime:</p>
-<div class="highlight"><pre><span></span><code>/async-status
-</code></pre></div>
-
-<h3 id="agent-chaining-and-parallel-execution">Agent Chaining and Parallel Execution</h3>
-<p>You can request multiple agents work simultaneously:</p>
-<div class="highlight"><pre><span></span><code>Run python-expert on src/api.py and frontend-expert on src/components/ in parallel
-</code></pre></div>
-
-<p>Or chain agents so each builds on the previous result:</p>
-<div class="highlight"><pre><span></span><code>Run scout and planner in a chain to analyze the auth module
-</code></pre></div>
-
-<h3 id="project-memory">Project Memory</h3>
-<p>pi-config stores per-repo lessons in <code>.pi/memory/memory.md</code>. Save something for future sessions:</p>
-<div class="highlight"><pre><span></span><code>/remember this project uses SQLAlchemy 2.0 async sessions exclusively
-</code></pre></div>
-
-<p>Run memory consolidation to organize and deduplicate stored knowledge:</p>
-<div class="highlight"><pre><span></span><code>/dream
-</code></pre></div>
-
-<p>For native (non-Docker) installs, add the memory directory to your global gitignore:</p>
-<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;.pi/memory/&#39;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.gitignore-global
-git<span class="w"> </span>config<span class="w"> </span>--global<span class="w"> </span>core.excludesFile<span class="w"> </span>~/.gitignore-global
-</code></pre></div>
-
 <blockquote>
-<p><strong>Note:</strong> The Docker container handles this automatically.</p>
+<p><strong>Tip:</strong> A <code>WARNING</code> on stderr about packages already being cached is normal. If pi doesn't start, check your network connectivity.</p>
 </blockquote>
-<h3 id="pidash-live-web-dashboard">Pidash — Live Web Dashboard</h3>
-<p>Pi-config includes a web dashboard that runs alongside your terminal session:</p>
-<div class="highlight"><pre><span></span><code><span class="c1"># Opens automatically — visit in your browser:</span>
-http://localhost:19190
+<p>For a permanent shell alias, see <a href="docker-deployment.html">Running Pi in a Docker Container</a>.</p>
+<h3 id="option-b-native-installation">Option B: Native Installation</h3>
+<p>For running pi directly on your machine without Docker.</p>
+<p><strong>1. Install prerequisites:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Node.js 22+</span>
+nvm<span class="w"> </span>install<span class="w"> </span><span class="m">22</span>
+
+<span class="c1"># pi coding agent</span>
+npm<span class="w"> </span>install<span class="w"> </span>-g<span class="w"> </span>@earendil-works/pi-coding-agent
+
+<span class="c1"># uv (Python package manager — required for Python tools)</span>
+curl<span class="w"> </span>-LsSf<span class="w"> </span>https://astral.sh/uv/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
 </code></pre></div>
 
-<p>The dashboard shows live conversations across all pi sessions, lets you send messages from the browser, and supports model switching. See Pidash Dashboard for details.</p>
-<h3 id="google-cloud-vertex-ai">Google Cloud Vertex AI</h3>
-<p>To use Claude models through Google Cloud instead of the Anthropic API:</p>
-<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude@feat/1m-context-window-support
+<p><strong>2. Run the interactive installer:</strong></p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
 </code></pre></div>
 
-<p>Add these to your <code>.env</code>:</p>
-<div class="highlight"><pre><span></span><code>GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/youruser/.config/gcloud/application_default_credentials.json
-VERTEX_PROJECT_ID=your-project-id
-VERTEX_REGION=us-east5
+<p>The installer walks you through five steps with multi-select checkboxes:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>What it installs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pi Packages</td>
+<td>pi-config, pi-vertex-claude, pi-web-access, pi-tasks, myk-pi-tools, bun</td>
+</tr>
+<tr>
+<td>Python Tools</td>
+<td>mcp-launchpad (mcpl), prek</td>
+</tr>
+<tr>
+<td>npm Packages</td>
+<td>acpx, agent-browser</td>
+</tr>
+<tr>
+<td>Browser Automation</td>
+<td>Playwright + Chromium</td>
+</tr>
+<tr>
+<td>Environment Setup</td>
+<td>Adds <code>.pi/memory/</code>, <code>.worktrees/</code>, <code>.pi/tasks/</code> to global gitignore</td>
+</tr>
+</tbody>
+</table>
+<p>Select only what you need — each tool shows whether it's already installed.</p>
+<blockquote>
+<p><strong>Tip:</strong> For non-interactive CI environments, run <code>uv run scripts/install.py --all</code> to install everything without prompts.</p>
+</blockquote>
+<p><strong>3. Start a session:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>your-project
+pi
 </code></pre></div>
 
-<h3 id="custom-agents">Custom Agents</h3>
-<p>Override any bundled agent or add your own. Place a <code>.md</code> file in <code>~/.pi/agent/agents/</code> (user-level) or <code>.pi/agents/</code> (project-level):</p>
-<div class="highlight"><pre><span></span><code>---
-name: my-custom-agent
-description: Handles our internal deployment tooling
-<span class="gu">tools: read, write, edit, bash</span>
-<span class="gu">---</span>
+<h2 id="configuring-prerequisites">Configuring Prerequisites</h2>
+<h3 id="github-cli-gh">GitHub CLI (gh)</h3>
+<p>The GitHub CLI is required for PR reviews, issue creation, and release workflows. It's pre-installed in the Docker image.</p>
+<p><strong>Native installation:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># macOS</span>
+brew<span class="w"> </span>install<span class="w"> </span>gh
 
-You are an expert in our internal deployment system. Always check
-the deploy-config.yaml before making changes.
+<span class="c1"># Linux (Debian/Ubuntu)</span>
+curl<span class="w"> </span>-fsSL<span class="w"> </span>https://cli.github.com/packages/githubcli-archive-keyring.gpg<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>gpg<span class="w"> </span>--dearmor<span class="w"> </span>-o<span class="w"> </span>/usr/share/keyrings/githubcli-archive-keyring.gpg
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;deb [arch=</span><span class="k">$(</span>dpkg<span class="w"> </span>--print-architecture<span class="k">)</span><span class="s2"> signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>tee<span class="w"> </span>/etc/apt/sources.list.d/github-cli.list<span class="w"> </span>&gt;<span class="w"> </span>/dev/null
+sudo<span class="w"> </span>apt<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>gh
 </code></pre></div>
 
-<p>Project-level agents take priority over user-level, which take priority over bundled agents. See Agent Configuration for the full format.</p>
-<h3 id="scheduled-tasks">Scheduled Tasks</h3>
-<p>Schedule recurring work within your pi session:</p>
-<div class="highlight"><pre><span></span><code>/cron add every 2h check for new issues assigned to me
-/cron list
-/cron remove
+<p><strong>Authenticate:</strong></p>
+<div class="highlight"><pre><span></span><code>gh<span class="w"> </span>auth<span class="w"> </span>login
 </code></pre></div>
 
-<p>Cron tasks run while pi is active, survive <code>/reload</code>, and stop on exit.</p>
+<p>For Docker, mount your gh config directory: <code>-v "$HOME/.config/gh":"$HOME/.config/gh":ro</code></p>
+<h3 id="api-keys">API Keys</h3>
+<p>Pi needs credentials for at least one LLM provider. Pass them as environment variables:</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Environment Variable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Anthropic (direct)</td>
+<td><code>ANTHROPIC_API_KEY</code></td>
+</tr>
+<tr>
+<td>Google Vertex AI</td>
+<td><code>GOOGLE_CLOUD_PROJECT</code>, <code>GOOGLE_CLOUD_LOCATION</code>, <code>GOOGLE_APPLICATION_CREDENTIALS</code></td>
+</tr>
+<tr>
+<td>Gemini (image generation)</td>
+<td><code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code></td>
+</tr>
+<tr>
+<td>GitHub (for PR/issue workflows)</td>
+<td><code>GITHUB_TOKEN</code></td>
+</tr>
+</tbody>
+</table>
+<p>For Docker, put these in your <code>~/.pi/.env</code> file and pass with <code>--env-file</code>. For native, export them in your shell profile.</p>
+<p>See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for the full list of supported variables.</p>
+<h3 id="mcp-launchpad-optional">MCP Launchpad (Optional)</h3>
+<p>MCP Launchpad (<code>mcpl</code>) lets pi access external tools from MCP servers (Sentry, Vercel, Jenkins, etc.). It's pre-installed in the Docker image.</p>
+<p><strong>Native installation:</strong></p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>mcp-launchpad<span class="w"> </span>--from<span class="w"> </span><span class="s2">&quot;mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git&quot;</span>
+</code></pre></div>
+
+<p><strong>Docker mount</strong> for your MCP config:</p>
+<div class="highlight"><pre><span></span><code>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.config/mcpl/mcp.json&quot;</span>:<span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.config/mcpl/mcp.json&quot;</span>:ro
+</code></pre></div>
+
+<h2 id="running-your-first-session">Running Your First Session</h2>
+<p><strong>1. Navigate to your project and start pi:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>~/my-project
+pi<span class="w">     </span><span class="c1"># or use the Docker command/alias</span>
+</code></pre></div>
+
+<p><strong>2. On startup, pi validates your environment.</strong> You'll see notifications about any missing tools — critical ones (like <code>uv</code>) get a warning, optional ones (like <code>gh</code>, <code>mcpl</code>) are informational.</p>
+<p><strong>3. Try a simple task:</strong></p>
+<div class="highlight"><pre><span></span><code>Add a docstring to every public function in src/utils.py
+</code></pre></div>
+
+<p>The orchestrator reads the request, identifies it as Python work, and delegates to the <code>python-expert</code> agent. You'll see the delegation happen in real time.</p>
+<p><strong>4. Try a workflow command:</strong></p>
+<div class="highlight"><pre><span></span><code>/implement add retry logic to the HTTP client
+</code></pre></div>
+
+<p>This runs the full scout → planner → worker pipeline: a scout agent explores the codebase, a planner creates a step-by-step plan, and a worker implements it.</p>
+<p><strong>5. Check session status anytime:</strong></p>
+<div class="highlight"><pre><span></span><code>/status
+</code></pre></div>
+
+<p>This shows async agents, cron tasks, git branch, and session info at a glance.</p>
+<blockquote>
+<p><strong>Tip:</strong> The orchestrator never edits files directly — it always delegates to the right specialist agent. See <a href="agent-routing.html">Understanding Agent Routing and Delegation</a> for how routing decisions work.</p>
+</blockquote>
+<h2 id="project-level-configuration">Project-Level Configuration</h2>
+<p>Create <code>.pi/pi-config-settings.json</code> in any project to customize behavior:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;co_author&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;use_worktrees&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;dream_interval_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>What it does</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>co_author</code></td>
+<td>Add co-author trailer to git commits</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>use_worktrees</code></td>
+<td>Force git worktree workflow for branches</td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>dream_interval_hours</code></td>
+<td>How often memory consolidation runs</td>
+<td><code>3</code></td>
+</tr>
+</tbody>
+</table>
+<p>Settings resolve in order: project file → environment variable → default. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for details.</p>
 <h2 id="updating">Updating</h2>
 <h3 id="docker">Docker</h3>
 <div class="highlight"><pre><span></span><code>docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/myk-org/pi-config:latest
 </code></pre></div>
 
-<p>The container also runs <code>pi update</code> automatically on each start.</p>
+<p>The container runs <code>pi update</code> automatically on every start, so you always get the latest pi-config and agents.</p>
 <h3 id="native">Native</h3>
-<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>update<span class="w">                          </span><span class="c1"># Update the pi-config package</span>
-uv<span class="w"> </span>tool<span class="w"> </span>upgrade<span class="w"> </span>myk-pi-tools<span class="w">      </span><span class="c1"># Update the CLI tools</span>
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>update<span class="w">                       </span><span class="c1"># Updates pi-config and all pi packages</span>
+uv<span class="w"> </span>tool<span class="w"> </span>upgrade<span class="w"> </span>myk-pi-tools<span class="w">    </span><span class="c1"># Updates the CLI tool</span>
 </code></pre></div>
 
-<p>After updating, run <code>/reload</code> inside pi or restart the session.</p>
+<p>After updating, run <code>/reload</code> inside a running pi session or restart pi to pick up changes.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="building-the-docker-image-from-source">Building the Docker Image from Source</h3>
+<p>If you want to customize the image or run on a different architecture:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/myk-org/pi-config.git
+<span class="nb">cd</span><span class="w"> </span>pi-config
+docker<span class="w"> </span>build<span class="w"> </span>-t<span class="w"> </span>ghcr.io/myk-org/pi-config:latest<span class="w"> </span>.
+</code></pre></div>
+
+<blockquote>
+<p><strong>Note:</strong> The image is built for <strong>linux/amd64</strong> only. On ARM hosts, build with <code>--platform linux/amd64</code>.</p>
+</blockquote>
+<h3 id="docker-socket-access">Docker Socket Access</h3>
+<p>To let pi inspect containers (via the restricted <code>docker-safe</code> wrapper), mount the Docker socket:</p>
+<div class="highlight"><pre><span></span><code>-v<span class="w"> </span>/var/run/docker.sock:/var/run/docker.sock:ro<span class="w"> </span><span class="se">\</span>
+--group-add<span class="w"> </span><span class="k">$(</span>stat<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;%g&#39;</span><span class="w"> </span>/var/run/docker.sock<span class="k">)</span>
+</code></pre></div>
+
+<p>The <code>docker-safe</code> wrapper only allows read-only operations: <code>ps</code>, <code>logs</code>, <code>inspect</code>, <code>top</code>, <code>stats</code>.</p>
+<h3 id="additional-docker-mounts">Additional Docker Mounts</h3>
+<table>
+<thead>
+<tr>
+<th>Mount</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro</code></td>
+<td>Google Cloud ADC for Vertex AI</td>
+</tr>
+<tr>
+<td><code>-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro</code></td>
+<td>Cursor CLI auth for ACPX models</td>
+</tr>
+<tr>
+<td><code>-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro</code></td>
+<td>GitLab CLI config</td>
+</tr>
+<tr>
+<td><code>-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw</code></td>
+<td>CodeRabbit CLI auth and review data</td>
+</tr>
+<tr>
+<td><code>-v "$HOME/.agents":"$HOME/.agents":rw</code></td>
+<td>User-level skills for agent-browser</td>
+</tr>
+<tr>
+<td><code>-v "$HOME/screenshots":"$HOME/screenshots":ro</code></td>
+<td>Share screenshots/images with the agent</td>
+</tr>
+</tbody>
+</table>
+<h3 id="acpx-provider-external-agent-models">ACPX Provider (External Agent Models)</h3>
+<p>Access models from external agents (Cursor, Claude, Gemini, Copilot) as native pi models by setting <code>ACPX_AGENTS</code>:</p>
+<div class="highlight"><pre><span></span><code>ACPX_AGENTS=cursor
+</code></pre></div>
+
+<p>This registers all models available through the Cursor agent as selectable pi models.</p>
+<h3 id="disabling-bundled-features">Disabling Bundled Features</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Environment Variable</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pidash web dashboard</td>
+<td><code>PI_PIDASH_ENABLE=false</code></td>
+<td>enabled</td>
+</tr>
+<tr>
+<td>Pidiff diff viewer</td>
+<td><code>PI_PIDIFF_ENABLE=false</code></td>
+<td>enabled</td>
+</tr>
+<tr>
+<td>Pidash custom port</td>
+<td><code>PI_PIDASH_PORT=9999</code></td>
+<td><code>19190</code></td>
+</tr>
+<tr>
+<td>Pidiff custom port</td>
+<td><code>PI_PIDIFF_PORT=9999</code></td>
+<td><code>19290</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="native-gitignore-setup">Native Gitignore Setup</h3>
+<p>The Docker container automatically configures the global gitignore. For native installations, the installer handles this too, but you can verify manually:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;.pi/memory/&#39;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.gitignore-global
+<span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;.worktrees/&#39;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.gitignore-global
+<span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;.pi/tasks/&#39;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.gitignore-global
+git<span class="w"> </span>config<span class="w"> </span>--global<span class="w"> </span>core.excludesFile<span class="w"> </span>~/.gitignore-global
+</code></pre></div>
+
 <h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>Pi won't start in Docker — "permission denied" errors:</strong>
+The container runs as user <code>node</code> (UID 1000). If your project files are owned by a different UID, set <code>PI_HOST_USER=your-username</code> in the env file so the container maps home directories correctly.</p>
+<p><strong>"uv not found" warning on session start:</strong>
+<code>uv</code> is required for Python execution. In Docker it's pre-installed. For native, install with <code>curl -LsSf https://astral.sh/uv/install.sh | sh</code>.</p>
+<p><strong>"gh not found" notification:</strong>
+GitHub CLI is optional but needed for PR/issue workflows. Install it or mount your existing config into the container.</p>
+<p><strong>Container exits immediately:</strong>
+Ensure you're passing <code>-it</code> (interactive + TTY). Without it, pi has no terminal to attach to.</p>
+<p><strong>Slow first start:</strong>
+The first run downloads pi-config, companion packages, and npm dependencies. Subsequent starts use cached packages and are much faster. Mount <code>/tmp/pi-work:/tmp/pi-work:rw</code> to persist temp files across container restarts.</p>
+<h2 id="related-pages">Related Pages</h2>
 <ul>
-<li>
-<p><strong>Container start shows <code>WARNING</code> about cached packages</strong> — This is normal. The entrypoint checks for existing packages before installing. If pi misbehaves, verify network connectivity and run <code>pi install git:github.com/myk-org/pi-config</code> manually inside the container.</p>
-</li>
-<li>
-<p><strong>Host paths don't resolve inside Docker</strong> — Make sure <code>PI_HOST_USER</code> in your <code>.env</code> matches your host username. This creates the symlinks needed for mounted paths to work.</p>
-</li>
-<li>
-<p><strong>Agent not found errors</strong> — Run <code>/reload</code> to re-discover agents. For custom agents, verify the file has valid YAML frontmatter with <code>name</code>, <code>description</code>, and <code>tools</code> fields.</p>
-</li>
-<li>
-<p><strong>Permission denied on mounted volumes</strong> — The container runs as user <code>node</code> (UID 1000). If your host UID differs, the mounted files may not be writable. Ensure your project directory is owned by UID 1000 or adjust permissions.</p>
-</li>
+<li><a href="first-workflow.html">Your First Coding Workflow</a></li>
+<li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
+<li><a href="agent-routing.html">Understanding Agent Routing and Delegation</a></li>
 </ul>
                 </div>
             </article>
@@ -524,9 +695,9 @@ uv<span class="w"> </span>tool<span class="w"> </span>upgrade<span class="w"> </
                 <div></div>
 
 
-                <a href="delegating-tasks.html" class="page-nav-link page-nav-next">
+                <a href="first-workflow.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Delegating Tasks to Specialist Agents</span>
+                    <span class="page-nav-title">Your First Coding Workflow</span>
                 </a>
 
             </nav>
@@ -537,37 +708,36 @@ uv<span class="w"> </span>tool<span class="w"> </span>upgrade<span class="w"> </
                     <div class="toc">
 <ul>
 <li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-1-install-pi-config">Step 1: Install pi-config</a><ul>
-<li><a href="#option-a-docker-recommended">Option A: Docker (Recommended)</a></li>
-<li><a href="#option-b-native">Option B: Native</a></li>
+<li><a href="#quick-start-docker">Quick Start (Docker)</a></li>
+<li><a href="#installation-methods">Installation Methods</a><ul>
+<li><a href="#option-a-docker-container-recommended">Option A: Docker Container (Recommended)</a></li>
+<li><a href="#option-b-native-installation">Option B: Native Installation</a></li>
 </ul>
 </li>
-<li><a href="#step-2-configure-your-environment">Step 2: Configure Your Environment</a><ul>
-<li><a href="#native-setup">Native Setup</a></li>
-<li><a href="#docker-setup">Docker Setup</a></li>
+<li><a href="#configuring-prerequisites">Configuring Prerequisites</a><ul>
+<li><a href="#github-cli-gh">GitHub CLI (gh)</a></li>
+<li><a href="#api-keys">API Keys</a></li>
+<li><a href="#mcp-launchpad-optional">MCP Launchpad (Optional)</a></li>
 </ul>
 </li>
-<li><a href="#step-3-delegate-your-first-task">Step 3: Delegate Your First Task</a></li>
-<li><a href="#step-4-use-workflow-commands">Step 4: Use Workflow Commands</a></li>
-<li><a href="#what-happens-after-code-changes">What Happens After Code Changes</a></li>
-<li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#shell-alias-for-docker">Shell Alias for Docker</a></li>
-<li><a href="#background-agents">Background Agents</a></li>
-<li><a href="#agent-chaining-and-parallel-execution">Agent Chaining and Parallel Execution</a></li>
-<li><a href="#project-memory">Project Memory</a></li>
-<li><a href="#pidash-live-web-dashboard">Pidash — Live Web Dashboard</a></li>
-<li><a href="#google-cloud-vertex-ai">Google Cloud Vertex AI</a></li>
-<li><a href="#custom-agents">Custom Agents</a></li>
-<li><a href="#scheduled-tasks">Scheduled Tasks</a></li>
-</ul>
-</li>
+<li><a href="#running-your-first-session">Running Your First Session</a></li>
+<li><a href="#project-level-configuration">Project-Level Configuration</a></li>
 <li><a href="#updating">Updating</a><ul>
 <li><a href="#docker">Docker</a></li>
 <li><a href="#native">Native</a></li>
 </ul>
 </li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#building-the-docker-image-from-source">Building the Docker Image from Source</a></li>
+<li><a href="#docker-socket-access">Docker Socket Access</a></li>
+<li><a href="#additional-docker-mounts">Additional Docker Mounts</a></li>
+<li><a href="#acpx-provider-external-agent-models">ACPX Provider (External Agent Models)</a></li>
+<li><a href="#disabling-bundled-features">Disabling Bundled Features</a></li>
+<li><a href="#native-gitignore-setup">Native Gitignore Setup</a></li>
+</ul>
+</li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
 
@@ -579,7 +749,7 @@ uv<span class="w"> </span>tool<span class="w"> </span>upgrade<span class="w"> </
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 2.2.0</span>
+            <span class="footer-version">Generated from version 3.6.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

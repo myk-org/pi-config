@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>pi-config</title>
+    <title>Generating Images with the generate_image Tool - pi-config</title>
     <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -226,7 +226,7 @@
 
                     <li>
                         <a href="image-generation.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Generating Images with the generate_image Tool
                         </a>
                     </li>
@@ -288,293 +288,263 @@
 
         <main class="content">
 
-            <section class="index-header">
-                <h1 class="index-title">pi-config</h1>
-                <p class="index-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="generating-images-with-the-generate_image-tool">Generating Images with the generate_image Tool</h1>
+<p>Create AI-generated images directly from your pi session using natural language or structured parameters, powered by Google's Gemini API.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>A <strong>Google Gemini API key</strong> — get one from <a href="https://aistudio.google.com/apikey">Google AI Studio</a></li>
+<li>A Gemini model that supports image generation (e.g., <code>gemini-2.0-flash-exp</code> or <code>gemini-3-pro-image</code>)</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>Set the required environment variables, then ask pi to generate an image:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GEMINI_API_KEY</span><span class="o">=</span><span class="s2">&quot;AIzaSy...&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_IMAGE_MODEL</span><span class="o">=</span><span class="s2">&quot;gemini-3-pro-image&quot;</span>
+</code></pre></div>
+
+<p>Then in your pi session:</p>
+<div class="highlight"><pre><span></span><code>Generate an image of a golden retriever playing fetch on a beach at sunset
+</code></pre></div>
+
+<p>Pi calls the <code>generate_image</code> tool, saves the resulting image to <code>/tmp/pi-work/&lt;project&gt;/</code>, and returns the file path.</p>
+<h2 id="setup">Setup</h2>
+<p>Both environment variables are required — without them, <code>generate_image</code> returns an error.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PI_IMAGE_MODEL</code></td>
+<td>Gemini model name (e.g., <code>gemini-3-pro-image</code>). No default — must be set explicitly.</td>
+</tr>
+<tr>
+<td><code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code></td>
+<td>Your Google Gemini API key. Either variable name works.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>For Docker containers</strong>, add both to your <code>.env</code> file:</p>
+<div class="highlight"><pre><span></span><code>GEMINI_API_KEY=AIzaSy...
+PI_IMAGE_MODEL=gemini-3-pro-image
+</code></pre></div>
+
+<p>Then pass the file with <code>--env-file /path/to/.env</code> in your <code>docker run</code> command. See <a href="docker-deployment.html">Running Pi in a Docker Container</a> for the full container setup.</p>
+<blockquote>
+<p><strong>Note:</strong> Changes to environment variables require restarting your pi session to take effect.</p>
+</blockquote>
+<h2 id="using-the-tool">Using the Tool</h2>
+<p>You can ask for images conversationally — pi translates your request into structured parameters automatically. You can also specify parameters explicitly for more control.</p>
+<h3 id="parameters">Parameters</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>subject</code></td>
+<td><strong>Yes</strong></td>
+<td>Main subject of the image</td>
+</tr>
+<tr>
+<td><code>action</code></td>
+<td>No</td>
+<td>What the subject is doing</td>
+</tr>
+<tr>
+<td><code>scene</code></td>
+<td>No</td>
+<td>Location or environment</td>
+</tr>
+<tr>
+<td><code>composition</code></td>
+<td>No</td>
+<td>Camera angle and framing</td>
+</tr>
+<tr>
+<td><code>lighting</code></td>
+<td>No</td>
+<td>Lighting setup</td>
+</tr>
+<tr>
+<td><code>style</code></td>
+<td>No</td>
+<td>Artistic style (e.g., photorealistic, watercolor, pixel art)</td>
+</tr>
+<tr>
+<td><code>text</code></td>
+<td>No</td>
+<td>Text to render inside the image</td>
+</tr>
+<tr>
+<td><code>aspect_ratio</code></td>
+<td>No</td>
+<td>Image dimensions ratio (defaults to model default)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="supported-aspect-ratios">Supported Aspect Ratios</h3>
+<table>
+<thead>
+<tr>
+<th>Ratio</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>1:1</code></td>
+<td>Square — social media avatars, icons</td>
+</tr>
+<tr>
+<td><code>3:4</code></td>
+<td>Portrait — mobile wallpapers</td>
+</tr>
+<tr>
+<td><code>4:3</code></td>
+<td>Landscape — presentations</td>
+</tr>
+<tr>
+<td><code>9:16</code></td>
+<td>Tall portrait — phone screens, stories</td>
+</tr>
+<tr>
+<td><code>16:9</code></td>
+<td>Widescreen — desktop wallpapers, banners</td>
+</tr>
+</tbody>
+</table>
+<h2 id="example-prompts">Example Prompts</h2>
+<p>Here are different ways to ask pi for images, demonstrating the range of styles and parameters:</p>
+<p><strong>Simple request:</strong></p>
+<div class="highlight"><pre><span></span><code>Generate an image of a mountain landscape
+</code></pre></div>
+
+<p><strong>With style and lighting:</strong></p>
+<div class="highlight"><pre><span></span><code>Generate an image of a cat sitting on a windowsill, watercolor style, warm afternoon lighting
+</code></pre></div>
+
+<p><strong>With composition and scene:</strong></p>
+<div class="highlight"><pre><span></span><code>Generate an image: subject is a vintage typewriter, scene is a cluttered writer&#39;s desk,
+composition is close-up overhead shot, lighting is soft lamp light, style is photorealistic
+</code></pre></div>
+
+<p><strong>With text overlay:</strong></p>
+<div class="highlight"><pre><span></span><code>Generate an image of a coffee mug on a table, text &quot;Good Morning&quot;, style is minimalist flat design
+</code></pre></div>
+
+<p><strong>Specific aspect ratio for a phone wallpaper:</strong></p>
+<div class="highlight"><pre><span></span><code>Generate a 9:16 image of a starry night sky over a forest, style is digital painting
+</code></pre></div>
+
+<p><strong>Pixel art style:</strong></p>
+<div class="highlight"><pre><span></span><code>Generate a 1:1 image of a knight fighting a dragon, pixel art style
+</code></pre></div>
+
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="how-images-are-saved">How Images Are Saved</h3>
+<p>Generated images are saved to <code>/tmp/pi-work/&lt;project-name&gt;/</code> with auto-generated filenames. Pi reports the full file path in its response, so you can open, copy, or move the file.</p>
+<h3 id="automatic-http-preview-in-containers">Automatic HTTP Preview in Containers</h3>
+<p>When running pi inside a Docker container, you can't open local file paths directly in your browser. Pi detects the container environment automatically and spins up an HTTP server to serve the generated image.</p>
+<p>After generating an image in a container, pi returns both the file path and a preview URL:</p>
+<div class="highlight"><pre><span></span><code>Generated 1 image(s):
+  /tmp/pi-work/my-project/pi-image-1717123456-a1b2c3.png
+  Preview: http://localhost:38291/pi-image-1717123456-a1b2c3.png
+</code></pre></div>
+
+<p>Open the preview URL in your browser to view the image.</p>
+<blockquote>
+<p><strong>Note:</strong> The preview server requires <code>--network host</code> on your container. This is already included in the standard Docker run command. See <a href="docker-deployment.html">Running Pi in a Docker Container</a> for details.</p>
+</blockquote>
+<p>On native (non-container) installs, no HTTP server is started — you can open the saved file directly.</p>
+<h3 id="request-timeout">Request Timeout</h3>
+<p>Image generation requests time out after <strong>3 minutes</strong>. Complex prompts with detailed parameters may take longer than simple ones, but should complete well within this limit.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>"Error: PI_IMAGE_MODEL environment variable is not set"</strong></p>
+<ul>
+<li>Set <code>PI_IMAGE_MODEL</code> to a valid Gemini image model name and restart pi.</li>
+</ul>
+<p><strong>"Error: No API key found"</strong></p>
+<ul>
+<li>Set either <code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code> and restart pi.</li>
+</ul>
+<p><strong>"Image generation blocked by safety filter"</strong></p>
+<ul>
+<li>The prompt triggered Gemini's content safety filters. Rephrase your request to avoid restricted content.</li>
+</ul>
+<p><strong>"No image data returned from Gemini"</strong></p>
+<ul>
+<li>The model processed the request but didn't produce an image. Try rephrasing or simplifying the prompt. Verify your model name supports image generation.</li>
+</ul>
+<p><strong>Preview URL not working in Docker</strong></p>
+<ul>
+<li>Ensure your container was started with <code>--network host</code> so the preview server is accessible from the host browser.</li>
+</ul>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
+<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
+<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
+<li><a href="quickstart.html">Installing and Starting Your First Session</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="neovim-integration.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Neovim Integration and Quickfix Support</span>
+                </a>
 
 
+                <a href="command-enforcement.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Command Safety Guards and Enforcement</span>
+                </a>
 
+            </nav>
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                <a href="quickstart.html" class="index-cta">Get Started →</a>
-
-            </section>
-
-            <section class="card-grid">
-
-                <div class="card">
-                    <h3 class="card-title">Getting Started</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="quickstart.html">Installing and Starting Your First Session</a>
-
-                            <p class="card-page-desc">Install pi-config via Docker container or the native installer script, configure prerequisites (GitHub CLI, API keys), and run your first pi session with the orchestrator</p>
-
-                        </li>
-
-                        <li>
-                            <a href="first-workflow.html">Your First Coding Workflow</a>
-
-                            <p class="card-page-desc">Walk through a complete feature implementation: ask pi to make a change, watch the orchestrator delegate to specialist agents, go through the code review loop, and create a PR</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="quickstart.html" class="card-link">Explore →</a>
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#setup">Setup</a></li>
+<li><a href="#using-the-tool">Using the Tool</a><ul>
+<li><a href="#parameters">Parameters</a></li>
+<li><a href="#supported-aspect-ratios">Supported Aspect Ratios</a></li>
+</ul>
+</li>
+<li><a href="#example-prompts">Example Prompts</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#how-images-are-saved">How Images Are Saved</a></li>
+<li><a href="#automatic-http-preview-in-containers">Automatic HTTP Preview in Containers</a></li>
+<li><a href="#request-timeout">Request Timeout</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
 
                 </div>
+            </aside>
 
-                <div class="card">
-                    <h3 class="card-title">User Guides</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="agent-routing.html">Understanding Agent Routing and Delegation</a>
-
-                            <p class="card-page-desc">Learn how the orchestrator automatically routes tasks to the right specialist agent (python-expert, git-expert, github-expert, etc.) and when to override routing</p>
-
-                        </li>
-
-                        <li>
-                            <a href="code-review-loop.html">Running the Automated Code Review Loop</a>
-
-                            <p class="card-page-desc">Use the 3-reviewer parallel code review system (quality, guidelines, security), handle review findings, and iterate until all reviewers approve</p>
-
-                        </li>
-
-                        <li>
-                            <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a>
-
-                            <p class="card-page-desc">Master the built-in slash commands (/implement, /pr-review, /review-local, /release, /external-ai, /scout-and-plan, /btw, /status) and understand how prompt templates work</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-system.html">Working with Project Memory</a>
-
-                            <p class="card-page-desc">Use the scored memory system to teach pi your preferences, lessons learned, and project conventions — including memory tools, dreaming consolidation, auto-extraction, and capacity management</p>
-
-                        </li>
-
-                        <li>
-                            <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>
-
-                            <p class="card-page-desc">Spawn async agents for long-running tasks, monitor their status with /async-status, set up recurring tasks with /cron, and understand fire-and-forget vs tracked agents</p>
-
-                        </li>
-
-                        <li>
-                            <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a>
-
-                            <p class="card-page-desc">Set up P2P (/coms) and networked (/coms-net) communication between multiple pi sessions for collaborative multi-agent workflows</p>
-
-                        </li>
-
-                        <li>
-                            <a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a>
-
-                            <p class="card-page-desc">Route prompts to external AI CLIs via /external-ai for peer reviews, code generation, and multi-agent debates using ai-cli-runner</p>
-
-                        </li>
-
-                        <li>
-                            <a href="docker-deployment.html">Running Pi in a Docker Container</a>
-
-                            <p class="card-page-desc">Deploy pi-config in a sandboxed Docker container with proper volume mounts, environment variables, host user mapping, and Docker socket access</p>
-
-                        </li>
-
-                        <li>
-                            <a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a>
-
-                            <p class="card-page-desc">Launch the pidash web dashboard to monitor sessions from a browser and use pidiff to view diffs with review comments in a rich UI</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="agent-routing.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Recipes</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="workflow-recipes.html">Common Workflow Recipes</a>
-
-                            <p class="card-page-desc">Copy-paste patterns for PR reviews, GitHub releases, review handling (autorabbit/autoqodo), implementing with review, scouting and planning, querying the review database, and refining pending reviews</p>
-
-                        </li>
-
-                        <li>
-                            <a href="customization-recipes.html">Customization and Extension Recipes</a>
-
-                            <p class="card-page-desc">Add a new specialist agent, create custom prompt templates, write reusable skills with /create-skill, configure project settings (.pi/pi-config-settings.json), and set up MCP servers via mcpl</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="workflow-recipes.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Reference</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="agents-reference.html">Specialist Agents Reference</a>
-
-                            <p class="card-page-desc">Complete list of all 24 specialist agents with their names, descriptions, tools, model overrides, and when each is invoked</p>
-
-                        </li>
-
-                        <li>
-                            <a href="commands-reference.html">Slash Commands and Extension Commands Reference</a>
-
-                            <p class="card-page-desc">Full reference for all slash commands (/implement, /pr-review, /release, /review-handler, /external-ai, /btw, /status, /cron, /dream, /coms, /pidash, /pidiff, /repair) with arguments and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="cli-reference.html">myk-pi-tools CLI Reference</a>
-
-                            <p class="card-page-desc">Complete reference for the myk-pi-tools Python CLI: memory, pr, release, reviews, db, coderabbit, and ai-cli subcommands with all flags and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>
-
-                            <p class="card-page-desc">All configuration options: pi-config-settings.json fields, environment variables (PI_CO_AUTHOR, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, ACPX_AGENTS, GEMINI_API_KEY), rules loading order, and .coderabbit.yaml setup</p>
-
-                        </li>
-
-                        <li>
-                            <a href="rules-reference.html">Orchestrator Rules Reference</a>
-
-                            <p class="card-page-desc">Reference for all 13 orchestrator rules (00-60): core behavior, issue-first workflow, agent routing, MCP launchpad, code review loop, documentation updates, prompt templates, memory, critical rules, file preview, bug reporting, coms protocol, and task tracking</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="agents-reference.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Internals</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a>
-
-                            <p class="card-page-desc">How the orchestrator extension registers tools, commands, and event hooks (session_start, before_agent_start, turn_end, input) — essential knowledge for writing new extensions or modifying existing ones</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a>
-
-                            <p class="card-page-desc">Deep dive into the stability-based scoring formula, vector embeddings (bge-small-en-v1.5), topic tree organization, situation report budget allocation, and the auto-injection pipeline</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="extension-architecture.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Guides</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="acpx-provider.html">Using ACPX Provider for External Agent Models</a>
-
-                            <p class="card-page-desc">How to configure and use the ACPX provider extension to route pi&#39;s LLM requests through external agents (Cursor, Claude, Gemini, Copilot). Covers ACPX_AGENTS configuration, model discovery, session management, and how ACPX provider differs from /external-ai. Includes setup prerequisites (acpx runtime), available models per agent, and troubleshooting.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="discord-bot.html">Controlling Pi Sessions from Discord</a>
-
-                            <p class="card-page-desc">Set up and use the Discord bot built into the pidash server to remotely control pi sessions. Covers DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS configuration, slash commands (/sessions, /status, /prompt, /stop), watching sessions, sending prompts and images via DM, receiving real-time output and ask_user prompts, and security considerations for allowed users.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="neovim-integration.html">Neovim Integration and Quickfix Support</a>
-
-                            <p class="card-page-desc">Using pi inside Neovim terminal: automatic detection via NVIM environment variable, /nvim-changed-files command to send git changed files to the quickfix list, how pi communicates with the parent Neovim instance via RPC, and quickfix workflow for navigating review findings or changed files.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="image-generation.html">Generating Images with the generate_image Tool</a>
-
-                            <p class="card-page-desc">How to use pi&#39;s generate_image tool powered by the Gemini API. Covers setup (PI_IMAGE_MODEL and GEMINI_API_KEY environment variables), available parameters (subject, action, scene, composition, lighting, style, text, aspect_ratio), supported aspect ratios, automatic HTTP preview server in containers, and example prompts for different image styles.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="acpx-provider.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Concepts</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="command-enforcement.html">Command Safety Guards and Enforcement</a>
-
-                            <p class="card-page-desc">How pi&#39;s enforcement system protects your environment: blocked commands (direct python/pip, git add ., remote script piping), git branch protection (protected branches, merged branch detection, detached HEAD), dangerous command confirmation prompts, repeat command detection, worktree enforcement, docker-safe wrapper in containers, and memory write restrictions for subagents. What to do when a command is blocked and how to work with the guardrails.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="command-enforcement.html" class="card-link">Explore →</a>
-
-                </div>
-
-            </section>
-
-            <div class="llm-docs-banner">
-                <div class="llm-docs-icon">🤖</div>
-                <div class="llm-docs-content">
-                    <strong>AI-friendly documentation</strong>
-                    <p>This documentation is optimized for AI consumption.</p>
-                    <div class="llm-docs-links">
-                        <a href="llms.txt">llms.txt</a> — structured index
-                        <span class="llm-docs-sep">·</span>
-                        <a href="llms-full.txt">llms-full.txt</a> — complete docs in one file
-                    </div>
-                </div>
-            </div>
 
         </main>
 
