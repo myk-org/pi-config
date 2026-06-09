@@ -74,7 +74,7 @@ export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -241,7 +241,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -275,6 +275,8 @@ export function registerAsyncAgents(
     const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
     const effectiveModel = agent.model || options?.parentModelId;
     if (effectiveModel) piArgs.push("--model", effectiveModel);
+    const effectiveProvider = agent.provider || options?.parentProvider;
+    if (effectiveProvider) piArgs.push("--provider", effectiveProvider);
     if (agent.tools?.length) piArgs.push("--tools", agent.tools.join(","));
 
     if (agent.systemPrompt?.trim()) {
