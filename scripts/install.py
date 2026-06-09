@@ -293,8 +293,10 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     pi_inst = wt_inst = False
     try:
         content = Path(gi).read_text()
-        pi_inst = ".pi/" in content
-        wt_inst = ".worktrees/" in content
+        # Exact line match — ".pi/memory/" should not count as ".pi/" being present
+        lines = content.splitlines()
+        pi_inst = ".pi/" in lines
+        wt_inst = ".worktrees/" in lines
     except Exception:
         pass
 

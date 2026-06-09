@@ -38,10 +38,9 @@ register_pi_pkg pi-tasks @tintinweb/pi-tasks
 
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
-cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || true
-if [ -f "$HOME/.gitconfig-local" ]; then
-    export GIT_CONFIG_GLOBAL="$HOME/.gitconfig-local"
-fi
+# Always create a writable local copy so git config --global never writes to a read-only mount
+cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || touch "$HOME/.gitconfig-local"
+export GIT_CONFIG_GLOBAL="$HOME/.gitconfig-local"
 
 # Ensure gitignore is writable (host file may be read-only mounted)
 # Resolve source: normalize ~ prefix, try configured path then known defaults
@@ -68,7 +67,7 @@ export GIT_SSH_COMMAND="ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -
 
 # Ensure required entries are in global gitignore
 add_to_gitignore() {
-    if ! grep -qF "$1" "$GITIGNORE_LOCAL" 2>/dev/null; then
+    if ! grep -qxF "$1" "$GITIGNORE_LOCAL" 2>/dev/null; then
         echo "$1" >> "$GITIGNORE_LOCAL"
     fi
 }
