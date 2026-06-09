@@ -290,12 +290,11 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     # ── Step 6: Environment Setup ────────────────────────────────────────
     gd = "" if has["git"] else "requires git"
     gi = _gitignore_path()
-    mem_inst = wt_inst = tasks_inst = False
+    pi_inst = wt_inst = False
     try:
         content = Path(gi).read_text()
-        mem_inst = ".pi/memory/" in content
+        pi_inst = ".pi/" in content
         wt_inst = ".worktrees/" in content
-        tasks_inst = ".pi/tasks/" in content
     except Exception:
         pass
 
@@ -320,11 +319,11 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         "Git configuration for pi-config",
         [
             Tool(
-                ".pi/memory/ in gitignore",
-                "Prevent memory files from being committed",
-                installed=mem_inst,
+                ".pi/ in gitignore",
+                "Prevent pi data files from being committed",
+                installed=pi_inst,
                 disabled=gd,
-                install_fn=lambda: _add_to_gitignore(".pi/memory/"),
+                install_fn=lambda: _add_to_gitignore(".pi/"),
                 installed_label="configured",
             ),
             Tool(
@@ -333,14 +332,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=wt_inst,
                 disabled=gd,
                 install_fn=lambda: _add_to_gitignore(".worktrees/"),
-                installed_label="configured",
-            ),
-            Tool(
-                ".pi/tasks/ in gitignore",
-                "Prevent task state files from being committed",
-                installed=tasks_inst,
-                disabled=gd,
-                install_fn=lambda: _add_to_gitignore(".pi/tasks/"),
                 installed_label="configured",
             ),
         ],
