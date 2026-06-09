@@ -154,6 +154,12 @@ function killServer(project: string, log: (msg: string) => void): void {
     const sj = readServerJson(project);
     if (!sj?.pid || !Number.isInteger(sj.pid) || sj.pid <= 0) return;
     const pid = sj.pid;
+    // Verify PID is still the server by re-reading server.json
+    const verify = readServerJson(project);
+    if (!verify || verify.pid !== pid) {
+        log(`server.json changed — pid ${pid} may not be the server, skipping kill`);
+        return;
+    }
     try {
         process.kill(pid, "SIGTERM");
         log(`sent SIGTERM to server pid ${pid}`);

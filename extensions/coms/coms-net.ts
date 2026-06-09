@@ -637,6 +637,8 @@ export default function (pi: ExtensionAPI) {
 		if (pending) {
 			pending.result = { response: responseVal, error: errVal };
 			try { pending.resolve(pending.result); } catch { /* ignore */ }
+			// Delete after a delay — coms_net_get poll has time to read the result
+			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
 			try {
 				pi.appendEntry("coms-net-log", {
 					event: "response_in",
@@ -1391,6 +1393,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!currentInbound || !identity) {
+			if (!identity) {
+				for (const [id, ib] of inboundQueue) {
+					ib.fulfilled = true;
+					inboundQueue.delete(id);
+				}
+				currentInbound = null;
+			}
 			processingInbound = false;
 			return;
 		}
