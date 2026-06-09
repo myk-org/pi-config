@@ -771,8 +771,12 @@ async function handleHeartbeat(
 		entry.context_used_pct = body.context_used_pct;
 	if (typeof body.queue_depth === "number")
 		entry.queue_depth = body.queue_depth;
-	if (body.tasks_summary !== undefined)
-		entry.tasks_summary = (body.tasks_summary && typeof body.tasks_summary === "object") ? body.tasks_summary : null;
+	if (body.tasks_summary !== undefined) {
+		const ts = body.tasks_summary;
+		entry.tasks_summary = (ts && typeof ts === "object" && typeof ts.total === "number" && typeof ts.completed === "number" && typeof ts.in_progress === "number")
+			? { total: ts.total, completed: ts.completed, in_progress: ts.in_progress }
+			: null;
+	}
 	if (typeof body.model === "string") entry.model = body.model;
 	if (
 		body.status === "online" ||
