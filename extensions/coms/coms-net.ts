@@ -139,6 +139,7 @@ interface InboundContext {
 	sender_name: string;
 	sender_cwd: string;
 	prompt: string;
+	tasks?: Array<{ subject: string; description: string }> | null;
 	response_schema?: object | null;
 	fulfilled: boolean;
 }
@@ -659,6 +660,21 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function buildInboundContent(senderName: string, senderCwd: string, prompt: string, tasks?: Array<{ subject: string; description: string }> | null): string {
+		let content =
+			`[inbound coms-net message from ${senderName} @ ${senderCwd}]\n` +
+			`[reply by writing a normal assistant message \u2014 your turn output is auto-returned to ${senderName}. ` +
+			`DO NOT call coms_net_send/coms_net_await/coms_net_get to reply; that creates a ping-pong loop.]\n\n` +
+			`${prompt}`;
+		if (tasks && tasks.length > 0) {
+			content += `\n\n## Assigned Tasks\n\nThe sender has assigned you these tasks. Use TaskCreate to add them to your task list, then work through them:\n\n`;
+			for (const task of tasks) {
+				content += `- **${task.subject}**: ${task.description}\n`;
+			}
+		}
+		return content;
+	}
+
 	function handleInboundPrompt(data: any): void {
 		const msg_id: string | undefined = data?.msg_id;
 		if (!msg_id || typeof msg_id !== "string") return;
@@ -678,6 +694,7 @@ export default function (pi: ExtensionAPI) {
 			sender_name: senderName,
 			sender_cwd: senderCwd,
 			prompt: promptText,
+			tasks: tasks,
 			response_schema: responseSchema,
 			fulfilled: false,
 		};
@@ -685,14 +702,6 @@ export default function (pi: ExtensionAPI) {
 
 		// If already processing another inbound, just queue — agent_end will drain FIFO.
 		if (processingInbound) {
-			// Emit tasks immediately even if message is queued
-			if (tasks && tasks.length > 0) {
-				for (const task of tasks) {
-					if (task.subject && task.description) {
-						try { pi.events.emit("tasks:create", { subject: task.subject, description: task.description }); } catch { /* pi-tasks not loaded */ }
-					}
-				}
-			}
 			try {
 				pi.appendEntry("coms-net-log", {
 					event: "prompt_queued",
@@ -713,12 +722,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: "coms-net-inbound",
-					content:
-						`[inbound coms-net message from ${senderName} @ ${senderCwd}]\n` +
-						`[reply by writing a normal assistant message — your turn output is auto-returned to ${senderName}. ` +
-						`DO NOT call coms_net_send/coms_net_await/coms_net_get to reply; that creates a ping-pong loop. ` +
-						`msg_id ${msg_id} belongs to ${senderName}'s outbound, not yours.]\n\n` +
-						`${promptText}`,
+					content: buildInboundContent(senderName, senderCwd, promptText, tasks),
 					display: true,
 					details: {
 						msg_id,
@@ -738,14 +742,6 @@ export default function (pi: ExtensionAPI) {
 					hops,
 				});
 			} catch { /* best-effort */ }
-			// Emit tasks for pi-tasks integration
-			if (tasks && tasks.length > 0) {
-				for (const task of tasks) {
-					if (task.subject && task.description) {
-						try { pi.events.emit("tasks:create", { subject: task.subject, description: task.description }); } catch { /* pi-tasks not loaded */ }
-					}
-				}
-			}
 		} catch (err) {
 			inboundQueue.delete(msg_id);
 			currentInbound = null;
@@ -1578,12 +1574,7 @@ export default function (pi: ExtensionAPI) {
 				pi.sendMessage(
 					{
 						customType: "coms-net-inbound",
-						content:
-							`[inbound coms-net message from ${next.sender_name} @ ${next.sender_cwd}]\n` +
-							`[reply by writing a normal assistant message — your turn output is auto-returned to ${next.sender_name}. ` +
-							`DO NOT call coms_net_send/coms_net_await/coms_net_get to reply; that creates a ping-pong loop. ` +
-							`msg_id ${next.msg_id} belongs to ${next.sender_name}'s outbound, not yours.]\n\n` +
-							`${next.prompt}`,
+						content: buildInboundContent(next.sender_name, next.sender_cwd, next.prompt, next.tasks),
 						display: true,
 						details: {
 							msg_id: next.msg_id,

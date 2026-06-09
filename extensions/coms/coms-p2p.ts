@@ -124,6 +124,7 @@ interface InboundContext {
 	sender_name: string;
 	sender_cwd: string;
 	prompt: string;
+	tasks?: Array<{ subject: string; description: string }> | null;
 	response_schema?: object | null;
 	fulfilled: boolean;
 }
@@ -598,6 +599,17 @@ export default function (pi: ExtensionAPI) {
 		try { socket.end(); } catch { /* ignore */ }
 	}
 
+	function buildInboundContent(senderName: string, senderCwd: string, prompt: string, tasks?: Array<{ subject: string; description: string }> | null): string {
+		let content = `[from ${senderName} @ ${senderCwd}]\n\n${prompt}`;
+		if (tasks && tasks.length > 0) {
+			content += `\n\n## Assigned Tasks\n\nThe sender has assigned you these tasks. Use TaskCreate to add them to your task list, then work through them:\n\n`;
+			for (const task of tasks) {
+				content += `- **${task.subject}**: ${task.description}\n`;
+			}
+		}
+		return content;
+	}
+
 	function handlePrompt(socket: net.Socket, env: PromptEnvelope): void {
 		// 1. Hop limit check
 		if (typeof env.hops !== "number" || env.hops >= MAX_HOPS) {
@@ -614,6 +626,7 @@ export default function (pi: ExtensionAPI) {
 			sender_name: env.sender_name,
 			sender_cwd: env.sender_cwd,
 			prompt: env.prompt,
+			tasks: Array.isArray(env.tasks) ? env.tasks : null,
 			response_schema: env.response_schema ?? null,
 			fulfilled: false,
 		};
@@ -623,14 +636,6 @@ export default function (pi: ExtensionAPI) {
 		if (processingInbound) {
 			ackOk(socket, env.msg_id);
 
-			// Emit tasks immediately even if message is queued
-			if (Array.isArray(env.tasks) && env.tasks.length > 0) {
-				for (const task of env.tasks) {
-					if (task.subject && task.description) {
-						try { pi.events.emit("tasks:create", { subject: task.subject, description: task.description }); } catch { /* pi-tasks not loaded */ }
-					}
-				}
-			}
 			try {
 				pi.appendEntry("coms-log", {
 					event: "inbound_queued",
@@ -650,7 +655,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: "coms-inbound",
-					content: `[from ${env.sender_name} @ ${env.sender_cwd}]\n\n${env.prompt}`,
+					content: buildInboundContent(env.sender_name, env.sender_cwd, env.prompt, env.tasks),
 					display: true,
 					details: {
 						msg_id: env.msg_id,
@@ -671,14 +676,6 @@ export default function (pi: ExtensionAPI) {
 		// 5. Ack + audit log
 		ackOk(socket, env.msg_id);
 
-		// 6. Emit tasks for pi-tasks integration (if present in the envelope)
-		if (Array.isArray(env.tasks) && env.tasks.length > 0) {
-			for (const task of env.tasks) {
-				if (task.subject && task.description) {
-					try { pi.events.emit("tasks:create", { subject: task.subject, description: task.description }); } catch { /* pi-tasks not loaded */ }
-				}
-			}
-		}
 		try {
 			pi.appendEntry("coms-log", {
 				event: "inbound_prompt",
@@ -1587,7 +1584,7 @@ export default function (pi: ExtensionAPI) {
 				pi.sendMessage(
 					{
 						customType: "coms-inbound",
-						content: `[from ${next.sender_name} @ ${next.sender_cwd}]\n\n${next.prompt}`,
+						content: buildInboundContent(next.sender_name, next.sender_cwd, next.prompt, next.tasks),
 						display: true,
 						details: {
 							msg_id: next.msg_id,
