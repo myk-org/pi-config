@@ -22,9 +22,9 @@
  *   bun extensions/coms/coms-net-server.ts                                 # start hub
  *   loaded via extensions/coms/index.ts                                   # auto-discover local server.json
  *   loaded via extensions/coms/index.ts --server-url http://host:port \
- *      --auth-token <tok> --cname planner --project default
+ *      --auth-token <tok> --name planner --project default
  *
- * Note: the agent name flag is `--cname` (not `--name`). pi's own harness owns
+ * Note: the agent name flag is `--name` for coms peer identity.
  * `--name` and resumes it across sessions, so coms-net uses a distinct flag.
  */
 
@@ -353,7 +353,7 @@ interface CliFlags {
 }
 
 function readCliFlags(pi: ExtensionAPI): CliFlags {
-	const name = pi.getFlag("cname") as string | undefined;
+	const name = pi.getFlag("name") as string | undefined;
 	const purpose = pi.getFlag("purpose") as string | undefined;
 	const project = pi.getFlag("project") as string | undefined;
 	const color = pi.getFlag("color") as string | undefined;
@@ -375,8 +375,8 @@ function readCliFlags(pi: ExtensionAPI): CliFlags {
 
 export default function (pi: ExtensionAPI) {
 	// ━━ Identity flags ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	// Agent name flag is `--cname`: pi's harness owns `--name` and resumes it.
-	pi.registerFlag("cname", {
+	// Agent name flag for coms peer identity.
+	pi.registerFlag("name", {
 		description: "Override coms-net agent name (otherwise from frontmatter or auto-generated). Distinct from pi's own --name, which the harness owns and resumes.",
 		type: "string",
 		default: undefined,

@@ -65,7 +65,7 @@ export function registerComs(pi: ExtensionAPI) {
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
                 const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
-                    { v: "--cname ", l: "--cname", d: "Agent name" },
+                    { v: "--name ", l: "--name", d: "Agent name" },
                     { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
                     { v: "--project ", l: "--project", d: "Project namespace" },
                     { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
