@@ -365,26 +365,31 @@ function pruneDeadEntriesAllProjects(): RegistryEntry[] {
 	return out;
 }
 
-/** Read task summary from pi-tasks store files (best-effort, returns null if unavailable). */
-function readTaskSummary(cwd: string): { total: number; completed: number; in_progress: number } | null {
+/** Read task summary for this session only (best-effort, returns null if unavailable). */
+function readTaskSummary(cwd: string, sessionId?: string): { total: number; completed: number; in_progress: number } | null {
 	try {
 		const tasksDir = path.join(cwd, ".pi", "tasks");
 		if (!fs.existsSync(tasksDir)) return null;
-		let total = 0, completed = 0, in_progress = 0;
-		for (const f of fs.readdirSync(tasksDir)) {
-			if (!f.endsWith(".json")) continue;
+		// Try session-scoped file first, then project-scoped
+		const candidates = sessionId
+			? [`tasks-${sessionId}.json`, "tasks.json"]
+			: ["tasks.json"];
+		for (const candidate of candidates) {
+			const filePath = path.join(tasksDir, candidate);
+			if (!fs.existsSync(filePath)) continue;
 			try {
-				const data = JSON.parse(fs.readFileSync(path.join(tasksDir, f), "utf-8"));
-				if (!Array.isArray(data.tasks)) continue;
+				const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+				if (!Array.isArray(data.tasks) || data.tasks.length === 0) continue;
+				let total = 0, completed = 0, in_progress = 0;
 				for (const t of data.tasks) {
 					total++;
 					if (t.status === "completed") completed++;
 					else if (t.status === "in_progress") in_progress++;
 				}
-			} catch { /* skip corrupt files */ }
+				return { total, completed, in_progress };
+			} catch { /* skip corrupt file */ }
 		}
-		if (total === 0) return null;
-		return { total, completed, in_progress };
+		return null;
 	} catch { return null; }
 }
 
@@ -747,7 +752,7 @@ export default function (pi: ExtensionAPI) {
 			color: ident?.color ?? "#36F9F6",
 			context_used_pct: pct,
 			queue_depth: inboundQueue.size,
-			tasks_summary: readTaskSummary(currentCtx?.cwd ?? process.cwd()),
+			tasks_summary: readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 		};
 		const pong: Pong = { type: "pong", msg_id: env.msg_id, agent_card: card };
 		try {
