@@ -363,7 +363,8 @@ export async function runSingleAgent(
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
   const effectiveModel = agent.model || parentModelId;
   if (effectiveModel) args.push("--model", effectiveModel);
-  if (parentProvider) args.push("--provider", parentProvider);
+  const effectiveProvider = agent.provider || parentProvider;
+  if (effectiveProvider) args.push("--provider", effectiveProvider);
   if (agent.tools && agent.tools.length > 0)
     args.push("--tools", agent.tools.join(","));
 

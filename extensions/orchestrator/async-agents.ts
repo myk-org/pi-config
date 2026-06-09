@@ -275,7 +275,8 @@ export function registerAsyncAgents(
     const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
     const effectiveModel = agent.model || options?.parentModelId;
     if (effectiveModel) piArgs.push("--model", effectiveModel);
-    if (options?.parentProvider) piArgs.push("--provider", options.parentProvider);
+    const effectiveProvider = agent.provider || options?.parentProvider;
+    if (effectiveProvider) piArgs.push("--provider", effectiveProvider);
     if (agent.tools?.length) piArgs.push("--tools", agent.tools.join(","));
 
     if (agent.systemPrompt?.trim()) {
