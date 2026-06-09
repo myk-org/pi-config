@@ -93,7 +93,7 @@ async function ensureServerRunning(
                             (wantHost && sj?.host !== wantHost);
         if (needRestart) {
             log(`server running but port/host mismatch — restarting`);
-            killServer(project, log);
+            await killServer(project, log);
             await new Promise(r => setTimeout(r, 1000));
         } else {
             log("server already running");
@@ -150,15 +150,24 @@ async function ensureServerRunning(
     return false;
 }
 
-function killServer(project: string, log: (msg: string) => void): void {
+async function killServer(project: string, log: (msg: string) => void): Promise<void> {
     const sj = readServerJson(project);
     if (!sj?.pid || !Number.isInteger(sj.pid) || sj.pid <= 0) return;
     const pid = sj.pid;
-    // Verify PID is still the server by re-reading server.json
-    const verify = readServerJson(project);
-    if (!verify || verify.pid !== pid) {
-        log(`server.json changed — pid ${pid} may not be the server, skipping kill`);
-        return;
+    // Verify PID is our server by checking health endpoint before killing
+    if (sj.local_url) {
+        try {
+            const resp = await fetch(`${sj.local_url}/health`, { signal: AbortSignal.timeout(2000) });
+            if (!resp.ok) {
+                log(`health check failed for pid ${pid} — may not be our server, skipping kill`);
+                return;
+            }
+        } catch {
+            // Health endpoint unreachable — server likely dead, clean up server.json
+            log(`pid ${pid} unreachable, cleaning up server.json`);
+            try { fs.unlinkSync(serverJsonPath(project)); } catch { /* ignore */ }
+            return;
+        }
     }
     try {
         process.kill(pid, "SIGTERM");
@@ -370,7 +379,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                                      (wantHost && sj?.host !== wantHost);
                     if (mismatch) {
                         log(`server port/host mismatch — restarting (want ${wantHost || "*"}:${wantPort || "*"}, have ${sj?.host}:${sj?.port})`);
-                        killServer(project, log);
+                        await killServer(project, log);
                         await new Promise(r => setTimeout(r, 1000));
                         try { ctx.ui.notify("📡 Restarting coms-net server (port/host changed)...", "info"); } catch {}
                         const started = await ensureServerRunning(project, log, { port, host });
@@ -480,7 +489,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 state.active = false;
                 persist();
                 // User explicitly stopped — kill server unconditionally
-                killServer(getProject(), log);
+                await killServer(getProject(), log);
                 serverStartedByUs = false;
                 try { ctx.ui.notify("📡 coms-net stopped", "info"); } catch {}
             } else if (subcommand === "status") {
@@ -502,11 +511,11 @@ export function registerComsNet(pi: ExtensionAPI) {
     });
 
     // Kill server on session shutdown if we started it and no other peers are connected
-    pi.on("session_shutdown", (event: any) => {
+    pi.on("session_shutdown", async (event: any) => {
         if (!serverStartedByUs) return;
         // Don't kill server on reload — it will be reused after reload
         if (event?.reason === "reload") return;
-        killServer(getProject(), log);
+        await killServer(getProject(), log);
         log("server killed on shutdown (we started it)");
     });
 }
