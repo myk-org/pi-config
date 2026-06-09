@@ -1173,8 +1173,8 @@ export default function (pi: ExtensionAPI) {
 			"Send a prompt to a peer agent. Returns synchronously with a msg_id once the receiver acks. " +
 			"Use coms_get (non-blocking) or coms_await (blocking) with the msg_id to retrieve the response. " +
 			"Throws if the receiver is unreachable or rejects the envelope.\n\n" +
-			"When delegating multiple work items, use the `tasks` parameter so they appear in the peer's task widget for tracking. " +
-			"Each task gets a subject and description. The peer will see them and can work through them with TaskCreate/TaskUpdate.",
+			"When delegating multiple work items, use the `tasks` parameter to include structured task definitions. " +
+			"The peer receives them as an instruction to create tasks via TaskCreate and track progress in their task widget.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name (preferred, scoped to your project) or session_id (global)." }),
 			prompt: Type.String({ description: "The prompt to send." }),

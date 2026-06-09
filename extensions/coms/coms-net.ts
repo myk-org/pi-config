@@ -1117,8 +1117,8 @@ export default function (pi: ExtensionAPI) {
 			"Only valid uses: (a) you, the user, or your task explicitly ask to start a new conversation with a peer; " +
 			"(b) you are forwarding/delegating to a *different* peer than the one whose prompt you are currently answering; " +
 			"in that case `hops` is auto-incremented and the hop limit will eventually stop runaway chains.\n\n" +
-			"When delegating multiple work items, use the `tasks` parameter so they appear in the peer's task widget for tracking. " +
-			"Each task gets a subject and description. The peer will see them and can work through them with TaskCreate/TaskUpdate.",
+			"When delegating multiple work items, use the `tasks` parameter to include structured task definitions. " +
+			"The peer receives them as an instruction to create tasks via TaskCreate and track progress in their task widget.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name (preferred, scoped to your project) or session_id." }),
 			prompt: Type.String({ description: "The prompt to send." }),
