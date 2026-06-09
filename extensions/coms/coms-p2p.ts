@@ -572,8 +572,8 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				// ignore
 			}
-			// Delete after a delay — coms_get poll has 30s to read the result
-			setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
+			// Delete after timeout window — coms_get/coms_await may still poll
+			setTimeout(() => { pendingReplies.delete(env.msg_id); }, TIMEOUT_MS).unref();
 		} else {
 			try {
 				pi.appendEntry("coms-log", { event: "orphan_response", msg_id: env.msg_id });
@@ -1236,6 +1236,8 @@ export default function (pi: ExtensionAPI) {
 				if (entry.result) return;
 				entry.result = { error: "timeout" };
 				try { entry.resolve(entry.result); } catch { /* ignore */ }
+				// Clean up timed-out entry
+				setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
 			}, TIMEOUT_MS);
 			// Don't keep the event loop alive solely for this timer.
 			try { (entry.timer as any).unref?.(); } catch { /* ignore */ }

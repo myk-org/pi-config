@@ -638,7 +638,7 @@ export default function (pi: ExtensionAPI) {
 			pending.result = { response: responseVal, error: errVal };
 			try { pending.resolve(pending.result); } catch { /* ignore */ }
 			// Delete after a delay — coms_net_get poll has time to read the result
-			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
+			setTimeout(() => { pendingReplies.delete(msg_id); }, MESSAGE_TIMEOUT_MS).unref();
 			try {
 				pi.appendEntry("coms-net-log", {
 					event: "response_in",
@@ -1176,6 +1176,15 @@ export default function (pi: ExtensionAPI) {
 				target_session,
 				created_at: nowIso(),
 			});
+			// Hard TTL cleanup — prevents leaks if response never arrives
+			setTimeout(() => {
+				const p = pendingReplies.get(msg_id);
+				if (p && !p.result) {
+					p.result = { error: "timeout" };
+					try { p.resolve(p.result); } catch { /* ignore */ }
+				}
+				pendingReplies.delete(msg_id);
+			}, MESSAGE_TIMEOUT_MS).unref();
 
 			try {
 				pi.appendEntry("coms-net-log", {
