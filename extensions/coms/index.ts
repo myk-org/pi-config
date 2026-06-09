@@ -7,13 +7,12 @@
  * Standalone extension so it can be loaded independently by pi-sidecar
  * without pulling in the full orchestrator.
  *
- * Based on upstream extensions from disler/pi-vs-claude-code.
- * Synced via scripts/sync-coms-upstream.sh.
+ * Forked from disler/pi-vs-claude-code — we own the coms implementation files.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerComs } from "./coms.js";
-import { registerComsNet } from "./coms-net.js";
+import { registerComs } from "./coms-wrapper.js";
+import { registerComsNet } from "./coms-net-wrapper.js";
 
 export default function (pi: ExtensionAPI) {
     registerComs(pi);

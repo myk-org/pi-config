@@ -108,7 +108,7 @@ For LAN/remote access, set `PI_COMS_NET_AUTH_TOKEN` and `PI_COMS_NET_HOST=0.0.0.
 | `*_get` | Non-blocking poll for a response |
 | `*_await` | Block until response arrives |
 
-Based on [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-code) coms extensions. Upstream files synced via `scripts/sync-coms-upstream.sh`.
+Forked from [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-code) coms extensions. We own these files — FIFO message queue, structured task delegation via coms protocol.
 
 ## Installation
 

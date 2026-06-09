@@ -1,4 +1,6 @@
-// scripts/coms-net-server.ts
+// Forked from https://github.com/disler/pi-vs-claude-code (commit b93c3f1)
+// We own this code — check upstream periodically for relevant changes.
+// coms-net-server.ts
 //
 // coms-net Bun HTTP/SSE hub server (v1).
 //
@@ -167,6 +169,7 @@ export type ComsMessage = {
 	conversation_id: string | null;
 	response_schema: object | null;
 	hops: number;
+	tasks?: Array<{ subject: string; description: string }> | null;
 	status: MessageStatus;
 	response?: any;
 	error?: string | null;
@@ -212,6 +215,7 @@ export type SendRequest = {
 	conversation_id: string | null;
 	response_schema: object | null;
 	hops: number;
+	tasks?: Array<{ subject: string; description: string }> | null;
 };
 
 export type SendResponse = {
@@ -906,6 +910,7 @@ async function handleSendMessage(req: Request): Promise<Response> {
 				? body.response_schema
 				: null,
 		hops,
+		tasks: Array.isArray(body.tasks) ? body.tasks : null,
 		status: "queued",
 		response: null,
 		error: null,
@@ -935,6 +940,7 @@ async function handleSendMessage(req: Request): Promise<Response> {
 			conversation_id: msg.conversation_id,
 			response_schema: msg.response_schema,
 			hops: msg.hops,
+			tasks: msg.tasks ?? null,
 		});
 		msg.status = "delivered";
 		msg.delivered_at = nowIso();

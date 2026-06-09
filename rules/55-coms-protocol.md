@@ -93,6 +93,33 @@ To START a new conversation with a peer, use the send tool then await the respon
 
 ---
 
+## Message Queue Behavior
+
+Inbound messages are processed in **FIFO order** (oldest first). When multiple messages arrive while the peer is busy:
+
+1. First message is processed immediately
+2. Subsequent messages are **queued** — not lost, not superseded
+3. After responding to the current message, the next queued message is automatically injected
+4. Each message gets its own dedicated turn and response
+5. The sender receives a response for every message sent — nothing is dropped
+
+---
+
+## Structured Task Delegation
+
+Send structured tasks alongside messages using the `tasks` parameter. Tasks appear in the peer's task widget (requires `@tintinweb/pi-tasks`).
+
+```text
+coms_send(target="coder", prompt="Implement these features", tasks=[
+  {"subject": "Add auth middleware", "description": "JWT validation for all /api routes"},
+  {"subject": "Write tests", "description": "Unit tests for auth middleware"}
+])
+```
+
+The peer sees the tasks in their task widget and can track progress. Tasks are created immediately — even if the message itself is queued.
+
+---
+
 ## Key Rules
 
 1. **`coms_await` / `coms_net_await` are interruptible** — user can press ESC to cancel.
@@ -100,3 +127,5 @@ To START a new conversation with a peer, use the send tool then await the respon
 2. **Never call send tools to reply** to inbound messages — your assistant text is the reply
 3. **Always check peers first** — use list tools before sending to verify the peer exists
 4. **Try both systems** — when asked to interact with peers without specifying which system, try `coms_` first, then `coms_net_` if it fails (or vice versa)
+5. **Messages are never lost** — if the peer is busy, messages queue and process in order
+6. **Use tasks for structured work** — when delegating multiple items, use the `tasks` parameter instead of listing them in prose

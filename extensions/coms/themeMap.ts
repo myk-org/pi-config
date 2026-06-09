@@ -1,3 +1,5 @@
+// Forked from https://github.com/disler/pi-vs-claude-code (commit b93c3f1)
+// We own this code — check upstream periodically for relevant changes.
 /**
  * themeMap.ts — Per-extension default theme assignments
  *

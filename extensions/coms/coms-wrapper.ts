@@ -1,7 +1,7 @@
 /**
- * coms.ts — On-demand P2P agent communication wrapper
+ * coms-wrapper.ts — On-demand P2P agent communication wrapper
  *
- * Wraps the upstream coms extension (upstream-coms/coms.ts) to support
+ * Wraps the P2P coms extension (coms-p2p.ts) to support
  * activation via /coms command instead of auto-start on session_start.
  */
 
@@ -9,7 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
-import upstreamComsInit from "./upstream-coms/coms.js";
+import upstreamComsInit from "./coms-p2p.js";
 
 function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
     if (!query.trim()) return items.length > 0 ? items : null;

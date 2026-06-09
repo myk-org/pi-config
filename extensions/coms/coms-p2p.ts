@@ -1,3 +1,5 @@
+// Forked from https://github.com/disler/pi-vs-claude-code (commit b93c3f1)
+// We own this code — check upstream periodically for relevant changes.
 /**
  * coms — Peer-to-peer messaging between Pi agents on the same machine
  *
@@ -10,13 +12,11 @@
  * response capture. Phase C: live pool widget, ping + keepalive cycles, /coms
  * slash command, clean shutdown lifecycle.
  *
- * Usage: pi -e extensions/coms.ts
+ * Usage: loaded via extensions/coms/index.ts
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Text, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import * as net from "node:net";
@@ -59,6 +59,7 @@ interface PromptEnvelope extends Envelope {
 	sender_cwd: string;
 	conversation_id?: string | null;
 	response_schema?: object | null;
+	tasks?: Array<{ subject: string; description: string }> | null;
 }
 
 interface ResponseEnvelope extends Envelope {
@@ -120,6 +121,9 @@ interface InboundContext {
 	hops: number;
 	sender_endpoint: string;
 	sender_session: string;
+	sender_name: string;
+	sender_cwd: string;
+	prompt: string;
 	response_schema?: object | null;
 	fulfilled: boolean;
 }
@@ -222,7 +226,7 @@ interface CliFlags {
 function readCliFlags(pi: ExtensionAPI): CliFlags {
 	// Identity flags are declared via pi.registerFlag at extension load time so
 	// pi's CLI parser accepts them; here we just read them back.
-	const name = pi.getFlag("name") as string | undefined;
+	const name = pi.getFlag("cname") as string | undefined;
 	const purpose = pi.getFlag("purpose") as string | undefined;
 	const project = pi.getFlag("project") as string | undefined;
 	const color = pi.getFlag("color") as string | undefined;
@@ -357,15 +361,6 @@ function pruneDeadEntriesAllProjects(): RegistryEntry[] {
 		out.push(...pruneDeadEntries(p));
 	}
 	return out;
-}
-
-function keepaliveTouch(file: string): void {
-	try {
-		const now = new Date();
-		fs.utimesSync(file, now, now);
-	} catch {
-		// best-effort
-	}
 }
 
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -531,9 +526,10 @@ function readFrontmatterFromArgv(argv: string[]): { name?: string; description?:
 export default function (pi: ExtensionAPI) {
 	// ━━ Register identity CLI flags so pi's parser accepts them. ━━━━━━━━━
 	// Without these, pi 0.73+ rejects the invocation with "Unknown options:
-	// --name, --project, ..." before this extension's hooks ever fire.
-	pi.registerFlag("name", {
-		description: "Override agent name (otherwise from frontmatter or auto-generated)",
+	// --cname, --project, ..." before this extension's hooks ever fire.
+	// Agent name flag is `--cname`: pi's harness owns `--name` and resumes it.
+	pi.registerFlag("cname", {
+		description: "Override coms agent name (otherwise from frontmatter or auto-generated). Distinct from pi's own --name, which the harness owns and resumes.",
 		type: "string",
 		default: undefined,
 	});
@@ -581,6 +577,7 @@ export default function (pi: ExtensionAPI) {
 	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
+	let processingInbound = false;
 
 	// Phase A stub handlers — each just acks valid envelopes. Phase B replaces these.
 	function ackOk(socket: net.Socket, msg_id: string): void {
@@ -608,22 +605,47 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// 2. Insert into inbound queue
+		// 2. Insert into inbound queue (store message content for FIFO re-injection)
 		const inbound: InboundContext = {
 			msg_id: env.msg_id,
 			hops: env.hops,
 			sender_endpoint: env.sender_endpoint,
 			sender_session: env.sender_session,
+			sender_name: env.sender_name,
+			sender_cwd: env.sender_cwd,
+			prompt: env.prompt,
 			response_schema: env.response_schema ?? null,
 			fulfilled: false,
 		};
 		inboundQueue.set(env.msg_id, inbound);
 
-		// 3. Track the current inbound so that any coms_send issued during the
-		//    resulting LLM turn inherits the right hop count.
-		currentInbound = inbound;
+		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
+		if (processingInbound) {
+			ackOk(socket, env.msg_id);
 
-		// 4. Inject as a follow-up message into the receiver's next turn.
+			// Emit tasks immediately even if message is queued
+			if (Array.isArray(env.tasks) && env.tasks.length > 0) {
+				for (const task of env.tasks) {
+					if (task.subject && task.description) {
+						try { pi.events.emit("tasks:create", { subject: task.subject, description: task.description }); } catch { /* pi-tasks not loaded */ }
+					}
+				}
+			}
+			try {
+				pi.appendEntry("coms-log", {
+					event: "inbound_queued",
+					msg_id: env.msg_id,
+					sender: env.sender_session,
+					hops: env.hops,
+					queue_depth: inboundQueue.size,
+				});
+			} catch { /* best-effort */ }
+			return;
+		}
+
+		// 4. Not busy — inject immediately.
+		currentInbound = inbound;
+		processingInbound = true;
 		try {
 			pi.sendMessage(
 				{
@@ -639,15 +661,24 @@ export default function (pi: ExtensionAPI) {
 				{ deliverAs: "followUp", triggerTurn: true },
 			);
 		} catch (err) {
-			// If sendMessage fails, drop the inbound and nack.
 			inboundQueue.delete(env.msg_id);
 			currentInbound = null;
+			processingInbound = false;
 			nack(socket, env.msg_id, "internal error");
 			return;
 		}
 
 		// 5. Ack + audit log
 		ackOk(socket, env.msg_id);
+
+		// 6. Emit tasks for pi-tasks integration (if present in the envelope)
+		if (Array.isArray(env.tasks) && env.tasks.length > 0) {
+			for (const task of env.tasks) {
+				if (task.subject && task.description) {
+					try { pi.events.emit("tasks:create", { subject: task.subject, description: task.description }); } catch { /* pi-tasks not loaded */ }
+				}
+			}
+		}
 		try {
 			pi.appendEntry("coms-log", {
 				event: "inbound_prompt",
@@ -909,8 +940,7 @@ export default function (pi: ExtensionAPI) {
 				};
 				// Unconditional atomic write: handles BOTH the live-status refresh
 				// (file present → overwrite with fresh values) AND self-heal (file
-				// missing → re-create entry). The atomic write also bumps mtime, so
-				// keepaliveTouch is now redundant.
+				// missing → re-create entry). The atomic write also bumps mtime.
 				writeRegistryAtomic(live, identity.project);
 				if (missingBeforeWrite) {
 					pi.appendEntry("coms-log", { event: "self_heal", session_id: identity.session_id, reason: "registry file missing" });
@@ -1275,6 +1305,10 @@ export default function (pi: ExtensionAPI) {
 			prompt: Type.String({ description: "The prompt to send." }),
 			conversation_id: Type.Optional(Type.String()),
 			response_schema: Type.Optional(Type.Any({ description: "Optional JSON Schema describing the expected response shape." })),
+			tasks: Type.Optional(Type.Array(Type.Object({
+				subject: Type.String({ description: "Brief task title" }),
+				description: Type.String({ description: "Detailed task description" }),
+			}), { description: "Optional structured tasks to create in the peer's task list." })),
 		}),
 		async execute(_callId, params) {
 			if (!identity) {
@@ -1301,6 +1335,7 @@ export default function (pi: ExtensionAPI) {
 				prompt: params.prompt,
 				conversation_id: params.conversation_id ?? null,
 				response_schema: (params.response_schema as object | undefined) ?? null,
+				tasks: params.tasks ?? null,
 			};
 
 			// Send the envelope synchronously and wait for the receiver's ack.
@@ -1477,8 +1512,11 @@ export default function (pi: ExtensionAPI) {
 	// ━━ agent_end: capture turn output and dispatch response back ━━━━━━━━
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const inbound = [...inboundQueue.values()].reverse().find((i) => !i.fulfilled);
-		if (!inbound || !identity) return;
+		if (!currentInbound || !identity) {
+			processingInbound = false;
+			return;
+		}
+		const inbound = currentInbound;
 
 		// Walk the session branch for the most recent assistant message text.
 		let lastAssistantText = "";
@@ -1526,9 +1564,7 @@ export default function (pi: ExtensionAPI) {
 					msg_id: inbound.msg_id,
 					error,
 				});
-			} catch {
-				// best-effort
-			}
+			} catch { /* best-effort */ }
 		} catch (e: any) {
 			try {
 				pi.appendEntry("coms-log", {
@@ -1536,15 +1572,56 @@ export default function (pi: ExtensionAPI) {
 					msg_id: inbound.msg_id,
 					reason: e?.message ?? String(e),
 				});
-			} catch {
-				// best-effort
-			}
+			} catch { /* best-effort */ }
 		}
 
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
-		if (currentInbound && currentInbound.msg_id === inbound.msg_id) {
-			currentInbound = null;
+		currentInbound = null;
+
+		// FIFO drain: pick the next queued (oldest unfulfilled) inbound
+		const next = [...inboundQueue.values()].find((i) => !i.fulfilled);
+		if (next) {
+			currentInbound = next;
+			try {
+				pi.sendMessage(
+					{
+						customType: "coms-inbound",
+						content: `[from ${next.sender_name} @ ${next.sender_cwd}]\n\n${next.prompt}`,
+						display: true,
+						details: {
+							msg_id: next.msg_id,
+							sender_session: next.sender_session,
+							response_schema: next.response_schema ?? null,
+						},
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch (err: any) {
+				// Failed to inject — drain ALL remaining queued messages with error responses
+				try { pi.appendEntry("coms-log", { event: "fifo_drain_failed", msg_id: next.msg_id, reason: err?.message ?? String(err) }); } catch { /* best-effort */ }
+				const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
+				for (const orphan of remaining) {
+					try {
+						await sendEnvelope(orphan.sender_endpoint, {
+							type: "response",
+							msg_id: orphan.msg_id,
+							sender_session: identity!.session_id,
+							sender_endpoint: identity!.endpoint,
+							hops: 0,
+							timestamp: nowIso(),
+							response: null,
+							error: "injection_failed",
+						});
+					} catch { /* best-effort */ }
+					orphan.fulfilled = true;
+					inboundQueue.delete(orphan.msg_id);
+				}
+				currentInbound = null;
+				processingInbound = false;
+			}
+		} else {
+			processingInbound = false;
 		}
 	});
 
@@ -1586,11 +1663,9 @@ export default function (pi: ExtensionAPI) {
 				pi.appendEntry("coms-log", { event: "shutdown", session_id: identity.session_id });
 			} catch { /* best-effort */ }
 		}
-		try {
-			if (currentCtx?.hasUI) {
-				currentCtx.ui.setWidget("coms-pool", undefined);
-			}
-		} catch { /* ctx may be stale on shutdown */ }
+		if (currentCtx?.hasUI) {
+			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
+		}
 	}
 
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });
