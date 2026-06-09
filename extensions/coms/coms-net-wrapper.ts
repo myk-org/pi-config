@@ -282,7 +282,7 @@ export function registerComsNet(pi: ExtensionAPI) {
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
                 const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
-                    { v: "--name ", l: "--name", d: "Agent name" },
+                    { v: "--cname ", l: "--cname", d: "Agent name" },
                     { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
                     { v: "--project ", l: "--project", d: "Project namespace" },
                     { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
@@ -294,7 +294,7 @@ export function registerComsNet(pi: ExtensionAPI) {
             if (completed[0] === "connect" && (lastPart.startsWith("-") || lastPart === "")) {
                 const used = new Set(completed.filter(p => p.startsWith("--")));
                 return mk([
-                    { v: "--name ", l: "--name", d: "Agent name" },
+                    { v: "--cname ", l: "--cname", d: "Agent name" },
                     { v: "--purpose ", l: "--purpose", d: "Agent purpose" },
                     { v: "--project ", l: "--project", d: "Project namespace" },
                     { v: "--color ", l: "--color", d: "Hex color #RRGGBB" },
@@ -323,6 +323,11 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
                 state.flagValues = new Map();
                 parseFlags(parts.slice(1), state.flagValues);
+
+                if (state.flagValues.has("name")) {
+                    try { ctx.ui.notify("📡 coms-net: use --cname instead of --name", "error"); } catch {}
+                    return;
+                }
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
                     const cwd = ctx.cwd || "";
@@ -397,6 +402,11 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
                 state.flagValues = new Map();
                 parseFlags(parts.slice(1), state.flagValues);
+
+                if (state.flagValues.has("name")) {
+                    try { ctx.ui.notify("📡 coms-net: use --cname instead of --name", "error"); } catch {}
+                    return;
+                }
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
                     const cwd = ctx.cwd || "";

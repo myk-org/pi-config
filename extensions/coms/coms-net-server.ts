@@ -454,6 +454,7 @@ function entryToCard(e: RegistryEntry): AgentCard {
 		context_used_pct,
 		queue_depth,
 		status,
+		tasks_summary: e.tasks_summary ?? null,
 	};
 }
 
@@ -770,8 +771,8 @@ async function handleHeartbeat(
 		entry.context_used_pct = body.context_used_pct;
 	if (typeof body.queue_depth === "number")
 		entry.queue_depth = body.queue_depth;
-	if (body.tasks_summary && typeof body.tasks_summary === "object")
-		entry.tasks_summary = body.tasks_summary;
+	if (body.tasks_summary !== undefined)
+		entry.tasks_summary = (body.tasks_summary && typeof body.tasks_summary === "object") ? body.tasks_summary : null;
 	if (typeof body.model === "string") entry.model = body.model;
 	if (
 		body.status === "online" ||

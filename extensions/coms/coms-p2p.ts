@@ -228,7 +228,7 @@ interface CliFlags {
 function readCliFlags(pi: ExtensionAPI): CliFlags {
 	// Identity flags are declared via pi.registerFlag at extension load time so
 	// pi's CLI parser accepts them; here we just read them back.
-	const name = pi.getFlag("name") as string | undefined;
+	const name = pi.getFlag("cname") as string | undefined;
 	const purpose = pi.getFlag("purpose") as string | undefined;
 	const project = pi.getFlag("project") as string | undefined;
 	const color = pi.getFlag("color") as string | undefined;
@@ -558,7 +558,7 @@ export default function (pi: ExtensionAPI) {
 	// Without these, pi 0.73+ rejects the invocation with "Unknown options:
 	// --name, --project, ..." before this extension's hooks ever fire.
 	// Agent name flag for coms peer identity.
-	pi.registerFlag("name", {
+	pi.registerFlag("cname", {
 		description: "Override coms agent name (otherwise from frontmatter or auto-generated). Distinct from pi's own --name, which the harness owns and resumes.",
 		type: "string",
 		default: undefined,
@@ -1029,7 +1029,7 @@ export default function (pi: ExtensionAPI) {
 		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
+			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
 			seenSessions.add(sid);
 			rows.push({
 				name: card.name,
@@ -1046,7 +1046,7 @@ export default function (pi: ExtensionAPI) {
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
-			if (identity && entry.session_id === identity.session_id) continue;
+			if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
 			if (!includeExplicit && entry.explicit) continue;
 			if (seenSessions.has(entry.session_id)) continue;
 			if (seenNames.has(entry.name)) continue;
@@ -1131,8 +1131,12 @@ export default function (pi: ExtensionAPI) {
 
 			let tasksPart = "";
 			if (r.tasks && r.tasks.total > 0) {
-				tasksPart = theme.fg("dim", " ") + theme.fg("accent", `${r.tasks.completed}/${r.tasks.total}`) + theme.fg("dim", "t");
-				if (r.tasks.in_progress > 0) tasksPart += theme.fg("warning", ` ${r.tasks.in_progress}⚡`);
+				const pending = r.tasks.total - r.tasks.completed - r.tasks.in_progress;
+				const parts: string[] = [];
+				if (r.tasks.completed > 0) parts.push(theme.fg("success", `${r.tasks.completed}✔`));
+				if (r.tasks.in_progress > 0) parts.push(theme.fg("accent", `${r.tasks.in_progress}◼`));
+				if (pending > 0) parts.push(theme.fg("dim", `${pending}◻`));
+				tasksPart = theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
 			}
 			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
@@ -1198,7 +1202,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
+			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
 			if (!seenSessions.has(sid)) {
 				card.staleCount = (card.staleCount ?? 0) + 1;
 				if (card.staleCount > 6) {
@@ -1266,7 +1270,7 @@ export default function (pi: ExtensionAPI) {
 			for (const proj of projects) {
 				for (const entry of pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
-					if (identity && entry.session_id === identity.session_id) continue;
+					if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
 					collected.push({ entry, project: proj });
 				}
 			}

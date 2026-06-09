@@ -356,7 +356,7 @@ interface CliFlags {
 }
 
 function readCliFlags(pi: ExtensionAPI): CliFlags {
-	const name = pi.getFlag("name") as string | undefined;
+	const name = pi.getFlag("cname") as string | undefined;
 	const purpose = pi.getFlag("purpose") as string | undefined;
 	const project = pi.getFlag("project") as string | undefined;
 	const color = pi.getFlag("color") as string | undefined;
@@ -379,7 +379,7 @@ function readCliFlags(pi: ExtensionAPI): CliFlags {
 export default function (pi: ExtensionAPI) {
 	// ━━ Identity flags ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// Agent name flag for coms peer identity.
-	pi.registerFlag("name", {
+	pi.registerFlag("cname", {
 		description: "Override coms-net agent name (otherwise from frontmatter or auto-generated). Distinct from pi's own --name, which the harness owns and resumes.",
 		type: "string",
 		default: undefined,
@@ -1169,8 +1169,12 @@ export default function (pi: ExtensionAPI) {
 
 			let tasksPart = "";
 			if (r.tasks && r.tasks.total > 0) {
-				tasksPart = theme.fg("dim", " ") + theme.fg("accent", `${r.tasks.completed}/${r.tasks.total}`) + theme.fg("dim", "t");
-				if (r.tasks.in_progress > 0) tasksPart += theme.fg("warning", ` ${r.tasks.in_progress}⚡`);
+				const pending = r.tasks.total - r.tasks.completed - r.tasks.in_progress;
+				const parts: string[] = [];
+				if (r.tasks.completed > 0) parts.push(theme.fg("success", `${r.tasks.completed}✔`));
+				if (r.tasks.in_progress > 0) parts.push(theme.fg("accent", `${r.tasks.in_progress}◼`));
+				if (pending > 0) parts.push(theme.fg("dim", `${pending}◻`));
+				tasksPart = theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
 			}
 			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
