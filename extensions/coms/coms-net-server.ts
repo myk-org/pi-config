@@ -153,6 +153,7 @@ export type AgentCard = {
 	context_used_pct: number;
 	queue_depth: number;
 	status: AgentStatus;
+	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 };
 
 export type RegistryEntry = AgentCard & {
@@ -763,11 +764,14 @@ async function handleHeartbeat(
 		queue_depth: entry.queue_depth,
 		model: entry.model,
 		status: entry.status,
+		tasks_summary: entry.tasks_summary,
 	};
 	if (typeof body.context_used_pct === "number")
 		entry.context_used_pct = body.context_used_pct;
 	if (typeof body.queue_depth === "number")
 		entry.queue_depth = body.queue_depth;
+	if (body.tasks_summary && typeof body.tasks_summary === "object")
+		entry.tasks_summary = body.tasks_summary;
 	if (typeof body.model === "string") entry.model = body.model;
 	if (
 		body.status === "online" ||
@@ -786,7 +790,8 @@ async function handleHeartbeat(
 		before.context_used_pct !== entry.context_used_pct ||
 		before.queue_depth !== entry.queue_depth ||
 		before.model !== entry.model ||
-		before.status !== entry.status;
+		before.status !== entry.status ||
+		JSON.stringify(before.tasks_summary) !== JSON.stringify(entry.tasks_summary);
 	if (changed) {
 		broadcast(
 			p,

@@ -77,6 +77,7 @@ interface AgentCard {
 	context_used_pct: number;
 	queue_depth: number;
 	status: AgentStatus;
+	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 }
 
 interface RegisterRequest {
@@ -104,6 +105,7 @@ interface HeartbeatRequest {
 	queue_depth: number;
 	model?: string;
 	status?: AgentStatus;
+	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 }
 
 interface SendRequest {
@@ -578,6 +580,29 @@ export default function (pi: ExtensionAPI) {
 		return { ...prev, ...patch };
 	}
 
+	/** Read task summary from pi-tasks store files (best-effort). */
+	function readTaskSummary(cwd: string): { total: number; completed: number; in_progress: number } | null {
+		try {
+			const tasksDir = path.join(cwd, ".pi", "tasks");
+			if (!fs.existsSync(tasksDir)) return null;
+			let total = 0, completed = 0, in_progress = 0;
+			for (const f of fs.readdirSync(tasksDir)) {
+				if (!f.endsWith(".json")) continue;
+				try {
+					const data = JSON.parse(fs.readFileSync(path.join(tasksDir, f), "utf-8"));
+					if (!Array.isArray(data.tasks)) continue;
+					for (const t of data.tasks) {
+						total++;
+						if (t.status === "completed") completed++;
+						else if (t.status === "in_progress") in_progress++;
+					}
+				} catch { /* skip corrupt files */ }
+			}
+			if (total === 0) return null;
+			return { total, completed, in_progress };
+		} catch { return null; }
+	}
+
 	function handleSseEvent(event: string, data: any, _id?: string): void {
 		if (!data || typeof data !== "object") return;
 		switch (event) {
@@ -1031,6 +1056,7 @@ export default function (pi: ExtensionAPI) {
 				project: identity.project,
 				context_used_pct: pct,
 				queue_depth: inboundQueue.size,
+				tasks_summary: readTaskSummary(identity?.cwd ?? process.cwd()),
 				model: ctxNow?.model?.id ?? identity.model,
 				status: "online",
 			};
@@ -1053,6 +1079,7 @@ export default function (pi: ExtensionAPI) {
 			pct: number | null;
 			pending: boolean;
 			stale: boolean;
+			tasks?: { total: number; completed: number; in_progress: number } | null;
 		}
 
 		const rows: Row[] = [];
@@ -1067,6 +1094,7 @@ export default function (pi: ExtensionAPI) {
 				pct: typeof card.context_used_pct === "number" ? card.context_used_pct : null,
 				pending: card.status === "stale",
 				stale: card.status === "offline",
+				tasks: card.tasks_summary,
 			});
 		}
 
@@ -1135,7 +1163,12 @@ export default function (pi: ExtensionAPI) {
 			const sep = theme.fg("dim", "  —  ");
 			const purposePart = theme.fg("muted", r.purpose || "");
 
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + sep + purposePart;
+			let tasksPart = "";
+			if (r.tasks && r.tasks.total > 0) {
+				tasksPart = theme.fg("dim", " ") + theme.fg("accent", `${r.tasks.completed}/${r.tasks.total}`) + theme.fg("dim", "t");
+				if (r.tasks.in_progress > 0) tasksPart += theme.fg("warning", ` ${r.tasks.in_progress}⚡`);
+			}
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
