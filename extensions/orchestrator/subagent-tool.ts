@@ -335,6 +335,7 @@ export async function runSingleAgent(
   onUpdate: OnUpdate | undefined,
   makeDetails: (r: SingleResult[]) => SubagentDetails,
   parentModelId?: string,
+  parentProvider?: string,
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
@@ -362,6 +363,7 @@ export async function runSingleAgent(
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
   const effectiveModel = agent.model || parentModelId;
   if (effectiveModel) args.push("--model", effectiveModel);
+  if (!agent.model && parentProvider) args.push("--provider", parentProvider);
   if (agent.tools && agent.tools.length > 0)
     args.push("--tools", agent.tools.join(","));
 
@@ -504,7 +506,7 @@ export async function runSingleAgent(
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -555,6 +557,7 @@ export function registerSubagentTool(
       const agents = discovery.agents;
       const confirm = params.confirmProjectAgents ?? true;
       const parentModelId = ctx.model?.id;
+      const parentProvider = ctx.model?.provider;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -685,6 +688,7 @@ export function registerSubagentTool(
               fireAndForget: params.fireAndForget,
               name: (t as any).name,
               parentModelId,
+              parentProvider,
             });
             if (r.error) {
               errors.push(`${t.agent}: ${r.error}`);
@@ -726,7 +730,7 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId });
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider });
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],
@@ -814,6 +818,7 @@ export function registerSubagentTool(
             chainUpdate,
             mkd("chain"),
             parentModelId,
+            parentProvider,
           );
           activeAgents.delete(s.agent);
           updateWorking();
@@ -955,6 +960,7 @@ export function registerSubagentTool(
               },
               mkd("parallel"),
               parentModelId,
+              parentProvider,
             );
             all[i] = r;
             activeAgents.delete(t.name || t.agent);
@@ -1028,6 +1034,7 @@ export function registerSubagentTool(
           onUpdate,
           mkd("single"),
           parentModelId,
+          parentProvider,
         );
         activeAgents.delete(label);
         updateWorking();
