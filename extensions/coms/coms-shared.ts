@@ -471,10 +471,13 @@ export interface TasksSummary {
 
 export function renderTasksPart(tasks: TasksSummary | null | undefined, theme: any): string {
 	if (!tasks || tasks.total === 0) return "";
-	const pending = tasks.total - tasks.completed - tasks.in_progress;
+	// Clamp to prevent negative/misleading values from corrupt data
+	const completed = Math.max(0, Math.min(tasks.completed, tasks.total));
+	const in_progress = Math.max(0, Math.min(tasks.in_progress, tasks.total - completed));
+	const pending = Math.max(0, tasks.total - completed - in_progress);
 	const parts: string[] = [];
-	if (tasks.completed > 0) parts.push(theme.fg("success", `${tasks.completed}✔`));
-	if (tasks.in_progress > 0) parts.push(theme.fg("accent", `${tasks.in_progress}◼`));
+	if (completed > 0) parts.push(theme.fg("success", `${completed}✔`));
+	if (in_progress > 0) parts.push(theme.fg("accent", `${in_progress}◼`));
 	if (pending > 0) parts.push(theme.fg("dim", `${pending}◻`));
 	return theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
 }
