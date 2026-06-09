@@ -41,7 +41,11 @@ register_pi_pkg pi-tasks @tintinweb/pi-tasks
 cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || true
 if [ -f "$HOME/.gitconfig-local" ]; then
     export GIT_CONFIG_GLOBAL="$HOME/.gitconfig-local"
-    git config --global core.excludesFile "$HOME/.gitignore-global"
+    # Copy gitignore to writable location (host file may be read-only mounted)
+    GITIGNORE_SRC="$(git config --global core.excludesFile 2>/dev/null || echo "$HOME/.gitignore-global")"
+    GITIGNORE_LOCAL="$HOME/.gitignore-local"
+    cp "$GITIGNORE_SRC" "$GITIGNORE_LOCAL" 2>/dev/null || touch "$GITIGNORE_LOCAL"
+    git config --global core.excludesFile "$GITIGNORE_LOCAL"
 fi
 
 # SSH timeout — detect dead connections during git fetch/push/pull
