@@ -38,15 +38,26 @@ register_pi_pkg pi-tasks @tintinweb/pi-tasks
 
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
-cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || true
-if [ -f "$HOME/.gitconfig-local" ]; then
-    export GIT_CONFIG_GLOBAL="$HOME/.gitconfig-local"
-    # Copy gitignore to writable location (host file may be read-only mounted)
-    GITIGNORE_SRC="$(git config --global core.excludesFile 2>/dev/null || echo "$HOME/.gitignore-global")"
-    GITIGNORE_LOCAL="$HOME/.gitignore-local"
-    cp "$GITIGNORE_SRC" "$GITIGNORE_LOCAL" 2>/dev/null || touch "$GITIGNORE_LOCAL"
-    git config --global core.excludesFile "$GITIGNORE_LOCAL"
+# Always create a writable local copy so git config --global never writes to a read-only mount
+cp "$HOME/.gitconfig" "$HOME/.gitconfig-local" 2>/dev/null || touch "$HOME/.gitconfig-local"
+export GIT_CONFIG_GLOBAL="$HOME/.gitconfig-local"
+
+# Ensure gitignore is writable (host file may be read-only mounted)
+# Resolve source: normalize ~ prefix, try configured path then known defaults
+GITIGNORE_SRC="$(git config --global core.excludesFile 2>/dev/null || true)"
+case "$GITIGNORE_SRC" in ~/*)  GITIGNORE_SRC="$HOME/${GITIGNORE_SRC#\~/}" ;; esac
+if [ -z "$GITIGNORE_SRC" ] || [ ! -r "$GITIGNORE_SRC" ]; then
+    for candidate in "$HOME/.gitignore-global" "$HOME/.config/git/ignore"; do
+        if [ -r "$candidate" ]; then GITIGNORE_SRC="$candidate"; break; fi
+    done
 fi
+GITIGNORE_LOCAL="$HOME/.gitignore-local"
+if [ -n "$GITIGNORE_SRC" ] && [ -r "$GITIGNORE_SRC" ]; then
+    cp "$GITIGNORE_SRC" "$GITIGNORE_LOCAL"
+else
+    touch "$GITIGNORE_LOCAL"
+fi
+git config --global core.excludesFile "$GITIGNORE_LOCAL"
 
 # SSH timeout — detect dead connections during git fetch/push/pull
 # ServerAliveInterval: send keepalive every 15s
@@ -54,17 +65,14 @@ fi
 # ConnectTimeout: fail if can't connect within 10s
 export GIT_SSH_COMMAND="ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10"
 
-# Ensure .pi/memory/ is in global gitignore (memory DB must not be committed)
-GITIGNORE_FILE="$(git config --global core.excludesFile 2>/dev/null || echo "$HOME/.gitignore-global")"
-if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/memory/' "$GITIGNORE_FILE" 2>/dev/null; then
-    echo '.pi/memory/' >> "$GITIGNORE_FILE"
-fi
-if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.worktrees/' "$GITIGNORE_FILE" 2>/dev/null; then
-    echo '.worktrees/' >> "$GITIGNORE_FILE"
-fi
-if [ -n "$GITIGNORE_FILE" ] && ! grep -qF '.pi/tasks/' "$GITIGNORE_FILE" 2>/dev/null; then
-    echo '.pi/tasks/' >> "$GITIGNORE_FILE"
-fi
+# Ensure required entries are in global gitignore
+add_to_gitignore() {
+    if ! grep -qxF "$1" "$GITIGNORE_LOCAL" 2>/dev/null; then
+        echo "$1" >> "$GITIGNORE_LOCAL"
+    fi
+}
+add_to_gitignore '.pi/'
+add_to_gitignore '.worktrees/'
 
 
 exec pi "$@"
