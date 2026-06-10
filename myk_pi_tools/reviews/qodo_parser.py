@@ -8,18 +8,21 @@ This module parses that comment to extract unresolved findings.
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any
 
-
-def _log(msg: str) -> None:
-    print(msg, file=sys.stderr)
-
+from bs4 import BeautifulSoup, Tag
 
 # Header that identifies a Qodo sticky comment
 QODO_STICKY_HEADER = "Code Review by Qodo"
 
-# Pattern matching individual findings in the sticky comment
+# Boundary marking previous review iterations (duplicates of current findings)
+# Match the real fold marker — must be on its own line (not inside backtick quotes).
+_PREVIOUS_RESULTS_RE = re.compile(
+    r"^\s*<!-- FOLDED_SECTION_START -->\s*$",
+    re.MULTILINE,
+)
+
+# Pattern matching individual finding summary lines
 # Captures: number, optional strikethrough, title, codes (type, category)
 _FINDING_SUMMARY_RE = re.compile(
     r"<summary>\s*(\d+)\.\s+"  # number
@@ -29,31 +32,89 @@ _FINDING_SUMMARY_RE = re.compile(
     re.DOTALL,
 )
 
-# Pattern for resolved/dismissed markers
-_RESOLVED_RE = re.compile(r"<code>[^<]*Resolved[^<]*</code>")
-_DISMISSED_RE = re.compile(r"<code>[^<]*Dismissed[^<]*</code>")
-
 # Pattern for code references like [file[R28-52]](url) or [file[28-52]](url)
 _CODE_REF_RE = re.compile(
     r"\[([^\[\]]+)\[R?(\d+)(?:-(?:R)?(\d+))?\]\]"  # file[R28-52] or file[28-52]
     r"\(([^)]+)\)"  # (url)
 )
 
-# Pattern for description in <pre> tags
-_DESCRIPTION_RE = re.compile(r"<pre>(.*?)</pre>", re.DOTALL)
+# Pattern to extract fenced diff blocks (```diff ... ```)
+_FENCED_DIFF_RE = re.compile(r"```diff\n(.*?)```", re.DOTALL)
 
-# Pattern for severity/type code tags
-_TYPE_RE = re.compile(r"<code>([^<]*(?:Bug|Rule violation|Requirement gap|UX issue|Cross-repo conflict)[^<]*)</code>")
-_CATEGORY_RE = re.compile(r"<code>([^<]*(?:Correctness|Security|Reliability|Performance|Maintainability)[^<]*)</code>")
+# Pattern to extract fenced code blocks (``` ... ```)
+_FENCED_CODE_RE = re.compile(r"```(?!\w)\n(.*?)```", re.DOTALL)
 
-# Boundary marking previous review iterations (duplicates of current findings)
-# Match the real fold marker — must be on its own line (not inside backtick quotes).
-# The marker appears as: \n<!-- FOLDED_SECTION_START -->\n
-# Inside code quotes it appears as: `<!-- FOLDED_SECTION_START -->`
-_PREVIOUS_RESULTS_RE = re.compile(
-    r"^\s*<!-- FOLDED_SECTION_START -->\s*$",
-    re.MULTILINE,
+# Finding type keywords from Qodo sticky <code> tags
+_FINDING_TYPES = (
+    "Bug",
+    "Rule violation",
+    "Requirement gap",
+    "UX issue",
+    "Cross-repo conflict",
 )
+
+# Finding category keywords from Qodo sticky <code> tags
+_FINDING_CATEGORIES = (
+    "Correctness",
+    "Security",
+    "Reliability",
+    "Performance",
+    "Maintainability",
+    "Observability",
+)
+
+
+def _strip_blockquote_prefix(text: str) -> str:
+    """Strip leading `> ` or `>` markdown blockquote prefix from each line."""
+    lines = []
+    for line in text.splitlines():
+        if line.startswith(">"):
+            line = line[1:]
+            if line.startswith(" "):
+                line = line[1:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _find_inner_section(soup: BeautifulSoup | Tag, section_name: str) -> Tag | None:
+    """Find a direct-child <details> whose <summary> text matches *section_name*."""
+    for details in soup.find_all("details", recursive=False):
+        summary = details.find("summary", recursive=False)
+        if summary and summary.get_text(strip=True) == section_name:
+            return details
+    return None
+
+
+def _extract_pre_content(section: Tag) -> str:
+    """Extract text from a section's <pre> block, preserving HTML."""
+    pre = section.find("pre")
+    if not pre:
+        return ""
+    return pre.decode_contents().strip()
+
+
+def _extract_evidence_refs(section: Tag) -> list[str]:
+    """Extract <code> tags from Evidence section that are OUTSIDE any <pre> block."""
+    refs = []
+    for code in section.find_all("code"):
+        if code.find_parent("pre"):
+            continue
+        text = code.get_text(strip=True)
+        if text:
+            refs.append(text)
+    return refs
+
+
+def _extract_agent_prompt(raw_section: str) -> str:
+    """Extract agent prompt from fenced code block, excluding trailing copy-hint line."""
+    match = _FENCED_CODE_RE.search(raw_section)
+    if not match:
+        return ""
+    content = match.group(1).strip()
+    lines = content.splitlines()
+    while lines and "ⓘ Copy this prompt" in lines[-1]:
+        lines.pop()
+    return "\n".join(lines).strip()
 
 
 def is_qodo_sticky_comment(body: str) -> bool:
@@ -70,10 +131,14 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
     - path: str (file path from first code reference)
     - line: int (start line from first code reference)
     - end_line: int | None
-    - description: str (from <pre> block)
+    - description: str (from Description section <pre> block, HTML preserved)
     - finding_type: str (Bug, Rule violation, Requirement gap)
     - category: str (Correctness, Security, etc.)
-    - status: str ("open", "resolved", "dismissed")
+    - status: str ("open")
+    - code_diff: str (diff content from Code section)
+    - evidence: str (reasoning text from Evidence section <pre> block, HTML preserved)
+    - evidence_refs: list[str] (reference lines from Evidence section <code> tags)
+    - agent_prompt: str (prompt text from Agent prompt section)
     """
     if not is_qodo_sticky_comment(body):
         return []
@@ -86,8 +151,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     # Split into individual <details> blocks for each finding
-    # Each finding is a <details><summary>...</summary>...</details> block
-    details_blocks = re.split(r"<details>\s*\n?", body)
+    details_blocks = re.split(r"^<details>\s*\n?", body, flags=re.MULTILINE)
 
     for block in details_blocks:
         summary_match = _FINDING_SUMMARY_RE.search(block)
@@ -95,40 +159,43 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
             continue
 
         index = int(summary_match.group(1))
-        strikethrough_title = summary_match.group(2)  # if in <s> tags
-        plain_title = summary_match.group(3)  # if not in <s> tags
+        strikethrough_title = summary_match.group(2)
+        plain_title = summary_match.group(3)
         codes_str = summary_match.group(4)
 
-        # Determine status
-        is_resolved = _RESOLVED_RE.search(codes_str) is not None if codes_str else False
-        is_dismissed = _DISMISSED_RE.search(codes_str) is not None if codes_str else False
+        # Parse code tags with BeautifulSoup to determine status, type, category
+        is_resolved = False
+        is_dismissed = False
+        finding_type = ""
+        category = ""
+
+        if codes_str:
+            codes_soup = BeautifulSoup(codes_str, "html.parser")
+            for code_tag in codes_soup.find_all("code"):
+                text = code_tag.get_text()
+                if "Resolved" in text:
+                    is_resolved = True
+                elif "Dismissed" in text:
+                    is_dismissed = True
+                elif any(t in text for t in _FINDING_TYPES):
+                    finding_type = re.sub(r"[^\w\s-]", "", text).strip()
+                elif any(c in text for c in _FINDING_CATEGORIES):
+                    category = re.sub(r"[^\w\s]", "", text).strip()
 
         if strikethrough_title is not None:
             title = strikethrough_title
             if not is_resolved and not is_dismissed:
-                # Has strikethrough but no explicit marker — treat as resolved
                 is_resolved = True
         else:
             title = plain_title or ""
 
         # Strip HTML from title
-        title = re.sub(r"<[^>]+>", "", title).strip()
+        title = BeautifulSoup(title, "html.parser").get_text().strip()
 
         if is_resolved or is_dismissed:
-            continue  # Skip resolved/dismissed
+            continue
 
-        # Extract type and category from code tags
-        finding_type = ""
-        category = ""
-        if codes_str:
-            type_match = _TYPE_RE.search(codes_str)
-            if type_match:
-                finding_type = re.sub(r"[^\w\s-]", "", type_match.group(1)).strip()
-            cat_match = _CATEGORY_RE.search(codes_str)
-            if cat_match:
-                category = re.sub(r"[^\w\s]", "", cat_match.group(1)).strip()
-
-        # Extract first code reference (file + lines)
+        # Extract first code reference from raw block (markdown construct)
         path = ""
         line = None
         end_line = None
@@ -139,13 +206,39 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
             if code_ref.group(3):
                 end_line = int(code_ref.group(3))
 
+        # Strip blockquote prefixes and parse inner sections with BeautifulSoup
+        stripped_block = _strip_blockquote_prefix(block)
+        soup = BeautifulSoup(stripped_block, "html.parser")
+
         # Extract description
         description = ""
-        desc_match = _DESCRIPTION_RE.search(block)
-        if desc_match:
-            desc_text = desc_match.group(1).strip()
-            # Strip HTML tags from description
-            description = re.sub(r"<[^>]+>", "", desc_text).strip()
+        desc_section = _find_inner_section(soup, "Description")
+        if desc_section:
+            description = _extract_pre_content(desc_section)
+
+        # Extract code diff from Code section
+        code_diff = ""
+        code_section = _find_inner_section(soup, "Code")
+        if code_section:
+            # Use raw stripped text for fenced diff extraction (markdown)
+            code_section_str = str(code_section)
+            diff_match = _FENCED_DIFF_RE.search(code_section_str)
+            if diff_match:
+                code_diff = diff_match.group(1).strip()
+
+        # Extract evidence and evidence refs
+        evidence = ""
+        evidence_refs: list[str] = []
+        evidence_section = _find_inner_section(soup, "Evidence")
+        if evidence_section:
+            evidence = _extract_pre_content(evidence_section)
+            evidence_refs = _extract_evidence_refs(evidence_section)
+
+        # Extract agent prompt
+        agent_prompt = ""
+        prompt_section = _find_inner_section(soup, "Agent prompt")
+        if prompt_section:
+            agent_prompt = _extract_agent_prompt(str(prompt_section))
 
         results.append({
             "index": index,
@@ -157,6 +250,10 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
             "finding_type": finding_type,
             "category": category,
             "status": "open",
+            "code_diff": code_diff,
+            "evidence": evidence,
+            "evidence_refs": evidence_refs,
+            "agent_prompt": agent_prompt,
         })
 
     return results

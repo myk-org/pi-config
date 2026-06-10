@@ -2,7 +2,9 @@
 
 CodeRabbit embeds certain comments directly in the review body text
 (not as inline threads). This module extracts those comments into
-structured data. Five kinds of body-embedded sections are supported:
+structured data using BeautifulSoup for HTML structure parsing and
+regex for markdown-level patterns. Five kinds of body-embedded
+sections are supported:
 
 - **Outside diff range** comments (code outside the PR diff range)
 - **Major** comments (significant issues requiring attention)
@@ -20,39 +22,23 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from bs4 import BeautifulSoup, Tag
+
 # ---------------------------------------------------------------------------
-# Compiled patterns
+# Section keyword mapping
 # ---------------------------------------------------------------------------
 
-# Matches the start of the outer "Outside diff range comments" section.
-_OUTSIDE_SECTION_START_RE = re.compile(
-    r"<summary>\s*(?:\S+\s+)*?Outside diff range comments?\s*(?:\(\d+\))?\s*</summary>\s*<blockquote>",
-)
+_SECTION_KEYWORDS: dict[str, str] = {
+    "outside_diff": "Outside diff range",
+    "major": "Major",
+    "minor": "Minor",
+    "nitpick": "Nitpick",
+    "duplicate": "Duplicate",
+}
 
-# Matches the start of the outer "Major comments" section.
-_MAJOR_SECTION_START_RE = re.compile(
-    r"<summary>\s*(?:\S+\s+)*?Major comments?\s*(?:\(\d+\))?\s*</summary>\s*<blockquote>",
-)
-
-# Matches the start of the outer "Minor comments" section.
-_MINOR_SECTION_START_RE = re.compile(
-    r"<summary>\s*(?:\S+\s+)*?Minor comments?\s*(?:\(\d+\))?\s*</summary>\s*<blockquote>",
-)
-
-# Matches the start of the outer "Nitpick comments" section.
-_NITPICK_SECTION_START_RE = re.compile(
-    r"<summary>\s*(?:\S+\s+)*?Nitpick comments?\s*(?:\(\d+\))?\s*</summary>\s*<blockquote>",
-)
-
-# Matches the start of the outer "Duplicate comments" section.
-_DUPLICATE_SECTION_START_RE = re.compile(
-    r"<summary>\s*(?:\S+\s+)*?Duplicate comments?\s*(?:\(\d+\))?\s*</summary>\s*<blockquote>",
-)
-
-# Matches the start of a file-level <details> block with path and count.
-_FILE_SUMMARY_RE = re.compile(
-    r"<details>\s*\n?\s*<summary>\s*(?P<path>.+?)\s*(?:\(\d+\))?\s*</summary>\s*<blockquote>",
-)
+# ---------------------------------------------------------------------------
+# Compiled patterns (markdown-level — NOT HTML)
+# ---------------------------------------------------------------------------
 
 # Matches the backtick line-range pattern at the start of a comment.
 # Handles both range (`552-572`) and single-line (`42`) formats.
@@ -72,11 +58,13 @@ _TITLE_RE = re.compile(
     re.MULTILINE,
 )
 
-# Matches the "Prompt for AI Agents" details block (to be excluded).
-_AI_PROMPT_RE = re.compile(
-    r"<details>\s*\n?\s*<summary>\s*\S*\s*Prompt for AI Agents\s*</summary>.*?</details>",
-    re.DOTALL,
-)
+# Strips trailing count like " (2)" from file summary text.
+_FILE_PATH_COUNT_RE = re.compile(r"\s*\(\d+\)\s*$")
+
+
+# ---------------------------------------------------------------------------
+# BeautifulSoup helpers
+# ---------------------------------------------------------------------------
 
 
 def _strip_blockquote_prefix(text: str) -> str:
@@ -95,40 +83,77 @@ def _strip_blockquote_prefix(text: str) -> str:
     return "\n".join(lines)
 
 
-def _extract_blockquote_content(text: str, start: int) -> str | None:
-    """Extract blockquote content by tracking nesting depth from a given position.
+def _remove_ai_prompts(soup: BeautifulSoup) -> None:
+    """Remove all 'Prompt for AI Agents' details blocks from the soup.
+
+    Collects targets first to avoid modifying the tree during iteration.
+    """
+    to_remove: list[Tag] = []
+    for details in soup.find_all("details"):
+        summary = details.find("summary", recursive=False)
+        if summary and "Prompt for AI Agents" in summary.get_text():
+            to_remove.append(details)
+    for details in to_remove:
+        details.decompose()
+
+
+def _find_sections(soup: BeautifulSoup, keyword: str) -> list[Tag]:
+    """Find all ``<details>`` tags whose ``<summary>`` text contains *keyword*.
 
     Args:
-        text: The full text.
-        start: Position immediately after the opening ``<blockquote>`` tag.
+        soup: Parsed HTML tree.
+        keyword: Text to search for in ``<summary>`` content (e.g. ``"Major"``).
 
     Returns:
-        The content between the opening and its matching closing
-        ``</blockquote>`` tag, or ``None`` if no matching close is found.
+        List of matching ``<details>`` :class:`Tag` objects.
     """
-    depth = 1
-    pos = start
-    bq_open_tag = "<blockquote>"
-    bq_close_tag = "</blockquote>"
+    results: list[Tag] = []
+    for details in soup.find_all("details"):
+        summary = details.find("summary", recursive=False)
+        if summary and keyword.lower() + " comment" in summary.get_text().lower():
+            results.append(details)
+    return results
 
-    while depth > 0 and pos < len(text):
-        next_open = text.find(bq_open_tag, pos)
-        next_close = text.find(bq_close_tag, pos)
 
-        if next_close == -1:
-            # No closing tag found at all
-            break
+def _find_file_blocks(section_bq: Tag) -> list[tuple[str, Tag]]:
+    """Find file-level ``<details>`` blocks inside a section's ``<blockquote>``.
 
-        if next_open != -1 and next_open < next_close:
-            depth += 1
-            pos = next_open + len(bq_open_tag)
-        else:
-            depth -= 1
-            if depth == 0:
-                return text[start:next_close]
-            pos = next_close + len(bq_close_tag)
+    Each file block is expected to have a ``<summary>`` with the file path
+    (optionally followed by a count in parentheses) and a ``<blockquote>``
+    containing the individual comments.
 
-    return None
+    Args:
+        section_bq: The ``<blockquote>`` tag of a section-level ``<details>``.
+
+    Returns:
+        List of ``(path, blockquote_tag)`` tuples.
+    """
+    results: list[tuple[str, Tag]] = []
+    for details in section_bq.find_all("details", recursive=False):
+        summary = details.find("summary", recursive=False)
+        if summary:
+            path = _FILE_PATH_COUNT_RE.sub("", summary.get_text()).strip()
+            bq = details.find("blockquote", recursive=False)
+            if bq and path:
+                results.append((path, bq))
+    return results
+
+
+def _prepare_soup(body: str) -> BeautifulSoup:
+    """Prepare a :class:`BeautifulSoup` tree from a review body string.
+
+    Strips markdown blockquote ``>`` prefixes, parses the HTML, and removes
+    any "Prompt for AI Agents" ``<details>`` blocks.
+    """
+    cleaned = _strip_blockquote_prefix(body)
+    soup = BeautifulSoup(cleaned, "html.parser")
+    _remove_ai_prompts(soup)
+    return soup
+
+
+# ---------------------------------------------------------------------------
+# Comment parsing
+# ---------------------------------------------------------------------------
 
 
 def _parse_single_comment(raw: str) -> dict[str, Any] | None:
@@ -171,14 +196,11 @@ def _parse_single_comment(raw: str) -> dict[str, Any] | None:
         title = title_match.group("title").strip()
 
     # --- Body ---
-    # Body starts after the title line. We keep everything except the
-    # "Prompt for AI Agents" details block.
+    # Body starts after the title line. AI prompt sections have already
+    # been removed from the soup before text extraction.
     body_text = text
     if title_match:
         body_text = text[title_match.end() :].strip()
-
-    # Remove AI prompt sections
-    body_text = _AI_PROMPT_RE.sub("", body_text).strip()
 
     # Build the full body: title + remaining body
     body_parts: list[str] = []
@@ -199,18 +221,16 @@ def _parse_single_comment(raw: str) -> dict[str, Any] | None:
     }
 
 
-def _parse_section_comments(cleaned: str, section_re: re.Pattern[str]) -> list[dict[str, Any]]:
-    """Extract and parse comments from a single section of a cleaned review body.
+def _parse_section_comments(soup: BeautifulSoup, keyword: str) -> list[dict[str, Any]]:
+    """Extract and parse comments from sections matching *keyword*.
 
-    This is the shared logic for "outside diff range", "major", "minor", "nitpick", and "duplicate"
-    sections. The caller is responsible for cleaning the text first (stripping
-    blockquote prefixes and trailing AI prompt blocks).
+    Finds all ``<details>`` blocks whose ``<summary>`` contains *keyword*,
+    then iterates their file-level sub-blocks and parses individual
+    comments separated by ``---`` dividers.
 
     Args:
-        cleaned: The review body text after blockquote-prefix and AI-prompt
-            stripping.
-        section_re: Compiled regex that matches the section's ``<summary>``
-            header (up to and including the opening ``<blockquote>`` tag).
+        soup: Parsed and AI-prompt-cleaned HTML tree.
+        keyword: Section keyword (e.g. ``"Major"``).
 
     Returns:
         List of dicts, each with keys:
@@ -223,19 +243,13 @@ def _parse_section_comments(cleaned: str, section_re: re.Pattern[str]) -> list[d
     """
     results: list[dict[str, Any]] = []
 
-    for section_start_match in section_re.finditer(cleaned):
-        section_content = _extract_blockquote_content(cleaned, section_start_match.end())
-        if section_content is None:
+    for section in _find_sections(soup, keyword):
+        section_bq = section.find("blockquote", recursive=False)
+        if section_bq is None:
             continue
 
-        # Extract each file-level block using nesting-aware extraction.
-        for file_match in _FILE_SUMMARY_RE.finditer(section_content):
-            file_path = file_match.group("path").strip()
-            file_content = _extract_blockquote_content(section_content, file_match.end())
-            if file_content is None:
-                continue
-
-            file_content = file_content.strip()
+        for file_path, file_bq in _find_file_blocks(section_bq):
+            file_content = file_bq.decode_contents().strip()
 
             # Split individual comments on --- separators
             comment_blocks = re.split(r"\r?\n---\s*\r?\n", file_content)
@@ -247,6 +261,11 @@ def _parse_section_comments(cleaned: str, section_re: re.Pattern[str]) -> list[d
                     results.append(parsed)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def parse_outside_diff_comments(body: str) -> list[dict[str, Any]]:
@@ -267,14 +286,7 @@ def parse_outside_diff_comments(body: str) -> list[dict[str, Any]]:
     if not body:
         return []
 
-    # Strip blockquote prefixes so we can parse clean HTML
-    cleaned = _strip_blockquote_prefix(body)
-
-    # Also strip a trailing AI prompt section that may appear outside the
-    # blockquote at the very end of the review body.
-    cleaned = _AI_PROMPT_RE.sub("", cleaned).strip()
-
-    return _parse_section_comments(cleaned, _OUTSIDE_SECTION_START_RE)
+    return _parse_section_comments(_prepare_soup(body), _SECTION_KEYWORDS["outside_diff"])
 
 
 def parse_major_comments(body: str) -> list[dict[str, Any]]:
@@ -295,14 +307,7 @@ def parse_major_comments(body: str) -> list[dict[str, Any]]:
     if not body:
         return []
 
-    # Strip blockquote prefixes so we can parse clean HTML
-    cleaned = _strip_blockquote_prefix(body)
-
-    # Also strip a trailing AI prompt section that may appear outside the
-    # blockquote at the very end of the review body.
-    cleaned = _AI_PROMPT_RE.sub("", cleaned).strip()
-
-    return _parse_section_comments(cleaned, _MAJOR_SECTION_START_RE)
+    return _parse_section_comments(_prepare_soup(body), _SECTION_KEYWORDS["major"])
 
 
 def parse_minor_comments(body: str) -> list[dict[str, Any]]:
@@ -323,14 +328,7 @@ def parse_minor_comments(body: str) -> list[dict[str, Any]]:
     if not body:
         return []
 
-    # Strip blockquote prefixes so we can parse clean HTML
-    cleaned = _strip_blockquote_prefix(body)
-
-    # Also strip a trailing AI prompt section that may appear outside the
-    # blockquote at the very end of the review body.
-    cleaned = _AI_PROMPT_RE.sub("", cleaned).strip()
-
-    return _parse_section_comments(cleaned, _MINOR_SECTION_START_RE)
+    return _parse_section_comments(_prepare_soup(body), _SECTION_KEYWORDS["minor"])
 
 
 def parse_nitpick_comments(body: str) -> list[dict[str, Any]]:
@@ -351,14 +349,7 @@ def parse_nitpick_comments(body: str) -> list[dict[str, Any]]:
     if not body:
         return []
 
-    # Strip blockquote prefixes so we can parse clean HTML
-    cleaned = _strip_blockquote_prefix(body)
-
-    # Also strip a trailing AI prompt section that may appear outside the
-    # blockquote at the very end of the review body.
-    cleaned = _AI_PROMPT_RE.sub("", cleaned).strip()
-
-    return _parse_section_comments(cleaned, _NITPICK_SECTION_START_RE)
+    return _parse_section_comments(_prepare_soup(body), _SECTION_KEYWORDS["nitpick"])
 
 
 def parse_duplicate_comments(body: str) -> list[dict[str, Any]]:
@@ -379,14 +370,7 @@ def parse_duplicate_comments(body: str) -> list[dict[str, Any]]:
     if not body:
         return []
 
-    # Strip blockquote prefixes so we can parse clean HTML
-    cleaned = _strip_blockquote_prefix(body)
-
-    # Also strip a trailing AI prompt section that may appear outside the
-    # blockquote at the very end of the review body.
-    cleaned = _AI_PROMPT_RE.sub("", cleaned).strip()
-
-    return _parse_section_comments(cleaned, _DUPLICATE_SECTION_START_RE)
+    return _parse_section_comments(_prepare_soup(body), _SECTION_KEYWORDS["duplicate"])
 
 
 def parse_review_body_comments(body: str) -> dict[str, list[dict[str, Any]]]:
@@ -394,19 +378,12 @@ def parse_review_body_comments(body: str) -> dict[str, list[dict[str, Any]]]:
 
     Returns:
         Dict with keys ``'outside_diff'``, ``'major'``, ``'minor'``,
-        ``'major'``, ``'minor'``, ``'nitpick'``, and ``'duplicate'``, each containing a list of
+        ``'nitpick'``, and ``'duplicate'``, each containing a list of
         parsed comment dicts.
     """
     if not body:
         return {"outside_diff": [], "major": [], "minor": [], "nitpick": [], "duplicate": []}
 
-    cleaned = _strip_blockquote_prefix(body)
-    cleaned = _AI_PROMPT_RE.sub("", cleaned).strip()
+    soup = _prepare_soup(body)
 
-    return {
-        "outside_diff": _parse_section_comments(cleaned, _OUTSIDE_SECTION_START_RE),
-        "major": _parse_section_comments(cleaned, _MAJOR_SECTION_START_RE),
-        "minor": _parse_section_comments(cleaned, _MINOR_SECTION_START_RE),
-        "nitpick": _parse_section_comments(cleaned, _NITPICK_SECTION_START_RE),
-        "duplicate": _parse_section_comments(cleaned, _DUPLICATE_SECTION_START_RE),
-    }
+    return {key: _parse_section_comments(soup, keyword) for key, keyword in _SECTION_KEYWORDS.items()}

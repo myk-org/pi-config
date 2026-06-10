@@ -18,7 +18,12 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-dependencies = ["click>=8.0.0", "tomli>=2.0.0; python_version < '3.11'", "ai-cli-runner>=0.4.0"]
+dependencies = [
+    "click>=8.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+    "ai-cli-runner>=0.4.0",
+    "beautifulsoup4>=4.15.0",
+]
 
 [project.scripts]
 myk-pi-tools = "myk_pi_tools.cli:main"

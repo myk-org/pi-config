@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from bs4 import BeautifulSoup
+
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
@@ -685,6 +687,10 @@ def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[di
                 else "MEDIUM",
                 "reply": None,
                 "status": "pending",
+                "code_diff": finding.get("code_diff", ""),
+                "evidence": finding.get("evidence", ""),
+                "evidence_refs": finding.get("evidence_refs", []),
+                "agent_prompt": finding.get("agent_prompt", ""),
             }
             results.append(thread_data)
 
@@ -742,7 +748,7 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
         author = thread.get("author")
         body = thread.get("body")
 
-        source = detect_source(author)
+        source = thread.get("source") or detect_source(author)
 
         # Preserve pre-computed priority (e.g., from Qodo sticky findings)
         existing_priority = thread.get("priority")
@@ -761,7 +767,13 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
         }
 
         # Check for previously dismissed similar comment (only if status is pending)
-        if (dismissed_by_path or dismissed_by_comment_id or dismissed_by_key) and enriched.get("status") == "pending":
+        # Qodo sticky findings are never auto-skipped — they persist intentionally
+        # until properly resolved and must always be re-evaluated.
+        if (
+            source != "qodo"
+            and (dismissed_by_path or dismissed_by_comment_id or dismissed_by_key)
+            and enriched.get("status") == "pending"
+        ):
             # Fast path: exact match by thread key (works for sticky findings)
             thread_key = get_thread_key(enriched)
             if thread_key and thread_key in dismissed_by_key:
@@ -842,8 +854,10 @@ def _extract_sticky_title(body: str) -> str:
     if m:
         return m.group(1).strip().lower()
     # Fallback: first non-empty line, stripped of HTML/markdown
-    for line in body.split("\n"):
-        clean = re.sub(r"<[^>]+>", "", line).strip()
+    # Strip HTML once, then scan lines
+    plain = BeautifulSoup(body, "html.parser").get_text()
+    for line in plain.split("\n"):
+        clean = line.strip()
         clean = clean.replace("**", "").replace("*", "").replace("`", "").strip()
         if clean and len(clean) > 5:
             return clean[:60].lower()
