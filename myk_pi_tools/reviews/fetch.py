@@ -761,7 +761,13 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
         }
 
         # Check for previously dismissed similar comment (only if status is pending)
-        if (dismissed_by_path or dismissed_by_comment_id or dismissed_by_key) and enriched.get("status") == "pending":
+        # Qodo sticky findings are never auto-skipped — they persist intentionally
+        # until properly resolved and must always be re-evaluated.
+        if (
+            source != "qodo"
+            and (dismissed_by_path or dismissed_by_comment_id or dismissed_by_key)
+            and enriched.get("status") == "pending"
+        ):
             # Fast path: exact match by thread key (works for sticky findings)
             thread_key = get_thread_key(enriched)
             if thread_key and thread_key in dismissed_by_key:

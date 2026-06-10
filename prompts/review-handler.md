@@ -138,6 +138,11 @@ Returns JSON with:
 >
 > If autoqodo mode is ON:
 >
+> **Qodo sticky findings are NEVER auto-skipped.** Unlike CodeRabbit, Qodo sticky
+> findings persist intentionally until resolved. Even if a finding was previously
+> addressed or dismissed, it must be re-evaluated and fixed again. The `is_auto_skipped`
+> flag does not apply to Qodo sources.
+>
 > 1. **Qodo comments → auto-approved based on finding type:**
 >    - `qodo_bug` → **MUST address.** Fix the code. No skip allowed.
 >    - `qodo_rule_violation` → **MUST address.** Fix the code. No skip allowed.
