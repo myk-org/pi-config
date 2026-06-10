@@ -321,7 +321,7 @@ Update each JSON entry with `status` and `reply` fields before posting.
 **Mapping from user decisions (Phase 2):**
 
 - User said **yes** and code was changed → `addressed`
-- User said **yes** but change was not implemented → `not_addressed`
+- User said **yes** but fix attempt failed (code change didn't work) → `not_addressed`
 - User said **no** → `skipped` (include the user's skip reason in `reply`)
 - User said **all** → same as **yes** for each remaining comment
 - User said **skip \<source\>** → `skipped` for all remaining from that source

@@ -312,6 +312,9 @@ class ReviewDB:
         - Status is not 'pending' (i.e., was processed)
         - Has a comment_id (sticky findings use the issue comment ID)
 
+        Failed entries with posted_at set are included (consolidated reply was
+        posted even though per-item status stayed failed).
+
         Used for deduplication: if a sticky finding's comment_id + body
         exactly matches an entry here, it was already replied to.
 
@@ -337,7 +340,8 @@ class ReviewDB:
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
                   AND c.source = 'qodo'
-                  AND c.status IN ('addressed', 'not_addressed', 'skipped')
+                  AND (c.status IN ('addressed', 'not_addressed', 'skipped')
+                       OR (c.status = 'failed' AND c.posted_at IS NOT NULL AND c.posted_at != ''))
                   AND c.comment_id IS NOT NULL
                 ORDER BY c.posted_at DESC
                 """,

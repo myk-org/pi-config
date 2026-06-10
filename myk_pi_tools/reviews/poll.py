@@ -224,7 +224,7 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> dict | None:
         _prev_re = _re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", _re.MULTILINE)
         _prev_match = _prev_re.search(body)
         current_body = body[: _prev_match.start()] if _prev_match else body
-        resolved_count = current_body.count("✓ Resolved") + current_body.count("✗ Dismissed")
+        resolved_count = current_body.count("Resolved</code>") + current_body.count("Dismissed</code>")
         total_findings = resolved_count + len(unresolved)
 
         if len(unresolved) > 0:
@@ -389,7 +389,13 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
             print_stderr("[poll] Checking Qodo approval...")
             approval = _is_qodo_approved(owner, repo, pr_number)
             if approval:
-                print_stderr("[poll] Qodo approved — all findings resolved.")
+                reason = approval.get("reason", "unknown")
+                if reason == "all_resolved":
+                    print_stderr("[poll] Qodo approved — all findings resolved.")
+                elif reason == "stale_sticky":
+                    print_stderr("[poll] Qodo approved — stale sticky, all unresolved findings already replied to.")
+                else:
+                    print_stderr(f"[poll] Qodo approved — {reason}.")
                 # Print approval summary
                 _print_approval_summary(approval)
                 print('{"approved": true}')
