@@ -329,6 +329,16 @@ Update each JSON entry with `status` and `reply` fields before posting.
 - User said **skip ai** → `skipped` for all remaining AI sources
   (include the user's skip reason in `reply`)
 
+**Autoqodo status rules (MANDATORY):**
+
+- Code was changed to fix the finding → `addressed`
+- No code changed, finding is by design / won't fix / not applicable → `skipped` (with reason)
+- No code changed, deferred to follow-up → `skipped` (with reason)
+- Issue spec was updated (no code change) → `skipped` (with reason referencing the spec update)
+
+🚨 **`addressed` means code was changed. If no code was changed, the status MUST be `skipped`.**
+`not_addressed` means "we wanted to fix it but couldn't" — do NOT use it for "by design" findings.
+
 ### Phase 6: Testing
 
 Run tests with coverage.
