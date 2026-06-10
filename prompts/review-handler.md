@@ -344,7 +344,7 @@ refactoring, new module, etc.).** The AI does NOT decide what is too much work �
 If a finding requires a code change, make the code change. If you genuinely believe a finding
 is wrong or not applicable, set status to `skipped` with a technical reason — but "too much work",
 "requires migration", "will add later", or "deferred to follow-up" are NEVER valid reasons to skip.
-Fix it now or ask the user.
+Fix it now. In auto mode (--autoqodo / --autorabbit), there is NO user interaction — fix the code.
 
 ### Phase 6: Testing
 
