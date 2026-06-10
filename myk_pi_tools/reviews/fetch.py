@@ -697,7 +697,9 @@ def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[di
     return results
 
 
-def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str) -> dict[str, list[dict[str, Any]]]:
+def process_and_categorize(
+    threads: list[dict[str, Any]], owner: str, repo: str, pr_number: int | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Process threads: add source and priority, categorize, and auto-skip previously dismissed."""
     human: list[dict[str, Any]] = []
     qodo: list[dict[str, Any]] = []
@@ -744,6 +746,19 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
             dismissed_by_comment_id = {}
             dismissed_by_key = {}
 
+    # Preload already-replied Qodo sticky findings for dedup (exact match only)
+    replied_sticky: set[tuple[int, str, str]] = set()
+    if db and pr_number:
+        try:
+            for c in db.get_replied_sticky_findings(owner, repo, pr_number):
+                cid = c.get("comment_id")
+                body = c.get("body") or ""
+                code_diff = c.get("code_diff") or ""
+                if cid is not None:
+                    replied_sticky.add((int(cid), body, code_diff))
+        except Exception as e:
+            print_stderr(f"Warning: Failed to preload replied sticky findings: {e}")
+
     for thread in threads:
         author = thread.get("author")
         body = thread.get("body")
@@ -765,6 +780,14 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
             "status": thread.get("status", "pending"),
             "quality_label": thread.get("quality_label"),
         }
+
+        # Check if this Qodo sticky finding was already replied to (exact match)
+        if source == "qodo" and thread.get("thread_id") is None and replied_sticky:
+            cid = thread.get("comment_id")
+            thread_body = thread.get("body") or ""
+            thread_code_diff = thread.get("code_diff") or ""
+            if cid is not None and (int(cid), thread_body, thread_code_diff) in replied_sticky:
+                enriched["already_replied"] = True
 
         # Check for previously dismissed similar comment (only if status is pending)
         # Qodo sticky findings are never auto-skipped — they persist intentionally
@@ -1097,7 +1120,7 @@ def run(review_url: str = "") -> int:
 
         # Process and categorize threads
         print_stderr("Categorizing threads by source...")
-        categorized = process_and_categorize(all_threads, owner, repo)
+        categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
 
         # Build final output
         final_output = {

@@ -321,13 +321,30 @@ Update each JSON entry with `status` and `reply` fields before posting.
 **Mapping from user decisions (Phase 2):**
 
 - User said **yes** and code was changed → `addressed`
-- User said **yes** but change was not implemented → `not_addressed`
+- User said **yes** but fix attempt failed (code change didn't work) → `not_addressed`
 - User said **no** → `skipped` (include the user's skip reason in `reply`)
 - User said **all** → same as **yes** for each remaining comment
 - User said **skip \<source\>** → `skipped` for all remaining from that source
   (include the user's skip reason in `reply`)
 - User said **skip ai** → `skipped` for all remaining AI sources
   (include the user's skip reason in `reply`)
+
+**Autoqodo status rules (MANDATORY):**
+
+- Code was changed to fix the finding → `addressed`
+- No code changed, finding is by design / won't fix / not applicable → `skipped` (with reason)
+- No code changed, deferred to follow-up → `skipped` (with reason)
+- Issue spec was updated (no code change) → `skipped` (with reason referencing the spec update)
+
+🚨 **`addressed` means code was changed. If no code was changed, the status MUST be `skipped`.**
+`not_addressed` means "we wanted to fix it but couldn't" — do NOT use it for "by design" findings.
+
+🚨 **NEVER defer or skip a finding because the fix "requires too much work" (schema migration,
+refactoring, new module, etc.).** The AI does NOT decide what is too much work — the user does.
+If a finding requires a code change, make the code change. If you genuinely believe a finding
+is wrong or not applicable, set status to `skipped` with a technical reason — but "too much work",
+"requires migration", "will add later", or "deferred to follow-up" are NEVER valid reasons to skip.
+Fix it now. In auto mode (--autoqodo / --autorabbit), there is NO user interaction — fix the code.
 
 ### Phase 6: Testing
 
