@@ -130,15 +130,16 @@ _QODO_REVIEWING_BODY = (
 )
 
 
-def _is_qodo_reviewing(owner: str, repo: str, pr_number: str) -> bool:
+def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
     """Check if Qodo is currently reviewing the PR.
 
     Qodo posts a transient comment with exact body while reviewing.
     If this comment exists, the sticky is about to be updated — we should wait.
     Matches exact author (qodo-code-review[bot]) and exact body text.
     """
-    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-    comments = run_gh_api(endpoint, paginate=True)
+    if comments is None:
+        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+        comments = run_gh_api(endpoint, paginate=True)
     if not comments or not isinstance(comments, list):
         return False
 
@@ -154,7 +155,7 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str) -> bool:
     return False
 
 
-def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> dict | None:
+def _is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | None = None) -> dict | None:
     """Check if Qodo has approved the PR.
 
     Returns a summary dict if approved, None if not approved.
@@ -193,8 +194,9 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> dict | None:
         return None
 
     # Find the Qodo sticky comment
-    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-    comments = run_gh_api(endpoint, paginate=True)
+    if comments is None:
+        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+        comments = run_gh_api(endpoint, paginate=True)
     if not comments or not isinstance(comments, list):
         return None
 
@@ -379,7 +381,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
             has_actionable = _has_actionable_qodo_comments(pr_number)
             if has_actionable:
                 # Before returning, check if Qodo is mid-review — if so, wait for it to finish
-                if _is_qodo_reviewing(owner, repo, pr_number):
+                _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+                _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
+                if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
                     print_stderr(
                         "[poll] Qodo is currently reviewing —"
                         " waiting for review to complete before processing findings."
@@ -395,14 +399,17 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
         # Step 2: Only check approval AFTER confirming 0 new comments
         # This prevents approving before processing new findings
         if fetch_result == 0:
+            # Fetch PR comments once — reused by mid-review and approval checks
+            _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+            _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
             # Don't check approval if Qodo is mid-review — sticky is about to change
-            if _is_qodo_reviewing(owner, repo, pr_number):
+            if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
             else:
                 print_stderr("[poll] Checking Qodo approval...")
-                approval = _is_qodo_approved(owner, repo, pr_number)
+                approval = _is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
                 if approval:
                     reason = approval.get("reason", "unknown")
                     if reason == "all_resolved":
