@@ -1,3 +1,5 @@
+// Forked from https://github.com/disler/pi-vs-claude-code (commit b93c3f1)
+// We own this code — check upstream periodically for relevant changes.
 /**
  * coms — Peer-to-peer messaging between Pi agents on the same machine
  *
@@ -10,15 +12,14 @@
  * response capture. Phase C: live pool widget, ping + keepalive cycles, /coms
  * slash command, clean shutdown lifecycle.
  *
- * Usage: pi -e extensions/coms.ts
+ * Usage: loaded via extensions/coms/index.ts
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Text, Container, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -34,10 +35,6 @@ const PING_INTERVAL_MS = Number(process.env.PI_COMS_PING_INTERVAL_MS) || 10_000;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 const LINE_CAP_BYTES = 64 * 1024;
 
-const FALLBACK_PALETTE = [
-	"#72F1B8", "#36F9F6", "#FF7EDB", "#FEDE5D",
-	"#C792EA", "#FF8B39", "#4D9DE0", "#FFAA8B",
-];
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -59,6 +56,7 @@ interface PromptEnvelope extends Envelope {
 	sender_cwd: string;
 	conversation_id?: string | null;
 	response_schema?: object | null;
+	tasks?: Array<{ subject: string; description: string }> | null;
 }
 
 interface ResponseEnvelope extends Envelope {
@@ -78,6 +76,7 @@ interface AgentCard {
 	color: string;
 	context_used_pct: number;
 	queue_depth: number;
+	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 }
 
 interface Pong {
@@ -120,75 +119,12 @@ interface InboundContext {
 	hops: number;
 	sender_endpoint: string;
 	sender_session: string;
+	sender_name: string;
+	sender_cwd: string;
+	prompt: string;
+	tasks?: Array<{ subject: string; description: string }> | null;
 	response_schema?: object | null;
 	fulfilled: boolean;
-}
-
-// ━━ Helpers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // pragma: allowlist secret
-
-function ulid(): string {
-	const time = Date.now();
-	const rand = crypto.randomBytes(10);
-	let timeStr = "";
-	let t = time;
-	for (let i = 9; i >= 0; i--) {
-		timeStr = CROCKFORD[t % 32] + timeStr;
-		t = Math.floor(t / 32);
-	}
-	let randStr = "";
-	let bits = 0;
-	let value = 0;
-	for (const byte of rand) {
-		value = (value << 8) | byte;
-		bits += 8;
-		while (bits >= 5) {
-			bits -= 5;
-			randStr += CROCKFORD[(value >> bits) & 31];
-		}
-	}
-	return (timeStr + randStr).slice(0, 26);
-}
-
-function hexFg(hex: string, s: string): string {
-	const r = parseInt(hex.slice(1, 3), 16);
-	const g = parseInt(hex.slice(3, 5), 16);
-	const b = parseInt(hex.slice(5, 7), 16);
-	return `\x1b[38;2;${r};${g};${b}m${s}\x1b[39m`;
-}
-
-function isValidHex(hex: string): boolean {
-	return /^#[0-9a-fA-F]{6}$/.test(hex);
-}
-
-function fallbackColor(sessionId: string): string {
-	const h = crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 8);
-	return FALLBACK_PALETTE[Number(BigInt("0x" + h)) % FALLBACK_PALETTE.length];
-}
-
-function parseFrontmatter(raw: string): { name?: string; description?: string; color?: string; body: string } {
-	const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-	if (!match) return { body: raw };
-	const frontmatter: Record<string, string> = {};
-	for (const line of match[1].split("\n")) {
-		const idx = line.indexOf(":");
-		if (idx > 0) {
-			const key = line.slice(0, idx).trim();
-			let val = line.slice(idx + 1).trim();
-			// strip surrounding quotes for values like color: "#36F9F6"
-			if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-				val = val.slice(1, -1);
-			}
-			frontmatter[key] = val;
-		}
-	}
-	return {
-		name: frontmatter.name,
-		description: frontmatter.description,
-		color: frontmatter.color,
-		body: match[2],
-	};
 }
 
 function makeEndpoint(sessionId: string): string {
@@ -196,17 +132,6 @@ function makeEndpoint(sessionId: string): string {
 		return `\\\\.\\pipe\\pi-coms-${sessionId}`;
 	}
 	return path.join(COMS_DIR, "sockets", `${sessionId}.sock`);
-}
-
-function nowIso(): string {
-	return new Date().toISOString();
-}
-
-function abbreviateModel(model: string): string {
-	let m = model || "";
-	if (m.startsWith("claude-")) m = m.slice("claude-".length);
-	if (m.length > 14) m = m.slice(0, 14);
-	return m;
 }
 
 // ━━ CLI flag shape (read via pi.registerFlag/pi.getFlag) ━━━━━━━━━━━━━━━━━━━
@@ -222,7 +147,7 @@ interface CliFlags {
 function readCliFlags(pi: ExtensionAPI): CliFlags {
 	// Identity flags are declared via pi.registerFlag at extension load time so
 	// pi's CLI parser accepts them; here we just read them back.
-	const name = pi.getFlag("name") as string | undefined;
+	const name = pi.getFlag("cname") as string | undefined;
 	const purpose = pi.getFlag("purpose") as string | undefined;
 	const project = pi.getFlag("project") as string | undefined;
 	const color = pi.getFlag("color") as string | undefined;
@@ -359,15 +284,6 @@ function pruneDeadEntriesAllProjects(): RegistryEntry[] {
 	return out;
 }
 
-function keepaliveTouch(file: string): void {
-	try {
-		const now = new Date();
-		fs.utimesSync(file, now, now);
-	} catch {
-		// best-effort
-	}
-}
-
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
@@ -488,52 +404,15 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 	});
 }
 
-// ━━ System-prompt frontmatter scan ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function findSystemPromptPath(argv: string[]): string | null {
-	// Prefer --system-prompt (overwrite). Fall back to --append-system-prompt.
-	// These flags are pi-builtin (not extension-registered) so we still scan
-	// argv directly. First match wins per preference order.
-	const scan = (flag: string): string | null => {
-		for (let i = 0; i < argv.length; i++) {
-			if (argv[i] === flag && i + 1 < argv.length) {
-				const candidate = argv[i + 1];
-				if (candidate.endsWith(".md")) {
-					try {
-						if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-							return candidate;
-						}
-					} catch {
-						// fall through
-					}
-				}
-			}
-		}
-		return null;
-	};
-	return scan("--system-prompt") ?? scan("--append-system-prompt");
-}
-
-function readFrontmatterFromArgv(argv: string[]): { name?: string; description?: string; color?: string } {
-	const p = findSystemPromptPath(argv);
-	if (!p) return {};
-	try {
-		const raw = fs.readFileSync(p, "utf-8");
-		const { name, description, color } = parseFrontmatter(raw);
-		return { name, description, color };
-	} catch {
-		return {};
-	}
-}
-
 // ━━ Default export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export default function (pi: ExtensionAPI) {
 	// ━━ Register identity CLI flags so pi's parser accepts them. ━━━━━━━━━
 	// Without these, pi 0.73+ rejects the invocation with "Unknown options:
 	// --name, --project, ..." before this extension's hooks ever fire.
-	pi.registerFlag("name", {
-		description: "Override agent name (otherwise from frontmatter or auto-generated)",
+	// Agent name flag for coms peer identity.
+	pi.registerFlag("cname", {
+		description: "Override coms agent name (otherwise from frontmatter or auto-generated). Distinct from pi's own --name, which the harness owns and resumes.",
 		type: "string",
 		default: undefined,
 	});
@@ -581,6 +460,7 @@ export default function (pi: ExtensionAPI) {
 	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
+	let processingInbound = false;
 
 	// Phase A stub handlers — each just acks valid envelopes. Phase B replaces these.
 	function ackOk(socket: net.Socket, msg_id: string): void {
@@ -608,27 +488,45 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// 2. Insert into inbound queue
+		// 2. Insert into inbound queue (store message content for FIFO re-injection)
 		const inbound: InboundContext = {
 			msg_id: env.msg_id,
 			hops: env.hops,
 			sender_endpoint: env.sender_endpoint,
 			sender_session: env.sender_session,
+			sender_name: env.sender_name,
+			sender_cwd: env.sender_cwd,
+			prompt: env.prompt,
+			tasks: Array.isArray(env.tasks) ? env.tasks : null,
 			response_schema: env.response_schema ?? null,
 			fulfilled: false,
 		};
 		inboundQueue.set(env.msg_id, inbound);
 
-		// 3. Track the current inbound so that any coms_send issued during the
-		//    resulting LLM turn inherits the right hop count.
-		currentInbound = inbound;
+		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
+		if (processingInbound) {
+			ackOk(socket, env.msg_id);
 
-		// 4. Inject as a follow-up message into the receiver's next turn.
+			try {
+				pi.appendEntry("coms-log", {
+					event: "inbound_queued",
+					msg_id: env.msg_id,
+					sender: env.sender_session,
+					hops: env.hops,
+					queue_depth: inboundQueue.size,
+				});
+			} catch { /* best-effort */ }
+			return;
+		}
+
+		// 4. Not busy — inject immediately.
+		currentInbound = inbound;
+		processingInbound = true;
 		try {
 			pi.sendMessage(
 				{
 					customType: "coms-inbound",
-					content: `[from ${env.sender_name} @ ${env.sender_cwd}]\n\n${env.prompt}`,
+					content: buildInboundContent(`[from ${env.sender_name} @ ${env.sender_cwd}]`, env.prompt, env.tasks),
 					display: true,
 					details: {
 						msg_id: env.msg_id,
@@ -639,15 +537,16 @@ export default function (pi: ExtensionAPI) {
 				{ deliverAs: "followUp", triggerTurn: true },
 			);
 		} catch (err) {
-			// If sendMessage fails, drop the inbound and nack.
 			inboundQueue.delete(env.msg_id);
 			currentInbound = null;
+			processingInbound = false;
 			nack(socket, env.msg_id, "internal error");
 			return;
 		}
 
 		// 5. Ack + audit log
 		ackOk(socket, env.msg_id);
+
 		try {
 			pi.appendEntry("coms-log", {
 				event: "inbound_prompt",
@@ -673,7 +572,8 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				// ignore
 			}
-			// Note: do NOT delete the entry here — coms_get poll may still want it.
+			// Delete after timeout window — coms_get/coms_await may still poll
+			setTimeout(() => { pendingReplies.delete(env.msg_id); }, TIMEOUT_MS).unref();
 		} else {
 			try {
 				pi.appendEntry("coms-log", { event: "orphan_response", msg_id: env.msg_id });
@@ -695,6 +595,7 @@ export default function (pi: ExtensionAPI) {
 			color: ident?.color ?? "#36F9F6",
 			context_used_pct: pct,
 			queue_depth: inboundQueue.size,
+			tasks_summary: readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 		};
 		const pong: Pong = { type: "pong", msg_id: env.msg_id, agent_card: card };
 		try {
@@ -909,8 +810,7 @@ export default function (pi: ExtensionAPI) {
 				};
 				// Unconditional atomic write: handles BOTH the live-status refresh
 				// (file present → overwrite with fresh values) AND self-heal (file
-				// missing → re-create entry). The atomic write also bumps mtime, so
-				// keepaliveTouch is now redundant.
+				// missing → re-create entry). The atomic write also bumps mtime.
 				writeRegistryAtomic(live, identity.project);
 				if (missingBeforeWrite) {
 					pi.appendEntry("coms-log", { event: "self_heal", session_id: identity.session_id, reason: "registry file missing" });
@@ -966,12 +866,13 @@ export default function (pi: ExtensionAPI) {
 			pct: number | null;
 			pending: boolean;
 			stale: boolean;
+			tasks?: { total: number; completed: number; in_progress: number } | null;
 		}
 		const rows: Row[] = [];
 		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
+			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
 			seenSessions.add(sid);
 			rows.push({
 				name: card.name,
@@ -981,13 +882,14 @@ export default function (pi: ExtensionAPI) {
 				pct: card.context_used_pct,
 				pending: false,
 				stale: (card.staleCount ?? 0) >= 3,
+				tasks: card.tasks_summary,
 			});
 		}
 
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
-			if (identity && entry.session_id === identity.session_id) continue;
+			if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
 			if (!includeExplicit && entry.explicit) continue;
 			if (seenSessions.has(entry.session_id)) continue;
 			if (seenNames.has(entry.name)) continue;
@@ -1070,7 +972,8 @@ export default function (pi: ExtensionAPI) {
 			const sep = theme.fg("dim", "  —  ");
 			const purposePart = theme.fg("muted", r.purpose || "");
 
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + sep + purposePart;
+			const tasksPart = renderTasksPart(r.tasks, theme);
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
@@ -1134,7 +1037,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
+			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
 			if (!seenSessions.has(sid)) {
 				card.staleCount = (card.staleCount ?? 0) + 1;
 				if (card.staleCount > 6) {
@@ -1202,7 +1105,7 @@ export default function (pi: ExtensionAPI) {
 			for (const proj of projects) {
 				for (const entry of pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
-					if (identity && entry.session_id === identity.session_id) continue;
+					if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
 					collected.push({ entry, project: proj });
 				}
 			}
@@ -1269,12 +1172,18 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Send a prompt to a peer agent. Returns synchronously with a msg_id once the receiver acks. " +
 			"Use coms_get (non-blocking) or coms_await (blocking) with the msg_id to retrieve the response. " +
-			"Throws if the receiver is unreachable or rejects the envelope.",
+			"Throws if the receiver is unreachable or rejects the envelope.\n\n" +
+			"When delegating multiple work items, use the `tasks` parameter to include structured task definitions. " +
+			"The peer receives them as an instruction to create tasks via TaskCreate and track progress in their task widget.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name (preferred, scoped to your project) or session_id (global)." }),
 			prompt: Type.String({ description: "The prompt to send." }),
 			conversation_id: Type.Optional(Type.String()),
 			response_schema: Type.Optional(Type.Any({ description: "Optional JSON Schema describing the expected response shape." })),
+			tasks: Type.Optional(Type.Array(Type.Object({
+				subject: Type.String({ description: "Brief task title" }),
+				description: Type.String({ description: "Detailed task description" }),
+			}), { description: "Optional structured tasks to create in the peer's task list." })),
 		}),
 		async execute(_callId, params) {
 			if (!identity) {
@@ -1301,6 +1210,7 @@ export default function (pi: ExtensionAPI) {
 				prompt: params.prompt,
 				conversation_id: params.conversation_id ?? null,
 				response_schema: (params.response_schema as object | undefined) ?? null,
+				tasks: params.tasks ?? null,
 			};
 
 			// Send the envelope synchronously and wait for the receiver's ack.
@@ -1326,6 +1236,8 @@ export default function (pi: ExtensionAPI) {
 				if (entry.result) return;
 				entry.result = { error: "timeout" };
 				try { entry.resolve(entry.result); } catch { /* ignore */ }
+				// Clean up timed-out entry
+				setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
 			}, TIMEOUT_MS);
 			// Don't keep the event loop alive solely for this timer.
 			try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
@@ -1477,8 +1389,20 @@ export default function (pi: ExtensionAPI) {
 	// ━━ agent_end: capture turn output and dispatch response back ━━━━━━━━
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const inbound = [...inboundQueue.values()].reverse().find((i) => !i.fulfilled);
-		if (!inbound || !identity) return;
+		if (!currentInbound || !identity) {
+			// Drain any orphaned inbounds — can't send responses without identity,
+			// but must clear the queue to prevent permanent buildup
+			if (!identity) {
+				for (const [id, ib] of inboundQueue) {
+					ib.fulfilled = true;
+					inboundQueue.delete(id);
+				}
+				currentInbound = null;
+			}
+			processingInbound = false;
+			return;
+		}
+		const inbound = currentInbound;
 
 		// Walk the session branch for the most recent assistant message text.
 		let lastAssistantText = "";
@@ -1526,9 +1450,7 @@ export default function (pi: ExtensionAPI) {
 					msg_id: inbound.msg_id,
 					error,
 				});
-			} catch {
-				// best-effort
-			}
+			} catch { /* best-effort */ }
 		} catch (e: any) {
 			try {
 				pi.appendEntry("coms-log", {
@@ -1536,15 +1458,56 @@ export default function (pi: ExtensionAPI) {
 					msg_id: inbound.msg_id,
 					reason: e?.message ?? String(e),
 				});
-			} catch {
-				// best-effort
-			}
+			} catch { /* best-effort */ }
 		}
 
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
-		if (currentInbound && currentInbound.msg_id === inbound.msg_id) {
-			currentInbound = null;
+		currentInbound = null;
+
+		// FIFO drain: pick the next queued (oldest unfulfilled) inbound
+		const next = [...inboundQueue.values()].find((i) => !i.fulfilled);
+		if (next) {
+			currentInbound = next;
+			try {
+				pi.sendMessage(
+					{
+						customType: "coms-inbound",
+						content: buildInboundContent(`[from ${next.sender_name} @ ${next.sender_cwd}]`, next.prompt, next.tasks),
+						display: true,
+						details: {
+							msg_id: next.msg_id,
+							sender_session: next.sender_session,
+							response_schema: next.response_schema ?? null,
+						},
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch (err: any) {
+				// Failed to inject — drain ALL remaining queued messages with error responses
+				try { pi.appendEntry("coms-log", { event: "fifo_drain_failed", msg_id: next.msg_id, reason: err?.message ?? String(err) }); } catch { /* best-effort */ }
+				const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
+				for (const orphan of remaining) {
+					try {
+						await sendEnvelope(orphan.sender_endpoint, {
+							type: "response",
+							msg_id: orphan.msg_id,
+							sender_session: identity!.session_id,
+							sender_endpoint: identity!.endpoint,
+							hops: 0,
+							timestamp: nowIso(),
+							response: null,
+							error: "injection_failed",
+						});
+					} catch { /* best-effort */ }
+					orphan.fulfilled = true;
+					inboundQueue.delete(orphan.msg_id);
+				}
+				currentInbound = null;
+				processingInbound = false;
+			}
+		} else {
+			processingInbound = false;
 		}
 	});
 
@@ -1586,11 +1549,9 @@ export default function (pi: ExtensionAPI) {
 				pi.appendEntry("coms-log", { event: "shutdown", session_id: identity.session_id });
 			} catch { /* best-effort */ }
 		}
-		try {
-			if (currentCtx?.hasUI) {
-				currentCtx.ui.setWidget("coms-pool", undefined);
-			}
-		} catch { /* ctx may be stale on shutdown */ }
+		if (currentCtx?.hasUI) {
+			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
+		}
 	}
 
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });

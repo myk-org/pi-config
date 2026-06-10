@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import * as os from "node:os";
 
 /**
@@ -306,4 +307,177 @@ export function pruneStaleRegistry(): void {
             }
         } catch (e: any) { console.debug("[coms] async prune failed:", e?.message?.slice(0, 100)); }
     });
+}
+
+// ━━ Shared helpers (used by both coms-p2p.ts and coms-net.ts) ━━━━━━━━━━━━━━
+
+export const FALLBACK_PALETTE = [
+	"#72F1B8", "#36F9F6", "#FF7EDB", "#FEDE5D",
+	"#C792EA", "#FF8B39", "#4D9DE0", "#FFAA8B",
+];
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // pragma: allowlist secret
+
+export function ulid(): string {
+	const time = Date.now();
+	const rand = crypto.randomBytes(10);
+	let timeStr = "";
+	let t = time;
+	for (let i = 9; i >= 0; i--) {
+		timeStr = CROCKFORD[t % 32] + timeStr;
+		t = Math.floor(t / 32);
+	}
+	let randStr = "";
+	let bits = 0;
+	let value = 0;
+	for (const byte of rand) {
+		value = (value << 8) | byte;
+		bits += 8;
+		while (bits >= 5) {
+			bits -= 5;
+			randStr += CROCKFORD[(value >> bits) & 31];
+		}
+	}
+	return (timeStr + randStr).slice(0, 26);
+}
+
+export function hexFg(hex: string, s: string): string {
+	const r = parseInt(hex.slice(1, 3), 16);
+	const g = parseInt(hex.slice(3, 5), 16);
+	const b = parseInt(hex.slice(5, 7), 16);
+	return `\x1b[38;2;${r};${g};${b}m${s}\x1b[39m`;
+}
+
+export function isValidHex(hex: string): boolean {
+	return /^#[0-9a-fA-F]{6}$/.test(hex);
+}
+
+export function fallbackColor(sessionId: string): string {
+	const h = crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 8);
+	return FALLBACK_PALETTE[Number(BigInt("0x" + h)) % FALLBACK_PALETTE.length];
+}
+
+export function comsParseYamlFrontmatter(raw: string): { name?: string; description?: string; color?: string; body: string } {
+	const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+	if (!match) return { body: raw };
+	const frontmatter: Record<string, string> = {};
+	for (const line of match[1].split("\n")) {
+		const idx = line.indexOf(":");
+		if (idx > 0) {
+			const key = line.slice(0, idx).trim();
+			let val = line.slice(idx + 1).trim();
+			if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+				val = val.slice(1, -1);
+			}
+			frontmatter[key] = val;
+		}
+	}
+	return {
+		name: frontmatter.name,
+		description: frontmatter.description,
+		color: frontmatter.color,
+		body: match[2],
+	};
+}
+
+export function nowIso(): string {
+	return new Date().toISOString();
+}
+
+export function abbreviateModel(model: string): string {
+	let m = model || "";
+	if (m.startsWith("claude-")) m = m.slice("claude-".length);
+	if (m.length > 14) m = m.slice(0, 14);
+	return m;
+}
+
+export function findSystemPromptPath(argv: string[]): string | null {
+	const scan = (flag: string): string | null => {
+		for (let i = 0; i < argv.length; i++) {
+			if (argv[i] === flag && i + 1 < argv.length) {
+				const candidate = argv[i + 1];
+				if (candidate.endsWith(".md")) {
+					try {
+						if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+							return candidate;
+						}
+					} catch { /* fall through */ }
+				}
+			}
+		}
+		return null;
+	};
+	return scan("--system-prompt") ?? scan("--append-system-prompt");
+}
+
+export function readFrontmatterFromArgv(argv: string[]): { name?: string; description?: string; color?: string } {
+	const p = findSystemPromptPath(argv);
+	if (!p) return {};
+	try {
+		const raw = fs.readFileSync(p, "utf-8");
+		const { name, description, color } = comsParseYamlFrontmatter(raw);
+		return { name, description, color };
+	} catch {
+		return {};
+	}
+}
+
+export function readTaskSummary(cwd: string, sessionId?: string): { total: number; completed: number; in_progress: number } | null {
+	try {
+		const tasksDir = path.join(cwd, ".pi", "tasks");
+		if (!fs.existsSync(tasksDir)) return null;
+		const candidates = sessionId
+			? [`tasks-${sessionId}.json`, "tasks.json"]
+			: ["tasks.json"];
+		for (const candidate of candidates) {
+			const filePath = path.join(tasksDir, candidate);
+			if (!fs.existsSync(filePath)) continue;
+			try {
+				const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+				if (!Array.isArray(data.tasks) || data.tasks.length === 0) continue;
+				let total = 0, completed = 0, in_progress = 0;
+				for (const t of data.tasks) {
+					total++;
+					if (t.status === "completed") completed++;
+					else if (t.status === "in_progress") in_progress++;
+				}
+				return { total, completed, in_progress };
+			} catch { /* skip corrupt file */ }
+		}
+		return null;
+	} catch { return null; }
+}
+
+export function buildInboundContent(
+	header: string,
+	prompt: string,
+	tasks?: Array<{ subject: string; description: string }> | null,
+): string {
+	let content = `${header}\n\n${prompt}`;
+	if (tasks && tasks.length > 0) {
+		content += `\n\n## Assigned Tasks\n\nThe sender has assigned you these tasks. Use TaskCreate to add them to your task list, then work through them:\n\n`;
+		for (const task of tasks) {
+			content += `- **${task.subject}**: ${task.description}\n`;
+		}
+	}
+	return content;
+}
+
+export interface TasksSummary {
+	total: number;
+	completed: number;
+	in_progress: number;
+}
+
+export function renderTasksPart(tasks: TasksSummary | null | undefined, theme: any): string {
+	if (!tasks || tasks.total === 0) return "";
+	// Clamp to prevent negative/misleading values from corrupt data
+	const completed = Math.max(0, Math.min(tasks.completed, tasks.total));
+	const in_progress = Math.max(0, Math.min(tasks.in_progress, tasks.total - completed));
+	const pending = Math.max(0, tasks.total - completed - in_progress);
+	const parts: string[] = [];
+	if (completed > 0) parts.push(theme.fg("success", `${completed}✔`));
+	if (in_progress > 0) parts.push(theme.fg("accent", `${in_progress}◼`));
+	if (pending > 0) parts.push(theme.fg("dim", `${pending}◻`));
+	return theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
 }

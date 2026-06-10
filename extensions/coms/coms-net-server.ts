@@ -1,4 +1,6 @@
-// scripts/coms-net-server.ts
+// Forked from https://github.com/disler/pi-vs-claude-code (commit b93c3f1)
+// We own this code — check upstream periodically for relevant changes.
+// coms-net-server.ts
 //
 // coms-net Bun HTTP/SSE hub server (v1).
 //
@@ -151,6 +153,7 @@ export type AgentCard = {
 	context_used_pct: number;
 	queue_depth: number;
 	status: AgentStatus;
+	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 };
 
 export type RegistryEntry = AgentCard & {
@@ -167,6 +170,7 @@ export type ComsMessage = {
 	conversation_id: string | null;
 	response_schema: object | null;
 	hops: number;
+	tasks?: Array<{ subject: string; description: string }> | null;
 	status: MessageStatus;
 	response?: any;
 	error?: string | null;
@@ -212,6 +216,7 @@ export type SendRequest = {
 	conversation_id: string | null;
 	response_schema: object | null;
 	hops: number;
+	tasks?: Array<{ subject: string; description: string }> | null;
 };
 
 export type SendResponse = {
@@ -449,6 +454,7 @@ function entryToCard(e: RegistryEntry): AgentCard {
 		context_used_pct,
 		queue_depth,
 		status,
+		tasks_summary: e.tasks_summary ?? null,
 	};
 }
 
@@ -759,11 +765,18 @@ async function handleHeartbeat(
 		queue_depth: entry.queue_depth,
 		model: entry.model,
 		status: entry.status,
+		tasks_summary: entry.tasks_summary,
 	};
 	if (typeof body.context_used_pct === "number")
 		entry.context_used_pct = body.context_used_pct;
 	if (typeof body.queue_depth === "number")
 		entry.queue_depth = body.queue_depth;
+	if (body.tasks_summary !== undefined) {
+		const ts = body.tasks_summary;
+		entry.tasks_summary = (ts && typeof ts === "object" && typeof ts.total === "number" && typeof ts.completed === "number" && typeof ts.in_progress === "number")
+			? { total: ts.total, completed: ts.completed, in_progress: ts.in_progress }
+			: null;
+	}
 	if (typeof body.model === "string") entry.model = body.model;
 	if (
 		body.status === "online" ||
@@ -782,7 +795,8 @@ async function handleHeartbeat(
 		before.context_used_pct !== entry.context_used_pct ||
 		before.queue_depth !== entry.queue_depth ||
 		before.model !== entry.model ||
-		before.status !== entry.status;
+		before.status !== entry.status ||
+		JSON.stringify(before.tasks_summary) !== JSON.stringify(entry.tasks_summary);
 	if (changed) {
 		broadcast(
 			p,
@@ -906,6 +920,7 @@ async function handleSendMessage(req: Request): Promise<Response> {
 				? body.response_schema
 				: null,
 		hops,
+		tasks: Array.isArray(body.tasks) ? body.tasks : null,
 		status: "queued",
 		response: null,
 		error: null,
@@ -935,6 +950,7 @@ async function handleSendMessage(req: Request): Promise<Response> {
 			conversation_id: msg.conversation_id,
 			response_schema: msg.response_schema,
 			hops: msg.hops,
+			tasks: msg.tasks ?? null,
 		});
 		msg.status = "delivered";
 		msg.delivered_at = nowIso();

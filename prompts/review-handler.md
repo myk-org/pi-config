@@ -275,6 +275,26 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
   4. No secondary instructions or reply clarifications were skipped
   If any part was missed, fix it before moving to the next comment.
 
+### Phase 3b: Finding Verification (MANDATORY — DO NOT SKIP)
+
+**After ALL fixes are applied, verify EVERY finding from ALL sources (human, Qodo, CodeRabbit):**
+
+1. **Read each finding's FULL description** — not just the title. Two findings with similar titles can reference completely different code.
+2. **Read the code block** in the finding — the specific file, line range, and code snippet the reviewer referenced.
+3. **Check the ACTUAL file** at that location — does the problematic code still exist?
+   - If YES → the finding is NOT addressed. Fix it.
+   - If NO → the finding is addressed.
+4. **Never group findings by title.** Each finding is independent.
+   "Inconsistent task counts" about `readTaskSummary` is a DIFFERENT finding than
+   "Inconsistent task counts" about `renderTasksPart`.
+5. **Never mark a finding as "pre-existing" or "by design" without reading the actual
+   code reference.** The code block tells you exactly what the reviewer found —
+   check if it's still there.
+
+🚨 **HARD RULE: Every finding that includes a code block MUST be verified against
+the actual file before being marked as addressed. No exceptions. No shortcuts.
+No "this looks similar to the one I already fixed."**
+
 ### Phase 4: Review Unimplemented
 
 If any approved tasks weren't implemented, review with user.
