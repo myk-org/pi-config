@@ -748,7 +748,7 @@ def process_and_categorize(threads: list[dict[str, Any]], owner: str, repo: str)
         author = thread.get("author")
         body = thread.get("body")
 
-        source = detect_source(author)
+        source = thread.get("source") or detect_source(author)
 
         # Preserve pre-computed priority (e.g., from Qodo sticky findings)
         existing_priority = thread.get("priority")
