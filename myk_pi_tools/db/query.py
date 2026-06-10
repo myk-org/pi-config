@@ -337,7 +337,7 @@ class ReviewDB:
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
                   AND c.source = 'qodo'
-                  AND c.status != 'pending'
+                  AND c.status IN ('addressed', 'not_addressed', 'skipped')
                   AND c.comment_id IS NOT NULL
                 ORDER BY c.posted_at DESC
                 """,
