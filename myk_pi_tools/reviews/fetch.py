@@ -685,6 +685,10 @@ def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[di
                 else "MEDIUM",
                 "reply": None,
                 "status": "pending",
+                "code_diff": finding.get("code_diff", ""),
+                "evidence": finding.get("evidence", ""),
+                "evidence_refs": finding.get("evidence_refs", []),
+                "agent_prompt": finding.get("agent_prompt", ""),
             }
             results.append(thread_data)
 
