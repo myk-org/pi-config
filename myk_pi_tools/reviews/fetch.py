@@ -854,8 +854,10 @@ def _extract_sticky_title(body: str) -> str:
     if m:
         return m.group(1).strip().lower()
     # Fallback: first non-empty line, stripped of HTML/markdown
-    for line in body.split("\n"):
-        clean = BeautifulSoup(line, "html.parser").get_text().strip()
+    # Strip HTML once, then scan lines
+    plain = BeautifulSoup(body, "html.parser").get_text()
+    for line in plain.split("\n"):
+        clean = line.strip()
         clean = clean.replace("**", "").replace("*", "").replace("`", "").strip()
         if clean and len(clean) > 5:
             return clean[:60].lower()

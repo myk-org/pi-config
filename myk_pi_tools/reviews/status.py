@@ -123,7 +123,7 @@ def extract_summary(body: str, max_len: int = 60) -> str:
     if not body:
         return ""
     # Strip ALL HTML tags from entire body first
-    cleaned_body = BeautifulSoup(body, "html.parser").get_text()
+    cleaned_body = BeautifulSoup(body, "html.parser").get_text() if "<" in body else body
     # Try to get the first meaningful line
     for line in cleaned_body.split("\n"):
         line = line.strip()
