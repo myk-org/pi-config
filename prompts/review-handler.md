@@ -339,6 +339,13 @@ Update each JSON entry with `status` and `reply` fields before posting.
 🚨 **`addressed` means code was changed. If no code was changed, the status MUST be `skipped`.**
 `not_addressed` means "we wanted to fix it but couldn't" — do NOT use it for "by design" findings.
 
+🚨 **NEVER defer or skip a finding because the fix "requires too much work" (schema migration,
+refactoring, new module, etc.).** The AI does NOT decide what is too much work — the user does.
+If a finding requires a code change, make the code change. If you genuinely believe a finding
+is wrong or not applicable, set status to `skipped` with a technical reason — but "too much work",
+"requires migration", "will add later", or "deferred to follow-up" are NEVER valid reasons to skip.
+Fix it now or ask the user.
+
 ### Phase 6: Testing
 
 Run tests with coverage.
