@@ -242,8 +242,15 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> dict | None:
                     rbody = r.get("body") or ""
                     if cid is not None:
                         key = (int(cid), rbody)
-                        if key not in replied_map:
+                        existing = replied_map.get(key)
+                        if existing is None:
                             replied_map[key] = r
+                        else:
+                            # Prefer records with meaningful replies over dedup artifacts
+                            existing_reply = existing.get("reply") or ""
+                            new_reply = r.get("reply") or ""
+                            if "Already replied" in existing_reply and "Already replied" not in new_reply and new_reply:
+                                replied_map[key] = r
 
                 # Check each unresolved finding
                 sticky_id = int(comment.get("id", 0))
@@ -386,20 +393,26 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
         # Step 2: Only check approval AFTER confirming 0 new comments
         # This prevents approving before processing new findings
         if fetch_result == 0:
-            print_stderr("[poll] Checking Qodo approval...")
-            approval = _is_qodo_approved(owner, repo, pr_number)
-            if approval:
-                reason = approval.get("reason", "unknown")
-                if reason == "all_resolved":
-                    print_stderr("[poll] Qodo approved — all findings resolved.")
-                elif reason == "stale_sticky":
-                    print_stderr("[poll] Qodo approved — stale sticky, all unresolved findings already replied to.")
-                else:
-                    print_stderr(f"[poll] Qodo approved — {reason}.")
-                # Print approval summary
-                _print_approval_summary(approval)
-                print('{"approved": true}')
-                return 0
+            # Don't check approval if Qodo is mid-review — sticky is about to change
+            if _is_qodo_reviewing(owner, repo, pr_number):
+                print_stderr(
+                    "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
+                )
+            else:
+                print_stderr("[poll] Checking Qodo approval...")
+                approval = _is_qodo_approved(owner, repo, pr_number)
+                if approval:
+                    reason = approval.get("reason", "unknown")
+                    if reason == "all_resolved":
+                        print_stderr("[poll] Qodo approved — all findings resolved.")
+                    elif reason == "stale_sticky":
+                        print_stderr("[poll] Qodo approved — stale sticky, all unresolved findings already replied to.")
+                    else:
+                        print_stderr(f"[poll] Qodo approved — {reason}.")
+                    # Print approval summary
+                    _print_approval_summary(approval)
+                    print('{"approved": true}')
+                    return 0
 
         # No actionable result — sleep and loop
         print_stderr(f"[poll] No new Qodo comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
