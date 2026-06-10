@@ -70,7 +70,7 @@ Generate the exact commands the user needs to run. For each peer:
 
 ```text
 Open a new pi terminal and run:
-/coms start --name <peer-name> --purpose "<brief purpose>"
+/coms start --cname <peer-name> --purpose "<brief purpose>"
 ```
 
 Repeat for each peer. Then:
