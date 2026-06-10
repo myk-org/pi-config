@@ -7,6 +7,7 @@ Outputs:
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -123,7 +124,7 @@ def extract_summary(body: str, max_len: int = 60) -> str:
     if not body:
         return ""
     # Strip ALL HTML tags from entire body first
-    cleaned_body = BeautifulSoup(body, "html.parser").get_text() if "<" in body else body
+    cleaned_body = BeautifulSoup(body, "html.parser").get_text() if re.search(r"<[a-zA-Z/]", body) else body
     # Try to get the first meaningful line
     for line in cleaned_body.split("\n"):
         line = line.strip()
