@@ -235,13 +235,14 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> dict | None:
                 db = ReviewDB(db_path=None)
                 replied = db.get_replied_sticky_findings(owner, repo, int(pr_number))
 
-                # Build lookup: (comment_id, body) -> DB record
-                replied_map: dict[tuple[int, str], dict] = {}
+                # Build lookup: (comment_id, body, code_diff) -> DB record
+                replied_map: dict[tuple[int, str, str], dict] = {}
                 for r in replied:
                     cid = r.get("comment_id")
                     rbody = r.get("body") or ""
+                    rcode_diff = r.get("code_diff") or ""
                     if cid is not None:
-                        key = (int(cid), rbody)
+                        key = (int(cid), rbody, rcode_diff)
                         existing = replied_map.get(key)
                         if existing is None:
                             replied_map[key] = r
@@ -258,7 +259,8 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> dict | None:
                 findings_summary = []
                 for finding in unresolved:
                     finding_body = f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}"
-                    key = (sticky_id, finding_body)
+                    finding_code_diff = finding.get("code_diff") or ""
+                    key = (sticky_id, finding_body, finding_code_diff)
                     db_record = replied_map.get(key)
                     if db_record:
                         findings_summary.append({

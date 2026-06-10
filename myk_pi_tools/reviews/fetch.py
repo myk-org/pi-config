@@ -747,14 +747,15 @@ def process_and_categorize(
             dismissed_by_key = {}
 
     # Preload already-replied Qodo sticky findings for dedup (exact match only)
-    replied_sticky: set[tuple[int, str]] = set()
+    replied_sticky: set[tuple[int, str, str]] = set()
     if db and pr_number:
         try:
             for c in db.get_replied_sticky_findings(owner, repo, pr_number):
                 cid = c.get("comment_id")
                 body = c.get("body") or ""
+                code_diff = c.get("code_diff") or ""
                 if cid is not None:
-                    replied_sticky.add((int(cid), body))
+                    replied_sticky.add((int(cid), body, code_diff))
         except Exception as e:
             print_stderr(f"Warning: Failed to preload replied sticky findings: {e}")
 
@@ -784,7 +785,8 @@ def process_and_categorize(
         if source == "qodo" and thread.get("thread_id") is None and replied_sticky:
             cid = thread.get("comment_id")
             thread_body = thread.get("body") or ""
-            if cid is not None and (int(cid), thread_body) in replied_sticky:
+            thread_code_diff = thread.get("code_diff") or ""
+            if cid is not None and (int(cid), thread_body, thread_code_diff) in replied_sticky:
                 enriched["already_replied"] = True
 
         # Check for previously dismissed similar comment (only if status is pending)

@@ -203,8 +203,14 @@ class ReviewDB:
             try:
                 cursor = conn.execute("PRAGMA table_info(comments)")
                 columns = {row[1] for row in cursor.fetchall()}
+                needs_commit = False
                 if "type" not in columns:
                     conn.execute("ALTER TABLE comments ADD COLUMN type TEXT DEFAULT NULL")
+                    needs_commit = True
+                if "code_diff" not in columns:
+                    conn.execute("ALTER TABLE comments ADD COLUMN code_diff TEXT DEFAULT NULL")
+                    needs_commit = True
+                if needs_commit:
                     conn.commit()
             finally:
                 conn.close()
@@ -335,7 +341,7 @@ class ReviewDB:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT c.comment_id, c.body, c.status, c.reply, c.posted_at
+                SELECT c.comment_id, c.body, c.status, c.reply, c.posted_at, c.code_diff
                 FROM comments c
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
@@ -355,6 +361,7 @@ class ReviewDB:
                     "status": row["status"],
                     "reply": row["reply"],
                     "posted_at": row["posted_at"],
+                    "code_diff": row["code_diff"],
                 })
             return results
         except sqlite3.Error as e:
