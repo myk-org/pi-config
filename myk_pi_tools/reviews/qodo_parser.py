@@ -77,9 +77,9 @@ def _strip_blockquote_prefix(text: str) -> str:
 
 
 def _find_inner_section(soup: BeautifulSoup | Tag, section_name: str) -> Tag | None:
-    """Find a nested <details> whose <summary> text matches *section_name*."""
-    for details in soup.find_all("details"):
-        summary = details.find("summary")
+    """Find a direct-child <details> whose <summary> text matches *section_name*."""
+    for details in soup.find_all("details", recursive=False):
+        summary = details.find("summary", recursive=False)
         if summary and summary.get_text(strip=True) == section_name:
             return details
     return None
@@ -95,15 +95,9 @@ def _extract_pre_content(section: Tag) -> str:
 
 def _extract_evidence_refs(section: Tag) -> list[str]:
     """Extract <code> tags from Evidence section that are OUTSIDE any <pre> block."""
-    # Get all <pre> tags to identify which <code> tags are inside them
-    pre_tags = set()
-    for pre in section.find_all("pre"):
-        for code in pre.find_all("code"):
-            pre_tags.add(id(code))
-
     refs = []
     for code in section.find_all("code"):
-        if id(code) in pre_tags:
+        if code.find_parent("pre"):
             continue
         text = code.get_text(strip=True)
         if text:

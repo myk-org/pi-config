@@ -146,7 +146,7 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
     seen: dict[str, dict] = {}
     for c in comments:
         # Normalize summary for dedup: strip HTML, lowercase, first 30 chars
-        raw = BeautifulSoup(extract_summary(c["body"], 50), "html.parser").get_text().lower().strip()
+        raw = extract_summary(c["body"], 50).lower().strip()
         key = f"{c['source']}:{c['path']}:{c['line']}:{raw[:30]}"
         seen[key] = c  # Last one wins (latest cycle)
     return list(seen.values())

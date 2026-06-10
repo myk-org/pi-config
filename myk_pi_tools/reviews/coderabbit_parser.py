@@ -110,7 +110,7 @@ def _find_sections(soup: BeautifulSoup, keyword: str) -> list[Tag]:
     results: list[Tag] = []
     for details in soup.find_all("details"):
         summary = details.find("summary", recursive=False)
-        if summary and keyword in summary.get_text():
+        if summary and keyword.lower() + " comment" in summary.get_text().lower():
             results.append(details)
     return results
 
