@@ -8,15 +8,9 @@ This module parses that comment to extract unresolved findings.
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
-
-
-def _log(msg: str) -> None:
-    print(msg, file=sys.stderr)
-
 
 # Header that identifies a Qodo sticky comment
 QODO_STICKY_HEADER = "Code Review by Qodo"
@@ -50,6 +44,25 @@ _FENCED_DIFF_RE = re.compile(r"```diff\n(.*?)```", re.DOTALL)
 # Pattern to extract fenced code blocks (``` ... ```)
 _FENCED_CODE_RE = re.compile(r"```(?!\w)\n(.*?)```", re.DOTALL)
 
+# Finding type keywords from Qodo sticky <code> tags
+_FINDING_TYPES = (
+    "Bug",
+    "Rule violation",
+    "Requirement gap",
+    "UX issue",
+    "Cross-repo conflict",
+)
+
+# Finding category keywords from Qodo sticky <code> tags
+_FINDING_CATEGORIES = (
+    "Correctness",
+    "Security",
+    "Reliability",
+    "Performance",
+    "Maintainability",
+    "Observability",
+)
+
 
 def _strip_blockquote_prefix(text: str) -> str:
     """Strip leading `> ` or `>` markdown blockquote prefix from each line."""
@@ -72,16 +85,8 @@ def _find_inner_section(soup: BeautifulSoup | Tag, section_name: str) -> Tag | N
     return None
 
 
-def _extract_description(section: Tag) -> str:
-    """Extract description from a Description section's <pre> block, preserving HTML."""
-    pre = section.find("pre")
-    if not pre:
-        return ""
-    return pre.decode_contents().strip()
-
-
-def _extract_evidence(section: Tag) -> str:
-    """Extract evidence text from an Evidence section's <pre> block, preserving HTML."""
+def _extract_pre_content(section: Tag) -> str:
+    """Extract text from a section's <pre> block, preserving HTML."""
     pre = section.find("pre")
     if not pre:
         return ""
@@ -174,28 +179,13 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
             codes_soup = BeautifulSoup(codes_str, "html.parser")
             for code_tag in codes_soup.find_all("code"):
                 text = code_tag.get_text()
-                _types = (
-                    "Bug",
-                    "Rule violation",
-                    "Requirement gap",
-                    "UX issue",
-                    "Cross-repo conflict",
-                )
-                _cats = (
-                    "Correctness",
-                    "Security",
-                    "Reliability",
-                    "Performance",
-                    "Maintainability",
-                    "Observability",
-                )
                 if "Resolved" in text:
                     is_resolved = True
                 elif "Dismissed" in text:
                     is_dismissed = True
-                elif any(t in text for t in _types):
+                elif any(t in text for t in _FINDING_TYPES):
                     finding_type = re.sub(r"[^\w\s-]", "", text).strip()
-                elif any(c in text for c in _cats):
+                elif any(c in text for c in _FINDING_CATEGORIES):
                     category = re.sub(r"[^\w\s]", "", text).strip()
 
         if strikethrough_title is not None:
@@ -206,7 +196,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
             title = plain_title or ""
 
         # Strip HTML from title
-        title = re.sub(r"<[^>]+>", "", title).strip()
+        title = BeautifulSoup(title, "html.parser").get_text().strip()
 
         if is_resolved or is_dismissed:
             continue
@@ -230,7 +220,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
         description = ""
         desc_section = _find_inner_section(soup, "Description")
         if desc_section:
-            description = _extract_description(desc_section)
+            description = _extract_pre_content(desc_section)
 
         # Extract code diff from Code section
         code_diff = ""
@@ -247,7 +237,7 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
         evidence_refs: list[str] = []
         evidence_section = _find_inner_section(soup, "Evidence")
         if evidence_section:
-            evidence = _extract_evidence(evidence_section)
+            evidence = _extract_pre_content(evidence_section)
             evidence_refs = _extract_evidence_refs(evidence_section)
 
         # Extract agent prompt

@@ -7,13 +7,14 @@ Outputs:
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
+
+from bs4 import BeautifulSoup
 
 
 def log(message: str) -> None:
@@ -122,7 +123,7 @@ def extract_summary(body: str, max_len: int = 60) -> str:
     if not body:
         return ""
     # Strip ALL HTML tags from entire body first
-    cleaned_body = re.sub(r"<[^>]+>", "", body)
+    cleaned_body = BeautifulSoup(body, "html.parser").get_text()
     # Try to get the first meaningful line
     for line in cleaned_body.split("\n"):
         line = line.strip()
@@ -145,7 +146,7 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
     seen: dict[str, dict] = {}
     for c in comments:
         # Normalize summary for dedup: strip HTML, lowercase, first 30 chars
-        raw = re.sub(r"<[^>]+>", "", extract_summary(c["body"], 50)).lower().strip()
+        raw = BeautifulSoup(extract_summary(c["body"], 50), "html.parser").get_text().lower().strip()
         key = f"{c['source']}:{c['path']}:{c['line']}:{raw[:30]}"
         seen[key] = c  # Last one wins (latest cycle)
     return list(seen.values())

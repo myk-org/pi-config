@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from bs4 import BeautifulSoup
+
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
@@ -853,7 +855,7 @@ def _extract_sticky_title(body: str) -> str:
         return m.group(1).strip().lower()
     # Fallback: first non-empty line, stripped of HTML/markdown
     for line in body.split("\n"):
-        clean = re.sub(r"<[^>]+>", "", line).strip()
+        clean = BeautifulSoup(line, "html.parser").get_text().strip()
         clean = clean.replace("**", "").replace("*", "").replace("`", "").strip()
         if clean and len(clean) > 5:
             return clean[:60].lower()
