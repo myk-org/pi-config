@@ -303,6 +303,62 @@ class ReviewDB:
         finally:
             conn.close()
 
+    def get_replied_sticky_findings(self, owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
+        """Get Qodo sticky findings that were already replied to for a specific PR.
+
+        Returns comments from the DB where:
+        - Same owner/repo/pr_number
+        - Source is 'qodo'
+        - Status is not 'pending' (i.e., was processed)
+        - Has a comment_id (sticky findings use the issue comment ID)
+
+        Used for deduplication: if a sticky finding's comment_id + body
+        exactly matches an entry here, it was already replied to.
+
+        Args:
+            owner: GitHub repository owner.
+            repo: GitHub repository name.
+            pr_number: PR number.
+
+        Returns:
+            List of dicts with keys: comment_id, body, status, reply, posted_at.
+            Returns empty list if database doesn't exist or on error.
+        """
+        if not self.db_path.exists():
+            return []
+
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT c.comment_id, c.body, c.status, c.reply, c.posted_at
+                FROM comments c
+                JOIN reviews r ON c.review_id = r.id
+                WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+                  AND c.source = 'qodo'
+                  AND c.status != 'pending'
+                  AND c.comment_id IS NOT NULL
+                ORDER BY c.posted_at DESC
+                """,
+                (owner, repo, pr_number),
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    "comment_id": row["comment_id"],
+                    "body": row["body"],
+                    "status": row["status"],
+                    "reply": row["reply"],
+                    "posted_at": row["posted_at"],
+                })
+            return results
+        except sqlite3.Error as e:
+            log(f"Database error: {e}")
+            return []
+        finally:
+            conn.close()
+
     def find_similar_comment(
         self, owner: str, repo: str, path: str, body: str, threshold: float = 0.6
     ) -> dict[str, Any] | None:

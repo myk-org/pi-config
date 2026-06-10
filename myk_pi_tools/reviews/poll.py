@@ -119,7 +119,37 @@ def _has_actionable_qodo_comments(pr_number: str) -> bool:
         return True
 
     for comment in data.get("qodo", []):
-        if not comment.get("is_auto_skipped"):
+        if not comment.get("is_auto_skipped") and not comment.get("already_replied"):
+            return True
+
+    return False
+
+
+# Exact body Qodo posts while reviewing a PR (transient comment)
+_QODO_REVIEWING_BODY = (
+    "\n<h3>Looking for bugs?</h3>\nCheck back in a few minutes. An AI review agent is analyzing this pull request.\n"
+)
+
+
+def _is_qodo_reviewing(owner: str, repo: str, pr_number: str) -> bool:
+    """Check if Qodo is currently reviewing the PR.
+
+    Qodo posts a transient comment with exact body while reviewing.
+    If this comment exists, the sticky is about to be updated — we should wait.
+    Matches exact author (qodo-code-review[bot]) and exact body text.
+    """
+    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+    comments = run_gh_api(endpoint, paginate=True)
+    if not comments or not isinstance(comments, list):
+        return False
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author != "qodo-code-review[bot]":
+            continue
+        body = comment.get("body", "")
+        if body == _QODO_REVIEWING_BODY:
+            print_stderr("[poll] Qodo review in progress (Looking for bugs).")
             return True
 
     return False
@@ -161,16 +191,6 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
 
     QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
 
-    # Check if Qodo has a review-in-progress comment after our commit
-    for comment in comments:
-        author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in QODO_USERS:
-            continue
-        body = comment.get("body", "")
-        if "Looking for bugs" in body:
-            print_stderr("[poll] Qodo review in progress (Looking for bugs). Not approved yet.")
-            return False
-
     for comment in comments:
         author = comment.get("user", {}).get("login") if comment.get("user") else None
         if author not in QODO_USERS:
@@ -189,6 +209,38 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str) -> bool:
         # Parse for unresolved findings
         unresolved = parse_qodo_sticky_comment(body)
         if len(unresolved) > 0:
+            # Check if all unresolved findings were already replied to (stale sticky)
+            try:
+                from myk_pi_tools.db.query import ReviewDB
+
+                db = ReviewDB(db_path=None)
+                replied = db.get_replied_sticky_findings(owner, repo, int(pr_number))
+                replied_set: set[tuple[int, str]] = set()
+                for r in replied:
+                    cid = r.get("comment_id")
+                    rbody = r.get("body") or ""
+                    if cid is not None:
+                        replied_set.add((int(cid), rbody))
+
+                # Build body for each unresolved finding to check against DB
+                sticky_id = int(comment.get("id", 0))
+                all_replied = True
+                for finding in unresolved:
+                    finding_body = f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}"
+                    if (sticky_id, finding_body) not in replied_set:
+                        all_replied = False
+                        break
+
+                if all_replied:
+                    print_stderr(
+                        f"[poll] Sticky has {len(unresolved)} unresolved finding(s),"
+                        f" but all already replied to (stale sticky)."
+                    )
+                    print_stderr("[poll] Treating stale sticky as approved.")
+                    return True
+            except Exception as e:
+                print_stderr(f"[poll] Warning: Could not check replied sticky findings: {e}")
+
             print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
             return False
 
@@ -236,9 +288,17 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
             _print_poll_summary(pr_number)
             has_actionable = _has_actionable_qodo_comments(pr_number)
             if has_actionable:
-                print_stderr("[poll] Found actionable Qodo comments.")
-                return 0
-            print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
+                # Before returning, check if Qodo is mid-review — if so, wait for it to finish
+                if _is_qodo_reviewing(owner, repo, pr_number):
+                    print_stderr(
+                        "[poll] Qodo is currently reviewing —"
+                        " waiting for review to complete before processing findings."
+                    )
+                else:
+                    print_stderr("[poll] Found actionable Qodo comments.")
+                    return 0
+            else:
+                print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
         else:
             print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
 
