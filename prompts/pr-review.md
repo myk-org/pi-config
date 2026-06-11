@@ -128,8 +128,16 @@ Store the output as `claude_md_content`.
 
 Fetch ALL human review threads (resolved + unresolved) from the PR:
 
+If PR was auto-detected (no arguments):
+
 ```bash
 myk-pi-tools reviews fetch --user {current_github_user} --include-resolved
+```
+
+Otherwise:
+
+```bash
+myk-pi-tools reviews fetch --user {current_github_user} --include-resolved <raw_arguments>
 ```
 
 Where `{current_github_user}` is obtained from:
