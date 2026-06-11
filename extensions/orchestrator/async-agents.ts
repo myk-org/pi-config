@@ -37,6 +37,7 @@ export interface AsyncJob {
   durationMs?: number;
   delivered?: boolean;
   fireAndForget?: boolean;
+  groupId?: string;
 }
 
 interface AsyncState {
@@ -74,7 +75,7 @@ export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -153,6 +154,12 @@ export function registerAsyncAgents(
             try { process.kill(status.pid, 0); } catch {
               job.status = "failed";
               job.updatedAt = Date.now();
+              // Check if this completes a group — deliver remaining siblings' results
+              if (job.groupId) {
+                const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+                const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+                if (pending.length === 0) deliverGroupResults(groupJobs);
+              }
             }
           }
         }
@@ -166,9 +173,11 @@ export function registerAsyncAgents(
         }
       } catch (e: any) { console.debug("[async-agents] result file scan failed:", e?.message || e); }
 
-      // Remove completed/failed jobs older than 30s
+      // Remove completed/failed jobs older than 30s (skip undelivered group members)
       for (const [id, job] of asyncState.jobs.entries()) {
-        if ((job.status === "complete" || job.status === "failed") && Date.now() - job.updatedAt > 30000) {
+        if ((job.status === "complete" || job.status === "failed")
+            && Date.now() - job.updatedAt > 30000
+            && (job.delivered || !job.groupId)) {
           asyncState.jobs.delete(id);
         }
       }
@@ -177,19 +186,82 @@ export function registerAsyncAgents(
     if (asyncState.poller.unref) asyncState.poller.unref();
   }
 
+  /** Deliver all results from a completed group as a single combined message. */
+  function deliverGroupResults(groupJobs: AsyncJob[]) {
+    if (!asyncState.lastCtx) return;
+
+    // Skip delivery if ALL jobs in group are fire-and-forget
+    if (groupJobs.every(j => j.fireAndForget)) {
+      for (const j of groupJobs) j.delivered = true;
+      return;
+    }
+
+    const sections: string[] = [];
+    for (const j of groupJobs) {
+      if (j.fireAndForget) { j.delivered = true; continue; }
+      const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
+      const displayName = j.name || j.agent;
+      const output = (j.output || "").slice(0, 3000);
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}`);
+      j.delivered = true;
+    }
+
+    if (sections.length > 0) {
+      pi.sendMessage({
+        customType: "async-agent-result",
+        content: sections.join("\n\n---\n\n"),
+        display: true,
+      }, { triggerTurn: true, deliverAs: "followUp" });
+    }
+
+    // Clean up result files for group members now that delivery succeeded
+    for (const j of groupJobs) {
+      const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
+      try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
+    }
+  }
+
   function processResultFile(resultPath: string) {
     try {
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
-      asyncLog(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget}`);
+      asyncLog(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
       if (!job) return;
       if (job.delivered) return; // Already delivered to user
 
-      // Notify user
+      // Update job state immediately (before group check)
+      job.status = data.success ? "complete" : "failed";
+      job.output = data.output;
+      job.exitCode = data.exitCode;
+      job.durationMs = data.durationMs;
+      job.updatedAt = Date.now();
+
+      // Notify terminal per-agent (lightweight, non-conversational)
       const displayName = job.name || data.agent;
       terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
 
-      // Surface result in conversation (skip for fire-and-forget jobs)
+      // Clean up result file — for grouped jobs, defer to deliverGroupResults
+      if (!job.groupId) {
+        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
+      }
+
+      // Group-aware delivery: hold results until ALL jobs in the group are done
+      if (job.groupId) {
+        const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+        const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+        asyncLog(`group ${job.groupId}: ${groupJobs.length} total, ${pending.length} pending`);
+        if (pending.length > 0) {
+          // Not all group members done yet — hold delivery
+          updateAsyncWidget();
+          return;
+        }
+        // All group members done — deliver combined result
+        deliverGroupResults(groupJobs);
+        updateAsyncWidget();
+        return;
+      }
+
+      // Non-grouped job: deliver immediately (existing behavior)
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
@@ -200,18 +272,9 @@ export function registerAsyncAgents(
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
 
-      // Mark as delivered AFTER delivery succeeds
       job.delivered = true;
-      job.status = data.success ? "complete" : "failed";
-      job.output = data.output;
-      job.exitCode = data.exitCode;
-      job.durationMs = data.durationMs;
-      job.updatedAt = Date.now();
-
+      // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
-
-      // Clean up result file
-      try { fs.unlinkSync(resultPath); } catch {}
     } catch (e: any) {
       asyncLog(`processResultFile ERROR: ${e.message}`);
     }
@@ -241,7 +304,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -355,6 +418,7 @@ export function registerAsyncAgents(
       startedAt: Date.now(),
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
+      groupId: options?.groupId,
     };
     asyncState.jobs.set(id, job);
     updateAsyncWidget();
@@ -729,7 +793,18 @@ export function registerAsyncAgents(
       killed.push(label);
       job.status = "failed";
       job.updatedAt = Date.now();
-      setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
+      // Check if this completes a group — deliver remaining siblings' results
+      if (job.groupId) {
+        const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+        const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+        if (pending.length === 0) {
+          deliverGroupResults(groupJobs);
+        }
+      }
+      // Delay cleanup — skip auto-delete for undelivered group members (let reaper handle them)
+      if (!job.groupId || job.delivered) {
+        setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
+      }
     }
 
     updateAsyncWidget();

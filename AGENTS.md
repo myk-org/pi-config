@@ -39,7 +39,7 @@ pi-config/
 │   │   ├── index.ts                 # Main entry — imports and wires all modules
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
-│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget support)
+│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery)
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
