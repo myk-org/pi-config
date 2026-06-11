@@ -153,6 +153,41 @@ This updates accepted comment bodies on GitHub and submits the review when `--su
 
 If the command fails, display the error. If it reports a 404, inform the user their pending review may have been submitted or deleted externally.
 
+### Phase 7b: Store Posted Comments (MANDATORY)
+
+After submitting the review (Phase 7), store the comments in the PR review database
+for future `/pr-review` cycle tracking:
+
+1. Write a JSON file with the submitted comments:
+
+```bash
+cat > /tmp/pi-work/$(basename $PWD)/pr-review-store.json << 'EOF'
+{
+  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
+  "comments": [
+    {
+      "thread_id": null,
+      "comment_id": null,
+      "path": "file.py",
+      "line": 42,
+      "body": "Comment body as posted (refined or original)",
+      "severity": null,
+      "posted_at": "<ISO timestamp>"
+    }
+  ]
+}
+EOF
+```
+
+1. Store to database:
+
+```bash
+myk-pi-tools pr store-pr-review /tmp/pi-work/$(basename $PWD)/pr-review-store.json
+```
+
+**This step is MANDATORY — never skip it.** Only store if the review was actually
+submitted (user chose "Yes" in Phase 6). Skip if review was kept pending.
+
 ### Phase 8: Summary
 
 Display:

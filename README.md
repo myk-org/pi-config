@@ -55,7 +55,7 @@ Single extension that provides:
 | `/implement <task>` | scout → planner → worker |
 | `/scout-and-plan <task>` | scout → planner |
 | `/implement-and-review <task>` | worker → 3 reviewers → worker |
-| `/pr-review [number\|url]` | Fetch PR diff, review with guidelines, post comments |
+| `/pr-review [number\|url]` | Fetch PR diff, check past review comments, review with guidelines, post and track comments |
 | `/release [flags]` | Create GitHub release with changelog and version bumping |
 | `/review-local [branch]` | Review local uncommitted or branch changes |
 | `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
