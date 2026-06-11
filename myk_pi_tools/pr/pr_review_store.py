@@ -1,4 +1,4 @@
-"""Store and query outgoing PR review comments in SQLite.
+"""Store outgoing PR review comments in SQLite.
 
 Separate from reviews.db (which handles incoming review-handler comments).
 This DB tracks comments posted by /pr-review and /refine-review prompts
@@ -53,7 +53,10 @@ def _get_project_root() -> Path:
     """Detect main project root (resolves through git worktrees)."""
     from myk_pi_tools.reviews.store import get_project_root
 
-    return get_project_root()
+    try:
+        return get_project_root()
+    except SystemExit as e:
+        raise RuntimeError("Failed to detect project root — git not available or not in a repo") from e
 
 
 def _get_current_commit_sha(cwd: Path | None = None) -> str:
@@ -67,9 +70,11 @@ def _get_current_commit_sha(cwd: Path | None = None) -> str:
             cwd=cwd,
         )
         if result.returncode != 0:
+            log(f"Warning: Could not get commit SHA: {result.stderr.strip()}")
             return "unknown"
         return result.stdout.strip() or "unknown"
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as e:
+        log(f"Warning: Could not get commit SHA: {e}")
         return "unknown"
 
 
@@ -77,23 +82,6 @@ def _get_db_path() -> Path:
     """Get the pr-reviews.db path."""
     project_root = _get_project_root()
     return project_root / ".pi" / "data" / "pr-reviews.db"
-
-
-def _ensure_db(db_path: Path) -> None:
-    """Create DB directory and tables if needed."""
-    db_dir = db_path.parent
-    if not db_dir.exists():
-        db_dir.mkdir(parents=True, mode=0o700)
-    else:
-        try:
-            db_dir.chmod(0o700)
-        except OSError as exc:
-            log(f"Warning: could not chmod {db_dir}: {exc}")
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(SCHEMA)
-    finally:
-        conn.close()
 
 
 def store_pr_review(
@@ -111,9 +99,19 @@ def store_pr_review(
         pr_number: PR number.
         comments: List of comment dicts with keys: thread_id, comment_id,
                   path, line, body, severity, posted_at.
+        head_sha: Git commit SHA for the reviewed code. Auto-detected
+                  from local git HEAD if not provided.
     """
     db_path = _get_db_path()
-    _ensure_db(db_path)
+    # Ensure directory exists
+    db_dir = db_path.parent
+    if not db_dir.exists():
+        db_dir.mkdir(parents=True, mode=0o700)
+    else:
+        try:
+            db_dir.chmod(0o700)
+        except OSError as exc:
+            log(f"Warning: could not chmod {db_dir}: {exc}")
 
     if not head_sha:
         project_root = _get_project_root()
@@ -125,6 +123,7 @@ def store_pr_review(
 
     conn = sqlite3.connect(str(db_path))
     try:
+        conn.executescript(SCHEMA)
         conn.execute("PRAGMA foreign_keys=ON")
 
         cursor = conn.cursor()

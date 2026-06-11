@@ -487,7 +487,6 @@ def fetch_review_threads(
 
         thread_data = {
             "thread_id": thread.get("id"),
-            "is_resolved": is_resolved,
             "node_id": first_comment.get("id"),
             "comment_id": first_comment.get("databaseId"),
             "author": first_comment.get("author", {}).get("login") if first_comment.get("author") else None,
@@ -503,6 +502,8 @@ def fetch_review_threads(
                 for c in rest_comments
             ],
         }
+        if include_resolved:
+            thread_data["is_resolved"] = is_resolved
         # Filter by user if specified
         if user and (thread_data.get("author") or "").lower() != user.lower():
             continue
