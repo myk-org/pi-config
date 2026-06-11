@@ -128,16 +128,10 @@ Store the output as `claude_md_content`.
 
 Fetch ALL human review threads (resolved + unresolved) from the PR:
 
-If PR was auto-detected (no arguments):
+Use the `owner`, `repo`, and `pr_number` from Phase 0 to construct the PR URL:
 
 ```bash
-myk-pi-tools reviews fetch --user {current_github_user} --include-resolved
-```
-
-Otherwise:
-
-```bash
-myk-pi-tools reviews fetch --user {current_github_user} --include-resolved <raw_arguments>
+myk-pi-tools reviews fetch --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
 ```
 
 Where `{current_github_user}` is obtained from:
