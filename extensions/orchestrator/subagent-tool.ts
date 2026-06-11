@@ -684,12 +684,17 @@ export function registerSubagentTool(
           }
           const results: string[] = [];
           const errors: string[] = [];
+          // Group parallel async tasks so results are delivered together
+          const groupId = params.tasks.length > 1
+            ? `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+            : undefined;
           for (const t of params.tasks) {
             const r = spawnAsyncAgent(t.agent, t.task, t.cwd, agents, {
               fireAndForget: params.fireAndForget,
               name: (t as any).name,
               parentModelId,
               parentProvider,
+              groupId,
             });
             if (r.error) {
               errors.push(`${t.agent}: ${r.error}`);
