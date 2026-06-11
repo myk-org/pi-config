@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
 
 CREATE TABLE IF NOT EXISTS pr_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    review_id INTEGER NOT NULL REFERENCES pr_reviews(id),
+    review_id INTEGER NOT NULL REFERENCES pr_reviews(id) ON DELETE CASCADE,
     thread_id TEXT,
     comment_id INTEGER,
     path TEXT,
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS pr_comments (
 
 CREATE INDEX IF NOT EXISTS idx_pr_comments_review_id ON pr_comments(review_id);
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(owner, repo, pr_number);
+CREATE INDEX IF NOT EXISTS idx_pr_comments_posted_at ON pr_comments(posted_at);
 """
 
 
@@ -50,23 +51,9 @@ def log(message: str) -> None:
 
 def _get_project_root() -> Path:
     """Detect main project root (resolves through git worktrees)."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            log(f"Error: git rev-parse failed: {result.stderr.strip()}")
-            sys.exit(1)
-        return Path(result.stdout.strip()).resolve().parent
-    except subprocess.TimeoutExpired:
-        log("Error: git command timed out")
-        sys.exit(1)
-    except FileNotFoundError:
-        log("Error: git command not found")
-        sys.exit(1)
+    from myk_pi_tools.reviews.store import get_project_root
+
+    return get_project_root()
 
 
 def _get_current_commit_sha(cwd: Path | None = None) -> str:
@@ -100,8 +87,8 @@ def _ensure_db(db_path: Path) -> None:
     else:
         try:
             db_dir.chmod(0o700)
-        except OSError:
-            pass
+        except OSError as exc:
+            log(f"Warning: could not chmod {db_dir}: {exc}")
     conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(SCHEMA)
@@ -114,6 +101,7 @@ def store_pr_review(
     repo: str,
     pr_number: int,
     comments: list[dict[str, Any]],
+    head_sha: str | None = None,
 ) -> None:
     """Store posted PR review comments to the database.
 
@@ -124,11 +112,12 @@ def store_pr_review(
         comments: List of comment dicts with keys: thread_id, comment_id,
                   path, line, body, severity, posted_at.
     """
-    project_root = _get_project_root()
-    db_path = project_root / ".pi" / "data" / "pr-reviews.db"
+    db_path = _get_db_path()
     _ensure_db(db_path)
 
-    head_sha = _get_current_commit_sha(cwd=project_root)
+    if not head_sha:
+        project_root = _get_project_root()
+        head_sha = _get_current_commit_sha(cwd=project_root)
     created_at = datetime.now(UTC).isoformat()
 
     log(f"Storing {len(comments)} PR review comment(s) for {owner}/{repo}#{pr_number}...")
@@ -171,47 +160,7 @@ def store_pr_review(
 
     except sqlite3.Error as e:
         conn.rollback()
-        log(f"Database error: {e}")
-        sys.exit(1)
-    finally:
-        conn.close()
-
-
-def get_pr_review_comments(owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
-    """Get all previously posted review comments for a PR.
-
-    Args:
-        owner: Repository owner.
-        repo: Repository name.
-        pr_number: PR number.
-
-    Returns:
-        List of dicts with keys: thread_id, comment_id, path, line, body,
-        severity, posted_at, head_sha, review_created_at.
-    """
-    db_path = _get_db_path()
-    if not db_path.exists():
-        return []
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT c.thread_id, c.comment_id, c.path, c.line, c.body,
-                   c.severity, c.posted_at, r.head_sha, r.created_at as review_created_at
-            FROM pr_comments c
-            JOIN pr_reviews r ON c.review_id = r.id
-            WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
-            ORDER BY c.posted_at DESC
-            """,
-            (owner, repo, pr_number),
-        )
-        return [dict(row) for row in cursor.fetchall()]
-    except sqlite3.Error as e:
-        log(f"Database error: {e}")
-        return []
+        raise RuntimeError(f"Database error storing PR review: {e}") from e
     finally:
         conn.close()
 
@@ -265,5 +214,20 @@ def run_store(json_path: str) -> int:
         log("No comments to store")
         return 0
 
-    store_pr_review(owner, repo, pr_number, comments)
+    if not isinstance(comments, list):
+        log(f"Error: 'comments' must be a list, got {type(comments).__name__}")
+        return 1
+
+    for i, comment in enumerate(comments):
+        if not isinstance(comment, dict):
+            log(f"Error: comment[{i}] must be a dict, got {type(comment).__name__}")
+            return 1
+
+    head_sha = metadata.get("head_sha") or metadata.get("commit_sha")
+
+    try:
+        store_pr_review(owner, repo, pr_number, comments, head_sha=head_sha)
+    except RuntimeError as e:
+        log(f"Error: {e}")
+        return 1
     return 0

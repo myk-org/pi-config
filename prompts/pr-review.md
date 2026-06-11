@@ -220,7 +220,7 @@ After posting comments, store them in the PR review database for future cycle tr
 ```bash
 cat > /tmp/pi-work/$(basename $PWD)/pr-review-store.json << 'EOF'
 {
-  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}},
+  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
   "comments": [
     {
       "thread_id": null,

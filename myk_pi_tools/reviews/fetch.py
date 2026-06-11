@@ -350,7 +350,7 @@ def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
         return None
 
 
-def fetch_unresolved_threads(
+def fetch_review_threads(
     owner: str,
     repo: str,
     pr_number: str,
@@ -504,7 +504,7 @@ def fetch_unresolved_threads(
             ],
         }
         # Filter by user if specified
-        if user and thread_data.get("author") != user:
+        if user and (thread_data.get("author") or "").lower() != user.lower():
             continue
 
         result.append(thread_data)
@@ -1064,7 +1064,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         # Fetch all unresolved threads
         label = "review" if include_resolved else "unresolved review"
         print_stderr(f"Fetching {label} threads...")
-        all_threads = fetch_unresolved_threads(owner, repo, pr_number, include_resolved=include_resolved, user=user)
+        all_threads = fetch_review_threads(owner, repo, pr_number, include_resolved=include_resolved, user=user)
         print_stderr(f"Found {len(all_threads)} {label} thread(s)")
 
         # Skip bot comment fetching when filtering by specific user
