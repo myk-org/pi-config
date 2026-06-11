@@ -12,10 +12,14 @@ def reviews() -> None:
 
 @reviews.command("fetch")
 @click.argument("review_url", required=False, default="")
-def reviews_fetch(review_url: str) -> None:
-    """Fetch unresolved review threads from current PR.
+@click.option(
+    "--include-resolved", is_flag=True, default=False, help="Include resolved threads (with is_resolved field)"
+)
+@click.option("--user", default=None, help="Filter threads by author username")
+def reviews_fetch(review_url: str, include_resolved: bool, user: str | None) -> None:
+    """Fetch review threads from current PR.
 
-    Fetches ALL unresolved review threads from the current branch's PR
+    Fetches review threads from the current branch's PR
     and categorizes them by source (human, qodo, coderabbit).
 
     Saves output to /tmp/pi-work/pr-<number>-reviews.json
@@ -25,7 +29,7 @@ def reviews_fetch(review_url: str) -> None:
     """
     from myk_pi_tools.reviews.fetch import run
 
-    exit_code = run(review_url)
+    exit_code = run(review_url, include_resolved=include_resolved, user=user)
     sys.exit(exit_code)
 
 

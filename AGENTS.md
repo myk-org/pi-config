@@ -130,6 +130,7 @@ pi-config/
 │   ├── db/
 │   ├── memory/
 │   ├── pr/
+│   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db)
 │   ├── release/
 │   └── reviews/
 ├── scripts/                         # Utility scripts
@@ -388,6 +389,11 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Indexed on session shutdown from compaction summaries
 - Auto-injected in `before_agent_start` for relevant past sessions
 - Storage: `.pi/data/session-search.json`
+
+**PR Review Store** (`myk_pi_tools/pr/pr_review_store.py`):
+
+- Tracks PR review comments in a local SQLite database
+- Storage: `.pi/data/pr-reviews.db`
 
 **Capacity Signal** (`situation-report.ts`):
 

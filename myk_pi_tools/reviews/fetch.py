@@ -1,6 +1,7 @@
-"""Fetch unresolved review threads from a PR.
+"""Fetch review threads from a PR.
 
-This module fetches ALL unresolved review threads from the current branch's PR
+This module fetches review threads from the current branch's PR
+(supports resolved/unresolved filtering and user filtering).
 and categorizes them by source (human, qodo, coderabbit).
 
 Output: JSON with metadata and categorized comments saved to /tmp/pi-work/pr-<number>-reviews.json
@@ -349,8 +350,22 @@ def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
         return None
 
 
-def fetch_unresolved_threads(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
-    """Fetch all unresolved review threads using paginated GraphQL."""
+def fetch_unresolved_threads(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    include_resolved: bool = False,
+    user: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch review threads using paginated GraphQL.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        pr_number: PR number.
+        include_resolved: If True, include resolved threads (with is_resolved field).
+        user: If set, only return threads where the first comment author matches this username.
+    """
     all_threads: list[dict[str, Any]] = []
     cursor: str | None = None
     has_next_page = True
@@ -456,10 +471,11 @@ def fetch_unresolved_threads(owner: str, repo: str, pr_number: str) -> list[dict
     if page_count > 1:
         print_stderr(f"Fetched {page_count} pages of review threads")
 
-    # Filter unresolved threads and extract first comment details with replies
+    # Filter threads and extract first comment details with replies
     result = []
     for thread in all_threads:
-        if thread.get("isResolved", False):
+        is_resolved = thread.get("isResolved", False)
+        if is_resolved and not include_resolved:
             continue
 
         comments = thread.get("comments", {}).get("nodes") or []
@@ -471,6 +487,7 @@ def fetch_unresolved_threads(owner: str, repo: str, pr_number: str) -> list[dict
 
         thread_data = {
             "thread_id": thread.get("id"),
+            "is_resolved": is_resolved,
             "node_id": first_comment.get("id"),
             "comment_id": first_comment.get("databaseId"),
             "author": first_comment.get("author", {}).get("login") if first_comment.get("author") else None,
@@ -486,6 +503,10 @@ def fetch_unresolved_threads(owner: str, repo: str, pr_number: str) -> list[dict
                 for c in rest_comments
             ],
         }
+        # Filter by user if specified
+        if user and thread_data.get("author") != user:
+            continue
+
         result.append(thread_data)
 
     return result
@@ -1009,11 +1030,13 @@ def fetch_review_body(owner: str, repo: str, pr_number: str, review_id: str) -> 
     return result if isinstance(result, dict) else None
 
 
-def run(review_url: str = "") -> int:
+def run(review_url: str = "", include_resolved: bool = False, user: str | None = None) -> int:
     """Main entry point.
 
     Args:
         review_url: Optional specific review URL for context.
+        include_resolved: If True, include resolved threads with is_resolved field.
+        user: If set, only return threads where the first comment author matches.
 
     Returns:
         Exit code (0 for success, 1 for error).
@@ -1039,23 +1062,26 @@ def run(review_url: str = "") -> int:
         json_path = out_dir / f"pr-{pr_number}-reviews.json"
 
         # Fetch all unresolved threads
-        print_stderr("Fetching unresolved review threads...")
-        all_threads = fetch_unresolved_threads(owner, repo, pr_number)
-        print_stderr(f"Found {len(all_threads)} unresolved thread(s)")
+        label = "review" if include_resolved else "unresolved review"
+        print_stderr(f"Fetching {label} threads...")
+        all_threads = fetch_unresolved_threads(owner, repo, pr_number, include_resolved=include_resolved, user=user)
+        print_stderr(f"Found {len(all_threads)} {label} thread(s)")
 
-        # Fetch CodeRabbit body-embedded comments from review bodies
-        print_stderr("Fetching CodeRabbit body-embedded comments...")
-        body_comment_threads = fetch_coderabbit_body_comments(owner, repo, pr_number)
-        if body_comment_threads:
-            print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
-            all_threads = merge_threads(all_threads, body_comment_threads)
+        # Skip bot comment fetching when filtering by specific user
+        if not user:
+            # Fetch CodeRabbit body-embedded comments from review bodies
+            print_stderr("Fetching CodeRabbit body-embedded comments...")
+            body_comment_threads = fetch_coderabbit_body_comments(owner, repo, pr_number)
+            if body_comment_threads:
+                print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
+                all_threads = merge_threads(all_threads, body_comment_threads)
 
-        # Fetch Qodo sticky comment findings
-        print_stderr("Fetching Qodo sticky comment findings...")
-        qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number)
-        if qodo_sticky_findings:
-            print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
-            all_threads = merge_threads(all_threads, qodo_sticky_findings)
+            # Fetch Qodo sticky comment findings
+            print_stderr("Fetching Qodo sticky comment findings...")
+            qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number)
+            if qodo_sticky_findings:
+                print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
+                all_threads = merge_threads(all_threads, qodo_sticky_findings)
 
         # If review URL provided, also fetch specific thread(s)
         specific_threads: list[dict[str, Any]] = []

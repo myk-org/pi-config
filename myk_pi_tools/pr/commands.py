@@ -61,3 +61,23 @@ def pr_post_comment(owner_repo: str, pr_number: str, commit_sha: str, json_file:
     from myk_pi_tools.pr.post_comment import run
 
     run(owner_repo, pr_number, commit_sha, json_file)
+
+
+@pr.command("store-pr-review")
+@click.argument("json_file")
+def pr_store_review(json_file: str) -> None:
+    """Store posted PR review comments to pr-reviews.db.
+
+    JSON format:
+        {
+            "metadata": {"owner": "...", "repo": "...", "pr_number": 123},
+            "comments": [{"thread_id": "...", "comment_id": 123, "path": "file.py",
+                          "line": 42, "body": "...", "severity": "WARNING", "posted_at": "..."}]
+        }
+    """
+    import sys
+
+    from myk_pi_tools.pr.pr_review_store import run_store
+
+    exit_code = run_store(json_file)
+    sys.exit(exit_code)
