@@ -190,9 +190,29 @@ export function registerAsyncAgents(
   function deliverGroupResults(groupJobs: AsyncJob[]) {
     if (!asyncState.lastCtx) return;
 
+    // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
+    // before processResultFile() has read all group members' outputs
+    for (const j of groupJobs) {
+      if (j.output !== undefined) continue; // Already ingested
+      const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
+      try {
+        const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
+        j.output = data.output;
+        j.exitCode = data.exitCode;
+        j.durationMs = data.durationMs;
+        if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
+        asyncLog(`deliverGroupResults: late-ingested result for ${j.id}`);
+      } catch { /* file missing or unreadable — job may have no output (zombie) */ }
+    }
+
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
       for (const j of groupJobs) j.delivered = true;
+      // Clean up result files for fire-and-forget groups
+      for (const j of groupJobs) {
+        const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
+        try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
+      }
       return;
     }
 
@@ -228,6 +248,8 @@ export function registerAsyncAgents(
       asyncLog(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
       if (!job) return;
       if (job.delivered) return; // Already delivered to user
+      // Skip if already ingested (grouped jobs stay on disk until group delivers)
+      if (job.output !== undefined) return;
 
       // Update job state immediately (before group check)
       job.status = data.success ? "complete" : "failed";
