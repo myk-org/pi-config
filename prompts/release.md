@@ -88,14 +88,18 @@ Store the detect-versions JSON output for use in Phase 4. The key fields are:
 
 **Group commits by PR number first, then categorize.**
 
-1. Extract the PR number from each commit subject (the `(#NNN)` suffix)
+1. Extract the PR number from each commit — check ALL of these locations:
+   - Subject suffix: `(#NNN)`
+   - Merge commit subject: `Merge pull request #NNN`
+   - Commit body: any `(#NNN)` or `#NNN` reference
 2. Group all commits that share the same PR number
-3. For each PR group, create ONE changelog entry — use the most descriptive commit
-   (prefer `feat:` over `fix:`, prefer the first commit over fix-up iterations)
+3. For each PR group, create ONE changelog entry — use the commit with the
+   highest-priority type (`feat:` > `fix:` > `refactor:` > `docs:` > `chore:`)
+   as the changelog entry. Do NOT use fix-up commits as the entry.
 4. Internal fix-up commits within the same PR (e.g., `fix: address review findings (#472)`,
    `fix: review cycle 2 (#472)`) are NOT separate entries — they are implementation
    iterations within the parent PR
-5. Only commits WITHOUT a PR reference (direct pushes to main) get their own entries
+5. Only commits WITHOUT a PR reference anywhere (subject or body) get their own entries
 
 Categorize each PR entry by the highest-priority commit type in its group:
 
