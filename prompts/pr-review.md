@@ -88,20 +88,29 @@ If the raw arguments are empty:
 
 If the raw arguments contain a PR number or URL:
 
-1. Parse the PR number from the arguments (extract number from URL if needed)
-2. Get `owner` and `repo` from the current repository context:
+1. If the argument is a URL (contains `github.com`):
+   - Extract `owner`, `repo`, and `pr_number` directly from the URL pattern
+     `https://github.com/{owner}/{repo}/pull/{pr_number}`
+   - Get `head_sha`:
 
-   ```bash
-   gh repo view --json owner,name
-   ```
+     ```bash
+     gh pr view {pr_number} --repo {owner}/{repo} --json headRefOid --jq '.headRefOid'
+     ```
 
-3. Get `head_sha`:
+1. If the argument is a bare PR number:
+   - Get `owner` and `repo` from the current repository context:
 
-   ```bash
-   gh pr view {pr_number} --json headRefOid --jq '.headRefOid'
-   ```
+     ```bash
+     gh repo view --json owner,name
+     ```
 
-4. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 4.
+   - Get `head_sha`:
+
+     ```bash
+     gh pr view {pr_number} --json headRefOid --jq '.headRefOid'
+     ```
+
+1. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 4.
 
 ### Phase 1a: Data Fetching
 
