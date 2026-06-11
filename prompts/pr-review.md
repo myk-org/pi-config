@@ -86,7 +86,22 @@ If the raw arguments are empty:
 
 4. Use `{pr_number}` for subsequent CLI commands
 
-If the raw arguments contain a PR number or URL, use it directly.
+If the raw arguments contain a PR number or URL:
+
+1. Parse the PR number from the arguments (extract number from URL if needed)
+2. Get `owner` and `repo` from the current repository context:
+
+   ```bash
+   gh repo view --json owner,name
+   ```
+
+3. Get `head_sha`:
+
+   ```bash
+   gh pr view {pr_number} --json headRefOid --jq '.headRefOid'
+   ```
+
+4. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 4.
 
 ### Phase 1a: Data Fetching
 
