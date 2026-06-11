@@ -79,6 +79,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
   // Caches (populated lazily on first Tab)
   const prCache = createCache<AutocompleteItem[]>();
+  let prUrlMap = new Map<string, string>();
   const branchCache = createCache<AutocompleteItem[]>();
   const tagCache = createCache<AutocompleteItem[]>();
   const modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
@@ -91,17 +92,19 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     prCache.loading = true;
     try {
       const result = await pi.exec(
-        "gh", ["pr", "list", "--state", "open", "--limit", "50", "--json", "number,title"],
+        "gh", ["pr", "list", "--state", "open", "--limit", "50", "--json", "number,title,url"],
         { cwd, timeout: 10_000 },
       );
       if (result.code === 0) {
-        const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string }>;
+        const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string; url: string }>;
         prCache.data = prs.map((pr) => ({
           value: String(pr.number),
           label: `#${pr.number}`,
           description: pr.title,
         }));
         prCache.timestamp = Date.now();
+        // URL-keyed version for pr-review (uses URL as completion value)
+        prUrlMap = new Map(prs.map((pr) => [String(pr.number), pr.url || String(pr.number)]));
       }
     } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
     prCache.loading = false;
@@ -263,7 +266,9 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
     "pr-review": (prefix: string) => {
       void fetchOpenPRs(lastCwd);
-      return prCache.data ? filter(prCache.data, prefix.replace(/^#/, "")) : null;
+      if (!prCache.data) return null;
+      const filtered = filter(prCache.data, prefix.replace(/^#/, ""));
+      return filtered ? filtered.map((item) => ({ ...item, value: prUrlMap.get(item.value) || item.value })) : null;
     },
 
     "coderabbit-rate-limit": (prefix: string) => {
