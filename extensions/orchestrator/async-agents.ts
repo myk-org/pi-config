@@ -202,7 +202,7 @@ export function registerAsyncAgents(
         j.durationMs = data.durationMs;
         if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
         asyncLog(`deliverGroupResults: late-ingested result for ${j.id}`);
-      } catch { /* file missing or unreadable — job may have no output (zombie) */ }
+      } catch (e: any) { asyncLog(`deliverGroupResults: late-ingest failed for ${j.id}: ${e?.message}`); }
     }
 
     // Skip delivery if ALL jobs in group are fire-and-forget
