@@ -86,11 +86,29 @@ Store the detect-versions JSON output for use in Phase 4. The key fields are:
 
 ### Phase 3: Changelog Analysis & Version
 
-Parse commits from Phase 1 output and categorize by conventional commit type:
+**Group commits by PR number first, then categorize.**
+
+1. Extract the PR number from each commit — check ALL of these locations:
+   - Subject suffix: `(#NNN)`
+   - Merge commit subject: `Merge pull request #NNN`
+   - Commit body: `(#NNN)` pattern (parenthesized only — bare `#NNN` may be an issue reference, not a PR)
+2. Group all commits that share the same PR number
+3. For each PR group, create ONE changelog entry — use the commit with the
+   highest-priority type (`feat:` > `fix:` > `refactor:` > `docs:` > `chore:`)
+   as the changelog entry. If multiple commits share the same type, use the one
+   with the most descriptive subject. Do NOT use fix-up commits as the entry.
+4. Internal fix-up commits within the same PR (e.g., `fix: address review findings (#472)`,
+   `fix: review cycle 2 (#472)`) are NOT separate entries — they are implementation
+   iterations within the parent PR
+5. Only commits WITHOUT a PR reference anywhere (subject or body) get their own entries
+
+Categorize each PR entry by the highest-priority commit type in its group:
 
 - Breaking Changes → MAJOR
 - Features (`feat:`) → MINOR
 - Bug Fixes (`fix:`), Docs (`docs:`), Maintenance (`chore:`, `refactor:`, `test:`, `ci:`) → PATCH
+
+If a PR group contains both `feat:` and `fix:` commits, categorize as `feat:` (highest priority wins).
 
 **Changelog formatting rules (MANDATORY):**
 

@@ -86,7 +86,31 @@ If the raw arguments are empty:
 
 4. Use `{pr_number}` for subsequent CLI commands
 
-If the raw arguments contain a PR number or URL, use it directly.
+If the raw arguments contain a PR number or URL:
+
+1. If the argument is a URL (contains `github.com`):
+   - Extract `owner`, `repo`, and `pr_number` directly from the URL pattern
+     `https://github.com/{owner}/{repo}/pull/{pr_number}`
+   - Get `head_sha`:
+
+     ```bash
+     gh pr view {pr_number} --repo {owner}/{repo} --json headRefOid --jq '.headRefOid'
+     ```
+
+1. If the argument is a bare PR number:
+   - Get `owner` and `repo` from the current repository context:
+
+     ```bash
+     gh repo view --json owner,name
+     ```
+
+   - Get `head_sha`:
+
+     ```bash
+     gh pr view {pr_number} --json headRefOid --jq '.headRefOid'
+     ```
+
+1. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 4.
 
 ### Phase 1a: Data Fetching
 
@@ -128,8 +152,10 @@ Store the output as `claude_md_content`.
 
 Fetch ALL human review threads (resolved + unresolved) from the PR:
 
+Use the `owner`, `repo`, and `pr_number` from Phase 0 to construct the PR URL:
+
 ```bash
-myk-pi-tools reviews fetch --user {current_github_user} --include-resolved
+myk-pi-tools reviews fetch --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
 ```
 
 Where `{current_github_user}` is obtained from:
