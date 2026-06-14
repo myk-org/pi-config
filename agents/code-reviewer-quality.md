@@ -27,7 +27,7 @@ Check these locations in order — use the first `AGENTS.md` found, fall back to
 1. `CLAUDE.md` (repository root)
 2. `.claude/CLAUDE.md`
 
-Read ALL matching files found (a project may have both root and nested).
+If multiple AGENTS.md files exist (e.g., both root and `.agents/`), read and merge ALL of them.
 Use the guidelines to inform your review — flag violations of project-specific
 conventions, patterns, or rules as findings.
 
