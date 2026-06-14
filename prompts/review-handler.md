@@ -468,8 +468,13 @@ Check the poll RAW output (not the worker's summary — look for the exact JSON 
 
   **On exit, display the Remaining Findings Summary (MANDATORY):**
 
-  Parse the poll output for any unresolved sticky findings (findings that were skipped,
-  not addressed, or still pending). Display them in a table:
+  The `{"approved": true}` response does NOT contain finding details.
+  Instead, read the last saved reviews JSON file (`/tmp/pi-work/pr-{pr_number}-reviews.json`)
+  to get unresolved sticky findings (status = skipped, not_addressed, or pending).
+  If the JSON file was already deleted by `reviews store`, re-fetch with:
+  `myk-pi-tools reviews fetch`
+
+  Display remaining findings in a table:
 
   ```text
   🎉 {source} approved PR #{pr_number}. Auto loop complete.
