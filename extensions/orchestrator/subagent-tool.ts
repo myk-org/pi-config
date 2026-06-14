@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { createRequire } from "node:module";
 
@@ -33,7 +34,7 @@ let TaskStoreClass: any = null;
 (async () => {
   const candidates = [
     "@tintinweb/pi-tasks/dist/task-store.js",
-    path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js"),
+    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
   ];
   for (const c of candidates) {
     try { const mod = await import(c); if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; } } catch { continue; }
@@ -541,7 +542,11 @@ function validateTaskId(taskId: string, cwd: string, sessionId?: string): string
         const data = JSON.parse(fs.readFileSync(p, "utf-8"));
         if ((data.tasks || []).some((t: any) => t.id === taskId)) return null;
       }
-    } catch { continue; }
+    } catch (e: any) {
+      // Only continue silently for missing files; report other errors
+      if (e?.code === "ENOENT" || e?.message?.includes("ENOENT")) continue;
+      return `Task store error for ${path.basename(p)}: ${e?.message || e}. Fix the task store or pass taskId: "-1".`;
+    }
   }
 
   return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;

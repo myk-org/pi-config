@@ -6,6 +6,7 @@ import { execFileSync, execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -16,7 +17,7 @@ let TaskStoreClass: any = null;
   // Try multiple resolution strategies
   const candidates = [
     "@tintinweb/pi-tasks/dist/task-store.js",
-    path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js"),
+    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
   ];
   for (const candidate of candidates) {
     try {
@@ -59,6 +60,7 @@ export interface AsyncJob {
   groupId?: string;
   taskId?: string;
   cwd?: string;
+  sessionId?: string;
 }
 
 interface AsyncState {
@@ -267,8 +269,7 @@ export function registerAsyncAgents(
       const output = (j.output || "").slice(0, 3000);
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
-        const sessionId = asyncState.lastCtx?.sessionManager?.getSessionId?.();
-        const completed = autoCompleteTask(j.taskId, j.cwd, sessionId);
+        const completed = autoCompleteTask(j.taskId, j.cwd, j.sessionId);
         asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
       }
       const taskHint = "";
@@ -339,8 +340,7 @@ export function registerAsyncAgents(
         const output = (data.output || "").slice(0, 3000);
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
-          const sessionId = asyncState.lastCtx?.sessionManager?.getSessionId?.();
-          const completed = autoCompleteTask(job.taskId, job.cwd, sessionId);
+          const completed = autoCompleteTask(job.taskId, job.cwd, job.sessionId);
           asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
         }
         const taskHint = "";
@@ -413,6 +413,7 @@ export function registerAsyncAgents(
       parentStartTime,
       taskId: options?.taskId || null,
       cwd,
+      sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
 
     // Build pi args
@@ -502,6 +503,7 @@ export function registerAsyncAgents(
       groupId: options?.groupId,
       taskId: options?.taskId,
       cwd,
+      sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.(),
     };
     asyncState.jobs.set(id, job);
     updateAsyncWidget();
@@ -596,6 +598,7 @@ export function registerAsyncAgents(
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,
+            sessionId: marker.sessionId || undefined,
           };
           asyncState.jobs.set(id, job);
           asyncLog(`restored job: ${id} state=${job.status}`);

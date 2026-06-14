@@ -157,7 +157,7 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
             r"\b(bug|rule violation|requirement gap|correctness|reliability|maintainability|performance)\b", "", raw
         )
         # Collapse whitespace and take first 40 chars for stable matching
-        normalized = re.sub(r"\s+", " ", raw).strip()[:40]
+        normalized = re.sub(r"\s+", " ", raw).strip()[:80]
         key = f"{c['source']}:{c.get('path', '')}:{normalized}"
         seen[key] = c  # Last one wins (latest cycle)
     return list(seen.values())
@@ -434,9 +434,6 @@ def run(pr_number: int | None = None) -> None:
     pr_info["owner"] = owner
     pr_info["repo"] = repo
     comments = deduplicate_comments(query_comments(db_path, pr_num))
-
-    # TUI output
-    print(format_tui_table(comments, pr_info))
 
     # HTML output
     html = generate_html(comments, pr_info)
