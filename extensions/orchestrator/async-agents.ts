@@ -357,6 +357,7 @@ export function registerAsyncAgents(
       fireAndForget: options?.fireAndForget || false,
       parentPid: process.pid,
       parentStartTime,
+      taskId: options?.taskId || null,
     }), { mode: 0o600 });
 
     // Build pi args
