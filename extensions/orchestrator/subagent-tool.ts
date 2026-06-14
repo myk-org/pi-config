@@ -507,6 +507,28 @@ export async function runSingleAgent(
   }
 }
 
+/** Validate that a taskId references an existing task in the pi-tasks store. */
+function validateTaskId(taskId: string, cwd: string, sessionId?: string): string | null {
+  if (taskId === "-1") return null; // -1 means "not linked"
+
+  // Try session-scoped file first, then project-scoped
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  const candidates: string[] = [];
+  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+  candidates.push(path.join(tasksDir, "tasks.json"));
+
+  for (const filePath of candidates) {
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const tasks: any[] = data.tasks || [];
+      if (tasks.some((t: any) => t.id === taskId)) return null; // Found
+    } catch {
+      continue; // File doesn't exist or parse error
+    }
+  }
+  return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
+}
+
 // ── Registration ─────────────────────────────────────────────────────────
 
 export function registerSubagentTool(
@@ -694,6 +716,17 @@ export function registerSubagentTool(
               isError: true,
             };
           }
+          for (const t of params.tasks) {
+            const tid = (t as any).taskId as string;
+            const taskErr = validateTaskId(tid, t.cwd, ctx.sessionManager?.getSessionId?.());
+            if (taskErr) {
+              return {
+                content: [{ type: "text", text: `${taskErr} (agent: ${t.agent})` }],
+                details: mkd("single")([]),
+                isError: true,
+              };
+            }
+          }
           const results: string[] = [];
           const errors: string[] = [];
           // Group parallel async tasks so results are delivered together
@@ -755,6 +788,16 @@ export function registerSubagentTool(
             details: mkd("single")([]),
             isError: true,
           };
+        }
+        {
+          const taskErr = validateTaskId(params.taskId, params.cwd, ctx.sessionManager?.getSessionId?.());
+          if (taskErr) {
+            return {
+              content: [{ type: "text", text: taskErr }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
         }
         const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId });
         if (result.error) {
