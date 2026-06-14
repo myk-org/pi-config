@@ -12,9 +12,19 @@ const require = createRequire(import.meta.url);
 
 // Import TaskStore for direct task auto-completion (bypasses AI)
 let TaskStoreClass: any = null;
-import("@tintinweb/pi-tasks/dist/task-store.js")
-  .then(mod => { TaskStoreClass = mod.TaskStore; })
-  .catch(() => {});
+(async () => {
+  // Try multiple resolution strategies
+  const candidates = [
+    "@tintinweb/pi-tasks/dist/task-store.js",
+    path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const mod = await import(candidate);
+      if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; }
+    } catch { continue; }
+  }
+})();
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
