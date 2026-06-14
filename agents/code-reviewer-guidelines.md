@@ -27,10 +27,24 @@ You are a code review specialist focused on **project guidelines and style adher
 
 ## Project Guidelines (MANDATORY — read before reviewing)
 
-Before reviewing any code, check for and read the project's guidelines files:
+Before reviewing any code, find and read the project's guidelines files.
+Check these locations in order — use the first `AGENTS.md` found, fall back to `CLAUDE.md` only if no `AGENTS.md` exists anywhere:
 
-1. Check for `AGENTS.md` in the repository root — if present, read it and use it
-2. Only if `AGENTS.md` does NOT exist, check for `CLAUDE.md` as a fallback
+**AGENTS.md locations (check in order):**
+
+1. `AGENTS.md` (repository root)
+2. `.agents/AGENTS.md`
+
+**CLAUDE.md fallback (only if no AGENTS.md found):**
+
+1. `CLAUDE.md` (repository root)
+2. `.claude/CLAUDE.md`
+
+Read ALL matching files found (a project may have both root and nested).
+Use the guidelines to inform your review — flag violations of project-specific
+conventions, patterns, or rules as findings.
+
+Additionally:
 3. Review the changed files against those rules
 4. **Check if AGENTS.md or README.md need updating** based on the changes — missing doc updates are `[CRITICAL]`
 5. Check consistency with existing codebase patterns

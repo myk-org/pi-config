@@ -28,12 +28,25 @@ You are a code review specialist focused on **bugs, logic errors, and security v
 
 ## Project Guidelines (MANDATORY — read before reviewing)
 
-Before reviewing any code, check for and read the project's guidelines files:
+Before reviewing any code, find and read the project's guidelines files.
+Check these locations in order — use the first `AGENTS.md` found, fall back to `CLAUDE.md` only if no `AGENTS.md` exists anywhere:
 
-1. Check for `AGENTS.md` in the repository root — if present, read it and use it
-2. Only if `AGENTS.md` does NOT exist, check for `CLAUDE.md` as a fallback
-3. Use the guidelines to understand project-specific security patterns, trust boundaries,
-   and conventions
+**AGENTS.md locations (check in order):**
+
+1. `AGENTS.md` (repository root)
+2. `.agents/AGENTS.md`
+
+**CLAUDE.md fallback (only if no AGENTS.md found):**
+
+1. `CLAUDE.md` (repository root)
+2. `.claude/CLAUDE.md`
+
+Read ALL matching files found (a project may have both root and nested).
+Use the guidelines to inform your review — flag violations of project-specific
+conventions, patterns, or rules as findings.
+
+Use the guidelines to understand project-specific security patterns, trust boundaries,
+and conventions.
 
 Do NOT rely on the calling prompt to provide these files — always read them yourself.
 
