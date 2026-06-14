@@ -526,18 +526,22 @@ export async function runSingleAgent(
 function validateTaskId(taskId: string, cwd: string, sessionId?: string): string | null {
   if (taskId === "-1") return null;
 
-  if (TaskStoreClass) {
-    // Use TaskStore API — no raw file reads
-    const tasksDir = path.join(cwd, ".pi", "tasks");
-    const paths: string[] = [];
-    if (sessionId) paths.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-    paths.push(path.join(tasksDir, "tasks.json"));
-    for (const p of paths) {
-      try {
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  const paths: string[] = [];
+  if (sessionId) paths.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+  paths.push(path.join(tasksDir, "tasks.json"));
+
+  for (const p of paths) {
+    try {
+      if (TaskStoreClass) {
         const store = new TaskStoreClass(p);
         if (store.get(taskId)) return null;
-      } catch { continue; }
-    }
+      } else {
+        // Fallback: raw file read when TaskStore hasn't loaded yet (async init race)
+        const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+        if ((data.tasks || []).some((t: any) => t.id === taskId)) return null;
+      }
+    } catch { continue; }
   }
 
   return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
