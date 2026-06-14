@@ -710,8 +710,15 @@ export function registerSubagentTool(
           }
           const noTaskId = params.tasks.filter(t => (t as any).taskId == null);
           if (noTaskId.length > 0) {
+            const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map(t => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"`;
+            // Force a follow-up turn so the AI MUST deal with this error
+            pi.sendMessage({
+              customType: "subagent-taskid-error",
+              content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map(t => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs, or pass taskId: "-1" if not linked.`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
             return {
-              content: [{ type: "text", text: `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map(t => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"` }],
+              content: [{ type: "text", text: errorMsg }],
               details: mkd("single")([]),
               isError: true,
             };
@@ -720,6 +727,11 @@ export function registerSubagentTool(
             const tid = (t as any).taskId as string;
             const taskErr = validateTaskId(tid, t.cwd, ctx.sessionManager?.getSessionId?.());
             if (taskErr) {
+              pi.sendMessage({
+                customType: "subagent-taskid-error",
+                content: `🚨 CRITICAL: ${taskErr} (agent: ${t.agent}). NO agents were spawned. Fix the taskId and retry.`,
+                display: true,
+              }, { triggerTurn: true, deliverAs: "followUp" });
               return {
                 content: [{ type: "text", text: `${taskErr} (agent: ${t.agent})` }],
                 details: mkd("single")([]),
@@ -783,8 +795,15 @@ export function registerSubagentTool(
           };
         }
         if (params.taskId == null) {
+          const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
+          // Force a follow-up turn so the AI MUST deal with this error
+          pi.sendMessage({
+            customType: "subagent-taskid-error",
+            content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID, or pass taskId: "-1" if not linked to any task. Do NOT proceed without fixing this.`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
           return {
-            content: [{ type: "text", text: `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")` }],
+            content: [{ type: "text", text: errorMsg }],
             details: mkd("single")([]),
             isError: true,
           };
@@ -792,6 +811,11 @@ export function registerSubagentTool(
         {
           const taskErr = validateTaskId(params.taskId, params.cwd, ctx.sessionManager?.getSessionId?.());
           if (taskErr) {
+            pi.sendMessage({
+              customType: "subagent-taskid-error",
+              content: `🚨 CRITICAL: ${taskErr} The agent was NOT spawned. Fix the taskId and retry.`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
             return {
               content: [{ type: "text", text: taskErr }],
               details: mkd("single")([]),
