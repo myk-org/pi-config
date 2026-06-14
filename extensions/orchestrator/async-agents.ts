@@ -39,6 +39,7 @@ export interface AsyncJob {
   fireAndForget?: boolean;
   groupId?: string;
   taskId?: string;
+  cwd?: string;
 }
 
 interface AsyncState {
@@ -68,6 +69,45 @@ export function formatDuration(ms: number): string {
   const m = Math.floor(ms / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   return `${m}m${s}s`;
+}
+
+/** Directly update a task's status in the pi-tasks store file. */
+function autoCompleteTask(taskId: string, cwd: string): boolean {
+  if (!taskId || taskId === "-1") return false;
+
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  // Try all possible store files
+  let files: string[];
+  try {
+    files = fs.readdirSync(tasksDir).filter(f => f.startsWith("tasks") && f.endsWith(".json"));
+  } catch {
+    return false;
+  }
+
+  for (const file of files) {
+    const filePath = path.join(tasksDir, file);
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const tasks: any[] = data.tasks || [];
+      const task = tasks.find((t: any) => t.id === taskId);
+      if (task) {
+        // Check all blockedBy deps are completed
+        const allDepsCompleted = (task.blockedBy || []).every((depId: string) => {
+          const dep = tasks.find((t: any) => t.id === depId);
+          return dep && dep.status === "completed";
+        });
+        if (!allDepsCompleted) return false;
+
+        task.status = "completed";
+        task.updatedAt = Date.now();
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────
@@ -223,7 +263,12 @@ export function registerAsyncAgents(
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
       const output = (j.output || "").slice(0, 3000);
-      const taskHint = j.taskId && j.taskId !== "-1" ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${j.taskId}", status="${j.status === "complete" ? "completed" : "in_progress"}")\` now.` : "";
+      // Auto-complete linked task directly in the store file (no AI involvement)
+      if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
+        const completed = autoCompleteTask(j.taskId, j.cwd);
+        asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
+      }
+      const taskHint = "";
       sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${taskHint}`);
       j.delivered = true;
     }
@@ -289,7 +334,12 @@ export function registerAsyncAgents(
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
-        const taskHint = job.taskId && job.taskId !== "-1" ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${job.taskId}", status="${data.success ? "completed" : "in_progress"}")\` now.` : "";
+        // Auto-complete linked task directly in the store file (no AI involvement)
+        if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
+          const completed = autoCompleteTask(job.taskId, job.cwd);
+          asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
+        }
+        const taskHint = "";
         pi.sendMessage({
           customType: "async-agent-result",
           content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${taskHint}`,
@@ -446,6 +496,7 @@ export function registerAsyncAgents(
       fireAndForget: options?.fireAndForget,
       groupId: options?.groupId,
       taskId: options?.taskId,
+      cwd,
     };
     asyncState.jobs.set(id, job);
     updateAsyncWidget();
