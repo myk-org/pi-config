@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+from myk_pi_tools.utils import merge_paginated_json
 
 # Map Qodo finding types to our type field
 _QODO_TYPE_MAP = {
@@ -336,14 +337,7 @@ def run_gh_api(endpoint: str, *, paginate: bool = False) -> Any | None:
     try:
         # --paginate returns concatenated JSON arrays, merge them
         if paginate:
-            data = json.loads(f"[{result.stdout.replace('][', ',')}]")
-            merged = []
-            for item in data:
-                if isinstance(item, list):
-                    merged.extend(item)
-                else:
-                    merged.append(item)
-            return merged
+            return merge_paginated_json(result.stdout)
         return json.loads(result.stdout)
     except json.JSONDecodeError as e:
         print_stderr(f"Error parsing JSON from gh api: {e}")

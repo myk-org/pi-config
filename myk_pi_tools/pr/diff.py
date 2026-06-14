@@ -15,6 +15,7 @@ from typing import Any
 
 from myk_pi_tools.pr.common import PRInfo
 from myk_pi_tools.pr.common import parse_args as _parse_args
+from myk_pi_tools.utils import merge_paginated_json
 
 
 def parse_args(args: list[str]) -> PRInfo:
@@ -149,13 +150,10 @@ def fetch_pr_files(pr_info: PRInfo) -> list[dict[str, Any]]:
             check=True,
             timeout=120,
         )
-        # --paginate returns concatenated JSON arrays, merge them
-        files_data = []
-        for item in json.loads(f"[{result.stdout.replace('][', ',')}]"):
-            if isinstance(item, list):
-                files_data.extend(item)
-            else:
-                files_data.append(item)
+        # --paginate returns concatenated JSON arrays, merge them safely.
+        # Cannot use naive '][' replacement — it corrupts bracket sequences
+        # inside patch content (e.g., dict["key1"]["key2"] → dict["key1","key2"]).
+        files_data = merge_paginated_json(result.stdout)
         # Extract relevant fields
         return [
             {
@@ -185,6 +183,12 @@ def fetch_pr_files(pr_info: PRInfo) -> list[dict[str, Any]]:
             file=sys.stderr,
         )
         print(e.stderr, file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(
+            f"Error: Failed to parse PR files response for {pr_info.repo_full_name}#{pr_info.pr_number}: {e}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
