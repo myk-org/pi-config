@@ -232,7 +232,13 @@ export function registerAsyncAgents(
   }
 
   /** Deliver all results from a completed group as a single combined message. */
+  let groupDeliveryInProgress = new Set<string>();
   async function deliverGroupResults(groupJobs: AsyncJob[]) {
+    // Guard against duplicate concurrent invocations
+    const gid = groupJobs[0]?.groupId;
+    if (gid && groupDeliveryInProgress.has(gid)) return;
+    if (gid) groupDeliveryInProgress.add(gid);
+    try {
     if (!asyncState.lastCtx) return;
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
@@ -295,6 +301,9 @@ export function registerAsyncAgents(
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
     }
+    } finally {
+      if (gid) groupDeliveryInProgress.delete(gid);
+    }
   }
 
   async function processResultFile(resultPath: string) {
@@ -342,7 +351,6 @@ export function registerAsyncAgents(
       // Non-grouped job: deliver immediately (existing behavior)
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
-        const output = (data.output || "").slice(0, 3000);
         let autoCompleteError = "";
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
@@ -354,6 +362,8 @@ export function registerAsyncAgents(
             asyncLog(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
           }
         }
+        const maxOutput = 3000 - autoCompleteError.length;
+        const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
         pi.sendMessage({
           customType: "async-agent-result",
           content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
