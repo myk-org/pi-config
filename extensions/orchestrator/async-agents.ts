@@ -267,17 +267,18 @@ export function registerAsyncAgents(
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
       const output = (j.output || "").slice(0, 3000);
+      let autoCompleteError = "";
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
         try {
           const completed = await autoCompleteTask(j.taskId, j.cwd, j.sessionId);
           asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
         } catch (e: any) {
+          autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${j.taskId}: ${e?.message}. Run TaskUpdate(taskId="${j.taskId}", status="completed") manually.`;
           asyncLog(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
         }
       }
-      const taskHint = "";
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${taskHint}`);
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${autoCompleteError}`);
       j.delivered = true;
     }
 
@@ -342,19 +343,20 @@ export function registerAsyncAgents(
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
+        let autoCompleteError = "";
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
           try {
             const completed = await autoCompleteTask(job.taskId, job.cwd, job.sessionId);
             asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
           } catch (e: any) {
+            autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
             asyncLog(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
           }
         }
-        const taskHint = "";
         pi.sendMessage({
           customType: "async-agent-result",
-          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${taskHint}`,
+          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
