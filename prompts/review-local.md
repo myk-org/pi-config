@@ -111,9 +111,9 @@ Mark Task 1 as `completed`.
 
 Spawn ALL 3 review agents as async subagents. Each reviewer is its own task:
 
-- **Task 2** — `superpowers:code-reviewer` — General code quality and maintainability
-- **Task 3** — `pr-review-toolkit:code-reviewer` — Project guidelines and style adherence
-- **Task 4** — `feature-dev:code-reviewer` — Bugs, logic errors, and security vulnerabilities
+- **Task 2** — `code-reviewer-quality` — General code quality and maintainability
+- **Task 3** — `code-reviewer-guidelines` — Project guidelines and style adherence
+- **Task 4** — `code-reviewer-security` — Bugs, logic errors, and security vulnerabilities
 
 Mark Tasks 2, 3, 4 as `in_progress` when spawning the agents.
 

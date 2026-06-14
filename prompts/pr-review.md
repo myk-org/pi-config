@@ -194,7 +194,8 @@ If the raw arguments contain a PR number or URL:
 
 Mark Task 1 as `completed`.
 
-Tasks 2, 3, and 4 are independent — execute them in parallel.
+Tasks 2 and 3 are independent — execute them in parallel.
+Task 4 depends on Task 2 (needs the diff data) and will start after Task 2 completes.
 
 ### Phase 1a: Fetch PR Diff — Task 2
 
@@ -286,9 +287,9 @@ Mark Task 4 as `completed`.
 
 Spawn ALL 3 review agents as async subagents. Each reviewer is its own task:
 
-- **Task 5** — `superpowers:code-reviewer` — General code quality and maintainability
-- **Task 6** — `pr-review-toolkit:code-reviewer` — Project guidelines and style adherence
-- **Task 7** — `feature-dev:code-reviewer` — Bugs, logic errors, and security vulnerabilities
+- **Task 5** — `code-reviewer-quality` — General code quality and maintainability
+- **Task 6** — `code-reviewer-guidelines` — Project guidelines and style adherence
+- **Task 7** — `code-reviewer-security` — Bugs, logic errors, and security vulnerabilities
 
 Mark Tasks 5, 6, 7 as `in_progress` when spawning the agents.
 
@@ -301,8 +302,10 @@ Each agent should analyze for security, bugs, error handling, and performance is
 
 Mark each reviewer task as `completed` ONLY when its findings are fully received and stored.
 
-Async agent results surface automatically when complete — no polling needed.
-When a reviewer's result arrives, mark its task as `completed`.
+Async agent results surface automatically in the conversation when complete.
+Each reviewer's findings are delivered as its async result text — store them
+in the conversation context. Mark the reviewer's task as `completed` only
+after reading and storing its findings.
 Wait for ALL 3 results before proceeding.
 
 > 🚨 **DO NOT proceed to Phase 3 until ALL THREE reviewer tasks (5, 6, 7) are `completed`.**
