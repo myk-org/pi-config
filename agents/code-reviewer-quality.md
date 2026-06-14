@@ -16,8 +16,8 @@ You are a code review specialist focused on **general code quality and maintaina
 
 Before reviewing any code, check for and read the project's guidelines files:
 
-1. Check for `AGENTS.md` in the repository root — read it if present
-2. Check for `CLAUDE.md` in the repository root — read it if present
+1. Check for `AGENTS.md` in the repository root — if present, read it and use it
+2. Only if `AGENTS.md` does NOT exist, check for `CLAUDE.md` as a fallback
 3. Use the guidelines to inform your review — flag violations of project-specific
    conventions, patterns, or rules as findings
 
