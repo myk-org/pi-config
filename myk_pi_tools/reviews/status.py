@@ -143,12 +143,22 @@ def extract_summary(body: str, max_len: int = 60) -> str:
 
 
 def deduplicate_comments(comments: list[dict]) -> list[dict]:
-    """Deduplicate comments — keep latest status for same path+line+source+summary."""
+    """Deduplicate comments — keep latest status for same source+path+summary.
+
+    Line numbers are excluded from the key because they shift between commits.
+    Summary is normalized: stripped, lowercased, whitespace collapsed, first 40 chars.
+    """
     seen: dict[str, dict] = {}
     for c in comments:
-        # Normalize summary for dedup: strip HTML, lowercase, first 30 chars
-        raw = extract_summary(c["body"], 50).lower().strip()
-        key = f"{c['source']}:{c['path']}:{c['line']}:{raw[:30]}"
+        raw = extract_summary(c["body"], 60).lower().strip()
+        # Strip emoji badges, quality labels, and Qodo type markers
+        raw = re.sub(r"[\U0001f300-\U0001f9ff\u2600-\u27bf\u2700-\u27bf≡☼➹📎]", "", raw)
+        raw = re.sub(
+            r"\b(bug|rule violation|requirement gap|correctness|reliability|maintainability|performance)\b", "", raw
+        )
+        # Collapse whitespace and take first 40 chars for stable matching
+        normalized = re.sub(r"\s+", " ", raw).strip()[:40]
+        key = f"{c['source']}:{c.get('path', '')}:{normalized}"
         seen[key] = c  # Last one wins (latest cycle)
     return list(seen.values())
 
