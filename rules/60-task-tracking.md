@@ -93,3 +93,39 @@ Task tracking works alongside — not instead of — existing workflow rules:
 - **Tasks are code-enforced** — the extension injects reminders if you ignore tasks for 4+ turns
 - **Never abandon tasks** — if scope changes, use `TaskUpdate` with `status: "deleted"` to remove obsolete tasks
 - **The task list is your contract** — complete every task or explicitly remove it
+
+---
+
+## Async Agent taskId (MANDATORY — code-enforced)
+
+**Every async agent call MUST include `taskId`.** This is enforced by the subagent tool —
+calls without `taskId` are rejected.
+
+- If the agent is working on a task: pass the task ID (e.g., `taskId: "5"`)
+- If the agent is NOT linked to any task: pass `taskId: "-1"`
+
+When `taskId` is a real task ID, the task auto-completes when the agent finishes successfully.
+No manual `TaskUpdate` needed — the system handles it.
+
+```text
+# Async agent linked to task 5 — auto-completes on success
+subagent(agent="code-reviewer-quality", task="...", cwd="...", async=true, name="Review Quality", taskId="5")
+
+# Async agent NOT linked to any task
+subagent(agent="worker", task="...", cwd="...", async=true, name="Qodo Poll", taskId="-1")
+
+# Parallel async agents linked to tasks
+subagent(tasks=[
+  {agent: "code-reviewer-quality", task: "...", cwd: "...", name: "Review Quality", taskId: "5"},
+  {agent: "code-reviewer-guidelines", task: "...", cwd: "...", name: "Review Guidelines", taskId: "6"},
+  {agent: "code-reviewer-security", task: "...", cwd: "...", name: "Review Security", taskId: "7"},
+])
+```
+
+**Rules:**
+
+- ✅ **ALWAYS** pass `taskId` — the tool rejects async calls without it
+- ✅ Pass `"-1"` when the agent is not linked to any task
+- ✅ The task auto-completes on success, stays `in_progress` on failure
+- ❌ **NEVER** manually `TaskUpdate` a task to `completed` if it has an async agent — the agent handles it
+- ❌ **NEVER** omit `taskId` — the call will fail with a clear error

@@ -47,6 +47,50 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# Lazy reply patterns that indicate the AI didn't write a real response
+_LAZY_REPLY_PATTERNS = [
+    "previously addressed",
+    "see earlier replies",
+    "see earlier",
+    "see above",
+    "see sticky",
+    "see sticky finding",
+    "already handled",
+    "already covered",
+    "same as above",
+    "refer to previous",
+    "see prior",
+    "addressed above",
+    "covered above",
+    "handled above",
+    "see previous reply",
+    "see previous comment",
+    "see consolidated",
+]
+
+
+def validate_reply(reply: str, path: str, status: str) -> str | None:
+    """Validate a reply is not lazy/vague. Returns error message or None if OK.
+
+    Pending entries are skipped (no reply expected).
+    """
+    if status == "pending":
+        return None
+    if not isinstance(reply, str):
+        reply = str(reply) if reply is not None else ""
+    if not reply or not reply.strip():
+        return f"{path}: Empty reply for status '{status}'. Every non-pending entry needs a specific reply."
+
+    reply_lower = reply.lower().strip()
+    for pattern in _LAZY_REPLY_PATTERNS:
+        if pattern in reply_lower:
+            return (
+                f"{path}: Lazy reply detected — contains '{pattern}'. "
+                f"Write a specific reply explaining what was done or why it was skipped. "
+                f"Current reply: {reply[:100]}"
+            )
+    return None
+
 
 def eprint(*args: Any, **kwargs: Any) -> None:
     """Print to stderr."""
@@ -496,6 +540,29 @@ def run(json_path: str) -> None:
         sys.exit(0)
 
     eprint(f"Processing {total_thread_count} threads sequentially...")
+
+    # Validate replies — block lazy/vague replies before posting
+    lazy_errors: list[str] = []
+    for cat in categories:
+        for comment in data.get(cat, []):
+            reply = str(comment.get("reply") or comment.get("skip_reason") or "")
+            status = comment.get("status", "pending")
+            comment_path = comment.get("path", "unknown")
+            err = validate_reply(reply, comment_path, status)
+            if err:
+                lazy_errors.append(err)
+            # Ensure reply field is always populated (posting uses reply, not skip_reason)
+            elif status != "pending" and not comment.get("reply") and comment.get("skip_reason"):
+                comment["reply"] = comment["skip_reason"]
+    if lazy_errors:
+        eprint(f"\nError: {len(lazy_errors)} lazy/vague replies detected. Fix them before posting:\n")
+        for err in lazy_errors:
+            eprint(f"  ✗ {err}")
+        eprint(
+            "\nEvery reply must be specific — explain what was fixed"
+            " (with commit SHA) or why it was skipped (with technical reason)."
+        )
+        sys.exit(1)
 
     # Counters for summary
     addressed_count = 0

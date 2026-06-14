@@ -6,9 +6,28 @@ import { execFileSync, execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
+
+// Import TaskStore for direct task auto-completion (bypasses AI)
+let TaskStoreClass: any = null;
+const taskStoreReady: Promise<void> = (async () => {
+  const candidates = [
+    "@tintinweb/pi-tasks/dist/task-store.js",
+    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const mod = await import(candidate);
+      if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; }
+    } catch { continue; }
+  }
+  if (!TaskStoreClass) {
+    throw new Error("[async-agents] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
+  }
+})();
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -38,6 +57,9 @@ export interface AsyncJob {
   delivered?: boolean;
   fireAndForget?: boolean;
   groupId?: string;
+  taskId?: string;
+  cwd?: string;
+  sessionId?: string;
 }
 
 interface AsyncState {
@@ -69,13 +91,36 @@ export function formatDuration(ms: number): string {
   return `${m}m${s}s`;
 }
 
+/** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
+async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
+  if (!taskId || taskId === "-1") return false;
+  await taskStoreReady;
+
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  const candidates: string[] = [];
+  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+  candidates.push(path.join(tasksDir, "tasks.json"));
+
+  for (const storePath of candidates) {
+    try {
+      const store = new TaskStoreClass(storePath);
+      const task = store.get(taskId);
+      if (task && task.status !== "completed") {
+        store.update(taskId, { status: "completed" });
+        return true;
+      }
+    } catch { continue; }
+  }
+  return false;
+}
+
 // ── Registration ─────────────────────────────────────────────────────────
 
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -187,7 +232,13 @@ export function registerAsyncAgents(
   }
 
   /** Deliver all results from a completed group as a single combined message. */
-  function deliverGroupResults(groupJobs: AsyncJob[]) {
+  let groupDeliveryInProgress = new Set<string>();
+  async function deliverGroupResults(groupJobs: AsyncJob[]) {
+    // Guard against duplicate concurrent invocations
+    const gid = groupJobs[0]?.groupId;
+    if (gid && groupDeliveryInProgress.has(gid)) return;
+    if (gid) groupDeliveryInProgress.add(gid);
+    try {
     if (!asyncState.lastCtx) return;
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
@@ -222,7 +273,18 @@ export function registerAsyncAgents(
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
       const output = (j.output || "").slice(0, 3000);
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}`);
+      let autoCompleteError = "";
+      // Auto-complete linked task directly in the store file (no AI involvement)
+      if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
+        try {
+          const completed = await autoCompleteTask(j.taskId, j.cwd, j.sessionId);
+          asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
+        } catch (e: any) {
+          autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${j.taskId}: ${e?.message}. Run TaskUpdate(taskId="${j.taskId}", status="completed") manually.`;
+          asyncLog(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
+        }
+      }
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${autoCompleteError}`);
       j.delivered = true;
     }
 
@@ -239,9 +301,12 @@ export function registerAsyncAgents(
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
     }
+    } finally {
+      if (gid) groupDeliveryInProgress.delete(gid);
+    }
   }
 
-  function processResultFile(resultPath: string) {
+  async function processResultFile(resultPath: string) {
     try {
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
@@ -286,10 +351,22 @@ export function registerAsyncAgents(
       // Non-grouped job: deliver immediately (existing behavior)
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
-        const output = (data.output || "").slice(0, 3000);
+        let autoCompleteError = "";
+        // Auto-complete linked task directly in the store file (no AI involvement)
+        if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
+          try {
+            const completed = await autoCompleteTask(job.taskId, job.cwd, job.sessionId);
+            asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
+          } catch (e: any) {
+            autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
+            asyncLog(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
+          }
+        }
+        const maxOutput = 3000 - autoCompleteError.length;
+        const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
         pi.sendMessage({
           customType: "async-agent-result",
-          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
+          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
@@ -326,7 +403,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -354,6 +431,9 @@ export function registerAsyncAgents(
       fireAndForget: options?.fireAndForget || false,
       parentPid: process.pid,
       parentStartTime,
+      taskId: options?.taskId || null,
+      cwd,
+      sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
 
     // Build pi args
@@ -441,6 +521,9 @@ export function registerAsyncAgents(
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
       groupId: options?.groupId,
+      taskId: options?.taskId,
+      cwd,
+      sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.(),
     };
     asyncState.jobs.set(id, job);
     updateAsyncWidget();
@@ -533,6 +616,9 @@ export function registerAsyncAgents(
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
             fireAndForget: marker.fireAndForget || false,
+            taskId: marker.taskId || undefined,
+            cwd: marker.cwd || undefined,
+            sessionId: marker.sessionId || undefined,
           };
           asyncState.jobs.set(id, job);
           asyncLog(`restored job: ${id} state=${job.status}`);

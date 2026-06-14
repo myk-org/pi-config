@@ -1,8 +1,9 @@
-"""Review handler status — query reviews DB and display all comments for current PR.
+"""Review handler status — query reviews DB and display deduplicated findings for current PR.
 
-Outputs:
-1. TUI table to stdout
-2. HTML file saved to /tmp/pi-work/<project>/review-status-<pr>.html
+Shows the latest status per unique finding (keyed by source + path + summary).
+Duplicate entries from multiple review cycles are merged, keeping the most recent.
+
+Output: HTML report saved to /tmp/pi-work/<project>/review-status-<pr>.html
 """
 
 import json
@@ -143,12 +144,22 @@ def extract_summary(body: str, max_len: int = 60) -> str:
 
 
 def deduplicate_comments(comments: list[dict]) -> list[dict]:
-    """Deduplicate comments — keep latest status for same path+line+source+summary."""
+    """Deduplicate comments — keep latest status for same source+path+summary.
+
+    Line numbers are excluded from the key because they shift between commits.
+    Summary is normalized: stripped, lowercased, whitespace collapsed, first 40 chars.
+    """
     seen: dict[str, dict] = {}
     for c in comments:
-        # Normalize summary for dedup: strip HTML, lowercase, first 30 chars
-        raw = extract_summary(c["body"], 50).lower().strip()
-        key = f"{c['source']}:{c['path']}:{c['line']}:{raw[:30]}"
+        raw = extract_summary(c["body"], 60).lower().strip()
+        # Strip emoji badges, quality labels, and Qodo type markers
+        raw = re.sub(r"[\U0001f300-\U0001f9ff\u2600-\u27bf\u2700-\u27bf≡☼➹📎]", "", raw)
+        raw = re.sub(
+            r"\b(bug|rule violation|requirement gap|correctness|reliability|maintainability|performance)\b", "", raw
+        )
+        # Collapse whitespace and take first 40 chars for stable matching
+        normalized = re.sub(r"\s+", " ", raw).strip()[:80]
+        key = f"{c['source']}:{c.get('path', '')}:{normalized}"
         seen[key] = c  # Last one wins (latest cycle)
     return list(seen.values())
 
@@ -170,7 +181,7 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         "Line": 5,
         "Summary": 40,
         "Status": 15,
-        "Reply": 40,
+        "Reply": 80,
     }
 
     def pad(text: str, width: int) -> str:
@@ -198,6 +209,9 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
     for i, c in enumerate(comments, 1):
         summary = extract_summary(c["body"], col_widths["Summary"])
         status = c.get("status") or "pending"
+        is_sticky = (c.get("type") or "").startswith("qodo_")
+        if is_sticky:
+            status = f"{status} \U0001f4cc"
         file_name = (c.get("path") or "").split("/")[-1]
         line_num = str(c.get("line") or "")
 
@@ -257,8 +271,14 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
     rows_html = ""
     for i, c in enumerate(comments, 1):
         summary = escape(extract_summary(c["body"], 80))
-        reply = escape((c.get("reply") or c.get("skip_reason") or "")[:100])
+        raw_reply = c.get("reply") or c.get("skip_reason") or ""
+        if len(raw_reply) > 200:
+            reply = f"<details><summary>{escape(raw_reply[:150])}...</summary>{escape(raw_reply)}</details>"
+        else:
+            reply = escape(raw_reply)
         status = c.get("status") or "pending"
+        is_sticky = (c.get("type") or "").startswith("qodo_")
+        sticky_badge = ' <span title="Still in Qodo sticky comment">📌</span>' if is_sticky else ""
         bg = status_colors.get(status, "#e2e3e5")
         path = escape(c.get("path") or "")
         rows_html += f"""
@@ -270,7 +290,7 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
             <td>{summary}</td>
             <td style="background-color: {bg}; font-weight: bold;
                 color: {status_text_colors.get(status, "#c9d1d9")};">
-                {escape(status)}</td>
+                {escape(status)}{sticky_badge}</td>
             <td>{reply}</td>
         </tr>"""
 
@@ -418,10 +438,7 @@ def run(pr_number: int | None = None) -> None:
     owner, repo = get_pr_repo_info(db_path, pr_num)
     pr_info["owner"] = owner
     pr_info["repo"] = repo
-    comments = query_comments(db_path, pr_num)
-
-    # TUI output
-    print(format_tui_table(comments, pr_info))
+    comments = deduplicate_comments(query_comments(db_path, pr_num))
 
     # HTML output
     html = generate_html(comments, pr_info)

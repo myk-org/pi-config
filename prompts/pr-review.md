@@ -50,9 +50,89 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 - `/pr-review 123` - Review PR #123 in current repo
 - `/pr-review https://github.com/owner/repo/pull/123` - Review from URL
 
+## Task Plan
+
+Before starting any work, create ALL tasks upfront using `TaskCreate`, then set their dependencies
+using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order — blocked tasks cannot start.
+
+### Task List
+
+| Task | Title | blockedBy |
+|------|-------|-----------|
+| 1 | PR Detection | — |
+| 2 | Fetch PR diff | 1 |
+| 3 | Fetch AGENTS.md | 1 |
+| 4 | Check past review comments | 1, 2 |
+| 5 | Review — Code Quality | 2, 3 |
+| 6 | Review — Guidelines | 2, 3 |
+| 7 | Review — Security | 2, 3 |
+| 8 | Merge & deduplicate findings | 4, 5, 6, 7 |
+| 9 | User selection | 8 |
+| 10 | Post comments | 9 |
+| 11 | Store comments | 10 |
+| 12 | Summary | 11 |
+
+### Dependency Graph
+
+```text
+Task 1 (PR Detection)
+ ├── Task 2 (Fetch diff) ─────────────┐
+ ├── Task 3 (Fetch AGENTS.md) ────────┤
+ │    Tasks 2+3 unblock:              │
+ │    ├── Task 5 (Review: Quality)    │
+ │    ├── Task 6 (Review: Guidelines) │
+ │    └── Task 7 (Review: Security)   │
+ └── Task 4 (Past comments) ──────────┤  (also needs Task 2)
+                                       ▼
+                            Task 8 (Merge findings)
+                                       │
+                            Task 9 (User selection)
+                                       │
+                            Task 10 (Post comments)
+                                       │
+                            Task 11 (Store comments)
+                                       │
+                            Task 12 (Summary)
+```
+
+Create all 12 tasks using `TaskCreate` NOW, before starting any work.
+Then IMMEDIATELY set dependencies using `TaskUpdate` with `addBlockedBy` for each task per the table above.
+
+`TaskCreate` does NOT accept `addBlockedBy` — dependencies MUST be set via `TaskUpdate` after creation.
+
+Example two-step flow:
+
+```text
+# Step 1: Create all tasks
+TaskCreate(subject="PR Detection", ...)          → Task 1
+TaskCreate(subject="Fetch PR diff", ...)          → Task 2
+TaskCreate(subject="Fetch AGENTS.md", ...)        → Task 3
+...all 12 tasks...
+
+# Step 2: Set dependencies
+TaskUpdate(taskId="2", addBlockedBy=["1"])
+TaskUpdate(taskId="3", addBlockedBy=["1"])
+TaskUpdate(taskId="4", addBlockedBy=["1", "2"])
+TaskUpdate(taskId="5", addBlockedBy=["2", "3"])
+TaskUpdate(taskId="6", addBlockedBy=["2", "3"])
+TaskUpdate(taskId="7", addBlockedBy=["2", "3"])
+TaskUpdate(taskId="8", addBlockedBy=["4", "5", "6", "7"])
+TaskUpdate(taskId="9", addBlockedBy=["8"])
+TaskUpdate(taskId="10", addBlockedBy=["9"])
+TaskUpdate(taskId="11", addBlockedBy=["10"])
+TaskUpdate(taskId="12", addBlockedBy=["11"])
+```
+
+> 🚨 **HARD RULE: NEVER start a task while its `blockedBy` tasks are incomplete.**
+> The task system enforces this via `addBlockedBy` — but even if you could bypass it, **DON'T**.
+> Posting comments from partial reviewer results is a **CRITICAL violation**.
+> ALL 3 reviewers (Tasks 5, 6, 7) MUST complete before merging findings (Task 8).
+
 ## Workflow
 
-### Phase 0: PR Detection (when no arguments provided)
+### Phase 0: PR Detection — Task 1
+
+Mark Task 1 as `in_progress`.
 
 If the raw arguments are empty:
 
@@ -110,9 +190,16 @@ If the raw arguments contain a PR number or URL:
      gh pr view {pr_number} --json headRefOid --jq '.headRefOid'
      ```
 
-1. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 4.
+1. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 5.
 
-### Phase 1a: Data Fetching
+Mark Task 1 as `completed`.
+
+Tasks 2 and 3 are independent — execute them in parallel.
+Task 4 depends on Task 2 (needs the diff data) and will start after Task 2 completes.
+
+### Phase 1a: Fetch PR Diff — Task 2
+
+Mark Task 2 as `in_progress`.
 
 Run the diff command to get PR data:
 
@@ -130,7 +217,11 @@ myk-pi-tools pr diff <raw_arguments>
 
 Store the JSON output containing metadata, diff, and files.
 
-### Phase 1b: Fetch AGENTS.md
+Mark Task 2 as `completed`.
+
+### Phase 1b: Fetch AGENTS.md — Task 3
+
+Mark Task 3 as `in_progress`.
 
 Run the claude-md command to get project rules:
 
@@ -148,7 +239,11 @@ myk-pi-tools pr claude-md <raw_arguments>
 
 Store the output as `claude_md_content`.
 
-### Phase 1c: Check Past Review Comments (MANDATORY)
+Mark Task 3 as `completed`.
+
+### Phase 1c: Check Past Review Comments — Task 4
+
+Mark Task 4 as `in_progress`.
 
 Fetch ALL human review threads (resolved + unresolved) from the PR:
 
@@ -169,7 +264,7 @@ Parse the JSON output. For the `human` list, categorize each thread:
 **Unresolved threads:**
 
 - These are still open — the PR author hasn't addressed them yet.
-- Include them in the findings presented to the user in Phase 3.
+- Include them in the findings presented to the user in Phase 4.
 - Mark as "⚠️ UNRESOLVED from previous review"
 
 **Resolved threads:**
@@ -183,26 +278,53 @@ Parse the JSON output. For the `human` list, categorize each thread:
     - Valid response (by design, wrong assumption, clarification) → mark as "✅ Resolved — response accepted"
     - Invalid/missing response → include in findings as "❌ Resolved without code change or valid response"
 
-**All past comment statuses are included in the combined findings in Phase 3 —
+**All past comment statuses are included in the combined findings in Phase 4 —
 not presented as a separate summary.**
 
-### Phase 2: Code Analysis
+Mark Task 4 as `completed`.
 
-Delegate to ALL 3 review agents IN PARALLEL (single message with 3 Task tool calls):
+### Phase 2: Code Analysis — Tasks 5, 6, 7
 
-- `superpowers:code-reviewer` - General code quality and maintainability
-- `pr-review-toolkit:code-reviewer` - Project guidelines and style adherence
-- `feature-dev:code-reviewer` - Bugs, logic errors, and security vulnerabilities
+Mark Tasks 5, 6, 7 as `in_progress`, then spawn ALL 3 review agents as async subagents
+with `taskId` linking each to its task:
+
+Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
+
+```text
+subagent(tasks=[
+  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "<actual task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "<actual task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "<actual task 7 ID>"},
+])
+```
 
 Provide each agent with:
 
 - The diff content from Phase 1a
 - The AGENTS.md content from Phase 1b (or "No AGENTS.md found" if empty)
 
-Each agent should analyze for security, bugs, error handling, and performance issues and return their findings as prose.
-Merge and deduplicate the findings from all 3 reviewers before proceeding.
+Each agent should analyze for security, bugs, error handling, and performance issues
+and return their findings as prose.
 
-### Phase 3: User Selection
+**After spawning, verify the response confirms all 3 agents were spawned.**
+If any spawn fails, STOP and report the error — do NOT continue waiting.
+
+**After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
+or check status. Results arrive automatically as follow-up messages.
+When each reviewer finishes, its task is auto-completed via `taskId`.
+Task 8 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
+
+### Phase 3: Merge & Deduplicate Findings — Task 8
+
+Mark Task 8 as `in_progress`.
+
+Merge and deduplicate the findings from all 3 reviewers AND the past review comment analysis from Task 4 into a single combined findings list.
+
+Mark Task 8 as `completed`.
+
+### Phase 4: User Selection — Task 9
+
+Mark Task 9 as `in_progress`.
 
 Present ALL findings to user in one combined list, grouped by severity (CRITICAL, WARNING, SUGGESTION).
 This includes:
@@ -223,7 +345,11 @@ Ask which to post:
 - 'none' = Skip posting
 - Specific numbers = Post only those
 
-### Phase 4: Post Comments
+Mark Task 9 as `completed`.
+
+### Phase 5: Post Comments — Task 10
+
+Mark Task 10 as `in_progress`.
 
 If user selected findings, create temp directory and write JSON to temp file:
 
@@ -237,7 +363,11 @@ Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a me
 myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} /tmp/pi-work/$(basename $PWD)/pr-review-comments.json
 ```
 
-### Phase 4b: Store Posted Comments (MANDATORY)
+Mark Task 10 as `completed`.
+
+### Phase 5b: Store Posted Comments — Task 11
+
+Mark Task 11 as `in_progress`.
 
 After posting comments, store them in the PR review database for future cycle tracking:
 
@@ -271,6 +401,12 @@ myk-pi-tools pr store-pr-review /tmp/pi-work/$(basename $PWD)/pr-review-store.js
 **This step is MANDATORY — never skip it.** The database is used by future `/pr-review`
 runs to track which comments were posted and verify they were addressed.
 
-### Phase 5: Summary
+Mark Task 11 as `completed`.
+
+### Phase 6: Summary — Task 12
+
+Mark Task 12 as `in_progress`.
 
 Display final summary with counts and links.
+
+Mark Task 12 as `completed`.

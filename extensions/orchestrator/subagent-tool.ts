@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { createRequire } from "node:module";
 
@@ -27,6 +28,21 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+
+// Import TaskStore for taskId validation (bypasses raw file reads)
+let TaskStoreClass: any = null;
+(async () => {
+  const candidates = [
+    "@tintinweb/pi-tasks/dist/task-store.js",
+    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
+  ];
+  for (const c of candidates) {
+    try { const mod = await import(c); if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; } } catch { continue; }
+  }
+  if (!TaskStoreClass) {
+    throw new Error("[subagent] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
+  }
+})();
 import { clockHHMM, getPiInvocation, getProjectTmpDir } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -55,6 +71,7 @@ const TaskItem = Type.Object({
   cwd: Type.String({ description: "Working directory" }),
   name: Type.Optional(Type.String({ description: "Display name for async status" })),
   estimatedSeconds: Type.Optional(Type.Number({ description: "Estimated task duration in seconds. Required for sync parallel tasks." })),
+  taskId: Type.Optional(Type.String({ description: "Task ID to auto-complete when this async agent finishes" })),
 });
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
@@ -104,6 +121,9 @@ const SubagentParams = Type.Object({
   ),
   name: Type.Optional(
     Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
+  ),
+  taskId: Type.Optional(
+    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Required for async agents — pass \"-1\" if not linked to any task." }),
   ),
   asyncKill: Type.Optional(
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
@@ -503,11 +523,40 @@ export async function runSingleAgent(
   }
 }
 
+/** Validate that a taskId references an existing task in the pi-tasks store. */
+function validateTaskId(taskId: string, cwd: string, sessionId?: string): string | null {
+  if (taskId === "-1") return null;
+
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  const paths: string[] = [];
+  if (sessionId) paths.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+  paths.push(path.join(tasksDir, "tasks.json"));
+
+  for (const p of paths) {
+    try {
+      if (TaskStoreClass) {
+        const store = new TaskStoreClass(p);
+        if (store.get(taskId)) return null;
+      } else {
+        // Fallback: raw file read when TaskStore hasn't loaded yet (async init race)
+        const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+        if ((data.tasks || []).some((t: any) => t.id === taskId)) return null;
+      }
+    } catch (e: any) {
+      // Only continue silently for missing files; report other errors
+      if (e?.code === "ENOENT" || e?.message?.includes("ENOENT")) continue;
+      return `Task store error for ${path.basename(p)}: ${e?.message || e}. Fix the task store or pass taskId: "-1".`;
+    }
+  }
+
+  return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
+}
+
 // ── Registration ─────────────────────────────────────────────────────────
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -682,6 +731,37 @@ export function registerSubagentTool(
               isError: true,
             };
           }
+          const noTaskId = params.tasks.filter(t => (t as any).taskId == null);
+          if (noTaskId.length > 0) {
+            const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map(t => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"`;
+            // Force a follow-up turn so the AI MUST deal with this error
+            pi.sendMessage({
+              customType: "subagent-taskid-error",
+              content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map(t => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs, or pass taskId: "-1" if not linked.`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            return {
+              content: [{ type: "text", text: errorMsg }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
+          for (const t of params.tasks) {
+            const tid = (t as any).taskId as string;
+            const taskErr = validateTaskId(tid, t.cwd, ctx.sessionManager?.getSessionId?.());
+            if (taskErr) {
+              pi.sendMessage({
+                customType: "subagent-taskid-error",
+                content: `🚨 CRITICAL: ${taskErr} (agent: ${t.agent}). NO agents were spawned. Fix the taskId and retry.`,
+                display: true,
+              }, { triggerTurn: true, deliverAs: "followUp" });
+              return {
+                content: [{ type: "text", text: `${taskErr} (agent: ${t.agent})` }],
+                details: mkd("single")([]),
+                isError: true,
+              };
+            }
+          }
           const results: string[] = [];
           const errors: string[] = [];
           // Group parallel async tasks so results are delivered together
@@ -695,6 +775,7 @@ export function registerSubagentTool(
               parentModelId,
               parentProvider,
               groupId,
+              taskId: (t as any).taskId,
             });
             if (r.error) {
               errors.push(`${t.agent}: ${r.error}`);
@@ -736,7 +817,36 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider });
+        if (params.taskId == null) {
+          const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
+          // Force a follow-up turn so the AI MUST deal with this error
+          pi.sendMessage({
+            customType: "subagent-taskid-error",
+            content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID, or pass taskId: "-1" if not linked to any task. Do NOT proceed without fixing this.`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+          return {
+            content: [{ type: "text", text: errorMsg }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        {
+          const taskErr = validateTaskId(params.taskId, params.cwd, ctx.sessionManager?.getSessionId?.());
+          if (taskErr) {
+            pi.sendMessage({
+              customType: "subagent-taskid-error",
+              content: `🚨 CRITICAL: ${taskErr} The agent was NOT spawned. Fix the taskId and retry.`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            return {
+              content: [{ type: "text", text: taskErr }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
+        }
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId });
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],
