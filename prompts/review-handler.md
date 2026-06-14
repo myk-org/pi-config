@@ -462,10 +462,31 @@ can continue working. When the result surfaces, process it:
 
 Check the poll RAW output (not the worker's summary — look for the exact JSON string):
 
-- If output contains the EXACT string `"approved": true`: **EXIT the loop**. Notify the user:
-  "🎉 All auto-approved reviewers approved this PR — no actionable comments. Auto loop complete."
+- If output contains the EXACT string `"approved": true`: **EXIT the loop**.
   **CRITICAL:** Only exit on the literal JSON `{"approved": true}` from the CLI output.
   Do NOT exit because the worker says "approved" or "0 comments" in its summary.
+
+  **On exit, display the Remaining Findings Summary (MANDATORY):**
+
+  Parse the poll output for any unresolved sticky findings (findings that were skipped,
+  not addressed, or still pending). Display them in a table:
+
+  ```text
+  🎉 {source} approved PR #{pr_number}. Auto loop complete.
+
+  ## Remaining Findings ({count})
+
+  | # | Type | File | Finding | Why remaining |
+  |---|------|------|---------|---------------|
+  | 1 | Bug | path/to/file.py:17 | Finding title | Skipped — reason from the reply |
+  ```
+
+  - Show EVERY unresolved finding — skipped, not_addressed, or stale sticky
+  - **Type** = the finding type (Bug, Requirement gap, Rule violation, etc.)
+  - **Finding** = the finding title (bold text from the body)
+  - **Why remaining** = the status + reason (from the reply field)
+  - If zero remaining findings: show `## Remaining Findings (0)` with "All findings resolved."
+  - This is the ONLY user-facing output on exit — no per-cycle summaries, no fix history
 - If **new comments found from auto-approved sources**: Run Phases 2-8 again with
   auto-approve behavior for the relevant sources.
   After completing, spawn another async worker (go to 9a+9b again).
@@ -525,5 +546,5 @@ Each cycle displays a status update so the user knows the loop is active:
 [auto] Found {N} new comments — processing...
 [auto] No new comments. Next check in 5 minutes...
 [auto] CodeRabbit rate-limited. Handling automatically via reviews poll --source coderabbit...
-[auto] 🎉 All auto-approved reviewers approved! No actionable comments. Loop complete.
+[auto] 🎉 {source} approved PR #{pr_number}. Displaying remaining findings summary.
 ```
