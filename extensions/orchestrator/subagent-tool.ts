@@ -55,6 +55,7 @@ const TaskItem = Type.Object({
   cwd: Type.String({ description: "Working directory" }),
   name: Type.Optional(Type.String({ description: "Display name for async status" })),
   estimatedSeconds: Type.Optional(Type.Number({ description: "Estimated task duration in seconds. Required for sync parallel tasks." })),
+  taskId: Type.Optional(Type.String({ description: "Task ID to auto-complete when this async agent finishes" })),
 });
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
@@ -104,6 +105,9 @@ const SubagentParams = Type.Object({
   ),
   name: Type.Optional(
     Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
+  ),
+  taskId: Type.Optional(
+    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Only works with async: true." }),
   ),
   asyncKill: Type.Optional(
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
@@ -507,7 +511,7 @@ export async function runSingleAgent(
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; taskId?: string }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -695,6 +699,7 @@ export function registerSubagentTool(
               parentModelId,
               parentProvider,
               groupId,
+              taskId: (t as any).taskId,
             });
             if (r.error) {
               errors.push(`${t.agent}: ${r.error}`);
@@ -736,7 +741,7 @@ export function registerSubagentTool(
             isError: true,
           };
         }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider });
+        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId });
         if (result.error) {
           return {
             content: [{ type: "text", text: result.error }],

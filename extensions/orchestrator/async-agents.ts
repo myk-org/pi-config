@@ -38,6 +38,7 @@ export interface AsyncJob {
   delivered?: boolean;
   fireAndForget?: boolean;
   groupId?: string;
+  taskId?: string;
 }
 
 interface AsyncState {
@@ -75,7 +76,7 @@ export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -222,7 +223,8 @@ export function registerAsyncAgents(
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
       const output = (j.output || "").slice(0, 3000);
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}`);
+      const taskHint = j.taskId ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${j.taskId}", status="${j.status === "complete" ? "completed" : "in_progress"}")\` now.` : "";
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${taskHint}`);
       j.delivered = true;
     }
 
@@ -287,9 +289,10 @@ export function registerAsyncAgents(
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
+        const taskHint = job.taskId ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${job.taskId}", status="${data.success ? "completed" : "in_progress"}")\` now.` : "";
         pi.sendMessage({
           customType: "async-agent-result",
-          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}`,
+          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${taskHint}`,
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
@@ -326,7 +329,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -441,6 +444,7 @@ export function registerAsyncAgents(
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
       groupId: options?.groupId,
+      taskId: options?.taskId,
     };
     asyncState.jobs.set(id, job);
     updateAsyncWidget();
