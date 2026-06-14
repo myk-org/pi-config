@@ -208,6 +208,9 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
     for i, c in enumerate(comments, 1):
         summary = extract_summary(c["body"], col_widths["Summary"])
         status = c.get("status") or "pending"
+        is_sticky = (c.get("type") or "").startswith("qodo_")
+        if is_sticky:
+            status = f"{status} \U0001f4cc"
         file_name = (c.get("path") or "").split("/")[-1]
         line_num = str(c.get("line") or "")
 
@@ -269,6 +272,8 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
         summary = escape(extract_summary(c["body"], 80))
         reply = escape((c.get("reply") or c.get("skip_reason") or "")[:100])
         status = c.get("status") or "pending"
+        is_sticky = (c.get("type") or "").startswith("qodo_")
+        sticky_badge = ' <span title="Still in Qodo sticky comment">📌</span>' if is_sticky else ""
         bg = status_colors.get(status, "#e2e3e5")
         path = escape(c.get("path") or "")
         rows_html += f"""
@@ -280,7 +285,7 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
             <td>{summary}</td>
             <td style="background-color: {bg}; font-weight: bold;
                 color: {status_text_colors.get(status, "#c9d1d9")};">
-                {escape(status)}</td>
+                {escape(status)}{sticky_badge}</td>
             <td>{reply}</td>
         </tr>"""
 
