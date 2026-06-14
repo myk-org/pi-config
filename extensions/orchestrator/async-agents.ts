@@ -25,7 +25,7 @@ let TaskStoreClass: any = null;
     } catch { continue; }
   }
   if (!TaskStoreClass) {
-    console.debug("[async-agents] WARNING: TaskStore not found — task auto-completion disabled");
+    throw new Error("[async-agents] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
   }
 })();
 
@@ -92,7 +92,7 @@ export function formatDuration(ms: number): string {
 
 /** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
 function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): boolean {
-  if (!taskId || taskId === "-1" || !TaskStoreClass) return false;
+  if (!taskId || taskId === "-1") return false;
 
   const tasksDir = path.join(cwd, ".pi", "tasks");
   const candidates: string[] = [];

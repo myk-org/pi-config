@@ -39,7 +39,7 @@ let TaskStoreClass: any = null;
     try { const mod = await import(c); if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; } } catch { continue; }
   }
   if (!TaskStoreClass) {
-    console.debug("[subagent] WARNING: TaskStore not found — taskId validation falls back to file reads");
+    throw new Error("[subagent] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
   }
 })();
 import { clockHHMM, getPiInvocation, getProjectTmpDir } from "./utils.js";
