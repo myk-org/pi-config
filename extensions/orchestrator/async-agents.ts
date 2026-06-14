@@ -10,6 +10,12 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
+// Import TaskStore for direct task auto-completion (bypasses AI)
+let TaskStoreClass: any = null;
+try {
+  TaskStoreClass = require("@tintinweb/pi-tasks/dist/task-store.js").TaskStore;
+} catch {}
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
@@ -71,50 +77,39 @@ export function formatDuration(ms: number): string {
   return `${m}m${s}s`;
 }
 
-/** Directly update a task's status in the pi-tasks store file. */
-function autoCompleteTask(taskId: string, cwd: string): boolean {
-  if (!taskId || taskId === "-1") return false;
+/** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
+function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): boolean {
+  if (!taskId || taskId === "-1" || !TaskStoreClass) return false;
 
   const tasksDir = path.join(cwd, ".pi", "tasks");
-  // Try all possible store files
-  let files: string[];
+  // Determine the store path — prefer session-scoped, fall back to project-scoped
+  let storePath: string | undefined;
+  if (sessionId) {
+    const sessionFile = path.join(tasksDir, `tasks-${sessionId}.json`);
+    if (fs.existsSync(sessionFile)) storePath = sessionFile;
+  }
+  if (!storePath) {
+    const projectFile = path.join(tasksDir, "tasks.json");
+    if (fs.existsSync(projectFile)) storePath = projectFile;
+  }
+  if (!storePath) {
+    // Try to find any session-scoped file
+    try {
+      const files = fs.readdirSync(tasksDir).filter(f => f.startsWith("tasks") && f.endsWith(".json"));
+      if (files.length > 0) storePath = path.join(tasksDir, files[0]);
+    } catch { /* dir doesn't exist */ }
+  }
+  if (!storePath) return false;
+
   try {
-    files = fs.readdirSync(tasksDir)
-      .filter(f => f.startsWith("tasks") && f.endsWith(".json"))
-      .sort((a, b) => {
-        // Session-scoped files (tasks-<uuid>.json) before project-scoped (tasks.json)
-        const aSession = a !== "tasks.json" ? 1 : 0;
-        const bSession = b !== "tasks.json" ? 1 : 0;
-        return bSession - aSession;
-      });
+    const store = new TaskStoreClass(storePath);
+    const task = store.get(taskId);
+    if (!task || task.status === "completed") return false;
+    store.update(taskId, { status: "completed" });
+    return true;
   } catch {
     return false;
   }
-
-  for (const file of files) {
-    const filePath = path.join(tasksDir, file);
-    try {
-      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-      const tasks: any[] = data.tasks || [];
-      const task = tasks.find((t: any) => t.id === taskId);
-      if (task) {
-        // Check all blockedBy deps are completed
-        const allDepsCompleted = (task.blockedBy || []).every((depId: string) => {
-          const dep = tasks.find((t: any) => t.id === depId);
-          return dep && dep.status === "completed";
-        });
-        if (!allDepsCompleted) return false;
-
-        task.status = "completed";
-        task.updatedAt = Date.now();
-        fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
-        return true;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return false;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────
@@ -272,7 +267,8 @@ export function registerAsyncAgents(
       const output = (j.output || "").slice(0, 3000);
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
-        const completed = autoCompleteTask(j.taskId, j.cwd);
+        const sessionId = asyncState.lastCtx?.sessionManager?.getSessionId?.();
+        const completed = autoCompleteTask(j.taskId, j.cwd, sessionId);
         asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
       }
       const taskHint = "";
@@ -343,7 +339,8 @@ export function registerAsyncAgents(
         const output = (data.output || "").slice(0, 3000);
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
-          const completed = autoCompleteTask(job.taskId, job.cwd);
+          const sessionId = asyncState.lastCtx?.sessionManager?.getSessionId?.();
+          const completed = autoCompleteTask(job.taskId, job.cwd, sessionId);
           asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
         }
         const taskHint = "";
