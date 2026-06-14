@@ -269,8 +269,12 @@ export function registerAsyncAgents(
       const output = (j.output || "").slice(0, 3000);
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
-        const completed = await autoCompleteTask(j.taskId, j.cwd, j.sessionId);
-        asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
+        try {
+          const completed = await autoCompleteTask(j.taskId, j.cwd, j.sessionId);
+          asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
+        } catch (e: any) {
+          asyncLog(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
+        }
       }
       const taskHint = "";
       sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${taskHint}`);
@@ -340,8 +344,12 @@ export function registerAsyncAgents(
         const output = (data.output || "").slice(0, 3000);
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
-          const completed = await autoCompleteTask(job.taskId, job.cwd, job.sessionId);
-          asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
+          try {
+            const completed = await autoCompleteTask(job.taskId, job.cwd, job.sessionId);
+            asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
+          } catch (e: any) {
+            asyncLog(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
+          }
         }
         const taskHint = "";
         pi.sendMessage({

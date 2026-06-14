@@ -551,6 +551,9 @@ def run(json_path: str) -> None:
             err = validate_reply(reply, comment_path, status)
             if err:
                 lazy_errors.append(err)
+            # Ensure reply field is always populated (posting uses reply, not skip_reason)
+            elif status != "pending" and not comment.get("reply") and comment.get("skip_reason"):
+                comment["reply"] = comment["skip_reason"]
     if lazy_errors:
         eprint(f"\nError: {len(lazy_errors)} lazy/vague replies detected. Fix them before posting:\n")
         for err in lazy_errors:
