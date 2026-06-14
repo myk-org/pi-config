@@ -1,8 +1,9 @@
-"""Review handler status — query reviews DB and display all comments for current PR.
+"""Review handler status — query reviews DB and display deduplicated findings for current PR.
 
-Outputs:
-1. TUI table to stdout
-2. HTML file saved to /tmp/pi-work/<project>/review-status-<pr>.html
+Shows the latest status per unique finding (keyed by source + path + summary).
+Duplicate entries from multiple review cycles are merged, keeping the most recent.
+
+Output: HTML report saved to /tmp/pi-work/<project>/review-status-<pr>.html
 """
 
 import json
