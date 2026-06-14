@@ -418,7 +418,7 @@ def run(pr_number: int | None = None) -> None:
     owner, repo = get_pr_repo_info(db_path, pr_num)
     pr_info["owner"] = owner
     pr_info["repo"] = repo
-    comments = query_comments(db_path, pr_num)
+    comments = deduplicate_comments(query_comments(db_path, pr_num))
 
     # TUI output
     print(format_tui_table(comments, pr_info))
