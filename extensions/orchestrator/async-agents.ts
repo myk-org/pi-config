@@ -583,20 +583,21 @@ export function registerAsyncAgents(
         return;
       }
 
-      // Build selection list
+      // Build selection list — append short ID to ensure uniqueness
       const options = running.map((j) => {
         const duration = formatDuration(Date.now() - j.startedAt);
         const taskPreview = j.task.length > 60 ? j.task.slice(0, 60) + "..." : j.task;
-        return `${j.name || j.agent} (${duration}) — ${taskPreview}`;
+        const shortId = j.id.slice(-6);
+        return `${j.name || j.agent} (${duration}) [${shortId}] — ${taskPreview}`;
       });
 
       const selected = await ctx.ui.select("View async agent output:", options);
       if (!selected) return;
 
-      const idx = options.indexOf(selected);
-      if (idx < 0) return;
-
-      const job = running[idx];
+      // Extract short ID from selection to find the exact job (avoids indexOf collision on duplicate labels)
+      const idMatch = selected.match(/\[(\w{6})\] —/);
+      const job = idMatch ? running.find(j => j.id.endsWith(idMatch[1])) : running[options.indexOf(selected)];
+      if (!job) return;
       const outputPath = path.join(job.workerDir, "output.log");
 
       // Create a live output viewer as an overlay
@@ -860,20 +861,21 @@ export function registerAsyncAgents(
         return;
       }
 
-      // Build selection list: agent name + task preview
+      // Build selection list — append short ID to ensure uniqueness
       const options = running.map((j) => {
         const duration = formatDuration(Date.now() - j.startedAt);
         const taskPreview = j.task.length > 60 ? j.task.slice(0, 60) + "..." : j.task;
-        return `${j.agent} (${duration}) — ${taskPreview}`;
+        const shortId = j.id.slice(-6);
+        return `${j.name || j.agent} (${duration}) [${shortId}] — ${taskPreview}`;
       });
 
       const selected = await ctx.ui.select("Kill which async agent?", options);
       if (!selected) return;
 
-      const idx = options.indexOf(selected);
-      if (idx < 0) return;
-
-      const job = running[idx];
+      // Extract short ID from selection to find the exact job (avoids indexOf collision on duplicate labels)
+      const idMatch = selected.match(/\[(\w{6})\] —/);
+      const job = idMatch ? running.find(j => j.id.endsWith(idMatch[1])) : running[options.indexOf(selected)];
+      if (!job) return;
 
       // Kill entire process tree
       const status = readAsyncStatus(job.workerDir);
@@ -900,7 +902,7 @@ export function registerAsyncAgents(
       job.status = "failed";
       job.updatedAt = Date.now();
       updateAsyncWidget();
-      ctx.ui.notify(`Killed: ${job.agent}`, "info");
+      ctx.ui.notify(`Killed: ${job.name || job.agent}`, "info");
 
       // Clean up after 5s
       setTimeout(() => {
