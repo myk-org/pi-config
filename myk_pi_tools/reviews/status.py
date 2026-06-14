@@ -180,7 +180,7 @@ def format_tui_table(comments: list[dict], pr_info: dict) -> str:
         "Line": 5,
         "Summary": 40,
         "Status": 15,
-        "Reply": 40,
+        "Reply": 80,
     }
 
     def pad(text: str, width: int) -> str:
@@ -270,7 +270,7 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
     rows_html = ""
     for i, c in enumerate(comments, 1):
         summary = escape(extract_summary(c["body"], 80))
-        reply = escape((c.get("reply") or c.get("skip_reason") or "")[:100])
+        reply = escape(c.get("reply") or c.get("skip_reason") or "")
         status = c.get("status") or "pending"
         is_sticky = (c.get("type") or "").startswith("qodo_")
         sticky_badge = ' <span title="Still in Qodo sticky comment">📌</span>' if is_sticky else ""
