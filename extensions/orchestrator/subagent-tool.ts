@@ -107,7 +107,7 @@ const SubagentParams = Type.Object({
     Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
   ),
   taskId: Type.Optional(
-    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Only works with async: true." }),
+    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Required for async agents — pass \"-1\" if not linked to any task." }),
   ),
   asyncKill: Type.Optional(
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
@@ -686,6 +686,14 @@ export function registerSubagentTool(
               isError: true,
             };
           }
+          const noTaskId = params.tasks.filter(t => (t as any).taskId == null);
+          if (noTaskId.length > 0) {
+            return {
+              content: [{ type: "text", text: `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map(t => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"` }],
+              details: mkd("single")([]),
+              isError: true,
+            };
+          }
           const results: string[] = [];
           const errors: string[] = [];
           // Group parallel async tasks so results are delivered together
@@ -737,6 +745,13 @@ export function registerSubagentTool(
         if (!params.name) {
           return {
             content: [{ type: "text", text: "Async agents require a name for display in status line (e.g., 'Dream', 'Code Review', 'PR #42')." }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+        if (params.taskId == null) {
+          return {
+            content: [{ type: "text", text: `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")` }],
             details: mkd("single")([]),
             isError: true,
           };

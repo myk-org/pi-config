@@ -111,9 +111,9 @@ Mark Task 1 as `completed`.
 
 Spawn ALL 3 review agents as async subagents. Each reviewer is its own task:
 
-- **Task 2** — `code-reviewer-quality` — General code quality and maintainability
-- **Task 3** — `code-reviewer-guidelines` — Project guidelines and style adherence
-- **Task 4** — `code-reviewer-security` — Bugs, logic errors, and security vulnerabilities
+- **Task 2** — `code-reviewer-quality`
+- **Task 3** — `code-reviewer-guidelines`
+- **Task 4** — `code-reviewer-security`
 
 Mark Tasks 2, 3, 4 as `in_progress` when spawning the agents.
 
@@ -128,11 +128,8 @@ Provide each agent with the diff content from Phase 1 and ask them to analyze fo
 7. Code duplication
 8. Suggestions for improvement
 
-Mark each reviewer task as `completed` ONLY when its findings are fully received and stored.
-
-Async agent results surface automatically when complete — no polling needed.
-When a reviewer's result arrives, mark its task as `completed`.
-Wait for ALL 3 results before proceeding.
+When each reviewer finishes, its task is auto-completed (see orchestrator rules on taskId).
+Task 5 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
 
 > 🚨 **DO NOT proceed to Phase 3 until ALL THREE reviewer tasks (2, 3, 4) are `completed`.**
 > Task 5 is blocked by Tasks 2, 3, and 4 — this is enforced by `addBlockedBy`.

@@ -223,7 +223,7 @@ export function registerAsyncAgents(
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
       const output = (j.output || "").slice(0, 3000);
-      const taskHint = j.taskId ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${j.taskId}", status="${j.status === "complete" ? "completed" : "in_progress"}")\` now.` : "";
+      const taskHint = j.taskId && j.taskId !== "-1" ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${j.taskId}", status="${j.status === "complete" ? "completed" : "in_progress"}")\` now.` : "";
       sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${taskHint}`);
       j.delivered = true;
     }
@@ -289,7 +289,7 @@ export function registerAsyncAgents(
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         const output = (data.output || "").slice(0, 3000);
-        const taskHint = job.taskId ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${job.taskId}", status="${data.success ? "completed" : "in_progress"}")\` now.` : "";
+        const taskHint = job.taskId && job.taskId !== "-1" ? `\n\n**Auto-complete:** Run \`TaskUpdate(taskId="${job.taskId}", status="${data.success ? "completed" : "in_progress"}")\` now.` : "";
         pi.sendMessage({
           customType: "async-agent-result",
           content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${taskHint}`,

@@ -287,9 +287,9 @@ Mark Task 4 as `completed`.
 
 Spawn ALL 3 review agents as async subagents. Each reviewer is its own task:
 
-- **Task 5** — `code-reviewer-quality` — General code quality and maintainability
-- **Task 6** — `code-reviewer-guidelines` — Project guidelines and style adherence
-- **Task 7** — `code-reviewer-security` — Bugs, logic errors, and security vulnerabilities
+- **Task 5** — `code-reviewer-quality`
+- **Task 6** — `code-reviewer-guidelines`
+- **Task 7** — `code-reviewer-security`
 
 Mark Tasks 5, 6, 7 as `in_progress` when spawning the agents.
 
@@ -300,13 +300,8 @@ Provide each agent with:
 
 Each agent should analyze for security, bugs, error handling, and performance issues and return their findings as prose.
 
-Mark each reviewer task as `completed` ONLY when its findings are fully received and stored.
-
-Async agent results surface automatically in the conversation when complete.
-Each reviewer's findings are delivered as its async result text — store them
-in the conversation context. Mark the reviewer's task as `completed` only
-after reading and storing its findings.
-Wait for ALL 3 results before proceeding.
+When each reviewer finishes, its task is auto-completed (see orchestrator rules on taskId).
+Task 8 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
 
 > 🚨 **DO NOT proceed to Phase 3 until ALL THREE reviewer tasks (5, 6, 7) are `completed`.**
 > Task 8 is blocked by Tasks 4, 5, 6, and 7 — this is enforced by `addBlockedBy`.
