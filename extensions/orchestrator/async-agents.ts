@@ -12,9 +12,9 @@ const require = createRequire(import.meta.url);
 
 // Import TaskStore for direct task auto-completion (bypasses AI)
 let TaskStoreClass: any = null;
-try {
-  TaskStoreClass = require("@tintinweb/pi-tasks/dist/task-store.js").TaskStore;
-} catch {}
+import("@tintinweb/pi-tasks/dist/task-store.js")
+  .then(mod => { TaskStoreClass = mod.TaskStore; })
+  .catch(() => {});
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
