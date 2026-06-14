@@ -270,7 +270,11 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
     rows_html = ""
     for i, c in enumerate(comments, 1):
         summary = escape(extract_summary(c["body"], 80))
-        reply = escape(c.get("reply") or c.get("skip_reason") or "")
+        raw_reply = c.get("reply") or c.get("skip_reason") or ""
+        if len(raw_reply) > 200:
+            reply = f"<details><summary>{escape(raw_reply[:150])}...</summary>{escape(raw_reply)}</details>"
+        else:
+            reply = escape(raw_reply)
         status = c.get("status") or "pending"
         is_sticky = (c.get("type") or "").startswith("qodo_")
         sticky_badge = ' <span title="Still in Qodo sticky comment">📌</span>' if is_sticky else ""

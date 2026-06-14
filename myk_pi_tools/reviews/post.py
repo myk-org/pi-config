@@ -76,6 +76,8 @@ def validate_reply(reply: str, path: str, status: str) -> str | None:
     """
     if status == "pending":
         return None
+    if not isinstance(reply, str):
+        reply = str(reply) if reply is not None else ""
     if not reply or not reply.strip():
         return f"{path}: Empty reply for status '{status}'. Every non-pending entry needs a specific reply."
 
@@ -543,7 +545,7 @@ def run(json_path: str) -> None:
     lazy_errors: list[str] = []
     for cat in categories:
         for comment in data.get(cat, []):
-            reply = comment.get("reply") or comment.get("skip_reason") or ""
+            reply = str(comment.get("reply") or comment.get("skip_reason") or "")
             status = comment.get("status", "pending")
             comment_path = comment.get("path", "unknown")
             err = validate_reply(reply, comment_path, status)

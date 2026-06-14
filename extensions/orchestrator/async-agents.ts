@@ -13,8 +13,7 @@ const require = createRequire(import.meta.url);
 
 // Import TaskStore for direct task auto-completion (bypasses AI)
 let TaskStoreClass: any = null;
-(async () => {
-  // Try multiple resolution strategies
+const taskStoreReady: Promise<void> = (async () => {
   const candidates = [
     "@tintinweb/pi-tasks/dist/task-store.js",
     pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
@@ -93,8 +92,9 @@ export function formatDuration(ms: number): string {
 }
 
 /** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
-function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): boolean {
+async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
+  await taskStoreReady;
 
   const tasksDir = path.join(cwd, ".pi", "tasks");
   const candidates: string[] = [];
@@ -232,7 +232,7 @@ export function registerAsyncAgents(
   }
 
   /** Deliver all results from a completed group as a single combined message. */
-  function deliverGroupResults(groupJobs: AsyncJob[]) {
+  async function deliverGroupResults(groupJobs: AsyncJob[]) {
     if (!asyncState.lastCtx) return;
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
@@ -269,7 +269,7 @@ export function registerAsyncAgents(
       const output = (j.output || "").slice(0, 3000);
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
-        const completed = autoCompleteTask(j.taskId, j.cwd, j.sessionId);
+        const completed = await autoCompleteTask(j.taskId, j.cwd, j.sessionId);
         asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
       }
       const taskHint = "";
@@ -292,7 +292,7 @@ export function registerAsyncAgents(
     }
   }
 
-  function processResultFile(resultPath: string) {
+  async function processResultFile(resultPath: string) {
     try {
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
@@ -340,7 +340,7 @@ export function registerAsyncAgents(
         const output = (data.output || "").slice(0, 3000);
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
-          const completed = autoCompleteTask(job.taskId, job.cwd, job.sessionId);
+          const completed = await autoCompleteTask(job.taskId, job.cwd, job.sessionId);
           asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
         }
         const taskHint = "";
