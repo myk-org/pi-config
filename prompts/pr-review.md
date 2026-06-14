@@ -285,26 +285,32 @@ Mark Task 4 as `completed`.
 
 ### Phase 2: Code Analysis — Tasks 5, 6, 7
 
-Spawn ALL 3 review agents as async subagents. Each reviewer is its own task:
+Mark Tasks 5, 6, 7 as `in_progress`, then spawn ALL 3 review agents as async subagents
+with `taskId` linking each to its task:
 
-- **Task 5** — `code-reviewer-quality`
-- **Task 6** — `code-reviewer-guidelines`
-- **Task 7** — `code-reviewer-security`
-
-Mark Tasks 5, 6, 7 as `in_progress` when spawning the agents.
+```text
+subagent(tasks=[
+  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "5"},
+  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "6"},
+  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "7"},
+])
+```
 
 Provide each agent with:
 
 - The diff content from Phase 1a
 - The AGENTS.md content from Phase 1b (or "No AGENTS.md found" if empty)
 
-Each agent should analyze for security, bugs, error handling, and performance issues and return their findings as prose.
+Each agent should analyze for security, bugs, error handling, and performance issues
+and return their findings as prose.
 
-When each reviewer finishes, its task is auto-completed (see orchestrator rules on taskId).
+**After spawning, verify the response says "Async agent spawned" for all 3.**
+If any spawn fails, STOP and report the error — do NOT continue waiting.
+
+**After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
+or check status. Results arrive automatically as follow-up messages.
+When each reviewer finishes, its task is auto-completed via `taskId`.
 Task 8 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
-
-> 🚨 **DO NOT proceed to Phase 3 until ALL THREE reviewer tasks (5, 6, 7) are `completed`.**
-> Task 8 is blocked by Tasks 4, 5, 6, and 7 — this is enforced by `addBlockedBy`.
 
 ### Phase 3: Merge & Deduplicate Findings — Task 8
 

@@ -109,13 +109,16 @@ Mark Task 1 as `completed`.
 
 ### Phase 2: Code Analysis — Tasks 2, 3, 4
 
-Spawn ALL 3 review agents as async subagents. Each reviewer is its own task:
+Mark Tasks 2, 3, 4 as `in_progress`, then spawn ALL 3 review agents as async subagents
+with `taskId` linking each to its task:
 
-- **Task 2** — `code-reviewer-quality`
-- **Task 3** — `code-reviewer-guidelines`
-- **Task 4** — `code-reviewer-security`
-
-Mark Tasks 2, 3, 4 as `in_progress` when spawning the agents.
+```text
+subagent(tasks=[
+  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "2"},
+  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "3"},
+  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "4"},
+])
+```
 
 Provide each agent with the diff content from Phase 1 and ask them to analyze for:
 
@@ -128,11 +131,13 @@ Provide each agent with the diff content from Phase 1 and ask them to analyze fo
 7. Code duplication
 8. Suggestions for improvement
 
-When each reviewer finishes, its task is auto-completed (see orchestrator rules on taskId).
-Task 5 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
+**After spawning, verify the response says "Async agent spawned" for all 3.**
+If any spawn fails, STOP and report the error — do NOT continue waiting.
 
-> 🚨 **DO NOT proceed to Phase 3 until ALL THREE reviewer tasks (2, 3, 4) are `completed`.**
-> Task 5 is blocked by Tasks 2, 3, and 4 — this is enforced by `addBlockedBy`.
+**After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
+or check status. Results arrive automatically as follow-up messages.
+When each reviewer finishes, its task is auto-completed via `taskId`.
+Task 5 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
 
 ### Phase 3: Merge & Deduplicate Findings — Task 5
 
