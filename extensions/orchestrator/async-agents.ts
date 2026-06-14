@@ -79,7 +79,14 @@ function autoCompleteTask(taskId: string, cwd: string): boolean {
   // Try all possible store files
   let files: string[];
   try {
-    files = fs.readdirSync(tasksDir).filter(f => f.startsWith("tasks") && f.endsWith(".json"));
+    files = fs.readdirSync(tasksDir)
+      .filter(f => f.startsWith("tasks") && f.endsWith(".json"))
+      .sort((a, b) => {
+        // Session-scoped files (tasks-<uuid>.json) before project-scoped (tasks.json)
+        const aSession = a !== "tasks.json" ? 1 : 0;
+        const bSession = b !== "tasks.json" ? 1 : 0;
+        return bSession - aSession;
+      });
   } catch {
     return false;
   }
@@ -408,6 +415,7 @@ export function registerAsyncAgents(
       parentPid: process.pid,
       parentStartTime,
       taskId: options?.taskId || null,
+      cwd,
     }), { mode: 0o600 });
 
     // Build pi args
@@ -589,6 +597,8 @@ export function registerAsyncAgents(
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
             fireAndForget: marker.fireAndForget || false,
+            taskId: marker.taskId || undefined,
+            cwd: marker.cwd || undefined,
           };
           asyncState.jobs.set(id, job);
           asyncLog(`restored job: ${id} state=${job.status}`);

@@ -288,11 +288,13 @@ Mark Task 4 as `completed`.
 Mark Tasks 5, 6, 7 as `in_progress`, then spawn ALL 3 review agents as async subagents
 with `taskId` linking each to its task:
 
+Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
+
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "5"},
-  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "6"},
-  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "7"},
+  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "<actual task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "<actual task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "<actual task 7 ID>"},
 ])
 ```
 
@@ -304,7 +306,7 @@ Provide each agent with:
 Each agent should analyze for security, bugs, error handling, and performance issues
 and return their findings as prose.
 
-**After spawning, verify the response says "Async agent spawned" for all 3.**
+**After spawning, verify the response confirms all 3 agents were spawned.**
 If any spawn fails, STOP and report the error — do NOT continue waiting.
 
 **After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,

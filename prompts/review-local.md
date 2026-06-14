@@ -110,13 +110,14 @@ Mark Task 1 as `completed`.
 ### Phase 2: Code Analysis — Tasks 2, 3, 4
 
 Mark Tasks 2, 3, 4 as `in_progress`, then spawn ALL 3 review agents as async subagents
-with `taskId` linking each to its task:
+with `taskId` linking each to its task.
+Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "2"},
-  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "3"},
-  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "4"},
+  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "<actual task 2 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "<actual task 3 ID>"},
+  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "<actual task 4 ID>"},
 ])
 ```
 
@@ -131,7 +132,7 @@ Provide each agent with the diff content from Phase 1 and ask them to analyze fo
 7. Code duplication
 8. Suggestions for improvement
 
-**After spawning, verify the response says "Async agent spawned" for all 3.**
+**After spawning, verify the response confirms all 3 agents were spawned.**
 If any spawn fails, STOP and report the error — do NOT continue waiting.
 
 **After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
