@@ -864,7 +864,7 @@ export function registerAsyncAgents(
       const options = running.map((j) => {
         const duration = formatDuration(Date.now() - j.startedAt);
         const taskPreview = j.task.length > 60 ? j.task.slice(0, 60) + "..." : j.task;
-        return `${j.agent} (${duration}) — ${taskPreview}`;
+        return `${j.name || j.agent} (${duration}) — ${taskPreview}`;
       });
 
       const selected = await ctx.ui.select("Kill which async agent?", options);
@@ -900,7 +900,7 @@ export function registerAsyncAgents(
       job.status = "failed";
       job.updatedAt = Date.now();
       updateAsyncWidget();
-      ctx.ui.notify(`Killed: ${job.agent}`, "info");
+      ctx.ui.notify(`Killed: ${job.name || job.agent}`, "info");
 
       // Clean up after 5s
       setTimeout(() => {
