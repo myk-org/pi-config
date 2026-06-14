@@ -24,6 +24,9 @@ let TaskStoreClass: any = null;
       if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; }
     } catch { continue; }
   }
+  if (!TaskStoreClass) {
+    console.debug("[async-agents] WARNING: TaskStore not found — task auto-completion disabled");
+  }
 })();
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -92,34 +95,21 @@ function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): bool
   if (!taskId || taskId === "-1" || !TaskStoreClass) return false;
 
   const tasksDir = path.join(cwd, ".pi", "tasks");
-  // Determine the store path — prefer session-scoped, fall back to project-scoped
-  let storePath: string | undefined;
-  if (sessionId) {
-    const sessionFile = path.join(tasksDir, `tasks-${sessionId}.json`);
-    if (fs.existsSync(sessionFile)) storePath = sessionFile;
-  }
-  if (!storePath) {
-    const projectFile = path.join(tasksDir, "tasks.json");
-    if (fs.existsSync(projectFile)) storePath = projectFile;
-  }
-  if (!storePath) {
-    // Try to find any session-scoped file
-    try {
-      const files = fs.readdirSync(tasksDir).filter(f => f.startsWith("tasks") && f.endsWith(".json"));
-      if (files.length > 0) storePath = path.join(tasksDir, files[0]);
-    } catch { /* dir doesn't exist */ }
-  }
-  if (!storePath) return false;
+  const candidates: string[] = [];
+  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+  candidates.push(path.join(tasksDir, "tasks.json"));
 
-  try {
-    const store = new TaskStoreClass(storePath);
-    const task = store.get(taskId);
-    if (!task || task.status === "completed") return false;
-    store.update(taskId, { status: "completed" });
-    return true;
-  } catch {
-    return false;
+  for (const storePath of candidates) {
+    try {
+      const store = new TaskStoreClass(storePath);
+      const task = store.get(taskId);
+      if (task && task.status !== "completed") {
+        store.update(taskId, { status: "completed" });
+        return true;
+      }
+    } catch { continue; }
   }
+  return false;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────

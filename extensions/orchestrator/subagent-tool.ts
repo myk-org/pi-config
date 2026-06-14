@@ -27,6 +27,21 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+
+// Import TaskStore for taskId validation (bypasses raw file reads)
+let TaskStoreClass: any = null;
+(async () => {
+  const candidates = [
+    "@tintinweb/pi-tasks/dist/task-store.js",
+    path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js"),
+  ];
+  for (const c of candidates) {
+    try { const mod = await import(c); if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; } } catch { continue; }
+  }
+  if (!TaskStoreClass) {
+    console.debug("[subagent] WARNING: TaskStore not found — taskId validation falls back to file reads");
+  }
+})();
 import { clockHHMM, getPiInvocation, getProjectTmpDir } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -509,23 +524,22 @@ export async function runSingleAgent(
 
 /** Validate that a taskId references an existing task in the pi-tasks store. */
 function validateTaskId(taskId: string, cwd: string, sessionId?: string): string | null {
-  if (taskId === "-1") return null; // -1 means "not linked"
+  if (taskId === "-1") return null;
 
-  // Try session-scoped file first, then project-scoped
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const candidates: string[] = [];
-  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  candidates.push(path.join(tasksDir, "tasks.json"));
-
-  for (const filePath of candidates) {
-    try {
-      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-      const tasks: any[] = data.tasks || [];
-      if (tasks.some((t: any) => t.id === taskId)) return null; // Found
-    } catch {
-      continue; // File doesn't exist or parse error
+  if (TaskStoreClass) {
+    // Use TaskStore API — no raw file reads
+    const tasksDir = path.join(cwd, ".pi", "tasks");
+    const paths: string[] = [];
+    if (sessionId) paths.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+    paths.push(path.join(tasksDir, "tasks.json"));
+    for (const p of paths) {
+      try {
+        const store = new TaskStoreClass(p);
+        if (store.get(taskId)) return null;
+      } catch { continue; }
     }
   }
+
   return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
 }
 
