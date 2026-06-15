@@ -281,10 +281,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       // Check for near-duplicates via vector similarity (catches same lesson with different wording)
       try {
-        await embedMissing(cwd, topicEntries);
-        const vectorMatches = await vectorSearch(cwd, text, topicEntries, 20);
+        const sameCategoryEntries = topicEntries.filter(te => te.category === category);
+        await embedMissing(cwd, sameCategoryEntries);
+        const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
         for (const vm of vectorMatches) {
-          if (vm.category === category && vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
+          if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
             const existingLine = `- [${vm.category}] ${vm.text}`;
             if (reinforce(cwd, existingLine)) {
               return {
