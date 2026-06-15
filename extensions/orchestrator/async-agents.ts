@@ -542,6 +542,8 @@ export function registerAsyncAgents(
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
+    // Export as env var so prompts/CLI commands can reference it
+    process.env.PROJECT_TMP_DIR = PROJECT_TMP_DIR;
 
     // Set results dir — PID-scoped under project dir
     ASYNC_RESULTS_DIR = path.join(PROJECT_TMP_DIR, sessionResultsDirName());
