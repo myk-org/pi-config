@@ -378,3 +378,5 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     return undefined;
   });
 }
+
+// trigger re-scan
