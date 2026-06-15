@@ -281,7 +281,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
 
       // Check for near-duplicates via vector similarity (catches same lesson with different wording)
       try {
-        const vectorMatches = await vectorSearch(cwd, text, topicEntries, 5);
+        const vectorMatches = await vectorSearch(cwd, text, topicEntries, 20);
         for (const vm of vectorMatches) {
           if (vm.category === category && vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
             const existingLine = `- [${vm.category}] ${vm.text}`;
@@ -293,8 +293,8 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
                 }],
               };
             }
-            // reinforce() failed (score entry missing) — fall through to add normally
-            break;
+            // reinforce() failed (score entry missing) — try next candidate
+            continue;
           }
         }
       } catch (err) {
