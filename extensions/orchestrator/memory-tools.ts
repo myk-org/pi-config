@@ -28,6 +28,8 @@ import {
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 
+const NEAR_DUPLICATE_THRESHOLD = 0.85;
+
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -267,7 +269,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         ? `- [${category}] ${text} *(pinned)*`
         : canonicalLine;
 
-      // Check for duplicates
+      // Check for duplicates — exact match first, then vector similarity
       const topicEntries = readAllTopicEntries(cwd);
       for (const te of topicEntries) {
         if (te.text === text && te.category === category) {
@@ -275,6 +277,28 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           reinforce(cwd, canonicalLine);
           return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
         }
+      }
+
+      // Check for near-duplicates via vector similarity (catches same lesson with different wording)
+      try {
+        const vectorMatches = await vectorSearch(cwd, text, topicEntries, 5);
+        for (const vm of vectorMatches) {
+          if (vm.category === category && vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
+            const existingLine = `- [${vm.category}] ${vm.text}`;
+            if (reinforce(cwd, existingLine)) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}`,
+                }],
+              };
+            }
+            // reinforce() failed (score entry missing) — fall through to add normally
+            break;
+          }
+        }
+      } catch (err) {
+        console.debug(`[memory] memory_add: vector dedup skipped: ${err}`);
       }
 
       const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
