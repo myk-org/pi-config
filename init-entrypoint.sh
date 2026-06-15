@@ -10,15 +10,6 @@ if [ "$(id -u)" != "0" ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
     # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
-    for d in /tmp/pi-data; do
-        if ! mkdir -p "$d" 2>/dev/null; then
-            echo "WARNING: failed to create $d — temp files may fail. Fix with: sudo mkdir -p $d && sudo chown $(id -u):$(id -g) $d" >&2
-        elif _probe="$d/.pi-probe-$$" && ! touch "$_probe" 2>/dev/null; then
-            echo "WARNING: $d is not writable by $(whoami) — temp files may fail. Fix with: sudo chown $(id -u):$(id -g) $d" >&2
-        else
-            rm -f "$_probe" 2>/dev/null
-        fi
-    done
     exec entrypoint.sh "$@"
 fi
 
@@ -91,22 +82,6 @@ if [ -S "$DOCKER_SOCK" ]; then
         usermod -aG "$SOCK_GROUP" node
     fi
 fi
-
-# Ensure temp dirs exist and are owned by node (not root)
-for d in /tmp/pi-data; do
-    # Refuse to operate on symlinks — prevents chown escape
-    if [ -L "$d" ]; then
-        echo "WARNING: $d is a symlink — removing to prevent chown escape" >&2
-        rm -f "$d" || true
-    fi
-    if ! mkdir -p "$d" 2>/dev/null; then
-        echo "WARNING: failed to create $d — temp files may fail" >&2
-        continue
-    fi
-    if ! chown node:node "$d" 2>/dev/null; then
-        echo "WARNING: could not chown $d — temp file writes may fail on mounted volumes" >&2
-    fi
-done
 
 # Drop to node permanently — runuser replaces the process
 exec runuser -m -u node -- entrypoint.sh "$@"

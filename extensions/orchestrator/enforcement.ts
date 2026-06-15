@@ -6,6 +6,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import * as path from "node:path";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir } from "./utils.js";
@@ -351,13 +352,19 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
-    // Enforce temp files go to /tmp/pi-data/ — not bare /tmp/
+    // Enforce temp files go to .pi/tmp/ — not bare /tmp/
     // Catches: mktemp /tmp/foo, > /tmp/foo, tee /tmp/foo, cat > /tmp/foo
-    if (/(?:^|[;&|$( \t])mktemp\b/.test(command) && !/\/tmp\/pi-data/.test(command) && !/PROJECT_TMP_DIR/.test(command)) {
-      return {
-        block: true,
-        reason: `⛔ mktemp must use project temp dir. Use: mktemp \${PROJECT_TMP_DIR}/XXXXXX (where PROJECT_TMP_DIR is from getProjectTmpDir)`,
-      };
+    if (/(?:^|[;&|$( \t])mktemp\b/.test(command)) {
+      const expectedTmpDir = path.join(ctx.cwd, ".pi", "tmp");
+      const usesEnvVar = /\$\{?PROJECT_TMP_DIR\}?/.test(command);
+      const usesExpectedPath = command.includes(expectedTmpDir);
+      const usesRelativePath = /\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
+      if (!usesEnvVar && !usesExpectedPath && !usesRelativePath) {
+        return {
+          block: true,
+          reason: `⛔ mktemp must use project temp dir. Use: mktemp \${PROJECT_TMP_DIR}/XXXXXX (resolves to ${expectedTmpDir}/)`,
+        };
+      }
     }
 
     // Dangerous command confirmation
