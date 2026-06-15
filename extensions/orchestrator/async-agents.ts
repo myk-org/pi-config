@@ -125,7 +125,7 @@ export function registerAsyncAgents(
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
-  let PROJECT_TMP_DIR = getProjectTmpDir(process.cwd()); // Updated to project-scoped dir on session_start
+  let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
   const ASYNC_DEBUG = !!process.env.PI_ASYNC_DEBUG;
