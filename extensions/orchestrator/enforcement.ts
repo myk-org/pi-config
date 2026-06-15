@@ -358,7 +358,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const expectedTmpDir = path.join(ctx.cwd, ".pi", "tmp");
       const usesEnvVar = /\$\{?PROJECT_TMP_DIR\}?/.test(command);
       const usesExpectedPath = command.includes(expectedTmpDir);
-      const usesRelativePath = /\.pi\/tmp\//.test(command);
+      const usesRelativePath = /\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
       if (!usesEnvVar && !usesExpectedPath && !usesRelativePath) {
         return {
           block: true,
