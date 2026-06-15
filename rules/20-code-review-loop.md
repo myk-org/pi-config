@@ -75,7 +75,7 @@ The process is iterative:
 Before declaring test failures as blockers, compare against the baseline:
 
 ```bash
-BASELINE_DIR="/tmp/pi-work/$(basename "$PWD")"
+BASELINE_DIR="${PROJECT_TMP_DIR}"
 mkdir -p "$BASELINE_DIR"
 
 # 1. Save ALL changes (staged + unstaged + untracked)

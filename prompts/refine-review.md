@@ -161,7 +161,7 @@ for future `/pr-review` cycle tracking:
 1. Write a JSON file with the submitted comments:
 
 ```bash
-cat > /tmp/pi-work/$(basename $PWD)/pr-review-store.json << 'EOF'
+cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
 {
   "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
   "comments": [
@@ -182,7 +182,7 @@ EOF
 1. Store to database:
 
 ```bash
-myk-pi-tools pr store-pr-review /tmp/pi-work/$(basename $PWD)/pr-review-store.json
+myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
 **This step is MANDATORY — never skip it.** Only store if the review was actually

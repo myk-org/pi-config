@@ -33,15 +33,12 @@ _RATE_LIMIT_BUFFER_SECONDS = 30
 _POLL_SLEEP_SECONDS = 300  # 5 minutes between cycles when no rate limit
 
 
-def _print_poll_summary(pr_number: str) -> None:
+def _print_poll_summary(pr_number: str, output_dir: str) -> None:
     """Print a summary line showing total/new/skipped counts after fetch."""
     import json
-    import os
-    import tempfile
     from pathlib import Path
 
-    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
-    json_path = tmp_base / "pi-work" / f"pr-{pr_number}-reviews.json"
+    json_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
 
     if not json_path.exists():
         return
@@ -66,19 +63,16 @@ def _print_poll_summary(pr_number: str) -> None:
     print_stderr(f"[poll] Summary: {total} total, {new} new, {skipped} auto-skipped")
 
 
-def _has_actionable_comments(pr_number: str) -> bool:
+def _has_actionable_comments(pr_number: str, output_dir: str) -> bool:
     """Check if the fetched reviews JSON has any actionable (non-auto-skipped) comments.
 
     Reads the JSON file written by fetch_run and checks if any comments
     have status 'pending' and are NOT auto-skipped.
     """
     import json
-    import os
-    import tempfile
     from pathlib import Path
 
-    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
-    json_path = tmp_base / "pi-work" / f"pr-{pr_number}-reviews.json"
+    json_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
 
     if not json_path.exists():
         # Can't determine — assume actionable to be safe
@@ -98,15 +92,12 @@ def _has_actionable_comments(pr_number: str) -> bool:
     return False
 
 
-def _has_actionable_qodo_comments(pr_number: str) -> bool:
+def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
     """Check if fetched reviews have actionable Qodo comments (not auto-skipped)."""
     import json
-    import os
-    import tempfile
     from pathlib import Path
 
-    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
-    json_path = tmp_base / "pi-work" / f"pr-{pr_number}-reviews.json"
+    json_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
 
     if not json_path.exists():
         return True
@@ -357,7 +348,7 @@ def _print_approval_summary(approval: dict) -> None:
     print_stderr("")
 
 
-def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> int:
+def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, output_dir: str) -> int:
     """Poll for Qodo reviews in a loop until approved or new comments.
 
     Flow per cycle:
@@ -374,11 +365,11 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
 
         # Step 1: Fetch reviews first
         print_stderr("[poll] Fetching reviews...")
-        fetch_result = fetch_run(review_url)
+        fetch_result = fetch_run(review_url, output_dir=output_dir)
 
         if fetch_result == 0:
-            _print_poll_summary(pr_number)
-            has_actionable = _has_actionable_qodo_comments(pr_number)
+            _print_poll_summary(pr_number, output_dir)
+            has_actionable = _has_actionable_qodo_comments(pr_number, output_dir)
             if has_actionable:
                 # Before returning, check if Qodo is mid-review — if so, wait for it to finish
                 _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
@@ -428,7 +419,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str) -> in
         time.sleep(_POLL_SLEEP_SECONDS)
 
 
-def run(review_url: str = "", source: str = "coderabbit") -> int:
+def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) -> int:
     """Poll for reviews in a loop until approval or new comments.
 
     Steps (repeated in a loop):
@@ -444,7 +435,7 @@ def run(review_url: str = "", source: str = "coderabbit") -> int:
     owner, repo, pr_number = get_pr_info(review_url)
 
     if source == "qodo":
-        return _run_qodo_poll(review_url, owner, repo, pr_number)
+        return _run_qodo_poll(review_url, owner, repo, pr_number, output_dir)
 
     # CodeRabbit poll (source == "coderabbit" or "all")
     owner_repo = f"{owner}/{repo}"
@@ -464,13 +455,13 @@ def run(review_url: str = "", source: str = "coderabbit") -> int:
 
         # Step 3: Fetch reviews — get actionable comments before waiting on rate limit
         print_stderr("[poll] Fetching reviews...")
-        fetch_result = fetch_run(review_url)
+        fetch_result = fetch_run(review_url, output_dir=output_dir)
 
         if fetch_result == 0:
-            _print_poll_summary(pr_number)
+            _print_poll_summary(pr_number, output_dir)
             # Check if there are actionable (non-auto-skipped) comments
             # fetch_run saves JSON to a predictable path
-            has_actionable = _has_actionable_comments(pr_number)
+            has_actionable = _has_actionable_comments(pr_number, output_dir)
             if has_actionable:
                 return 0
             print_stderr("[poll] All fetched comments are auto-skipped (previously addressed). No new comments.")

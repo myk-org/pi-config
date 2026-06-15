@@ -217,7 +217,7 @@ skipped and why before proceeding.
 Create a temp file with cleanup, write changelog to it, and create release:
 
 ```bash
-CHANGELOG_FILE=$(mktemp /tmp/pi-work/$(basename $PWD)/release-XXXXXX.md)
+CHANGELOG_FILE=$(mktemp ${PROJECT_TMP_DIR}/release-XXXXXX.md)
 trap "rm -f $CHANGELOG_FILE" EXIT
 
 cat > "$CHANGELOG_FILE" << 'EOF'

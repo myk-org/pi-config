@@ -16,20 +16,21 @@ def reviews() -> None:
     "--include-resolved", is_flag=True, default=False, help="Include resolved threads (with is_resolved field)"
 )
 @click.option("--user", default=None, help="Filter threads by author username")
-def reviews_fetch(review_url: str, include_resolved: bool, user: str | None) -> None:
+@click.option("--output-dir", required=True, help="Directory for output JSON file")
+def reviews_fetch(review_url: str, include_resolved: bool, user: str | None, output_dir: str) -> None:
     """Fetch review threads from current PR.
 
     Fetches review threads from the current branch's PR
     and categorizes them by source (human, qodo, coderabbit).
 
-    Saves output to /tmp/pi-work/pr-<number>-reviews.json
+    Saves output to <output-dir>/pr-<number>-reviews.json
 
     REVIEW_URL: Optional specific review URL for context
     (e.g., #pullrequestreview-XXX or #discussion_rXXX)
     """
     from myk_pi_tools.reviews.fetch import run
 
-    exit_code = run(review_url, include_resolved=include_resolved, user=user)
+    exit_code = run(review_url, include_resolved=include_resolved, user=user, output_dir=output_dir)
     sys.exit(exit_code)
 
 
@@ -41,7 +42,8 @@ def reviews_fetch(review_url: str, include_resolved: bool, user: str | None) -> 
     default="coderabbit",
     help="Which reviewer to poll for (default: coderabbit)",
 )
-def reviews_poll(review_url: str, source: str) -> None:
+@click.option("--output-dir", required=True, help="Directory for output JSON file")
+def reviews_poll(review_url: str, source: str, output_dir: str) -> None:
     """Poll for reviews until new actionable comments appear.
 
     Loops internally until something actionable happens, then returns
@@ -55,7 +57,7 @@ def reviews_poll(review_url: str, source: str) -> None:
     """
     from myk_pi_tools.reviews.poll import run
 
-    exit_code = run(review_url, source=source)
+    exit_code = run(review_url, source=source, output_dir=output_dir)
     sys.exit(exit_code)
 
 
@@ -78,17 +80,18 @@ def reviews_post(json_path: str) -> None:
 
 @reviews.command("pending-fetch")
 @click.argument("pr_url")
-def reviews_pending_fetch(pr_url: str) -> None:
+@click.option("--output-dir", required=True, help="Directory for output JSON file")
+def reviews_pending_fetch(pr_url: str, output_dir: str) -> None:
     """Fetch pending review comments from a PR.
 
     Fetches the authenticated user's PENDING review and its comments
-    from a GitHub PR. Saves output to /tmp/pi-work/pr-<number>-pending-review.json
+    from a GitHub PR. Saves output to <output-dir>/pr-<number>-pending-review.json
 
     PR_URL: GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)
     """
     from myk_pi_tools.reviews.pending_fetch import run
 
-    exit_code = run(pr_url)
+    exit_code = run(pr_url, output_dir=output_dir)
     sys.exit(exit_code)
 
 
@@ -111,7 +114,8 @@ def reviews_pending_update(json_path: str, submit: bool) -> None:  # noqa: FBT00
 
 @reviews.command("status")
 @click.option("--pr", type=int, default=None, help="PR number (default: auto-detect from current branch)")
-def reviews_status(pr: int | None) -> None:
+@click.option("--output-dir", required=True, help="Directory for output HTML report")
+def reviews_status(pr: int | None, output_dir: str) -> None:
     """Show review status for current PR.
 
     Queries the reviews database and displays all comments across all
@@ -119,7 +123,7 @@ def reviews_status(pr: int | None) -> None:
     """
     from myk_pi_tools.reviews.status import run
 
-    run(pr_number=pr)
+    run(pr_number=pr, output_dir=output_dir)
 
 
 @reviews.command("store")

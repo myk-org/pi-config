@@ -112,13 +112,13 @@ The `reviews fetch` command auto-detects the PR from the current branch.
 If a specific review URL is in the cleaned arguments:
 
 ```bash
-myk-pi-tools reviews fetch <cleaned_arguments>
+myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR} <cleaned_arguments>
 ```
 
 Otherwise (auto-detect from current branch):
 
 ```bash
-myk-pi-tools reviews fetch
+myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}
 ```
 
 Returns JSON with:
@@ -434,7 +434,7 @@ Qodo if autoqodo, both if both flags active).
 **If autorabbit is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1].`
+- Task: `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
@@ -442,16 +442,16 @@ Qodo if autoqodo, both if both flags active).
 **If autoqodo is ON (only):** Spawn ONE async worker:
 
 - Agent: `worker`
-- Task: `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1].`
+- Task: `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 - async: true
 - **No timeout** — the poll loops internally until new Qodo comments appear. NEVER set a timeout.
 
 **If BOTH are ON:** Spawn TWO async workers in parallel:
 
-1. `Run: myk-pi-tools reviews poll --source coderabbit [same arguments as Phase 1].`
+1. `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
-1. `Run: myk-pi-tools reviews poll --source qodo [same arguments as Phase 1].`
+1. `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
 
 When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn that agent.
@@ -472,7 +472,7 @@ Check the poll RAW output (not the worker's summary — look for the exact JSON 
   Instead, read the last saved reviews JSON file — its path was in the
   `metadata.json_path` field from the most recent `reviews fetch` or `reviews poll` output.
   If the JSON file was already deleted by `reviews store`, re-fetch with:
-  `myk-pi-tools reviews fetch` (passing the same arguments used in Phase 1, if any)
+  `myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}` (passing the same arguments used in Phase 1, if any)
 
   Display remaining findings in a table:
 

@@ -93,8 +93,8 @@ function getExtensionForMime(mimeType: string): string {
 }
 
 function getTempDir(cwd: string): string {
-    const basename = path.basename(cwd);
-    const dir = path.join("/tmp/pi-work", basename);
+    const project = cwd.replace(/^\//, "").replace(/\//g, "__");
+    const dir = path.join("/tmp/pi-data", project);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
 }

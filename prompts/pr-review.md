@@ -130,6 +130,9 @@ TaskUpdate(taskId="12", addBlockedBy=["11"])
 
 ## Workflow
 
+**PROJECT_TMP_DIR** is the project-scoped temp directory from `getProjectTmpDir(cwd)`.
+All temp files for this workflow go there — never use `/tmp/pi-work/` directly.
+
 ### Phase 0: PR Detection — Task 1
 
 Mark Task 1 as `in_progress`.
@@ -205,9 +208,8 @@ Clone the target repo and checkout the PR branch. This gives reviewers full repo
 instead of passing a truncated diff in the prompt.
 
 ```bash
-# Shallow clone to temp dir
-REVIEW_DIR="/tmp/pi-work/pr-review-${owner}-${repo}-${pr_number}"
-rm -rf "$REVIEW_DIR"
+# Shallow clone to temp dir (timestamp suffix avoids collisions)
+REVIEW_DIR="${PROJECT_TMP_DIR}/pr-review-${owner}-${repo}-${pr_number}-$(date +%s)"
 git clone --depth 50 "https://github.com/${owner}/${repo}.git" "$REVIEW_DIR"
 cd "$REVIEW_DIR"
 
@@ -243,7 +245,7 @@ Fetch ALL human review threads (resolved + unresolved) from the PR:
 Use the `owner`, `repo`, and `pr_number` from Phase 0 to construct the PR URL:
 
 ```bash
-myk-pi-tools reviews fetch --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
+myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR} --user {current_github_user} --include-resolved https://github.com/{owner}/{repo}/pull/{pr_number}
 ```
 
 Where `{current_github_user}` is obtained from:
@@ -346,16 +348,12 @@ Mark Task 9 as `completed`.
 
 Mark Task 10 as `in_progress`.
 
-If user selected findings, create temp directory and write JSON to temp file:
-
-```bash
-mkdir -p /tmp/pi-work/$(basename $PWD)
-```
+If user selected findings, write JSON to temp file:
 
 Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
 
 ```bash
-myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} /tmp/pi-work/$(basename $PWD)/pr-review-comments.json
+myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
 ```
 
 Mark Task 10 as `completed`.
@@ -369,7 +367,7 @@ After posting comments, store them in the PR review database for future cycle tr
 1. Write a JSON file with the posted comments:
 
 ```bash
-cat > /tmp/pi-work/$(basename $PWD)/pr-review-store.json << 'EOF'
+cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
 {
   "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
   "comments": [
@@ -390,7 +388,7 @@ EOF
 1. Store to database:
 
 ```bash
-myk-pi-tools pr store-pr-review /tmp/pi-work/$(basename $PWD)/pr-review-store.json
+myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
 **This step is MANDATORY — never skip it.** The database is used by future `/pr-review`
