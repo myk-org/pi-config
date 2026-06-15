@@ -13,7 +13,7 @@ You are NOT reviewing our own code. You are evaluating a third-party repo we are
 
 ## Audit Process
 
-1. **Clone the repo** (if not already cloned) to `/tmp/pi-work/` with `--depth 1`
+1. **Clone the repo** (if not already cloned) to `${PROJECT_TMP_DIR}/` with `--depth 1`
 2. **Run all audit categories** below systematically
 3. **Produce a structured report** with findings, severity, and a final verdict
 
