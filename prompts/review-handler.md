@@ -69,6 +69,8 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ## Workflow
 
+**`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+
 > **CRITICAL — BEFORE ANY CLI COMMAND:**
 > `--autorabbit` and `--autoqodo` are **command-level flags**, NOT CLI arguments.
 > **NEVER** pass `--autorabbit` or `--autoqodo` to `myk-pi-tools`. The CLI will reject it.

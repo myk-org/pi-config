@@ -209,7 +209,7 @@ instead of passing a truncated diff in the prompt.
 
 ```bash
 # Shallow clone to temp dir (timestamp suffix avoids collisions)
-REVIEW_DIR="${PROJECT_TMP_DIR}/pr-review-${owner}-${repo}-${pr_number}-$(date +%s)"
+REVIEW_DIR="/tmp/pi-work/pr-review-${owner}-${repo}-${pr_number}-$(date +%s)"
 git clone --depth 50 "https://github.com/${owner}/${repo}.git" "$REVIEW_DIR"
 cd "$REVIEW_DIR"
 

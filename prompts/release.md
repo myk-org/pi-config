@@ -40,6 +40,8 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ## Workflow
 
+**`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+
 ### Phase 1: Validation
 
 If `--target <branch>` was passed to the release command:

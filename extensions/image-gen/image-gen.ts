@@ -92,8 +92,9 @@ function getExtensionForMime(mimeType: string): string {
     return map[mimeType] ?? "png";
 }
 
+// Same logic as getProjectTmpDir in extensions/orchestrator/utils.ts
 function getTempDir(cwd: string): string {
-    const project = cwd.replace(/^\//, "").replace(/\//g, "__");
+    const project = cwd.replace(/^[\/\\]/, "").replace(/[\/\\]/g, "__");
     const dir = path.join("/tmp/pi-data", project);
     fs.mkdirSync(dir, { recursive: true });
     return dir;

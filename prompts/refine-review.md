@@ -43,12 +43,14 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 
 ## Workflow
 
+**`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+
 ### Phase 1: Fetch Pending Review
 
 Parse the raw arguments above as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
 
 ```bash
-myk-pi-tools reviews pending-fetch "<PR_URL>"
+myk-pi-tools reviews pending-fetch --output-dir ${PROJECT_TMP_DIR} "<PR_URL>"
 ```
 
 The command saves the review data to a JSON file and outputs the file path to stdout.

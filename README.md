@@ -310,6 +310,7 @@ docker run --rm -it \
   -v "$HOME/.ssh":"$HOME/.ssh":ro \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
   -v /tmp/pi-work:/tmp/pi-work:rw \
+  -v /tmp/pi-data:/tmp/pi-data:rw \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
@@ -486,6 +487,7 @@ PI_PIDIFF_ENABLE=false pi
 | `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
 | `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
 | `-v /tmp/pi-work:/tmp/pi-work:rw` | Persistent temp files (survives container restarts) |
+| `-v /tmp/pi-data:/tmp/pi-data:rw` | Project-scoped temp files (reviews, releases, async agents) |
 | `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
 | `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
 
@@ -554,6 +556,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
   -v "$HOME/screenshots":"$HOME/screenshots":ro \
   -v /tmp/pi-work:/tmp/pi-work:rw \
+  -v /tmp/pi-data:/tmp/pi-data:rw \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --group-add $(stat -c '%g' /var/run/docker.sock) \
   -w "$PWD" \
