@@ -364,6 +364,7 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - Model: `Xenova/bge-small-en-v1.5` (384 dims, runs locally via @huggingface/transformers ONNX)
 - Storage: `.pi/memory/embeddings.json`
 - Embed on write: `memory_add` embeds each entry immediately
+- Dedup on write: `memory_add` checks vector similarity (≥0.85) before inserting — reinforces existing entry if near-duplicate found in same category
 - Semantic search: `memory_search` embeds query, cosine similarity against stored vectors
 - Hybrid results: union of vector + keyword matches, deduplicated
 - Fallback: keyword-only search when @huggingface/transformers is unavailable
@@ -374,7 +375,7 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 
 - `memory_search`: hybrid keyword + vector search across all topic entries
 - `memory_reinforce`: bump evidence count to prevent decay
-- `memory_add`: LLM-initiated memory writes (pinned or learned)
+- `memory_add`: LLM-initiated memory writes (pinned or learned); near-duplicate detection via vector similarity (≥0.85) auto-reinforces instead of adding
 - `memory_remove`: LLM-initiated entry removal
 - `memory_edit`: update content in-place or invalidate/supersede entries
 - `memory_reflect`: synthesize a coherent answer from recalled memories

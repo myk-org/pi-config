@@ -28,6 +28,8 @@ import {
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 
+const NEAR_DUPLICATE_THRESHOLD = 0.85;
+
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -267,12 +269,49 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         ? `- [${category}] ${text} *(pinned)*`
         : canonicalLine;
 
-      // Check for duplicates
+      // Check for duplicates — vector similarity first, then exact match
       const topicEntries = readAllTopicEntries(cwd);
+
+      // Check for near-duplicates via vector similarity (catches same lesson with different wording)
+      try {
+        const seen = new Set<string>();
+        const sameCategoryEntries = topicEntries.filter(te => {
+          if (te.category !== category || seen.has(te.text)) return false;
+          seen.add(te.text);
+          return true;
+        });
+        await embedMissing(cwd, sameCategoryEntries);
+        // Embed the new entry now so vectorSearch can use the cached embedding
+        // and embedEntry() later is a no-op (already in store)
+        await embedEntry(cwd, text, category);
+        const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
+        for (const vm of vectorMatches) {
+          if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
+            const existingLine = `- [${vm.category}] ${vm.text}`;
+            if (reinforce(cwd, existingLine)) {
+              // Remove the just-embedded entry since we're reinforcing instead of adding
+              await removeEmbedding(cwd, text, category);
+              return {
+                content: [{
+                  type: "text",
+                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}`,
+                }],
+              };
+            }
+            // reinforce() failed (score entry missing) — try next candidate
+            continue;
+          }
+        }
+      } catch (err) {
+        console.debug(`[memory] memory_add: vector dedup skipped: ${err}`);
+      }
+
+      // Exact match check (fast O(n) string comparison after expensive vector check)
       for (const te of topicEntries) {
         if (te.text === text && te.category === category) {
           // Reinforce instead of duplicating — always use canonical line (no pinned marker)
           reinforce(cwd, canonicalLine);
+          // No removeEmbedding here — same text/category key as existing entry, embedding is still valid
           return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
         }
       }
@@ -325,7 +364,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       } as ScoredEntry;
       saveScores(cwd, scores);
 
-      // Embed the new entry for vector search
+      // Embed the new entry (no-op if already embedded during dedup check above)
       await embedEntry(cwd, text, category);
 
       const pin = isPinned ? " (pinned)" : "";
