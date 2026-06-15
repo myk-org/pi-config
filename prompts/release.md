@@ -40,6 +40,8 @@ If not found, prompt to install: `uv tool install myk-pi-tools`
 
 ## Workflow
 
+**`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+
 ### Phase 1: Validation
 
 If `--target <branch>` was passed to the release command:
@@ -217,7 +219,7 @@ skipped and why before proceeding.
 Create a temp file with cleanup, write changelog to it, and create release:
 
 ```bash
-CHANGELOG_FILE=$(mktemp /tmp/pi-work/$(basename $PWD)/release-XXXXXX.md)
+CHANGELOG_FILE=$(mktemp ${PROJECT_TMP_DIR}/release-XXXXXX.md)
 trap "rm -f $CHANGELOG_FILE" EXIT
 
 cat > "$CHANGELOG_FILE" << 'EOF'

@@ -4,7 +4,7 @@ This module fetches review threads from the current branch's PR
 (supports resolved/unresolved filtering and user filtering).
 and categorizes them by source (human, qodo, coderabbit).
 
-Output: JSON with metadata and categorized comments saved to /tmp/pi-work/pr-<number>-reviews.json
+Output: JSON with metadata and categorized comments saved to <output_dir>/pr-<number>-reviews.json
 """
 
 from __future__ import annotations
@@ -1025,13 +1025,14 @@ def fetch_review_body(owner: str, repo: str, pr_number: str, review_id: str) -> 
     return result if isinstance(result, dict) else None
 
 
-def run(review_url: str = "", include_resolved: bool = False, user: str | None = None) -> int:
+def run(review_url: str = "", include_resolved: bool = False, user: str | None = None, *, output_dir: str) -> int:
     """Main entry point.
 
     Args:
         review_url: Optional specific review URL for context.
         include_resolved: If True, include resolved threads with is_resolved field.
         user: If set, only return threads where the first comment author matches.
+        output_dir: Directory for output JSON file.
 
     Returns:
         Exit code (0 for success, 1 for error).
@@ -1046,13 +1047,8 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         print_stderr(f"Repository: {owner}/{repo}, PR: {pr_number}")
 
         # Ensure output directory exists
-        tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
-        out_dir = tmp_base / "pi-work"
+        out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            out_dir.chmod(0o700)
-        except OSError as e:
-            print_stderr(f"Warning: unable to set permissions on {out_dir}: {e}")
 
         json_path = out_dir / f"pr-{pr_number}-reviews.json"
 

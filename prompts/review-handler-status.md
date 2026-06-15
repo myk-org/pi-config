@@ -21,7 +21,7 @@ Show the live state of running autoqodo/autorabbit review-handler agents.
    If none found → "No review handler agents running — nothing to show."
 
 2. For each running review agent, extract the PR number from the agent's task or worktree cwd.
-   Run `myk-pi-tools reviews status --pr <number>` to generate the HTML report.
+   Run `myk-pi-tools reviews status --output-dir ${PROJECT_TMP_DIR} --pr <number>` to generate the HTML report.
    Extract the path from `HTML report saved: <path>` in the output.
    - **Container** (`/.dockerenv` or `/run/.containerenv` exists): serve via file preview rule (`rules/45-file-preview.md`)
    - **Native**: show `file://<path>`

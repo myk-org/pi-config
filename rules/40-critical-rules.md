@@ -81,7 +81,7 @@ The tool enforces this — calls without `estimatedSeconds` or ≥ 30s are rejec
 **ALWAYS pass `cwd`** when delegating to subagents — in ALL modes (single, parallel, chain, async).
 
 - Use the project directory when working in the current repo
-- Use the target repo path when working in external repos (e.g., `/tmp/pi-work/...`)
+- Use the target repo path when working in external repos (e.g., `${PROJECT_TMP_DIR}/...`)
 
 ❌ **WRONG:** Omit cwd (subagent inherits session cwd, enforcement checks wrong repo)
 ✅ **RIGHT:** Always pass explicit cwd
@@ -164,8 +164,8 @@ After presenting your analysis, respect the user's decision.
 
 | Source | Trigger | Audit approach |
 |--------|---------|----------------|
-| **Git repos** | Adopting external repo/tool/library | Clone to `/tmp/pi-work/`, run `security-auditor` |
-| **Pi skills** | `pi skill install`, adding skill files | Clone/download source to `/tmp/pi-work/`, run `security-auditor` |
+| **Git repos** | Adopting external repo/tool/library | Clone to `${PROJECT_TMP_DIR}/`, run `security-auditor` |
+| **Pi skills** | `pi skill install`, adding skill files | Clone/download source to `${PROJECT_TMP_DIR}/`, run `security-auditor` |
 | **PyPI packages** | `uv add <unknown-pkg>`, `uv run --with <unknown-pkg>` | Clone source repo from PyPI metadata, check install hooks, scan code |
 | **npm packages** | `npm install <unknown-pkg>` | Download source, check `postinstall` scripts, scan code |
 | **MCP servers** | Adding new server to `mcp.json` | Audit the server source code before adding config |
@@ -182,10 +182,10 @@ After presenting your analysis, respect the user's decision.
 
 ## Temp Files
 
-**ALL temp files MUST go to `/tmp/pi-work/<cwd-basename>/`** (e.g., `/tmp/pi-work/pi-config/`).
+**ALL temp files MUST go to the project temp dir** (`getProjectTmpDir(cwd)` → `/tmp/pi-data/<project>/`).
 
-- `<cwd-basename>` is the last segment of the current working directory (not repo name — not all dirs are repos)
-- This path persists across container restarts when `/tmp/pi-work` is mounted from the host
+- `<project>` is the cwd path with `/` replaced by `__` (e.g., `/home/user/git/my-repo` → `home__user__git__my-repo`)
+- This path persists across container restarts when `/tmp/pi-data` is mounted from the host
 
 NEVER create temp files in the project directory.
 
@@ -221,7 +221,7 @@ The `--with` syntax ensures dependencies are managed per-execution without modif
 
 **When exploring external Git repositories, clone locally first.**
 
-Clone to `/tmp/pi-work/` and explore using read/bash (find, rg, grep) - NOT via web fetching.
+Clone to `${PROJECT_TMP_DIR}/` and explore using read/bash (find, rg, grep) - NOT via web fetching.
 
 ### Clone the Bare Minimum
 
@@ -235,21 +235,21 @@ Clone to `/tmp/pi-work/` and explore using read/bash (find, rg, grep) - NOT via 
 
 ```bash
 # Shallow clone to temp directory
-git clone --depth 1 https://github.com/org/repo.git /tmp/pi-work/repo
+git clone --depth 1 https://github.com/org/repo.git ${PROJECT_TMP_DIR}/repo
 
 # Sparse checkout for specific directory only
-git clone --depth 1 --filter=blob:none --sparse https://github.com/org/repo.git /tmp/pi-work/repo
-cd /tmp/pi-work/repo && git sparse-checkout set src/utils
+git clone --depth 1 --filter=blob:none --sparse https://github.com/org/repo.git ${PROJECT_TMP_DIR}/repo
+cd ${PROJECT_TMP_DIR}/repo && git sparse-checkout set src/utils
 
 # Clean up when done
-rm -rf /tmp/pi-work/repo
+rm -rf ${PROJECT_TMP_DIR}/repo
 ```
 
 ❌ **Wrong:**
 
 ```bash
 # Full clone with history
-git clone https://github.com/org/repo.git /tmp/pi-work/repo
+git clone https://github.com/org/repo.git ${PROJECT_TMP_DIR}/repo
 
 # Using web fetch to browse repository files
 fetch_content(https://github.com/org/repo/blob/main/src/file.py)
@@ -259,7 +259,7 @@ fetch_content(https://github.com/org/repo/blob/main/src/file.py)
 
 For private repositories, ensure authentication is configured:
 
-- **SSH**: `git clone --depth 1 git@github.com:org/private-repo.git /tmp/pi-work/repo`
+- **SSH**: `git clone --depth 1 git@github.com:org/private-repo.git ${PROJECT_TMP_DIR}/repo`
 - **Credential helper**: Ensure `git config --global credential.helper` is set
 
 Local exploration is faster, more reliable, and provides full file access without web scraping limitations.

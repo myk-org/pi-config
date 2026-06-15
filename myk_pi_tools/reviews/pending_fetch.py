@@ -3,7 +3,7 @@
 This module fetches the current user's PENDING review on a PR, retrieves all
 comments within that review, and outputs them as JSON for refinement.
 
-Output: JSON with metadata and comments saved to /tmp/pi-work/pr-<number>-pending-review.json
+Output: JSON with metadata and comments saved to <output_dir>/pr-<number>-pending-review.json
 """
 
 from __future__ import annotations
@@ -176,13 +176,14 @@ def fetch_pending_review_comments(
     return comments
 
 
-def run(pr_url: str) -> int:
+def run(pr_url: str, *, output_dir: str) -> int:
     """Main entry point.
 
     Fetches the authenticated user's pending review and its comments from a PR.
 
     Args:
         pr_url: GitHub PR URL (e.g., https://github.com/owner/repo/pull/123).
+        output_dir: Directory for output JSON file.
 
     Returns:
         Exit code (0 for success, 1 for error).
@@ -250,15 +251,8 @@ def run(pr_url: str) -> int:
         diff = ""
         print_stderr("Warning: Could not fetch diff, continuing without it")
 
-    # Temp files in /tmp/pi-work/ follow the standard pattern used by all review commands.
-    # The directory has 0o700 permissions to restrict access on shared machines.
-    tmp_base = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
-    out_dir = tmp_base / "pi-work"
+    out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        out_dir.chmod(0o700)
-    except OSError as e:
-        print_stderr(f"Warning: unable to set permissions on {out_dir}: {e}")
 
     safe_repo = f"{owner}-{repo}".replace("/", "-")
     json_path = out_dir / f"pr-{safe_repo}-{pr_number}-pending-review.json"

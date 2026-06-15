@@ -2,16 +2,16 @@
 
 When generating or modifying HTML, frontend, or any browser-viewable files:
 
-1. Save the file under the project directory (`$PWD`) or `/tmp/pi-work/`
+1. Save the file under the project directory (`$PWD`) or `${PROJECT_TMP_DIR}`
 2. Find a free port and launch the server:
 
    ```bash
    HTTPD=~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
    PORT=$(uv run python3 $HTTPD --find-port)
-   nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve > /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log 2>&1 &
+   nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve > ${PROJECT_TMP_DIR}/httpd-$PORT.log 2>&1 &
    disown
    sleep 0.5
-   if ! kill -0 $! 2>/dev/null; then echo "Server failed to start:"; cat /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log; fi
+   if ! kill -0 $! 2>/dev/null; then echo "Server failed to start:"; cat ${PROJECT_TMP_DIR}/httpd-$PORT.log; fi
    ```
 
    Replace `/path/to/serve` with the directory containing the files.

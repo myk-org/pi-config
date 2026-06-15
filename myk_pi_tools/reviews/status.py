@@ -3,7 +3,7 @@
 Shows the latest status per unique finding (keyed by source + path + summary).
 Duplicate entries from multiple review cycles are merged, keeping the most recent.
 
-Output: HTML report saved to /tmp/pi-work/<project>/review-status-<pr>.html
+Output: HTML report saved to <output_dir>/review-status-<pr>.html
 """
 
 import json
@@ -345,12 +345,16 @@ def generate_html(comments: list[dict], pr_info: dict) -> str:
 </html>"""
 
 
-def save_html(html: str, project_name: str, pr_number: int) -> Path:
-    """Save HTML to temp directory and return path."""
-    tmp_dir = Path("/tmp/pi-work") / project_name
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+def save_html(html: str, output_dir: str, pr_number: int) -> Path:
+    """Save HTML to output directory and return path."""
+    tmp_dir = Path(output_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     html_path = tmp_dir / f"review-status-{pr_number}.html"
     html_path.write_text(html, encoding="utf-8")
+    try:
+        html_path.chmod(0o600)
+    except OSError:
+        pass
     return html_path
 
 
@@ -399,10 +403,9 @@ def list_prs_from_db(db_path: Path) -> None:
     print("\nUse: myk-pi-tools reviews status --pr <number>")
 
 
-def run(pr_number: int | None = None) -> None:
+def run(pr_number: int | None = None, *, output_dir: str) -> None:
     """Main entry point for reviews status command."""
     project_root = get_project_root()
-    project_name = project_root.name
     db_path = project_root / ".pi" / "data" / "reviews.db"
 
     if not db_path.exists():
@@ -442,7 +445,7 @@ def run(pr_number: int | None = None) -> None:
 
     # HTML output
     html = generate_html(comments, pr_info)
-    html_path = save_html(html, project_name, pr_num)
+    html_path = save_html(html, output_dir, pr_num)
 
     # Check if in container
     in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
@@ -482,4 +485,9 @@ def run(pr_number: int | None = None) -> None:
 
 
 if __name__ == "__main__":
-    run()
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: status.py <output-dir>", file=sys.stderr)
+        sys.exit(1)
+    run(output_dir=sys.argv[1])

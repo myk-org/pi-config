@@ -351,12 +351,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
-    // Enforce temp files go to /tmp/pi-work/ — not bare /tmp/
+    // Enforce temp files go to /tmp/pi-data/ — not bare /tmp/
     // Catches: mktemp /tmp/foo, > /tmp/foo, tee /tmp/foo, cat > /tmp/foo
-    if (/\bmktemp\b/.test(command) && !/\/tmp\/pi-work/.test(command)) {
+    if (/(?:^|[;&|$( \t])mktemp\b/.test(command) && !/\/tmp\/pi-data/.test(command) && !/PROJECT_TMP_DIR/.test(command)) {
       return {
         block: true,
-        reason: `⛔ mktemp must use /tmp/pi-work/$(basename $PWD)/ prefix. Use: mktemp /tmp/pi-work/$(basename $PWD)/XXXXXX`,
+        reason: `⛔ mktemp must use project temp dir. Use: mktemp \${PROJECT_TMP_DIR}/XXXXXX (where PROJECT_TMP_DIR is from getProjectTmpDir)`,
       };
     }
 
@@ -378,3 +378,5 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     return undefined;
   });
 }
+
+// trigger re-scan

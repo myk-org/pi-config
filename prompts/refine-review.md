@@ -43,12 +43,14 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 
 ## Workflow
 
+**`PROJECT_TMP_DIR`** is the project-scoped temp directory from `getProjectTmpDir(cwd)` — all temp files go here.
+
 ### Phase 1: Fetch Pending Review
 
 Parse the raw arguments above as the PR URL. If empty, abort with: "PR URL required. Usage: `/refine-review https://github.com/owner/repo/pull/123`"
 
 ```bash
-myk-pi-tools reviews pending-fetch "<PR_URL>"
+myk-pi-tools reviews pending-fetch --output-dir ${PROJECT_TMP_DIR} "<PR_URL>"
 ```
 
 The command saves the review data to a JSON file and outputs the file path to stdout.
@@ -161,7 +163,7 @@ for future `/pr-review` cycle tracking:
 1. Write a JSON file with the submitted comments:
 
 ```bash
-cat > /tmp/pi-work/$(basename $PWD)/pr-review-store.json << 'EOF'
+cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
 {
   "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
   "comments": [
@@ -182,7 +184,7 @@ EOF
 1. Store to database:
 
 ```bash
-myk-pi-tools pr store-pr-review /tmp/pi-work/$(basename $PWD)/pr-review-store.json
+myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
 **This step is MANDATORY — never skip it.** Only store if the review was actually

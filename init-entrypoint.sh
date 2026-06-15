@@ -10,7 +10,7 @@ if [ "$(id -u)" != "0" ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
     # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
-    for d in /tmp/pi-work /tmp/pi-data; do
+    for d in /tmp/pi-data; do
         if ! mkdir -p "$d" 2>/dev/null; then
             echo "WARNING: failed to create $d — temp files may fail. Fix with: sudo mkdir -p $d && sudo chown $(id -u):$(id -g) $d" >&2
         elif _probe="$d/.pi-probe-$$" && ! touch "$_probe" 2>/dev/null; then
@@ -93,7 +93,7 @@ if [ -S "$DOCKER_SOCK" ]; then
 fi
 
 # Ensure temp dirs exist and are owned by node (not root)
-for d in /tmp/pi-work /tmp/pi-data; do
+for d in /tmp/pi-data; do
     # Refuse to operate on symlinks — prevents chown escape
     if [ -L "$d" ]; then
         echo "WARNING: $d is a symlink — removing to prevent chown escape" >&2
