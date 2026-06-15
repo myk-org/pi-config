@@ -59,6 +59,7 @@ export interface AsyncJob {
   groupId?: string;
   taskId?: string;
   cwd?: string;
+  projectCwd?: string;
   sessionId?: string;
 }
 
@@ -277,7 +278,7 @@ export function registerAsyncAgents(
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
         try {
-          const completed = await autoCompleteTask(j.taskId, j.cwd, j.sessionId);
+          const completed = await autoCompleteTask(j.taskId, j.projectCwd || j.cwd, j.sessionId);
           asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
         } catch (e: any) {
           autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${j.taskId}: ${e?.message}. Run TaskUpdate(taskId="${j.taskId}", status="completed") manually.`;
@@ -355,7 +356,7 @@ export function registerAsyncAgents(
         // Auto-complete linked task directly in the store file (no AI involvement)
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
           try {
-            const completed = await autoCompleteTask(job.taskId, job.cwd, job.sessionId);
+            const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId);
             asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
           } catch (e: any) {
             autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
@@ -433,6 +434,7 @@ export function registerAsyncAgents(
       parentStartTime,
       taskId: options?.taskId || null,
       cwd,
+      projectCwd: asyncState.lastCtx?.sessionManager?.getCwd?.() || null,
       sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
 
@@ -523,6 +525,7 @@ export function registerAsyncAgents(
       groupId: options?.groupId,
       taskId: options?.taskId,
       cwd,
+      projectCwd: asyncState.lastCtx?.sessionManager?.getCwd?.(),
       sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.(),
     };
     asyncState.jobs.set(id, job);
@@ -618,6 +621,7 @@ export function registerAsyncAgents(
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,
+            projectCwd: marker.projectCwd || undefined,
             sessionId: marker.sessionId || undefined,
           };
           asyncState.jobs.set(id, job);

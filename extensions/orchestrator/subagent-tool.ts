@@ -580,7 +580,7 @@ export function registerSubagentTool(
       "For multi-step workflows, use chain mode with {previous} placeholder.",
       "Set async: true when you don't need the result immediately for your next step. The result will surface automatically when complete. Use sync (default) only when the next step depends on this agent's output.",
       "ALWAYS use async: true for independent tasks that can run in parallel — code reviews, opening issues, research, analysis. Only use sync when the very next step depends on this agent's output (e.g., chain where step 2 needs step 1's result).",
-      "ALWAYS pass cwd — use the project directory for current repo work, or the target path for external repos (e.g., /tmp/pi-work/...).",
+      "ALWAYS pass cwd — use the project directory for current repo work, or the target path for external repos (e.g., ${PROJECT_TMP_DIR}/...).",
       "ALWAYS provide estimatedSeconds for sync agents. If estimated time is 30 seconds or more, you MUST use async: true instead.",
     ],
     parameters: SubagentParams,
@@ -748,7 +748,7 @@ export function registerSubagentTool(
           }
           for (const t of params.tasks) {
             const tid = (t as any).taskId as string;
-            const taskErr = validateTaskId(tid, t.cwd, ctx.sessionManager?.getSessionId?.());
+            const taskErr = validateTaskId(tid, ctx.cwd, ctx.sessionManager?.getSessionId?.());
             if (taskErr) {
               pi.sendMessage({
                 customType: "subagent-taskid-error",
@@ -832,7 +832,7 @@ export function registerSubagentTool(
           };
         }
         {
-          const taskErr = validateTaskId(params.taskId, params.cwd, ctx.sessionManager?.getSessionId?.());
+          const taskErr = validateTaskId(params.taskId, ctx.cwd, ctx.sessionManager?.getSessionId?.());
           if (taskErr) {
             pi.sendMessage({
               customType: "subagent-taskid-error",

@@ -131,7 +131,7 @@ TaskUpdate(taskId="12", addBlockedBy=["11"])
 ## Workflow
 
 **PROJECT_TMP_DIR** is the project-scoped temp directory from `getProjectTmpDir(cwd)`.
-All temp files for this workflow go there — never use `/tmp/pi-work/` directly.
+All temp files for this workflow go there —
 
 ### Phase 0: PR Detection — Task 1
 
@@ -207,19 +207,13 @@ Mark Task 2 as `in_progress`.
 Clone the target repo and checkout the PR branch. This gives reviewers full repo access
 instead of passing a truncated diff in the prompt.
 
-```bash
-# Shallow clone to temp dir (timestamp suffix avoids collisions)
-REVIEW_DIR="/tmp/pi-work/pr-review-${owner}-${repo}-${pr_number}-$(date +%s)"
-git clone --depth 50 "https://github.com/${owner}/${repo}.git" "$REVIEW_DIR"
-cd "$REVIEW_DIR"
+**Delegate to `git-expert`** with this task:
 
-# Checkout the PR (handles both forked and non-forked PRs)
-gh pr checkout ${pr_number}
-
-# Get the base branch for diff comparison
-BASE_BRANCH=$(gh pr view ${pr_number} --json baseRefName --jq '.baseRefName')
-git fetch origin "$BASE_BRANCH" --depth 50
-```
+> Clone `https://github.com/{owner}/{repo}.git` (depth 50) to `{PROJECT_TMP_DIR}/pr-review-{owner}-{repo}-{pr_number}`.
+> Then run: gh pr checkout {pr_number}
+> Then get the base branch: gh pr view {pr_number} --json baseRefName --jq '.baseRefName'
+> Then fetch the base: git fetch origin {base_branch} --depth 50
+> Report REVIEW_DIR and BASE_BRANCH.
 
 Store:
 
@@ -409,8 +403,4 @@ Mark Task 12 as `completed`.
 After the review is complete (all phases done):
 
 1. Delete all tasks: `TaskUpdate(taskId="N", status="deleted")` for every task created in this workflow
-2. Clean up the clone:
-
-```bash
-rm -rf "$REVIEW_DIR"
-```
+2. Delegate to `git-expert`: remove the clone directory `REVIEW_DIR`
