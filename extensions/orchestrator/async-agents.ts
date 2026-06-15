@@ -32,7 +32,7 @@ const taskStoreReady: Promise<void> = (async () => {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
-import { getPiInvocation, getProjectTmpDir, PI_TMP_BASE_DIR } from "./utils.js";
+import { getPiInvocation, getProjectTmpDir } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -125,11 +125,11 @@ export function registerAsyncAgents(
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
-  let PROJECT_TMP_DIR = PI_TMP_BASE_DIR; // Updated to project-scoped dir on session_start
+  let PROJECT_TMP_DIR = getProjectTmpDir(process.cwd()); // Updated to project-scoped dir on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
   const ASYNC_DEBUG = !!process.env.PI_ASYNC_DEBUG;
-  const EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PI_TMP_BASE_DIR, `early-debug-${process.pid}.log`) : "";
+  const EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
   let DEBUG_LOG_PATH = EARLY_LOG_PATH; // Starts with early log, moved to project dir on session_start
   function asyncLog(msg: string) {
     if (!ASYNC_DEBUG || !DEBUG_LOG_PATH) return;

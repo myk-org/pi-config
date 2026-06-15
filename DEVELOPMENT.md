@@ -44,7 +44,7 @@ Useful debug commands inside the container:
 ```bash
 ps aux | grep pi              # Find stuck pi/subagent processes
 pkill -f 'pi.*--mode.*json'   # Kill stuck subagent processes
-cat /tmp/pi-async-agents/*/status.json  # Check async agent status
+cat .pi/tmp/worker-*/status.json  # Check async agent status
 ```
 
 ## Python Dependencies

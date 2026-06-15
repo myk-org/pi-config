@@ -182,12 +182,11 @@ After presenting your analysis, respect the user's decision.
 
 ## Temp Files
 
-**ALL temp files MUST go to the project temp dir** (`getProjectTmpDir(cwd)` → `/tmp/pi-data/<project>/`).
+**ALL temp files MUST go to the project temp dir** (`getProjectTmpDir(cwd)` → `<cwd>/.pi/tmp/`).
 
-- `<project>` is the cwd path with `/` replaced by `__` (e.g., `/home/user/git/my-repo` → `home__user__git__my-repo`)
-- This path persists across container restarts when `/tmp/pi-data` is mounted from the host
+- The `.pi/` directory is already gitignored — no risk of committing temp files
 
-NEVER create temp files in the project directory.
+NEVER create temp files directly in the project tree — always use `.pi/tmp/` via `getProjectTmpDir()`.
 
 ---
 

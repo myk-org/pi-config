@@ -10,7 +10,6 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -95,8 +94,7 @@ function getExtensionForMime(mimeType: string): string {
 
 // Same logic as getProjectTmpDir in extensions/orchestrator/utils.ts
 function getTempDir(cwd: string): string {
-    const project = cwd.replace(/^[\/\\]/, "").replace(/[\/\\]/g, "__");
-    const dir = path.join(os.tmpdir(), "pi-data", project);
+    const dir = path.join(cwd, ".pi", "tmp");
     fs.mkdirSync(dir, { recursive: true });
     return dir;
 }

@@ -209,7 +209,7 @@ waiting for long-running agents.
 All async agent temp files live under project-scoped subdirectories:
 
 ```text
-/tmp/pi-data/<project>/
+.pi/tmp/
 ├── debug.log                    # Async debug log
 ├── cron-<pid>.json              # Cron task state
 ├── .repeat-<pid>.json           # Repeat command detection
@@ -225,13 +225,11 @@ All async agent temp files live under project-scoped subdirectories:
     └── system-prompt.md         # Agent system prompt
 ```
 
-**Project name format:** cwd with `/` replaced by `__` (e.g., `home__myakove__git__pi-config`).
-
 **Zombie cleanup:** On `session_start`, scans project dir for dead agents.
 Checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` field 22.
 Dead parent = zombie = delete.
 
-**Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — creates dir if missing, returns path.
+**Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — returns `<cwd>/.pi/tmp/`, creates dir if missing.
 
 ### Mode-Aware Guards (`ctx.mode`)
 

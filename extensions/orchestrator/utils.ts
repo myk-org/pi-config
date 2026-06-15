@@ -4,7 +4,6 @@
 
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 /** Whether notify-send is available (false = ENOENT, never retry) */
@@ -66,14 +65,10 @@ export function getPiInvocation(args: string[]): { command: string; args: string
   return { command: "pi", args };
 }
 
-/** Base temp dir for all pi data */
-export const PI_TMP_BASE_DIR = path.join(os.tmpdir(), "pi-data");
-
-/** Get project-scoped temp dir under /tmp/pi-data/<project>/ */
+/** Get project-scoped temp dir under <cwd>/.pi/tmp/ */
 export function getProjectTmpDir(cwd: string): string {
-  const projectName = cwd.replace(/^[\\/]/, "").replace(/[\\/]/g, "__");
-  const dir = path.join(PI_TMP_BASE_DIR, projectName);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const dir = path.join(cwd, ".pi", "tmp");
+  fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
