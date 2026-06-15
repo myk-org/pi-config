@@ -269,15 +269,8 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         ? `- [${category}] ${text} *(pinned)*`
         : canonicalLine;
 
-      // Check for duplicates — exact match first, then vector similarity
+      // Check for duplicates — vector similarity first, then exact match
       const topicEntries = readAllTopicEntries(cwd);
-      for (const te of topicEntries) {
-        if (te.text === text && te.category === category) {
-          // Reinforce instead of duplicating — always use canonical line (no pinned marker)
-          reinforce(cwd, canonicalLine);
-          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
-        }
-      }
 
       // Check for near-duplicates via vector similarity (catches same lesson with different wording)
       try {
@@ -288,11 +281,16 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           return true;
         });
         await embedMissing(cwd, sameCategoryEntries);
+        // Embed the new entry now so vectorSearch can use the cached embedding
+        // and embedEntry() later is a no-op (already in store)
+        await embedEntry(cwd, text, category);
         const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
         for (const vm of vectorMatches) {
           if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
             const existingLine = `- [${vm.category}] ${vm.text}`;
             if (reinforce(cwd, existingLine)) {
+              // Remove the just-embedded entry since we're reinforcing instead of adding
+              await removeEmbedding(cwd, text, category);
               return {
                 content: [{
                   type: "text",
@@ -306,6 +304,16 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         }
       } catch (err) {
         console.debug(`[memory] memory_add: vector dedup skipped: ${err}`);
+      }
+
+      // Exact match check (fast O(n) string comparison after expensive vector check)
+      for (const te of topicEntries) {
+        if (te.text === text && te.category === category) {
+          // Reinforce instead of duplicating — always use canonical line (no pinned marker)
+          reinforce(cwd, canonicalLine);
+          await removeEmbedding(cwd, text, category);
+          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
+        }
       }
 
       const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
@@ -356,7 +364,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       } as ScoredEntry;
       saveScores(cwd, scores);
 
-      // Embed the new entry for vector search
+      // embedEntry already called during dedup check — this is a no-op (already in store)
       await embedEntry(cwd, text, category);
 
       const pin = isPinned ? " (pinned)" : "";
