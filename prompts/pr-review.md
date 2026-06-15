@@ -60,12 +60,12 @@ using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order
 | Task | Title | blockedBy |
 |------|-------|-----------|
 | 1 | PR Detection | — |
-| 2 | Fetch PR diff | 1 |
-| 3 | Fetch AGENTS.md | 1 |
+| 2 | Clone & checkout PR | 1 |
+| 3 | (auto-complete — reviewers read from clone) | 1 |
 | 4 | Check past review comments | 1, 2 |
-| 5 | Review — Code Quality | 2, 3 |
-| 6 | Review — Guidelines | 2, 3 |
-| 7 | Review — Security | 2, 3 |
+| 5 | Review — Code Quality | 2 |
+| 6 | Review — Guidelines | 2 |
+| 7 | Review — Security | 2 |
 | 8 | Merge & deduplicate findings | 4, 5, 6, 7 |
 | 9 | User selection | 8 |
 | 10 | Post comments | 9 |
@@ -76,9 +76,9 @@ using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order
 
 ```text
 Task 1 (PR Detection)
- ├── Task 2 (Fetch diff) ─────────────┐
- ├── Task 3 (Fetch AGENTS.md) ────────┤
- │    Tasks 2+3 unblock:              │
+ ├── Task 2 (Clone & checkout PR) ────┐
+ │    Task 3 auto-completes instantly  │
+ │    Task 2 unblocks:                │
  │    ├── Task 5 (Review: Quality)    │
  │    ├── Task 6 (Review: Guidelines) │
  │    └── Task 7 (Review: Security)   │
@@ -113,9 +113,9 @@ TaskCreate(subject="Fetch AGENTS.md", ...)        → Task 3
 TaskUpdate(taskId="2", addBlockedBy=["1"])
 TaskUpdate(taskId="3", addBlockedBy=["1"])
 TaskUpdate(taskId="4", addBlockedBy=["1", "2"])
-TaskUpdate(taskId="5", addBlockedBy=["2", "3"])
-TaskUpdate(taskId="6", addBlockedBy=["2", "3"])
-TaskUpdate(taskId="7", addBlockedBy=["2", "3"])
+TaskUpdate(taskId="5", addBlockedBy=["2"])
+TaskUpdate(taskId="6", addBlockedBy=["2"])
+TaskUpdate(taskId="7", addBlockedBy=["2"])
 TaskUpdate(taskId="8", addBlockedBy=["4", "5", "6", "7"])
 TaskUpdate(taskId="9", addBlockedBy=["8"])
 TaskUpdate(taskId="10", addBlockedBy=["9"])
@@ -197,49 +197,42 @@ Mark Task 1 as `completed`.
 Tasks 2 and 3 are independent — execute them in parallel.
 Task 4 depends on Task 2 (needs the diff data) and will start after Task 2 completes.
 
-### Phase 1a: Fetch PR Diff — Task 2
+### Phase 1a: Clone & Checkout PR — Task 2
 
 Mark Task 2 as `in_progress`.
 
-Run the diff command to get PR data:
-
-If PR was auto-detected (no arguments):
-
-```bash
-myk-pi-tools pr diff {pr_number}
-```
-
-Otherwise:
+Clone the target repo and checkout the PR branch. This gives reviewers full repo access
+instead of passing a truncated diff in the prompt.
 
 ```bash
-myk-pi-tools pr diff <raw_arguments>
+# Shallow clone to temp dir
+REVIEW_DIR="/tmp/pi-work/pr-review-${owner}-${repo}-${pr_number}"
+rm -rf "$REVIEW_DIR"
+git clone --depth 50 "https://github.com/${owner}/${repo}.git" "$REVIEW_DIR"
+cd "$REVIEW_DIR"
+
+# Checkout the PR (handles both forked and non-forked PRs)
+gh pr checkout ${pr_number}
+
+# Get the base branch for diff comparison
+BASE_BRANCH=$(gh pr view ${pr_number} --json baseRefName --jq '.baseRefName')
+git fetch origin "$BASE_BRANCH" --depth 50
 ```
 
-Store the JSON output containing metadata, diff, and files.
+Store:
+
+- `REVIEW_DIR` — the clone path (used as `cwd` for reviewers)
+- `BASE_BRANCH` — the PR's target branch (used for `git diff`)
+
+If cloning or checkout fails, fall back to `myk-pi-tools pr diff` (original behavior).
 
 Mark Task 2 as `completed`.
 
-### Phase 1b: Fetch AGENTS.md — Task 3
+### Phase 1b: (Removed — reviewers read AGENTS.md from clone)
 
-Mark Task 3 as `in_progress`.
-
-Run the claude-md command to get project rules:
-
-If PR was auto-detected (no arguments):
-
-```bash
-myk-pi-tools pr claude-md {pr_number}
-```
-
-Otherwise:
-
-```bash
-myk-pi-tools pr claude-md <raw_arguments>
-```
-
-Store the output as `claude_md_content`.
-
-Mark Task 3 as `completed`.
+Task 3 is no longer needed — reviewers have full repo access via the clone
+and read AGENTS.md independently per their agent instructions.
+Mark Task 3 as `completed` immediately.
 
 ### Phase 1c: Check Past Review Comments — Task 4
 
@@ -292,16 +285,18 @@ Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review diff for code quality...", cwd: "...", name: "Review Quality", taskId: "<actual task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "<actual task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "<actual task 7 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
 ])
 ```
 
-Provide each agent with:
+Each reviewer runs in the cloned repo directory (`REVIEW_DIR`) and has full access to:
 
-- The diff content from Phase 1a
-- The AGENTS.md content from Phase 1b (or "No AGENTS.md found" if empty)
+- All source files via `read` tool
+- The PR diff via `git diff origin/<BASE_BRANCH>...HEAD`
+- Project guidelines (AGENTS.md/CLAUDE.md) — read independently per agent instructions
+- File history, imports, tests — anything in the repo
 
 Each agent should analyze for security, bugs, error handling, and performance issues
 and return their findings as prose.
@@ -410,3 +405,14 @@ Mark Task 12 as `in_progress`.
 Display final summary with counts and links.
 
 Mark Task 12 as `completed`.
+
+### Cleanup
+
+After the review is complete (all phases done):
+
+1. Delete all tasks: `TaskUpdate(taskId="N", status="deleted")` for every task created in this workflow
+2. Clean up the clone:
+
+```bash
+rm -rf "$REVIEW_DIR"
+```
