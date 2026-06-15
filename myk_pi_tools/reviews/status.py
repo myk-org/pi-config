@@ -351,7 +351,10 @@ def save_html(html: str, output_dir: str, pr_number: int) -> Path:
     tmp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     html_path = tmp_dir / f"review-status-{pr_number}.html"
     html_path.write_text(html, encoding="utf-8")
-    html_path.chmod(0o600)
+    try:
+        html_path.chmod(0o600)
+    except OSError:
+        pass
     return html_path
 
 
