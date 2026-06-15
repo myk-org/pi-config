@@ -311,7 +311,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         if (te.text === text && te.category === category) {
           // Reinforce instead of duplicating — always use canonical line (no pinned marker)
           reinforce(cwd, canonicalLine);
-          await removeEmbedding(cwd, text, category);
+          // No removeEmbedding here — same text/category key as existing entry, embedding is still valid
           return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
         }
       }
@@ -364,7 +364,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       } as ScoredEntry;
       saveScores(cwd, scores);
 
-      // embedEntry already called during dedup check — this is a no-op (already in store)
+      // Embed the new entry (no-op if already embedded during dedup check above)
       await embedEntry(cwd, text, category);
 
       const pin = isPinned ? " (pinned)" : "";
