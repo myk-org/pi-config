@@ -372,9 +372,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
               trailerName = trailerSetting;
             }
 
-            // Skip if this specific trailer already exists in the command
-            if (command.includes(`${trailerName}: ${piIdentity}`)) return undefined;
+            // Skip if this specific trailer already exists in the command (check both raw and escaped forms)
             const trailerLines = `${shellEscapeTrailer(trailerName)}: ${piIdentity}`;
+            if (command.includes(trailerLines) || command.includes(`${trailerName}: ${piIdentity}`)) return undefined;
 
             if (trailerLines) {
               // Pattern A: echo "..." | git commit -F -
