@@ -341,7 +341,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         const trailerSetting = getSetting(ctx.cwd, "commit_trailer");
         if (typeof trailerSetting === "string") {
           const modelId = (ctx as any).model?.id;
-          if (modelId && !command.includes(`: PI (${modelId}) <noreply@pi.dev>`)) {
+          if (modelId) {
             const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
             let trailerName: string;
 
@@ -372,6 +372,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
               trailerName = trailerSetting;
             }
 
+            // Skip if this specific trailer already exists in the command
+            if (command.includes(`${trailerName}: ${piIdentity}`)) return undefined;
             const trailerLines = `${shellEscapeTrailer(trailerName)}: ${piIdentity}`;
 
             if (trailerLines) {
