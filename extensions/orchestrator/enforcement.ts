@@ -341,7 +341,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         const trailerSetting = getSetting(ctx.cwd, "commit_trailer");
         if (typeof trailerSetting === "string") {
           const model = (ctx as any).model;
-          const piIdentity = `PI (${model?.id || "unknown"}) <noreply@pi.dev>`;
+          const piIdentity = `PI (${model.id}) <noreply@pi.dev>`;
           if (model?.id && !command.includes(`: ${piIdentity}`)) {
             let trailerName: string;
 
