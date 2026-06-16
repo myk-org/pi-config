@@ -221,7 +221,7 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
 
 ```json
 {
-  "commit_trailer": true,
+  "commit_trailer": "Assisted-by",
   "allow_push_to_protected_branches": false,
   "use_worktrees": true,
   "dream_interval_hours": 6

@@ -95,15 +95,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     trailerToolRegistered = true;
     pi.registerTool({
       name: "select_commit_trailer",
-      description: "Select which commit trailer identity to use for this session. " +
-        "Call this when a git commit is blocked because multiple trailer identities are configured. " +
-        "Pass the identity string WITHOUT the numeric prefix (e.g., 'Jane Doe <jane@example.com>', not '1) Jane Doe <jane@example.com>').",
+      description: "Select which commit trailer name to use for this session. " +
+        "Call this when a git commit is blocked because multiple trailer options are configured. " +
+        "Pass the trailer name WITHOUT the numeric prefix (e.g., 'Assisted-by', not '1) Assisted-by').",
       parameters: {
         type: "object" as const,
         properties: {
           identity: {
             type: "string",
-            description: "The selected trailer identity string (e.g., 'Jane Doe <jane@example.com>')",
+            description: "The selected trailer name (e.g., 'Assisted-by')",
           },
         },
         required: ["identity"],
@@ -337,43 +337,42 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
           };
 
-        // Commit trailer injection (Assisted-by)
+        // Commit trailer injection — setting value is the trailer name (e.g., "Assisted-by")
         const trailerSetting = getSetting(ctx.cwd, "commit_trailer");
-        if (trailerSetting) {
+        if (typeof trailerSetting === "string") {
           const model = (ctx as any).model;
-          if (model?.id && !command.includes("Assisted-by:")) {
-            // Determine trailer lines
-            let trailerLines: string | null = null;
+          const piIdentity = `PI (${model?.id || "unknown"}) <noreply@pi.dev>`;
+          if (model?.id && !command.includes(`: ${piIdentity}`)) {
+            let trailerName: string;
 
-            if (typeof trailerSetting === "string" && trailerSetting.includes(",")) {
-              // Multiple options — need user selection
+            if (trailerSetting.includes(",")) {
+              // Multiple trailer name options — need user selection
               if (!cachedTrailerIdentity) {
                 ensureTrailerTool();
                 const options = getTrailerOptions(ctx.cwd) ?? [];
                 const optionsList = options.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
                 return {
                   block: true,
-                  reason: `\u26d4 Select commit trailer identity before committing. Options: ${optionsList}. Ask the user which identity to use, then call select_commit_trailer with their choice.`,
+                  reason: `\u26d4 Select commit trailer before committing. Options: ${optionsList}. Ask the user which trailer to use, then call select_commit_trailer with their choice.`,
                 };
               }
-              // Validate cached identity is still in current options
+              // Validate cached selection is still in current options
               const currentOptions = getTrailerOptions(ctx.cwd) ?? [];
               if (!currentOptions.includes(cachedTrailerIdentity)) {
                 cachedTrailerIdentity = null;
                 const optionsList = currentOptions.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
                 return {
                   block: true,
-                  reason: `\u26d4 Cached trailer identity is no longer valid. Options: ${optionsList}. Ask the user which identity to use, then call select_commit_trailer with their choice.`,
+                  reason: `\u26d4 Cached trailer is no longer valid. Options: ${optionsList}. Ask the user which trailer to use, then call select_commit_trailer with their choice.`,
                 };
               }
-              trailerLines = `Assisted-by: ${shellEscapeTrailer(cachedTrailerIdentity)}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
-            } else if (typeof trailerSetting === "string") {
-              // Single custom identity
-              trailerLines = `Assisted-by: ${shellEscapeTrailer(trailerSetting)}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
+              trailerName = cachedTrailerIdentity;
             } else {
-              // true — PI only
-              trailerLines = `Assisted-by: PI (${model.id}) <noreply@pi.dev>`;
+              // Single trailer name
+              trailerName = trailerSetting;
             }
+
+            const trailerLines = `${shellEscapeTrailer(trailerName)}: ${piIdentity}`;
 
             if (trailerLines) {
               // Pattern A: echo "..." | git commit -F -
