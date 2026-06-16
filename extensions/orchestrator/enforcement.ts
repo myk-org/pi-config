@@ -35,6 +35,9 @@ function normalizeForRepeatCheck(command: string): string {
 // Repeat detection file — set to project dir on first use
 let REPEAT_FILE = "";
 
+/** Cached trailer identity selection for comma-separated commit_trailer values */
+let cachedTrailerIdentity: string | null = null;
+
 function ensureRepeatFile(cwd: string): void {
   if (!REPEAT_FILE) {
     REPEAT_FILE = join(getProjectTmpDir(cwd), `.repeat-${process.pid}.json`);
@@ -78,6 +81,40 @@ function resolveEffectiveCwd(command: string, sessionCwd: string): string {
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
 
+  // Register select_commit_trailer tool for choosing trailer identity
+  pi.registerTool({
+    name: "select_commit_trailer",
+    description: "Select which commit trailer identity to use for this session. " +
+      "Call this when a git commit is blocked because multiple trailer identities are configured. " +
+      "Pass the user's chosen identity string exactly as shown in the block reason.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        identity: {
+          type: "string",
+          description: "The selected trailer identity string (e.g., 'Jane Doe <jane@example.com>')",
+        },
+      },
+      required: ["identity"],
+    },
+    execute: async (params: { identity: string }, ctx: any) => {
+      const options = getTrailerOptions(ctx.cwd);
+      if (!options) {
+        return { content: [{ type: "text", text: "No trailer options configured — commit_trailer setting is not comma-separated." }] };
+      }
+      const identity = params.identity.trim();
+      if (!options.includes(identity)) {
+        return { content: [{ type: "text", text: `Invalid identity. Must be one of: ${options.join(", ")}` }] };
+      }
+      setTrailerIdentity(identity);
+      return { content: [{ type: "text", text: `Commit trailer identity set to: ${identity}. You can now retry the git commit.` }] };
+    },
+  });
+
+  // Reset trailer identity cache on session start
+  pi.on("session_start", () => {
+    cachedTrailerIdentity = null;
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("bash", event)) return undefined;
@@ -258,7 +295,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const mainBranch = getMainBranch(gitCwd);
       const protectedBranches = getProtectedBranches(gitCwd);
 
-      // Block commits to protected branches
+      // Block commits to protected branches (unless allow_push_to_protected is set)
       if (hasGitSub(command, "commit")) {
         if (!branch)
           return {
@@ -266,7 +303,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason:
               "⛔ Detached HEAD. Create a branch first: git checkout -b my-branch",
           };
-        if (protectedBranches.has(branch))
+        if (protectedBranches.has(branch) && !getSetting(ctx.cwd, "allow_push_to_protected_branches"))
           return {
             block: true,
             reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git commit in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
@@ -288,32 +325,56 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
           };
 
-        // Co-author trailer injection
-        if (getSetting(ctx.cwd, "co_author")) {
+        // Commit trailer injection (Assisted-by)
+        const trailerSetting = getSetting(ctx.cwd, "commit_trailer");
+        if (trailerSetting) {
           const model = (ctx as any).model;
-          if (model?.id && !command.includes("Co-authored-by:")) {
-            // Pattern A: echo "..." | git commit -F -
-            const pipeIdx = command.lastIndexOf("|");
-            if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
-              const echoPart = command.slice(0, pipeIdx);
-              const gitPart = command.slice(pipeIdx);
-              // Find the closing quote of the echo
-              const lastDoubleQuote = echoPart.lastIndexOf('"');
-              const lastSingleQuote = echoPart.lastIndexOf("'");
-              const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
-              if (lastQuoteIdx > 0) {
-                event.input.command =
-                  echoPart.slice(0, lastQuoteIdx) + `\\n\\nCo-authored-by: PI (${model.id}) <noreply@pi.dev>` + echoPart.slice(lastQuoteIdx) + gitPart;
+          if (model?.id && !command.includes("Assisted-by:")) {
+            // Determine trailer lines
+            let trailerLines: string | null = null;
+
+            if (typeof trailerSetting === "string" && trailerSetting.includes(",")) {
+              // Multiple options — need user selection
+              if (!cachedTrailerIdentity) {
+                const options = getTrailerOptions(ctx.cwd) ?? [];
+                const optionsList = options.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
+                return {
+                  block: true,
+                  reason: `\u26d4 Select commit trailer identity before committing. Options: ${optionsList}. Ask the user which identity to use, then call select_commit_trailer with their choice.`,
+                };
               }
+              trailerLines = `Assisted-by: ${cachedTrailerIdentity}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
+            } else if (typeof trailerSetting === "string") {
+              // Single custom identity
+              trailerLines = `Assisted-by: ${trailerSetting}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
+            } else {
+              // true — PI only
+              trailerLines = `Assisted-by: PI (${model.id}) <noreply@pi.dev>`;
             }
-            // Pattern B: git commit -m "..."
-            else {
-              const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
-              if (mFlagMatch) {
-                const fullMatch = mFlagMatch[0];
-                const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1; // before closing quote
-                event.input.command =
-                  command.slice(0, insertPos) + `\n\nCo-authored-by: PI (${model.id}) <noreply@pi.dev>` + command.slice(insertPos);
+
+            if (trailerLines) {
+              // Pattern A: echo "..." | git commit -F -
+              const pipeIdx = command.lastIndexOf("|");
+              if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+                const echoPart = command.slice(0, pipeIdx);
+                const gitPart = command.slice(pipeIdx);
+                const lastDoubleQuote = echoPart.lastIndexOf('"');
+                const lastSingleQuote = echoPart.lastIndexOf("'");
+                const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
+                if (lastQuoteIdx > 0) {
+                  event.input.command =
+                    echoPart.slice(0, lastQuoteIdx) + `\\n\\n${trailerLines.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+                }
+              }
+              // Pattern B: git commit -m "..."
+              else {
+                const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
+                if (mFlagMatch) {
+                  const fullMatch = mFlagMatch[0];
+                  const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
+                  event.input.command =
+                    command.slice(0, insertPos) + `\n\n${trailerLines}` + command.slice(insertPos);
+                }
               }
             }
           }
@@ -323,18 +384,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // Block pushes to protected branches
       if (hasGitSub(command, "push")) {
         // Block if currently on a protected branch
-        if (branch && protectedBranches.has(branch))
-          return {
-            block: true,
-            reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
-          };
-        // Block explicit push to any protected branch (e.g., git push origin v2.10)
-        for (const pb of protectedBranches) {
-          if (new RegExp(`\\bgit\\b.*\\bpush\\b.*\\b${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(command))
+        if (!getSetting(ctx.cwd, "allow_push_to_protected_branches")) {
+          if (branch && protectedBranches.has(branch))
             return {
               block: true,
-              reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+              reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
             };
+          // Block explicit push to any protected branch (e.g., git push origin v2.10)
+          for (const pb of protectedBranches) {
+            if (new RegExp(`\\bgit\\b.*\\bpush\\b.*\\b${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(command))
+              return {
+                block: true,
+                reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+              };
+          }
         }
         if (branch) {
           const pr = getPrMergeStatus(branch, gitCwd);
@@ -384,6 +447,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     return undefined;
   });
+}
+
+/** Set the cached commit trailer identity (called by select_commit_trailer tool) */
+export function setTrailerIdentity(identity: string): void {
+  cachedTrailerIdentity = identity;
+}
+
+/** Get available trailer options from setting (null if not comma-separated) */
+export function getTrailerOptions(cwd: string): string[] | null {
+  const setting = getSetting(cwd, "commit_trailer");
+  if (typeof setting === "string" && setting.includes(",")) {
+    return setting.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  return null;
 }
 
 // trigger re-scan

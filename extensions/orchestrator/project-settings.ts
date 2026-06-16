@@ -3,16 +3,17 @@
  *
  * Resolution order:
  * 1. Project .pi/pi-config-settings.json (wins if set)
- * 2. Global env var (PI_CO_AUTHOR, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS)
+ * 2. Global env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS)
  * 3. Default (only dream_interval_hours has a default of 3)
  */
 
-import { existsSync, lstatSync, statSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, statSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface ProjectSettings {
-  co_author?: boolean;
+  commit_trailer?: boolean | string;
+  allow_push_to_protected_branches?: boolean;
   use_worktrees?: boolean;
   dream_interval_hours?: number;
 }
@@ -30,7 +31,8 @@ function loadProjectSettings(cwd: string): ProjectSettings {
     const raw = JSON.parse(readFileSync(settingsPath, "utf-8"));
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
     const result: ProjectSettings = {};
-    if (typeof raw.co_author === "boolean") result.co_author = raw.co_author;
+    if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
+    if (typeof raw.allow_push_to_protected_branches === "boolean") result.allow_push_to_protected_branches = raw.allow_push_to_protected_branches;
     if (typeof raw.use_worktrees === "boolean") result.use_worktrees = raw.use_worktrees;
     if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
       result.dream_interval_hours = raw.dream_interval_hours;
@@ -39,13 +41,6 @@ function loadProjectSettings(cwd: string): ProjectSettings {
   } catch {
     return {};
   }
-}
-
-function saveProjectSettings(cwd: string, settings: ProjectSettings): void {
-  const settingsPath = getSettingsPath(cwd);
-  const dir = dirname(settingsPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
 }
 
 function parseBoolEnv(name: string): boolean | undefined {
@@ -94,7 +89,7 @@ function getSettings(cwd: string): ProjectSettings {
 }
 
 /** Clear cache — call after migration or manual edits */
-function clearSettingsCache(): void {
+export function clearSettingsCache(): void {
   cachedCwd = "";
   cachedSettings = {};
 }
@@ -102,18 +97,29 @@ function clearSettingsCache(): void {
 /**
  * Get a setting value. Resolution: project file → env var → default.
  */
-export function getSetting(cwd: string, key: "co_author"): boolean;
+export function getSetting(cwd: string, key: "commit_trailer"): boolean | string;
+export function getSetting(cwd: string, key: "allow_push_to_protected_branches"): boolean;
 export function getSetting(cwd: string, key: "use_worktrees"): boolean;
 export function getSetting(cwd: string, key: "dream_interval_hours"): number;
-export function getSetting(cwd: string, key: string): boolean | number {
+export function getSetting(cwd: string, key: string): boolean | string | number {
   const settings = getSettings(cwd);
 
   switch (key) {
-    case "co_author": {
-      if (settings.co_author !== undefined) return settings.co_author;
-      const env = parseBoolEnv("PI_CO_AUTHOR");
-      if (env !== undefined) return env;
+    case "commit_trailer": {
+      if (settings.commit_trailer !== undefined) return settings.commit_trailer;
+      const envStr = process.env.PI_COMMIT_TRAILER;
+      if (envStr !== undefined && envStr !== "") {
+        if (["true", "1", "yes", "on"].includes(envStr.toLowerCase())) return true;
+        if (["false", "0", "no", "off"].includes(envStr.toLowerCase())) return false;
+        return envStr; // treat as custom trailer string
+      }
       return false; // default: disabled
+    }
+    case "allow_push_to_protected_branches": {
+      if (settings.allow_push_to_protected_branches !== undefined) return settings.allow_push_to_protected_branches;
+      const env = parseBoolEnv("PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES");
+      if (env !== undefined) return env;
+      return false; // default: block pushes to protected branches
     }
     case "use_worktrees": {
       if (settings.use_worktrees !== undefined) return settings.use_worktrees;
@@ -133,54 +139,12 @@ export function getSetting(cwd: string, key: string): boolean | number {
 }
 
 /**
- * One-time migration: .pi-co-author file → pi-config-settings.json
- * Call on session_start. If .pi-co-author exists, migrate and delete it.
- */
-function migrateCoAuthorFile(cwd: string): void {
-  const legacyPath = join(cwd, ".pi-co-author");
-  if (!existsSync(legacyPath)) return;
-
-  try {
-    const settingsPath = getSettingsPath(cwd);
-    const dir = dirname(settingsPath);
-    // Guard against symlink attacks — skip migration if .pi or settings file is a symlink
-    if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
-      console.debug("[project-settings] .pi dir is a symlink — skipping write, deleting legacy file");
-      try { unlinkSync(legacyPath); } catch {}
-      return;
-    }
-    if (existsSync(settingsPath) && lstatSync(settingsPath).isSymbolicLink()) {
-      console.debug("[project-settings] settings file is a symlink — skipping write, deleting legacy file");
-      try { unlinkSync(legacyPath); } catch {}
-      return;
-    }
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    // Read raw JSON to preserve unknown keys
-    let raw: Record<string, unknown> = {};
-    if (existsSync(settingsPath)) {
-      try { raw = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch {}
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) raw = {};
-    }
-    if (raw.co_author === undefined) {
-      raw.co_author = true;
-    }
-    writeFileSync(settingsPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
-    unlinkSync(legacyPath);
-    console.debug("[project-settings] Migrated .pi-co-author → pi-config-settings.json");
-    clearSettingsCache();
-  } catch (e: any) {
-    console.debug("[project-settings] migration failed:", e?.message?.slice(0, 100));
-  }
-}
-
-/**
  * Register project settings — runs migration on session_start.
  */
 export function registerProjectSettings(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   pi.on("session_start", (_event, ctx) => {
-    migrateCoAuthorFile(ctx.cwd);
     clearSettingsCache();
   });
 }

@@ -411,7 +411,8 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 
 | Setting | Type | Default | Env var | Description |
 |---|---|---|---|---|
-| `co_author` | boolean | disabled | `PI_CO_AUTHOR` | Co-author trailer in commits |
+| `commit_trailer` | boolean \| string | disabled | `PI_COMMIT_TRAILER` | Commit trailer: `true` = PI only, `"Name <email>"` = custom + PI, `"A, B"` = ask user + PI |
+| `allow_push_to_protected_branches` | boolean | disabled | `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES` | Allow commits/pushes to protected branches |
 | `use_worktrees` | boolean | disabled | `PI_USE_WORKTREES` | Force worktree-only workflow |
 | `dream_interval_hours` | number | 3 | `PI_DREAM_INTERVAL_HOURS` | Dream frequency |
 
