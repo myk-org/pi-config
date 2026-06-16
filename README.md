@@ -221,7 +221,8 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
 
 ```json
 {
-  "co_author": true,
+  "commit_trailer": "Assisted-by",
+  "allow_push_to_protected_branches": false,
   "use_worktrees": true,
   "dream_interval_hours": 6
 }
@@ -229,7 +230,7 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
 
 Resolution order: project file → env var → default.
 
-Global env vars: `PI_CO_AUTHOR`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`
+Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`
 
 ### Override agents
 

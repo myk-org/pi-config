@@ -35,6 +35,19 @@ function normalizeForRepeatCheck(command: string): string {
 // Repeat detection file — set to project dir on first use
 let REPEAT_FILE = "";
 
+/** Cached trailer identity selection for comma-separated commit_trailer values */
+let cachedTrailerIdentity: string | null = null;
+
+/** Escape a string for safe inclusion in double-quoted shell strings */
+function escapeForDoubleQuote(s: string): string {
+  return s.replace(/[\\"`$!]/g, "\\$&");
+}
+
+/** Escape a string for safe inclusion in single-quoted shell strings */
+function escapeForSingleQuote(s: string): string {
+  return s.replace(/'/g, "'\\''");
+}
+
 function ensureRepeatFile(cwd: string): void {
   if (!REPEAT_FILE) {
     REPEAT_FILE = join(getProjectTmpDir(cwd), `.repeat-${process.pid}.json`);
@@ -78,6 +91,47 @@ function resolveEffectiveCwd(command: string, sessionCwd: string): string {
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
 
+  // Track whether select_commit_trailer tool has been registered
+  let trailerToolRegistered = false;
+
+  /** Lazily register select_commit_trailer tool on first need */
+  function ensureTrailerTool(): void {
+    if (trailerToolRegistered) return;
+    trailerToolRegistered = true;
+    pi.registerTool({
+      name: "select_commit_trailer",
+      description: "Select which commit trailer name to use for this session. " +
+        "Call this when a git commit is blocked because multiple trailer options are configured. " +
+        "Pass the trailer name WITHOUT the numeric prefix (e.g., 'Assisted-by', not '1) Assisted-by').",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          identity: {
+            type: "string",
+            description: "The selected trailer name (e.g., 'Assisted-by')",
+          },
+        },
+        required: ["identity"],
+      },
+      async execute(_toolCallId: string, params: { identity: string }, _signal: unknown, _onUpdate: unknown, ctx: any) {
+        const options = getTrailerOptions(ctx.cwd);
+        if (!options) {
+          return { content: [{ type: "text", text: "No trailer options configured." }] };
+        }
+        const identity = params.identity.trim();
+        if (!options.includes(identity)) {
+          return { content: [{ type: "text", text: `Invalid identity. Must be one of: ${options.join(", ")}` }] };
+        }
+        setTrailerIdentity(identity);
+        return { content: [{ type: "text", text: `Commit trailer identity set to: ${identity}. You can now retry the git commit.` }] };
+      },
+    });
+  }
+
+  // Reset trailer identity cache on session start
+  pi.on("session_start", () => {
+    cachedTrailerIdentity = null;
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("bash", event)) return undefined;
@@ -258,7 +312,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const mainBranch = getMainBranch(gitCwd);
       const protectedBranches = getProtectedBranches(gitCwd);
 
-      // Block commits to protected branches
+      // Block commits to protected branches (unless allow_push_to_protected is set)
       if (hasGitSub(command, "commit")) {
         if (!branch)
           return {
@@ -266,7 +320,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason:
               "⛔ Detached HEAD. Create a branch first: git checkout -b my-branch",
           };
-        if (protectedBranches.has(branch))
+        if (protectedBranches.has(branch) && !getSetting(gitCwd, "allow_push_to_protected_branches"))
           return {
             block: true,
             reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git commit in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
@@ -288,32 +342,75 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
           };
 
-        // Co-author trailer injection
-        if (getSetting(ctx.cwd, "co_author")) {
-          const model = (ctx as any).model;
-          if (model?.id && !command.includes("Co-authored-by:")) {
+        // Commit trailer injection — setting value is the trailer name (e.g., "Assisted-by")
+        const trailerSetting = getSetting(gitCwd, "commit_trailer");
+        if (typeof trailerSetting === "string") {
+          const modelId = (ctx as any).model?.id;
+          if (modelId) {
+            const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
+            let trailerName: string;
+
+            if (trailerSetting.includes(",")) {
+              // Multiple trailer name options — need user selection
+              if (!cachedTrailerIdentity) {
+                ensureTrailerTool();
+                const options = getTrailerOptions(gitCwd) ?? [];
+                const optionsList = options.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
+                return {
+                  block: true,
+                  reason: `\u26d4 Select commit trailer before committing. Options: ${optionsList}. Ask the user which trailer to use, then call select_commit_trailer with their choice.`,
+                };
+              }
+              // Validate cached selection is still in current options
+              const currentOptions = getTrailerOptions(gitCwd) ?? [];
+              if (!currentOptions.includes(cachedTrailerIdentity)) {
+                cachedTrailerIdentity = null;
+                const optionsList = currentOptions.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
+                return {
+                  block: true,
+                  reason: `\u26d4 Cached trailer is no longer valid. Options: ${optionsList}. Ask the user which trailer to use, then call select_commit_trailer with their choice.`,
+                };
+              }
+              trailerName = cachedTrailerIdentity;
+            } else {
+              // Single trailer name
+              trailerName = trailerSetting;
+            }
+
+            // Raw trailer line for duplicate detection (what the commit message should contain)
+            const rawTrailerLine = `${trailerName}: ${piIdentity}`;
+            if (command.includes(rawTrailerLine)) return undefined;
+
             // Pattern A: echo "..." | git commit -F -
             const pipeIdx = command.lastIndexOf("|");
             if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
               const echoPart = command.slice(0, pipeIdx);
               const gitPart = command.slice(pipeIdx);
-              // Find the closing quote of the echo
               const lastDoubleQuote = echoPart.lastIndexOf('"');
               const lastSingleQuote = echoPart.lastIndexOf("'");
               const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
               if (lastQuoteIdx > 0) {
+                // Determine quote context for correct escaping
+                const quoteChar = echoPart[lastQuoteIdx];
+                const escaped = quoteChar === "'"
+                  ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
+                  : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
                 event.input.command =
-                  echoPart.slice(0, lastQuoteIdx) + `\\n\\nCo-authored-by: PI (${model.id}) <noreply@pi.dev>` + echoPart.slice(lastQuoteIdx) + gitPart;
+                  echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
               }
             }
-            // Pattern B: git commit -m "..."
+            // Pattern B: git commit -m "..." or git commit -m '...'
             else {
               const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
               if (mFlagMatch) {
+                const quoteChar = mFlagMatch[1];
+                const escaped = quoteChar === "'"
+                  ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
+                  : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
                 const fullMatch = mFlagMatch[0];
-                const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1; // before closing quote
+                const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
                 event.input.command =
-                  command.slice(0, insertPos) + `\n\nCo-authored-by: PI (${model.id}) <noreply@pi.dev>` + command.slice(insertPos);
+                  command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
               }
             }
           }
@@ -323,18 +420,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // Block pushes to protected branches
       if (hasGitSub(command, "push")) {
         // Block if currently on a protected branch
-        if (branch && protectedBranches.has(branch))
-          return {
-            block: true,
-            reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
-          };
-        // Block explicit push to any protected branch (e.g., git push origin v2.10)
-        for (const pb of protectedBranches) {
-          if (new RegExp(`\\bgit\\b.*\\bpush\\b.*\\b${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(command))
+        if (!getSetting(gitCwd, "allow_push_to_protected_branches")) {
+          if (branch && protectedBranches.has(branch))
             return {
               block: true,
-              reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+              reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
             };
+          // Block explicit push to any protected branch (e.g., git push origin v2.10)
+          for (const pb of protectedBranches) {
+            if (new RegExp(`\\bgit\\b.*\\bpush\\b.*\\b${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(command))
+              return {
+                block: true,
+                reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+              };
+          }
         }
         if (branch) {
           const pr = getPrMergeStatus(branch, gitCwd);
@@ -384,6 +483,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     return undefined;
   });
+}
+
+/** Set the cached commit trailer identity (called by select_commit_trailer tool) */
+export function setTrailerIdentity(identity: string): void {
+  cachedTrailerIdentity = identity;
+}
+
+/** Get available trailer options from setting (null if not comma-separated) */
+export function getTrailerOptions(cwd: string): string[] | null {
+  const setting = getSetting(cwd, "commit_trailer");
+  if (typeof setting === "string" && setting.includes(",")) {
+    return setting.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  return null;
 }
 
 // trigger re-scan
