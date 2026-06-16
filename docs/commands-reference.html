@@ -419,7 +419,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Phases:</strong> PR detection → data fetch → 3 parallel reviewers → user selection → post comments → summary</p>
+<p><strong>Phases:</strong> PR detection → clone &amp; checkout → past review check → 3 parallel reviewers → merge findings → user selection → post comments → store comments → summary</p>
 <p><strong>Prerequisites:</strong> <code>myk-pi-tools</code>, <code>gh</code> CLI</p>
 <div class="highlight"><pre><span></span><code>/pr-review
 /pr-review 123
@@ -715,7 +715,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Phases:</strong> Fetch pending review → refine comments → side-by-side preview → user approval → update JSON → submit decision → execute</p>
+<p><strong>Phases:</strong> Fetch pending review → refine comments → side-by-side preview → user approval → update JSON → submit decision → execute → store comments → summary</p>
 <p><strong>Prerequisites:</strong> <code>myk-pi-tools</code></p>
 <div class="highlight"><pre><span></span><code>/refine-review https://github.com/owner/repo/pull/123
 </code></pre></div>
@@ -1731,7 +1731,7 @@
 <li><a href="agents-reference.html">Specialist Agents Reference</a></li>
 <li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 <li><a href="inter-agent-communication.html">Communicating Between Pi Sessions</a></li>
-<li><a href="workflow-recipes.html">Common Workflow Recipes</a></li>
+<li><a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a></li>
 </ul>
                 </div>
             </article>
@@ -1804,7 +1804,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

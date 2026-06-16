@@ -1092,6 +1092,10 @@ System prompt instructions here...
 <td><code>.pi/data/session-search.json</code></td>
 <td>Past session summaries index for keyword search</td>
 </tr>
+<tr>
+<td><code>.pi/data/pr-reviews.db</code></td>
+<td>PR review comment tracking (SQLite database)</td>
+</tr>
 </tbody>
 </table>
 <blockquote>
@@ -1101,8 +1105,7 @@ System prompt instructions here...
 <hr />
 <h2 id="temp-directory-structure">Temp Directory Structure</h2>
 <p>All runtime data lives under project-scoped temp directories.</p>
-<p><strong>Base path:</strong> <code>/tmp/pi-data/&lt;project&gt;/</code></p>
-<p>Project name format: cwd with <code>/</code> replaced by <code>__</code> (e.g., <code>home__user__git__my-project</code>).</p>
+<p><strong>Base path:</strong> <code>&lt;project-root&gt;/.pi/tmp/</code></p>
 <table>
 <thead>
 <tr>
@@ -1145,7 +1148,7 @@ System prompt instructions here...
 </tr>
 </tbody>
 </table>
-<p>The helper function <code>getProjectTmpDir(cwd)</code> in <code>extensions/orchestrator/utils.ts</code> creates and returns the project temp directory.</p>
+<p>The helper function <code>getProjectTmpDir(cwd)</code> in <code>extensions/orchestrator/utils.ts</code> returns <code>&lt;cwd&gt;/.pi/tmp/</code>, creating the directory if it does not exist.</p>
 <hr />
 <h2 id="mode-aware-feature-guards">Mode-Aware Feature Guards</h2>
 <p>Pi operates in four modes. Extensions use <code>ctx.mode</code> to conditionally enable features.</p>
@@ -1301,9 +1304,9 @@ System prompt instructions here...
 <ul>
 <li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
 <li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
-<li><a href="memory-system.html">Working with Project Memory</a></li>
-<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
-<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
+<li><a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a></li>
+<li><a href="inter-agent-communication.html">Communicating Between Pi Sessions</a></li>
+<li><a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a></li>
 </ul>
                 </div>
             </article>
@@ -1381,7 +1384,7 @@ System prompt instructions here...
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

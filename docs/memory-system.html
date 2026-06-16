@@ -295,227 +295,280 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="working-with-project-memory">Working with Project Memory</h1>
-<p>Teach pi what matters in your project — your preferences, lessons learned, and conventions — so it remembers across sessions and gets smarter over time.</p>
+<p>Teach pi your preferences, lessons learned, and project conventions so it remembers them across sessions. The memory system scores each entry by how often you reinforce it, automatically decays stale knowledge, and injects the most relevant memories into every conversation.</p>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>You need a pi session running in a git repository (pi stores memory under <code>.pi/memory/</code>)</li>
-<li>Memory works automatically once you start talking — but knowing the tools gives you full control</li>
+<li>A pi session running in an initialized project (a <code>.pi/</code> directory will be created automatically)</li>
+<li>No extra setup — memory works out of the box in every session</li>
 </ul>
 <h2 id="quick-example">Quick Example</h2>
-<p>Tell pi to remember something, and it persists across sessions:</p>
-<div class="highlight"><pre><span></span><code>/remember Always run tests with --no-cache flag
+<p>Tell pi something worth remembering:</p>
+<div class="highlight"><pre><span></span><code>/remember Always run tests with --verbose flag in this project
 </code></pre></div>
 
-<p>Or say it naturally in conversation — pi detects preference statements automatically:</p>
-<div class="highlight"><pre><span></span><code>I prefer using pnpm over npm for this project
+<p>Or just say it naturally in conversation — pi auto-detects preference statements like "I prefer," "always use," or "never":</p>
+<div class="highlight"><pre><span></span><code>I prefer short commit messages, one line max
 </code></pre></div>
 
-<p>Both approaches create memory entries that pi recalls in future sessions.</p>
-<h2 id="how-memory-categories-work">How Memory Categories Work</h2>
-<p>Every memory entry belongs to one of six categories:</p>
+<p>Both approaches store the memory and recall it in future sessions automatically.</p>
+<h2 id="how-memories-are-organized">How Memories Are Organized</h2>
+<p>Memories are stored in topic files under <code>.pi/memory/topics/</code>, one file per category:</p>
 <table>
 <thead>
 <tr>
 <th>Category</th>
-<th>What it stores</th>
-<th>How long it lasts</th>
+<th>File</th>
+<th>What to store</th>
+<th>Decay half-life</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>preference</code></td>
-<td>How you like things done</td>
-<td>90 days (slow decay)</td>
+<td><code>preferences.md</code></td>
+<td>How the user likes things done</td>
+<td>90 days</td>
 </tr>
 <tr>
 <td><code>lesson</code></td>
+<td><code>lessons.md</code></td>
 <td>Gotchas, tips, how things work</td>
 <td>60 days</td>
 </tr>
 <tr>
 <td><code>pattern</code></td>
-<td>Recurring approaches, conventions</td>
+<td><code>patterns.md</code></td>
+<td>Recurring conventions or approaches</td>
 <td>30 days</td>
 </tr>
 <tr>
 <td><code>decision</code></td>
+<td><code>decisions.md</code></td>
 <td>Architectural or design choices</td>
 <td>30 days</td>
 </tr>
 <tr>
 <td><code>done</code></td>
-<td>Completed tasks, merged PRs</td>
-<td>14 days (fast decay)</td>
+<td><code>completions.md</code></td>
+<td>Completed features, merged PRs</td>
+<td>14 days</td>
 </tr>
 <tr>
 <td><code>mistake</code></td>
-<td>Things that went wrong</td>
+<td><code>mistakes.md</code></td>
+<td>Things that went wrong, to avoid</td>
 <td>14 days</td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Note:</strong> Decay doesn't mean deletion — it means lower priority. Memories you reinforce stay strong. Pinned memories never decay.</p>
-</blockquote>
-<h2 id="searching-and-recalling-memories">Searching and Recalling Memories</h2>
-<p>Pi automatically recalls relevant memories before every response. You can also ask it directly:</p>
-<div class="highlight"><pre><span></span><code>What do you remember about our Docker setup?
-</code></pre></div>
+<p>Each entry is a single short line — specific, actionable, and max ~100 characters:</p>
+<div class="highlight"><pre><span></span><code><span class="gh"># Lessons</span>
 
-<p>Pi will use <code>memory_search</code> behind the scenes to find matching entries. Results combine keyword matching and semantic (vector) similarity search — so even paraphrased queries find the right memories.</p>
-<p>You can search by category too:</p>
-<div class="highlight"><pre><span></span><code>Search my memories for lessons about CI/CD
+<span class="k">-</span><span class="w"> </span>[lesson] buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid instead
+<span class="k">-</span><span class="w"> </span>[lesson] Always check PR merge status before closing issues
 </code></pre></div>
 
 <h2 id="adding-memories">Adding Memories</h2>
-<h3 id="explicit-you-tell-pi-to-remember">Explicit — You Tell Pi to Remember</h3>
-<p>Use the <code>/remember</code> command for important things you never want pi to forget:</p>
-<div class="highlight"><pre><span></span><code>/remember Use port 8443 for the dev server, not 8080
+<p>You have three ways to add memories, depending on the situation.</p>
+<h3 id="1-the-remember-command">1. The <code>/remember</code> command</h3>
+<p>Use this for anything you explicitly want pi to keep. Memories added this way are <strong>pinned</strong> — they never decay and dreaming never removes them:</p>
+<div class="highlight"><pre><span></span><code>/remember This repo uses pnpm, not npm
+/remember Deploy to staging before production — always
 </code></pre></div>
 
-<p>This creates a <strong>pinned</strong> entry that never decays and is protected from automatic cleanup.</p>
-<h3 id="proactive-pi-remembers-on-its-own">Proactive — Pi Remembers on Its Own</h3>
-<p>Pi adds memories automatically when it notices something worth saving:</p>
+<h3 id="2-natural-conversation">2. Natural conversation</h3>
+<p>Pi automatically detects preference statements in your messages. Phrases like "I prefer," "always use," "from now on," and "please never" trigger auto-extraction:</p>
+<div class="highlight"><pre><span></span><code>From now on, use single quotes in TypeScript files
+I always want error messages in English
+</code></pre></div>
+
+<blockquote>
+<p><strong>Tip:</strong> Auto-extracted preferences are learned (not pinned), so they'll decay if never reinforced. Say <code>/remember</code> if you want them permanent.</p>
+</blockquote>
+<h3 id="3-the-cli">3. The CLI</h3>
+<p>For scripting or manual management outside a pi session:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Add a learned memory</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Run migrations before deploying&quot;</span>
+
+<span class="c1"># Add a pinned memory (never auto-removed)</span>
+uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Use uv, not pip&quot;</span><span class="w"> </span>--pinned
+</code></pre></div>
+
+<h2 id="viewing-your-memories">Viewing Your Memories</h2>
+<p>Inside a pi session, ask pi to list your memory topics:</p>
+<div class="highlight"><pre><span></span><code>What&#39;s in my project memory?
+</code></pre></div>
+
+<p>Pi will call <code>memory_topics</code> and show you each topic file with its entry count and activity level.</p>
+<p>From the CLI:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
+</code></pre></div>
+
+<h2 id="how-memories-reach-pi-automatically">How Memories Reach Pi Automatically</h2>
+<p>You don't need to manually search memory before every question — three auto-injection mechanisms handle this:</p>
+<ol>
+<li>
+<p><strong>Situation report</strong> — A token-budgeted summary of your highest-scored memories is always included in pi's system prompt. Preferences and lessons get top priority.</p>
+</li>
+<li>
+<p><strong>Contextual memory recall</strong> — When you send a message, pi runs a vector similarity search against your memories. Entries with high relevance appear automatically as context.</p>
+</li>
+<li>
+<p><strong>Session history recall</strong> — Pi also searches past conversation summaries by keyword, surfacing relevant discussions from previous sessions.</p>
+</li>
+<li>
+<p><strong>File-change reminders</strong> — After pi modifies files, it checks if any memories relate to those files and surfaces them as reminders.</p>
+</li>
+</ol>
+<blockquote>
+<p><strong>Note:</strong> Trivial messages like "ok," "thanks," or emoji-only responses skip the search — no wasted computation.</p>
+</blockquote>
+<h2 id="searching-memory-manually">Searching Memory Manually</h2>
+<p>When you need to look something up from a past session or check what pi remembers about a topic, just ask:</p>
+<div class="highlight"><pre><span></span><code>What do you remember about our Docker setup?
+Search memory for &quot;deployment&quot;
+</code></pre></div>
+
+<p>Pi will use <code>memory_search</code> (hybrid keyword + vector search) to find matching entries. You can also ask pi to search past conversations:</p>
+<div class="highlight"><pre><span></span><code>What did we discuss about the API refactor last week?
+</code></pre></div>
+
+<h2 id="removing-and-editing-memories">Removing and Editing Memories</h2>
+<h3 id="remove-an-outdated-memory">Remove an outdated memory</h3>
+<div class="highlight"><pre><span></span><code>Remove the memory about Python 3.11 from lessons
+</code></pre></div>
+
+<p>Or from the CLI:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Project uses Python 3.11&quot;</span>
+</code></pre></div>
+
+<h3 id="edit-a-memory-in-place">Edit a memory in place</h3>
+<p>Ask pi to update a memory without losing its scoring history:</p>
+<div class="highlight"><pre><span></span><code>Update the lesson about Docker caching — change it to &quot;Use buildkit cache mounts with --mount=type=cache&quot;
+</code></pre></div>
+
+<p>Pi uses <code>memory_edit</code> to replace the text while preserving the evidence count and score.</p>
+<h3 id="invalidate-a-superseded-memory">Invalidate a superseded memory</h3>
+<div class="highlight"><pre><span></span><code>The decision about using REST is outdated — we switched to gRPC. Invalidate it.
+</code></pre></div>
+
+<h2 id="pinned-vs-learned-memories">Pinned vs Learned Memories</h2>
 <table>
 <thead>
 <tr>
-<th>What happens</th>
-<th>Category pi uses</th>
+<th></th>
+<th>Pinned</th>
+<th>Learned</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>You correct pi</td>
-<td><code>lesson</code></td>
+<td><strong>Created by</strong></td>
+<td><code>/remember</code>, <code>--pinned</code> flag, or <code>memory_add</code> with <code>pinned: true</code></td>
+<td>Auto-extraction, dreaming, pi's proactive writes</td>
 </tr>
 <tr>
-<td>A fix attempt fails</td>
-<td><code>mistake</code></td>
+<td><strong>Decays?</strong></td>
+<td>Never (score = 9999)</td>
+<td>Yes — based on category half-life</td>
 </tr>
 <tr>
-<td>You say "don't do X" or "always do Y"</td>
-<td><code>preference</code></td>
+<td><strong>Removed by dreaming?</strong></td>
+<td>Never</td>
+<td>Yes — if stale or redundant</td>
 </tr>
 <tr>
-<td>A PR gets merged</td>
-<td><code>done</code></td>
-</tr>
-<tr>
-<td>Pi notices a recurring pattern</td>
-<td><code>pattern</code></td>
-</tr>
-<tr>
-<td>An architectural decision is made</td>
-<td><code>decision</code></td>
+<td><strong>When to use</strong></td>
+<td>Critical preferences, permanent rules</td>
+<td>Everything else</td>
 </tr>
 </tbody>
 </table>
-<h3 id="auto-extraction-pi-detects-your-preferences">Auto-extraction — Pi Detects Your Preferences</h3>
-<p>When you say things like "I prefer...", "always use...", "never...", or "from now on...", pi automatically extracts and saves them as preferences. No explicit command needed.</p>
-<h3 id="cli-manage-memory-from-the-terminal">CLI — Manage Memory from the Terminal</h3>
-<div class="highlight"><pre><span></span><code><span class="c1"># Add a memory</span>
-uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R breaks cache mounts&quot;</span>
-
-<span class="c1"># Add a pinned memory</span>
-uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Always use uv run&quot;</span><span class="w"> </span>--pinned
-
-<span class="c1"># Remove a memory</span>
-uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;buildah chown -R breaks cache mounts&quot;</span>
-
-<span class="c1"># Show all memories</span>
-uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
-
-<span class="c1"># Print the memory directory path</span>
-uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>path
-</code></pre></div>
-
-<h2 id="where-memories-are-stored">Where Memories Are Stored</h2>
-<p>Memories live in your project under <code>.pi/memory/topics/</code> as simple Markdown files:</p>
-<div class="highlight"><pre><span></span><code>.pi/memory/
-├── memory-scores.json          # Scoring data (auto-managed)
-├── embeddings.json             # Vector embeddings (auto-managed)
-└── topics/
-    ├── preferences.md          # [preference] entries
-    ├── lessons.md              # [lesson] entries
-    ├── patterns.md             # [pattern] entries
-    ├── decisions.md            # [decision] entries
-    ├── completions.md          # [done] entries
-    └── mistakes.md             # [mistake] entries
-</code></pre></div>
-
-<p>Each topic file is human-readable Markdown:</p>
-<div class="highlight"><pre><span></span><code><span class="gh"># Preferences</span>
-
-<span class="k">-</span><span class="w"> </span>[preference] Always use pnpm over npm <span class="ge">*(pinned)*</span>
-<span class="k">-</span><span class="w"> </span>[preference] Prefers concise responses
-</code></pre></div>
-
 <blockquote>
-<p><strong>Tip:</strong> You can edit these files directly — pi reads them as the source of truth on every session start.</p>
+<p><strong>Tip:</strong> Don't over-pin. Let learned memories decay naturally — if something is important, it gets reinforced through use and stays alive on its own.</p>
 </blockquote>
-<h2 id="memory-scoring-and-decay">Memory Scoring and Decay</h2>
-<p>Every memory has a stability score that determines whether it appears in pi's context. The score decays over time unless reinforced.</p>
-<p><strong>What keeps memories alive:</strong></p>
+<h2 id="understanding-scores-and-decay">Understanding Scores and Decay</h2>
+<p>Every learned memory has a stability score that decreases over time unless reinforced. The formula combines three factors:</p>
 <ul>
-<li><strong>Reinforcement</strong> — when pi notices a memory is relevant to the current task, it bumps the evidence count, resetting the decay clock</li>
-<li><strong>Pinning</strong> — pinned entries have a fixed score of 9999 and never decay</li>
-<li><strong>Repetition</strong> — if you state a preference that already exists, pi reinforces it automatically</li>
+<li><strong>Recency</strong> — how recently the memory was last reinforced (exponential decay based on category half-life)</li>
+<li><strong>Evidence</strong> — how many times the memory has been reinforced (logarithmic growth)</li>
+<li><strong>Cue weight</strong> — how the memory was created (explicit user statements score highest)</li>
 </ul>
-<p><strong>Lifecycle states:</strong></p>
+<p>Memories move through lifecycle states as their score changes:</p>
 <table>
 <thead>
 <tr>
 <th>State</th>
-<th>What it means</th>
+<th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>active</code></td>
-<td>Included in pi's context every turn</td>
+<td><strong>Active</strong></td>
+<td>Included in the situation report, injected into prompts</td>
 </tr>
 <tr>
-<td><code>provisional</code></td>
-<td>Overflow — included only when budget allows</td>
+<td><strong>Provisional</strong></td>
+<td>Overflow — included if budget allows</td>
 </tr>
 <tr>
-<td><code>candidate</code></td>
-<td>Low priority — at risk of being dropped</td>
+<td><strong>Candidate</strong></td>
+<td>Low score, at risk of being dropped</td>
 </tr>
 <tr>
-<td><code>dropped</code></td>
-<td>No longer injected into context</td>
+<td><strong>Dropped</strong></td>
+<td>Below threshold, no longer injected</td>
 </tr>
 </tbody>
 </table>
-<p>Per-category budgets keep memory focused: 8 entries max for preferences and lessons, 6 for patterns, 4 each for decisions, completions, and mistakes. A total cap of 40 active entries prevents context overload.</p>
-<h2 id="dreaming-background-memory-consolidation">Dreaming — Background Memory Consolidation</h2>
-<p>Dreaming is pi's way of processing memories in the background — deduplicating entries, removing stale information, and extracting new knowledge from past sessions.</p>
-<h3 id="when-dreaming-runs">When Dreaming Runs</h3>
+<p>Pi automatically reinforces memories it notices are relevant to the current task. You can also reinforce manually:</p>
+<div class="highlight"><pre><span></span><code>That lesson about cache mounts was really helpful — reinforce it
+</code></pre></div>
+
+<h2 id="memory-capacity">Memory Capacity</h2>
+<p>The situation report header shows your current usage:</p>
+<div class="highlight"><pre><span></span><code># Project Memory [72% — 1,224/1,700 tokens]
+</code></pre></div>
+
 <ul>
-<li><strong>Automatically</strong> every 3 hours (configurable)</li>
-<li><strong>On session shutdown</strong> when you quit pi</li>
-<li><strong>On demand</strong> with the <code>/dream</code> command</li>
+<li><strong>Below 80%</strong> — Add memories freely</li>
+<li><strong>Above 80%</strong> — Pi warns you to consolidate before adding more</li>
 </ul>
-<h3 id="manual-trigger">Manual Trigger</h3>
+<p>When you're running out of space, ask pi to consolidate:</p>
+<div class="highlight"><pre><span></span><code>Consolidate my memories
+</code></pre></div>
+
+<p>Pi will review all entries, merge duplicates, remove contradictions, and clean up stale information. You can also remove entries manually to free space.</p>
+<blockquote>
+<p><strong>Note:</strong> Each topic file is capped at approximately 3,000 tokens. If a single category gets too large, you'll need to remove or consolidate entries before adding more.</p>
+</blockquote>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="dreaming-background-memory-consolidation">Dreaming: Background Memory Consolidation</h3>
+<p>Dreaming is a background process that reviews your session history, extracts useful knowledge, and cleans up memory — all without blocking your session.</p>
+<p><strong>Automatic dreaming</strong> runs on two schedules:</p>
+<ul>
+<li>Every 3 hours (configurable) — a background agent reads past sessions and extracts durable knowledge</li>
+<li>On session shutdown — a lightweight pass captures anything from the ending session</li>
+</ul>
+<p><strong>Manual dreaming:</strong></p>
 <div class="highlight"><pre><span></span><code>/dream
 </code></pre></div>
 
-<p>This runs memory consolidation as a background agent — it never blocks your session.</p>
-<h3 id="toggle-auto-dreaming">Toggle Auto-Dreaming</h3>
-<div class="highlight"><pre><span></span><code>/dream-auto off    # Disable automatic dreaming
+<p><strong>Toggle automatic dreaming:</strong></p>
+<div class="highlight"><pre><span></span><code>/dream-auto off    # Disable auto-dreaming
 /dream-auto on     # Re-enable it
-/dream-auto        # Check current status
 </code></pre></div>
 
-<h3 id="what-dreaming-does">What Dreaming Does</h3>
+<p>The status bar shows a 🌙 icon — highlighted when a dream is actively running.</p>
+<h4 id="what-dreaming-does">What dreaming does</h4>
 <ol>
-<li>Reads session transcripts and extracts durable knowledge</li>
-<li>Adds new entries to the appropriate topic files</li>
-<li>Deduplicates and removes stale entries</li>
-<li>Generates reusable skills from recurring multi-step workflows</li>
+<li>Reads the current session and recent past sessions</li>
+<li>Extracts lessons, corrections, completed work, and preferences</li>
+<li>Deduplicates and cleans up existing topic files</li>
+<li>Auto-generates reusable skills from recurring multi-step workflows</li>
 <li><strong>Never</strong> touches pinned entries</li>
 </ol>
-<h3 id="configuring-the-dream-interval">Configuring the Dream Interval</h3>
+<h4 id="configuring-dream-frequency">Configuring dream frequency</h4>
 <p>Set the interval in <code>.pi/pi-config-settings.json</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;dream_interval_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
@@ -528,84 +581,19 @@ uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"
 
 <p>Valid range: 0.5 to 24 hours. Default: 3 hours.</p>
 <blockquote>
-<p><strong>Note:</strong> Project settings take priority over environment variables. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for all settings.</p>
+<p><strong>Note:</strong> A separate scoring rebuild runs every 30 minutes (no LLM cost — it just recalculates stability scores and reorganizes entries).</p>
 </blockquote>
-<h2 id="capacity-management">Capacity Management</h2>
-<p>The situation report header shows your current memory usage:</p>
-<div class="highlight"><pre><span></span><code># Project Memory [72% — 1,224/1,700 tokens]
-</code></pre></div>
-
-<p>The total budget is 1,700 tokens by default, dynamically adjusted based on how much of the system prompt is used by rules and other context.</p>
-<h3 id="when-memory-gets-full">When Memory Gets Full</h3>
-<p>When usage exceeds 80%, pi shows a warning:</p>
-<div class="highlight"><pre><span></span><code>&gt; ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or
-&gt; remove existing ones using memory_remove.
-</code></pre></div>
-
-<p><strong>To free up space:</strong></p>
-<ol>
-<li>
-<p>Ask pi to consolidate memories:
-   <code>Consolidate my project memory — find duplicates and remove stale entries</code></p>
-</li>
-<li>
-<p>Remove specific outdated entries:
-   <code>Remove the memory about Python 3.11, we upgraded to 3.12</code></p>
-</li>
-<li>
-<p>Run dreaming to auto-clean:
-   <code>/dream</code></p>
-</li>
-</ol>
-<h3 id="topic-file-size-limits">Topic File Size Limits</h3>
-<p>Each topic file is capped at ~3,000 tokens (12,000 characters). If you hit this limit on a specific category, pi will prompt you to consolidate or remove entries before adding new ones.</p>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="memory-editing">Memory Editing</h3>
-<p>Pi can update memories in place without losing scoring history:</p>
-<div class="highlight"><pre><span></span><code>Update my memory about the dev server port — it changed from 8443 to 9090
-</code></pre></div>
-
-<p>This preserves the evidence count and reinforcement history of the original entry, unlike a remove-then-add which starts fresh.</p>
-<p>Pi can also invalidate superseded memories:</p>
-<div class="highlight"><pre><span></span><code>The memory about using webpack is outdated — we switched to vite
-</code></pre></div>
-
-<h3 id="memory-reflection">Memory Reflection</h3>
-<p>Ask pi to synthesize an answer from its memories rather than returning raw entries:</p>
-<div class="highlight"><pre><span></span><code>What do you remember about how our deployment pipeline works?
-</code></pre></div>
-
-<p>Pi searches across all topic files using both keyword and vector similarity, then composes a coherent answer from the matching entries.</p>
-<h3 id="session-history-search">Session History Search</h3>
-<p>Beyond topic-based memory, pi indexes summaries of past conversations. When you reference something from a previous session, pi automatically searches these summaries and injects relevant snippets — at zero LLM cost.</p>
-<p>You can also search explicitly:</p>
-<div class="highlight"><pre><span></span><code>What did we discuss about the database migration last week?
-</code></pre></div>
-
-<p>Session summaries are stored in <code>.pi/data/session-search.json</code> and indexed on session shutdown.</p>
-<h3 id="contextual-memory-auto-injection">Contextual Memory Auto-Injection</h3>
-<p>Three mechanisms inject memory into pi's context automatically on every turn:</p>
-<ol>
-<li><strong>Situation Report</strong> — a token-budgeted summary of scored memories, always present at the top of pi's context</li>
-<li><strong>Contextual Memory Recall</strong> — vector similarity search against your current message, injecting entries with similarity &gt; 0.65</li>
-<li><strong>File-Change Reminders</strong> — after pi modifies files, it searches for memories related to those file paths and surfaces relevant ones</li>
-</ol>
-<blockquote>
-<p><strong>Tip:</strong> Trivial messages like "ok", "thanks", or emoji skip vector search to avoid wasted computation.</p>
-</blockquote>
-<h3 id="vector-embeddings">Vector Embeddings</h3>
-<p>Memory search uses a local embedding model (<code>Xenova/bge-small-en-v1.5</code>, 384 dimensions) that runs entirely in-process — no API keys needed, no network calls. The model downloads automatically on first use (~50MB).</p>
-<p>Embeddings are stored in <code>.pi/memory/embeddings.json</code> and created automatically when memories are added. On first search after upgrading, pi migrates existing entries that don't have embeddings yet.</p>
-<h3 id="retrieval-telemetry">Retrieval Telemetry</h3>
-<p>Pi logs which memories were injected and whether they were actually used in the response. This data lives in <code>.pi/data/memory-telemetry.jsonl</code> and helps track memory effectiveness over time.</p>
-<h3 id="cold-topic-archival">Cold Topic Archival</h3>
-<p>Topics that haven't been reinforced for 2× their half-life are archived automatically (deleted). For example, a completions topic with no reinforcement for 28 days is removed. Pinned entries are never archived.</p>
-<h3 id="writing-good-memory-entries">Writing Good Memory Entries</h3>
+<h3 id="duplicate-detection-with-vector-embeddings">Duplicate Detection with Vector Embeddings</h3>
+<p>When pi adds a memory, it checks for near-duplicates using vector similarity (threshold: 0.85). If you try to add "Always use pnpm" and "Use pnpm, not npm" already exists, pi reinforces the existing entry instead of creating a duplicate.</p>
+<p>This runs locally using an in-process embedding model — no API keys, no network calls. The first search in a session may take a moment to initialize the model; subsequent searches are near-instant (~2.5ms).</p>
+<p>Embeddings are stored in <code>.pi/memory/embeddings.json</code> and managed automatically.</p>
+<h3 id="memory-quality-guidelines">Memory Quality Guidelines</h3>
+<p>Write memories that are specific and actionable — not vague observations:</p>
 <table>
 <thead>
 <tr>
-<th>❌ Avoid</th>
-<th>✅ Prefer</th>
+<th>❌ Bad</th>
+<th>✅ Good</th>
 </tr>
 </thead>
 <tbody>
@@ -614,7 +602,7 @@ uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"
 <td>"buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid"</td>
 </tr>
 <tr>
-<td>"The integration was incomplete"</td>
+<td>"The memory system was incomplete"</td>
 <td>"Never close issues with unchecked deliverables in Done section"</td>
 </tr>
 <tr>
@@ -625,40 +613,87 @@ uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"
 </table>
 <p>Rules of thumb:</p>
 <ul>
-<li><strong>One line only</strong> — max ~100 characters</li>
-<li><strong>Specific and actionable</strong> — concrete "do X" or "don't do Y"</li>
-<li><strong>No fluff</strong> — no context, background, or explanation</li>
+<li>One line, ~100 characters max</li>
+<li>Concrete "do X" or "don't do Y" — not background explanations</li>
+<li>No fluff, no context, just the fact</li>
 </ul>
+<h3 id="skill-creation-from-memory-patterns">Skill Creation from Memory Patterns</h3>
+<p>When dreaming detects a multi-step workflow that recurs across entries (3+ steps), it can auto-generate a <strong>skill</strong> — a reusable procedure saved as a file. You can also create skills manually:</p>
+<div class="highlight"><pre><span></span><code>/create-skill deploy-staging
+</code></pre></div>
+
+<p>This extracts the workflow from the current conversation and saves it for future sessions. See <a href="customization-recipes.html">Customization and Extension Recipes</a> for details.</p>
+<h3 id="per-category-budget-caps">Per-Category Budget Caps</h3>
+<p>The scoring system enforces per-category limits to keep memory balanced:</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Max active entries</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preference</code></td>
+<td>8</td>
+</tr>
+<tr>
+<td><code>lesson</code></td>
+<td>8</td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td>6</td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td>4</td>
+</tr>
+</tbody>
+</table>
+<p>There's an additional overflow pool of 6 entries for provisional items, and a hard cap of 40 total active entries. Entries beyond these limits are demoted to lower lifecycle states.</p>
+<h3 id="retrieval-telemetry">Retrieval Telemetry</h3>
+<p>Pi logs which memories are injected and whether they were actually used in responses. This data lives at <code>.pi/data/memory-telemetry.jsonl</code> and helps you understand which memories are providing value.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
-<p><strong>Memories aren't showing up in pi's context</strong></p>
+<p><strong>Memory not showing up in pi's responses</strong></p>
 <ul>
-<li>Check capacity: if memory is at 100%, lower-priority entries are dropped. Remove or consolidate entries.</li>
-<li>Verify the entry exists: <code>uv run myk-pi-tools memory show</code></li>
-<li>The entry may have decayed to <code>dropped</code> state — reinforce it by asking pi about the topic.</li>
+<li>Check that the entry is in the right topic file: <code>uv run myk-pi-tools memory show</code></li>
+<li>The entry may have decayed below the active threshold — ask pi to search for it and reinforce it</li>
+<li>Scoring rebuilds run every 30 minutes; a freshly added entry should be active immediately</li>
 </ul>
-<p><strong>Vector search isn't finding relevant memories</strong></p>
+<p><strong>"Topic would exceed size limit" error</strong></p>
 <ul>
-<li>On first run, the embedding model downloads (~50MB). If it fails, pi falls back to keyword-only search.</li>
-<li>Check that <code>.pi/memory/embeddings.json</code> exists. If corrupted, delete it — pi rebuilds it on next search.</li>
+<li>A single topic file has reached its ~3,000-token cap</li>
+<li>Remove outdated entries with <code>memory_remove</code> or ask pi to consolidate</li>
+<li>Run <code>/dream</code> to trigger automatic cleanup</li>
 </ul>
-<p><strong>Dreaming isn't running</strong></p>
+<p><strong>Memory capacity at 80%+</strong></p>
 <ul>
-<li>Check status: <code>/dream-auto</code> (shows enabled/disabled)</li>
-<li>Dreaming is disabled in one-shot modes (<code>print</code>, <code>json</code>) — it only runs in interactive sessions.</li>
-<li>The dream interval may be too long. Check <code>.pi/pi-config-settings.json</code> or set <code>PI_DREAM_INTERVAL_HOURS</code>.</li>
+<li>Ask pi: "Consolidate my memories"</li>
+<li>Remove completed work entries (<code>done</code> category) that are no longer relevant</li>
+<li>Check if duplicate entries exist across topics</li>
 </ul>
-<p><strong>Memory entries seem duplicated</strong></p>
+<p><strong>Auto-extracted preferences you didn't intend</strong></p>
 <ul>
-<li>Run <code>/dream</code> to trigger consolidation, which deduplicates entries.</li>
-<li>Or ask pi directly: "Consolidate my project memory — find and merge duplicates."</li>
+<li>Pi detects phrases like "I always" even in casual statements</li>
+<li>Remove unwanted entries: ask pi to remove the specific memory</li>
+<li>Auto-extracted entries are learned (not pinned), so they'll decay on their own if never reinforced</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li><a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a></li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
 <li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
 <li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
-<li><a href="cli-reference.html">myk-pi-tools CLI Reference</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
 </ul>
                 </div>
             </article>
@@ -682,40 +717,34 @@ uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
 <li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#how-memory-categories-work">How Memory Categories Work</a></li>
-<li><a href="#searching-and-recalling-memories">Searching and Recalling Memories</a></li>
+<li><a href="#how-memories-are-organized">How Memories Are Organized</a></li>
 <li><a href="#adding-memories">Adding Memories</a><ul>
-<li><a href="#explicit-you-tell-pi-to-remember">Explicit — You Tell Pi to Remember</a></li>
-<li><a href="#proactive-pi-remembers-on-its-own">Proactive — Pi Remembers on Its Own</a></li>
-<li><a href="#auto-extraction-pi-detects-your-preferences">Auto-extraction — Pi Detects Your Preferences</a></li>
-<li><a href="#cli-manage-memory-from-the-terminal">CLI — Manage Memory from the Terminal</a></li>
+<li><a href="#1-the-remember-command">1. The /remember command</a></li>
+<li><a href="#2-natural-conversation">2. Natural conversation</a></li>
+<li><a href="#3-the-cli">3. The CLI</a></li>
 </ul>
 </li>
-<li><a href="#where-memories-are-stored">Where Memories Are Stored</a></li>
-<li><a href="#memory-scoring-and-decay">Memory Scoring and Decay</a></li>
-<li><a href="#dreaming-background-memory-consolidation">Dreaming — Background Memory Consolidation</a><ul>
-<li><a href="#when-dreaming-runs">When Dreaming Runs</a></li>
-<li><a href="#manual-trigger">Manual Trigger</a></li>
-<li><a href="#toggle-auto-dreaming">Toggle Auto-Dreaming</a></li>
-<li><a href="#what-dreaming-does">What Dreaming Does</a></li>
-<li><a href="#configuring-the-dream-interval">Configuring the Dream Interval</a></li>
+<li><a href="#viewing-your-memories">Viewing Your Memories</a></li>
+<li><a href="#how-memories-reach-pi-automatically">How Memories Reach Pi Automatically</a></li>
+<li><a href="#searching-memory-manually">Searching Memory Manually</a></li>
+<li><a href="#removing-and-editing-memories">Removing and Editing Memories</a><ul>
+<li><a href="#remove-an-outdated-memory">Remove an outdated memory</a></li>
+<li><a href="#edit-a-memory-in-place">Edit a memory in place</a></li>
+<li><a href="#invalidate-a-superseded-memory">Invalidate a superseded memory</a></li>
 </ul>
 </li>
-<li><a href="#capacity-management">Capacity Management</a><ul>
-<li><a href="#when-memory-gets-full">When Memory Gets Full</a></li>
-<li><a href="#topic-file-size-limits">Topic File Size Limits</a></li>
-</ul>
-</li>
+<li><a href="#pinned-vs-learned-memories">Pinned vs Learned Memories</a></li>
+<li><a href="#understanding-scores-and-decay">Understanding Scores and Decay</a></li>
+<li><a href="#memory-capacity">Memory Capacity</a></li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#memory-editing">Memory Editing</a></li>
-<li><a href="#memory-reflection">Memory Reflection</a></li>
-<li><a href="#session-history-search">Session History Search</a></li>
-<li><a href="#contextual-memory-auto-injection">Contextual Memory Auto-Injection</a></li>
-<li><a href="#vector-embeddings">Vector Embeddings</a></li>
+<li><a href="#dreaming-background-memory-consolidation">Dreaming: Background Memory Consolidation</a></li>
+<li><a href="#duplicate-detection-with-vector-embeddings">Duplicate Detection with Vector Embeddings</a></li>
+<li><a href="#memory-quality-guidelines">Memory Quality Guidelines</a></li>
+<li><a href="#skill-creation-from-memory-patterns">Skill Creation from Memory Patterns</a></li>
+<li><a href="#per-category-budget-caps">Per-Category Budget Caps</a></li>
 <li><a href="#retrieval-telemetry">Retrieval Telemetry</a></li>
-<li><a href="#cold-topic-archival">Cold Topic Archival</a></li>
-<li><a href="#writing-good-memory-entries">Writing Good Memory Entries</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -731,7 +760,7 @@ uv<span class="w"> </span>run<span class="w"> </span>myk-pi-tools<span class="w"
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

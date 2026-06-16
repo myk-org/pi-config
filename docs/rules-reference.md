@@ -1,22 +1,42 @@
 # Orchestrator Rules Reference
 
-Rules in `rules/` are the orchestrator's behavioral contract. They load automatically in **alphabetical order** (by numeric prefix) at session start and inject into the orchestrator's system prompt via the `before_agent_start` hook. Specialist agents **never** see these rules — they are scoped to the orchestrator only.
+Orchestrator rules are markdown files in the `rules/` directory that define the orchestrator's behavior. They load automatically in **alphabetical order** (by numeric prefix) at the start of each pi session and are injected into the orchestrator's system prompt via the `before_agent_start` hook in `extensions/orchestrator/rules.ts`.
 
-> **Note:** Rules take effect on the **next pi session**. Running sessions are not affected by rule file changes. See [Extension Architecture and Lifecycle Hooks](extension-architecture.html) for details on the injection mechanism.
-
----
-
-## Loading Mechanism
+> **Note:** Rules apply to the **orchestrator only** — specialist agents ignore them. Each rule file begins with a scope declaration that enforces this boundary.
 
 | Property | Value |
 |----------|-------|
-| Source directory | `rules/` |
-| File format | Markdown (`.md`) |
-| Load order | Alphabetical (numeric prefix: `00`, `05`, `10`, … `60`) |
-| Injection point | `before_agent_start` event (orchestrator only) |
-| Skipped for | All specialist subagents (`PI_SUBAGENT_CHILD=1`) |
+| Location | `rules/` directory |
+| Format | Markdown (`.md`) |
+| Load order | Alphabetical (numeric prefix) |
+| Takes effect | Next pi session start |
+| Injected via | `before_agent_start` hook in `extensions/orchestrator/rules.ts` |
+| Target | Orchestrator only (not specialist agents) |
 
-The extension reads all `.md` files from the `rules/` directory, sorts them, concatenates their contents, and appends the result to the orchestrator's system prompt.
+---
+
+## Rule Loading Mechanism
+
+The `registerRules()` function in `extensions/orchestrator/rules.ts` reads all `.md` files from the `rules/` directory, sorts them alphabetically, and concatenates their contents into the orchestrator's system prompt. This happens on every `before_agent_start` event.
+
+```text
+rules/
+├── 00-orchestrator-core.md      # Loads first
+├── 05-issue-first-workflow.md
+├── 10-agent-routing.md
+├── 15-mcp-launchpad.md
+├── 20-code-review-loop.md
+├── 25-documentation-updates.md
+├── 30-prompt-templates.md
+├── 35-memory.md
+├── 40-critical-rules.md
+├── 45-file-preview.md
+├── 50-agent-bug-reporting.md
+├── 55-coms-protocol.md
+└── 60-task-tracking.md          # Loads last
+```
+
+> **Tip:** To add a new rule, create a file with a numeric prefix that places it in the desired load order. See [Customization and Extension Recipes](customization-recipes.html) for details.
 
 ---
 
@@ -24,38 +44,36 @@ The extension reads all `.md` files from the `rules/` directory, sorts them, con
 
 **File:** `rules/00-orchestrator-core.md`
 
-Defines the orchestrator's fundamental role: it is a **manager** that delegates work to specialist agents and never performs direct edits.
+Defines the fundamental separation between the orchestrator (manager) and specialist agents (workers). The orchestrator delegates all implementation work and never directly modifies files.
 
 ### Forbidden Actions
 
+| Action | Status | Alternative |
+|--------|--------|-------------|
+| `edit`, `write`, `bash` tools | ❌ Forbidden | Delegate to specialist agents via `subagent` |
+| Delegating slash commands | ❌ Forbidden | Execute slash commands directly |
+| Git commands | ❌ Forbidden | Delegate to `git-expert` |
+| MCP tool execution | ❌ Forbidden | Delegate to specialist agents |
+| Multi-file exploration | ❌ Forbidden | Delegate to `worker` agent |
+
+### Allowed Direct Actions
+
 | Action | Status |
 |--------|--------|
-| `edit`, `write`, `bash` (except `mcpl`) | ❌ Forbidden |
-| Delegating slash commands to agents | ❌ Forbidden |
-| `read` (single files) | ✅ Allowed |
-| `bash` for `mcpl` only | ✅ Allowed |
+| Read files (read tool) | ✅ Allowed |
+| Run `mcpl` via bash for MCP discovery | ✅ Allowed |
 | Ask clarifying questions | ✅ Allowed |
-| Analyze, plan, route via `subagent` | ✅ Allowed |
-| Execute slash commands directly | ✅ Allowed |
-
-### Delegation Targets
-
-| Work type | Delegate to |
-|-----------|------------|
-| `edit` / `write` | Language specialist via `subagent` |
-| Git commands | `git-expert` via `subagent` |
-| MCP tools | Manager agents via `subagent` |
-| Multi-file exploration | `worker` agent via `subagent` |
+| Analyze and plan | ✅ Allowed |
+| Route tasks to agents via `subagent` | ✅ Allowed |
+| Execute slash commands and their internal operations | ✅ Allowed |
 
 ### Pre-Implementation Checklist
 
-Before any code change, the orchestrator verifies:
+Before any code changes (when the issue-first workflow applies):
 
-1. Root cause investigated (read relevant code, understand the problem)
-2. GitHub issue created (when issue-first workflow applies)
-3. On issue branch (`feat/issue-N-...` or `fix/issue-N-...`)
-
-> **Tip:** The checklist is skipped when the issue-first workflow does not apply. See [rule 05](#05--issue-first-workflow) for skip conditions.
+1. Root cause investigated? (read code, understand the problem)
+2. GitHub issue created?
+3. On issue branch (`feat/issue-N-...` or `fix/issue-N-...`)?
 
 ---
 
@@ -63,46 +81,46 @@ Before any code change, the orchestrator verifies:
 
 **File:** `rules/05-issue-first-workflow.md`
 
-Requires creating a GitHub issue and a dedicated branch before code changes. See [Your First Coding Workflow](first-workflow.html) for a guided walkthrough.
+Requires a GitHub issue and dedicated branch before starting code changes. Defines the full lifecycle from user request to issue closure.
+
+### When to Apply
+
+| Condition | Action |
+|-----------|--------|
+| New features or enhancements | **Use** workflow |
+| Bug fixes requiring code changes | **Use** workflow |
+| Refactoring tasks | **Use** workflow |
+| Multi-file modifications | **Use** workflow |
+| Trivial fixes (typos, single-line) | **Skip** workflow |
+| Questions or explanations | **Skip** workflow |
+| Exploration or research | **Skip** workflow |
+| User says "just do it" / "quick fix" | **Skip** workflow |
+| Urgent hotfixes | **Skip** workflow |
 
 ### Workflow Steps
 
-1. Analyze the user's request
-2. Check skip conditions (see below)
-3. Investigate root cause — read source, identify files, verify the problem exists
-4. Delegate issue creation to `github-expert`
+1. Analyze and understand the request
+2. Determine if workflow should be skipped
+3. Investigate root cause — read source code, identify affected files and functions
+4. Delegate to `github-expert` to create issue with type, description, root cause analysis, proposed fix, and deliverables checklist
 5. Ask user: "Issue #N created. Do you want to work on it now?"
-6. On confirmation, delegate branch creation to `git-expert`
-7. Proceed with implementation
-
-### Skip Conditions
-
-| Condition | Effect |
-|-----------|--------|
-| Trivial fix (typo, single-line change) | Skip entire workflow |
-| Question or explanation (no code changes) | Skip |
-| Exploration or research | Skip |
-| User says "just do it" or "quick fix" | Skip |
-| Urgent hotfix with time pressure | Skip |
+6. On confirmation, delegate to `git-expert` to fetch main and create issue branch
+7. Implement changes, following the code review loop
+8. Check off deliverables as completed
+9. Close issue when all deliverables are done
 
 ### Branch Naming
 
 | Type | Pattern | Example |
 |------|---------|---------|
-| Feature | `feat/issue-N-description` | `feat/issue-70-issue-first-workflow` |
-| Bug fix | `fix/issue-N-description` | `fix/issue-42-memory-leak` |
-| Refactor | `refactor/issue-N-description` | `refactor/issue-99-cleanup-utils` |
-| Docs | `docs/issue-N-description` | `docs/issue-15-update-readme` |
+| Feature | `feat/issue-<N>-<description>` | `feat/issue-70-issue-first-workflow` |
+| Fix | `fix/issue-<N>-<description>` | `fix/issue-42-memory-leak` |
+| Refactor | `refactor/issue-<N>-<description>` | `refactor/issue-99-cleanup-utils` |
+| Docs | `docs/issue-<N>-<description>` | `docs/issue-15-update-readme` |
 
 ### Issue Requirements
 
-Every issue **must** include:
-
-- Type (fix/feat/refactor/docs)
-- Problem or feature description
-- Root cause analysis (for bugs — affected files, functions, why)
-- Proposed fix approach
-- **`## Done` section with checkboxes** — these define the completion contract
+Every issue **must** include a `## Done` section with checkboxes:
 
 ```markdown
 ## Done
@@ -112,17 +130,17 @@ Every issue **must** include:
 - [ ] Deliverable 3
 ```
 
+> **Warning:** Issues must never be closed with unchecked deliverables. If a deliverable is no longer needed, remove it or mark as N/A before closing.
+
 ### Edge Cases
 
 | Scenario | Behavior |
 |----------|----------|
 | User says "just fix it" | Skip workflow, do directly |
-| Partial requirements provided | Ask clarifying questions, then create issue |
+| Partial requirements | Ask clarifying questions, then create issue |
 | Issue already exists | Ask if user wants to continue existing issue |
 | Urgent/hotfix request | Skip workflow, note in commit message |
 | Multiple unrelated requests | Create separate issues for each |
-
-> **Warning:** Issues are never closed until **all** checkboxes in the `## Done` section are checked. Unchecked deliverables that are no longer needed must be explicitly removed or marked N/A.
 
 ---
 
@@ -130,7 +148,7 @@ Every issue **must** include:
 
 **File:** `rules/10-agent-routing.md`
 
-Maps task domains to specialist agents. For the full agent list, see [Specialist Agents Reference](agents-reference.html).
+Maps task domains to specialist agents. See [Specialist Agents Reference](agents-reference.html) for full agent specifications.
 
 ### Routing Table
 
@@ -143,8 +161,8 @@ Maps task domains to specialist agents. For the full agent list, see [Specialist
 | Shell scripts (`.sh`) | `bash-expert` |
 | Markdown (`.md`) | `technical-documentation-writer` |
 | Docker | `docker-expert` |
-| Kubernetes / OpenShift | `kubernetes-expert` |
-| Jenkins / CI / Groovy | `jenkins-expert` |
+| Kubernetes/OpenShift | `kubernetes-expert` |
+| Jenkins/CI/Groovy | `jenkins-expert` |
 | Git operations (local) | `git-expert` |
 | GitHub (PRs, issues, releases, workflows) | `github-expert` |
 | Tests | `test-automator` |
@@ -155,31 +173,31 @@ Maps task domains to specialist agents. For the full agent list, see [Specialist
 | External library/framework docs | `docs-fetcher` |
 | No specialist match | `worker` (fallback) |
 
-### Routing Principle: Intent over Tool
+### Routing Principles
 
-Route based on **what the task is**, not which CLI tool is involved.
+Route by **task intent**, not by tool:
 
-| Task | Correct Route | Reason |
-|------|--------------|--------|
-| Running Python tests | `python-expert` | Intent is testing Python code |
-| Editing Python files with sed | `python-expert` | Intent is Python file modification |
-| Creating a PR | `github-expert` | Intent is GitHub interaction |
-| Committing changes | `git-expert` | Intent is local git operation |
-| Shell script creation | `bash-expert` | Intent is shell scripting |
+| Task | Correct Route | Reasoning |
+|------|---------------|-----------|
+| Running Python tests | `python-expert` | Intent is Python, not shell |
+| Editing Python files with sed/awk | `python-expert` | Intent is Python code modification |
+| Creating a PR | `github-expert` | GitHub operation, not local git |
+| Committing changes | `git-expert` | Local git operation |
+| React documentation lookup | `docs-fetcher` | External library docs |
 
-### Documentation Routing
+### docs-fetcher Routing
 
-External library/framework documentation (React, FastAPI, Django, Oh My Posh, etc.) **must** go through `docs-fetcher`. The orchestrator is forbidden from calling `fetch_content` on external docs directly.
+The orchestrator must **never** fetch external documentation directly. All external doc lookups go through `docs-fetcher`.
 
 ```text
-# Correct
+# Correct — delegate to docs-fetcher
 subagent(agent="docs-fetcher", task="Fetch React hooks documentation...")
 
-# Forbidden
+# Wrong — orchestrator fetching directly
 fetch_content(https://react.dev/...)
 ```
 
-`docs-fetcher` tries `llms.txt` first (LLM-optimized format) and extracts only relevant sections.
+`docs-fetcher` tries `llms.txt` first (optimized for LLMs), then extracts only relevant sections.
 
 ---
 
@@ -187,52 +205,47 @@ fetch_content(https://react.dev/...)
 
 **File:** `rules/15-mcp-launchpad.md`
 
-Governs MCP (Model Context Protocol) server interaction via the `mcpl` CLI. See [Customization and Extension Recipes](customization-recipes.html) for MCP server setup.
+Defines how to use the `mcpl` CLI for MCP (Model Context Protocol) server interactions. See [Slash Commands and Extension Commands Reference](commands-reference.html) for related commands.
 
-### Command Reference
+### mcpl Commands
 
 | Command | Purpose |
 |---------|---------|
-| `mcpl search "<query>"` | Search all tools (5 results default) |
-| `mcpl search "<query>" --limit N` | Search with custom result count |
+| `mcpl search "<query>"` | Search all tools (shows required params, 5 results) |
+| `mcpl search "<query>" --limit N` | Search with custom result limit |
 | `mcpl list` | List all MCP servers |
 | `mcpl list <server>` | List tools for a specific server |
 | `mcpl list --refresh` | Refresh and list all servers |
 | `mcpl inspect <server> <tool>` | Get full tool schema |
-| `mcpl inspect <server> <tool> --example` | Get schema with example call |
-| `mcpl call <server> <tool> '{}'` | Execute tool (no arguments) |
+| `mcpl inspect <server> <tool> --example` | Get schema + example call |
+| `mcpl call <server> <tool> '{}'` | Execute tool with no arguments |
 | `mcpl call <server> <tool> '{"param": "v"}'` | Execute tool with arguments |
 | `mcpl verify` | Test all server connections |
 
 ### Workflow
 
-```bash
-# 1. Search for the right tool
-mcpl search "list projects"
-
-# 2. Get example for complex tools
-mcpl inspect sentry search_issues --example
-
-# 3. Call with required params
-mcpl call vercel list_projects '{"teamId": "team_xxx"}'
+```text
+1. Search for the tool:    mcpl search "list projects"
+2. Get an example call:    mcpl inspect sentry search_issues --example
+3. Call with params:       mcpl call vercel list_projects '{"teamId": "team_xxx"}'
 ```
-
-### Orchestrator vs Agent Usage
-
-| Role | Allowed |
-|------|---------|
-| Orchestrator | `mcpl search`, `mcpl list` (discovery only) |
-| Specialist agents | Full `mcpl` workflow including `mcpl call` |
 
 ### Troubleshooting Commands
 
 | Command | Purpose |
 |---------|---------|
 | `mcpl verify` | Test all server connections |
-| `mcpl session status` | Check daemon and connection status |
+| `mcpl session status` | Check daemon and server connection status |
 | `mcpl session stop` | Restart daemon |
 | `mcpl config` | Show current configuration |
 | `mcpl call <server> <tool> '{}' --no-daemon` | Bypass daemon for debugging |
+
+### Role Separation
+
+| Role | Can Do |
+|------|--------|
+| Orchestrator | `mcpl search` / `mcpl list` for discovery only |
+| Specialist agents | Full `mcpl` workflow including `mcpl call` |
 
 ---
 
@@ -240,54 +253,61 @@ mcpl call vercel list_projects '{"teamId": "team_xxx"}'
 
 **File:** `rules/20-code-review-loop.md`
 
-Mandatory review cycle after every code change. See [Running the Automated Code Review Loop](code-review-loop.html) for usage guidance.
+Mandatory review process after every code change. Three reviewers run in parallel, and the loop repeats until all approve. See [Running the Automated Code Review Loop](code-review-loop.html) for a usage guide.
 
 ### Review Agents
 
 | Agent | Focus Area |
-|-------|-----------|
+|-------|------------|
 | `code-reviewer-quality` | General code quality and maintainability |
 | `code-reviewer-guidelines` | Project guidelines and style (AGENTS.md) |
 | `code-reviewer-security` | Bugs, logic errors, security vulnerabilities |
 
-All three run as **async subagents** (`async: true`) in a single assistant turn. They execute in parallel — the orchestrator does not block waiting for results.
+> **Note:** All three reviewers are enforced as `async: true` by the `ASYNC_ONLY_AGENTS` set in `extensions/orchestrator/subagent-tool.ts`. Sync calls are automatically rejected.
 
 ### Standard Loop (Manual Reviews)
 
-1. Specialist writes or modifies code
-2. All 3 reviewers launch in parallel (`async: true`)
+1. Specialist writes/fixes code
+2. All 3 review agents dispatched **in parallel** (async)
 3. Merge and deduplicate findings from all reviewers
 4. If any reviewer has comments → fix code → go to step 2
 5. Run `test-automator`
-6. Tests pass? → **Done**. Tests fail? → Fix code, then:
+6. If tests fail → fix code:
    - Minor fix (test/config only) → re-run tests (step 5)
    - Substantive code change → full re-review (step 2)
+7. Done when all reviewers approve **AND** tests pass
 
 ### Deduplication Criteria
 
 | Condition | Action |
 |-----------|--------|
-| Same file/line + same issue type | Keep most actionable version |
+| Same file/line range + same issue type or root cause | Keep most actionable version |
 | Conflicting suggestions | Priority: security > correctness > performance > style |
-| Complementary findings (different types, same code) | Keep both |
-
-### Staged Review Mode (Automated Workflows)
-
-Used by automated flows (autorabbit, autoqodo) instead of parallel review:
-
-- **Stage 1 — Spec Compliance:** Does the code meet requirements? All deliverables implemented? No scope creep?
-- **Stage 2 — Code Quality:** Quality, security, and guidelines checks (only after Stage 1 passes)
+| Complementary findings on same code (different issue types) | Keep both |
 
 ### Baseline Test Comparison
 
-Before declaring test failures as blockers, the rule compares against a clean baseline:
+Before declaring test failures as blockers, compare against baseline:
 
-1. Save all changes (staged, unstaged, untracked)
-2. Reset to `HEAD`, run tests → baseline failure count
-3. Restore changes, run tests → current failure count
-4. Only **new failures** (current minus baseline) block the review
+1. Save all changes (staged + unstaged + untracked)
+2. Reset to clean state (`git reset --hard HEAD`)
+3. Run tests → record baseline failure count
+4. Restore changes (`git apply`)
+5. Run tests → record current failure count
+6. Only **new failures** (current minus baseline) block the review
 
-> **Note:** Pre-existing failures are noted but do not block. If `git apply` fails, baseline comparison is skipped.
+> **Note:** Pre-existing failures are noted in the review but do not block. If `git apply` and `git apply --3way` both fail, skip baseline comparison and note "baseline comparison unavailable."
+
+### Staged Review Mode (Automated Workflows)
+
+For automated review flows (autorabbit, autoqodo), use a two-stage order instead of parallel:
+
+| Stage | Focus | Rationale |
+|-------|-------|-----------|
+| Stage 1 | Spec compliance — requirements met, all deliverables implemented, no scope creep | Don't polish code that doesn't meet spec |
+| Stage 2 | Code quality, security, guidelines | Quality review on spec-compliant code |
+
+Each stage loops independently until passed before advancing to the next.
 
 ---
 
@@ -295,12 +315,12 @@ Before declaring test failures as blockers, the rule compares against a clean ba
 
 **File:** `rules/25-documentation-updates.md`
 
-Mandatory documentation check after any code addition, change, or removal.
+Mandatory documentation check after any code change. Maps change types to documentation files that must be reviewed and updated.
 
-### Update Matrix
+### Change-to-Documentation Map
 
 | Change Type | Files to Check |
-|-------------|---------------|
+|-------------|----------------|
 | New feature/command/tool | `README.md` (feature table, usage examples) |
 | New or modified extension module | `AGENTS.md` (repository structure) |
 | New agent added/removed | `AGENTS.md`, `rules/10-agent-routing.md`, `rules/50-agent-bug-reporting.md` |
@@ -309,7 +329,7 @@ Mandatory documentation check after any code addition, change, or removal.
 | New CLI tool or dependency | `README.md` (tools table), `Dockerfile` |
 | Dev workflow changes | `DEVELOPMENT.md` |
 
-> **Warning:** Documentation drift is treated as a bug. This step is never skipped.
+> **Warning:** Documentation drift is treated as a bug. This step must not be skipped.
 
 ---
 
@@ -317,25 +337,24 @@ Mandatory documentation check after any code addition, change, or removal.
 
 **File:** `rules/30-prompt-templates.md`
 
-Governs how the orchestrator executes slash commands backed by prompt templates (files in `prompts/`). See [Using Slash Commands and Prompt Templates](slash-commands.html) for the full command reference.
+Governs how the orchestrator executes prompt templates (slash commands). See [Using Slash Commands and Prompt Templates](slash-commands.html) for usage details.
 
 ### Execution Rules
 
 | Rule | Description |
 |------|-------------|
-| Template is authority | Follow the template's instructions exactly |
-| Never delegate the command itself | The orchestrator executes the prompt, not an agent |
-| Template decides delegation | If the template says "delegate to X", delegate. Otherwise, follow normal rules. |
-| Template overrides general rules | Template instructions take priority over general delegation rules when they conflict |
-
-### Correct Execution Pattern
+| Prompt is the authority | Follow the template's instructions exactly |
+| Never delegate the template itself | The orchestrator executes the prompt, not an agent |
+| Prompt decides delegation | If the prompt says "delegate to X," delegate. If it says "run this bash command," run it. |
+| Orchestrator maintains control | The orchestrator owns the prompt workflow |
+| Template overrides general rules | When a prompt's instructions conflict with general delegation rules, the prompt wins |
 
 ```text
-# WRONG — delegating the entire command
-/mycommand → subagent(agent="worker", task="/mycommand ...")
+# Correct — orchestrator executes prompt, delegates sub-tasks as directed
+/mycommand → orchestrator follows prompt → delegates sub-tasks per prompt instructions
 
-# RIGHT — orchestrator runs the command, delegates sub-tasks
-/mycommand → orchestrator follows prompt → delegates sub-tasks as instructed
+# Wrong — delegating the entire prompt to an agent
+/mycommand → delegate entire prompt to an agent
 ```
 
 ---
@@ -344,82 +363,95 @@ Governs how the orchestrator executes slash commands backed by prompt templates 
 
 **File:** `rules/35-memory.md`
 
-Defines the orchestrator's memory usage obligations. See [Working with Project Memory](memory-system.html) for user-facing guidance and [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html) for implementation details.
+Defines the scored memory system, memory tools, and per-turn self-improvement obligations. See [Working with Project Memory](memory-system.html) for a usage guide and [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html) for architecture details.
 
 ### Memory Tools
 
-| Tool | Purpose | Mandatory Usage |
-|------|---------|----------------|
-| `memory_search` | Hybrid keyword + vector search | Before answering questions about prior sessions, preferences, past decisions |
-| `memory_reinforce` | Bump evidence count, prevent decay | When a memory is relevant to the current task |
-| `memory_add` | Write new memory entry | When learning something worth remembering |
-| `memory_remove` | Delete outdated entry | When information is outdated, wrong, or superseded |
-| `memory_topics` | List topic files with hotness scores | Inspection and organization |
-| `session_search` | Search past conversation summaries | When user references something from a prior session |
+| Tool | Purpose | Mandatory? |
+|------|---------|------------|
+| `memory_search` | Search memories by keyword or category | Yes — before answering questions about prior sessions |
+| `memory_reinforce` | Bump evidence count to prevent decay | Yes — when a memory is relevant to current task |
+| `memory_add` | Add new memories (pinned or learned) | Yes — when learning something worth remembering |
+| `memory_remove` | Remove outdated or incorrect memories | No |
+| `memory_topics` | List topic files with hotness scores | No |
+| `session_search` | Search past conversation summaries | No |
 
 ### Memory Categories
 
 | Category | Storage File |
 |----------|-------------|
-| `preference` | `topics/preferences.md` |
-| `lesson` | `topics/lessons.md` |
-| `pattern` | `topics/patterns.md` |
-| `decision` | `topics/decisions.md` |
-| `done` | `topics/completions.md` |
-| `mistake` | `topics/mistakes.md` |
+| `preference` | `.pi/memory/topics/preferences.md` |
+| `lesson` | `.pi/memory/topics/lessons.md` |
+| `pattern` | `.pi/memory/topics/patterns.md` |
+| `decision` | `.pi/memory/topics/decisions.md` |
+| `done` | `.pi/memory/topics/completions.md` |
+| `mistake` | `.pi/memory/topics/mistakes.md` |
 
 ### Auto-Injection Pipeline
 
-Three mechanisms inject memories automatically — no tool calls needed:
+Three mechanisms inject memories into the system prompt automatically:
 
-1. **Situation Report** — token-budgeted summary of scored memories (always present)
-2. **Contextual Memory Recall** — vector similarity search (threshold > 0.65) against the current message
-3. **Session History Recall** — keyword search against past conversation summaries
+| Mechanism | Source | Trigger |
+|-----------|--------|---------|
+| Situation Report | Token-budgeted summary of scored memories | Every `before_agent_start` |
+| Contextual Memory Recall | Vector similarity search (threshold > 0.65) | Every `before_agent_start` (non-trivial messages) |
+| Session History Recall | Keyword search over past conversation summaries | Every `before_agent_start` (non-trivial messages) |
 
-> **Note:** Trivial messages ("ok", "thanks", "yes", messages < 6 chars) skip vector and session search.
-
-### Entry Quality Rules
-
-| Requirement | Example |
-|-------------|---------|
-| One line only (~100 chars max) | `"buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid"` |
-| Specific and actionable | `"Attach child processes to pi (no detached:true) — kills on exit"` |
-| No fluff, no context, no explanation | ❌ `"We had issues with buildah and Docker caching and tried several approaches"` |
-
-### Per-Turn Self-Improvement Triggers
-
-| Event | Action |
-|-------|--------|
-| User corrected you | `memory_add(category: "lesson")` |
-| Something failed | `memory_add(category: "mistake")` |
-| User said "don't do X" / "always do Y" | `memory_add(category: "preference")` |
-| PR merged | `memory_add(category: "done")` |
-| Non-obvious pattern discovered | `memory_add(category: "pattern")` |
-| Technical decision made | `memory_add(category: "decision")` |
+> **Note:** Trivial messages ("ok", "thanks", "yes", emoji-only, messages < 6 chars) skip vector/session search via the social closer gate.
 
 ### Capacity Signal
 
-The situation report header shows usage:
+The situation report header shows memory usage:
 
 ```text
 # Project Memory [72% — 1,224/1,700 tokens]
 ```
 
-- **Below 80%** — add freely
-- **Above 80%** — consolidate first (merge related, remove outdated)
+| Usage | Action |
+|-------|--------|
+| Below 80% | Add memories freely |
+| Above 80% | Consolidate first — merge related entries, remove outdated ones |
+
+### Per-Turn Self-Improvement Triggers
+
+| Event | Action |
+|-------|--------|
+| User corrected you | `memory_add(text: "...", category: "lesson")` |
+| Something failed | `memory_add(text: "...", category: "mistake")` |
+| User said "don't do X" / "always do Y" | `memory_add(text: "...", category: "preference")` |
+| PR merged | `memory_add(text: "...", category: "done")` |
+| Non-obvious pattern discovered | `memory_add(text: "...", category: "pattern")` |
+| Technical decision made | `memory_add(text: "...", category: "decision")` |
+
+### Memory Quality Rules
+
+- One line only — max ~100 characters
+- Specific and actionable — concrete "do X" or "don't do Y"
+- No fluff — no context, background, or explanation
+
+### CLI Interface
+
+```bash
+uv run myk-pi-tools memory add -c <category> -s "summary"           # Add to Learned
+uv run myk-pi-tools memory add -c <category> -s "summary" --pinned  # Add to Pinned
+uv run myk-pi-tools memory forget -c <category> -s "summary"        # Remove
+uv run myk-pi-tools memory show                                     # Show memory file
+uv run myk-pi-tools memory migrate                                  # DB→md migration
+uv run myk-pi-tools memory path                                     # Print file path
+```
+
+See [myk-pi-tools CLI Reference](cli-reference.html) for complete CLI documentation.
 
 ### Dreaming (Background Consolidation)
 
-| Property | Value |
-|----------|-------|
-| Trigger | `/dream` command or session shutdown |
-| Execution | Async + fireAndForget (never blocks session) |
-| Actions | Extract memories, deduplicate, reorganize, remove stale |
-| Restriction | Never removes or modifies **pinned** entries |
+Dreaming runs as an async fire-and-forget agent — never blocking the session.
 
-### Skill Creation
+| Trigger | Type |
+|---------|------|
+| `/dream` command | Manual |
+| Session shutdown | Automatic |
 
-Multi-step workflows (3+ steps, trial-and-error, non-obvious commands) are saved as reusable skills via `/create-skill <name>`. Skills are stored at `~/.agents/skills/<name>/SKILL.md`.
+Dreaming reads the session, extracts learnings, adds new entries, deduplicates, and removes stale entries. Pinned entries are never removed.
 
 ---
 
@@ -427,147 +459,111 @@ Multi-step workflows (3+ steps, trial-and-error, non-obvious commands) are saved
 
 **File:** `rules/40-critical-rules.md`
 
-Mandatory behavioral constraints enforced across all orchestrator actions. Several of these rules are backed by code-level enforcement in `extensions/orchestrator/enforcement.ts`.
+Mandatory behavioral constraints that apply across all orchestrator actions. See [Command Safety Guards and Enforcement](command-enforcement.html) for enforcement details.
 
 ### Questions Are Not Instructions
 
-When the user asks a question (contains `?`):
+When the user asks a question (contains `?`), the orchestrator must **only answer** — no file modifications, no state changes, no PRs, no issues.
 
 | Allowed | Forbidden |
 |---------|-----------|
-| Answer the question | Modify, create, or delete files |
-| Use read-only commands (`read`, `grep`, `ls`, `cat`) | Run state-changing commands (`git commit`, `rm`, `write`) |
-| Search memory (`memory_search`) | Create branches, PRs, issues |
+| Read-only commands (read, grep, cat, ls) | Modify/create/delete files |
+| `memory_search` | Run state-changing commands |
+| Answer the question | Create branches, PRs, or issues |
 | Ask for confirmation before acting | "Fix" something noticed while answering |
 
 ### Task Focus
 
-During multi-step workflows:
-
-- Side questions do **not** end the workflow — answer, then resume
-- The workflow completes only when all steps are done (e.g., PR created, issue closed)
+During multi-step workflows, side questions do not end the current task. Answer the question, then immediately resume the workflow from the next pending step.
 
 ### Parallel Execution
 
-| Requirement | Detail |
-|-------------|--------|
-| Default mode | Maximize parallelism — all independent operations in one message |
-| Sequential only when | There is a proven dependency between operations |
-| Async required when | Task is independent AND does not need immediate result |
-| Kill unused agents | Immediately kill async agents whose results are no longer needed |
+| Rule | Description |
+|------|-------------|
+| Maximize parallelism | If operations have no dependencies, execute all in one message |
+| Async by default | Use `async: true` for independent tasks (reviews, research, analysis) |
+| Sync only when blocked | Use sync only when the very next step depends on the agent's output |
+| Kill unused agents | Kill async agents immediately when their result is no longer needed |
 
 ### Sync Agent Time Estimates
 
-| Mode | `estimatedSeconds` Requirement | Threshold |
-|------|-------------------------------|-----------|
+| Mode | `estimatedSeconds` | Threshold |
+|------|---------------------|-----------|
 | Single sync | Required on top-level params | Must be < 30s |
 | Parallel sync | Required on each task | Max must be < 30s |
 | Chain sync | Required on each step | Sum must be < 30s |
-| Async | Not required | N/A |
+| Async | Not required | — |
 
-> **Note:** Calls ≥ 30s without `async: true` are rejected by the tool.
+> **Warning:** Sync calls without `estimatedSeconds` or with values ≥ 30s are rejected by the subagent tool.
 
-### Subagent `cwd`
+### Subagent cwd
 
-**Always** pass `cwd` when delegating to subagents — in all modes (single, parallel, chain, async). Omitting `cwd` causes enforcement checks to run against the wrong repository.
+Always pass `cwd` when delegating to subagents — in all modes (single, parallel, chain, async). Omitting `cwd` causes enforcement to check the wrong repository.
 
 ### Multi-PR / Multi-Branch Work
 
-When working on multiple PRs or branches simultaneously, **always** use `git worktree`:
+When working on multiple PRs simultaneously, use `git worktree` for each branch:
 
 ```bash
 git worktree add .worktrees/pr-42 origin/fix/issue-42
 git worktree add .worktrees/pr-43 origin/feat/issue-43
+# Work in each directory independently
+git worktree remove .worktrees/pr-42
 ```
 
-> **Warning:** Branch switching in the main worktree corrupts parallel agent work. The `use_worktrees` project setting enforces this by blocking `git checkout` and `git switch`. See [Configuration and Environment Variables Reference](configuration-reference.html).
+> **Warning:** Never switch branches in the main worktree when other agents may be running — it corrupts parallel agent work.
 
 ### User Interaction
 
-**Always** use the `ask_user` tool for approvals, selections, and confirmations. Never ask questions via plain text in the response.
+Always use the `ask_user` tool for user input (approvals, selections, confirmations). Never ask questions via plain text in the response.
 
 ### Technical Honesty
 
-When the user proposes an approach:
-
-1. Evaluate critically
-2. Present alternatives with tradeoffs (if they exist)
-3. Let the user decide
+Evaluate user proposals critically. Present alternatives with tradeoffs before proceeding. Let the user make the final call.
 
 ### Web Access
 
-| Use case | Tool |
-|----------|------|
-| Research and search queries | `web_search` |
-| Extracting content from URLs, YouTube, GitHub repos | `fetch_content` |
-| Interactive pages (clicks, forms, screenshots) | `agent-browser` CLI |
-| ❌ Never use | `curl` for reading web pages, SearXNG MCP |
+| Tool | Use For |
+|------|---------|
+| `web_search` | Research and search queries |
+| `fetch_content` | Extracting content from URLs, YouTube, GitHub repos |
+| `agent-browser` | Interactive pages (clicks, forms, screenshots) |
+
+> **Warning:** Never use `curl` for reading web pages. Never use SearXNG MCP.
 
 ### External Code Security Audit
 
-Before adopting external code from untrusted sources, delegate to `security-auditor`:
+Before adopting external code from untrusted sources, delegate a security audit to `security-auditor`.
 
-| Source | Audit approach |
-|--------|---------------|
-| Git repos | Clone to `/tmp/pi-work/`, run `security-auditor` |
-| Pi skills | Clone/download source, run `security-auditor` |
-| PyPI packages | Clone source repo, check install hooks, scan code |
-| npm packages | Download source, check `postinstall`, scan code |
-| MCP servers | Audit server source before adding config |
-| Docker images | Inspect Dockerfile, check base image provenance |
+| Source | Audit Approach |
+|--------|----------------|
+| Git repos | Clone to temp dir, run `security-auditor` |
+| Pi skills | Clone source, run `security-auditor` |
+| PyPI packages | Clone source repo, check install hooks |
+| npm packages | Download source, check `postinstall` scripts |
+| MCP servers | Audit server source code |
+| Docker images | Inspect Dockerfile source |
 | Remote scripts (`curl \| bash`) | **Always block** — download first, audit, then run |
 
-**Skip when:** User says "skip audit", source previously approved, or well-known package (e.g., `requests`, `react`).
+Skip audits when: user says "skip audit", tool is previously approved, or package is well-known (e.g., `requests`, `react`, `lodash`).
 
 ### Temp Files
 
-All temp files go to `/tmp/pi-work/<cwd-basename>/`. Never create temp files in the project directory.
+All temp files must go to `<cwd>/.pi/tmp/` via `getProjectTmpDir()`. The `.pi/` directory is already gitignored.
 
 ### Python Execution
+
+Use `uv run --with <package>` syntax only. Never use `uv run pip install`.
 
 ```bash
 # Correct
 uv run --with requests script.py
 uv run --with requests --with pandas script.py
-
-# Forbidden
-uv run pip install requests
-python3 script.py
-pip install requests
 ```
 
 ### External Git Repository Exploration
 
-Clone to `/tmp/pi-work/` with `--depth 1` for shallow clone. Never use `fetch_content` to browse repository files.
-
-```bash
-git clone --depth 1 https://github.com/org/repo.git /tmp/pi-work/repo
-```
-
-### Code-Level Enforcement
-
-The `enforcement.ts` module backs several critical rules with `tool_call` event blocks:
-
-| Enforced Rule | Block Condition |
-|---------------|-----------------|
-| Python/pip restriction | Direct `python3` / `pip` outside `uv` |
-| Pre-commit restriction | Direct `pre-commit` (must use `prek`) |
-| Git commit/push | Outside `git-expert` agent |
-| Protected branch commits | Commit to `main` or other protected branches |
-| Protected branch pushes | Push to protected branches |
-| `git add .` / `git add -A` | Blanket staging forbidden — stage specific files |
-| Staging gitignored files | `git check-ignore` blocks ignored files |
-| Git hooks bypass | `--no-verify` and `core.hooksPath=/dev/null` forbidden |
-| Merged branch commits | Commit to branches with merged PRs |
-| Remote script execution | `curl \| bash`, `wget \| sh`, process substitution patterns |
-| Repeat command spam | Same command ≥ 3 times in a row |
-| Sleep in loops | `sleep > 5s` inside loops |
-| Standalone sleep | `sleep > 30s` outside loops |
-| `mktemp` location | Must use `/tmp/pi-work/` prefix |
-| Docker/podman in container | Must use `docker-safe` wrapper |
-| Memory writes by specialists | Only orchestrator can write memories |
-| Worktree enforcement | `git checkout`/`switch` blocked when `use_worktrees` is enabled |
-| Dangerous commands | User confirmation required (via `ctx.ui.select`) |
+Clone external repos to `${PROJECT_TMP_DIR}/` with `--depth 1` for shallow clones. Never use full clones or `fetch_content` to browse repository files.
 
 ---
 
@@ -575,35 +571,32 @@ The `enforcement.ts` module backs several critical rules with `tool_call` event 
 
 **File:** `rules/45-file-preview.md`
 
-Serves generated HTML or browser-viewable files via a local HTTP server for user preview.
+Serves generated or modified browser-viewable files (HTML, frontend) via a built-in HTTP server.
 
-### Server Launch Sequence
+### Preview Workflow
+
+1. Save the file under `$PWD` or `${PROJECT_TMP_DIR}`
+2. Find a free port and launch the server:
 
 ```bash
 HTTPD=~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
 PORT=$(uv run python3 $HTTPD --find-port)
-nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve \
-  > /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log 2>&1 &
+nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve > ${PROJECT_TMP_DIR}/httpd-$PORT.log 2>&1 &
 disown
 sleep 0.5
-if ! kill -0 $! 2>/dev/null; then
-  echo "Server failed to start:"
-  cat /tmp/pi-work/$(basename $PWD)/httpd-$PORT.log
-fi
+if ! kill -0 $! 2>/dev/null; then echo "Server failed to start:"; cat ${PROJECT_TMP_DIR}/httpd-$PORT.log; fi
 ```
+
+3. Tell the user: `http://localhost:<PORT>/<filename>`
+4. Keep the server running until the user confirms they're done
 
 | Parameter | Description |
 |-----------|-------------|
-| `--find-port` | Returns a free port number |
-| `--port PORT` | Port to listen on |
-| `--dir PATH` | Directory to serve files from |
+| `--find-port` | Returns an available port number |
+| `--port <N>` | Port to serve on |
+| `--dir <path>` | Directory containing files to serve |
 
-After launch, the orchestrator tells the user:
-
-> File is being served at `http://localhost:<port>/<filename>` — open this URL in your browser.
-
-
-> **Note:** `nohup` + `disown` are required because `uv run` creates a parent process chain. Without them, bash cleanup kills the `uv` parent and terminates the server.
+> **Note:** `nohup` + `disown` are required because `uv run` creates a parent process chain. Works in both containers (`--network host`) and native installs.
 
 ---
 
@@ -611,37 +604,37 @@ After launch, the orchestrator tells the user:
 
 **File:** `rules/50-agent-bug-reporting.md`
 
-Defines the process when the orchestrator discovers a logic flaw in an agent's configuration (files in `agents/`).
+Defines the process for reporting logic bugs discovered in specialist agent configurations. Applies only to agents defined in the `agents/` directory.
 
 ### Covered Agents
 
-All 24 agents defined in the `agents/` directory:
+api-documenter, bash-expert, code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, debugger, docs-fetcher, docker-expert, ts-expert, git-expert, github-expert, go-expert, java-expert, jenkins-expert, kubernetes-expert, planner, python-expert, reviewer, scout, security-auditor, technical-documentation-writer, test-automator, test-runner, worker
 
-`api-documenter`, `bash-expert`, `code-reviewer-quality`, `code-reviewer-guidelines`, `code-reviewer-security`, `debugger`, `docs-fetcher`, `docker-expert`, `ts-expert`, `git-expert`, `github-expert`, `go-expert`, `java-expert`, `jenkins-expert`, `kubernetes-expert`, `planner`, `python-expert`, `reviewer`, `scout`, `security-auditor`, `technical-documentation-writer`, `test-automator`, `test-runner`, `worker`
-
-> **Note:** Built-in pi agents and agents from other sources are **not** covered.
+> **Note:** Built-in pi agents and agents from other sources are **not** covered by this rule.
 
 ### Trigger Conditions
 
 | Trigger | Not a Trigger |
-|---------|--------------|
+|---------|---------------|
 | Flawed logic in agent instructions | Runtime errors (network, missing files) |
-| Agent producing incorrect results from its config | External tool failures |
-| Agent behavior contradicts its purpose | User code bugs |
+| Agent producing incorrect results due to config | External tool failures |
+| Behavior contradicting intended purpose | User code bugs |
 | Instructions causing systematic errors | Expected behavior user disagrees with |
 
 ### Workflow
 
 1. Orchestrator discovers agent logic bug
-2. **Ask user:** "I found a logic bug in [agent]. Do you want me to create a GitHub issue?"
-3. If yes → delegate to `github-expert` to create issue in `myk-org/pi-config`
+2. Asks user: "I found a logic bug in [agent]. Do you want me to create a GitHub issue for this?"
+3. If user confirms → delegate to `github-expert` to create issue in `myk-org/pi-config`
 4. Continue with original task
 
 ### Issue Format
 
-- **Title:** `bug(agents): [agent-name] - brief description`
-- **Repository:** `myk-org/pi-config`
-- **Body sections:** Agent, Bug Description, Expected Behavior, Actual Behavior, Impact, Suggested Fix, Context
+| Field | Content |
+|-------|---------|
+| Title | `bug(agents): [agent-name] - brief description` |
+| Repository | `myk-org/pi-config` |
+| Body sections | Agent, Bug Description, Expected Behavior, Actual Behavior, Impact, Suggested Fix, Context |
 
 ---
 
@@ -649,52 +642,55 @@ All 24 agents defined in the `agents/` directory:
 
 **File:** `rules/55-coms-protocol.md`
 
-Inter-agent communication protocol for talking to other pi sessions. See [Communicating Between Pi Sessions](inter-agent-communication.html) for setup and usage.
+Inter-agent communication protocol for talking between pi sessions. See [Communicating Between Pi Sessions](inter-agent-communication.html) for a usage guide.
 
-### Systems
+### Communication Systems
 
 | System | Activation | Tool Prefix | Transport |
 |--------|-----------|-------------|-----------|
 | P2P | `/coms start` | `coms_` | Direct peer-to-peer |
 | Networked | `/coms-net start` | `coms_net_` | Hub server relay |
 
-Both systems can be active simultaneously.
+Both systems can be active simultaneously. When listing peers or sending messages, try both systems.
 
 ### Tool Reference
 
 | Action | P2P Tool | Networked Tool |
-|--------|----------|---------------|
+|--------|----------|----------------|
 | List peers | `coms_list` | `coms_net_list` |
 | Send message | `coms_send` | `coms_net_send` |
 | Poll for response | `coms_get` | `coms_net_get` |
 | Block until response | `coms_await` | `coms_net_await` |
 
-### Inbound Messages (Replying)
+### Inbound vs Outbound Messages
 
-Inbound messages appear as `[from <peer> @ <cwd>] <message>`. The orchestrator's assistant text **is** the reply — it is captured automatically by the `agent_end` hook.
+| Direction | How to Reply |
+|-----------|-------------|
+| **Inbound** (message received from peer) | Write your answer as normal assistant text — the `agent_end` hook automatically sends it back. **Do not** call any send tool. |
+| **Outbound** (initiating a conversation) | Call `coms_send` / `coms_net_send`, then `coms_await` / `coms_net_await` for the response. |
 
-```text
-# WRONG — creates a new conversation instead of replying
-Receive inbound → coms_send(peer="pi-2", msg="reply text")
-
-# RIGHT — assistant text is the reply
-Receive inbound → write answer as normal assistant text
-```
-
-### Outbound Messages (Initiating)
+### Outbound Example (P2P)
 
 ```text
-1. coms_list                          # Find peers
-2. coms_send(peer="pi-2", msg="...")  # Send question
-3. coms_await                         # Wait for response (ESC to cancel)
+1. coms_list                          # Find available peers
+2. coms_send(peer="pi-2", msg="...")  # Send the question
+3. coms_await                         # Wait for response (ESC to interrupt)
 ```
 
-### Key Rules
+### Message Queue
 
-- `coms_await` / `coms_net_await` are interruptible (user can press ESC)
-- Never use send tools to reply to inbound messages
-- Always check peers (`list`) before sending
-- When system is unspecified, try both `coms_` and `coms_net_`
+Messages are processed in **FIFO order**. If multiple messages arrive while the peer is busy, they queue — nothing is dropped. Each message gets a dedicated turn and response.
+
+### Structured Task Delegation
+
+Send structured tasks with the `tasks` parameter:
+
+```text
+coms_send(target="coder", prompt="Implement these features", tasks=[
+  {"subject": "Add auth middleware", "description": "JWT validation for all /api routes"},
+  {"subject": "Write tests", "description": "Unit tests for auth middleware"}
+])
+```
 
 ---
 
@@ -702,26 +698,36 @@ Receive inbound → write answer as normal assistant text
 
 **File:** `rules/60-task-tracking.md`
 
-Mandatory task tracking for multi-step workflows (3+ steps). See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for related async agent management.
+Mandatory task creation and tracking for multi-step workflows (3+ steps). Tasks persist across turns and provide automatic workflow resume after interruptions.
 
 ### When to Create Tasks
 
-| Use tasks for | Skip tasks for |
-|---------------|---------------|
-| Feature implementation | Single-step actions |
-| Bug fixes with multiple files | Questions or explanations |
-| Issue-first or code-review workflows | `/btw` side questions |
-| Multi-file refactoring | Trivial fixes (typos) |
+| Condition | Create Tasks? |
+|-----------|---------------|
+| Multi-step workflow (3+ steps) | Yes |
+| Feature implementation | Yes |
+| Bug fixes with multiple files | Yes |
+| Issue-first or code-review workflows | Yes |
+| Refactoring across multiple files | Yes |
+| Single-step actions | No |
+| Questions or explanations | No |
+| `/btw` side questions | No |
+| Trivial fixes | No |
+
+### Task Lifecycle
+
+1. **Create** all tasks before starting work (`TaskCreate`)
+2. **Mark `in_progress`** via `TaskUpdate` before starting each task
+3. **Mark `completed`** via `TaskUpdate` immediately after finishing each task
+4. Work through tasks in order — do not skip
+5. Do not start new work while unchecked tasks exist (unless user explicitly pivots)
 
 ### Task Granularity
 
-```text
-# BAD — too vague
-- Implement the fix
-- Review code
-- Create PR
+Tasks must be **specific and actionable**, not high-level summaries:
 
-# GOOD — specific and actionable
+```text
+# Good — specific steps
 - Investigate root cause in extensions/orchestrator/utils.ts
 - Create GitHub issue with root cause analysis
 - Create branch fix/issue-N-description from origin/main
@@ -734,39 +740,35 @@ Mandatory task tracking for multi-step workflows (3+ steps). See [Running Backgr
 - Create PR with description
 ```
 
-### Task Lifecycle
+### Async Agent taskId
 
-1. **Create** all tasks via `TaskCreate` before starting work
-2. **Mark `in_progress`** via `TaskUpdate` before starting each task
-3. **Mark `completed`** via `TaskUpdate` immediately after finishing each task
-4. Work through tasks in order — do not skip
-5. Do not start new work while unchecked tasks exist (unless user explicitly pivots)
+Every async agent call **must** include `taskId`. This is enforced by the subagent tool.
 
-### Side Question Handling
+| Scenario | taskId Value | Behavior |
+|----------|-------------|----------|
+| Agent linked to a task | Task ID (e.g., `"5"`) | Task auto-completes on success |
+| Agent not linked to a task | `"-1"` | No auto-completion |
 
-When the user asks a side question while tasks are active:
+```text
+# Linked to task 5 — auto-completes on success
+subagent(agent="code-reviewer-quality", task="...", cwd="...",
+         async=true, name="Review Quality", taskId="5")
 
-1. Answer the question
-2. Resume the next unchecked task immediately
+# Not linked to any task
+subagent(agent="worker", task="...", cwd="...",
+         async=true, name="Qodo Poll", taskId="-1")
+```
+
+> **Warning:** Async calls without `taskId` are rejected. Never manually `TaskUpdate` a task to `completed` if it has an async agent — the agent handles it automatically.
 
 ### Enforcement
 
-The extension injects reminders if tasks are ignored for **4+ turns**. Obsolete tasks are removed via `TaskUpdate` with `status: "deleted"`.
-
-### Integration
-
-Task tracking works alongside other workflow rules:
-
-| Rule | Integration |
-|------|-------------|
-| 05 — Issue-first workflow | Create tasks for the full issue workflow |
-| 20 — Code review loop | Include review steps as individual tasks |
-| 25 — Documentation updates | Include doc updates as tasks when applicable |
+The extension injects reminders if tasks are ignored for 4+ consecutive turns. Tasks persist in the task widget and are injected into every turn context.
 
 ## Related Pages
 
 - [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
 - [Specialist Agents Reference](agents-reference.html)
 - [Running the Automated Code Review Loop](code-review-loop.html)
+- [Working with Project Memory](memory-system.html)
 - [Command Safety Guards and Enforcement](command-enforcement.html)

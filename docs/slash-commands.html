@@ -352,10 +352,13 @@
 
 <p><strong>Workflow:</strong></p>
 <ol>
-<li>Fetches the PR diff and project rules (AGENTS.md)</li>
-<li>Runs three reviewers in parallel (quality, guidelines, security)</li>
-<li>Presents findings grouped by severity (CRITICAL → WARNING → SUGGESTION)</li>
+<li>Clones the PR's repo and checks out the PR branch (reviewers get full repo access)</li>
+<li>Checks past review comments — verifies whether previously posted comments were addressed, resolved correctly, or still unresolved</li>
+<li>Runs three reviewers in parallel (quality, guidelines, security) — each reviewer reads project guidelines (AGENTS.md/CLAUDE.md) independently</li>
+<li>Merges and deduplicates findings from all reviewers and past comment analysis</li>
+<li>Presents findings grouped by severity (CRITICAL → WARNING → SUGGESTION), including past unresolved and incorrectly resolved comments</li>
 <li>Lets you choose which findings to post as inline comments</li>
+<li>Stores posted comments in a local database for tracking across review cycles</li>
 </ol>
 <blockquote>
 <p><strong>Tip:</strong> Tab-completion is available — press Tab after <code>/pr-review</code> to see open PRs.</p>
@@ -456,6 +459,7 @@
 </code></pre></div>
 
 <p>Fetches your unsubmitted review comments, generates improved versions, and shows side-by-side comparisons. You pick which refinements to accept, optionally submit with "Request Changes," and the command updates comments on GitHub.</p>
+<p>When the review is submitted, comments are automatically stored in the local PR review database — enabling future <code>/pr-review</code> runs to track which comments were posted and verify they were addressed.</p>
 <h3 id="query-db-query-the-reviews-database">/query-db — Query the Reviews Database</h3>
 <p>Runs analytics queries against your local review history database.</p>
 <div class="highlight"><pre><span></span><code>/query-db stats --by-source
@@ -592,7 +596,7 @@
 </tr>
 <tr>
 <td><code>/release</code></td>
-<td>Recent git tags, flags (<code>--dry-run</code>, <code>--prerelease</code>, <code>--draft</code>, <code>--target</code>)</td>
+<td>Recent git tags, flags (<code>--dry-run</code>, <code>--prerelease</code>, <code>--draft</code>, <code>--target</code>, <code>--tag-match</code>)</td>
 </tr>
 <tr>
 <td><code>/review-handler</code></td>
@@ -755,8 +759,8 @@ gh<span class="w"> </span>pr<span class="w"> </span>view
 <li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
 <li><a href="workflow-recipes.html">Common Workflow Recipes</a></li>
 <li><a href="first-workflow.html">Your First Coding Workflow</a></li>
-<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
 <li><a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a></li>
+<li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
 </ul>
                 </div>
             </article>
@@ -837,7 +841,7 @@ gh<span class="w"> </span>pr<span class="w"> </span>view
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

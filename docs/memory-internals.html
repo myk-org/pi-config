@@ -337,7 +337,8 @@
 <h3 id="data-flow-from-entry-to-system-prompt">Data Flow: From Entry to System Prompt</h3>
 <ol>
 <li>A memory is added (via <code>memory_add</code> tool, preference auto-extraction, or dreaming)</li>
-<li>The entry is written to the appropriate topic file under <code>.pi/memory/topics/</code></li>
+<li>A vector similarity check runs against existing entries in the same category (≥ 0.85 = near-duplicate → reinforce instead of adding)</li>
+<li>If not a duplicate, the entry is written to the appropriate topic file under <code>.pi/memory/topics/</code></li>
 <li>A stability score is computed and stored in <code>memory-scores.json</code></li>
 <li>The entry is embedded as a 384-dim vector and stored in <code>embeddings.json</code></li>
 <li>On each turn, <code>before_agent_start</code> fires:</li>
@@ -647,14 +648,42 @@
 <h3 id="how-it-works">How It Works</h3>
 <ol>
 <li><strong>Embed on write:</strong> When <code>memory_add</code> creates an entry, it's immediately embedded and the vector is stored in <code>.pi/memory/embeddings.json</code></li>
+<li><strong>Dedup on write:</strong> Before inserting a new entry, <code>memory_add</code> computes vector similarity against all existing entries in the same category. If a near-duplicate is found (similarity ≥ 0.85), the existing entry is <strong>reinforced</strong> instead of creating a duplicate. This catches semantically equivalent memories even when worded differently (e.g., "use conventional commits" vs. "always write conventional commit messages"). If the vector check is unavailable, the system falls back to exact text matching.</li>
 <li><strong>Embed on first search:</strong> If any existing entries lack embeddings (e.g., after upgrading from a pre-embedding version), the first <code>memory_search</code> call batch-embeds all missing entries</li>
 <li><strong>Search:</strong> The query is embedded, then cosine similarity is computed against all stored vectors</li>
 <li><strong>Hybrid results:</strong> Vector search results are merged with keyword search results, deduplicated, and ranked by a combined score (similarity × 100 + stability score)</li>
 </ol>
 <h3 id="embedding-key-format">Embedding Key Format</h3>
 <p>Each embedding is keyed by a truncated SHA-256 hash of <code>[category] text</code> — this prevents cross-category collisions where the same text appears in different categories.</p>
+<h3 id="near-duplicate-detection-threshold">Near-Duplicate Detection Threshold</h3>
+<p>The dedup similarity threshold is <strong>0.85</strong> (cosine similarity). This value balances precision and recall:</p>
+<table>
+<thead>
+<tr>
+<th>Similarity</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≥ 0.85</td>
+<td>Treated as near-duplicate — existing entry is reinforced, new entry is not added</td>
+</tr>
+<tr>
+<td>0.65–0.84</td>
+<td>Treated as contextually relevant (used for search recall), but distinct enough to store separately</td>
+</tr>
+<tr>
+<td>&lt; 0.65</td>
+<td>Not related — no match</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> If the dedup check reinforces an existing entry, the just-embedded vector for the new text is removed from the store to keep embeddings clean.</p>
+</blockquote>
 <h3 id="graceful-fallback">Graceful Fallback</h3>
-<p>If the <code>@huggingface/transformers</code> package is unavailable or the model fails to load, the system falls back to <strong>keyword-only search</strong>. No errors are thrown — callers always get results.</p>
+<p>If the <code>@huggingface/transformers</code> package is unavailable or the model fails to load, the system falls back to <strong>keyword-only search</strong> and <strong>exact-match dedup</strong>. No errors are thrown — callers always get results.</p>
 <blockquote>
 <p><strong>Note:</strong> Embeddings are stored per-project in <code>.pi/memory/embeddings.json</code>. The model is loaded once per process and cached for the session lifetime.</p>
 </blockquote>
@@ -1073,6 +1102,7 @@
 <li><a href="#model-details">Model Details</a></li>
 <li><a href="#how-it-works">How It Works</a></li>
 <li><a href="#embedding-key-format">Embedding Key Format</a></li>
+<li><a href="#near-duplicate-detection-threshold">Near-Duplicate Detection Threshold</a></li>
 <li><a href="#graceful-fallback">Graceful Fallback</a></li>
 </ul>
 </li>
@@ -1113,7 +1143,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

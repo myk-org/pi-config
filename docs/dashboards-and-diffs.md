@@ -279,8 +279,8 @@ The amber banner may not appear immediately for branch-level changes. Click the 
 
 ## Related Pages
 
-- [Controlling Pi Sessions from Discord](discord-bot.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Running Pi in a Docker Container](docker-deployment.html)
+- [Controlling Pi Sessions from Discord](discord-bot.html)
 - [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Running Pi in a Docker Container](docker-deployment.html)
+- [Running the Automated Code Review Loop](code-review-loop.html)

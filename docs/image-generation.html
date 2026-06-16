@@ -311,7 +311,7 @@
 <div class="highlight"><pre><span></span><code>Generate an image of a golden retriever playing fetch on a beach at sunset
 </code></pre></div>
 
-<p>Pi calls the <code>generate_image</code> tool, saves the resulting image to <code>/tmp/pi-work/&lt;project&gt;/</code>, and returns the file path.</p>
+<p>Pi calls the <code>generate_image</code> tool, saves the resulting image to <code>.pi/tmp/</code> in your project directory, and returns the file path.</p>
 <h2 id="setup">Setup</h2>
 <p>Both environment variables are required — without them, <code>generate_image</code> returns an error.</p>
 <table>
@@ -455,7 +455,7 @@ composition is close-up overhead shot, lighting is soft lamp light, style is pho
 
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="how-images-are-saved">How Images Are Saved</h3>
-<p>Generated images are saved to <code>/tmp/pi-work/&lt;project-name&gt;/</code> with auto-generated filenames. Pi reports the full file path in its response, so you can open, copy, or move the file.</p>
+<p>Generated images are saved to <code>.pi/tmp/</code> inside your project directory with auto-generated filenames. Pi reports the full file path in its response, so you can open, copy, or move the file.</p>
 <h3 id="automatic-http-preview-in-containers">Automatic HTTP Preview in Containers</h3>
 <p>When running pi inside a Docker container, you can't open local file paths directly in your browser. Pi detects the container environment automatically and spins up an HTTP server to serve the generated image.</p>
 <p>After generating an image in a container, pi returns both the file path and a preview URL:</p>
@@ -496,9 +496,9 @@ composition is close-up overhead shot, lighting is soft lamp light, style is pho
 <ul>
 <li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
 <li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
-<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
 <li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
-<li><a href="quickstart.html">Installing and Starting Your First Session</a></li>
+<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
+<li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
 </ul>
                 </div>
             </article>
@@ -550,7 +550,7 @@ composition is close-up overhead shot, lighting is soft lamp light, style is pho
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

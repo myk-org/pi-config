@@ -73,7 +73,7 @@ Reviews a GitHub PR using 3 parallel review agents and posts inline comments.
 |-----------|------|----------|---------|-------------|
 | `PR number or URL` | string | no | Auto-detect from current branch | The PR to review |
 
-**Phases:** PR detection → data fetch → 3 parallel reviewers → user selection → post comments → summary
+**Phases:** PR detection → clone & checkout → past review check → 3 parallel reviewers → merge findings → user selection → post comments → store comments → summary
 
 **Prerequisites:** `myk-pi-tools`, `gh` CLI
 
@@ -225,7 +225,7 @@ Refines pending GitHub PR review comments with AI before submitting.
 |-----------|------|----------|-------------|
 | `PR URL` | string | yes | GitHub PR URL to refine pending comments for |
 
-**Phases:** Fetch pending review → refine comments → side-by-side preview → user approval → update JSON → submit decision → execute
+**Phases:** Fetch pending review → refine comments → side-by-side preview → user approval → update JSON → submit decision → execute → store comments → summary
 
 **Prerequisites:** `myk-pi-tools`
 
@@ -741,4 +741,4 @@ Refreshes the autocomplete model cache for `cursor`, `claude`, and `gemini` prov
 - [Specialist Agents Reference](agents-reference.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
 - [Communicating Between Pi Sessions](inter-agent-communication.html)
-- [Common Workflow Recipes](workflow-recipes.html)
+- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)

@@ -2,7 +2,7 @@
 
 `myk-pi-tools` is the Python CLI package that provides tooling for the pi orchestrator. It wraps GitHub API operations, review handling, release management, memory persistence, and external AI CLI integration.
 
-**Version:** 3.6.2
+**Version:** 3.9.1
 **Install:** `pip install myk-pi-tools` (included in pi-config Docker image and native install)
 **Entry point:** `myk-pi-tools`
 **Requires:** Python ≥ 3.12, GitHub CLI (`gh`) for most commands
@@ -192,6 +192,46 @@ myk-pi-tools pr claude-md https://github.com/myk-org/pi-config/pull/42
 
 **Output:** Combined content of all found files to stdout. Empty string if none found.
 
+### `pr store-pr-review`
+
+Store posted PR review comments to the `pr-reviews.db` database. Tracks comments posted by `/pr-review` and `/refine-review` for past-cycle verification on subsequent runs.
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `JSON_FILE` | string | yes | Path to JSON file with review data |
+
+```bash
+myk-pi-tools pr store-pr-review comments.json
+```
+
+**Input JSON format:**
+
+```json
+{
+  "metadata": {
+    "owner": "myk-org",
+    "repo": "pi-config",
+    "pr_number": 42,
+    "head_sha": "abc123..."
+  },
+  "comments": [
+    {
+      "thread_id": "...",
+      "comment_id": 123,
+      "path": "file.py",
+      "line": 42,
+      "body": "Comment text",
+      "severity": "WARNING",
+      "posted_at": "2026-06-16T12:00:00Z"
+    }
+  ]
+}
+```
+
+**Effect:** Inserts the review and all comments into `.pi/data/pr-reviews.db`. If `head_sha` is not provided in metadata, it is auto-detected from the local git HEAD.
+
+**Database schema:** Two tables — `pr_reviews` (PR metadata with head SHA and timestamp) and `pr_comments` (individual comments with thread ID, path, line, body, severity, and posting timestamp).
+
 ### `pr post-comment`
 
 Post inline comments to a PR as a single GitHub review with a summary table.
@@ -353,18 +393,23 @@ Review handling commands for the automated review workflow. See [Running the Aut
 
 ### `reviews fetch`
 
-Fetch unresolved review threads from the current branch's PR.
+Fetch review threads from the current branch's PR.
 
-| Argument | Type | Required | Default | Description |
+| Argument/Option | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `REVIEW_URL` | string | no | `""` | Specific review URL for context (e.g., `#pullrequestreview-XXX`) |
+| `--include-resolved` | flag | no | `false` | Include resolved threads (adds `is_resolved` field to output) |
+| `--user` | string | no | none | Filter threads by author username |
+| `--output-dir` | string | yes | — | Directory for output JSON file |
 
 ```bash
-myk-pi-tools reviews fetch
-myk-pi-tools reviews fetch "#pullrequestreview-12345"
+myk-pi-tools reviews fetch --output-dir /tmp/pi-work
+myk-pi-tools reviews fetch "#pullrequestreview-12345" --output-dir /tmp/pi-work
+myk-pi-tools reviews fetch --include-resolved --output-dir /tmp/pi-work
+myk-pi-tools reviews fetch --user coderabbitai --output-dir /tmp/pi-work
 ```
 
-**Output:** JSON saved to `/tmp/pi-work/pr-<number>-reviews.json` with structure:
+**Output:** JSON saved to `<output-dir>/pr-<number>-reviews.json` with structure:
 
 ```json
 {
@@ -387,11 +432,12 @@ Poll for reviews until new actionable comments appear. Loops internally — does
 |---|---|---|---|---|
 | `REVIEW_URL` | string | no | `""` | Specific review URL for context |
 | `--source` | choice | no | `coderabbit` | Which reviewer to poll for: `coderabbit` or `qodo` |
+| `--output-dir` | string | yes | — | Directory for output JSON file |
 
 ```bash
-myk-pi-tools reviews poll
-myk-pi-tools reviews poll --source qodo
-myk-pi-tools reviews poll "#pullrequestreview-12345" --source coderabbit
+myk-pi-tools reviews poll --output-dir /tmp/pi-work
+myk-pi-tools reviews poll --source qodo --output-dir /tmp/pi-work
+myk-pi-tools reviews poll "#pullrequestreview-12345" --source coderabbit --output-dir /tmp/pi-work
 ```
 
 **Behavior by source:**
@@ -431,15 +477,16 @@ myk-pi-tools reviews post /tmp/pi-work/pr-42-reviews.json
 
 Fetch the authenticated user's pending (unsubmitted) review comments from a PR.
 
-| Argument | Type | Required | Description |
+| Argument/Option | Type | Required | Description |
 |---|---|---|---|
 | `PR_URL` | string | yes | GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
+| `--output-dir` | string | yes | Directory for output JSON file |
 
 ```bash
-myk-pi-tools reviews pending-fetch https://github.com/myk-org/pi-config/pull/42
+myk-pi-tools reviews pending-fetch https://github.com/myk-org/pi-config/pull/42 --output-dir /tmp/pi-work
 ```
 
-**Output:** JSON saved to `/tmp/pi-work/pr-<number>-pending-review.json` with `metadata` and `comments` arrays.
+**Output:** JSON saved to `<output-dir>/pr-<owner>-<repo>-<number>-pending-review.json` with `metadata` and `comments` arrays.
 
 ### `reviews pending-update`
 
@@ -468,16 +515,17 @@ myk-pi-tools reviews pending-update /tmp/pi-work/pr-42-pending-review.json --sub
 
 Show review status for the current PR. Queries the reviews database and displays all comments across all review cycles.
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--pr` | integer | auto-detected from current branch | PR number |
+| Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--pr` | integer | no | auto-detected from current branch | PR number |
+| `--output-dir` | string | yes | — | Directory for output HTML report |
 
 ```bash
-myk-pi-tools reviews status
-myk-pi-tools reviews status --pr 42
+myk-pi-tools reviews status --output-dir /tmp/pi-work
+myk-pi-tools reviews status --pr 42 --output-dir /tmp/pi-work
 ```
 
-**Output:** TUI table to stdout and an HTML report saved to `/tmp/pi-work/<project>/review-status-<pr>.html`.
+**Output:** TUI table to stdout and an HTML report saved to `<output-dir>/review-status-<pr>.html`.
 
 ### `reviews store`
 
@@ -571,11 +619,12 @@ Run a raw SELECT query against the reviews database.
 | `--json` | flag | no | `false` | Output as JSON |
 | `--db-path` | string | no | auto-detected | Path to database file |
 
-> **Warning:** Only `SELECT` statements are allowed. Other SQL statements are rejected.
+> **Warning:** Only `SELECT` and `WITH` (CTE) statements are allowed. Other SQL statements are rejected. Multiple statements (separated by `;`) are also blocked.
 
 ```bash
 myk-pi-tools db query "SELECT * FROM comments WHERE status = 'skipped'"
 myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
+myk-pi-tools db query "WITH recent AS (SELECT * FROM comments ORDER BY posted_at DESC LIMIT 10) SELECT * FROM recent"
 myk-pi-tools db query "SELECT * FROM comments LIMIT 5" --json
 ```
 
@@ -744,4 +793,4 @@ Commands that output JSON include a `status` or `success` field in the response 
 - [Common Workflow Recipes](workflow-recipes.html)
 - [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
 - [Working with Project Memory](memory-system.html)
-- [Running the Automated Code Review Loop](code-review-loop.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)

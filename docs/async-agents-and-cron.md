@@ -211,7 +211,7 @@ The orchestrator can spawn multiple async agents in a single turn. This is how t
 Review the current changes — run all three reviewers in parallel
 ```
 
-Each gets its own status entry and delivers results independently.
+Each gets its own status entry. When all agents in the group finish, their results are delivered together as a single combined message — so you see everything at once rather than results trickling in one by one.
 
 ### Using /status for a Unified View
 
@@ -259,7 +259,7 @@ Logs are written to the project temp directory under `debug.log`.
 ## Related Pages
 
 - [Running the Automated Code Review Loop](code-review-loop.html)
+- [Understanding Agent Routing and Delegation](agent-routing.html)
 - [Slash Commands and Extension Commands Reference](commands-reference.html)
 - [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
-- [Understanding Agent Routing and Delegation](agent-routing.html)
 - [Configuration and Environment Variables Reference](configuration-reference.html)

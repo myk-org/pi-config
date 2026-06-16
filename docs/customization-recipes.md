@@ -1,21 +1,20 @@
 # Customization and Extension Recipes
 
-Practical, copy-paste recipes for customizing pi-config — adding agents, writing prompts, creating skills, configuring project settings, and connecting MCP servers.
+Recipes for tailoring pi to your project — adding specialist agents, building prompt templates, capturing skills, tuning project settings, and connecting MCP servers.
 
-## Add a New Specialist Agent
+## Add a Project-Scoped Specialist Agent
 
-Create a specialist agent that the orchestrator routes tasks to automatically.
-
-**Step 1 — Create the agent file** (`agents/rust-expert.md`):
+Create an agent that's available only within a specific project.
 
 ```markdown
+<!-- File: .pi/agents/terraform-expert.md -->
 ---
-name: rust-expert
-description: Rust code creation, modification, refactoring, and fixes. Specializes in ownership, lifetimes, async, and idiomatic Rust.
+name: terraform-expert
+description: Terraform and OpenTofu infrastructure-as-code creation, modification, and troubleshooting.
 tools: read, write, edit, bash
 ---
 
-You are a Rust Expert specializing in safe, performant, and idiomatic Rust code.
+You are a Terraform Expert specializing in infrastructure-as-code.
 
 ## Base Rules
 
@@ -26,72 +25,61 @@ You are a Rust Expert specializing in safe, performant, and idiomatic Rust code.
 
 ## Core Expertise
 
-- Ownership, borrowing, lifetimes
-- Async: tokio, async-std
-- Error handling: thiserror, anyhow
-- Testing: cargo test, proptest
-- Tooling: clippy, rustfmt, cargo-audit
+- Terraform and OpenTofu (HCL syntax, modules, state)
+- Providers: AWS, GCP, Azure, Kubernetes
+- Remote state (S3, GCS, Consul)
+- Sentinel and OPA policy-as-code
 
 ## Quality Checklist
 
-- [ ] `cargo clippy` passes with no warnings
-- [ ] `cargo test` passes
-- [ ] Error types use thiserror for libraries, anyhow for binaries
-- [ ] Public APIs have doc comments
-- [ ] Formatted with rustfmt
+- [ ] `terraform fmt` passes
+- [ ] `terraform validate` passes
+- [ ] Variables have descriptions and types
+- [ ] Outputs documented
+- [ ] State locking configured
 ```
 
-**Step 2 — Add routing** in `rules/10-agent-routing.md`:
+The agent file must have YAML frontmatter with `name`, `description`, and `tools`. Place it in `.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-global). Pi discovers it automatically on the next session — no restart needed.
+
+- **Supported frontmatter fields:** `name` (required), `description` (required), `tools` (comma-separated), `model` (override LLM model), `provider` (override LLM provider)
+- **Override built-in agents:** a project agent with the same `name` as a package agent replaces it
+- **Priority:** package agents < user agents < project agents (later overrides earlier by name)
+
+> **Note:** After adding the agent, update the routing table in `rules/10-agent-routing.md` so the orchestrator knows when to use it. See [Understanding Agent Routing and Delegation](agent-routing.html) for details.
+
+## Add a Lightweight Agent with a Model Override
+
+Create a cheap, fast agent for simple tasks by pinning it to a smaller model.
 
 ```markdown
-| Rust (.rs)                                                   | `rust-expert`                    |
-```
-
-**Step 3 — Register for bug reporting** in `rules/50-agent-bug-reporting.md` — add `rust-expert` to the agents list.
-
-The agent file uses YAML frontmatter with three required fields: `name`, `description`, and `tools`. The body contains the system prompt. Changes take effect on the next pi session.
-
-- **Minimal agent:** Only `name` and `description` are required in frontmatter. `tools` defaults to all available tools.
-- **Read-only agents:** Set `tools: read, bash` for agents that should not modify files (like `scout` or `debugger`).
-- **Model override:** Add `model: claude-haiku-4-5` to frontmatter for fast, cheap agents (the `scout` agent does this).
-
-## Add a Project-Local Agent
-
-Override or extend agents for a specific project without modifying pi-config.
-
-Create `.pi/agents/qa-checker.md` in your project root:
-
-```markdown
+<!-- File: .pi/agents/quick-formatter.md -->
 ---
-name: qa-checker
-description: Project-specific QA validation — runs smoke tests and checks acceptance criteria.
-tools: read, bash
+name: quick-formatter
+description: Fast code formatting and linting fixes using a lightweight model.
+tools: read, write, edit, bash
+model: claude-haiku-4-5
 ---
 
-You are a QA checker for this project. Run the smoke test suite and verify
-acceptance criteria from the linked GitHub issue.
+You are a code formatter. Run the project's formatter and linter, fix any issues.
 
-## Steps
+## Approach
 
-1. Read the issue description for acceptance criteria
-2. Run `make smoke-test`
-3. Verify each criterion is met
-4. Report pass/fail with evidence
+1. Detect the project type (package.json, pyproject.toml, Cargo.toml)
+2. Run the formatter (prettier, ruff format, rustfmt)
+3. Run the linter and fix auto-fixable issues
+4. Report what changed
 ```
 
-Project agents (`.pi/agents/`) override package agents with the same name. User agents (`~/.pi/agent/agents/`) sit in between — the priority order is: package → user → project (later wins).
-
-> **Tip:** Use project-local agents for workflows unique to one repository. Use user agents (`~/.pi/agent/agents/`) for personal agents shared across all your projects.
+The `model` field in frontmatter forces this agent to always use the specified model, regardless of what the parent session is running. Use this for agents that don't need a large reasoning model.
 
 ## Create a Custom Prompt Template
 
-Add a new slash command that the orchestrator executes directly.
-
-Create `prompts/lint-fix.md` in the pi-config repo (or `.pi/prompts/lint-fix.md` for project-local):
+Build a reusable slash command that becomes available as `/my-command`.
 
 ```markdown
+<!-- File: .pi/prompts/lint-and-fix.md -->
 ---
-description: "Run linter and auto-fix all issues — /lint-fix [path]"
+description: "Run linters, fix all auto-fixable issues, and report remaining problems — /lint-and-fix [path]"
 argument-hint: "[path]"
 ---
 
@@ -101,236 +89,230 @@ argument-hint: "[path]"
 $ARGUMENTS
 ```
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension
-> issues, or to the relevant tool's repository for CLI issues.
+> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug while executing this command — DO NOT work around it silently. Ask the user: "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
 
 # Lint and Fix
 
-Detect the project's linter and auto-fix all issues.
+Run all project linters with auto-fix enabled, then report remaining issues.
 
-## Steps
+## Workflow
 
-1. Detect linter from project files:
-   - `pyproject.toml` with `[tool.ruff]` → `uv run ruff check --fix .`
-   - `package.json` with `eslint` → `npx eslint --fix .`
-   - `Makefile` with `lint` target → `make lint`
-
-2. Delegate to the appropriate language expert:
-   - Python → `python-expert`
-   - JS/TS → `ts-expert`
-   - Go → `go-expert`
-
-3. If a path was provided in raw arguments, scope to that path only.
-
-4. Report what was fixed.
+1. Detect the project type and available linters
+2. Run auto-fix:
+   - Python: `uv run ruff check --fix . && uv run ruff format .`
+   - Node.js: `npx eslint --fix . && npx prettier --write .`
+   - Go: `gofmt -w . && golangci-lint run --fix`
+3. Run a second pass without `--fix` to collect remaining issues
+4. Report: files changed, issues fixed, issues remaining
 ```
 
-The `$ARGUMENTS` placeholder is replaced with whatever the user types after the command (e.g., `/lint-fix src/`). The `description` field appears in autocomplete. The bug reporting blockquote is mandatory for all prompt templates.
+Place the file in `.pi/prompts/` and reload pi (or start a new session). The file name becomes the command name — `lint-and-fix.md` → `/lint-and-fix`. The `$ARGUMENTS` placeholder is replaced with whatever the user types after the command.
 
-- **Project-local prompts** go in `.pi/prompts/` and are only available in that project.
-- **Argument autocomplete:** If your command needs Tab completions, add an entry in `extensions/orchestrator/extended-autocomplete.ts`. See [Slash Commands and Extension Commands Reference](commands-reference.html) for all available commands.
+> **Warning:** Every prompt template **must** include the Bug Reporting Policy blockquote after the Raw Arguments section. This is mandatory for all templates.
 
-## Create a Reusable Skill with /create-skill
+- The `description` field in frontmatter is displayed in command completion
+- The `argument-hint` field shows usage hints during autocomplete
+- The orchestrator executes the prompt directly — it is **not** delegated to an agent (see [Orchestrator Rules Reference](rules-reference.html))
 
-Capture a successful workflow as a reusable skill that pi can apply to future tasks.
+## Save a Workflow as a Reusable Skill
+
+Capture a successful multi-step workflow from the current conversation so pi can replay it later.
 
 ```text
-/create-skill debug-flaky-test
+/create-skill debug-container-build
 ```
 
 Pi will:
-1. Ask whether to save **globally** (`~/.agents/skills/`) or **per-project** (`.pi/skills/`)
-2. Review the current conversation for steps, commands, and pitfalls
-3. Write a `SKILL.md` file with the extracted workflow
 
-The generated skill follows this structure:
+1. Analyze the current conversation to extract the steps you followed
+2. Ask whether to save **globally** (`~/.agents/skills/`) or **per-project** (`.pi/skills/`)
+3. Write a `SKILL.md` file with exact commands, verification steps, and pitfalls
+
+The resulting skill file looks like this:
 
 ```markdown
+<!-- Generated: ~/.agents/skills/debug-container-build/SKILL.md -->
 ---
-name: debug-flaky-test
-description: "Diagnose and fix flaky tests caused by timing-sensitive assertions or shared state"
+name: debug-container-build
+description: "Debug Docker multi-stage build failures by isolating the failing stage and inspecting intermediate layers"
 ---
 
-# Debug Flaky Test
+# Debug Container Build
 
 ## When to Use
 
-- Test passes locally but fails in CI
-- Test fails intermittently with no code changes
+- Docker multi-stage build fails at an intermediate stage
+- Build cache invalidation causes unexpected rebuilds
 
 ## Steps
 
-1. Run the test 10 times: `uv run pytest tests/test_api.py -x --count=10`
-2. Check for shared state: grep for module-level variables and class attributes
-3. Check for timing: search for `sleep`, `time.time()`, hardcoded timeouts
-4. Add isolation: use `tmp_path` fixtures, reset state in `setUp`/`tearDown`
-5. Verify: run 50 times in CI-like conditions
+1. Identify the failing stage: `docker build --target <stage> .`
+2. Run the intermediate image interactively: `docker run --rm -it <image> sh`
+3. Check file permissions and paths inside the container
+4. Fix the Dockerfile and rebuild with `--no-cache` for the failing stage
 
 ## Pitfalls
 
-- Don't just increase sleep timeouts — find the race condition
-- Shared database fixtures are the #1 cause of flaky tests
+- Alpine images use `ash` not `bash` — use `sh` for shell access
+- Multi-stage COPY --from references are positional if stages are unnamed
 ```
 
-Skills are automatically discovered by pi at session start. Global skills are available everywhere; project skills only in that project.
-
-> **Tip:** The dreaming system (`/dream`) can also auto-generate project-level skills when it detects recurring multi-step workflows in your conversation history.
+> **Tip:** Run `/create-skill` immediately after solving a tricky problem — the conversation context is freshest. Skill names must be lowercase and hyphenated (e.g., `fix-flaky-tests`, not `Fix Flaky Tests`).
 
 ## Configure Project Settings
 
-Customize pi behavior per-project using `.pi/pi-config-settings.json`.
+Customize pi's behavior per-project using `.pi/pi-config-settings.json`.
 
 ```json
 {
   "co_author": true,
   "use_worktrees": false,
-  "dream_interval_hours": 2
+  "dream_interval_hours": 6
 }
 ```
 
-Place this file at `.pi/pi-config-settings.json` in your project root.
+Create this file at `.pi/pi-config-settings.json` in your project root. Settings take effect on the next session start.
 
 | Setting | Type | Default | Effect |
 |---------|------|---------|--------|
-| `co_author` | boolean | `false` | Add co-author trailer to git commits |
-| `use_worktrees` | boolean | `false` | Force worktree-only workflow for branches |
-| `dream_interval_hours` | number | `3` | Hours between automatic memory consolidation |
+| `co_author` | boolean | `false` | Add `Co-authored-by: pi` trailer to git commits |
+| `use_worktrees` | boolean | `false` | Force worktree-only workflow (no branch switching in main worktree) |
+| `dream_interval_hours` | number | `3` | How often auto-dreaming runs (memory consolidation) |
 
-Resolution order: project file → environment variable → default. Environment variables (`PI_CO_AUTHOR`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`) serve as global fallbacks when no project file exists.
+- **Resolution order:** project file → environment variable → default
+- **Environment variables:** `PI_CO_AUTHOR`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS` are used as fallbacks if the setting isn't in the JSON file
+- **Live reload:** the settings file is re-read on a throttled interval (every 30 seconds) — edits take effect without restarting
 
-> **Note:** Changes to the settings file are picked up automatically within 30 seconds — no session restart needed. See [Configuration and Environment Variables Reference](configuration-reference.html) for the full list of env vars.
+See [Configuration and Environment Variables Reference](configuration-reference.html) for the full list of environment variables.
 
-## Save a Memory with /remember
+## Discover and Use MCP Server Tools
 
-Persist a lesson, preference, or decision across sessions.
-
-```text
-/remember Always run pre-commit hooks before pushing — CI rejects unformatted code
-```
-
-Pi determines the best category automatically (`lesson`, `preference`, `decision`, `mistake`, `pattern`, or `done`) and saves it as a **pinned** memory that won't decay over time.
-
-Under the hood, this runs:
+Find and call tools from MCP (Model Context Protocol) servers using `mcpl`.
 
 ```bash
-uv run myk-pi-tools memory add -c lesson -s "Always run pre-commit hooks before pushing — CI rejects unformatted code" --pinned
-```
-
-See [Working with Project Memory](memory-system.html) for the full memory system.
-
-## Search MCP Servers for Available Tools
-
-Find and use tools from MCP servers configured via mcpl.
-
-```bash
-# Search for a tool by what it does
+# Search for a tool across all connected servers
 mcpl search "list projects"
 
-# List all configured MCP servers
-mcpl list
-
-# List tools on a specific server
+# List all tools on a specific server
 mcpl list vercel
 
-# Get full schema with example call
+# Get full schema with an example call
 mcpl inspect sentry search_issues --example
 
-# Call a tool
+# Call a tool with arguments
 mcpl call vercel list_projects '{"teamId": "team_xxx"}'
+
+# Verify all server connections are healthy
+mcpl verify
 ```
 
-The orchestrator uses `mcpl search` or `mcpl list` to discover tools, then delegates actual tool execution to specialist agents. See [Orchestrator Rules Reference](rules-reference.html) for the MCP launchpad rules.
+The orchestrator uses `mcpl search` and `mcpl list` for discovery, then delegates actual tool execution to specialist agents. You don't need to configure MCP servers in pi-config — they're managed by your MCP server configuration (e.g., `mcp.json`).
 
-- **Verify connections:** Run `mcpl verify` to test all server connections.
-- **Debug issues:** Run `mcpl session stop` to restart the daemon, then retry.
-- **Timeout tuning:** Set `MCPL_CONNECTION_TIMEOUT=120` for slow servers.
+- **Never guess tool names** — always `mcpl search` or `mcpl list` first
+- **Troubleshoot connections:** `mcpl verify` tests all servers, `mcpl session stop` restarts the daemon
+- **Timeout issues:** set `MCPL_CONNECTION_TIMEOUT=120` for slow servers
 
-## Add a Project-Local Prompt Template
+See [Orchestrator Rules Reference](rules-reference.html) for how MCP tools fit into the delegation model.
 
-Create a slash command available only in one project.
+## Override a Built-In Agent for Your Project
 
-```bash
-mkdir -p .pi/prompts
-```
-
-Create `.pi/prompts/deploy-staging.md`:
+Replace a package-bundled agent with a customized version for your project.
 
 ```markdown
----
-description: "Deploy current branch to staging — /deploy-staging"
----
-
-## Raw Arguments
-
-```text
-$ARGUMENTS
-```
-
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?"
-
-# Deploy to Staging
-
-1. Delegate to `git-expert`: ensure working tree is clean, all changes committed
-2. Delegate to `worker`: run `make docker-build && make deploy-staging`
-3. Delegate to `worker`: run `curl -sf https://staging.example.com/health` to verify
-4. Report deployment status
-```
-
-After creating the file, run `/reload` in your pi session to register the new command. It will appear as `/deploy-staging` with Tab completion.
-
-## Override a Built-in Agent for One Project
-
-Customize a built-in agent's behavior in a specific project without forking pi-config.
-
-Create `.pi/agents/python-expert.md` in your project:
-
-```markdown
+<!-- File: .pi/agents/python-expert.md -->
 ---
 name: python-expert
-description: Python expert customized for this Django project. Uses poetry, Django conventions, and pytest-django.
+description: Python expert customized for our Django + Celery monorepo.
 tools: read, write, edit, bash
 ---
 
-You are a Python Expert for this Django project.
+You are a Python Expert for this Django + Celery monorepo.
 
 ## Base Rules
 
 - Execute first, explain after
-- Do NOT explain what you will do — just do it
+- Do NOT ask for confirmation unless creating/modifying resources
 - If a task falls outside your domain, report it and hand off
 
 ## Project Conventions
 
-- Package manager: poetry (NOT uv for this project)
-- Framework: Django 5.x with DRF
-- Tests: pytest-django with factory_boy fixtures
-- Run tests: `poetry run pytest --reuse-db`
-- Migrations: always run `poetry run python manage.py makemigrations` after model changes
+- Always use `uv run` and `uvx` — never raw `python` or `pip`
+- Models go in `apps/<app>/models/` — one model per file
+- Use `pytest-django` with `@pytest.mark.django_db` for DB tests
+- Celery tasks must have `bind=True, max_retries=3, default_retry_delay=60`
+- All API views use `rest_framework.decorators.api_view`, never class-based views
 
 ## Quality Checklist
 
-- [ ] `poetry run ruff check .` passes
-- [ ] `poetry run pytest` passes
-- [ ] Django migrations created for model changes
-- [ ] ViewSet permissions tested
+- [ ] `uv run ruff check --fix .` passes
+- [ ] `uv run pytest --tb=short` passes
+- [ ] Type hints on all public functions
+- [ ] Celery tasks have retry config
 ```
 
-Since project agents override package agents by name, the orchestrator will use your customized `python-expert` instead of the built-in one — only in this project.
+Because the project agent's `name` field matches the built-in `python-expert`, it completely replaces the package version for this project. Other projects continue using the original.
 
-## Create a Multi-Agent Chain Prompt
+## Add Autocomplete for a Custom Prompt Template
 
-Build a prompt that chains multiple specialist agents together.
+Wire up Tab-completion for a custom prompt template's arguments.
 
-Create `.pi/prompts/refactor-and-test.md`:
+To add autocomplete for your own prompt template, edit `extensions/orchestrator/extended-autocomplete.ts`:
+
+```typescript
+// 1. Add the completion function to the `completions` map:
+"my-command": (prefix: string) => {
+  return filter([
+    { value: "--verbose", label: "--verbose", description: "Show detailed output" },
+    { value: "--dry-run", label: "--dry-run", description: "Preview without changes" },
+    { value: "src/", label: "src/", description: "Source directory" },
+    { value: "tests/", label: "tests/", description: "Test directory" },
+  ], prefix);
+},
+
+// 2. Add the command name to promptTemplateCommands:
+const promptTemplateCommands = new Set([
+  "external-ai", "pr-review", "coderabbit-rate-limit",
+  "review-local", "release", "review-handler", "cron",
+  "create-skill", "create-coms-feature-manager",
+  "my-command",  // ← add here
+]);
+```
+
+This gives users Tab-completion when typing `/my-command <Tab>`. Extension commands (registered via `pi.registerCommand`) get autocomplete automatically through the `getArgumentCompletions` wrapper — only prompt templates need this manual step.
+
+> **Note:** This recipe requires modifying the pi-config source. See [Extension Architecture and Lifecycle Hooks](extension-architecture.html) for how the autocomplete system works.
+
+## Store a Permanent Memory via /remember
+
+Save a project convention or preference that persists across sessions.
+
+```text
+/remember Always use conventional commits: feat(), fix(), chore(), docs()
+```
+
+This creates a **pinned** memory entry that won't decay over time. Pi automatically categorizes it (preference, lesson, decision, pattern, mistake, or done) and stores it in the topic-based memory system.
+
+```text
+/remember We deploy to staging via: make deploy-staging ENV=stg
+/remember The payments service is owned by team-billing — always tag them on payment PRs
+/remember Never use SELECT * in production queries — always specify columns
+```
+
+- Pinned memories have maximum stability score and never expire
+- Use `/remember` for hard rules; let pi's auto-extraction handle soft preferences (e.g., "I prefer tabs over spaces" said in conversation)
+- View stored memories with `memory_search` or `/dream` for consolidation
+
+See [Working with Project Memory](memory-system.html) for the full memory system guide.
+
+## Create a Multi-Agent Prompt Template with Chain
+
+Build a prompt that runs multiple agents in sequence, passing results between them.
 
 ```markdown
+<!-- File: .pi/prompts/refactor-safely.md -->
 ---
-description: "Refactor a module and add tests — /refactor-and-test <module>"
-argument-hint: "<module>"
+description: "Scout → plan → refactor → test a component — /refactor-safely <component>"
+argument-hint: "<component>"
 ---
 
 ## Raw Arguments
@@ -339,126 +321,56 @@ argument-hint: "<module>"
 $ARGUMENTS
 ```
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?"
+> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug while executing this command — DO NOT work around it silently. Ask the user: "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
 
-Use the subagent tool with a chain of 3 agents:
+# Safe Refactor
 
-1. **scout** — Find all usages, callers, and tests for the module from raw arguments.
-   Return file locations, public API, and dependency graph.
+Use the subagent tool with a chain of 4 agents:
 
-2. **worker** — Based on {previous}, refactor the module:
-   - Extract complex functions
-   - Improve naming
-   - Remove dead code
-   - Preserve the public API
+1. **scout** — Find all files, functions, and tests related to the component described above.
+   Return file paths, key functions, import chains, and test coverage.
 
-3. **test-automator** — Based on {previous}, add missing test coverage:
-   - Unit tests for extracted functions
-   - Edge case tests identified during refactoring
-   - Verify existing tests still pass
+2. **planner** — Based on {previous}, create a refactoring plan:
+   - Files to modify and why
+   - New abstractions to introduce
+   - Breaking changes and migration steps
+   - What tests need updating
+
+3. **worker** — Based on {previous}, execute the refactoring:
+   - Make all code changes
+   - Update imports across the codebase
+   - Keep backward compatibility where noted in the plan
+
+4. **test-automator** — Based on {previous}, verify and update tests:
+   - Run existing tests, fix any failures caused by the refactoring
+   - Add tests for new abstractions
+   - Ensure coverage doesn't decrease
 ```
 
-The `{previous}` placeholder passes the output of one agent to the next. This pattern is used by the built-in `/implement` and `/scout-and-plan` commands.
+The `{previous}` placeholder is automatically replaced with the output of the preceding agent in the chain. See [Using Slash Commands and Prompt Templates](slash-commands.html) for more on how prompt templates interact with the orchestrator.
 
-## Set Up a Coms Feature Manager
+## Set Up a Project-Scoped .gitignore for Pi Files
 
-Generate a project-specific inter-agent review workflow using the built-in template.
+Ensure pi's working files don't leak into your repository.
 
-```text
-/create-coms-feature-manager
+```gitignore
+# Add to your project's .gitignore
+.pi/
 ```
 
-Pi will:
-1. Read the immutable template from `templates/coms-feature-manager-prompt.md`
-2. Analyze your project (detect test commands, test locations, project type)
-3. Ask if you need live/E2E verification
-4. Fill all placeholders with project-specific values
-5. Write `.pi/prompts/coms-feature-manager.md`
+The `.pi/` directory contains all pi state — memory, settings, skills, agents, temp files, and async worker data. It should always be gitignored. The container entrypoint adds this automatically, but for native installs, add it manually.
 
-After running `/reload`, use `/coms-feature-manager` to activate a manager agent that reviews and directs a coder peer via the coms system.
-
-> **Note:** This requires a running coms session. See [Communicating Between Pi Sessions](inter-agent-communication.html) for setup.
-
-## Enable Co-Author Commit Trailers
-
-Add pi as a co-author on all git commits in a project.
-
-```bash
-mkdir -p .pi
-echo '{ "co_author": true }' > .pi/pi-config-settings.json
-```
-
-Or set globally via environment variable:
-
-```bash
-export PI_CO_AUTHOR=true
-```
-
-When enabled, the git-expert agent adds a `Co-authored-by` trailer to commit messages. The project setting overrides the env var.
-
-## Force Worktree-Only Workflow
-
-Prevent branch switching in the main worktree — essential for multi-PR parallel work.
-
-```json
-{
-  "use_worktrees": true
-}
-```
-
-Save to `.pi/pi-config-settings.json`. When enabled, pi uses `git worktree` for every branch operation instead of `git checkout`/`git switch`, preventing corruption when multiple agents work simultaneously.
-
-## Adjust Dreaming Frequency
-
-Control how often the background memory consolidation runs.
-
-```json
-{
-  "dream_interval_hours": 1
-}
-```
-
-The dreaming system scans conversation history and writes memories to topic files. The default interval is 3 hours. Set a lower value for active sessions where you want faster learning, or a higher value (up to 24) to reduce background work.
-
-- **Manual trigger:** Run `/dream` to consolidate immediately.
-- **Toggle auto-dreaming:** Run `/dream-auto off` to disable, `/dream-auto on` to re-enable.
-
-## Create a Read-Only Analysis Agent
-
-Build an agent that can investigate but never modify files.
-
-```markdown
----
-name: perf-analyzer
-description: Performance analysis — profiles code, identifies bottlenecks, suggests optimizations. Does not modify files.
-tools: read, bash
----
-
-You are a performance analysis specialist. Profile code and identify bottlenecks.
-
-## Base Rules
-
-- Execute first, explain after
-- Do NOT modify files — only analyze and report
-- If a task falls outside your domain, report it and hand off
-
-## Approach
-
-1. Profile the target code path
-2. Identify the top 3 bottlenecks
-3. Measure baseline metrics
-4. Report findings with specific optimization recommendations
-5. Estimate expected improvement for each recommendation
-```
-
-By setting `tools: read, bash`, the agent cannot use `write` or `edit`. This is the same pattern used by `scout`, `planner`, `debugger`, and the code reviewer agents.
+> **Tip:** If you need to version-control your project agents or prompts (so teammates share them), move them to a committed directory and symlink:
+> ```bash
+> # Version-controlled agents
+> mkdir -p .agents/
+> ln -s ../.agents .pi/agents
+> ```
 
 ## Related Pages
 
 - [Specialist Agents Reference](agents-reference.html)
 - [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
 - [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
 - [Working with Project Memory](memory-system.html)

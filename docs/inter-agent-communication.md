@@ -1,136 +1,116 @@
 # Communicating Between Pi Sessions
 
-Enable multiple pi sessions to send messages to each other and collaborate on tasks — useful for patterns like a manager agent reviewing a coder agent's work, or distributing work across specialized agents.
+Coordinate work across multiple pi sessions by enabling them to discover each other, exchange messages, and delegate tasks — useful for multi-agent workflows like manager/coder splits, parallel code review, and collaborative feature development.
 
 ## Prerequisites
 
-- Two or more pi sessions running in the same project directory (or accessible via network)
-- For `/coms-net`: [Bun](https://bun.sh) must be installed (used to run the hub server)
+- Two or more pi sessions running in the same project directory (or on the same machine for P2P)
+- For networked mode (`/coms-net`): [Bun](https://bun.sh) installed (used to run the hub server)
 
 ## Quick Example
 
-Open two terminals in the same project directory.
-
-**Terminal 1** — start a pi session and activate P2P communication:
+Open two terminals in the same project directory. In the first:
 
 ```
-/coms start --name reviewer --purpose "code reviewer"
+/coms start --cname reviewer --purpose "Code reviewer"
 ```
 
-**Terminal 2** — start another pi session and activate P2P communication:
+In the second:
 
 ```
-/coms start --name coder --purpose "implements features"
+/coms start --cname coder --purpose "Feature implementer"
 ```
 
-The agent now has tools to list peers and send messages. Ask pi to "send a message to reviewer asking for feedback on the login module" and it will use the `coms_send` and `coms_await` tools automatically.
+Now either agent can ask pi to send a message to the other. The orchestrator uses the `coms_send` tool to send prompts and `coms_await` to wait for replies. A live pool widget appears below the editor showing connected peers with their context usage.
 
-## Choosing Between P2P and Networked
+## Choosing Between P2P and Networked Mode
 
 | | P2P (`/coms`) | Networked (`/coms-net`) |
 |---|---|---|
-| **Transport** | Direct Unix socket connections | HTTP/SSE hub server |
-| **Scope** | Same machine only | Same machine or across a LAN |
-| **Setup** | No extra processes needed | Requires a hub server (auto-started) |
-| **Server management** | None | Server auto-managed by `/coms-net start` |
-| **Tool prefix** | `coms_*` | `coms_net_*` |
-| **Best for** | Quick local multi-agent work | Teams, remote collaboration, persistent hubs |
+| Transport | Direct Unix sockets between sessions | HTTP/SSE hub server |
+| Scope | Same machine only | Same machine or across a network |
+| Server required | No | Yes (auto-started by default) |
+| Tool prefix | `coms_` | `coms_net_` |
+| Best for | Quick local pairing | Multi-session teams, remote collaboration |
 
-Both systems can run simultaneously without conflicts.
+Both modes can run simultaneously in the same session. They use separate tool names so there's no conflict.
 
-## Setting Up P2P Communication (`/coms`)
+## Setting Up P2P Communication
 
-### Step 1: Start coms in each session
+### Starting
 
-Run this in each pi session that should participate:
+In each pi session, run:
 
 ```
-/coms start --name <agent-name>
+/coms start --cname <agent-name> --purpose "<what this agent does>"
 ```
 
-Available flags:
+Available flags for `/coms start`:
 
 | Flag | Description |
 |---|---|
-| `--name <name>` | Agent name (auto-generated if omitted) |
-| `--purpose <text>` | Short description of this agent's role |
-| `--project <name>` | Project namespace for peer discovery (defaults to current directory) |
-| `--color #RRGGBB` | Hex color for the pool widget |
-| `--explicit` | Hide from auto-discovery (only reachable by exact name) |
+| `--cname` | Agent name (used by peers to address this session) |
+| `--purpose` | Short description of the agent's role |
+| `--project` | Project namespace for discovery (defaults to current directory) |
+| `--color` | Hex color `#RRGGBB` for the pool widget |
+| `--explicit` | Hide from auto-discovery (only addressable by exact name) |
 
-### Step 2: Verify peers are visible
+> **Note:** The project namespace defaults to the current working directory. Sessions in different directories won't see each other unless you set `--project` explicitly.
 
-A pool widget appears below the editor showing connected peers with their names, models, and context usage.
-
-You can also check status at any time:
+### Checking Status
 
 ```
 /coms status
 ```
 
-### Step 3: Send messages between agents
-
-Ask pi to communicate with a peer naturally — for example: "ask the coder to implement a retry mechanism." Pi will use the communication tools (`coms_list`, `coms_send`, `coms_await`) automatically.
-
-### Stop P2P communication
+### Stopping
 
 ```
 /coms stop
 ```
 
-## Setting Up Networked Communication (`/coms-net`)
+## Setting Up Networked Communication
 
-### Step 1: Start the hub and connect
+Networked mode uses a hub server that sessions connect to. The server is auto-managed — `/coms-net start` launches one if none is running.
+
+### Starting
 
 ```
-/coms-net start --name <agent-name>
+/coms-net start --cname planner --purpose "Architecture planning"
 ```
 
 This automatically:
+1. Checks for a running hub server for the current project
+2. Starts one if none is found (requires Bun)
+3. Connects the session to the hub
 
-1. Starts a hub server (via Bun) if one isn't already running
-2. Registers your session with the hub
-3. Opens a real-time SSE connection for instant message delivery
-
-Available flags (in addition to those listed for `/coms`):
+Available flags for `/coms-net start`:
 
 | Flag | Description |
 |---|---|
-| `--port <number>` | Server port (OS picks a free port by default) |
-| `--host <address>` | Server bind address (default: `127.0.0.1`) |
+| `--cname` | Agent name |
+| `--purpose` | Short description of the agent's role |
+| `--project` | Project namespace |
+| `--color` | Hex color `#RRGGBB` |
+| `--explicit` | Hide from auto-discovery |
+| `--port` | Server port (default: OS picks a free port) |
+| `--host` | Server bind address (default: `127.0.0.1`) |
 
-### Step 2: Connect additional sessions
+### Connecting to an Existing Server
 
-In other terminals, run:
-
-```
-/coms-net start --name <another-name>
-```
-
-Additional sessions auto-discover the running server — no URL or token configuration needed for local use.
-
-### Connecting to an existing server
-
-If a hub is already running (started by another session or manually), connect without starting a new one:
+If another session already started the server, use `connect` instead of `start`:
 
 ```
-/coms-net connect --name <agent-name>
+/coms-net connect --cname coder --purpose "Feature implementer"
 ```
 
 To connect to a remote server:
 
 ```
-/coms-net connect --name <agent-name> --url http://host:port --auth-token <token>
+/coms-net connect --cname coder --url http://192.168.1.50:8080 --auth-token <token>
 ```
 
-### Disconnecting vs stopping
-
-| Command | Effect |
-|---|---|
-| `/coms-net disconnect` | Disconnect from the hub but leave the server running (for sessions that used `connect`) |
-| `/coms-net stop` | Disconnect and shut down the hub server (for the session that used `start`) |
-
-### Check status
+### Checking Status
 
 ```
 /coms-net status
@@ -138,143 +118,172 @@ To connect to a remote server:
 
 Shows whether coms-net is active, the server URL, and whether this session started the server.
 
-## The Coms Feature Manager Pattern
+### Disconnecting vs Stopping
 
-For structured multi-agent workflows, generate a project-specific coms feature manager prompt:
+- **`/coms-net disconnect`** — Disconnects from the server but leaves it running (use when you joined someone else's server)
+- **`/coms-net stop`** — Disconnects and kills the server (use when you started the server)
+
+> **Tip:** The server is shared — if Session A started it, Session B should use `disconnect`, not `stop`. Pi enforces this and shows a warning if you try the wrong one.
+
+## Sending Messages Between Sessions
+
+Once coms is active, pi's orchestrator has access to communication tools. You can ask pi to talk to a peer directly:
+
+> "Ask the coder to implement the login form"
+
+Or be explicit:
+
+> "Use coms_send to ask reviewer to check the auth module"
+
+### The Message Flow
+
+1. **List peers** — Pi discovers available agents
+2. **Send message** — Pi sends a prompt to the target peer
+3. **Peer processes** — The target session receives the message as a follow-up and generates a response
+4. **Receive reply** — The response is automatically returned to the sender
+
+### How Replies Work
+
+When a session receives an inbound message, it appears as:
+
+```
+[from reviewer @ /home/user/project] Please check the auth implementation
+```
+
+The receiving session writes its answer as a normal response. The coms extension automatically captures the assistant's output at the end of the turn and sends it back to the sender. No extra tool calls are needed to reply.
+
+> **Warning:** Peers should never call `coms_send` to reply to an inbound message — that creates a new outbound conversation instead of a reply, leading to infinite ping-pong loops.
+
+### Message Queue Behavior
+
+Messages are processed in FIFO order. When a session is busy handling one message:
+
+1. Additional incoming messages are queued, not dropped
+2. After the current message is answered, the next one is automatically injected
+3. Each message gets its own dedicated turn and response
+4. Senders always get a reply — nothing is silently lost
+
+## Delegating Structured Tasks
+
+When coordinating multi-step work, use structured task delegation. This creates trackable tasks in the peer's task widget:
+
+> "Send the coder these tasks: 1) Add JWT auth middleware for /api routes, 2) Write unit tests for the middleware"
+
+Pi passes these as structured `tasks` alongside the message. The peer receives them as actionable items in their task tracking widget (requires `@tintinweb/pi-tasks`).
+
+## The Feature Manager Pattern
+
+A common multi-agent workflow pairs a **manager** (reviewer) session with a **coder** (implementer) session. The manager reviews work, provides feedback, and gates PR creation. The coder writes code and responds to feedback.
+
+Generate a project-specific feature manager prompt with:
 
 ```
 /create-coms-feature-manager
 ```
 
-This creates a `.pi/prompts/coms-feature-manager.md` file customized for your project. The pattern sets up:
-
-- A **manager** agent that reviews code and directs implementation
-- A **coder** agent that implements changes and responds to feedback
-- A review → feedback → fix → re-review loop over coms
-
-After generating the prompt, run `/reload`, then start a coms session and use `/coms-feature-manager` to activate the manager role.
-
-## Available Tools
-
-When coms is active, pi gains these tools (used automatically based on your requests):
-
-| Action | P2P Tool | Networked Tool |
-|---|---|---|
-| List connected peers | `coms_list` | `coms_net_list` |
-| Send a message to a peer | `coms_send` | `coms_net_send` |
-| Poll for a reply (non-blocking) | `coms_get` | `coms_net_get` |
-| Wait for a reply (blocking, ESC to cancel) | `coms_await` | `coms_net_await` |
-
-> **Tip:** You don't need to call these tools directly. Just tell pi what you want — for example, "ask the reviewer to check my changes" — and it will use the right tools.
+This creates a customized prompt at `.pi/prompts/coms-feature-manager.md` that defines the manager role, review workflow, and coder coordination protocol for your project.
 
 ## Advanced Usage
 
-### Project isolation
+### Project Namespaces
 
-Sessions are scoped by project namespace. By default, the project is derived from the current working directory. Sessions in different directories won't see each other.
-
-To override the project namespace:
+Sessions are isolated by project namespace. By default, the namespace is derived from the working directory. To create a custom namespace shared across directories:
 
 ```
-/coms start --name agent1 --project my-shared-project
+/coms start --cname agent-a --project my-team
 ```
 
-### Running the coms-net hub server manually
+All sessions using `--project my-team` will discover each other regardless of their working directory.
 
-Instead of letting `/coms-net start` auto-manage the server, you can run it yourself:
+### Hidden Agents
 
-```bash
-bun ~/.pi/agent/git/github.com/myk-org/pi-config/extensions/coms/upstream-coms/coms-net-server.ts
-```
-
-Then connect sessions with `/coms-net connect`.
-
-### LAN access
-
-By default, the hub binds to `127.0.0.1` (localhost only). To allow connections from other machines:
-
-1. Set an explicit auth token (required for non-loopback binds):
-
-   ```bash
-   export PI_COMS_NET_AUTH_TOKEN="your-secret-token"
-   ```
-
-2. Start with `--host 0.0.0.0`:
-
-   ```
-   /coms-net start --name agent1 --host 0.0.0.0 --port 9000
-   ```
-
-3. On remote machines, connect with the server URL and token:
-
-   ```
-   /coms-net connect --name agent2 --url http://<server-ip>:9000 --auth-token your-secret-token
-   ```
-
-> **Warning:** Always set `PI_COMS_NET_AUTH_TOKEN` when binding to non-loopback addresses. The server refuses to start on `0.0.0.0` without an explicit token.
-
-### Hiding agents from discovery
-
-Use `--explicit` to create agents that are only reachable by exact name — they won't appear in peer listings unless the caller passes `include_explicit=true`:
+Use `--explicit` to hide an agent from auto-discovery:
 
 ```
-/coms start --name secret-agent --explicit
+/coms start --cname secret-reviewer --explicit
 ```
 
-### Environment variables
+Explicit agents don't appear in peer lists by default. Other sessions can still reach them by exact name. To include hidden agents when listing peers, pi uses the `include_explicit` parameter on the list tool.
+
+### Hop Limits
+
+Messages can chain between agents (A sends to B, B forwards to C). A hop counter prevents infinite forwarding. The default limit is 5 hops, configurable via the `PI_COMS_MAX_HOPS` environment variable (P2P) or `PI_COMS_NET_MAX_HOPS` (networked).
+
+### Network Configuration for coms-net
+
+For LAN access, bind the server to all interfaces:
+
+```
+/coms-net start --host 0.0.0.0 --port 9000
+```
+
+> **Warning:** When binding to a non-loopback address, you must set the `PI_COMS_NET_AUTH_TOKEN` environment variable explicitly. The server refuses to start on a public interface without an explicit token for security.
+
+Remote sessions connect with:
+
+```
+/coms-net connect --url http://<server-ip>:9000 --auth-token <token>
+```
+
+### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `PI_COMS_TIMEOUT_MS` | `1800000` (30 min) | P2P message response timeout |
 | `PI_COMS_MAX_HOPS` | `5` | Maximum message forwarding hops (P2P) |
+| `PI_COMS_TIMEOUT_MS` | `1800000` (30 min) | Response timeout (P2P) |
 | `PI_COMS_PING_INTERVAL_MS` | `10000` | Peer health check interval (P2P) |
-| `PI_COMS_NET_AUTH_TOKEN` | auto-generated | Bearer token for coms-net hub authentication |
-| `PI_COMS_NET_HOST` | `127.0.0.1` | Hub server bind address |
-| `PI_COMS_NET_PORT` | `0` (auto) | Hub server port |
-| `PI_COMS_NET_SERVER_URL` | auto-discovered | Override hub server URL for clients |
 | `PI_COMS_NET_MAX_HOPS` | `5` | Maximum message forwarding hops (networked) |
-| `PI_COMS_NET_MESSAGE_TTL_MS` | `1800000` (30 min) | Message TTL on the hub |
-| `PI_COMS_NET_HEARTBEAT_MS` | `10000` | Client heartbeat interval |
-| `PI_COMS_NET_STALE_AFTER_MS` | `30000` | Time without heartbeat before agent marked stale |
-| `PI_COMS_NET_OFFLINE_AFTER_MS` | `60000` | Time without heartbeat before agent marked offline |
+| `PI_COMS_NET_MESSAGE_TTL_MS` | `1800000` (30 min) | Message time-to-live (networked) |
+| `PI_COMS_NET_HEARTBEAT_MS` | `10000` | Heartbeat interval (networked) |
+| `PI_COMS_NET_HOST` | `127.0.0.1` | Server bind address |
+| `PI_COMS_NET_PORT` | `0` (auto) | Server port |
+| `PI_COMS_NET_AUTH_TOKEN` | Auto-generated | Bearer token for hub authentication |
+| `PI_COMS_NET_SERVER_URL` | Auto-discovered | Override server URL for clients |
 
-### Hop limits and message forwarding
+### Server Lifecycle
 
-Messages include a hop counter that increments each time a message is forwarded between agents. This prevents infinite loops when agents forward messages to each other. The default limit is 5 hops — if reached, the send fails with a "hop limit reached" error.
+The coms-net hub server is automatically managed:
 
-### Reload resilience
+- **Auto-start:** `/coms-net start` launches a server if one isn't running
+- **Shared:** Multiple sessions connect to the same server
+- **Auto-cleanup:** The server is killed when the session that started it shuts down (unless other peers are connected)
+- **Crash recovery:** Stale registry entries and dead sockets are pruned automatically on session start
 
-Both `/coms` and `/coms-net` survive `/reload`. When you reload pi's configuration, the communication session is automatically re-established with the same flags. You don't need to re-run `/coms start` or `/coms-net start`.
+Server logs are written to `~/.pi/coms-net/projects/<project>/server.log`.
+
+### Authentication
+
+Token resolution follows a priority chain:
+
+1. `--auth-token` flag (highest priority)
+2. `PI_COMS_NET_AUTH_TOKEN` environment variable
+3. Auto-discovered from `~/.pi/coms-net/projects/<project>/server.secret.json` (local servers only, file must be mode `0600`)
+
+For local-only servers, the token is auto-generated and stored securely. For remote servers, always set the token explicitly.
 
 ## Troubleshooting
 
-**Peers not visible after starting coms:**
-- Ensure both sessions are in the same project directory (or use `--project` to set the same namespace)
-- Run `/coms status` to confirm coms is active
-- P2P sessions must be on the same machine
+**"coms not active" when trying to send messages**
+Run `/coms start` or `/coms-net start` first. Communication tools are unavailable until explicitly activated.
 
-**`coms-net: failed to start server. Is Bun installed?`**
-- Install Bun: `curl -fsSL https://bun.sh/install | bash`
-- Bun is required for the coms-net hub server (already included in the Docker container)
+**Peers can't see each other (P2P)**
+Verify both sessions are in the same project namespace. Run `/coms status` in each session. Check that both are running from the same directory, or set `--project` to match.
 
-**`coms-net: no auth token`**
-- For local use, the token is auto-generated and stored in `~/.pi/coms-net/projects/<project>/server.secret.json`
-- For remote connections, set `PI_COMS_NET_AUTH_TOKEN` or pass `--auth-token`
+**"bun not found" when starting coms-net**
+The hub server requires [Bun](https://bun.sh). Install it with `curl -fsSL https://bun.sh/install | bash`. Use P2P mode (`/coms start`) as an alternative that doesn't need Bun.
 
-**Agent name collisions:**
-- If a name is already taken, a numeric suffix is added automatically (e.g., `coder` becomes `coder2`)
-- Use unique `--name` values across sessions to avoid this
+**Server port/host mismatch**
+If you change `--port` or `--host` on a restart, `/coms-net start` automatically detects the mismatch and restarts the server with the new settings.
 
-**Stale peers in the pool widget:**
-- Stale entries from crashed sessions are cleaned up automatically on session start
-- Run `/coms` or `/coms-net` (bare command) to force-refresh the pool widget
+**Session shows stale peers in the pool widget**
+Stale peers (marked with `✗`) are sessions that stopped responding to health checks. They're automatically removed after several missed checks. Run `/coms` or `/coms-net` to force-refresh the pool.
 
-See [Slash Commands and Extension Commands Reference](commands-reference.html) for the full `/coms` and `/coms-net` command syntax. See [Configuration and Environment Variables Reference](configuration-reference.html) for all environment variable details. See [Orchestrator Rules Reference](rules-reference.html) for the coms protocol rules that govern how the orchestrator interacts with coms tools.
+See [Slash Commands and Extension Commands Reference](commands-reference.html) for the complete `/coms` and `/coms-net` command syntax. See [Configuration and Environment Variables Reference](configuration-reference.html) for all coms-related environment variables.
 
 ## Related Pages
 
 - [Slash Commands and Extension Commands Reference](commands-reference.html)
 - [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Customization and Extension Recipes](customization-recipes.html)
-- [Orchestrator Rules Reference](rules-reference.html)
 - [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Customization and Extension Recipes](customization-recipes.html)
