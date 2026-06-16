@@ -20,7 +20,7 @@ export function terminalNotify(title: string, body: string): void {
     timeout: 2000,
   }, (err) => {
     if (err) {
-      if ((err as any).code === "ENOENT") {
+      if ((err as any).code === "ENOENT" || /DBus\.Error|not activatable|No session bus/.test(err.message)) {
         notifyAvailable = false;
       } else {
         console.debug("[utils] notify-send failed:", err.message);
