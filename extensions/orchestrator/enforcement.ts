@@ -97,7 +97,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       name: "select_commit_trailer",
       description: "Select which commit trailer identity to use for this session. " +
         "Call this when a git commit is blocked because multiple trailer identities are configured. " +
-        "Pass the user's chosen identity string exactly as shown in the block reason.",
+        "Pass the identity string WITHOUT the numeric prefix (e.g., 'Jane Doe <jane@example.com>', not '1) Jane Doe <jane@example.com>').",
       parameters: {
         type: "object" as const,
         properties: {
