@@ -38,9 +38,14 @@ let REPEAT_FILE = "";
 /** Cached trailer identity selection for comma-separated commit_trailer values */
 let cachedTrailerIdentity: string | null = null;
 
-/** Escape a string for safe inclusion in shell single/double-quoted strings */
-function shellEscapeTrailer(s: string): string {
-  return s.replace(/[\\'"`$!]/g, "\\$&");
+/** Escape a string for safe inclusion in double-quoted shell strings */
+function escapeForDoubleQuote(s: string): string {
+  return s.replace(/[\\"`$!]/g, "\\$&");
+}
+
+/** Escape a string for safe inclusion in single-quoted shell strings */
+function escapeForSingleQuote(s: string): string {
+  return s.replace(/'/g, "'\\''");
 }
 
 function ensureRepeatFile(cwd: string): void {
@@ -315,7 +320,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             reason:
               "⛔ Detached HEAD. Create a branch first: git checkout -b my-branch",
           };
-        if (protectedBranches.has(branch) && !getSetting(ctx.cwd, "allow_push_to_protected_branches"))
+        if (protectedBranches.has(branch) && !getSetting(gitCwd, "allow_push_to_protected_branches"))
           return {
             block: true,
             reason: `⛔ Cannot commit to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git commit in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
@@ -338,7 +343,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           };
 
         // Commit trailer injection — setting value is the trailer name (e.g., "Assisted-by")
-        const trailerSetting = getSetting(ctx.cwd, "commit_trailer");
+        const trailerSetting = getSetting(gitCwd, "commit_trailer");
         if (typeof trailerSetting === "string") {
           const modelId = (ctx as any).model?.id;
           if (modelId) {
@@ -349,7 +354,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
               // Multiple trailer name options — need user selection
               if (!cachedTrailerIdentity) {
                 ensureTrailerTool();
-                const options = getTrailerOptions(ctx.cwd) ?? [];
+                const options = getTrailerOptions(gitCwd) ?? [];
                 const optionsList = options.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
                 return {
                   block: true,
@@ -357,7 +362,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
                 };
               }
               // Validate cached selection is still in current options
-              const currentOptions = getTrailerOptions(ctx.cwd) ?? [];
+              const currentOptions = getTrailerOptions(gitCwd) ?? [];
               if (!currentOptions.includes(cachedTrailerIdentity)) {
                 cachedTrailerIdentity = null;
                 const optionsList = currentOptions.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
@@ -372,33 +377,40 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
               trailerName = trailerSetting;
             }
 
-            // Skip if this specific trailer already exists in the command (check both raw and escaped forms)
-            const trailerLines = `${shellEscapeTrailer(trailerName)}: ${piIdentity}`;
-            if (command.includes(trailerLines) || command.includes(`${trailerName}: ${piIdentity}`)) return undefined;
+            // Raw trailer line for duplicate detection (what the commit message should contain)
+            const rawTrailerLine = `${trailerName}: ${piIdentity}`;
+            if (command.includes(rawTrailerLine)) return undefined;
 
-            if (trailerLines) {
-              // Pattern A: echo "..." | git commit -F -
-              const pipeIdx = command.lastIndexOf("|");
-              if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
-                const echoPart = command.slice(0, pipeIdx);
-                const gitPart = command.slice(pipeIdx);
-                const lastDoubleQuote = echoPart.lastIndexOf('"');
-                const lastSingleQuote = echoPart.lastIndexOf("'");
-                const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
-                if (lastQuoteIdx > 0) {
-                  event.input.command =
-                    echoPart.slice(0, lastQuoteIdx) + `\\n\\n${trailerLines.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
-                }
+            // Pattern A: echo "..." | git commit -F -
+            const pipeIdx = command.lastIndexOf("|");
+            if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+              const echoPart = command.slice(0, pipeIdx);
+              const gitPart = command.slice(pipeIdx);
+              const lastDoubleQuote = echoPart.lastIndexOf('"');
+              const lastSingleQuote = echoPart.lastIndexOf("'");
+              const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
+              if (lastQuoteIdx > 0) {
+                // Determine quote context for correct escaping
+                const quoteChar = echoPart[lastQuoteIdx];
+                const escaped = quoteChar === "'"
+                  ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
+                  : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
+                event.input.command =
+                  echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
               }
-              // Pattern B: git commit -m "..."
-              else {
-                const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
-                if (mFlagMatch) {
-                  const fullMatch = mFlagMatch[0];
-                  const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
-                  event.input.command =
-                    command.slice(0, insertPos) + `\n\n${trailerLines}` + command.slice(insertPos);
-                }
+            }
+            // Pattern B: git commit -m "..." or git commit -m '...'
+            else {
+              const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
+              if (mFlagMatch) {
+                const quoteChar = mFlagMatch[1];
+                const escaped = quoteChar === "'"
+                  ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
+                  : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
+                const fullMatch = mFlagMatch[0];
+                const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
+                event.input.command =
+                  command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
               }
             }
           }
@@ -408,7 +420,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // Block pushes to protected branches
       if (hasGitSub(command, "push")) {
         // Block if currently on a protected branch
-        if (!getSetting(ctx.cwd, "allow_push_to_protected_branches")) {
+        if (!getSetting(gitCwd, "allow_push_to_protected_branches")) {
           if (branch && protectedBranches.has(branch))
             return {
               block: true,
