@@ -1,13 +1,13 @@
 # Installing and Starting Your First Session
 
-Get pi-config installed and running so you can start delegating coding tasks to an orchestrator backed by 24 specialist agents. Choose between Docker (sandboxed, all dependencies included) or native installation on your own machine.
+Get pi-config installed and launch your first orchestrator session so you can start delegating tasks to specialist agents. You can install via a pre-built Docker container (recommended for isolation and consistency) or natively on your machine.
 
 ## Prerequisites
 
-- **Node.js 22+** — required by pi itself ([download](https://nodejs.org) or `nvm install 22`)
-- **Git** — version control (`apt install git` / `brew install git`)
-- **pi** — the coding agent that pi-config extends (`npm install -g @earendil-works/pi-coding-agent`)
-- **An LLM provider** — pi needs an API key for at least one provider (Anthropic, Google Vertex AI, etc.). See [Configuration and Environment Variables Reference](configuration-reference.html) for all supported providers.
+- **Node.js 22+** — required for pi itself ([nodejs.org](https://nodejs.org))
+- **Git** — version control ([git-scm.com](https://git-scm.com))
+- **A GitHub account** with a personal access token — needed for PR and issue workflows
+- **An LLM provider** — pi needs a model to run (e.g., Claude via Vertex AI, or another supported provider)
 
 ## Quick Start (Docker)
 
@@ -17,7 +17,6 @@ docker pull ghcr.io/myk-org/pi-config:latest
 docker run --rm -it \
   --name "pi-session" \
   --network host \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":"$HOME/.pi":rw \
   -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
@@ -27,46 +26,58 @@ docker run --rm -it \
   ghcr.io/myk-org/pi-config:latest
 ```
 
-That's it. The container installs pi, pulls pi-config, and drops you into an interactive session. Type a task and the orchestrator takes over.
+That's it — pi starts automatically with the orchestrator, all 24 specialist agents, and every tool pre-installed. Navigate to a project directory first, then run the command.
 
-## Installation Methods
+## Quick Start (Native)
 
-### Option A: Docker Container (Recommended)
+```bash
+npm install -g @earendil-works/pi-coding-agent
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
+```
 
-The Docker image ships with every tool pre-installed — GitHub CLI, Python (uv), Go, kubectl, browser automation, and more. Your host filesystem is protected; the agent can only access mounted directories.
+After the installer finishes, start a session:
 
-**1. Pull the image:**
+```bash
+pi
+```
+
+## Step-by-Step: Docker Installation
+
+### 1. Pull the image
 
 ```bash
 docker pull ghcr.io/myk-org/pi-config:latest
 ```
 
-**2. Create an environment file** at `~/.pi/.env`:
+The image includes everything pre-installed: `gh`, `uv`, `go`, `kubectl`, `bun`, Playwright + Chromium, CodeRabbit CLI, Cursor CLI, Claude Code, and more.
+
+### 2. Create an environment file
+
+Create a file at `~/.pi/.env` with your credentials and settings:
 
 ```env
-# Timezone
+# Timezone (match your host for correct timestamps)
 TZ=America/New_York
 
-# Host username — maps container home to /home/<user> so host paths resolve
-PI_HOST_USER=your-username
+# Host username (maps container paths to match your host home directory)
+PI_HOST_USER=yourusername
 
-# LLM provider (at least one required)
-# Option A: Anthropic direct
-ANTHROPIC_API_KEY=sk-ant-xxx
+# GitHub token (required for PR/issue workflows)
+GITHUB_TOKEN=ghp_xxx
+GH_CONFIG_DIR=/home/yourusername/.config/gh
 
-# Option B: Google Cloud / Vertex AI
+# Google Cloud / Vertex AI (if using Claude via Vertex)
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/your-username/.config/gcloud/application_default_credentials.json
-
-# GitHub (required for PR/issue workflows)
-GITHUB_TOKEN=ghp_xxx
-GH_CONFIG_DIR=/home/your-username/.config/gh
+GOOGLE_APPLICATION_CREDENTIALS=/home/yourusername/.config/gcloud/application_default_credentials.json
 ```
 
-> **Note:** Use your actual home path in the env file — the `PI_HOST_USER` setting creates a symlink inside the container so these paths resolve correctly.
+> **Note:** Replace `yourusername` with your actual system username. The `PI_HOST_USER` variable creates a symlink inside the container so that host-mounted paths resolve correctly.
 
-**3. Run the container:**
+### 3. Run pi in a container
+
+Navigate to your project directory and start a session:
 
 ```bash
 docker run --rm -it \
@@ -79,183 +90,125 @@ docker run --rm -it \
   -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
   -v "$HOME/.ssh":"$HOME/.ssh":ro \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v /tmp/pi-work:/tmp/pi-work:rw \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
 
-On first start, the entrypoint automatically:
+On each start, the container automatically installs the latest version of pi and updates all packages.
 
-1. Installs/updates pi to the latest version
-2. Installs pi-config (orchestrator, agents, prompts)
-3. Installs companion packages (pi-web-access, pi-tasks)
-4. Installs the myk-pi-tools CLI
-5. Configures the global gitignore for memory and worktree directories
-6. Starts an interactive pi session
+> **Tip:** A startup `WARNING` about already-cached packages is normal and can be ignored.
 
-> **Tip:** A `WARNING` on stderr about packages already being cached is normal. If pi doesn't start, check your network connectivity.
+### 4. Create a shell alias
 
-For a permanent shell alias, see [Running Pi in a Docker Container](docker-deployment.html).
-
-### Option B: Native Installation
-
-For running pi directly on your machine without Docker.
-
-**1. Install prerequisites:**
+Add this to your `~/.bashrc` or `~/.zshrc` so you can launch pi with a single command:
 
 ```bash
-# Node.js 22+
-nvm install 22
-
-# pi coding agent
-npm install -g @earendil-works/pi-coding-agent
-
-# uv (Python package manager — required for Python tools)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
+  docker run --rm -it \
+  --name "pi-config-$(basename $PWD)-$(date +%s)" \
+  --network host \
+  --env-file "$HOME/.pi/.env" \
+  -v "$PWD":"$PWD":rw \
+  -v "$HOME/.pi":"$HOME/.pi":rw \
+  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
+  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
+  -v "$HOME/.ssh":"$HOME/.ssh":ro \
+  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
+  -w "$PWD" \
+  ghcr.io/myk-org/pi-config:latest'
 ```
 
-**2. Run the interactive installer:**
+Then from any project directory:
+
+```bash
+pi-docker
+```
+
+## Step-by-Step: Native Installation
+
+### 1. Install prerequisites
+
+Install pi, uv, and the GitHub CLI:
+
+```bash
+# Pi coding agent
+npm install -g @earendil-works/pi-coding-agent
+
+# uv (Python package manager — enforced by pi-config instead of pip)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# GitHub CLI (for PR and issue workflows)
+# macOS:
+brew install gh
+# Debian/Ubuntu:
+# See https://cli.github.com/ for installation instructions
+```
+
+### 2. Run the interactive installer
+
+The installer walks you through each component with multi-select checkboxes:
 
 ```bash
 uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
 ```
 
-The installer walks you through five steps with multi-select checkboxes:
+It installs in 5 steps:
 
-| Step | What it installs |
-|------|-----------------|
-| Pi Packages | pi-config, pi-vertex-claude, pi-web-access, pi-tasks, myk-pi-tools, bun |
-| Python Tools | mcp-launchpad (mcpl), prek |
-| npm Packages | acpx, agent-browser |
-| Browser Automation | Playwright + Chromium |
-| Environment Setup | Adds `.pi/memory/`, `.worktrees/`, `.pi/tasks/` to global gitignore |
+1. **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, pi-tasks, myk-pi-tools, bun
+2. **Python Tools** — mcp-launchpad (mcpl), prek
+3. **npm Packages** — acpx, agent-browser
+4. **Browser Automation** — Playwright + Chromium
+5. **Environment Setup** — adds `.pi/` and `.worktrees/` to your global gitignore
 
-Select only what you need — each tool shows whether it's already installed.
+Deselect anything you don't need. The installer shows which items are already installed.
 
-> **Tip:** For non-interactive CI environments, run `uv run scripts/install.py --all` to install everything without prompts.
-
-**3. Start a session:**
-
-```bash
-cd your-project
-pi
-```
-
-## Configuring Prerequisites
-
-### GitHub CLI (gh)
-
-The GitHub CLI is required for PR reviews, issue creation, and release workflows. It's pre-installed in the Docker image.
-
-**Native installation:**
-
-```bash
-# macOS
-brew install gh
-
-# Linux (Debian/Ubuntu)
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-  | sudo gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-sudo apt update && sudo apt install gh
-```
-
-**Authenticate:**
+### 3. Authenticate GitHub CLI
 
 ```bash
 gh auth login
 ```
 
-For Docker, mount your gh config directory: `-v "$HOME/.config/gh":"$HOME/.config/gh":ro`
+Follow the prompts to authenticate. This enables PR creation, issue management, and release workflows.
 
-### API Keys
+### 4. Start a session
 
-Pi needs credentials for at least one LLM provider. Pass them as environment variables:
-
-| Provider | Environment Variable |
-|----------|---------------------|
-| Anthropic (direct) | `ANTHROPIC_API_KEY` |
-| Google Vertex AI | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` |
-| Gemini (image generation) | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
-| GitHub (for PR/issue workflows) | `GITHUB_TOKEN` |
-
-For Docker, put these in your `~/.pi/.env` file and pass with `--env-file`. For native, export them in your shell profile.
-
-See [Configuration and Environment Variables Reference](configuration-reference.html) for the full list of supported variables.
-
-### MCP Launchpad (Optional)
-
-MCP Launchpad (`mcpl`) lets pi access external tools from MCP servers (Sentry, Vercel, Jenkins, etc.). It's pre-installed in the Docker image.
-
-**Native installation:**
-
-```bash
-uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git"
-```
-
-**Docker mount** for your MCP config:
-
-```bash
--v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro
-```
-
-## Running Your First Session
-
-**1. Navigate to your project and start pi:**
+Navigate to a project directory and launch pi:
 
 ```bash
 cd ~/my-project
-pi     # or use the Docker command/alias
+pi
 ```
 
-**2. On startup, pi validates your environment.** You'll see notifications about any missing tools — critical ones (like `uv`) get a warning, optional ones (like `gh`, `mcpl`) are informational.
+The orchestrator loads automatically and validates your environment. You'll see notifications about any missing optional tools.
 
-**3. Try a simple task:**
+## Verifying Your Installation
 
-```
-Add a docstring to every public function in src/utils.py
-```
+When pi starts, it runs environment checks and notifies you about missing tools. A healthy session shows:
 
-The orchestrator reads the request, identifies it as Python work, and delegates to the `python-expert` agent. You'll see the delegation happen in real time.
+- **No critical warnings** — `uv` is detected
+- **Git status** in the status line — shows your current branch and working tree status
+- **Container indicator** (Docker only) — a container icon confirms you're running inside the sandbox
 
-**4. Try a workflow command:**
+Try a simple delegation to confirm the orchestrator is working:
 
-```
-/implement add retry logic to the HTTP client
-```
-
-This runs the full scout → planner → worker pipeline: a scout agent explores the codebase, a planner creates a step-by-step plan, and a worker implements it.
-
-**5. Check session status anytime:**
-
-```
-/status
+```text
+What files are in this project?
 ```
 
-This shows async agents, cron tasks, git branch, and session info at a glance.
+The orchestrator should route this to a specialist agent (typically `worker`) that reads and reports the directory contents.
 
-> **Tip:** The orchestrator never edits files directly — it always delegates to the right specialist agent. See [Understanding Agent Routing and Delegation](agent-routing.html) for how routing decisions work.
+## What the Container Protects
 
-## Project-Level Configuration
+When running via Docker, pi-config enforces filesystem isolation:
 
-Create `.pi/pi-config-settings.json` in any project to customize behavior:
+| Access | Scope |
+|--------|-------|
+| ✅ Read/write | Your mounted project directory |
+| ✅ Read/write | `~/.pi` (sessions, memory, settings) |
+| ✅ Read-only | Git, SSH, and GitHub CLI config |
+| ❌ Blocked | Everything else on your host |
 
-```json
-{
-  "co_author": true,
-  "use_worktrees": false,
-  "dream_interval_hours": 3
-}
-```
-
-| Setting | What it does | Default |
-|---------|-------------|---------|
-| `co_author` | Add co-author trailer to git commits | `false` |
-| `use_worktrees` | Force git worktree workflow for branches | `false` |
-| `dream_interval_hours` | How often memory consolidation runs | `3` |
-
-Settings resolve in order: project file → environment variable → default. See [Configuration and Environment Variables Reference](configuration-reference.html) for details.
+> **Warning:** The `--network host` flag shares your host network stack. This is required for local MCP servers, the web dashboard, and file preview. If you only use cloud-based LLM providers and don't need these features, you can omit it.
 
 ## Updating
 
@@ -265,22 +218,30 @@ Settings resolve in order: project file → environment variable → default. Se
 docker pull ghcr.io/myk-org/pi-config:latest
 ```
 
-The container runs `pi update` automatically on every start, so you always get the latest pi-config and agents.
+The container runs `pi update` automatically on each start, so packages stay current.
 
 ### Native
 
 ```bash
-pi update                       # Updates pi-config and all pi packages
-uv tool upgrade myk-pi-tools    # Updates the CLI tool
+pi update
+uv tool upgrade myk-pi-tools
 ```
 
-After updating, run `/reload` inside a running pi session or restart pi to pick up changes.
+After updating, run `/reload` inside an active session or restart pi to pick up changes. Pi-config shows a changelog notification on the first session after an upgrade.
 
 ## Advanced Usage
 
+### Non-Interactive Installation (CI)
+
+Skip all prompts and install everything:
+
+```bash
+uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py --all
+```
+
 ### Building the Docker Image from Source
 
-If you want to customize the image or run on a different architecture:
+> **Note:** The image is built for **linux/amd64** only. On ARM hosts, build with `--platform linux/amd64`.
 
 ```bash
 git clone https://github.com/myk-org/pi-config.git
@@ -288,81 +249,78 @@ cd pi-config
 docker build -t ghcr.io/myk-org/pi-config:latest .
 ```
 
-> **Note:** The image is built for **linux/amd64** only. On ARM hosts, build with `--platform linux/amd64`.
+### Additional Docker Volume Mounts
 
-### Docker Socket Access
-
-To let pi inspect containers (via the restricted `docker-safe` wrapper), mount the Docker socket:
-
-```bash
--v /var/run/docker.sock:/var/run/docker.sock:ro \
---group-add $(stat -c '%g' /var/run/docker.sock)
-```
-
-The `docker-safe` wrapper only allows read-only operations: `ps`, `logs`, `inspect`, `top`, `stats`.
-
-### Additional Docker Mounts
+These optional mounts unlock extra capabilities:
 
 | Mount | Purpose |
 |-------|---------|
-| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC for Vertex AI |
-| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth for ACPX models |
+| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud credentials (Claude via Vertex AI) |
+| `-v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro` | MCP server configuration |
+| `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills |
+| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for ACPX models) |
 | `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config |
-| `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
-| `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills for agent-browser |
-| `-v "$HOME/screenshots":"$HOME/screenshots":ro` | Share screenshots/images with the agent |
+| `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and data |
+| `-v "$HOME/screenshots":"$HOME/screenshots":ro` | Share images with the agent |
+| `-v /var/run/docker.sock:/var/run/docker.sock:ro` | Docker container inspection |
 
-### ACPX Provider (External Agent Models)
+When mounting the Docker socket, also add `--group-add $(stat -c '%g' /var/run/docker.sock)` for proper permissions.
 
-Access models from external agents (Cursor, Claude, Gemini, Copilot) as native pi models by setting `ACPX_AGENTS`:
+### Environment Variables for Additional Features
 
-```env
-ACPX_AGENTS=cursor
+Add these to your `.env` file as needed:
+
+| Variable | Purpose |
+|----------|---------|
+| `GEMINI_API_KEY` | Gemini API access (image generation, external AI) |
+| `PI_IMAGE_MODEL` | Gemini model for image generation (e.g., `gemini-3-pro-image`) |
+| `ACPX_AGENTS` | Comma-separated list of ACPX agents to register as providers (e.g., `cursor`) |
+| `MCPL_CONFIG_FILES` | Path to MCP Launchpad config inside the container |
+| `VERTEX_PROJECT_ID` | Google Cloud project for Vertex AI |
+| `VERTEX_REGION` | Google Cloud region for Vertex AI |
+| `PI_PIDASH_PORT` | Custom port for the web dashboard (default: `19190`) |
+| `PI_PIDIFF_PORT` | Custom port for the diff viewer (default: `19290`) |
+
+See [Configuration and Environment Variables Reference](configuration-reference.html) for the complete list.
+
+### Project-Level Settings
+
+Create `.pi/pi-config-settings.json` in any project to override global defaults:
+
+```json
+{
+  "co_author": true,
+  "use_worktrees": false,
+  "dream_interval_hours": 3
+}
 ```
 
-This registers all models available through the Cursor agent as selectable pi models.
-
-### Disabling Bundled Features
-
-| Feature | Environment Variable | Default |
-|---------|---------------------|---------|
-| Pidash web dashboard | `PI_PIDASH_ENABLE=false` | enabled |
-| Pidiff diff viewer | `PI_PIDIFF_ENABLE=false` | enabled |
-| Pidash custom port | `PI_PIDASH_PORT=9999` | `19190` |
-| Pidiff custom port | `PI_PIDIFF_PORT=9999` | `19290` |
-
-### Native Gitignore Setup
-
-The Docker container automatically configures the global gitignore. For native installations, the installer handles this too, but you can verify manually:
-
-```bash
-echo '.pi/memory/' >> ~/.gitignore-global
-echo '.worktrees/' >> ~/.gitignore-global
-echo '.pi/tasks/' >> ~/.gitignore-global
-git config --global core.excludesFile ~/.gitignore-global
-```
+See [Customization and Extension Recipes](customization-recipes.html) for details on project settings and custom agents.
 
 ## Troubleshooting
 
-**Pi won't start in Docker — "permission denied" errors:**
-The container runs as user `node` (UID 1000). If your project files are owned by a different UID, set `PI_HOST_USER=your-username` in the env file so the container maps home directories correctly.
+**"Cannot find pi" after native install**
+Make sure `~/.npm-global/bin` (or your npm prefix) is in your `PATH`. Run `npm config get prefix` to check.
 
-**"uv not found" warning on session start:**
-`uv` is required for Python execution. In Docker it's pre-installed. For native, install with `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+**Container exits immediately**
+Ensure you're running with `-it` (interactive + TTY). Without these flags, the container has no terminal to attach to.
 
-**"gh not found" notification:**
-GitHub CLI is optional but needed for PR/issue workflows. Install it or mount your existing config into the container.
+**"uv: command not found" warning on session start**
+Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`. Pi-config enforces `uv` instead of `pip` for all Python operations.
 
-**Container exits immediately:**
-Ensure you're passing `-it` (interactive + TTY). Without it, pi has no terminal to attach to.
+**GitHub CLI not authenticated**
+Run `gh auth login` on the host (native) or ensure `~/.config/gh` is mounted (Docker). Without it, PR and issue workflows won't work.
 
-**Slow first start:**
-The first run downloads pi-config, companion packages, and npm dependencies. Subsequent starts use cached packages and are much faster. Mount `/tmp/pi-work:/tmp/pi-work:rw` to persist temp files across container restarts.
+**Host file paths don't resolve inside the container**
+Set `PI_HOST_USER=yourusername` in your `.env` file. This creates a symlink from `/home/yourusername` inside the container to the container's home directory, so mounted paths match.
+
+**Startup is slow**
+The container runs `npm install -g` and `pi update` on every start to stay current. This takes a few seconds with a warm cache. Subsequent starts in the same network environment are faster.
 
 ## Related Pages
 
 - [Your First Coding Workflow](first-workflow.html)
 - [Running Pi in a Docker Container](docker-deployment.html)
 - [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Customization and Extension Recipes](customization-recipes.html)
 - [Using Slash Commands and Prompt Templates](slash-commands.html)
-- [Understanding Agent Routing and Delegation](agent-routing.html)

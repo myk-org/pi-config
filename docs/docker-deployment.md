@@ -1,69 +1,21 @@
 # Running Pi in a Docker Container
 
-Run pi inside an isolated Docker container to sandbox the agent's access to your filesystem. The container ensures pi can only read/write your mounted project directory and pi settings — everything else on your host stays protected.
+Run pi-config inside a sandboxed Docker container to get filesystem isolation, consistent tooling, and all dependencies pre-installed — without modifying your host system.
 
 ## Prerequisites
 
-- Docker installed and running on your host
-- A project directory you want pi to work in
-- API credentials for your LLM provider (Vertex AI, Gemini, etc.)
-- A GitHub token (`GITHUB_TOKEN`) for GitHub operations
+- **Docker** (or a compatible runtime like Podman) installed on your host
+- An **LLM provider** configured (e.g., Google Cloud / Vertex AI credentials, or an API key)
+- **Git**, **SSH keys**, and **GitHub CLI** (`gh`) configured on your host
+- An environment file (`.env`) with your API keys and settings (see [Setting up the environment file](#setting-up-the-environment-file) below)
 
-## Quick start
+## Quick Start
+
+Pull the pre-built image and launch a session from any project directory:
 
 ```bash
 docker pull ghcr.io/myk-org/pi-config:latest
 
-docker run --rm -it \
-  --name "pi-config-$(basename $PWD)-$(date +%s)" \
-  --network host \
-  -v "$PWD":"$PWD":rw \
-  -v "$HOME/.pi":"$HOME/.pi":rw \
-  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
-  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
-  -v "$HOME/.ssh":"$HOME/.ssh":ro \
-  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v /tmp/pi-work:/tmp/pi-work:rw \
-  -w "$PWD" \
-  ghcr.io/myk-org/pi-config:latest
-```
-
-This starts an interactive pi session in your current project directory. The container is destroyed when you exit (`--rm`).
-
-## Step 1: Create an environment file
-
-Create `~/.pi/.env` with your credentials and container-specific settings:
-
-```env
-# Timezone (for correct timestamps)
-TZ=America/New_York
-
-# Host username — required when your host user is not "node"
-PI_HOST_USER=youruser
-
-# Google Cloud / Vertex AI
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/youruser/.config/gcloud/application_default_credentials.json
-VERTEX_PROJECT_ID=your-project-id
-VERTEX_REGION=us-east5
-VERTEX_CLAUDE_1M=true
-
-# GitHub
-GITHUB_TOKEN=ghp_xxx
-GITHUB_API_TOKEN=ghp_xxx
-GH_CONFIG_DIR=/home/youruser/.config/gh
-
-# Gemini (optional — enables image generation)
-GEMINI_API_KEY=xxx
-PI_IMAGE_MODEL=gemini-3-pro-image
-```
-
-> **Warning:** Paths in the environment file (like `GOOGLE_APPLICATION_CREDENTIALS`) must use your **container home path** (`/home/<PI_HOST_USER>/...`), not the host path. The `PI_HOST_USER` mechanism creates symlinks so these paths resolve correctly inside the container.
-
-## Step 2: Run with the environment file
-
-```bash
 docker run --rm -it \
   --name "pi-config-$(basename $PWD)-$(date +%s)" \
   --network host \
@@ -74,14 +26,124 @@ docker run --rm -it \
   -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
   -v "$HOME/.ssh":"$HOME/.ssh":ro \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v /tmp/pi-work:/tmp/pi-work:rw \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest
 ```
 
-## Step 3: Set up a shell alias
+On first run, the container installs the latest `pi` and `pi-config` package, then drops you into an interactive pi session. Subsequent starts reuse cached packages and only pull updates.
 
-Add this to your `~/.bashrc` or `~/.zshrc` to start pi from any project directory:
+## Setting Up the Environment File
+
+Create a `.env` file at `~/.pi/.env` (or any path you prefer) with your credentials and configuration:
+
+```env
+# Timezone (match your host for correct timestamps)
+TZ=America/New_York
+
+# Host username — maps /home/<user> paths between host and container
+PI_HOST_USER=yourname
+
+# Google Cloud / Vertex AI
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-east5
+GOOGLE_APPLICATION_CREDENTIALS=/home/yourname/.config/gcloud/application_default_credentials.json
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_REGION=us-east5
+
+# GitHub
+GITHUB_TOKEN=ghp_xxx
+GITHUB_API_TOKEN=ghp_xxx
+GH_CONFIG_DIR=/home/yourname/.config/gh
+
+# Gemini (optional — for image generation)
+GEMINI_API_KEY=xxx
+PI_IMAGE_MODEL=gemini-3-pro-image
+
+# MCP Launchpad config path (must match mount target inside container)
+MCPL_CONFIG_FILES=/home/yourname/.config/mcpl/mcp.json
+```
+
+> **Note:** Paths in the `.env` file should use your **host home directory path** (e.g., `/home/yourname/...`). The `PI_HOST_USER` setting creates symlinks inside the container so these paths resolve correctly.
+
+## Understanding Volume Mounts
+
+Every file the container can access must be explicitly mounted. This is the core of Docker's filesystem isolation.
+
+### Required Mounts
+
+| Mount | Mode | Purpose |
+|-------|------|---------|
+| `-v "$PWD":"$PWD"` | `rw` | Your project directory — the agent reads and writes code here |
+| `-v "$HOME/.pi":"$HOME/.pi"` | `rw` | Pi settings, sessions, memory, and cached packages |
+| `-v "$HOME/.gitconfig":"$HOME/.gitconfig"` | `ro` | Git configuration (name, email, aliases) |
+| `-v "$HOME/.gitignore-global":"$HOME/.gitignore-global"` | `ro` | Global gitignore rules |
+| `-v "$HOME/.ssh":"$HOME/.ssh"` | `ro` | SSH keys for git push/pull over SSH |
+| `-v "$HOME/.config/gh":"$HOME/.config/gh"` | `ro` | GitHub CLI authentication |
+
+### Optional Mounts
+
+Add these for specific features:
+
+| Mount | Mode | Purpose |
+|-------|------|---------|
+| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json"` | `ro` | Google Cloud ADC (for Claude via Vertex AI) |
+| `-v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json"` | `ro` | MCP server config for `mcpl` |
+| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json"` | `ro` | Cursor CLI auth (for ACPX cursor models) |
+| `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli"` | `ro` | GitLab CLI config (auth tokens, host settings) |
+| `-v "$HOME/.agents":"$HOME/.agents"` | `rw` | User-level skills (install/uninstall from container) |
+| `-v "$HOME/.coderabbit":"$HOME/.coderabbit"` | `rw` | CodeRabbit CLI auth and review data |
+| `-v "$HOME/screenshots":"$HOME/screenshots"` | `ro` | Share screenshots/images with the agent |
+
+## Host User Mapping with `PI_HOST_USER`
+
+The container runs as the `node` user (UID 1000) internally. When you mount host directories like `$HOME/.ssh` or `$HOME/.config/gh`, the paths inside the container don't match because the container's home is `/home/node`.
+
+Set `PI_HOST_USER` in your `.env` file to your host username:
+
+```env
+PI_HOST_USER=yourname
+```
+
+The init entrypoint will:
+
+1. Create `/home/yourname` inside the container and symlink it to the container's internal directories
+2. Set `HOME=/home/yourname` so all your host paths (SSH keys, Git config, GCloud credentials) resolve correctly
+3. Reverse-symlink mounted content back to `/home/node` so container tools find everything regardless of which home they check
+
+> **Tip:** If your host UID is also 1000, you can skip `PI_HOST_USER` — paths under `/home/node` will match permission-wise. But if your username differs from `node`, you still need it for path resolution.
+
+## Docker Socket Access
+
+To let pi inspect running containers (via the read-only `docker-safe` wrapper), mount the Docker socket:
+
+```bash
+-v /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+The container's init entrypoint automatically detects the mounted socket and grants the `node` user access using ACLs or group membership — no manual `--group-add` is needed.
+
+For Podman, mount the Podman socket instead:
+
+```bash
+-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro
+```
+
+The `docker-safe` wrapper only allows **read-only inspection commands**: `ps`, `logs`, `inspect`, `top`, `stats`, `port`, `diff`, `images`, `version`, and `info`. All state-modifying commands (`run`, `exec`, `rm`, `build`, etc.) are blocked. See [Command Safety Guards and Enforcement](command-enforcement.html) for details.
+
+## Networking
+
+The `--network host` flag shares your host's network stack with the container. This is needed for:
+
+- **Local MCP servers** — pi connects to MCP servers running on your host
+- **File preview** — agents serve generated HTML files via HTTP for browser access
+- **Pidash dashboard** — the web dashboard listens on port `19190` (accessible at `http://localhost:19190`)
+- **Pidiff viewer** — the diff viewer listens on port `19290`
+
+> **Tip:** If your LLM provider is cloud-based, you don't use local MCP servers, and you don't need the web dashboard or file preview, you can omit `--network host` and use the default bridge network instead.
+
+## Creating a Shell Alias
+
+Add this to your `~/.bashrc` or `~/.zshrc` to launch pi with a single command from any project directory:
 
 ```bash
 alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
@@ -95,141 +157,93 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
   -v "$HOME/.ssh":"$HOME/.ssh":ro \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v /tmp/pi-work:/tmp/pi-work:rw \
+  -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
+  -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
+  -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
+  -v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro \
+  -v "$HOME/.agents":"$HOME/.agents":rw \
+  -v "$HOME/screenshots":"$HOME/screenshots":ro \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -w "$PWD" \
   ghcr.io/myk-org/pi-config:latest'
 ```
 
-Then run from any project:
+Then run `pi-docker` from any project directory. Remove any `-v` lines for mounts you don't need.
 
-```bash
-cd ~/projects/my-app
-pi-docker
-```
+## What's Included in the Image
 
-> **Tip:** The alias pulls the latest image on every run. If you prefer faster startup, remove the `docker pull` line and update manually with `docker pull ghcr.io/myk-org/pi-config:latest`.
+The container ships with all tools pre-installed:
 
-## Understanding the volume mounts
+| Tool | Purpose |
+|------|---------|
+| `pi` | Coding agent (installed/updated on each start) |
+| `git`, `gh`, `glab` | Version control, GitHub CLI, GitLab CLI |
+| `uv` / `uvx` | Python execution (enforced by the orchestrator) |
+| `go` | Go development |
+| `bun` | JavaScript/TypeScript runtime |
+| `kubectl` / `oc` | Kubernetes and OpenShift CLI |
+| `mcpl` | MCP server access |
+| `myk-pi-tools` | PR review, release, and CLI utilities |
+| `acpx` | Agent proxy for remote models |
+| `agent-browser` | Browser automation (Chromium via Playwright) |
+| `docker` / `podman` | Container CLIs (via `docker-safe` read-only wrapper) |
+| `cr` | CodeRabbit CLI for local AI code reviews |
+| `prek` | Pre-commit hook runner |
+| `jq`, `curl` | JSON processing, HTTP requests |
+| `procps` | Process utilities (`ps`, `top`, `pgrep`, `pkill`) |
 
-Every mount serves a specific purpose:
+## What's Protected
 
-| Mount | Mode | Purpose |
-|---|---|---|
-| `$PWD:$PWD` | rw | Your project directory — the only writable workspace |
-| `$HOME/.pi:$HOME/.pi` | rw | Pi settings, sessions, memory, and installed packages |
-| `$HOME/.gitconfig:$HOME/.gitconfig` | ro | Git configuration (user name, email, aliases) |
-| `$HOME/.gitignore-global:$HOME/.gitignore-global` | ro | Global gitignore patterns |
-| `$HOME/.ssh:$HOME/.ssh` | ro | SSH keys for git push/pull |
-| `$HOME/.config/gh:$HOME/.config/gh` | ro | GitHub CLI authentication |
-| `/tmp/pi-work:/tmp/pi-work` | rw | Temp files that persist across container restarts |
+The container cannot access anything outside your mounted volumes:
 
-> **Note:** Read-only (`:ro`) mounts prevent the agent from modifying your host configuration. The container automatically copies `.gitconfig` to a writable location internally so git operations still work.
-
-## How PI_HOST_USER works
-
-The container runs as user `node` (UID 1000) with home directory `/home/node`. When you mount host paths that expand to `/home/youruser/...`, they won't resolve inside the container without help.
-
-Setting `PI_HOST_USER=youruser` tells the init script to:
-
-1. Create symlinks between `/home/youruser` and `/home/node`
-2. Set `HOME` to `/home/youruser` inside the container
-3. Ensure all mounted paths resolve correctly
-
-If you skip this variable, mounts that use `$HOME` expansion may not resolve inside the container.
-
-## Filesystem isolation
-
-The container enforces strict filesystem boundaries:
-
-- **Read-write:** Your project directory (`$PWD`) and pi settings (`~/.pi`)
-- **Read-only:** Git, GitHub, and SSH configuration
-- **Blocked:** All other host directories, other git repos, system files
-
-This means the agent cannot accidentally modify files outside your project or access sensitive data on your host.
-
-## Network mode
-
-The `--network host` flag shares your host's network stack with the container. This is required for:
-
-- Local MCP servers (via `mcpl`)
-- LiteLLM proxy
-- File preview (agents serve generated HTML via a local HTTP server)
-- Pidash and Pidiff web dashboards
-
-If you only use cloud-based LLM providers and don't need local services, you can omit `--network host`.
+- ✅ `$PWD` (your project) — read/write
+- ✅ `~/.pi` (pi settings, sessions, memory) — read/write
+- ✅ Git, GitHub, SSH config — read-only
+- ❌ Other directories on your host — not accessible
+- ❌ Other git repos — not accessible
+- ❌ System files — not accessible
 
 ## Advanced Usage
 
-### Optional mounts
+### Building the Image from Source
 
-Add these mounts to enable additional features:
-
-| Mount | Mode | Purpose |
-|---|---|---|
-| `$HOME/.config/gcloud/application_default_credentials.json` (same path) | ro | Google Cloud ADC for Claude via Vertex AI |
-| `$HOME/.config/mcpl/mcp.json` (same path) | ro | MCP server configuration for `mcpl` |
-| `$HOME/.agents:$HOME/.agents` | rw | User-level skills |
-| `$HOME/.config/cursor/auth.json` (same path) | ro | Cursor CLI auth for acpx models |
-| `$HOME/.config/glab-cli:$HOME/.config/glab-cli` | ro | GitLab CLI config |
-| `$HOME/.coderabbit:$HOME/.coderabbit` | rw | CodeRabbit CLI auth and review data |
-| `$HOME/screenshots:$HOME/screenshots` | ro | Share screenshots/images with the agent |
-| `/var/run/docker.sock:/var/run/docker.sock` | ro | Docker container inspection via `docker-safe` |
-| `/var/run/podman/podman.sock:/var/run/podman/podman.sock` | ro | Podman container inspection via `docker-safe` |
-
-When using `mcpl`, add the config path to your `.env` file too:
-
-```env
-MCPL_CONFIG_FILES=/home/youruser/.config/mcpl/mcp.json
-```
-
-### Docker socket access
-
-To let the agent inspect running containers (read-only), mount the Docker socket:
+> **Note:** The image is built for **linux/amd64** only. On ARM hosts (e.g., Apple Silicon), build with `--platform linux/amd64`.
 
 ```bash
--v /var/run/docker.sock:/var/run/docker.sock:ro \
---group-add $(stat -c '%g' /var/run/docker.sock)
+git clone https://github.com/myk-org/pi-config.git
+cd pi-config
+docker build -t ghcr.io/myk-org/pi-config:latest .
 ```
 
-The init script automatically handles socket permissions — it detects the socket's group ID and either adds the container user to that group or sets an ACL.
-
-The agent uses a restricted `docker-safe` wrapper that only allows read-only commands:
-
-| Allowed | Blocked |
-|---------|---------|
-| `ps`, `logs`, `inspect`, `top`, `stats` | `exec`, `run`, `rm`, `cp` |
-| `port`, `diff`, `images`, `version`, `info` | `build`, `push`, `pull`, `stop`, `kill` |
-
-For Podman, mount the Podman socket instead and set the runtime:
+### Updating the Image
 
 ```bash
--v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro
+docker pull ghcr.io/myk-org/pi-config:latest
 ```
 
-### Dashboard configuration
+The container also runs `pi update` automatically on each start, so you always get the latest pi-config package even without pulling a new image.
 
-Two web dashboards start automatically alongside your pi session. See [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html) for full details on using them.
+### Custom Dashboard and Diff Viewer Ports
 
-| Dashboard | Default Port | Environment Variable | URL |
-|---|---|---|---|
-| Pidash | 19190 | `PI_PIDASH_PORT` | `http://localhost:19190` |
-| Pidiff | 19290 | `PI_PIDIFF_PORT` | `http://localhost:19290` |
-
-To use custom ports or disable either dashboard, add to your `.env`:
+Override the default ports via environment variables:
 
 ```env
-# Custom ports
 PI_PIDASH_PORT=9999
 PI_PIDIFF_PORT=9998
+```
 
-# Or disable entirely
+Or disable them entirely:
+
+```env
 PI_PIDASH_ENABLE=false
 PI_PIDIFF_ENABLE=false
 ```
 
-### External agent providers (acpx)
+See [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html) for more on pidash and pidiff.
 
-To route prompts through external AI agents like Cursor, set `ACPX_AGENTS` in your `.env` and mount the auth file:
+### Using ACPX Agent Providers
+
+To route LLM requests through external agents (Cursor, Claude CLI, Gemini CLI), set `ACPX_AGENTS` in your `.env` and mount the appropriate auth files:
 
 ```env
 ACPX_AGENTS=cursor
@@ -239,166 +253,76 @@ ACPX_AGENTS=cursor
 -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro
 ```
 
-See [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html) for setup details.
+See [Using ACPX Provider for External Agent Models](acpx-provider.html) for setup details.
 
-### Passing arguments to pi
+### Discord Bot in the Container
 
-Any arguments after the image name are forwarded to `pi`:
-
-```bash
-# Run a specific slash command
-docker run --rm -it ... ghcr.io/myk-org/pi-config:latest /implement add retry logic
-
-# Start with a prompt
-docker run --rm -it ... ghcr.io/myk-org/pi-config:latest "fix the failing tests"
-```
-
-### Building from source
+The Discord bot runs inside the pidash daemon. To enable it, create a Discord config file on your host:
 
 ```bash
-git clone https://github.com/myk-org/pi-config.git
-cd pi-config
-docker build -t ghcr.io/myk-org/pi-config:latest .
+cat > ~/.pi/discord.env << 'EOF'
+DISCORD_BOT_TOKEN=your-token-here
+DISCORD_ALLOWED_USERS=your-discord-user-id
+EOF
 ```
 
-> **Note:** The image is built for **linux/amd64** only. On ARM hosts, build with `--platform linux/amd64`.
+Since `~/.pi` is already mounted read/write, the pidash daemon inside the container picks up this file automatically. Run `/pidash restart` in your pi session to activate it. See [Controlling Pi Sessions from Discord](discord-bot.html) for full setup.
 
-### Project settings inside the container
+### Project-Level Settings
 
-Per-project settings in `.pi/pi-config-settings.json` override environment variables for that project. These work identically inside and outside the container:
+Create `.pi/pi-config-settings.json` in your project directory to override defaults per-project:
 
 ```json
 {
   "co_author": true,
   "use_worktrees": false,
-  "dream_interval_hours": 3
+  "dream_interval_hours": 6
 }
 ```
 
 See [Configuration and Environment Variables Reference](configuration-reference.html) for all available settings.
 
-### Complete alias with all optional mounts
-
-Here's a full alias including every optional mount:
-
-```bash
-alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
-  docker run --rm -it \
-  --name "pi-config-$(basename $PWD)-$(date +%s)" \
-  --network host \
-  --env-file "$HOME/.pi/.env" \
-  -v "$PWD":"$PWD":rw \
-  -v "$HOME/.pi":"$HOME/.pi":rw \
-  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
-  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
-  -v "$HOME/.ssh":"$HOME/.ssh":ro \
-  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro \
-  -v "$HOME/.agents":"$HOME/.agents":rw \
-  -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
-  -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
-  -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
-  -v "$HOME/.coderabbit":"$HOME/.coderabbit":rw \
-  -v "$HOME/screenshots":"$HOME/screenshots":ro \
-  -v /tmp/pi-work:/tmp/pi-work:rw \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  --group-add $(stat -c '%g' /var/run/docker.sock) \
-  -w "$PWD" \
-  ghcr.io/myk-org/pi-config:latest'
-```
-
-## Environment variables reference
-
-These are the container-specific variables you can set in your `.env` file. For the complete environment variables reference, see [Configuration and Environment Variables Reference](configuration-reference.html).
-
-| Variable | Required | Description |
-|---|---|---|
-| `PI_HOST_USER` | Yes (if your username ≠ `node`) | Maps host home directory into container |
-| `TZ` | No | Timezone for timestamps (e.g., `America/New_York`) |
-| `GOOGLE_CLOUD_PROJECT` | Provider-dependent | Google Cloud project ID |
-| `GOOGLE_CLOUD_LOCATION` | Provider-dependent | Google Cloud region |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Provider-dependent | Path to ADC JSON (container path) |
-| `VERTEX_PROJECT_ID` | Provider-dependent | Vertex AI project |
-| `VERTEX_REGION` | Provider-dependent | Vertex AI region |
-| `VERTEX_CLAUDE_1M` | No | Enable 1M context for Claude on Vertex |
-| `GITHUB_TOKEN` | Yes | GitHub personal access token |
-| `GITHUB_API_TOKEN` | Yes | GitHub API token (can be same as above) |
-| `GH_CONFIG_DIR` | No | GitHub CLI config directory (container path) |
-| `GEMINI_API_KEY` | No | Gemini API key (for image generation) |
-| `PI_IMAGE_MODEL` | No | Gemini model for image generation |
-| `ACPX_AGENTS` | No | Comma-separated acpx agents (e.g., `cursor`) |
-| `PI_PIDASH_PORT` | No | Pidash dashboard port (default: `19190`) |
-| `PI_PIDIFF_PORT` | No | Pidiff diff viewer port (default: `19290`) |
-| `PI_PIDASH_ENABLE` | No | Set `false` to disable pidash |
-| `PI_PIDIFF_ENABLE` | No | Set `false` to disable pidiff |
-| `PI_CO_AUTHOR` | No | Add co-author trailer to commits |
-| `PI_USE_WORKTREES` | No | Force git worktree workflow |
-| `PI_DREAM_INTERVAL_HOURS` | No | Memory dreaming interval (default: `3`) |
-| `MCPL_CONFIG_FILES` | No | Path to MCP Launchpad config (container path) |
-
-## Pre-installed tools
-
-The container image comes with all tools ready to use:
-
-| Tool | Purpose |
-|---|---|
-| `git`, `gh`, `glab` | Version control, GitHub CLI, GitLab CLI |
-| `uv` / `uvx` | Python package management and execution |
-| `go` | Go development |
-| `node` / `npm` | JavaScript runtime (Node.js 22) |
-| `bun` | Fast JavaScript runtime (required by coms-net) |
-| `kubectl` / `oc` | Kubernetes and OpenShift CLI |
-| `mcpl` | MCP server access |
-| `acpx` | Agent proxy for external AI models |
-| `agent-browser` | Browser automation (Chromium via Playwright) |
-| `docker-safe` | Read-only Docker/Podman inspection wrapper |
-| `cr` | CodeRabbit CLI for local AI code reviews |
-| `prek` | Pre-commit hook runner |
-| `mcp-proxy` | MCP transport proxy |
-| `cursor`, `claude` | External AI agent CLIs |
-| `jq`, `curl` | JSON processing, HTTP requests |
-
-## Container startup lifecycle
-
-On every container start, the entrypoint automatically:
-
-1. Installs/updates pi to the latest version
-2. Installs or updates the `pi-config` package from GitHub
-3. Installs `myk-pi-tools` CLI from the latest source
-4. Registers companion packages (`pi-web-access`, `pi-tasks`)
-5. Copies `.gitconfig` to a writable location (since the mount is read-only)
-6. Configures SSH timeouts for git operations (15s keepalive, 10s connect timeout)
-7. Ensures `.pi/memory/`, `.worktrees/`, and `.pi/tasks/` are in the global gitignore
-8. Starts pi with any arguments you passed
-
-This means you always get the latest version of pi and all extensions on every session.
-
 ## Troubleshooting
 
-### Mounted paths don't resolve inside the container
+### Container exits immediately on start
 
-Make sure `PI_HOST_USER` in your `.env` file matches your host username exactly. Without it, paths like `/home/youruser/.ssh` won't resolve because the container's default home is `/home/node`.
+Check that your `.env` file path is correct in `--env-file`. A missing file causes Docker to fail silently. Verify with:
 
-### Permission denied on mounted files
+```bash
+docker run --rm -it --env-file "$HOME/.pi/.env" ghcr.io/myk-org/pi-config:latest echo "env loaded"
+```
 
-The container runs as user `node` (UID 1000). If your host files are owned by a different UID, you may see permission errors. Ensure your host user's UID is 1000, or adjust file permissions on the host.
+### Permission denied on mounted volumes
 
-### Container can't reach local services
+The container runs as user `node` (UID 1000). If your host UID differs, mounted files may not be readable. Ensure your SSH keys and config files are world-readable or owned by UID 1000:
 
-Make sure you included `--network host` in your `docker run` command. Without it, the container has its own network namespace and can't reach services on `localhost`.
+```bash
+chmod 644 ~/.gitconfig
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/id_*
+```
 
-### Git push/pull hangs
+### `WARNING` about packages on startup
 
-The container sets SSH keepalive and connection timeouts automatically (15-second keepalive interval, 10-second connection timeout). If git operations still hang, check that your SSH keys are correctly mounted at `$HOME/.ssh` with `:ro` mode.
+A warning about already-cached packages during startup is normal. The entrypoint runs `pi install` / `pi update` on every start. If the warning persists or you see errors, check your network connection — the container needs internet access to fetch packages.
 
-### Startup WARNING about cached packages
+### Git push/pull fails with SSH errors
 
-A `WARNING` on stderr during startup is normal when pi-config is already cached in `~/.pi`. The container runs `pi install` and `pi update` on every start to stay current. If pi misbehaves, verify your network connectivity.
+Verify your SSH agent is running on the host and keys are loaded. The container mounts `~/.ssh` read-only but cannot access the host's SSH agent socket by default. Add the agent socket mount:
+
+```bash
+-v "$SSH_AUTH_SOCK":"$SSH_AUTH_SOCK":ro \
+-e SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
+```
+
+### Host paths don't resolve inside the container
+
+Make sure `PI_HOST_USER` in your `.env` matches your host username exactly. The container creates a `/home/<PI_HOST_USER>` directory with symlinks so that paths like `/home/yourname/.config/gh` work inside the container.
 
 ## Related Pages
 
 - [Installing and Starting Your First Session](quickstart.html)
 - [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
 - [Command Safety Guards and Enforcement](command-enforcement.html)
-- [Using ACPX Provider for External Agent Models](acpx-provider.html)
+- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
+- [Controlling Pi Sessions from Discord](discord-bot.html)

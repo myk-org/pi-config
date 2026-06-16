@@ -71,9 +71,10 @@ Or use a full URL:
 /pr-review https://github.com/owner/repo/pull/42
 ```
 
-This fetches the PR diff and the project's AGENTS.md, then sends both to all three code review agents in parallel. After analysis, pi presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION) and lets you choose which to post as inline GitHub comments.
+This clones the PR's repository, checks past review comments from previous cycles, then sends all three code review agents in parallel — each with full repo access. Reviewers independently read the project's AGENTS.md (or CLAUDE.md) for guideline compliance. After analysis, pi presents findings grouped by severity (CRITICAL, WARNING, SUGGESTION) and lets you choose which to post as inline GitHub comments. Posted comments are stored in a local database for tracking across review cycles.
 
 - Requires `gh` CLI to be authenticated
+- Past review comments (resolved and unresolved) are verified against the current diff
 - See [Using Slash Commands and Prompt Templates](slash-commands.html) for all command variants
 
 ---
@@ -197,7 +198,7 @@ Polish your in-progress GitHub review comments with AI before submitting.
 /refine-review https://github.com/owner/repo/pull/42
 ```
 
-This fetches your pending (unsubmitted) review comments from the PR, uses the diff context to generate refined versions that are clearer and more actionable, presents original vs. refined side-by-side, and lets you accept, reject, or customize each refinement. Optionally submits the review as "Request Changes".
+This fetches your pending (unsubmitted) review comments from the PR, uses the diff context to generate refined versions that are clearer and more actionable, presents original vs. refined side-by-side, and lets you accept, reject, or customize each refinement. Optionally submits the review as "Request Changes". If submitted, comments are stored in the PR review database for future cycle tracking.
 
 - You must have a pending review on the PR (started via GitHub UI but not yet submitted)
 - You can provide custom replacement text for any comment during the approval step

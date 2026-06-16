@@ -80,10 +80,13 @@ Reviews a GitHub PR using three parallel reviewers and posts inline comments.
 ```
 
 **Workflow:**
-1. Fetches the PR diff and project rules (AGENTS.md)
-2. Runs three reviewers in parallel (quality, guidelines, security)
-3. Presents findings grouped by severity (CRITICAL → WARNING → SUGGESTION)
-4. Lets you choose which findings to post as inline comments
+1. Clones the PR's repo and checks out the PR branch (reviewers get full repo access)
+2. Checks past review comments — verifies whether previously posted comments were addressed, resolved correctly, or still unresolved
+3. Runs three reviewers in parallel (quality, guidelines, security) — each reviewer reads project guidelines (AGENTS.md/CLAUDE.md) independently
+4. Merges and deduplicates findings from all reviewers and past comment analysis
+5. Presents findings grouped by severity (CRITICAL → WARNING → SUGGESTION), including past unresolved and incorrectly resolved comments
+6. Lets you choose which findings to post as inline comments
+7. Stores posted comments in a local database for tracking across review cycles
 
 > **Tip:** Tab-completion is available — press Tab after `/pr-review` to see open PRs.
 
@@ -178,6 +181,8 @@ Refines your pending GitHub PR review comments with AI before submitting.
 ```
 
 Fetches your unsubmitted review comments, generates improved versions, and shows side-by-side comparisons. You pick which refinements to accept, optionally submit with "Request Changes," and the command updates comments on GitHub.
+
+When the review is submitted, comments are automatically stored in the local PR review database — enabling future `/pr-review` runs to track which comments were posted and verify they were addressed.
 
 ### /query-db — Query the Reviews Database
 
@@ -354,7 +359,7 @@ Most commands support Tab-completion for arguments. Press Tab after the command 
 | `/external-ai` | Provider names, flags (`--fix`, `--peer`, `--model`), model IDs |
 | `/pr-review` | Open PR numbers with titles |
 | `/review-local` | Git branch names |
-| `/release` | Recent git tags, flags (`--dry-run`, `--prerelease`, `--draft`, `--target`) |
+| `/release` | Recent git tags, flags (`--dry-run`, `--prerelease`, `--draft`, `--target`, `--tag-match`) |
 | `/review-handler` | `--autorabbit`, `--autoqodo` |
 | `/coderabbit-rate-limit` | Open PR numbers |
 | `/cron` | Subcommands (`add`, `list`, `remove`), task IDs for removal |
@@ -519,5 +524,5 @@ For the full command reference with all arguments and options, see [Slash Comman
 - [Slash Commands and Extension Commands Reference](commands-reference.html)
 - [Common Workflow Recipes](workflow-recipes.html)
 - [Your First Coding Workflow](first-workflow.html)
-- [Running the Automated Code Review Loop](code-review-loop.html)
 - [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
+- [Customization and Extension Recipes](customization-recipes.html)

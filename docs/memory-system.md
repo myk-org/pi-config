@@ -1,189 +1,250 @@
 # Working with Project Memory
 
-Teach pi what matters in your project — your preferences, lessons learned, and conventions — so it remembers across sessions and gets smarter over time.
+Teach pi your preferences, lessons learned, and project conventions so it remembers them across sessions. The memory system scores each entry by how often you reinforce it, automatically decays stale knowledge, and injects the most relevant memories into every conversation.
 
-- You need a pi session running in a git repository (pi stores memory under `.pi/memory/`)
-- Memory works automatically once you start talking — but knowing the tools gives you full control
+## Prerequisites
+
+- A pi session running in an initialized project (a `.pi/` directory will be created automatically)
+- No extra setup — memory works out of the box in every session
 
 ## Quick Example
 
-Tell pi to remember something, and it persists across sessions:
+Tell pi something worth remembering:
 
 ```
-/remember Always run tests with --no-cache flag
+/remember Always run tests with --verbose flag in this project
 ```
 
-Or say it naturally in conversation — pi detects preference statements automatically:
+Or just say it naturally in conversation — pi auto-detects preference statements like "I prefer," "always use," or "never":
 
 ```
-I prefer using pnpm over npm for this project
+I prefer short commit messages, one line max
 ```
 
-Both approaches create memory entries that pi recalls in future sessions.
+Both approaches store the memory and recall it in future sessions automatically.
 
-## How Memory Categories Work
+## How Memories Are Organized
 
-Every memory entry belongs to one of six categories:
+Memories are stored in topic files under `.pi/memory/topics/`, one file per category:
 
-| Category | What it stores | How long it lasts |
-|----------|---------------|-------------------|
-| `preference` | How you like things done | 90 days (slow decay) |
-| `lesson` | Gotchas, tips, how things work | 60 days |
-| `pattern` | Recurring approaches, conventions | 30 days |
-| `decision` | Architectural or design choices | 30 days |
-| `done` | Completed tasks, merged PRs | 14 days (fast decay) |
-| `mistake` | Things that went wrong | 14 days |
+| Category | File | What to store | Decay half-life |
+|----------|------|---------------|-----------------|
+| `preference` | `preferences.md` | How the user likes things done | 90 days |
+| `lesson` | `lessons.md` | Gotchas, tips, how things work | 60 days |
+| `pattern` | `patterns.md` | Recurring conventions or approaches | 30 days |
+| `decision` | `decisions.md` | Architectural or design choices | 30 days |
+| `done` | `completions.md` | Completed features, merged PRs | 14 days |
+| `mistake` | `mistakes.md` | Things that went wrong, to avoid | 14 days |
 
-> **Note:** Decay doesn't mean deletion — it means lower priority. Memories you reinforce stay strong. Pinned memories never decay.
+Each entry is a single short line — specific, actionable, and max ~100 characters:
 
-## Searching and Recalling Memories
+```markdown
+# Lessons
 
-Pi automatically recalls relevant memories before every response. You can also ask it directly:
-
-```
-What do you remember about our Docker setup?
-```
-
-Pi will use `memory_search` behind the scenes to find matching entries. Results combine keyword matching and semantic (vector) similarity search — so even paraphrased queries find the right memories.
-
-You can search by category too:
-
-```
-Search my memories for lessons about CI/CD
+- [lesson] buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid instead
+- [lesson] Always check PR merge status before closing issues
 ```
 
 ## Adding Memories
 
-### Explicit — You Tell Pi to Remember
+You have three ways to add memories, depending on the situation.
 
-Use the `/remember` command for important things you never want pi to forget:
+### 1. The `/remember` command
+
+Use this for anything you explicitly want pi to keep. Memories added this way are **pinned** — they never decay and dreaming never removes them:
 
 ```
-/remember Use port 8443 for the dev server, not 8080
+/remember This repo uses pnpm, not npm
+/remember Deploy to staging before production — always
 ```
 
-This creates a **pinned** entry that never decays and is protected from automatic cleanup.
+### 2. Natural conversation
 
-### Proactive — Pi Remembers on Its Own
+Pi automatically detects preference statements in your messages. Phrases like "I prefer," "always use," "from now on," and "please never" trigger auto-extraction:
 
-Pi adds memories automatically when it notices something worth saving:
+```
+From now on, use single quotes in TypeScript files
+I always want error messages in English
+```
 
-| What happens | Category pi uses |
-|-------------|-----------------|
-| You correct pi | `lesson` |
-| A fix attempt fails | `mistake` |
-| You say "don't do X" or "always do Y" | `preference` |
-| A PR gets merged | `done` |
-| Pi notices a recurring pattern | `pattern` |
-| An architectural decision is made | `decision` |
+> **Tip:** Auto-extracted preferences are learned (not pinned), so they'll decay if never reinforced. Say `/remember` if you want them permanent.
 
-### Auto-extraction — Pi Detects Your Preferences
+### 3. The CLI
 
-When you say things like "I prefer...", "always use...", "never...", or "from now on...", pi automatically extracts and saves them as preferences. No explicit command needed.
-
-### CLI — Manage Memory from the Terminal
+For scripting or manual management outside a pi session:
 
 ```bash
-# Add a memory
-uv run myk-pi-tools memory add -c lesson -s "buildah chown -R breaks cache mounts"
+# Add a learned memory
+uv run myk-pi-tools memory add -c lesson -s "Run migrations before deploying"
 
-# Add a pinned memory
-uv run myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
+# Add a pinned memory (never auto-removed)
+uv run myk-pi-tools memory add -c preference -s "Use uv, not pip" --pinned
+```
 
-# Remove a memory
-uv run myk-pi-tools memory forget -c lesson -s "buildah chown -R breaks cache mounts"
+## Viewing Your Memories
 
-# Show all memories
+Inside a pi session, ask pi to list your memory topics:
+
+```
+What's in my project memory?
+```
+
+Pi will call `memory_topics` and show you each topic file with its entry count and activity level.
+
+From the CLI:
+
+```bash
 uv run myk-pi-tools memory show
-
-# Print the memory directory path
-uv run myk-pi-tools memory path
 ```
 
-## Where Memories Are Stored
+## How Memories Reach Pi Automatically
 
-Memories live in your project under `.pi/memory/topics/` as simple Markdown files:
+You don't need to manually search memory before every question — three auto-injection mechanisms handle this:
+
+1. **Situation report** — A token-budgeted summary of your highest-scored memories is always included in pi's system prompt. Preferences and lessons get top priority.
+
+2. **Contextual memory recall** — When you send a message, pi runs a vector similarity search against your memories. Entries with high relevance appear automatically as context.
+
+3. **Session history recall** — Pi also searches past conversation summaries by keyword, surfacing relevant discussions from previous sessions.
+
+4. **File-change reminders** — After pi modifies files, it checks if any memories relate to those files and surfaces them as reminders.
+
+> **Note:** Trivial messages like "ok," "thanks," or emoji-only responses skip the search — no wasted computation.
+
+## Searching Memory Manually
+
+When you need to look something up from a past session or check what pi remembers about a topic, just ask:
 
 ```
-.pi/memory/
-├── memory-scores.json          # Scoring data (auto-managed)
-├── embeddings.json             # Vector embeddings (auto-managed)
-└── topics/
-    ├── preferences.md          # [preference] entries
-    ├── lessons.md              # [lesson] entries
-    ├── patterns.md             # [pattern] entries
-    ├── decisions.md            # [decision] entries
-    ├── completions.md          # [done] entries
-    └── mistakes.md             # [mistake] entries
+What do you remember about our Docker setup?
+Search memory for "deployment"
 ```
 
-Each topic file is human-readable Markdown:
+Pi will use `memory_search` (hybrid keyword + vector search) to find matching entries. You can also ask pi to search past conversations:
 
-```markdown
-# Preferences
-
-- [preference] Always use pnpm over npm *(pinned)*
-- [preference] Prefers concise responses
+```
+What did we discuss about the API refactor last week?
 ```
 
-> **Tip:** You can edit these files directly — pi reads them as the source of truth on every session start.
+## Removing and Editing Memories
 
-## Memory Scoring and Decay
+### Remove an outdated memory
 
-Every memory has a stability score that determines whether it appears in pi's context. The score decays over time unless reinforced.
+```
+Remove the memory about Python 3.11 from lessons
+```
 
-**What keeps memories alive:**
+Or from the CLI:
 
-- **Reinforcement** — when pi notices a memory is relevant to the current task, it bumps the evidence count, resetting the decay clock
-- **Pinning** — pinned entries have a fixed score of 9999 and never decay
-- **Repetition** — if you state a preference that already exists, pi reinforces it automatically
+```bash
+uv run myk-pi-tools memory forget -c lesson -s "Project uses Python 3.11"
+```
 
-**Lifecycle states:**
+### Edit a memory in place
 
-| State | What it means |
-|-------|--------------|
-| `active` | Included in pi's context every turn |
-| `provisional` | Overflow — included only when budget allows |
-| `candidate` | Low priority — at risk of being dropped |
-| `dropped` | No longer injected into context |
+Ask pi to update a memory without losing its scoring history:
 
-Per-category budgets keep memory focused: 8 entries max for preferences and lessons, 6 for patterns, 4 each for decisions, completions, and mistakes. A total cap of 40 active entries prevents context overload.
+```
+Update the lesson about Docker caching — change it to "Use buildkit cache mounts with --mount=type=cache"
+```
 
-## Dreaming — Background Memory Consolidation
+Pi uses `memory_edit` to replace the text while preserving the evidence count and score.
 
-Dreaming is pi's way of processing memories in the background — deduplicating entries, removing stale information, and extracting new knowledge from past sessions.
+### Invalidate a superseded memory
 
-### When Dreaming Runs
+```
+The decision about using REST is outdated — we switched to gRPC. Invalidate it.
+```
 
-- **Automatically** every 3 hours (configurable)
-- **On session shutdown** when you quit pi
-- **On demand** with the `/dream` command
+## Pinned vs Learned Memories
 
-### Manual Trigger
+| | Pinned | Learned |
+|---|---|---|
+| **Created by** | `/remember`, `--pinned` flag, or `memory_add` with `pinned: true` | Auto-extraction, dreaming, pi's proactive writes |
+| **Decays?** | Never (score = 9999) | Yes — based on category half-life |
+| **Removed by dreaming?** | Never | Yes — if stale or redundant |
+| **When to use** | Critical preferences, permanent rules | Everything else |
+
+> **Tip:** Don't over-pin. Let learned memories decay naturally — if something is important, it gets reinforced through use and stays alive on its own.
+
+## Understanding Scores and Decay
+
+Every learned memory has a stability score that decreases over time unless reinforced. The formula combines three factors:
+
+- **Recency** — how recently the memory was last reinforced (exponential decay based on category half-life)
+- **Evidence** — how many times the memory has been reinforced (logarithmic growth)
+- **Cue weight** — how the memory was created (explicit user statements score highest)
+
+Memories move through lifecycle states as their score changes:
+
+| State | Meaning |
+|---|---|
+| **Active** | Included in the situation report, injected into prompts |
+| **Provisional** | Overflow — included if budget allows |
+| **Candidate** | Low score, at risk of being dropped |
+| **Dropped** | Below threshold, no longer injected |
+
+Pi automatically reinforces memories it notices are relevant to the current task. You can also reinforce manually:
+
+```
+That lesson about cache mounts was really helpful — reinforce it
+```
+
+## Memory Capacity
+
+The situation report header shows your current usage:
+
+```
+# Project Memory [72% — 1,224/1,700 tokens]
+```
+
+- **Below 80%** — Add memories freely
+- **Above 80%** — Pi warns you to consolidate before adding more
+
+When you're running out of space, ask pi to consolidate:
+
+```
+Consolidate my memories
+```
+
+Pi will review all entries, merge duplicates, remove contradictions, and clean up stale information. You can also remove entries manually to free space.
+
+> **Note:** Each topic file is capped at approximately 3,000 tokens. If a single category gets too large, you'll need to remove or consolidate entries before adding more.
+
+## Advanced Usage
+
+### Dreaming: Background Memory Consolidation
+
+Dreaming is a background process that reviews your session history, extracts useful knowledge, and cleans up memory — all without blocking your session.
+
+**Automatic dreaming** runs on two schedules:
+- Every 3 hours (configurable) — a background agent reads past sessions and extracts durable knowledge
+- On session shutdown — a lightweight pass captures anything from the ending session
+
+**Manual dreaming:**
 
 ```
 /dream
 ```
 
-This runs memory consolidation as a background agent — it never blocks your session.
-
-### Toggle Auto-Dreaming
+**Toggle automatic dreaming:**
 
 ```
-/dream-auto off    # Disable automatic dreaming
+/dream-auto off    # Disable auto-dreaming
 /dream-auto on     # Re-enable it
-/dream-auto        # Check current status
 ```
 
-### What Dreaming Does
+The status bar shows a 🌙 icon — highlighted when a dream is actively running.
 
-1. Reads session transcripts and extracts durable knowledge
-2. Adds new entries to the appropriate topic files
-3. Deduplicates and removes stale entries
-4. Generates reusable skills from recurring multi-step workflows
+#### What dreaming does
+
+1. Reads the current session and recent past sessions
+2. Extracts lessons, corrections, completed work, and preferences
+3. Deduplicates and cleans up existing topic files
+4. Auto-generates reusable skills from recurring multi-step workflows
 5. **Never** touches pinned entries
 
-### Configuring the Dream Interval
+#### Configuring dream frequency
 
 Set the interval in `.pi/pi-config-settings.json`:
 
@@ -201,153 +262,90 @@ export PI_DREAM_INTERVAL_HOURS=6
 
 Valid range: 0.5 to 24 hours. Default: 3 hours.
 
-> **Note:** Project settings take priority over environment variables. See [Configuration and Environment Variables Reference](configuration-reference.html) for all settings.
+> **Note:** A separate scoring rebuild runs every 30 minutes (no LLM cost — it just recalculates stability scores and reorganizes entries).
 
-## Capacity Management
+### Duplicate Detection with Vector Embeddings
 
-The situation report header shows your current memory usage:
+When pi adds a memory, it checks for near-duplicates using vector similarity (threshold: 0.85). If you try to add "Always use pnpm" and "Use pnpm, not npm" already exists, pi reinforces the existing entry instead of creating a duplicate.
 
-```
-# Project Memory [72% — 1,224/1,700 tokens]
-```
+This runs locally using an in-process embedding model — no API keys, no network calls. The first search in a session may take a moment to initialize the model; subsequent searches are near-instant (~2.5ms).
 
-The total budget is 1,700 tokens by default, dynamically adjusted based on how much of the system prompt is used by rules and other context.
+Embeddings are stored in `.pi/memory/embeddings.json` and managed automatically.
 
-### When Memory Gets Full
+### Memory Quality Guidelines
 
-When usage exceeds 80%, pi shows a warning:
+Write memories that are specific and actionable — not vague observations:
 
-```
-> ⚠️ Memory above 80% capacity. Before adding new entries, consolidate or
-> remove existing ones using memory_remove.
-```
-
-**To free up space:**
-
-1. Ask pi to consolidate memories:
-   ```
-   Consolidate my project memory — find duplicates and remove stale entries
-   ```
-
-2. Remove specific outdated entries:
-   ```
-   Remove the memory about Python 3.11, we upgraded to 3.12
-   ```
-
-3. Run dreaming to auto-clean:
-   ```
-   /dream
-   ```
-
-### Topic File Size Limits
-
-Each topic file is capped at ~3,000 tokens (12,000 characters). If you hit this limit on a specific category, pi will prompt you to consolidate or remove entries before adding new ones.
-
-## Advanced Usage
-
-### Memory Editing
-
-Pi can update memories in place without losing scoring history:
-
-```
-Update my memory about the dev server port — it changed from 8443 to 9090
-```
-
-This preserves the evidence count and reinforcement history of the original entry, unlike a remove-then-add which starts fresh.
-
-Pi can also invalidate superseded memories:
-
-```
-The memory about using webpack is outdated — we switched to vite
-```
-
-### Memory Reflection
-
-Ask pi to synthesize an answer from its memories rather than returning raw entries:
-
-```
-What do you remember about how our deployment pipeline works?
-```
-
-Pi searches across all topic files using both keyword and vector similarity, then composes a coherent answer from the matching entries.
-
-### Session History Search
-
-Beyond topic-based memory, pi indexes summaries of past conversations. When you reference something from a previous session, pi automatically searches these summaries and injects relevant snippets — at zero LLM cost.
-
-You can also search explicitly:
-
-```
-What did we discuss about the database migration last week?
-```
-
-Session summaries are stored in `.pi/data/session-search.json` and indexed on session shutdown.
-
-### Contextual Memory Auto-Injection
-
-Three mechanisms inject memory into pi's context automatically on every turn:
-
-1. **Situation Report** — a token-budgeted summary of scored memories, always present at the top of pi's context
-2. **Contextual Memory Recall** — vector similarity search against your current message, injecting entries with similarity > 0.65
-3. **File-Change Reminders** — after pi modifies files, it searches for memories related to those file paths and surfaces relevant ones
-
-> **Tip:** Trivial messages like "ok", "thanks", or emoji skip vector search to avoid wasted computation.
-
-### Vector Embeddings
-
-Memory search uses a local embedding model (`Xenova/bge-small-en-v1.5`, 384 dimensions) that runs entirely in-process — no API keys needed, no network calls. The model downloads automatically on first use (~50MB).
-
-Embeddings are stored in `.pi/memory/embeddings.json` and created automatically when memories are added. On first search after upgrading, pi migrates existing entries that don't have embeddings yet.
-
-### Retrieval Telemetry
-
-Pi logs which memories were injected and whether they were actually used in the response. This data lives in `.pi/data/memory-telemetry.jsonl` and helps track memory effectiveness over time.
-
-### Cold Topic Archival
-
-Topics that haven't been reinforced for 2× their half-life are archived automatically (deleted). For example, a completions topic with no reinforcement for 28 days is removed. Pinned entries are never archived.
-
-### Writing Good Memory Entries
-
-| ❌ Avoid | ✅ Prefer |
-|----------|----------|
+| ❌ Bad | ✅ Good |
+|--------|---------|
 | "We had issues with Docker caching" | "buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid" |
-| "The integration was incomplete" | "Never close issues with unchecked deliverables in Done section" |
+| "The memory system was incomplete" | "Never close issues with unchecked deliverables in Done section" |
 | "User prefers a certain approach" | "Attach child processes to pi (no detached:true) — kills on exit" |
 
 Rules of thumb:
-- **One line only** — max ~100 characters
-- **Specific and actionable** — concrete "do X" or "don't do Y"
-- **No fluff** — no context, background, or explanation
+- One line, ~100 characters max
+- Concrete "do X" or "don't do Y" — not background explanations
+- No fluff, no context, just the fact
+
+### Skill Creation from Memory Patterns
+
+When dreaming detects a multi-step workflow that recurs across entries (3+ steps), it can auto-generate a **skill** — a reusable procedure saved as a file. You can also create skills manually:
+
+```
+/create-skill deploy-staging
+```
+
+This extracts the workflow from the current conversation and saves it for future sessions. See [Customization and Extension Recipes](customization-recipes.html) for details.
+
+### Per-Category Budget Caps
+
+The scoring system enforces per-category limits to keep memory balanced:
+
+| Category | Max active entries |
+|----------|-------------------|
+| `preference` | 8 |
+| `lesson` | 8 |
+| `pattern` | 6 |
+| `decision` | 4 |
+| `done` | 4 |
+| `mistake` | 4 |
+
+There's an additional overflow pool of 6 entries for provisional items, and a hard cap of 40 total active entries. Entries beyond these limits are demoted to lower lifecycle states.
+
+### Retrieval Telemetry
+
+Pi logs which memories are injected and whether they were actually used in responses. This data lives at `.pi/data/memory-telemetry.jsonl` and helps you understand which memories are providing value.
 
 ## Troubleshooting
 
-**Memories aren't showing up in pi's context**
+**Memory not showing up in pi's responses**
 
-- Check capacity: if memory is at 100%, lower-priority entries are dropped. Remove or consolidate entries.
-- Verify the entry exists: `uv run myk-pi-tools memory show`
-- The entry may have decayed to `dropped` state — reinforce it by asking pi about the topic.
+- Check that the entry is in the right topic file: `uv run myk-pi-tools memory show`
+- The entry may have decayed below the active threshold — ask pi to search for it and reinforce it
+- Scoring rebuilds run every 30 minutes; a freshly added entry should be active immediately
 
-**Vector search isn't finding relevant memories**
+**"Topic would exceed size limit" error**
 
-- On first run, the embedding model downloads (~50MB). If it fails, pi falls back to keyword-only search.
-- Check that `.pi/memory/embeddings.json` exists. If corrupted, delete it — pi rebuilds it on next search.
+- A single topic file has reached its ~3,000-token cap
+- Remove outdated entries with `memory_remove` or ask pi to consolidate
+- Run `/dream` to trigger automatic cleanup
 
-**Dreaming isn't running**
+**Memory capacity at 80%+**
 
-- Check status: `/dream-auto` (shows enabled/disabled)
-- Dreaming is disabled in one-shot modes (`print`, `json`) — it only runs in interactive sessions.
-- The dream interval may be too long. Check `.pi/pi-config-settings.json` or set `PI_DREAM_INTERVAL_HOURS`.
+- Ask pi: "Consolidate my memories"
+- Remove completed work entries (`done` category) that are no longer relevant
+- Check if duplicate entries exist across topics
 
-**Memory entries seem duplicated**
+**Auto-extracted preferences you didn't intend**
 
-- Run `/dream` to trigger consolidation, which deduplicates entries.
-- Or ask pi directly: "Consolidate my project memory — find and merge duplicates."
+- Pi detects phrases like "I always" even in casual statements
+- Remove unwanted entries: ask pi to remove the specific memory
+- Auto-extracted entries are learned (not pinned), so they'll decay on their own if never reinforced
 
 ## Related Pages
 
 - [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
 - [Using Slash Commands and Prompt Templates](slash-commands.html)
 - [Customization and Extension Recipes](customization-recipes.html)
-- [myk-pi-tools CLI Reference](cli-reference.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)

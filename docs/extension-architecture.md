@@ -251,6 +251,8 @@ Here is the order hooks fire during a typical session:
 - Inject co-author trailers into git commits
 - Strip timeouts from long-running poll commands
 
+> **Note:** This is a representative sample. The full enforcement ruleset — including blocking sleep loops, direct docker/podman CLI in containers, memory writes from subagents, and git hooks bypass — is documented in [Command Safety Guards and Enforcement](command-enforcement.html).
+
 **`turn_end`** — Post-turn analysis:
 - Update git status in the status bar
 - Check modified files against memory for contextual reminders
@@ -403,12 +405,13 @@ To create a **standalone extension** (separate from the orchestrator):
 - [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html) — the memory injection pipeline in `before_agent_start`
 - [Configuration and Environment Variables Reference](configuration-reference.html) — settings that control extension behavior (`PI_PIDASH_ENABLE`, `PI_DREAM_INTERVAL_HOURS`, etc.)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — how `registerAsyncAgents` and `registerCron` work from the user's perspective
+- [Command Safety Guards and Enforcement](command-enforcement.html) — full enforcement ruleset applied by the `tool_call` hook
 - [Customization and Extension Recipes](customization-recipes.html) — step-by-step guides for adding agents, commands, and project settings
 
 ## Related Pages
 
 - [Orchestrator Rules Reference](rules-reference.html)
 - [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Command Safety Guards and Enforcement](command-enforcement.html)
 - [Specialist Agents Reference](agents-reference.html)
+- [Command Safety Guards and Enforcement](command-enforcement.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)

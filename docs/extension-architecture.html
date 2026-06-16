@@ -682,6 +682,9 @@ registerSessionSearch(pi)
 <li>Inject co-author trailers into git commits</li>
 <li>Strip timeouts from long-running poll commands</li>
 </ul>
+<blockquote>
+<p><strong>Note:</strong> This is a representative sample. The full enforcement ruleset — including blocking sleep loops, direct docker/podman CLI in containers, memory writes from subagents, and git hooks bypass — is documented in <a href="command-enforcement.html">Command Safety Guards and Enforcement</a>.</p>
+</blockquote>
 <p><strong><code>turn_end</code></strong> — Post-turn analysis:</p>
 <ul>
 <li>Update git status in the status bar</li>
@@ -899,15 +902,16 @@ registerSessionSearch(pi)
 <li><a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a> — the memory injection pipeline in <code>before_agent_start</code></li>
 <li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a> — settings that control extension behavior (<code>PI_PIDASH_ENABLE</code>, <code>PI_DREAM_INTERVAL_HOURS</code>, etc.)</li>
 <li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> — how <code>registerAsyncAgents</code> and <code>registerCron</code> work from the user's perspective</li>
+<li><a href="command-enforcement.html">Command Safety Guards and Enforcement</a> — full enforcement ruleset applied by the <code>tool_call</code> hook</li>
 <li><a href="customization-recipes.html">Customization and Extension Recipes</a> — step-by-step guides for adding agents, commands, and project settings</li>
 </ul>
 <h2 id="related-pages_1">Related Pages</h2>
 <ul>
 <li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
 <li><a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a></li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
-<li><a href="command-enforcement.html">Command Safety Guards and Enforcement</a></li>
 <li><a href="agents-reference.html">Specialist Agents Reference</a></li>
+<li><a href="command-enforcement.html">Command Safety Guards and Enforcement</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
 </ul>
                 </div>
             </article>
@@ -971,7 +975,7 @@ registerSessionSearch(pi)
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

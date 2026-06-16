@@ -295,52 +295,19 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="command-safety-guards-and-enforcement">Command Safety Guards and Enforcement</h1>
-<p>Pi's enforcement system intercepts every <code>bash</code> tool call before execution, applying a layered set of safety guards that protect your environment from accidental damage, security risks, and workflow anti-patterns. Whether you're running pi in a container or natively, these guards prevent common mistakes — staging the wrong files, committing to protected branches, executing remote scripts, or running destructive commands without confirmation.</p>
-<p>Understanding these guardrails helps you work <em>with</em> the system rather than against it. When a command is blocked, pi tells you exactly why and what to do instead.</p>
+<p>Pi operates with full access to your shell, file system, and git history. That power requires guardrails. The enforcement system is a set of runtime checks that intercept every <code>bash</code> command before it executes — blocking dangerous patterns, protecting git branches, and preventing common mistakes that could damage your environment or waste resources.</p>
+<p>You don't need to configure enforcement — it's always active. But understanding what it blocks (and why) helps you work with the guardrails instead of fighting them.</p>
 <h2 id="how-enforcement-works">How Enforcement Works</h2>
-<p>The enforcement system is registered as a <code>tool_call</code> event handler in the orchestrator extension. Every time pi (or a specialist agent) attempts to run a bash command, the handler inspects the command string and either:</p>
+<p>Every time pi (or any specialist agent) calls the <code>bash</code> tool, the command passes through a chain of checks in <code>enforcement.ts</code>. Each check can:</p>
 <ul>
-<li><strong>Allows</strong> it — execution proceeds normally</li>
-<li><strong>Blocks</strong> it — returns an error message explaining why and what to do instead</li>
-<li><strong>Prompts for confirmation</strong> — asks the user before proceeding (dangerous commands only)</li>
+<li><strong>Allow</strong> the command (no interference)</li>
+<li><strong>Block</strong> the command with an error message explaining what to do instead</li>
+<li><strong>Prompt for confirmation</strong> (dangerous commands only, when a UI is available)</li>
+<li><strong>Silently modify</strong> the command (co-author trailers, timeout stripping — rare cases)</li>
 </ul>
-<table>
-<thead>
-<tr>
-<th>Step</th>
-<th>What Happens</th>
-<th>Example</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1. Command intercepted</td>
-<td><code>tool_call</code> event fires for every <code>bash</code> invocation</td>
-<td><code>git add .</code></td>
-</tr>
-<tr>
-<td>2. Guards evaluated</td>
-<td>Each guard checks the command in order</td>
-<td>"Does this match <code>git add .</code>?" → Yes</td>
-</tr>
-<tr>
-<td>3. Decision returned</td>
-<td>Block with reason, prompt user, or allow</td>
-<td><code>⛔ 'git add .' forbidden. Stage specific files.</code></td>
-</tr>
-<tr>
-<td>4. Agent sees result</td>
-<td>The blocked command's reason appears as the tool result</td>
-<td>Agent retries with <code>git add src/file.ts</code></td>
-</tr>
-</tbody>
-</table>
-<blockquote>
-<p><strong>Note:</strong> Enforcement applies to <strong>all</strong> agents — both the orchestrator and specialist subagents. Some guards are scoped to specific contexts (container-only, orchestrator-only, specialist-only).</p>
-</blockquote>
+<p>Checks run in order. The first check that returns a block stops execution immediately — the command never reaches your shell.</p>
 <h2 id="blocked-commands">Blocked Commands</h2>
-<h3 id="python-and-pip-direct-execution">Python and pip (Direct Execution)</h3>
-<p>Pi requires all Python execution to go through <code>uv</code>, which provides isolated, reproducible environments.</p>
+<h3 id="python-and-pip">Python and pip</h3>
 <table>
 <thead>
 <tr>
@@ -354,70 +321,24 @@
 <td><code>uv run script.py</code></td>
 </tr>
 <tr>
-<td><code>python3 -c "..."</code></td>
-<td><code>uv run python3 -c "..."</code></td>
+<td><code>python3 -m pytest</code></td>
+<td><code>uv run python3 -m pytest</code></td>
 </tr>
 <tr>
 <td><code>pip install requests</code></td>
-<td><code>uv add requests</code></td>
+<td><code>uv add requests</code> or <code>uv run --with requests script.py</code></td>
 </tr>
 <tr>
-<td><code>pip3 install -r requirements.txt</code></td>
-<td><code>uv sync</code></td>
-</tr>
-<tr>
-<td><code>pre-commit run --all-files</code></td>
-<td><code>prek run --all-files</code></td>
+<td><code>pip3 freeze</code></td>
+<td><code>uv pip freeze</code></td>
 </tr>
 </tbody>
 </table>
-<p>Commands that already start with <code>uv</code> or <code>uvx</code> are allowed through. The check also catches piped variants like <code>something | python3</code>.</p>
-<h3 id="remote-script-execution">Remote Script Execution</h3>
-<p>Pi blocks all patterns that pipe downloaded content directly into a shell or interpreter. This prevents supply-chain attacks from untrusted sources.</p>
-<p><strong>Blocked patterns:</strong></p>
-<ul>
-<li><strong>Pipe to shell:</strong> <code>curl https://example.com/install.sh | bash</code></li>
-<li><strong>Pipe to interpreter:</strong> <code>wget https://example.com/setup.py | python3</code></li>
-<li><strong>Process substitution:</strong> <code>bash &lt;(curl https://example.com/install.sh)</code></li>
-<li><strong>Command substitution:</strong> <code>sh -c "$(curl https://example.com/install.sh)"</code></li>
-<li><strong>Eval:</strong> <code>eval $(curl https://example.com/script.sh)</code></li>
-<li><strong>Backtick substitution:</strong> <code>`curl https://example.com/script.sh`</code></li>
-</ul>
-<p><strong>What to do instead:</strong> Download the script first, audit it with the <code>security-auditor</code> agent, then run it if safe:</p>
-<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-o<span class="w"> </span>/tmp/pi-work/myproject/install.sh<span class="w"> </span>https://example.com/install.sh
-<span class="c1"># Security audit happens here</span>
-bash<span class="w"> </span>/tmp/pi-work/myproject/install.sh
-</code></pre></div>
-
+<p>Pi enforces the use of <code>uv</code> for all Python execution. This keeps dependencies managed per-execution without polluting the environment. The check catches <code>python</code> and <code>pip</code> (and their <code>3</code> variants) at the start of a command or after pipe/semicolon/<code>&amp;&amp;</code> operators.</p>
 <blockquote>
-<p><strong>Tip:</strong> Content inside heredocs (<code>&lt;&lt; 'EOF' ... EOF</code>) is stripped before the remote execution check. So documentation examples containing <code>curl | bash</code> won't trigger false positives.</p>
+<p><strong>Note:</strong> Commands that already start with <code>uv</code> or <code>uvx</code> are not affected — the check only targets bare <code>python</code>/<code>pip</code> invocations.</p>
 </blockquote>
-<h3 id="sleep-and-polling-loops">Sleep and Polling Loops</h3>
-<p>Pi blocks patterns that would tie up the session for extended periods:</p>
-<table>
-<thead>
-<tr>
-<th>Blocked Pattern</th>
-<th>Threshold</th>
-<th>Alternative</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>sleep N</code> (standalone)</td>
-<td>N &gt; 30 seconds</td>
-<td>Use a subagent with <code>async: true</code></td>
-</tr>
-<tr>
-<td><code>while ... sleep N ... done</code></td>
-<td>N &gt; 5 seconds</td>
-<td>Use a subagent with <code>async: true</code></td>
-</tr>
-</tbody>
-</table>
-<p>These guards prevent the LLM from implementing naive polling loops that block the entire session. Long-running monitoring belongs in async background agents.</p>
-<h3 id="temp-file-location">Temp File Location</h3>
-<p>All temp files must use the <code>/tmp/pi-work/&lt;project&gt;/</code> prefix (where <code>&lt;project&gt;</code> is the basename of the current working directory). Bare <code>mktemp</code> calls without this prefix are blocked:</p>
+<h3 id="pre-commit">Pre-commit</h3>
 <table>
 <thead>
 <tr>
@@ -427,329 +348,355 @@ bash<span class="w"> </span>/tmp/pi-work/myproject/install.sh
 </thead>
 <tbody>
 <tr>
-<td><code>mktemp /tmp/XXXXXX</code></td>
-<td><code>mktemp /tmp/pi-work/$(basename $PWD)/XXXXXX</code></td>
+<td><code>pre-commit run --all-files</code></td>
+<td><code>prek run --all-files</code></td>
 </tr>
 </tbody>
 </table>
-<p>This ensures temp files are organized by project and persist correctly across container restarts when <code>/tmp/pi-work</code> is mounted from the host.</p>
-<h2 id="git-branch-protection">Git Branch Protection</h2>
-<p>Pi enforces a branching workflow that prevents accidental commits to protected branches. Protection checks run against the <strong>effective working directory</strong> — if a command starts with <code>cd /path &amp;&amp; git ...</code> or uses <code>git -C /path</code>, the guard resolves the correct repo.</p>
-<h3 id="protected-branch-detection">Protected Branch Detection</h3>
-<p>Pi determines protected branches in this order:</p>
-<ol>
-<li><strong>GitHub API</strong> — queries <code>gh api repos/{owner}/{repo}/branches</code> for branches with <code>protected: true</code></li>
-<li><strong>Fallback</strong> — always includes <code>main</code> and <code>master</code> regardless of API results</li>
-<li><strong>Cache</strong> — results are cached per repository for the session lifetime (one API call per repo)</li>
-</ol>
-<h3 id="whats-protected">What's Protected</h3>
+<p>Direct <code>pre-commit</code> invocations are blocked. Use the <code>prek</code> wrapper instead.</p>
+<h3 id="remote-script-execution">Remote Script Execution</h3>
+<p>Pi blocks all forms of piping remote content into a shell or interpreter:</p>
 <table>
 <thead>
 <tr>
-<th>Action</th>
-<th>Guard</th>
-<th>Error Message</th>
+<th>Pattern</th>
+<th>Example</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Commit on protected branch</td>
-<td>Blocked</td>
-<td><code>⛔ Cannot commit to 'main' (protected). Create a feature branch.</code></td>
+<td>Pipe to shell</td>
+<td><code>curl https://example.com/install.sh \| bash</code></td>
 </tr>
 <tr>
-<td>Push to protected branch</td>
-<td>Blocked</td>
-<td><code>⛔ Cannot push to 'main' (protected). Create a feature branch.</code></td>
+<td>Pipe to interpreter</td>
+<td><code>wget https://example.com/setup.py \| python3</code></td>
 </tr>
 <tr>
-<td>Push explicitly naming a protected branch</td>
-<td>Blocked</td>
-<td><code>⛔ Cannot push to 'main' (protected). Create a feature branch.</code></td>
+<td>Process substitution</td>
+<td><code>bash &lt;(curl https://example.com/install.sh)</code></td>
 </tr>
 <tr>
-<td>Commit in detached HEAD</td>
-<td>Blocked</td>
-<td><code>⛔ Detached HEAD. Create a branch first: git checkout -b my-branch</code></td>
+<td>Command substitution</td>
+<td><code>sh -c "$(curl https://example.com/install.sh)"</code></td>
 </tr>
 <tr>
-<td>Commit on already-merged branch</td>
-<td>Blocked</td>
-<td><code>⛔ Branch 'my-feature' already merged into 'main'. Create a new branch.</code></td>
-</tr>
-<tr>
-<td>Commit on branch with merged PR</td>
-<td>Blocked</td>
-<td><code>⛔ PR #42 for 'my-feature' already merged. Create a new branch from main.</code></td>
-</tr>
-<tr>
-<td>Push on already-merged branch</td>
-<td>Blocked</td>
-<td><code>⛔ Branch 'my-feature' already merged into 'main'. Create a new branch.</code></td>
+<td>Eval with download</td>
+<td><code>eval `curl https://example.com/config`</code></td>
 </tr>
 </tbody>
 </table>
+<p><strong>What to do instead:</strong> Download the script first, have the <code>security-auditor</code> agent review it, then run it manually if it's safe.</p>
 <blockquote>
-<p><strong>Note:</strong> When you combine <code>git checkout</code> and <code>git commit</code> in a single bash call (e.g., <code>git checkout -b feature &amp;&amp; git commit -m "init"</code>), the branch check runs <em>before</em> execution. Split them into separate bash calls so the checkout happens first.</p>
+<p><strong>Tip:</strong> The check is smart about heredocs — if a <code>curl | bash</code> pattern appears inside heredoc content (like documentation examples), it won't trigger a false positive.</p>
 </blockquote>
-<h3 id="git-staging-guards">Git Staging Guards</h3>
+<h3 id="staging-all-files">Staging All Files</h3>
 <table>
 <thead>
 <tr>
-<th>Action</th>
-<th>Guard</th>
-<th>Error Message</th>
+<th>Blocked</th>
+<th>Use Instead</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>git add .</code> or <code>git add -A</code> or <code>git add --all</code></td>
-<td>Blocked</td>
-<td><code>⛔ 'git add .' / 'git add -A' forbidden. Stage specific files.</code></td>
+<td><code>git add .</code></td>
+<td><code>git add src/main.py src/utils.py</code></td>
 </tr>
 <tr>
-<td><code>git add &lt;gitignored-file&gt;</code></td>
-<td>Blocked</td>
-<td><code>⛔ '&lt;file&gt;' is in .gitignore. Do not stage ignored files.</code></td>
+<td><code>git add --all</code></td>
+<td><code>git add src/main.py src/utils.py</code></td>
+</tr>
+<tr>
+<td><code>git add -A</code></td>
+<td><code>git add src/main.py src/utils.py</code></td>
 </tr>
 </tbody>
 </table>
-<p>Staging guards force explicit, intentional file selection. This prevents accidentally committing build artifacts, secrets, or other ignored files.</p>
-<h3 id="git-hook-bypass-prevention">Git Hook Bypass Prevention</h3>
+<p>Pi requires staging specific files to prevent accidentally committing generated files, secrets, or unrelated changes.</p>
+<h3 id="staging-gitignored-files">Staging Gitignored Files</h3>
+<p>If you try to <code>git add</code> a file that matches a pattern in <code>.gitignore</code>, the command is blocked. Pi runs <code>git check-ignore</code> on each file in the <code>git add</code> command to catch this.</p>
+<h3 id="bypassing-git-hooks">Bypassing Git Hooks</h3>
 <table>
 <thead>
 <tr>
-<th>Action</th>
-<th>Guard</th>
+<th>Blocked</th>
+<th>Why</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>git commit --no-verify</code></td>
-<td>Blocked — pre-commit hooks must run</td>
+<td>Pre-commit hooks must always run</td>
 </tr>
 <tr>
-<td><code>core.hooksPath=/dev/null</code></td>
-<td>Blocked — hook bypass is forbidden</td>
+<td><code>git -c core.hooksPath=/dev/null commit ...</code></td>
+<td>Disabling hooks via config is not allowed</td>
 </tr>
 </tbody>
 </table>
-<h3 id="agent-restricted-git-operations">Agent-Restricted Git Operations</h3>
-<p>Git <code>commit</code> and <code>push</code> commands are only allowed from the <code>git-expert</code> agent. If any other agent attempts these operations, the command is blocked with a message to delegate to <code>git-expert</code>.</p>
-<h2 id="worktree-enforcement">Worktree Enforcement</h2>
-<p>When the <code>use_worktrees</code> project setting is enabled (via <code>.pi/pi-config-settings.json</code> or <code>PI_USE_WORKTREES</code> env var), pi blocks branch switching entirely:</p>
+<h3 id="sleep-and-polling-loops">Sleep and Polling Loops</h3>
 <table>
 <thead>
 <tr>
-<th>Blocked Command</th>
-<th>What to Do Instead</th>
+<th>Blocked</th>
+<th>Use Instead</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>git checkout &lt;branch&gt;</code></td>
-<td><code>git worktree add .worktrees/&lt;name&gt; -b &lt;branch&gt; main</code></td>
+<td><code>while true; do check; sleep 10; done</code></td>
+<td>Spawn an async subagent for polling</td>
 </tr>
 <tr>
-<td><code>git switch &lt;branch&gt;</code></td>
-<td><code>git worktree add .worktrees/&lt;name&gt; -b &lt;branch&gt; main</code></td>
+<td><code>sleep 120</code> (standalone, &gt; 30s)</td>
+<td>Spawn an async subagent</td>
+</tr>
+</tbody>
+</table>
+<p>Blocking the session with long sleeps or polling loops wastes resources. Pi's async agent system is designed for exactly these cases — see <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>.</p>
+<blockquote>
+<p><strong>Note:</strong> <code>sleep</code> commands of 30 seconds or less outside of loops are allowed. Inside loops, the threshold is 5 seconds.</p>
+</blockquote>
+<h3 id="temp-file-location">Temp File Location</h3>
+<table>
+<thead>
+<tr>
+<th>Blocked</th>
+<th>Use Instead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mktemp /tmp/foo.XXXXXX</code></td>
+<td><code>mktemp ${PROJECT_TMP_DIR}/foo.XXXXXX</code></td>
+</tr>
+</tbody>
+</table>
+<p>All temp files must go to the project-scoped temp directory (<code>.pi/tmp/</code>), which is already gitignored. This prevents cluttering system-level <code>/tmp/</code> and ensures cleanup on session end.</p>
+<h2 id="git-branch-protection">Git Branch Protection</h2>
+<p>Pi enforces a branch-based workflow to prevent accidental changes to production code.</p>
+<h3 id="protected-branches">Protected Branches</h3>
+<p>For GitHub repositories, pi queries the GitHub API to discover branches marked as protected and always includes <code>main</code> and <code>master</code>. For non-GitHub repos, only <code>main</code> and <code>master</code> are protected.</p>
+<p>The following operations are blocked on protected branches:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Error</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>git commit</code> on a protected branch</td>
+<td>"Cannot commit to 'main' (protected). Create a feature branch."</td>
+</tr>
+<tr>
+<td><code>git push</code> while on a protected branch</td>
+<td>"Cannot push to 'main' (protected). Create a feature branch."</td>
+</tr>
+<tr>
+<td><code>git push origin main</code> (explicit target)</td>
+<td>"Cannot push to 'main' (protected). Create a feature branch."</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p><strong>Note:</strong> <code>git checkout -- &lt;file&gt;</code> (restoring file contents, note the <code>--</code>) is still allowed — only branch-switching checkouts are blocked.</p>
+<p><strong>Tip:</strong> Protected branch information is cached per session — it's fetched once from the GitHub API and reused for all subsequent checks.</p>
 </blockquote>
-<p>This setting is essential for multi-PR workflows where parallel agents work in the same repository. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for how to enable it.</p>
-<h2 id="dangerous-command-confirmation">Dangerous Command Confirmation</h2>
-<p>Some commands are too risky to block outright but require explicit user approval. When pi detects a dangerous command, it presents a confirmation prompt:</p>
-<div class="highlight"><pre><span></span><code>⚠️ Dangerous command:
-
-  rm -rf /tmp/pi-work/old-project
-
-Allow? [Yes / No]
+<h3 id="detached-head-detection">Detached HEAD Detection</h3>
+<p>If you're in a detached HEAD state (not on any branch), commits are blocked. Create a branch first:</p>
+<div class="highlight"><pre><span></span><code>git checkout -b my-feature-branch
 </code></pre></div>
 
-<p><strong>Commands that trigger confirmation:</strong></p>
+<h3 id="merged-branch-detection">Merged Branch Detection</h3>
+<p>Pi detects two kinds of "already merged" situations:</p>
+<ol>
+<li><strong>PR already merged</strong> — If a GitHub PR for the current branch has been merged, further commits and pushes are blocked. Create a new branch from the main branch instead.</li>
+<li><strong>Branch merged locally</strong> — If the current branch has been merged into the main branch (checked via <code>git merge-base --is-ancestor</code>), commits and pushes are blocked.</li>
+</ol>
+<p>Both checks prevent the common mistake of continuing to work on a branch after its PR has been merged.</p>
+<h3 id="git-commit-and-push-agent-restriction">Git Commit and Push Agent Restriction</h3>
+<p>Only the <code>git-expert</code> specialist agent is allowed to run <code>git commit</code> and <code>git push</code>. If any other agent (or the orchestrator) attempts these commands, they are blocked with a message directing the work to <code>git-expert</code>.</p>
+<h2 id="worktree-enforcement">Worktree Enforcement</h2>
+<p>When <code>use_worktrees</code> is enabled in your project settings (<code>.pi/pi-config-settings.json</code>) or via the <code>PI_USE_WORKTREES</code> environment variable, pi blocks branch switching commands:</p>
 <table>
 <thead>
 <tr>
-<th>Pattern</th>
-<th>Examples</th>
+<th>Blocked</th>
+<th>Use Instead</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>rm -rf</code> or <code>rm -r</code></td>
-<td><code>rm -rf build/</code>, <code>rm -r node_modules/</code></td>
+<td><code>git checkout feature-branch</code></td>
+<td><code>git worktree add .worktrees/feature-branch -b feature-branch main</code></td>
+</tr>
+<tr>
+<td><code>git switch feature-branch</code></td>
+<td><code>git worktree add .worktrees/feature-branch -b feature-branch main</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Note:</strong> <code>git checkout -- file.txt</code> (restoring a file, not switching branches) is still allowed — the check looks for the <code>--</code> separator.</p>
+</blockquote>
+<p>This prevents branch switching when multiple agents may be working in the same worktree simultaneously. See <a href="configuration-reference.html">Configuration and Environment Variables Reference</a> for how to enable this setting.</p>
+<h2 id="dangerous-command-confirmation">Dangerous Command Confirmation</h2>
+<p>Some commands are not blocked outright but require explicit user confirmation before running. These are matched by pattern:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Example Commands</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rm -rf</code> / <code>rm --recursive</code></td>
+<td><code>rm -rf /path/to/dir</code></td>
 </tr>
 <tr>
 <td><code>sudo</code></td>
 <td><code>sudo apt install ...</code></td>
 </tr>
 <tr>
-<td><code>chmod 777</code> or <code>chown 777</code></td>
-<td><code>chmod 777 script.sh</code></td>
+<td><code>chmod 777</code> / <code>chown 777</code></td>
+<td><code>chmod 777 /var/www</code></td>
 </tr>
 <tr>
 <td><code>mkfs</code></td>
 <td><code>mkfs.ext4 /dev/sda1</code></td>
 </tr>
 <tr>
-<td><code>dd ... of=/dev/</code></td>
-<td><code>dd if=/dev/zero of=/dev/sda</code></td>
+<td><code>dd of=/dev/</code></td>
+<td><code>dd if=image.iso of=/dev/sdb</code></td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Warning:</strong> If pi is running without a UI (e.g., in <code>json</code> or <code>print</code> mode), dangerous commands are <strong>blocked entirely</strong> rather than prompted — there's no way to ask for confirmation.</p>
-</blockquote>
-<h2 id="repeat-command-detection">Repeat Command Detection</h2>
-<p>The orchestrator tracks consecutive identical bash commands to prevent polling-by-spam — where the LLM runs the same command over and over hoping for a different result.</p>
-<p><strong>How it works:</strong></p>
-<ol>
-<li>Each command is normalized (leading <code>cd ... &amp;&amp;</code> prefixes stripped, whitespace collapsed)</li>
-<li>The normalized command is compared against the last command via a per-process temp file</li>
-<li>On the 3rd consecutive identical execution, the command is blocked</li>
-</ol>
-<p><strong>Block message:</strong> <code>⛔ Same command executed 3 times in a row. Use a subagent with async: true for polling/monitoring instead of repeating the command.</code></p>
-<blockquote>
-<p><strong>Note:</strong> Repeat detection only applies to the <strong>orchestrator</strong>. Specialist subagents (which set <code>PI_SUBAGENT_CHILD=1</code>) are exempt, since they may legitimately retry commands.</p>
-</blockquote>
-<h2 id="docker-safe-wrapper-container-only">Docker-Safe Wrapper (Container Only)</h2>
-<p>When pi runs inside a Docker or Podman container, direct <code>docker</code> and <code>podman</code> CLI commands are blocked. Instead, pi provides the <code>docker-safe</code> wrapper script that only allows <strong>read-only inspection commands</strong>.</p>
-<p><strong>Allowed commands through <code>docker-safe</code>:</strong></p>
+<p>When pi detects one of these patterns, it shows a confirmation prompt:</p>
+<div class="highlight"><pre><span></span><code>⚠️ Dangerous command:
+
+  rm -rf /path/to/old-builds
+
+Allow? [Yes / No]
+</code></pre></div>
+
+<p>If no UI is available (e.g., running in JSON or print mode), the command is blocked entirely — there's no way to confirm.</p>
+<h2 id="docker-safe-wrapper">Docker-Safe Wrapper</h2>
+<p>When pi runs inside a Docker or Podman container, direct <code>docker</code> and <code>podman</code> CLI commands are blocked. Instead, pi uses the <code>docker-safe</code> wrapper script, which only allows read-only inspection commands:</p>
 <table>
 <thead>
 <tr>
-<th>Command</th>
-<th>Purpose</th>
+<th>Allowed via docker-safe</th>
+<th>Blocked</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>docker-safe ps</code></td>
-<td>List containers</td>
+<td><code>ps</code>, <code>logs</code>, <code>inspect</code></td>
+<td><code>exec</code>, <code>run</code>, <code>rm</code></td>
 </tr>
 <tr>
-<td><code>docker-safe logs</code></td>
-<td>View container logs</td>
+<td><code>top</code>, <code>stats</code>, <code>port</code></td>
+<td><code>cp</code>, <code>build</code>, <code>pull</code></td>
 </tr>
 <tr>
-<td><code>docker-safe inspect</code></td>
-<td>Inspect container or image metadata</td>
+<td><code>diff</code>, <code>images</code></td>
+<td><code>stop</code>, <code>start</code>, <code>kill</code></td>
 </tr>
 <tr>
-<td><code>docker-safe top</code></td>
-<td>Display running processes in a container</td>
-</tr>
-<tr>
-<td><code>docker-safe stats</code></td>
-<td>Show resource usage statistics</td>
-</tr>
-<tr>
-<td><code>docker-safe port</code></td>
-<td>List port mappings</td>
-</tr>
-<tr>
-<td><code>docker-safe diff</code></td>
-<td>Show filesystem changes in a container</td>
-</tr>
-<tr>
-<td><code>docker-safe images</code></td>
-<td>List images</td>
-</tr>
-<tr>
-<td><code>docker-safe version</code></td>
-<td>Show Docker/Podman version</td>
-</tr>
-<tr>
-<td><code>docker-safe info</code></td>
-<td>Show system-wide information</td>
+<td><code>version</code>, <code>info</code></td>
+<td>Everything else</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Everything else</strong> (<code>exec</code>, <code>run</code>, <code>rm</code>, <code>cp</code>, <code>build</code>, etc.) is blocked.</p>
-<p>To use Podman instead of Docker, pass <code>--runtime podman</code> or set <code>DOCKER_SAFE_RUNTIME=podman</code>.</p>
-<blockquote>
-<p><strong>Tip:</strong> Container detection uses filesystem checks (<code>/.dockerenv</code>, <code>/run/.containerenv</code>) and cgroup inspection. This guard only activates when pi detects it's running inside a container.</p>
-</blockquote>
-<h2 id="memory-write-restrictions-for-subagents">Memory Write Restrictions for Subagents</h2>
-<p>Specialist agents cannot modify pi's memory system. Any <code>myk-pi-tools memory add</code> or <code>myk-pi-tools memory delete</code> command from a subagent is blocked:</p>
-<div class="highlight"><pre><span></span><code>Memory writes are restricted to the orchestrator. Specialists can only search/list memories.
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code>docker-safe<span class="w"> </span>ps<span class="w"> </span>-a
+docker-safe<span class="w"> </span>logs<span class="w"> </span>my-container<span class="w"> </span>--tail<span class="w"> </span><span class="m">50</span>
+docker-safe<span class="w"> </span>--runtime<span class="w"> </span>podman<span class="w"> </span>inspect<span class="w"> </span>my-container
 </code></pre></div>
 
-<p>This ensures memory consistency — only the orchestrator (which has full context of the conversation) can add or remove memories. Specialist agents can still <strong>search</strong> memories via <code>memory_search</code>. See <a href="memory-system.html">Working with Project Memory</a> for how the memory system works.</p>
-<h2 id="async-only-agents">Async-Only Agents</h2>
-<p>Some agents are enforced to always run asynchronously. If the LLM attempts to call them synchronously, the system auto-promotes them to <code>async: true</code>. If they appear in a chain, the call is rejected entirely (chains are inherently synchronous).</p>
-<p><strong>Currently enforced async-only agents:</strong></p>
+<p>The runtime defaults to <code>docker</code> but can be switched to <code>podman</code> via the <code>--runtime</code> flag or the <code>DOCKER_SAFE_RUNTIME</code> environment variable.</p>
+<blockquote>
+<p><strong>Note:</strong> This restriction only applies when pi is running inside a container. Native installations are not affected.</p>
+</blockquote>
+<h2 id="memory-write-restrictions">Memory Write Restrictions</h2>
+<p>Specialist agents (subagents) cannot write to the project memory system. Only the orchestrator — the top-level pi session — is allowed to add or delete memories.</p>
+<table>
+<thead>
+<tr>
+<th>Agent Type</th>
+<th><code>memory add</code></th>
+<th><code>memory search</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Orchestrator</td>
+<td>✅ Allowed</td>
+<td>✅ Allowed</td>
+</tr>
+<tr>
+<td>Specialist agent</td>
+<td>❌ Blocked</td>
+<td>✅ Allowed</td>
+</tr>
+</tbody>
+</table>
+<p>This prevents specialist agents from creating conflicting or redundant memory entries. Specialists can read memories to inform their work, but any learned insights must be surfaced to the orchestrator for storage. See <a href="memory-system.html">Working with Project Memory</a> for how memory works.</p>
+<h2 id="repeat-command-detection">Repeat Command Detection</h2>
+<p>Pi tracks consecutive identical bash commands at the orchestrator level. If the same command is executed <strong>3 or more times in a row</strong>, it's blocked:</p>
+<div class="highlight"><pre><span></span><code>⛔ Same command executed 3 times in a row.
+Use a subagent with async: true for polling/monitoring instead of repeating the command.
+</code></pre></div>
+
+<p>This catches runaway loops where the LLM keeps retrying a failing command. The detection normalizes commands by stripping <code>cd</code> prefixes and whitespace, so <code>cd /tmp &amp;&amp; ls</code> and <code>cd /tmp  &amp;&amp;  ls</code> are treated as the same command.</p>
+<p>Repeat state is stored per session in a temp file (<code>.pi/tmp/.repeat-&lt;pid&gt;.json</code>) and only applies to the orchestrator — specialist agents are not tracked.</p>
+<h2 id="async-only-agent-enforcement">Async-Only Agent Enforcement</h2>
+<p>Certain long-running agents are enforced to always run asynchronously. If you (or the LLM) try to dispatch them synchronously, the system automatically promotes the call to <code>async: true</code>:</p>
 <ul>
 <li><code>code-reviewer-quality</code></li>
 <li><code>code-reviewer-guidelines</code></li>
 <li><code>code-reviewer-security</code></li>
 </ul>
-<p>This prevents code reviews from blocking the session — they can take minutes to complete and the user should be able to continue working.</p>
-<blockquote>
-<p><strong>Note:</strong> The <code>ASYNC_ONLY_AGENTS</code> set is defined in <code>extensions/orchestrator/subagent-tool.ts</code>. Changes to this list should be kept in sync with <code>rules/20-code-review-loop.md</code>.</p>
-</blockquote>
-<h2 id="timeout-stripping">Timeout Stripping</h2>
-<p>For known long-running commands (specifically <code>myk-pi-tools reviews poll</code>), pi silently removes any <code>timeout</code> parameter the LLM sets. These poll commands can run for 30+ minutes waiting for rate limits to clear. Rather than blocking the command (which causes retry loops), the timeout is simply deleted so the command runs to completion.</p>
+<p>These agents cannot be used in chain mode either — they must be dispatched as independent async tasks.</p>
+<p>This prevents the session from blocking while waiting for code reviews, which can take minutes. See <a href="code-review-loop.html">Running the Automated Code Review Loop</a> for how reviews work in practice.</p>
 <h2 id="co-author-trailer-injection">Co-Author Trailer Injection</h2>
-<p>While not a safety guard per se, the enforcement handler also manages automatic co-author trailer injection. When the <code>co_author</code> setting is enabled and a <code>git commit</code> command doesn't already include a <code>Co-authored-by:</code> trailer, enforcement automatically appends one with the current model ID. This works for both <code>-m "message"</code> style commits and <code>echo "message" | git commit -F -</code> piped commits.</p>
+<p>While not a safety guard, the enforcement system also handles co-author trailers. When <code>co_author</code> is enabled in project settings, pi automatically appends a <code>Co-authored-by:</code> line to git commit messages. This is a transparent modification — the command runs with the trailer added, and the user sees the full commit message.</p>
 <h2 id="what-to-do-when-a-command-is-blocked">What to Do When a Command Is Blocked</h2>
-<p>Every block message includes three things:</p>
+<p>Every block message includes:</p>
 <ol>
-<li><strong>What was blocked</strong> — the exact command or pattern that triggered the guard</li>
-<li><strong>Why it was blocked</strong> — the safety reason</li>
+<li><strong>What was blocked</strong> — the exact command or pattern</li>
+<li><strong>Why it was blocked</strong> — a brief explanation</li>
 <li><strong>What to do instead</strong> — the correct alternative command or approach</li>
 </ol>
-<p>The agent (or orchestrator) automatically retries using the suggested alternative in most cases. If you see repeated blocks, check that:</p>
+<p>In most cases, the LLM adjusts automatically after receiving the block message. If you're running commands manually and encounter a block:</p>
 <ul>
-<li>You're on a feature branch, not <code>main</code> or <code>master</code></li>
-<li>You're staging specific files, not using <code>git add .</code></li>
-<li>Your worktree setting matches your workflow (see <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>)</li>
-<li>Long-running tasks are dispatched as async agents</li>
+<li><strong>Read the suggestion</strong> — the error message always provides an alternative</li>
+<li><strong>Use the correct tool</strong> — <code>uv run</code> instead of <code>python</code>, <code>docker-safe</code> instead of <code>docker</code>, specific file paths instead of <code>git add .</code></li>
+<li><strong>Delegate to the right agent</strong> — <code>git-expert</code> for commits, async subagents for polling</li>
+<li><strong>Ask pi for help</strong> — describe what you're trying to do and let it route to the appropriate approach</li>
 </ul>
-<h2 id="extending-the-enforcement-system">Extending the Enforcement System</h2>
-<p>The enforcement handler is a single <code>tool_call</code> event listener registered in <code>extensions/orchestrator/enforcement.ts</code>. To add a new guard:</p>
-<ol>
-<li><strong>Add your check</strong> inside the <code>pi.on("tool_call", ...)</code> callback, after the existing guards</li>
-<li><strong>Return a block object</strong> with <code>{ block: true, reason: "..." }</code> to prevent execution</li>
-<li><strong>Return <code>undefined</code></strong> to allow the command through</li>
-<li><strong>For confirmation prompts</strong>, use <code>ctx.ui.select()</code> — check <code>ctx.hasUI</code> first to handle headless mode</li>
-</ol>
-<p>The handler receives the full <code>event.input.command</code> string and the <code>ctx</code> object with <code>cwd</code>, <code>hasUI</code>, <code>ui</code>, and <code>model</code> properties. You can also <strong>modify</strong> the command in-place by reassigning <code>event.input.command</code> (as co-author trailer injection does).</p>
-<p><strong>Hook signature:</strong></p>
-<div class="highlight"><pre><span></span><code><span class="nx">pi</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">&quot;tool_call&quot;</span><span class="p">,</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="p">(</span><span class="nx">event</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">isToolCallEventType</span><span class="p">(</span><span class="s2">&quot;bash&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">event</span><span class="p">))</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="kc">undefined</span><span class="p">;</span>
-<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">event</span><span class="p">.</span><span class="nx">input</span><span class="p">.</span><span class="nx">command</span><span class="p">;</span>
-
-<span class="w">  </span><span class="c1">// Your guard logic here</span>
-<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">shouldBlock</span><span class="p">(</span><span class="nx">command</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">block</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w"> </span><span class="nx">reason</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Explanation and alternative&quot;</span><span class="w"> </span><span class="p">};</span>
-<span class="w">  </span><span class="p">}</span>
-
-<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="kc">undefined</span><span class="p">;</span><span class="w"> </span><span class="c1">// Allow</span>
-<span class="p">});</span>
-</code></pre></div>
-
-<p>Git helper functions (<code>getCurrentBranch</code>, <code>getMainBranch</code>, <code>getProtectedBranches</code>, <code>hasGitSub</code>, <code>isBranchMerged</code>, etc.) are exported from <code>extensions/orchestrator/git-helpers.ts</code> for use in enforcement checks. The <code>DANGEROUS</code> regex array is also exported from there.</p>
+<blockquote>
+<p><strong>Warning:</strong> These guardrails exist to protect your environment. While the enforcement system can't cover every possible dangerous command, it catches the most common patterns that lead to accidental damage, security issues, or wasted resources.</p>
+</blockquote>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a> — how <code>tool_call</code> event handlers fit into pi's extension lifecycle</li>
-<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a> — async-only enforcement for review agents in practice</li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> — using async agents instead of blocked polling loops</li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a> — <code>use_worktrees</code>, <code>co_author</code>, and other settings that affect enforcement</li>
-<li><a href="docker-deployment.html">Running Pi in a Docker Container</a> — container setup and the <code>docker-safe</code> wrapper</li>
-<li><a href="memory-system.html">Working with Project Memory</a> — memory write restrictions and the orchestrator-only policy</li>
-<li><a href="rules-reference.html">Orchestrator Rules Reference</a> — the rule files that complement enforcement with behavioral guidance</li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> — how async agents work as an alternative to polling loops and long sleeps</li>
+<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a> — the async-only review agents in practice</li>
+<li><a href="docker-deployment.html">Running Pi in a Docker Container</a> — container setup and the docker-safe wrapper</li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a> — project settings like <code>use_worktrees</code> and <code>co_author</code></li>
+<li><a href="memory-system.html">Working with Project Memory</a> — memory tools and the orchestrator-only write restriction</li>
+<li><a href="rules-reference.html">Orchestrator Rules Reference</a> — the full set of rules that govern orchestrator behavior</li>
 </ul>
 <h2 id="related-pages_1">Related Pages</h2>
 <ul>
-<li><a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a></li>
-<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="agents-reference.html">Specialist Agents Reference</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 <li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
-<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
+<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
 </ul>
                 </div>
             </article>
@@ -772,30 +719,31 @@ Allow? [Yes / No]
 <ul>
 <li><a href="#how-enforcement-works">How Enforcement Works</a></li>
 <li><a href="#blocked-commands">Blocked Commands</a><ul>
-<li><a href="#python-and-pip-direct-execution">Python and pip (Direct Execution)</a></li>
+<li><a href="#python-and-pip">Python and pip</a></li>
+<li><a href="#pre-commit">Pre-commit</a></li>
 <li><a href="#remote-script-execution">Remote Script Execution</a></li>
+<li><a href="#staging-all-files">Staging All Files</a></li>
+<li><a href="#staging-gitignored-files">Staging Gitignored Files</a></li>
+<li><a href="#bypassing-git-hooks">Bypassing Git Hooks</a></li>
 <li><a href="#sleep-and-polling-loops">Sleep and Polling Loops</a></li>
 <li><a href="#temp-file-location">Temp File Location</a></li>
 </ul>
 </li>
 <li><a href="#git-branch-protection">Git Branch Protection</a><ul>
-<li><a href="#protected-branch-detection">Protected Branch Detection</a></li>
-<li><a href="#whats-protected">What's Protected</a></li>
-<li><a href="#git-staging-guards">Git Staging Guards</a></li>
-<li><a href="#git-hook-bypass-prevention">Git Hook Bypass Prevention</a></li>
-<li><a href="#agent-restricted-git-operations">Agent-Restricted Git Operations</a></li>
+<li><a href="#protected-branches">Protected Branches</a></li>
+<li><a href="#detached-head-detection">Detached HEAD Detection</a></li>
+<li><a href="#merged-branch-detection">Merged Branch Detection</a></li>
+<li><a href="#git-commit-and-push-agent-restriction">Git Commit and Push Agent Restriction</a></li>
 </ul>
 </li>
 <li><a href="#worktree-enforcement">Worktree Enforcement</a></li>
 <li><a href="#dangerous-command-confirmation">Dangerous Command Confirmation</a></li>
+<li><a href="#docker-safe-wrapper">Docker-Safe Wrapper</a></li>
+<li><a href="#memory-write-restrictions">Memory Write Restrictions</a></li>
 <li><a href="#repeat-command-detection">Repeat Command Detection</a></li>
-<li><a href="#docker-safe-wrapper-container-only">Docker-Safe Wrapper (Container Only)</a></li>
-<li><a href="#memory-write-restrictions-for-subagents">Memory Write Restrictions for Subagents</a></li>
-<li><a href="#async-only-agents">Async-Only Agents</a></li>
-<li><a href="#timeout-stripping">Timeout Stripping</a></li>
+<li><a href="#async-only-agent-enforcement">Async-Only Agent Enforcement</a></li>
 <li><a href="#co-author-trailer-injection">Co-Author Trailer Injection</a></li>
 <li><a href="#what-to-do-when-a-command-is-blocked">What to Do When a Command Is Blocked</a></li>
-<li><a href="#extending-the-enforcement-system">Extending the Enforcement System</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 <li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
@@ -809,7 +757,7 @@ Allow? [Yes / No]
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

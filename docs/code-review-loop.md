@@ -1,290 +1,254 @@
 # Running the Automated Code Review Loop
 
-Run your code changes through pi's 3-reviewer parallel code review system to catch quality issues, guideline violations, and security bugs before they land — and iterate until every reviewer approves.
+Get your code changes reviewed by three parallel reviewers — quality, guidelines, and security — and iterate on findings until all reviewers approve and tests pass.
 
 ## Prerequisites
 
 - A working pi session with the orchestrator (see [Installing and Starting Your First Session](quickstart.html))
-- Code changes ready for review (staged, unstaged, or on a branch)
-- Familiarity with how the orchestrator delegates to agents (see [Understanding Agent Routing and Delegation](agent-routing.html))
+- Code changes on a working branch (uncommitted or committed)
+- Familiarity with basic agent delegation (see [Understanding Agent Routing and Delegation](agent-routing.html))
 
 ## Quick Example
 
-Ask pi to review your uncommitted changes:
+Make a code change and ask pi to review it:
 
+```text
+I've updated the authentication module. Please review my changes.
 ```
+
+The orchestrator automatically triggers the code review loop — it spawns all three reviewers in parallel, collects their findings, and presents a merged summary. If there are issues, fix them and the loop runs again.
+
+For an even faster workflow, use the built-in slash command:
+
+```text
 /review-local
 ```
 
-Or review changes compared to a specific branch:
+This reviews all uncommitted changes (staged + unstaged) against `HEAD`. To review changes compared to a specific branch:
 
-```
+```text
 /review-local main
 ```
 
-Pi spawns three review agents in parallel, merges the findings, and presents them grouped by severity. That's the review loop in action.
+## How the Review Loop Works
+
+The code review loop runs automatically after any code change. Here's the flow:
+
+1. **Specialist writes or fixes code** — a language expert (e.g., `python-expert`, `ts-expert`) makes the changes
+2. **Three reviewers run in parallel** — all launched simultaneously as background agents
+3. **Findings are merged** — duplicates across reviewers are removed
+4. **Findings require fixes?** — if yes, the code is fixed and reviewers run again (step 2)
+5. **All reviewers approve** — the `test-automator` agent runs tests
+6. **Tests pass?** — if yes, the loop is complete. If not, the code is fixed and either re-reviewed (for substantive changes) or re-tested (for test/config-only fixes)
+
+> **Note:** You don't need to manage this loop manually. The orchestrator handles the full cycle — spawning reviewers, collecting results, requesting fixes, and re-running reviews. You only interact when asked to make a decision.
 
 ## The Three Reviewers
 
-Every code review dispatches three specialist agents simultaneously. Each focuses on a different dimension:
+Each reviewer focuses on a different aspect of your code:
 
-| Reviewer | Focus Area | What It Checks |
-|----------|-----------|----------------|
-| `code-reviewer-quality` | Code quality & maintainability | Readability, DRY violations, complexity, error handling, dead code, observability anti-patterns |
-| `code-reviewer-guidelines` | Project guidelines & style | AGENTS.md compliance, documentation updates, naming conventions, file structure consistency |
-| `code-reviewer-security` | Bugs, logic errors & security | Logic errors, null references, race conditions, injection flaws, resource leaks, edge cases |
+| Reviewer | Focus Area | Example Findings |
+|----------|-----------|------------------|
+| `code-reviewer-quality` | Code quality and maintainability | DRY violations, poor naming, missing error logging, dead code |
+| `code-reviewer-guidelines` | Project guidelines compliance | AGENTS.md violations, missing documentation updates, import ordering |
+| `code-reviewer-security` | Bugs, logic errors, and security | SQL injection, race conditions, null references, resource leaks |
 
-The overlapping scope is intentional — multiple reviewers examining similar areas reduces the chance of missed issues. Duplicate findings are merged automatically.
+The overlapping scope is intentional — multiple reviewers examining similar areas reduces the chance of missed issues.
 
-> **Note:** All three reviewers are read-only agents. They use `read` and `bash` tools to inspect your code but never modify files.
+### Finding Severity Levels
 
-## How the Loop Works
+Reviewers categorize their findings into three severity levels:
 
-The review loop follows a strict cycle that repeats until all three reviewers approve:
+- **`[CRITICAL]`** — Must fix before merging. Security vulnerabilities, data loss risks, logic errors.
+- **`[WARNING]`** — Should fix. Quality issues, missing error handling, guideline violations.
+- **`[SUGGESTION]`** — Nice to have. Style improvements, minor readability enhancements.
 
-1. **Code is written or modified** by a specialist agent (or you)
-2. **All 3 reviewers run in parallel** as async background agents
-3. **Findings are merged and deduplicated** across all reviewers
-4. **If any reviewer has comments** → fix the code, go back to step 2
-5. **All reviewers approve** → run tests via `test-automator`
-6. **Tests pass** → done. Tests fail → fix and determine whether to re-review or just re-test
+### How Findings Are Deduplicated
 
-> **Tip:** Minor fixes that only touch test files or configuration can skip the full re-review and go directly back to testing. Substantive code changes require a full re-review from step 2.
+When reviewers flag the same issue, the orchestrator merges findings using these rules:
 
-## Reviewing Local Changes
+- **Same file/line range + same root cause** → kept as one finding (the most actionable version)
+- **Conflicting suggestions** → priority order: security > correctness > performance > style
+- **Different issue types on the same code** → both findings are kept
 
-### Uncommitted Changes
+## Reviewing Uncommitted Changes
 
-Review everything that's changed since your last commit:
+The `/review-local` command runs a full three-reviewer analysis on your local changes without creating a PR.
 
-```
+```text
 /review-local
 ```
 
-This runs `git diff HEAD` to collect your changes and sends them to all three reviewers.
+This reviews all uncommitted changes (staged + unstaged) against `HEAD`.
 
-### Changes Against a Branch
+To compare against a specific branch:
 
-Compare your current branch against another branch:
-
-```
+```text
 /review-local main
-```
-
-```
 /review-local develop
 ```
 
-This runs `git diff <branch>...HEAD` to compute the diff.
+The workflow creates a structured task plan:
 
-### What You Get Back
+1. Get the diff
+2. Launch all three reviewers in parallel (async)
+3. Merge and deduplicate findings
+4. Present findings grouped by severity
 
-Findings are presented grouped by severity:
+> **Tip:** Use `/review-local` before pushing to catch issues early. It's faster than a full PR review since it works on local changes.
+
+## Implementing with Automatic Review
+
+To implement a feature and run the review loop in one step:
 
 ```text
-## Critical issues (must fix)
-[CRITICAL] src/auth.py:42 — SQL injection via unsanitized user input
-  Risk: Attacker can execute arbitrary SQL queries
-  Suggestion: Use parameterized queries
-
-## Warnings (should fix)
-[WARNING] src/utils.py:15 — Empty catch block swallows errors silently
-  Suggestion: Log the exception at minimum
-
-## Suggestions (nice to have)
-[SUGGESTION] src/config.py:8 — Unused import 'os'
-  Suggestion: Remove unused import
+/implement-and-review Add rate limiting to the API endpoints
 ```
 
-## Implement-and-Review in One Command
-
-To implement a change and automatically run the review loop:
-
-```
-/implement-and-review Add rate limiting to the /api/login endpoint
-```
-
-This chains three steps together:
+This chains three stages:
 
 1. A `worker` agent implements the task
-2. All 3 reviewers run in parallel on the result
+2. All three reviewers run in parallel on the changes
 3. A `worker` agent fixes all issues found by the reviewers
 
 ## Reviewing a GitHub PR
 
-To review a pull request and post inline comments on GitHub:
+The `/pr-review` command runs the three-reviewer system against a GitHub PR and posts inline comments:
 
-```
+```text
 /pr-review
 /pr-review 123
 /pr-review https://github.com/owner/repo/pull/123
 ```
 
-This fetches the PR diff, sends it to all three reviewers in parallel, lets you select which findings to post, and submits them as GitHub review comments. See [Using Slash Commands and Prompt Templates](slash-commands.html) for the full list of review-related commands.
+The PR review workflow:
 
-## How Reviewers Run in the Background
+1. **Detects the PR** — from the current branch or from the argument you provide
+2. **Clones the repo** — checks out the PR branch so reviewers have full repo access
+3. **Checks past review comments** — fetches previous review threads to track unresolved issues
+4. **Runs all three reviewers in parallel** — each reviewer examines the diff and full source
+5. **Presents merged findings** — you choose which to post as inline PR comments
+6. **Posts comments and stores them** — comments are tracked in a local database for future review cycles
 
-All three code reviewers are enforced as **async-only agents**. When the orchestrator dispatches them, they automatically run as background agents — the session stays interactive while reviews happen.
+> **Note:** Past review comments are categorized during the review. Unresolved threads appear as `[PREV-UNRESOLVED]`, while threads marked resolved but with incorrect fixes show as `[PREV-BAD-FIX]`. This prevents issues from slipping through across review cycles.
 
-When reviews finish, results surface automatically in your conversation with a notification:
+See [Using Slash Commands and Prompt Templates](slash-commands.html) for the full list of available commands.
+
+## Understanding Async Reviewers
+
+All three review agents are enforced to run asynchronously — they always run as background agents. This means:
+
+- The orchestrator spawns all three reviewers in a single action
+- Your session remains interactive while reviewers work
+- Results surface automatically when each reviewer finishes
+- You can continue other work while waiting
+
+Check reviewer status at any time:
 
 ```text
-## Async Agent Result: code-reviewer-quality ✅ completed
-
-Task: Review the changes for code quality
-Duration: 45s
-
-No quality issues found. Code approved.
-```
-
-You can check the status of running reviewers at any time:
-
-```
 /async-status
 ```
 
-This shows all background agents with their elapsed time and task description. Select one to view its live output as it runs.
+See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for more on async agents.
 
-> **Tip:** If you need to cancel a running review, use `/async-kill` and select the agent to stop, or `/async-kill all` to stop everything.
+## Baseline Test Comparison
 
-## How Findings Are Deduplicated
+When the review loop runs tests (step 5), it compares test results against a baseline to avoid blocking on pre-existing failures:
 
-When findings come back from all three reviewers, they're merged using these rules:
+- The orchestrator saves your changes, resets to a clean state, and runs tests to establish a baseline failure count
+- Then it restores your changes and runs tests again
+- **Only new failures** (current minus baseline) block the review
+- Pre-existing failures are noted but don't prevent approval
 
-| Scenario | Action |
-|----------|--------|
-| Same file/line range + same issue type or root cause | Keep the most actionable version |
-| Conflicting suggestions | Priority order: security > correctness > performance > style |
-| Complementary findings on the same code (different issue types) | Keep both |
-| Still ambiguous after priority ordering | Escalate to the user |
+This prevents the review loop from blocking on test failures that existed before your changes.
 
-## Handling Review Feedback from External Reviewers
+## Advanced Usage
 
-When your PR receives reviews from external tools (CodeRabbit, Qodo) or human reviewers on GitHub, use the review handler:
+### Handling Review Comments from External Reviewers
 
-```
+The `/review-handler` command processes review comments from multiple sources — human reviewers, CodeRabbit, and Qodo — on a GitHub PR:
+
+```text
 /review-handler
 ```
 
-This fetches all review comments from the current PR — human, CodeRabbit, and Qodo — and walks you through addressing each one.
+For each comment, you choose whether to address it, skip it, or address all at once. The agent then delegates fixes to the appropriate specialist.
 
-### Automated Review Loops
+To automatically fix comments from CodeRabbit or Qodo in a polling loop:
 
-For fully automated handling of external reviewer comments:
-
-```
+```text
 /review-handler --autorabbit
 /review-handler --autoqodo
 /review-handler --autorabbit --autoqodo
 ```
 
-In auto mode, the handler enters a polling loop: it fixes comments, pushes changes, waits for the reviewer to re-evaluate, and repeats until the reviewer approves. The session stays interactive while the loop runs.
+In auto mode, the handler processes comments, pushes fixes, and polls for new comments until the reviewer approves the PR.
 
-See [Common Workflow Recipes](workflow-recipes.html) for copy-paste patterns covering autorabbit and autoqodo workflows.
+See [Common Workflow Recipes](workflow-recipes.html) for more patterns.
 
-## Advanced Usage
+### Refining Your Own Review Comments
 
-### Baseline Test Comparison
-
-When the review loop reaches the testing phase, it compares test results against the baseline (the state before your changes). Only **new** test failures block the review — pre-existing failures are noted but don't block.
-
-The baseline comparison works by:
-
-1. Saving your changes as a patch
-2. Resetting to a clean state and running tests
-3. Restoring your changes and running tests again
-4. Comparing the two results — only new failures count
-
-> **Note:** If the baseline comparison fails (patch can't be applied), it's skipped with a note. Tests still run, but all failures are reported without filtering.
-
-### Staged Review Mode
-
-For automated workflows (`--autorabbit`, `--autoqodo`), reviews use a **two-stage order** instead of running all three reviewers in parallel:
-
-| Stage | Focus | Purpose |
-|-------|-------|---------|
-| **Stage 1** | Spec compliance | Does the code meet requirements? All deliverables implemented? No scope creep? |
-| **Stage 2** | Code quality | Quality, security, guidelines (runs only after Stage 1 passes) |
-
-The staged approach avoids polishing code that doesn't meet spec — saving review cycles.
-
-### Each Reviewer's Output Format
-
-All three reviewers use a consistent severity-tagged format:
+Before submitting a pending GitHub review, polish your comments with AI:
 
 ```text
-[SEVERITY] file:line — Description
-  Suggestion: What to change and why
+/refine-review https://github.com/owner/repo/pull/123
 ```
 
-- `[CRITICAL]` — Must fix before merging
-- `[WARNING]` — Should fix, potential issue
-- `[SUGGESTION]` — Nice to have, minor improvement
+This fetches your pending review comments, suggests refinements for clarity and actionability, and lets you accept, reject, or customize each suggestion before submitting.
 
-When a reviewer finds no issues, it explicitly states approval:
+### Staged Review Mode for Automated Workflows
+
+When using automated review flows (`--autorabbit`, `--autoqodo`), the system uses a two-stage review order instead of launching all three reviewers in parallel:
+
+- **Stage 1 — Spec Compliance:** Does the code meet requirements? Are all deliverables implemented? No scope creep?
+- **Stage 2 — Code Quality:** Quality, security, and guidelines checks (the normal three reviewers)
+
+Stage 1 must pass before Stage 2 begins. This avoids polishing code that doesn't meet the specification — saving time and review cycles.
+
+### Multi-PR Review Handling
+
+When handling reviews for multiple PRs simultaneously, the system uses git worktrees to isolate each PR:
 
 ```text
-No quality issues found. Code approved.
+/review-handler
 ```
 
-The loop only completes when all three reviewers return an approval message.
+> **Warning:** Never switch branches manually when multiple review agents are running. The orchestrator uses worktrees automatically to prevent branch switching from corrupting parallel agent work.
 
-### Guidelines Reviewer and Documentation Checks
+### The Implement → Review → Fix Cycle
 
-The `code-reviewer-guidelines` agent reads your project's `AGENTS.md` file first, then reviews changes against those rules. It also checks whether documentation needs updating:
+For a complete implementation workflow that includes scouting, planning, implementation, and review:
 
-- If code was added, changed, or removed, it verifies that `AGENTS.md` and `README.md` are updated accordingly
-- Missing documentation updates are flagged as `[CRITICAL]`
-
-### Multi-PR Reviews with Worktrees
-
-When reviewing multiple PRs simultaneously, never switch branches in the main worktree. Use git worktrees:
-
-```bash
-git worktree add .worktrees/pr-42 origin/fix/issue-42
-git worktree add .worktrees/pr-43 origin/feat/issue-43
+```text
+/implement Add caching layer to the database queries
 ```
 
-Each worktree gets its own directory, so agents working on different PRs don't interfere with each other. Clean up when done:
+This chains three agents:
 
-```bash
-git worktree remove .worktrees/pr-42
-git worktree remove .worktrees/pr-43
-```
+1. `scout` — explores the codebase to find relevant code
+2. `planner` — creates a detailed implementation plan
+3. `worker` — implements the plan
 
-### Extending the Review System
-
-#### Adding a Custom Reviewer
-
-To add a project-specific reviewer (e.g., for domain-specific rules), create an agent file in your project's `.pi/agents/` directory. See [Customization and Extension Recipes](customization-recipes.html) for the step-by-step process.
-
-#### Async-Only Enforcement
-
-All three code reviewers are in the async-only enforcement list. If the orchestrator accidentally tries to dispatch them synchronously, the system automatically promotes the call to async. This prevents the session from blocking while reviews run.
-
-> **Warning:** If you create a custom reviewer agent and want it enforced as async-only, it must be added to the enforcement list in the extension configuration. Without this, sync calls will block your session for the duration of the review.
+After implementation, the orchestrator automatically triggers the code review loop. Any findings lead to fixes and re-review until all three reviewers approve.
 
 ## Troubleshooting
 
-**Reviews seem to take a long time**
-Reviewer agents run as full pi sessions with their own context. Complex diffs take longer. Use `/async-status` to monitor progress and view live output.
+**Reviewers seem stuck or unresponsive:**
+Check `/async-status` to see if reviewers are still running. If a reviewer fails, the orchestrator reports the error and can retry.
 
-**A reviewer keeps finding the same issue after I fix it**
-Make sure your fix is saved to disk. Reviewers read files directly — unsaved editor buffers won't be seen. Also ensure you're not accidentally reverting changes between review cycles.
+**Too many false positives from reviewers:**
+The overlapping reviewer scope is intentional, but if findings are consistently unhelpful, check that your project has an `AGENTS.md` or `CLAUDE.md` file. Reviewers read these files to understand project-specific conventions and reduce noise.
 
-**"No async agents running" but I just started a review**
-Agents take a moment to spawn. Wait a few seconds and check `/async-status` again. If the agent failed to start, the orchestrator will report an error in the conversation.
+**Tests fail on pre-existing issues:**
+The baseline comparison should handle this automatically. If baseline comparison is unavailable (e.g., `git apply` fails), the review notes "baseline comparison unavailable" and does not block on all failures.
 
-**Tests fail but the failures existed before my changes**
-The baseline comparison should filter pre-existing failures. If it reports "baseline comparison unavailable," the patch couldn't be cleanly applied to the base. In that case, manually verify whether failures are new.
-
-**Review comments conflict with each other**
-When reviewers disagree, the priority order is: security > correctness > performance > style. If the conflict is still ambiguous, you'll be asked to decide.
+**Review loop keeps cycling:**
+The loop exits when all three reviewers approve AND tests pass. If fixes introduce new issues, the loop continues. For complex changes, consider breaking the work into smaller commits.
 
 ## Related Pages
 
 - [Understanding Agent Routing and Delegation](agent-routing.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
 - [Specialist Agents Reference](agents-reference.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
 - [Common Workflow Recipes](workflow-recipes.html)
-- [Your First Coding Workflow](first-workflow.html)

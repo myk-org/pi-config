@@ -361,6 +361,7 @@ The memory system uses several files under `.pi/memory/`. These are not directly
 | `.pi/memory/.dream-watermark` | Timestamp of last dreaming cycle processed |
 | `.pi/data/memory-telemetry.jsonl` | Retrieval telemetry log (capped at 500KB) |
 | `.pi/data/session-search.json` | Past session summaries index for keyword search |
+| `.pi/data/pr-reviews.db` | PR review comment tracking (SQLite database) |
 
 > **Tip:** Add `.pi/memory/` to your global gitignore to prevent committing memory data. The container entrypoint does this automatically.
 
@@ -372,9 +373,7 @@ For memory system internals, see [Memory Scoring, Embeddings, and Situation Repo
 
 All runtime data lives under project-scoped temp directories.
 
-**Base path:** `/tmp/pi-data/<project>/`
-
-Project name format: cwd with `/` replaced by `__` (e.g., `home__user__git__my-project`).
+**Base path:** `<project-root>/.pi/tmp/`
 
 | Path | Description |
 |---|---|
@@ -387,7 +386,7 @@ Project name format: cwd with `/` replaced by `__` (e.g., `home__user__git__my-p
 | `worker-<id>/output.log` | Agent output |
 | `worker-<id>/system-prompt.md` | Agent system prompt |
 
-The helper function `getProjectTmpDir(cwd)` in `extensions/orchestrator/utils.ts` creates and returns the project temp directory.
+The helper function `getProjectTmpDir(cwd)` in `extensions/orchestrator/utils.ts` returns `<cwd>/.pi/tmp/`, creating the directory if it does not exist.
 
 ---
 
@@ -461,6 +460,6 @@ Checked on `session_start` by the session validation module.
 
 - [Running Pi in a Docker Container](docker-deployment.html)
 - [Customization and Extension Recipes](customization-recipes.html)
-- [Working with Project Memory](memory-system.html)
-- [Orchestrator Rules Reference](rules-reference.html)
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+- [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
+- [Communicating Between Pi Sessions](inter-agent-communication.html)
+- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)

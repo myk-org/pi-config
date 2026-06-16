@@ -22,7 +22,7 @@ Then in your pi session:
 Generate an image of a golden retriever playing fetch on a beach at sunset
 ```
 
-Pi calls the `generate_image` tool, saves the resulting image to `/tmp/pi-work/<project>/`, and returns the file path.
+Pi calls the `generate_image` tool, saves the resulting image to `.pi/tmp/` in your project directory, and returns the file path.
 
 ## Setup
 
@@ -110,7 +110,7 @@ Generate a 1:1 image of a knight fighting a dragon, pixel art style
 
 ### How Images Are Saved
 
-Generated images are saved to `/tmp/pi-work/<project-name>/` with auto-generated filenames. Pi reports the full file path in its response, so you can open, copy, or move the file.
+Generated images are saved to `.pi/tmp/` inside your project directory with auto-generated filenames. Pi reports the full file path in its response, so you can open, copy, or move the file.
 
 ### Automatic HTTP Preview in Containers
 
@@ -155,6 +155,6 @@ Image generation requests time out after **3 minutes**. Complex prompts with det
 
 - [Configuration and Environment Variables Reference](configuration-reference.html)
 - [Running Pi in a Docker Container](docker-deployment.html)
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
 - [Slash Commands and Extension Commands Reference](commands-reference.html)
-- [Installing and Starting Your First Session](quickstart.html)
+- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)

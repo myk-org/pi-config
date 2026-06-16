@@ -22,9 +22,10 @@ These layers feed into an **auto-injection pipeline** (`rules.ts`) that runs on 
 ### Data Flow: From Entry to System Prompt
 
 1. A memory is added (via `memory_add` tool, preference auto-extraction, or dreaming)
-2. The entry is written to the appropriate topic file under `.pi/memory/topics/`
-3. A stability score is computed and stored in `memory-scores.json`
-4. The entry is embedded as a 384-dim vector and stored in `embeddings.json`
+2. A vector similarity check runs against existing entries in the same category (≥ 0.85 = near-duplicate → reinforce instead of adding)
+3. If not a duplicate, the entry is written to the appropriate topic file under `.pi/memory/topics/`
+4. A stability score is computed and stored in `memory-scores.json`
+5. The entry is embedded as a 384-dim vector and stored in `embeddings.json`
 5. On each turn, `before_agent_start` fires:
    - The situation report selects scored entries within a token budget
    - A vector search finds contextually relevant memories for the current message
@@ -174,17 +175,30 @@ Vector embeddings enable **semantic search** — finding memories that are conce
 ### How It Works
 
 1. **Embed on write:** When `memory_add` creates an entry, it's immediately embedded and the vector is stored in `.pi/memory/embeddings.json`
-2. **Embed on first search:** If any existing entries lack embeddings (e.g., after upgrading from a pre-embedding version), the first `memory_search` call batch-embeds all missing entries
-3. **Search:** The query is embedded, then cosine similarity is computed against all stored vectors
-4. **Hybrid results:** Vector search results are merged with keyword search results, deduplicated, and ranked by a combined score (similarity × 100 + stability score)
+2. **Dedup on write:** Before inserting a new entry, `memory_add` computes vector similarity against all existing entries in the same category. If a near-duplicate is found (similarity ≥ 0.85), the existing entry is **reinforced** instead of creating a duplicate. This catches semantically equivalent memories even when worded differently (e.g., "use conventional commits" vs. "always write conventional commit messages"). If the vector check is unavailable, the system falls back to exact text matching.
+3. **Embed on first search:** If any existing entries lack embeddings (e.g., after upgrading from a pre-embedding version), the first `memory_search` call batch-embeds all missing entries
+4. **Search:** The query is embedded, then cosine similarity is computed against all stored vectors
+5. **Hybrid results:** Vector search results are merged with keyword search results, deduplicated, and ranked by a combined score (similarity × 100 + stability score)
 
 ### Embedding Key Format
 
 Each embedding is keyed by a truncated SHA-256 hash of `[category] text` — this prevents cross-category collisions where the same text appears in different categories.
 
+### Near-Duplicate Detection Threshold
+
+The dedup similarity threshold is **0.85** (cosine similarity). This value balances precision and recall:
+
+| Similarity | Behavior |
+|------------|----------|
+| ≥ 0.85 | Treated as near-duplicate — existing entry is reinforced, new entry is not added |
+| 0.65–0.84 | Treated as contextually relevant (used for search recall), but distinct enough to store separately |
+| < 0.65 | Not related — no match |
+
+> **Note:** If the dedup check reinforces an existing entry, the just-embedded vector for the new text is removed from the store to keep embeddings clean.
+
 ### Graceful Fallback
 
-If the `@huggingface/transformers` package is unavailable or the model fails to load, the system falls back to **keyword-only search**. No errors are thrown — callers always get results.
+If the `@huggingface/transformers` package is unavailable or the model fails to load, the system falls back to **keyword-only search** and **exact-match dedup**. No errors are thrown — callers always get results.
 
 > **Note:** Embeddings are stored per-project in `.pi/memory/embeddings.json`. The model is loaded once per process and cached for the session lifetime.
 

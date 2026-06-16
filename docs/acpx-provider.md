@@ -182,5 +182,5 @@ rm -rf ~/.acpx/pi-*
 - [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
 - [Configuration and Environment Variables Reference](configuration-reference.html)
 - [Running Pi in a Docker Container](docker-deployment.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
 - [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)

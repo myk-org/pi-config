@@ -295,315 +295,217 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="your-first-coding-workflow">Your First Coding Workflow</h1>
-<p>You want to go from a feature idea to a merged pull request using pi's orchestrator, specialist agents, and automated code review. This guide walks you through the complete cycle so you can see every stage in action.</p>
+<p>You want to go from a feature idea to a merged pull request using pi's orchestrator. This guide walks you through the full cycle — asking pi to implement a change, watching it delegate to specialist agents, iterating through code review, and creating a PR.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>A running pi session connected to a Git repository (see <a href="quickstart.html">Installing and Starting Your First Session</a>)</li>
-<li>GitHub CLI (<code>gh</code>) authenticated — pi's <code>github-expert</code> agent uses it for issues and PRs</li>
-<li>At least one commit on a <code>main</code> branch pushed to a remote</li>
+<li>A running pi session in a Git repository (see <a href="quickstart.html">Installing and Starting Your First Session</a>)</li>
+<li>GitHub CLI (<code>gh</code>) authenticated — pi uses it for issues and PRs</li>
+<li>A remote <code>origin</code> configured for your repository</li>
 </ul>
 <h2 id="quick-example">Quick Example</h2>
-<p>The fastest way to implement a feature end-to-end:</p>
-<div class="highlight"><pre><span></span><code>You: Add a --verbose flag to the export command
+<p>Type a request in plain language. Pi handles the rest:</p>
+<div class="highlight"><pre><span></span><code>Add a --verbose flag to the export command that prints each file as it&#39;s processed
 </code></pre></div>
 
-<p>That single sentence triggers the full workflow: the orchestrator investigates the code, creates a GitHub issue, branches, delegates to the right specialist agent, runs three parallel code reviewers, fixes findings, runs tests, commits, pushes, and opens a PR — all automatically.</p>
-<h2 id="step-by-step-the-full-feature-workflow">Step-by-Step: The Full Feature Workflow</h2>
-<h3 id="step-1-describe-what-you-want">Step 1 — Describe what you want</h3>
-<p>Tell pi what to build in plain language:</p>
-<div class="highlight"><pre><span></span><code>You: Add rate limiting to the /api/users endpoint — max 100 requests per minute per IP
+<p>Pi will:</p>
+<ol>
+<li>Investigate the codebase to understand the current export command</li>
+<li>Create a GitHub issue describing the feature</li>
+<li>Create a feature branch (<code>feat/issue-12-verbose-flag</code>)</li>
+<li>Delegate code changes to the right specialist agent (e.g., <code>python-expert</code>)</li>
+<li>Run three parallel code reviewers</li>
+<li>Fix any findings and re-review until all pass</li>
+<li>Run tests</li>
+<li>Commit, push, and open a PR</li>
+</ol>
+<p>You stay in control at each checkpoint — pi asks before proceeding.</p>
+<h2 id="step-by-step-walkthrough">Step-by-Step Walkthrough</h2>
+<h3 id="step-1-describe-what-you-want">Step 1: Describe What You Want</h3>
+<p>Just tell pi what you need. Be specific about the behavior you want, not how to implement it:</p>
+<div class="highlight"><pre><span></span><code>The /stats endpoint should return results sorted by date descending instead of ascending
 </code></pre></div>
 
-<p>The orchestrator reads your request and begins the <strong>issue-first workflow</strong>. It will not start writing code immediately.</p>
-<h3 id="step-2-root-cause-investigation">Step 2 — Root cause investigation</h3>
-<p>Before creating anything, the orchestrator reads the relevant source code to understand what exists. It identifies the files, functions, and dependencies involved. This prevents issues based on misunderstandings and ensures the implementation plan is grounded in reality.</p>
-<p>You'll see it delegate to a <strong>scout</strong> agent to explore the codebase:</p>
-<div class="highlight"><pre><span></span><code> scout  Exploring codebase for rate limiting context...
-</code></pre></div>
+<p>Pi reads the relevant source code first to understand the current behavior before doing anything else.</p>
+<h3 id="step-2-issue-creation-and-branch-setup">Step 2: Issue Creation and Branch Setup</h3>
+<p>Pi creates a GitHub issue with a root cause analysis, requirements, and a checklist of deliverables. It then asks for confirmation:</p>
+<div class="highlight"><pre><span></span><code>Issue #24 created: fix: /stats endpoint returns results in ascending order
 
-<h3 id="step-3-issue-creation">Step 3 — Issue creation</h3>
-<p>The orchestrator delegates to the <code>github-expert</code> agent to create a tracked GitHub issue with:</p>
-<ul>
-<li>A clear title (<code>feat: add rate limiting to /api/users</code>)</li>
-<li>Problem description and requirements</li>
-<li>A <strong>Done</strong> checklist — the contract for when the issue can be closed</li>
-</ul>
-<div class="highlight"><pre><span></span><code> github-expert  Creating issue...
-</code></pre></div>
-
-<p>Once created, pi asks for confirmation:</p>
-<div class="highlight"><pre><span></span><code>Issue #42 created: feat: add rate limiting to /api/users
-URL: https://github.com/your-org/your-repo/issues/42
+URL: https://github.com/yourorg/yourrepo/issues/24
 
 Do you want to work on it now?
 </code></pre></div>
 
-<h3 id="step-4-branch-creation">Step 4 — Branch creation</h3>
-<p>After you confirm, the orchestrator delegates to the <code>git-expert</code> to create an issue branch:</p>
-<div class="highlight"><pre><span></span><code> git-expert  git fetch origin main
- git-expert  git checkout -b feat/issue-42-rate-limiting origin/main
-</code></pre></div>
-
-<p>Branch names follow the convention <code>&lt;type&gt;/issue-&lt;number&gt;-&lt;short-description&gt;</code>:</p>
+<p>Answer <strong>yes</strong> and pi fetches <code>main</code>, creates an issue branch (<code>fix/issue-24-stats-sort-order</code>), and starts working.</p>
+<blockquote>
+<p><strong>Tip:</strong> If you want to skip the issue-first workflow for a trivial change, say "just do it" or "quick fix" — pi will go straight to implementation.</p>
+</blockquote>
+<h3 id="step-3-watch-the-orchestrator-delegate">Step 3: Watch the Orchestrator Delegate</h3>
+<p>The orchestrator never writes code directly. It routes work to specialist agents based on what the task involves:</p>
 <table>
 <thead>
 <tr>
-<th>Change type</th>
-<th>Branch prefix</th>
+<th>What's happening</th>
+<th>Agent pi delegates to</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>New feature</td>
-<td><code>feat/issue-42-...</code></td>
-</tr>
-<tr>
-<td>Bug fix</td>
-<td><code>fix/issue-42-...</code></td>
-</tr>
-<tr>
-<td>Refactoring</td>
-<td><code>refactor/issue-42-...</code></td>
-</tr>
-<tr>
-<td>Documentation</td>
-<td><code>docs/issue-42-...</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="step-5-implementation">Step 5 — Implementation</h3>
-<p>The orchestrator routes the task to the appropriate <strong>specialist agent</strong> based on the files involved. You don't choose the agent — routing is automatic.</p>
-<table>
-<thead>
-<tr>
-<th>File type</th>
-<th>Agent selected</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Python (<code>.py</code>)</td>
+<td>Editing Python files</td>
 <td><code>python-expert</code></td>
 </tr>
 <tr>
-<td>TypeScript/JavaScript</td>
+<td>Editing TypeScript/React files</td>
 <td><code>ts-expert</code></td>
 </tr>
 <tr>
-<td>Go (<code>.go</code>)</td>
+<td>Editing Go files</td>
 <td><code>go-expert</code></td>
 </tr>
 <tr>
-<td>Shell scripts (<code>.sh</code>)</td>
+<td>Editing shell scripts</td>
 <td><code>bash-expert</code></td>
 </tr>
 <tr>
-<td>Dockerfile</td>
-<td><code>docker-expert</code></td>
+<td>Git operations (branch, commit)</td>
+<td><code>git-expert</code></td>
 </tr>
 <tr>
-<td>Markdown (<code>.md</code>)</td>
-<td><code>technical-documentation-writer</code></td>
+<td>GitHub operations (PR, issue)</td>
+<td><code>github-expert</code></td>
+</tr>
+<tr>
+<td>Writing or updating tests</td>
+<td><code>test-automator</code></td>
+</tr>
+<tr>
+<td>Exploring a codebase for context</td>
+<td><code>scout</code></td>
+</tr>
+<tr>
+<td>No specialist matches</td>
+<td><code>worker</code></td>
 </tr>
 </tbody>
 </table>
-<p>If no specialist matches, the <code>worker</code> agent handles it. See <a href="agent-routing.html">Understanding Agent Routing and Delegation</a> for the full routing table.</p>
-<div class="highlight"><pre><span></span><code> python-expert  Adding rate limiter middleware to api/users.py...
-</code></pre></div>
-
-<p>The specialist agent writes code directly — it doesn't explain what it will do first. Agents follow an "execute first, explain after" philosophy.</p>
-<h3 id="step-6-automated-code-review-3-reviewers-in-parallel">Step 6 — Automated code review (3 reviewers in parallel)</h3>
-<p>After implementation, the orchestrator launches <strong>three code review agents simultaneously</strong> as background (async) tasks:</p>
+<p>Pi picks the right agent automatically — you don't need to specify. See <a href="agent-routing.html">Understanding Agent Routing and Delegation</a> for the full routing table.</p>
+<h3 id="step-4-code-review-loop">Step 4: Code Review Loop</h3>
+<p>After the code changes are made, pi sends the diff to <strong>three review agents in parallel</strong>:</p>
 <table>
 <thead>
 <tr>
 <th>Reviewer</th>
-<th>Focus area</th>
+<th>Focus</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>code-reviewer-quality</code></td>
-<td>Clean code, DRY, readability, proper abstractions</td>
+<td>Readability, abstractions, DRY, error handling</td>
 </tr>
 <tr>
 <td><code>code-reviewer-guidelines</code></td>
-<td>Project conventions, AGENTS.md compliance, documentation updates</td>
+<td>Project conventions (AGENTS.md compliance), documentation updates</td>
 </tr>
 <tr>
 <td><code>code-reviewer-security</code></td>
-<td>Bugs, logic errors, edge cases, security vulnerabilities</td>
+<td>Bugs, logic errors, security vulnerabilities, edge cases</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code> code-reviewer-quality       Reviewing changes (async)...
- code-reviewer-guidelines    Reviewing changes (async)...
- code-reviewer-security      Reviewing changes (async)...
-</code></pre></div>
-
-<p>All three run as async agents — they don't block your session. You can continue chatting while they work. Results surface automatically when each reviewer finishes.</p>
-<p>Each reviewer produces findings with severity levels:</p>
-<div class="highlight"><pre><span></span><code>[CRITICAL] api/users.py:45 — Rate limit key uses X-Forwarded-For without validation
-  Risk: Attacker can bypass rate limiting by spoofing the header
-  Suggestion: Validate and sanitize the forwarded IP, fall back to connection IP
-
-[WARNING] api/users.py:62 — Missing error handling for Redis connection failure
-  Suggestion: Add try/except with fallback to in-memory counter
-
-[SUGGESTION] api/users.py:30 — Magic number 100 should be a named constant
-  Suggestion: Extract to RATE_LIMIT_MAX_REQUESTS = 100
-</code></pre></div>
-
-<h3 id="step-7-fix-and-review-loop">Step 7 — Fix-and-review loop</h3>
-<p>If <strong>any</strong> reviewer has findings, the orchestrator delegates fixes to the specialist agent and sends the code through all three reviewers again. This loop continues until every reviewer approves:</p>
-<div class="highlight"><pre><span></span><code>Code change → 3 reviewers in parallel → findings? → fix → 3 reviewers again → approved ✅
-</code></pre></div>
-
-<p>The orchestrator deduplicates findings across reviewers automatically. If two reviewers flag the same issue, only the most actionable version is kept.</p>
+<p>These reviewers run as background agents — pi doesn't block while waiting. When all three return, pi merges and deduplicates their findings, then categorizes them by severity:</p>
+<ul>
+<li><strong>Critical</strong> — must fix before proceeding</li>
+<li><strong>Warning</strong> — should fix</li>
+<li><strong>Suggestion</strong> — nice to have</li>
+</ul>
+<p>If there are findings, pi sends them to the appropriate specialist to fix, then re-runs all three reviewers on the updated code. This loop repeats until all reviewers approve.</p>
 <blockquote>
-<p><strong>Note:</strong> The review loop is mandatory — it cannot be skipped. Code is not considered ready until all three reviewers report "approved."</p>
+<p><strong>Note:</strong> You don't need to trigger reviews manually during implementation — they run automatically after every code change. See <a href="code-review-loop.html">Running the Automated Code Review Loop</a> for details on the review system.</p>
 </blockquote>
-<h3 id="step-8-test-execution">Step 8 — Test execution</h3>
-<p>Once reviewers approve, the orchestrator delegates to the <code>test-automator</code> agent:</p>
-<div class="highlight"><pre><span></span><code> test-automator  Running test suite...
-</code></pre></div>
-
-<p>The test agent compares results against a <strong>baseline</strong> (tests on the branch before your changes). Only <strong>new failures</strong> introduced by your code block the workflow. Pre-existing failures are noted but don't block.</p>
+<h3 id="step-5-tests">Step 5: Tests</h3>
+<p>Once all reviewers approve, pi delegates to the <code>test-automator</code> to run the project's test suite. Only <strong>new</strong> test failures block the workflow — pre-existing failures are noted but don't stop progress.</p>
 <p>If tests fail:</p>
 <ul>
-<li>Minor test/config fixes → re-run tests only (skip re-review)</li>
-<li>Substantive code changes → full re-review from step 6</li>
+<li><strong>Minor fix</strong> (test config, import path): pi fixes and re-runs tests</li>
+<li><strong>Code change needed</strong>: pi fixes the code and goes back through the full review loop</li>
 </ul>
-<h3 id="step-9-commit-and-push">Step 9 — Commit and push</h3>
-<p>With reviews approved and tests passing, the orchestrator delegates to <code>git-expert</code>:</p>
-<div class="highlight"><pre><span></span><code> git-expert  git add api/users.py api/middleware.py tests/test_rate_limit.py
- git-expert  git commit -F - (feat: add rate limiting to /api/users endpoint)
- git-expert  git push -u origin feat/issue-42-rate-limiting
-</code></pre></div>
-
-<p>Commits follow these conventions:</p>
-<ul>
-<li>Specific files are staged individually (never <code>git add .</code>)</li>
-<li>Commit messages use conventional format (<code>feat:</code>, <code>fix:</code>, <code>refactor:</code>)</li>
-<li>No AI attribution in commit messages</li>
-</ul>
-<h3 id="step-10-pull-request-creation">Step 10 — Pull request creation</h3>
-<p>The orchestrator delegates to <code>github-expert</code> to create the PR:</p>
-<div class="highlight"><pre><span></span><code> github-expert  gh pr create --title &quot;feat: add rate limiting to /api/users&quot; --body &quot;...&quot;
-</code></pre></div>
-
-<p>The PR links back to issue #42. When the PR merges, the issue's Done checklist items are checked off and the issue is closed.</p>
-<h2 id="using-slash-commands">Using Slash Commands</h2>
-<p>For common workflows, slash commands provide structured shortcuts instead of free-form prompts.</p>
-<h3 id="implement-scout-plan-and-build"><code>/implement</code> — Scout, plan, and build</h3>
-<div class="highlight"><pre><span></span><code>/implement add rate limiting to the /api/users endpoint
-</code></pre></div>
-
-<p>This runs a three-agent chain automatically:</p>
+<h3 id="step-6-commit-push-and-pr">Step 6: Commit, Push, and PR</h3>
+<p>When reviews pass and tests are green, pi:</p>
 <ol>
-<li><strong>scout</strong> — finds relevant files and dependencies</li>
-<li><strong>planner</strong> — creates a detailed implementation plan</li>
-<li><strong>worker</strong> — implements the plan</li>
+<li>Delegates to <code>git-expert</code> to stage specific files and commit with a clear message</li>
+<li>Pushes the branch to origin</li>
+<li>Delegates to <code>github-expert</code> to create a pull request with a description linking back to the issue</li>
 </ol>
-<h3 id="implement-and-review-build-with-automatic-review"><code>/implement-and-review</code> — Build with automatic review</h3>
-<div class="highlight"><pre><span></span><code>/implement-and-review add rate limiting to the /api/users endpoint
+<p>Pi checks off deliverables on the GitHub issue as they're completed, and closes the issue when everything is done.</p>
+<h2 id="using-the-implement-shortcut">Using the /implement Shortcut</h2>
+<p>For a streamlined experience, use the <code>/implement</code> command. It chains three agents together automatically — scout, planner, then worker:</p>
+<div class="highlight"><pre><span></span><code>/implement Add a --verbose flag to the export command
 </code></pre></div>
 
-<p>Same as <code>/implement</code>, but adds the three parallel reviewers plus a fix pass — the entire code review loop in one command.</p>
-<h3 id="review-local-review-before-committing"><code>/review-local</code> — Review before committing</h3>
+<p>This runs:</p>
+<ol>
+<li><strong>Scout</strong> — rapidly explores your codebase to find the relevant files, functions, and dependencies</li>
+<li><strong>Planner</strong> — creates a detailed implementation plan with files to change, edge cases, and testing approach</li>
+<li><strong>Worker</strong> — executes the plan, making all the code changes</li>
+</ol>
+<p>The code review loop runs automatically after the worker finishes.</p>
+<blockquote>
+<p><strong>Tip:</strong> Want a plan without implementation? Use <code>/scout-and-plan</code> instead — it runs only the scout and planner steps so you can review the approach before committing to it.</p>
+</blockquote>
+<h2 id="using-review-local-to-review-before-committing">Using /review-local to Review Before Committing</h2>
+<p>You can trigger a review at any time on your uncommitted changes:</p>
 <div class="highlight"><pre><span></span><code>/review-local
-/review-local main
 </code></pre></div>
 
-<p>Reviews your uncommitted changes (or changes vs. a branch) using all three reviewers in parallel. Use this to catch issues before pushing.</p>
-<h3 id="scout-and-plan-explore-without-changing-anything"><code>/scout-and-plan</code> — Explore without changing anything</h3>
-<div class="highlight"><pre><span></span><code>/scout-and-plan add rate limiting to the /api/users endpoint
+<p>Or compare against a specific branch:</p>
+<div class="highlight"><pre><span></span><code>/review-local main
 </code></pre></div>
 
-<p>Runs only the scout and planner agents — no code is written. Use this when you want to understand the codebase and see a plan before committing to implementation.</p>
-<p>See <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a> for the full command reference.</p>
-<h2 id="monitoring-progress">Monitoring Progress</h2>
-<h3 id="task-tracking">Task tracking</h3>
-<p>For multi-step workflows, the orchestrator creates a task list that persists across turns. You can see exactly where you are:</p>
-<div class="highlight"><pre><span></span><code>✅ Investigate root cause in api/users.py
-✅ Create GitHub issue with root cause analysis
-✅ Create branch feat/issue-42-rate-limiting from origin/main
-✅ Implement rate limiting middleware
-⏳ Run code review loop (3 async reviewers)
-⬚ Fix review findings (if any)
-⬚ Run test-automator
-⬚ Commit and push changes
-⬚ Create PR with description
-</code></pre></div>
-
-<p>If you ask a side question mid-workflow ("What's the Redis connection timeout?"), the orchestrator answers and then <strong>immediately resumes</strong> from the next unchecked task.</p>
-<h3 id="status-session-snapshot"><code>/status</code> — Session snapshot</h3>
+<p>This spawns the same three parallel reviewers and presents findings grouped by severity, without modifying any code. See <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a> for all available commands.</p>
+<h2 id="task-tracking-during-the-workflow">Task Tracking During the Workflow</h2>
+<p>For multi-step workflows, pi creates a visible task list and tracks progress through each step. If you ask a side question mid-workflow, pi answers it and then <strong>resumes from exactly where it left off</strong> — the task list ensures nothing gets forgotten.</p>
+<p>You can check the current session state at any time:</p>
 <div class="highlight"><pre><span></span><code>/status
 </code></pre></div>
 
-<p>Shows async agents currently running, cron tasks, git branch, and session context in one view.</p>
-<h3 id="async-status-background-agent-details"><code>/async-status</code> — Background agent details</h3>
-<div class="highlight"><pre><span></span><code>/async-status
-</code></pre></div>
-
-<p>Shows all background agents with elapsed time and task descriptions.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="skipping-the-issue-first-workflow">Skipping the issue-first workflow</h3>
-<p>For quick fixes where tracking overhead isn't needed, tell pi to skip the workflow:</p>
-<div class="highlight"><pre><span></span><code>You: Just fix the typo in README.md — &quot;recieve&quot; should be &quot;receive&quot;
+<h3 id="reviewing-an-existing-pull-request">Reviewing an Existing Pull Request</h3>
+<p>Use <code>/pr-review</code> to review a PR that's already on GitHub:</p>
+<div class="highlight"><pre><span></span><code>/pr-review 42
+/pr-review https://github.com/owner/repo/pull/42
 </code></pre></div>
 
-<p>The orchestrator recognizes signals like "just do it", "quick fix", or single-line trivial changes and skips issue creation, going directly to implementation.</p>
-<h3 id="working-on-an-existing-issue">Working on an existing issue</h3>
-<div class="highlight"><pre><span></span><code>You: Work on issue #42
+<p>Pi clones the PR branch, runs the three reviewers against the full repo context, lets you select which findings to post, and submits them as inline review comments on the PR. See <a href="workflow-recipes.html">Common Workflow Recipes</a> for more review patterns.</p>
+<h3 id="skipping-the-issue-first-workflow">Skipping the Issue-First Workflow</h3>
+<p>The issue-first workflow is skipped automatically for:</p>
+<ul>
+<li>Typos and single-line fixes</li>
+<li>Questions or explorations (no code changes)</li>
+<li>Urgent hotfixes when you indicate time pressure</li>
+<li>When you say "just do it" or "quick fix"</li>
+</ul>
+<h3 id="multiple-prs-in-parallel">Multiple PRs in Parallel</h3>
+<p>When working on more than one PR or branch at the same time, pi uses <code>git worktree</code> to keep each branch isolated:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Pi creates separate worktrees automatically</span>
+.worktrees/pr-42/<span class="w">   </span><span class="c1"># One branch</span>
+.worktrees/pr-43/<span class="w">   </span><span class="c1"># Another branch</span>
 </code></pre></div>
 
-<p>The orchestrator picks up the existing issue, creates a branch (if one doesn't exist), and starts working through the Done checklist.</p>
-<h3 id="reviewing-a-github-pr">Reviewing a GitHub PR</h3>
-<div class="highlight"><pre><span></span><code>/pr-review 123
-/pr-review https://github.com/your-org/repo/pull/123
+<p>This prevents branch switching from corrupting parallel agent work.</p>
+<h3 id="teaching-pi-your-preferences">Teaching Pi Your Preferences</h3>
+<p>Pi remembers your conventions across sessions. When you correct it or state a preference, it's saved automatically:</p>
+<div class="highlight"><pre><span></span><code>Always use conventional commits. Never put issue numbers in commit titles.
 </code></pre></div>
 
-<p>Reviews an existing PR and optionally posts inline comments. See <a href="code-review-loop.html">Running the Automated Code Review Loop</a> for details.</p>
-<h3 id="handling-review-comments-from-external-reviewers">Handling review comments from external reviewers</h3>
-<div class="highlight"><pre><span></span><code>/review-handler
-/review-handler --autorabbit
-/review-handler --autoqodo
-</code></pre></div>
-
-<p>Processes comments from human reviewers, CodeRabbit, and Qodo on the current PR. The <code>--autorabbit</code> and <code>--autoqodo</code> flags enter a fully automated polling loop that fixes comments, pushes, and re-polls until the reviewer approves.</p>
-<p>See <a href="workflow-recipes.html">Common Workflow Recipes</a> for more patterns.</p>
-<h3 id="creating-a-release-after-merging">Creating a release after merging</h3>
-<div class="highlight"><pre><span></span><code>/release
-/release 2.1.0
-</code></pre></div>
-
-<p>Generates a changelog from conventional commits, optionally bumps version files, and creates a GitHub release. See <a href="workflow-recipes.html">Common Workflow Recipes</a> for release patterns.</p>
-<h3 id="multi-pr-parallel-work">Multi-PR parallel work</h3>
-<p>When handling multiple PRs simultaneously, pi uses git worktrees to avoid branch-switching conflicts:</p>
-<div class="highlight"><pre><span></span><code>You: Handle reviews for PR #42 and PR #43
-</code></pre></div>
-
-<p>Each PR gets its own isolated worktree directory under <code>.worktrees/</code>. Agents working on PR #42 never interfere with agents working on PR #43.</p>
-<h3 id="teaching-pi-your-preferences">Teaching pi your preferences</h3>
-<p>Pi remembers your preferences across sessions. State them naturally and they're auto-extracted:</p>
-<div class="highlight"><pre><span></span><code>You: I always want tests before implementation
-You: Never use print statements for debugging — always use the logging module
-You: I prefer functional style over classes when possible
-</code></pre></div>
-
-<p>These become part of pi's memory and influence future workflows. See <a href="memory-system.html">Working with Project Memory</a> for details.</p>
+<p>These preferences influence future sessions — including how code is written, reviewed, and committed. See <a href="memory-system.html">Working with Project Memory</a> for more on the memory system.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
-<p><strong>The orchestrator is writing code directly instead of delegating.</strong>
-The orchestrator should never use <code>edit</code>, <code>write</code>, or <code>bash</code> (except for <code>mcpl</code>). If this happens, it's a routing issue. Mention the expected agent: "Delegate this to the python-expert."</p>
-<p><strong>Reviews are taking too long.</strong>
-All three reviewers run as async background agents. Check their status with <code>/async-status</code>. If a reviewer is stuck, you can kill it and re-trigger the review.</p>
-<p><strong>Tests fail but they were already failing before my changes.</strong>
-The test runner compares against a baseline. Only <strong>new</strong> failures block the workflow. If you're seeing pre-existing failures blocking, mention it and the orchestrator will re-run the baseline comparison.</p>
-<p><strong>The wrong specialist agent was chosen.</strong>
-Routing is based on task intent, not just file type. If the orchestrator routes incorrectly, tell it directly: "Use the python-expert for this." See <a href="agent-routing.html">Understanding Agent Routing and Delegation</a> for routing details.</p>
-<p><strong>Side question made pi forget what it was doing.</strong>
-Task tracking prevents this — the task list is injected every turn. If tasks exist, the orchestrator resumes automatically after answering. If it doesn't, say "continue with the tasks" to nudge it back.</p>
+<ul>
+<li><strong>Pi tries to write code directly instead of delegating</strong> — This shouldn't happen, but if it does, say "delegate this to the appropriate specialist agent."</li>
+<li><strong>Review loop seems stuck</strong> — Reviewers run as background agents. Use <code>/async-status</code> to check their progress. See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>.</li>
+<li><strong>Pi skipped the issue/branch step</strong> — It may have classified your request as trivial. Say "use the issue-first workflow" to force it.</li>
+<li><strong>Tests fail that were already failing</strong> — Pi compares against a baseline. Only new failures caused by your changes block the workflow. Pre-existing failures are noted but don't stop progress.</li>
+<li><strong>Wrong specialist agent picked</strong> — Pi routes by task intent, not file extension. If routing seems wrong, you can say "use the python-expert for this" to override.</li>
+</ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li><a href="quickstart.html">Installing and Starting Your First Session</a></li>
@@ -636,40 +538,23 @@ Task tracking prevents this — the task list is injected every turn. If tasks e
 <ul>
 <li><a href="#prerequisites">Prerequisites</a></li>
 <li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step-the-full-feature-workflow">Step-by-Step: The Full Feature Workflow</a><ul>
-<li><a href="#step-1-describe-what-you-want">Step 1 — Describe what you want</a></li>
-<li><a href="#step-2-root-cause-investigation">Step 2 — Root cause investigation</a></li>
-<li><a href="#step-3-issue-creation">Step 3 — Issue creation</a></li>
-<li><a href="#step-4-branch-creation">Step 4 — Branch creation</a></li>
-<li><a href="#step-5-implementation">Step 5 — Implementation</a></li>
-<li><a href="#step-6-automated-code-review-3-reviewers-in-parallel">Step 6 — Automated code review (3 reviewers in parallel)</a></li>
-<li><a href="#step-7-fix-and-review-loop">Step 7 — Fix-and-review loop</a></li>
-<li><a href="#step-8-test-execution">Step 8 — Test execution</a></li>
-<li><a href="#step-9-commit-and-push">Step 9 — Commit and push</a></li>
-<li><a href="#step-10-pull-request-creation">Step 10 — Pull request creation</a></li>
+<li><a href="#step-by-step-walkthrough">Step-by-Step Walkthrough</a><ul>
+<li><a href="#step-1-describe-what-you-want">Step 1: Describe What You Want</a></li>
+<li><a href="#step-2-issue-creation-and-branch-setup">Step 2: Issue Creation and Branch Setup</a></li>
+<li><a href="#step-3-watch-the-orchestrator-delegate">Step 3: Watch the Orchestrator Delegate</a></li>
+<li><a href="#step-4-code-review-loop">Step 4: Code Review Loop</a></li>
+<li><a href="#step-5-tests">Step 5: Tests</a></li>
+<li><a href="#step-6-commit-push-and-pr">Step 6: Commit, Push, and PR</a></li>
 </ul>
 </li>
-<li><a href="#using-slash-commands">Using Slash Commands</a><ul>
-<li><a href="#implement-scout-plan-and-build">/implement — Scout, plan, and build</a></li>
-<li><a href="#implement-and-review-build-with-automatic-review">/implement-and-review — Build with automatic review</a></li>
-<li><a href="#review-local-review-before-committing">/review-local — Review before committing</a></li>
-<li><a href="#scout-and-plan-explore-without-changing-anything">/scout-and-plan — Explore without changing anything</a></li>
-</ul>
-</li>
-<li><a href="#monitoring-progress">Monitoring Progress</a><ul>
-<li><a href="#task-tracking">Task tracking</a></li>
-<li><a href="#status-session-snapshot">/status — Session snapshot</a></li>
-<li><a href="#async-status-background-agent-details">/async-status — Background agent details</a></li>
-</ul>
-</li>
+<li><a href="#using-the-implement-shortcut">Using the /implement Shortcut</a></li>
+<li><a href="#using-review-local-to-review-before-committing">Using /review-local to Review Before Committing</a></li>
+<li><a href="#task-tracking-during-the-workflow">Task Tracking During the Workflow</a></li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#skipping-the-issue-first-workflow">Skipping the issue-first workflow</a></li>
-<li><a href="#working-on-an-existing-issue">Working on an existing issue</a></li>
-<li><a href="#reviewing-a-github-pr">Reviewing a GitHub PR</a></li>
-<li><a href="#handling-review-comments-from-external-reviewers">Handling review comments from external reviewers</a></li>
-<li><a href="#creating-a-release-after-merging">Creating a release after merging</a></li>
-<li><a href="#multi-pr-parallel-work">Multi-PR parallel work</a></li>
-<li><a href="#teaching-pi-your-preferences">Teaching pi your preferences</a></li>
+<li><a href="#reviewing-an-existing-pull-request">Reviewing an Existing Pull Request</a></li>
+<li><a href="#skipping-the-issue-first-workflow">Skipping the Issue-First Workflow</a></li>
+<li><a href="#multiple-prs-in-parallel">Multiple PRs in Parallel</a></li>
+<li><a href="#teaching-pi-your-preferences">Teaching Pi Your Preferences</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -685,7 +570,7 @@ Task tracking prevents this — the task list is injected every turn. If tasks e
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.6.2</span>
+            <span class="footer-version">Generated from version 3.9.1</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
