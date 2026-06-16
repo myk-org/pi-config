@@ -38,6 +38,11 @@ let REPEAT_FILE = "";
 /** Cached trailer identity selection for comma-separated commit_trailer values */
 let cachedTrailerIdentity: string | null = null;
 
+/** Escape a string for safe inclusion in shell single/double-quoted strings */
+function shellEscapeTrailer(s: string): string {
+  return s.replace(/[\\'"`$!]/g, "\\$&");
+}
+
 function ensureRepeatFile(cwd: string): void {
   if (!REPEAT_FILE) {
     REPEAT_FILE = join(getProjectTmpDir(cwd), `.repeat-${process.pid}.json`);
@@ -81,39 +86,44 @@ function resolveEffectiveCwd(command: string, sessionCwd: string): string {
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
 
-  // Register select_commit_trailer tool for choosing trailer identity
-  pi.registerTool({
-    name: "select_commit_trailer",
-    description: "Select which commit trailer identity to use for this session. " +
-      "Call this when a git commit is blocked because multiple trailer identities are configured. " +
-      "Pass the user's chosen identity string exactly as shown in the block reason.",
-    parameters: {
-      type: "object" as const,
-      properties: {
-        identity: {
-          type: "string",
-          description: "The selected trailer identity string (e.g., 'Jane Doe <jane@example.com>')",
-        },
-      },
-      required: ["identity"],
-    },
-    execute: async (params: { identity: string }, ctx: any) => {
-      const options = getTrailerOptions(ctx.cwd);
-      if (!options) {
-        return { content: [{ type: "text", text: "No trailer options configured — commit_trailer setting is not comma-separated." }] };
-      }
-      const identity = params.identity.trim();
-      if (!options.includes(identity)) {
-        return { content: [{ type: "text", text: `Invalid identity. Must be one of: ${options.join(", ")}` }] };
-      }
-      setTrailerIdentity(identity);
-      return { content: [{ type: "text", text: `Commit trailer identity set to: ${identity}. You can now retry the git commit.` }] };
-    },
-  });
+  // Track whether select_commit_trailer tool has been registered
+  let trailerToolRegistered = false;
 
-  // Reset trailer identity cache on session start
-  pi.on("session_start", () => {
+  // Reset trailer identity cache on session start + conditionally register tool
+  pi.on("session_start", (_event, ctx) => {
     cachedTrailerIdentity = null;
+    // Only register the tool when commit_trailer has multiple options
+    if (!trailerToolRegistered && getTrailerOptions(ctx.cwd)) {
+      trailerToolRegistered = true;
+      pi.registerTool({
+        name: "select_commit_trailer",
+        description: "Select which commit trailer identity to use for this session. " +
+          "Call this when a git commit is blocked because multiple trailer identities are configured. " +
+          "Pass the user's chosen identity string exactly as shown in the block reason.",
+        parameters: {
+          type: "object" as const,
+          properties: {
+            identity: {
+              type: "string",
+              description: "The selected trailer identity string (e.g., 'Jane Doe <jane@example.com>')",
+            },
+          },
+          required: ["identity"],
+        },
+        execute: async (params: { identity: string }, ctx: any) => {
+          const options = getTrailerOptions(ctx.cwd);
+          if (!options) {
+            return { content: [{ type: "text", text: "No trailer options configured." }] };
+          }
+          const identity = params.identity.trim();
+          if (!options.includes(identity)) {
+            return { content: [{ type: "text", text: `Invalid identity. Must be one of: ${options.join(", ")}` }] };
+          }
+          setTrailerIdentity(identity);
+          return { content: [{ type: "text", text: `Commit trailer identity set to: ${identity}. You can now retry the git commit.` }] };
+        },
+      });
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -343,10 +353,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
                   reason: `\u26d4 Select commit trailer identity before committing. Options: ${optionsList}. Ask the user which identity to use, then call select_commit_trailer with their choice.`,
                 };
               }
-              trailerLines = `Assisted-by: ${cachedTrailerIdentity}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
+              // Validate cached identity is still in current options
+              const currentOptions = getTrailerOptions(ctx.cwd) ?? [];
+              if (!currentOptions.includes(cachedTrailerIdentity)) {
+                cachedTrailerIdentity = null;
+                const optionsList = currentOptions.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
+                return {
+                  block: true,
+                  reason: `\u26d4 Cached trailer identity is no longer valid. Options: ${optionsList}. Ask the user which identity to use, then call select_commit_trailer with their choice.`,
+                };
+              }
+              trailerLines = `Assisted-by: ${shellEscapeTrailer(cachedTrailerIdentity)}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
             } else if (typeof trailerSetting === "string") {
               // Single custom identity
-              trailerLines = `Assisted-by: ${trailerSetting}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
+              trailerLines = `Assisted-by: ${shellEscapeTrailer(trailerSetting)}\nAssisted-by: PI (${model.id}) <noreply@pi.dev>`;
             } else {
               // true — PI only
               trailerLines = `Assisted-by: PI (${model.id}) <noreply@pi.dev>`;
