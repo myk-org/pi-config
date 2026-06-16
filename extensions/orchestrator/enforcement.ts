@@ -89,41 +89,43 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   // Track whether select_commit_trailer tool has been registered
   let trailerToolRegistered = false;
 
-  // Reset trailer identity cache on session start + conditionally register tool
-  pi.on("session_start", (_event, ctx) => {
-    cachedTrailerIdentity = null;
-    // Only register the tool when commit_trailer has multiple options
-    if (!trailerToolRegistered && getTrailerOptions(ctx.cwd)) {
-      trailerToolRegistered = true;
-      pi.registerTool({
-        name: "select_commit_trailer",
-        description: "Select which commit trailer identity to use for this session. " +
-          "Call this when a git commit is blocked because multiple trailer identities are configured. " +
-          "Pass the user's chosen identity string exactly as shown in the block reason.",
-        parameters: {
-          type: "object" as const,
-          properties: {
-            identity: {
-              type: "string",
-              description: "The selected trailer identity string (e.g., 'Jane Doe <jane@example.com>')",
-            },
+  /** Lazily register select_commit_trailer tool on first need */
+  function ensureTrailerTool(): void {
+    if (trailerToolRegistered) return;
+    trailerToolRegistered = true;
+    pi.registerTool({
+      name: "select_commit_trailer",
+      description: "Select which commit trailer identity to use for this session. " +
+        "Call this when a git commit is blocked because multiple trailer identities are configured. " +
+        "Pass the user's chosen identity string exactly as shown in the block reason.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          identity: {
+            type: "string",
+            description: "The selected trailer identity string (e.g., 'Jane Doe <jane@example.com>')",
           },
-          required: ["identity"],
         },
-        execute: async (params: { identity: string }, ctx: any) => {
-          const options = getTrailerOptions(ctx.cwd);
-          if (!options) {
-            return { content: [{ type: "text", text: "No trailer options configured." }] };
-          }
-          const identity = params.identity.trim();
-          if (!options.includes(identity)) {
-            return { content: [{ type: "text", text: `Invalid identity. Must be one of: ${options.join(", ")}` }] };
-          }
-          setTrailerIdentity(identity);
-          return { content: [{ type: "text", text: `Commit trailer identity set to: ${identity}. You can now retry the git commit.` }] };
-        },
-      });
-    }
+        required: ["identity"],
+      },
+      async execute(_toolCallId: string, params: { identity: string }, _signal: unknown, _onUpdate: unknown, ctx: any) {
+        const options = getTrailerOptions(ctx.cwd);
+        if (!options) {
+          return { content: [{ type: "text", text: "No trailer options configured." }] };
+        }
+        const identity = params.identity.trim();
+        if (!options.includes(identity)) {
+          return { content: [{ type: "text", text: `Invalid identity. Must be one of: ${options.join(", ")}` }] };
+        }
+        setTrailerIdentity(identity);
+        return { content: [{ type: "text", text: `Commit trailer identity set to: ${identity}. You can now retry the git commit.` }] };
+      },
+    });
+  }
+
+  // Reset trailer identity cache on session start
+  pi.on("session_start", () => {
+    cachedTrailerIdentity = null;
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -346,6 +348,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             if (typeof trailerSetting === "string" && trailerSetting.includes(",")) {
               // Multiple options — need user selection
               if (!cachedTrailerIdentity) {
+                ensureTrailerTool();
                 const options = getTrailerOptions(ctx.cwd) ?? [];
                 const optionsList = options.map((o: string, i: number) => `${i + 1}) ${o}`).join(", ");
                 return {
