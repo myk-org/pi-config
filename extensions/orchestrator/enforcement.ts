@@ -340,9 +340,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         // Commit trailer injection — setting value is the trailer name (e.g., "Assisted-by")
         const trailerSetting = getSetting(ctx.cwd, "commit_trailer");
         if (typeof trailerSetting === "string") {
-          const model = (ctx as any).model;
-          const piIdentity = `PI (${model.id}) <noreply@pi.dev>`;
-          if (model?.id && !command.includes(`: ${piIdentity}`)) {
+          const modelId = (ctx as any).model?.id;
+          if (modelId && !command.includes(`: PI (${modelId}) <noreply@pi.dev>`)) {
+            const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
             let trailerName: string;
 
             if (trailerSetting.includes(",")) {
