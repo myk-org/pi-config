@@ -38,7 +38,21 @@ export interface CronTask {
 let CRON_FILE = ""; // Set on session_start to project-scoped dir
 
 /** Unique session suffix — prevents PID collisions across containers */
-const SESSION_SUFFIX = `${process.pid}-${Date.now().toString(36)}`;
+/** Suffix must be unique across containers but stable across reloads (same process).
+ *  Use process start time from /proc or process.uptime() as a stable identifier. */
+const SESSION_SUFFIX = (() => {
+  try {
+    // Linux: read process start time from /proc/self/stat (field 22) — stable, unique per PID lifecycle
+    const stat = require("fs").readFileSync("/proc/self/stat", "utf-8");
+    const startTime = stat.split(" ")[21];
+    return `${process.pid}-${startTime}`;
+  } catch {
+    // Fallback for non-Linux: use a truncated hash of pid + ppid + argv
+    const crypto = require("crypto");
+    const seed = `${process.pid}-${process.ppid}-${process.argv.join(",")}`;
+    return `${process.pid}-${crypto.createHash("md5").update(seed).digest("hex").slice(0, 8)}`;
+  }
+})();
 
 /** Matches both old (cron-{pid}.json) and new (cron-{pid}-{suffix}.json) formats */
 const CRON_FILE_RE = /^cron-(\d+)(?:-[^.]+)?\.json$/;
