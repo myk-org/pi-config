@@ -40,14 +40,24 @@ let CRON_FILE = ""; // Set on session_start to project-scoped dir
 /** Unique session suffix — prevents PID collisions across containers */
 /** Suffix must be unique across containers but stable across reloads (same process).
  *  Use process start time from /proc or process.uptime() as a stable identifier. */
+/** Parse start time (field 22) from /proc stat content — handles comm fields with spaces */
+function parseProcStartTime(statContent: string): string | null {
+  // Field 2 (comm) is wrapped in parens and may contain spaces/parens.
+  // Find the LAST ')' to reliably skip it, then split remaining fields.
+  const closeParenIdx = statContent.lastIndexOf(")");
+  if (closeParenIdx < 0) return null;
+  const fields = statContent.slice(closeParenIdx + 2).split(" ");
+  // After comm: field 3=state(idx 0), field 4=ppid(idx 1), ... field 22=starttime(idx 19)
+  return fields[19] || null;
+}
+
 const SESSION_SUFFIX = (() => {
   try {
-    // Linux: read process start time from /proc/self/stat (field 22) — stable, unique per PID lifecycle
     const stat = fs.readFileSync("/proc/self/stat", "utf-8");
-    const startTime = stat.split(" ")[21];
+    const startTime = parseProcStartTime(stat);
+    if (!startTime) throw new Error("failed to parse start time");
     return `${process.pid}-${startTime}`;
   } catch {
-    // Fallback for non-Linux: use a truncated hash of pid + ppid + argv
     const seed = `${process.pid}-${process.ppid}-${process.argv.join(",")}`;
     let hash = 0;
     for (let i = 0; i < seed.length; i++) {
@@ -93,10 +103,31 @@ function cleanupOrphanedCronFiles(): void {
         try { fs.unlinkSync(path.join(dir, f)); } catch {}
         continue;
       }
-      // New format — delete only if PID is dead
+      // New format — extract PID and suffix token
       const pid = +m[1];
-      try { process.kill(pid, 0); } catch {
-        try { fs.unlinkSync(path.join(dir, f)); } catch {}
+      const suffixMatch = f.match(/^cron-\d+-(.+)\.json$/);
+      const fileToken = suffixMatch?.[1];
+      // Check /proc/{pid}/stat — if we can read it, verify start time matches
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8");
+        const startTime = parseProcStartTime(stat);
+        if (startTime && fileToken && startTime === fileToken) {
+          // Same PID, same start time — process is alive, skip
+          continue;
+        }
+        if (startTime && fileToken && startTime !== fileToken) {
+          // PID reused — different process, safe to delete
+          try { fs.unlinkSync(path.join(dir, f)); } catch {}
+          continue;
+        }
+      } catch {
+        // /proc/{pid} not readable — either dead process or different PID namespace
+        // Only delete if we can confirm PID is dead in our namespace
+        try { process.kill(pid, 0); } catch {
+          // PID dead in our namespace — safe to delete
+          try { fs.unlinkSync(path.join(dir, f)); } catch {}
+        }
+        // If kill(pid, 0) succeeds but /proc is unreadable — skip (can't verify)
       }
     }
   } catch (e: any) { console.debug("[cron] cleanup orphaned cron files failed:", e?.message || e); }

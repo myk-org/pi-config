@@ -122,9 +122,9 @@ _QODO_REVIEWING_MARKERS = ("Looking for bugs?", "review agent")
 def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
     """Check if Qodo is currently reviewing the PR.
 
-    Qodo posts a transient comment with exact body while reviewing.
+    Qodo posts a transient comment while reviewing (e.g., "Looking for bugs?").
     If this comment exists, the sticky is about to be updated — we should wait.
-    Matches exact author (qodo-code-review[bot]) and exact body text.
+    Matches author (qodo-code-review[bot]) and known substring markers.
     """
     if comments is None:
         endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
