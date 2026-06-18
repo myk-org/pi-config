@@ -115,10 +115,8 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
     return False
 
 
-# Exact body Qodo posts while reviewing a PR (transient comment)
-_QODO_REVIEWING_BODY = (
-    "\n<h3>Looking for bugs?</h3>\nCheck back in a few minutes. An AI review agent is analyzing this pull request.\n"
-)
+# Qodo posts a transient comment while reviewing — detect by heading text (resilient to body changes)
+_QODO_REVIEWING_MARKERS = ("Looking for bugs?", "review agent")
 
 
 def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
@@ -139,7 +137,7 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | N
         if author != "qodo-code-review[bot]":
             continue
         body = comment.get("body", "")
-        if body == _QODO_REVIEWING_BODY:
+        if any(marker in body for marker in _QODO_REVIEWING_MARKERS):
             print_stderr("[poll] Qodo review in progress (Looking for bugs).")
             return True
 
