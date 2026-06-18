@@ -2,7 +2,7 @@
  * Cron-like scheduled tasks — pi-process-scoped.
  *
  * Tasks survive /reload, /resume, /new but die on pi exit.
- * Persisted to a PID-scoped file so they survive extension re-evaluation.
+ * Persisted to a session-scoped file so they survive extension re-evaluation.
  *
  * The /cron command is a natural-language interface — the AI parses
  * the user's intent and calls the cron_manage tool with structured params.
@@ -37,6 +37,39 @@ export interface CronTask {
 
 let CRON_FILE = ""; // Set on session_start to project-scoped dir
 
+/** Unique session suffix — prevents PID collisions across containers */
+/** Suffix must be unique across containers but stable across reloads (same process).
+ *  Use process start time from /proc or process.uptime() as a stable identifier. */
+/** Parse start time (field 22) from /proc stat content — handles comm fields with spaces */
+function parseProcStartTime(statContent: string): string | null {
+  // Field 2 (comm) is wrapped in parens and may contain spaces/parens.
+  // Find the LAST ')' to reliably skip it, then split remaining fields.
+  const closeParenIdx = statContent.lastIndexOf(")");
+  if (closeParenIdx < 0) return null;
+  const fields = statContent.slice(closeParenIdx + 2).split(" ");
+  // After comm: field 3=state(idx 0), field 4=ppid(idx 1), ... field 22=starttime(idx 19)
+  return fields[19] || null;
+}
+
+const SESSION_SUFFIX = (() => {
+  try {
+    const stat = fs.readFileSync("/proc/self/stat", "utf-8");
+    const startTime = parseProcStartTime(stat);
+    if (!startTime) throw new Error("failed to parse start time");
+    return `${process.pid}-${startTime}`;
+  } catch {
+    const seed = `${process.pid}-${process.ppid}-${process.argv.join(",")}`;
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+    }
+    return `${process.pid}-${Math.abs(hash).toString(36)}`;
+  }
+})();
+
+/** Matches both old (cron-{pid}.json) and new (cron-{pid}-{suffix}.json) formats */
+const CRON_FILE_RE = /^cron-(\d+)(?:-[^.]+)?\.json$/;
+
 /** Get current cron file path — used by autocomplete */
 export function getCronFilePath(): string { return CRON_FILE; }
 
@@ -59,18 +92,45 @@ function loadCrons(): CronTask[] {
 
 function cleanupOrphanedCronFiles(): void {
   try {
-    // Clean up project-scoped cron files
     const dir = path.dirname(CRON_FILE);
+    const myFile = path.basename(CRON_FILE);
     for (const f of fs.readdirSync(dir)) {
-      const m = f.match(/^cron-(\d+)\.json$/);
-      if (m && +m[1] !== process.pid) {
-        try { process.kill(+m[1], 0); } catch {
+      const m = f.match(CRON_FILE_RE);
+      if (!m || f === myFile) continue;
+      // Old format (no suffix) — always delete (legacy)
+      const isLegacy = /^cron-\d+\.json$/.test(f);
+      if (isLegacy) {
+        try { fs.unlinkSync(path.join(dir, f)); } catch {}
+        continue;
+      }
+      // New format — extract PID and suffix token
+      const pid = +m[1];
+      const suffixMatch = f.match(/^cron-\d+-(.+)\.json$/);
+      const fileToken = suffixMatch?.[1];
+      // Check /proc/{pid}/stat — if we can read it, verify start time matches
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8");
+        const startTime = parseProcStartTime(stat);
+        if (startTime && fileToken && startTime === fileToken) {
+          // Same PID, same start time — process is alive, skip
+          continue;
+        }
+        if (startTime && fileToken && startTime !== fileToken) {
+          // PID reused — different process, safe to delete
+          try { fs.unlinkSync(path.join(dir, f)); } catch {}
+          continue;
+        }
+      } catch {
+        // /proc/{pid} not readable — either dead process or different PID namespace
+        // Only delete if we can confirm PID is dead in our namespace
+        try { process.kill(pid, 0); } catch {
+          // PID dead in our namespace — safe to delete
           try { fs.unlinkSync(path.join(dir, f)); } catch {}
         }
+        // If kill(pid, 0) succeeds but /proc is unreadable — skip (can't verify)
       }
     }
   } catch (e: any) { console.debug("[cron] cleanup orphaned cron files failed:", e?.message || e); }
-
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -192,7 +252,7 @@ export function registerCron(
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
-    CRON_FILE = path.join(getProjectTmpDir(ctx.cwd), `cron-${process.pid}.json`);
+    CRON_FILE = path.join(getProjectTmpDir(ctx.cwd), `cron-${SESSION_SUFFIX}.json`);
     cleanupOrphanedCronFiles();
     // Skip cron scheduling in one-shot modes
     if (ctx.mode === "print" || ctx.mode === "json") return;
@@ -327,10 +387,10 @@ export function registerCron(
         try {
           const dir = path.dirname(CRON_FILE);
           for (const f of fs.readdirSync(dir)) {
-            const m = f.match(/^cron-(\d+)\.json$/);
+            const m = f.match(CRON_FILE_RE);
             if (!m) continue;
             const pid = +m[1];
-            const isMe = pid === process.pid;
+            const isMe = f === path.basename(CRON_FILE);
             let alive = isMe;
             if (!isMe) { try { process.kill(pid, 0); alive = true; } catch {} }
             if (!alive) continue;
@@ -402,10 +462,10 @@ export function registerCron(
         try {
           const dir = path.dirname(CRON_FILE);
           for (const f of fs.readdirSync(dir)) {
-            const m = f.match(/^cron-(\d+)\.json$/);
+            const m = f.match(CRON_FILE_RE);
             if (!m) continue;
             const pid = +m[1];
-            const isMe = pid === process.pid;
+            const isMe = f === path.basename(CRON_FILE);
             let alive = isMe;
             if (!isMe) { try { process.kill(pid, 0); alive = true; } catch {} }
             if (!alive) continue;

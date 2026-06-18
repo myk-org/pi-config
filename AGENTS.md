@@ -211,7 +211,7 @@ All async agent temp files live under project-scoped subdirectories:
 ```text
 .pi/tmp/
 ├── debug.log                    # Async debug log
-├── cron-<pid>.json              # Cron task state
+├── cron-<pid>-<suffix>.json     # Cron task state (session-unique suffix prevents container PID collisions)
 ├── .repeat-<pid>.json           # Repeat command detection
 ├── nvim-<pid>-<ts>.lua          # Nvim integration (ephemeral)
 ├── nvim-qf-<pid>-<ts>.json      # Nvim quickfix data (ephemeral)
