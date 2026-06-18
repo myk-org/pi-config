@@ -519,6 +519,7 @@ export default function (pi: ExtensionAPI) {
 	let pingTimer: NodeJS.Timeout | null = null;
 	let pingWorker: Worker | null = null;
 	let pingWorkerReady = false;
+	let cardUpdateTimer: NodeJS.Timeout | null = null;
 	let keepaliveTimer: NodeJS.Timeout | null = null;
 	let includeExplicit = false;
 	let displayProject: string | null = null;
@@ -810,7 +811,10 @@ export default function (pi: ExtensionAPI) {
 		try {
 			pingWorker = createPingWorker(pingEndpoint);
 			pingWorker.on("message", (msg: any) => {
-				if (msg.type === "ready") pingWorkerReady = true;
+				if (msg.type === "ready") {
+					pingWorkerReady = true;
+					updatePingWorkerCard(); // Push initial card immediately
+				}
 				if (msg.type === "error") console.debug("[coms] ping worker error:", msg.message);
 			});
 			pingWorker.on("error", () => { pingWorkerReady = false; });
@@ -880,7 +884,7 @@ export default function (pi: ExtensionAPI) {
 		pingTimer = setInterval(() => { refreshPool().catch(() => {}); }, PING_INTERVAL_MS);
 		try { (pingTimer as any).unref?.(); } catch { /* ignore */ }
 		// Update ping worker card periodically
-		const cardUpdateTimer = setInterval(updatePingWorkerCard, 5000);
+		cardUpdateTimer = setInterval(updatePingWorkerCard, 5000);
 		try { (cardUpdateTimer as any).unref?.(); } catch { /* ignore */ }
 		keepaliveTimer = setInterval(() => {
 			if (!identity) return;
@@ -1643,6 +1647,10 @@ export default function (pi: ExtensionAPI) {
 		if (server) {
 			try { server.close(); } catch { /* ignore */ }
 			server = null;
+		}
+		if (cardUpdateTimer) {
+			clearInterval(cardUpdateTimer);
+			cardUpdateTimer = null;
 		}
 		if (pingWorker) {
 			try { pingWorker.postMessage({ type: "shutdown" }); } catch {}

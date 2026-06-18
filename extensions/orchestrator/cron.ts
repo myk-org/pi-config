@@ -43,14 +43,17 @@ let CRON_FILE = ""; // Set on session_start to project-scoped dir
 const SESSION_SUFFIX = (() => {
   try {
     // Linux: read process start time from /proc/self/stat (field 22) — stable, unique per PID lifecycle
-    const stat = require("fs").readFileSync("/proc/self/stat", "utf-8");
+    const stat = fs.readFileSync("/proc/self/stat", "utf-8");
     const startTime = stat.split(" ")[21];
     return `${process.pid}-${startTime}`;
   } catch {
     // Fallback for non-Linux: use a truncated hash of pid + ppid + argv
-    const crypto = require("crypto");
     const seed = `${process.pid}-${process.ppid}-${process.argv.join(",")}`;
-    return `${process.pid}-${crypto.createHash("md5").update(seed).digest("hex").slice(0, 8)}`;
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+    }
+    return `${process.pid}-${Math.abs(hash).toString(36)}`;
   }
 })();
 
@@ -82,12 +85,17 @@ function cleanupOrphanedCronFiles(): void {
     const dir = path.dirname(CRON_FILE);
     const myFile = path.basename(CRON_FILE);
     for (const f of fs.readdirSync(dir)) {
-      // Match both old (cron-{pid}.json) and new (cron-{pid}-{suffix}.json) formats
       const m = f.match(CRON_FILE_RE);
       if (!m || f === myFile) continue;
+      // Old format (no suffix) — always delete (legacy)
+      const isLegacy = /^cron-\d+\.json$/.test(f);
+      if (isLegacy) {
+        try { fs.unlinkSync(path.join(dir, f)); } catch {}
+        continue;
+      }
+      // New format — delete only if PID is dead
       const pid = +m[1];
       try { process.kill(pid, 0); } catch {
-        // PID dead — delete orphaned file
         try { fs.unlinkSync(path.join(dir, f)); } catch {}
       }
     }
