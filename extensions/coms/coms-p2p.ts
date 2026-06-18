@@ -25,6 +25,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
+import { Worker } from "node:worker_threads";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -132,6 +133,67 @@ function makeEndpoint(sessionId: string): string {
 		return `\\\\.\\pipe\\pi-coms-${sessionId}`;
 	}
 	return path.join(COMS_DIR, "sockets", `${sessionId}.sock`);
+}
+
+/** Inline ping worker — responds to pings on a separate socket, immune to main-thread event-loop blocks */
+function createPingWorker(pingEndpoint: string): Worker {
+	const workerCode = `
+const net = require("net");
+const fs = require("fs");
+const { parentPort, workerData } = require("worker_threads");
+
+let cachedPong = null;
+parentPort.on("message", (msg) => {
+	if (msg.type === "update_card") cachedPong = msg.pong;
+	if (msg.type === "shutdown") {
+		if (srv) try { srv.close(); } catch {}
+		try { fs.unlinkSync(workerData.endpoint); } catch {}
+		process.exit(0);
+	}
+});
+
+const srv = net.createServer((socket) => {
+	let buf = "";
+	socket.on("data", (chunk) => {
+		buf += chunk.toString("utf-8");
+		if (buf.length > 65536) { try { socket.destroy(); } catch {} return; }
+		const nl = buf.indexOf("\\n");
+		if (nl < 0) return;
+		const line = buf.slice(0, nl);
+		try {
+			const parsed = JSON.parse(line);
+			if (parsed.type === "ping" && cachedPong) {
+				const resp = { ...cachedPong, msg_id: parsed.msg_id };
+				socket.write(JSON.stringify(resp) + "\\n");
+			} else {
+				socket.write(JSON.stringify({ type: "nack", msg_id: parsed.msg_id || "", error: "not ready" }) + "\\n");
+			}
+		} catch {
+			socket.write(JSON.stringify({ type: "nack", msg_id: "", error: "parse error" }) + "\\n");
+		}
+		try { socket.end(); } catch {}
+	});
+	socket.once("error", () => { try { socket.destroy(); } catch {} });
+});
+
+// Clean up stale socket file
+if (fs.existsSync(workerData.endpoint)) {
+	try { fs.unlinkSync(workerData.endpoint); } catch {}
+}
+
+srv.listen(workerData.endpoint, () => {
+	parentPort.postMessage({ type: "ready" });
+});
+srv.on("error", (err) => {
+	parentPort.postMessage({ type: "error", message: err.message });
+});
+`;
+	const worker = new Worker(workerCode, {
+		eval: true,
+		workerData: { endpoint: pingEndpoint },
+	});
+	worker.unref();
+	return worker;
 }
 
 // ━━ CLI flag shape (read via pi.registerFlag/pi.getFlag) ━━━━━━━━━━━━━━━━━━━
@@ -455,6 +517,8 @@ export default function (pi: ExtensionAPI) {
 	const inboundQueue: Map<string, InboundContext> = new Map();
 	let server: net.Server | null = null;
 	let pingTimer: NodeJS.Timeout | null = null;
+	let pingWorker: Worker | null = null;
+	let pingWorkerReady = false;
 	let keepaliveTimer: NodeJS.Timeout | null = null;
 	let includeExplicit = false;
 	let displayProject: string | null = null;
@@ -584,11 +648,11 @@ export default function (pi: ExtensionAPI) {
 		ackOk(socket, env.msg_id);
 	}
 
-	function handlePing(socket: net.Socket, env: PingEnvelope): void {
+	function buildAgentCard(): AgentCard {
 		const ctx = currentCtx;
 		const ident = identity;
 		const pct = ctx ? Math.round(ctx.getContextUsage()?.percent ?? 0) : 0;
-		const card: AgentCard = {
+		return {
 			name: ident?.name ?? "unknown",
 			purpose: ident?.purpose ?? "",
 			model: ctx?.model?.id ?? ident?.model ?? "unknown",
@@ -597,6 +661,20 @@ export default function (pi: ExtensionAPI) {
 			queue_depth: inboundQueue.size,
 			tasks_summary: readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 		};
+	}
+
+	/** Push current agent card to ping worker so it can respond independently */
+	function updatePingWorkerCard(): void {
+		if (!pingWorker || !pingWorkerReady) return;
+		try {
+			const card = buildAgentCard();
+			const pong: Pong = { type: "pong", msg_id: "", agent_card: card };
+			pingWorker.postMessage({ type: "update_card", pong });
+		} catch { /* ignore */ }
+	}
+
+	function handlePing(socket: net.Socket, env: PingEnvelope): void {
+		const card = buildAgentCard();
 		const pong: Pong = { type: "pong", msg_id: env.msg_id, agent_card: card };
 		try {
 			socket.write(JSON.stringify(pong) + "\n");
@@ -604,6 +682,8 @@ export default function (pi: ExtensionAPI) {
 			// ignore
 		}
 		try { socket.end(); } catch { /* ignore */ }
+		// Also update worker with latest card
+		updatePingWorkerCard();
 	}
 
 	function isValidEnvelope(obj: any): obj is Envelope {
@@ -725,6 +805,20 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// 3b. Start ping worker on separate socket for liveness checks
+		const pingEndpoint = `${endpoint}.ping`;
+		try {
+			pingWorker = createPingWorker(pingEndpoint);
+			pingWorker.on("message", (msg: any) => {
+				if (msg.type === "ready") pingWorkerReady = true;
+				if (msg.type === "error") console.debug("[coms] ping worker error:", msg.message);
+			});
+			pingWorker.on("error", () => { pingWorkerReady = false; });
+			pingWorker.on("exit", () => { pingWorkerReady = false; pingWorker = null; });
+		} catch (err) {
+			console.debug("[coms] ping worker failed to start:", err instanceof Error ? err.message : String(err));
+		}
+
 		// 4. Build + write registry entry atomically.
 		const entry: RegistryEntry = {
 			session_id,
@@ -785,6 +879,9 @@ export default function (pi: ExtensionAPI) {
 		// 7. Start ping + keepalive cycles.
 		pingTimer = setInterval(() => { refreshPool().catch(() => {}); }, PING_INTERVAL_MS);
 		try { (pingTimer as any).unref?.(); } catch { /* ignore */ }
+		// Update ping worker card periodically
+		const cardUpdateTimer = setInterval(updatePingWorkerCard, 5000);
+		try { (cardUpdateTimer as any).unref?.(); } catch { /* ignore */ }
 		keepaliveTimer = setInterval(() => {
 			if (!identity) return;
 			try {
@@ -1016,7 +1113,14 @@ export default function (pi: ExtensionAPI) {
 				hops: 0,
 				timestamp: nowIso(),
 			};
-			const reply = await sendEnvelope(peer.endpoint, pingEnv);
+			// Try dedicated ping socket first (immune to event-loop blocks), fall back to main
+			const pingEndpoint = `${peer.endpoint}.ping`;
+			let reply: any;
+			try {
+				reply = await sendEnvelope(pingEndpoint, pingEnv);
+			} catch {
+				reply = await sendEnvelope(peer.endpoint, pingEnv);
+			}
 			return { peer, pong: reply as Pong };
 		}));
 
@@ -1539,6 +1643,11 @@ export default function (pi: ExtensionAPI) {
 		if (server) {
 			try { server.close(); } catch { /* ignore */ }
 			server = null;
+		}
+		if (pingWorker) {
+			try { pingWorker.postMessage({ type: "shutdown" }); } catch {}
+			pingWorker = null;
+			pingWorkerReady = false;
 		}
 		if (identity) {
 			if (process.platform !== "win32") {
