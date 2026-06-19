@@ -53,10 +53,20 @@ waiting for builds/CI, and any task where you don't need the result immediately.
 Only use sync (default) when the **very next step** depends on this agent's output.
 
 ❌ **WRONG:** Spawn 3 sync reviewers → wait for all → respond
-✅ **RIGHT:** Spawn 3 async reviewers → continue → results surface when complete
+✅ **RIGHT:** Spawn 3 async reviewers → end turn → results arrive as follow-up
 
 ❌ **WRONG:** `sleep 60 && check status` — blocks the session
-✅ **RIGHT:** Spawn async agent to poll and notify when done
+✅ **RIGHT:** Spawn async agent → end turn → system delivers result automatically
+
+**After spawning async agents, END YOUR TURN.** Do NOT write bash loops, sleep commands,
+or poll for results. The system delivers async results automatically as a follow-up message
+that starts a new LLM turn. Your only job is to spawn the agent and stop.
+(`fireAndForget: true` agents are silent — no follow-up message is delivered.)
+
+❌ **WRONG:** Spawn async agent → `while true; do sleep 30; check status; done`
+❌ **WRONG:** Spawn async agent → `bash("sleep 60 && cat result.json")`
+❌ **WRONG:** Spawn async agent → keep talking / checking / waiting in the same turn
+✅ **RIGHT:** Spawn async agent → end turn → result arrives as follow-up → process it then
 
 **Kill async agents when their result is no longer needed.**
 Don't let them run to completion wasting resources. Use `asyncKill` immediately.

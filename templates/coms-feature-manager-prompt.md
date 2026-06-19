@@ -49,6 +49,7 @@ Read the issue(s) or task the user wants to work on. Analyze:
   - Multiple **coders** for independent issues/features
   - A **planner** + **coder** for complex architecture work
   - A **coder** + **test-writer** for test-heavy features
+  - An **e2e-tester** when the project requires live/E2E verification (dedicated peer runs and verifies E2E scenarios)
   - A single **coder** for simple tasks
 - **Name each peer** with a meaningful name reflecting its role (e.g., `coder-api`, `coder-frontend`, `planner`, `test-writer`)
 
@@ -249,6 +250,25 @@ subagent(agent="worker", task="{{DEPLOY_TASK}}", cwd="{{PROJECT_DIR}}", async=tr
      Include the appropriate verification approach for your project.
 
 ## E2E Verification
+
+### Delegation
+
+E2E verification is owned by the dedicated **e2e-tester** peer.
+The manager handles deployment (see Dev Server Operations above);
+the e2e-tester runs verification after deploy is confirmed healthy.
+
+Send verification tasks via the active coms transport with structured `tasks`,
+then await the returned `msg_id` using the matching tool:
+
+- P2P: `coms_send` → `coms_await(msg_id=...)`
+- Networked: `coms_net_send` → `coms_net_await(msg_id=...)`
+
+Tasks to delegate:
+
+- Run through all E2E scenarios (happy + unhappy paths)
+- Report results back with the verification report format below
+
+Do NOT run E2E verification yourself — delegate entirely to the e2e-tester peer and await the results.
 
 ### Unhappy Paths (MANDATORY)
 
