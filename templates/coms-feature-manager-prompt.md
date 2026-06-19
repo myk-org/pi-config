@@ -257,12 +257,18 @@ E2E verification is owned by the dedicated **e2e-tester** peer.
 The manager handles deployment (see Dev Server Operations above);
 the e2e-tester runs verification after deploy is confirmed healthy.
 
-Send verification tasks via the active coms transport (`coms_send` or `coms_net_send`) with structured `tasks`:
+Send verification tasks via the active coms transport with structured `tasks`,
+then await using the matching tool:
+
+- P2P: `coms_send` → `coms_await`
+- Networked: `coms_net_send` → `coms_net_await`
+
+Tasks to delegate:
 
 - Run through all E2E scenarios (happy + unhappy paths)
 - Report results back with the verification report format below
 
-Do NOT run E2E verification yourself — delegate entirely to the e2e-tester peer and `coms_await` the results.
+Do NOT run E2E verification yourself — delegate entirely to the e2e-tester peer and await the results.
 
 ### Unhappy Paths (MANDATORY)
 

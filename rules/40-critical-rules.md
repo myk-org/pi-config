@@ -61,6 +61,7 @@ Only use sync (default) when the **very next step** depends on this agent's outp
 **After spawning async agents, END YOUR TURN.** Do NOT write bash loops, sleep commands,
 or poll for results. The system delivers async results automatically as a follow-up message
 that starts a new LLM turn. Your only job is to spawn the agent and stop.
+(`fireAndForget: true` agents are silent — no follow-up message is delivered.)
 
 ❌ **WRONG:** Spawn async agent → `while true; do sleep 30; check status; done`
 ❌ **WRONG:** Spawn async agent → `bash("sleep 60 && cat result.json")`
