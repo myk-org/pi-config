@@ -258,10 +258,10 @@ The manager handles deployment (see Dev Server Operations above);
 the e2e-tester runs verification after deploy is confirmed healthy.
 
 Send verification tasks via the active coms transport with structured `tasks`,
-then await using the matching tool:
+then await the returned `msg_id` using the matching tool:
 
-- P2P: `coms_send` → `coms_await`
-- Networked: `coms_net_send` → `coms_net_await`
+- P2P: `coms_send` → `coms_await(msg_id=...)`
+- Networked: `coms_net_send` → `coms_net_await(msg_id=...)`
 
 Tasks to delegate:
 
