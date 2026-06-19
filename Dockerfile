@@ -1,6 +1,8 @@
 FROM ghcr.io/astral-sh/uv:latest AS uv
 
-FROM node:22-slim
+# Pinned to 22.22.3 — node:22.23.0+ has a keep-alive regression that breaks
+# google-auth-library/gaxios/node-fetch@2 (https://github.com/nodejs/node/issues/63989)
+FROM node:22.22.3-slim
 
 LABEL maintainer="myk-org" \
   description="Sandboxed pi coding agent with all required tools" \
