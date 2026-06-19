@@ -582,6 +582,7 @@ export function registerSubagentTool(
       "ALWAYS use async: true for independent tasks that can run in parallel — code reviews, opening issues, research, analysis. Only use sync when the very next step depends on this agent's output (e.g., chain where step 2 needs step 1's result).",
       "ALWAYS pass cwd — use the project directory for current repo work, or the target path for external repos (e.g., ${PROJECT_TMP_DIR}/...).",
       "ALWAYS provide estimatedSeconds for sync agents. If estimated time is 30 seconds or more, you MUST use async: true instead.",
+      "After spawning async agents, END YOUR TURN. Do NOT write bash loops, sleep commands, or poll for results — the system delivers results automatically as a follow-up message. Spawn the agent and stop.",
     ],
     parameters: SubagentParams,
 
