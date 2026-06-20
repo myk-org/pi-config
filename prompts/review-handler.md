@@ -308,9 +308,10 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 1. **Read each finding's FULL description** — not just the title. Two findings with similar titles can reference completely different code.
 2. **Read the code block** in the finding — for Qodo sticky findings, check the `code_diff` field first.
    If `code_diff` is empty (not all findings have fenced diff blocks), fall back to
-   `evidence_refs` (verify **every** entry — it's a list of multiple locations),
+   `evidence_refs` (check each entry — entries that contain file/line references like
+   `file.py[L1-L2]` are code locations to verify; skip non-location entries),
    `path`/`line`/`end_line` (if present — can be empty/null), and the finding body.
-   If `path`/`line` are missing, derive locations from `evidence_refs` alone.
+   If `path`/`line` are missing, derive locations from `evidence_refs` file/line entries.
    Never skip verification because `code_diff` is empty — use the other fields instead.
    The title alone is NEVER enough.
 3. **Check the ACTUAL file** at that location — does the problematic code still exist?
