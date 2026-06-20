@@ -3,12 +3,14 @@
  *
  * Resolution order:
  * 1. Project .pi/pi-config-settings.json (wins if set)
- * 2. Global env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS)
- * 3. Default (only dream_interval_hours has a default of 3)
+ * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
+ * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO)
+ * 4. Default (only dream_interval_hours has a default of 3)
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface ProjectSettings {
@@ -16,6 +18,7 @@ interface ProjectSettings {
   allow_push_to_protected_branches?: boolean;
   use_worktrees?: boolean;
   dream_interval_hours?: number;
+  dco?: boolean;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -24,11 +27,10 @@ function getSettingsPath(cwd: string): string {
   return join(cwd, ".pi", SETTINGS_FILENAME);
 }
 
-function loadProjectSettings(cwd: string): ProjectSettings {
-  const settingsPath = getSettingsPath(cwd);
-  if (!existsSync(settingsPath)) return {};
+function parseSettingsFile(filePath: string): ProjectSettings {
+  if (!existsSync(filePath)) return {};
   try {
-    const raw = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
     const result: ProjectSettings = {};
     if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
@@ -37,10 +39,20 @@ function loadProjectSettings(cwd: string): ProjectSettings {
     if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
       result.dream_interval_hours = raw.dream_interval_hours;
     }
+    if (typeof raw.dco === "boolean") result.dco = raw.dco;
     return result;
-  } catch {
+  } catch (e: any) {
+    console.debug(`[project-settings] failed to parse ${filePath}:`, e?.message?.slice(0, 100));
     return {};
   }
+}
+
+function loadProjectSettings(cwd: string): ProjectSettings {
+  return parseSettingsFile(getSettingsPath(cwd));
+}
+
+function loadGlobalSettings(): ProjectSettings {
+  return parseSettingsFile(join(homedir(), ".pi", SETTINGS_FILENAME));
 }
 
 function parseBoolEnv(name: string): boolean | undefined {
@@ -60,6 +72,7 @@ function parseNumEnv(name: string): number | undefined {
 let cachedCwd = "";
 let cachedSettings: ProjectSettings = {};
 let cachedMtime = 0;
+let cachedGlobalMtime = 0;
 let lastMtimeCheck = 0;
 const MTIME_CHECK_INTERVAL_MS = 30_000; // Check file mtime at most every 30s
 
@@ -67,12 +80,18 @@ function getSettings(cwd: string): ProjectSettings {
   const now = Date.now();
   // Different cwd — always reload
   if (cwd !== cachedCwd) {
-    cachedSettings = loadProjectSettings(cwd);
+    const projectSettings = loadProjectSettings(cwd);
+    const globalSettings = loadGlobalSettings();
+    cachedSettings = { ...globalSettings, ...projectSettings };
     cachedCwd = cwd;
     try {
       const settingsPath = getSettingsPath(cwd);
       cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
+    try {
+      const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+      cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
+    } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
     return cachedSettings;
   }
@@ -80,11 +99,15 @@ function getSettings(cwd: string): ProjectSettings {
   if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
+  const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
   let mtime = 0;
+  let globalMtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
-  if (mtime === cachedMtime) return cachedSettings;
-  cachedSettings = loadProjectSettings(cwd);
+  try { if (existsSync(globalPath)) globalMtime = statSync(globalPath).mtimeMs; } catch {}
+  if (mtime === cachedMtime && globalMtime === cachedGlobalMtime) return cachedSettings;
+  cachedSettings = { ...loadGlobalSettings(), ...loadProjectSettings(cwd) };
   cachedMtime = mtime;
+  cachedGlobalMtime = globalMtime;
   return cachedSettings;
 }
 
@@ -95,12 +118,13 @@ export function clearSettingsCache(): void {
 }
 
 /**
- * Get a setting value. Resolution: project file → env var → default.
+ * Get a setting value. Resolution: project file → global ~/.pi/pi-config-settings.json → env var → default.
  */
 export function getSetting(cwd: string, key: "commit_trailer"): boolean | string;
 export function getSetting(cwd: string, key: "allow_push_to_protected_branches"): boolean;
 export function getSetting(cwd: string, key: "use_worktrees"): boolean;
 export function getSetting(cwd: string, key: "dream_interval_hours"): number;
+export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number {
   const settings = getSettings(cwd);
 
@@ -132,6 +156,12 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       const env = parseNumEnv("PI_DREAM_INTERVAL_HOURS");
       if (env !== undefined) return env;
       return 3; // default: 3 hours
+    }
+    case "dco": {
+      if (settings.dco !== undefined) return settings.dco;
+      const env = parseBoolEnv("PI_DCO");
+      if (env !== undefined) return env;
+      return false; // default: disabled
     }
     default:
       return false;

@@ -228,7 +228,7 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
 }
 ```
 
-Resolution order: project file → env var → default.
+Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
 Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`
 

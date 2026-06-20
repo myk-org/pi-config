@@ -415,8 +415,9 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `allow_push_to_protected_branches` | boolean | disabled | `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES` | Allow commits/pushes to protected branches |
 | `use_worktrees` | boolean | disabled | `PI_USE_WORKTREES` | Force worktree-only workflow |
 | `dream_interval_hours` | number | 3 | `PI_DREAM_INTERVAL_HOURS` | Dream frequency |
+| `dco` | boolean | disabled | `PI_DCO` | Add --signoff to all commits (DCO) |
 
-Resolution: project file → env var → default.
+Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
 Module: `extensions/orchestrator/project-settings.ts`
 

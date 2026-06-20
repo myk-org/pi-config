@@ -2,5 +2,6 @@
   "commit_trailer": "Assisted-by",
   "allow_push_to_protected_branches": false,
   "use_worktrees": false,
-  "dream_interval_hours": 3
+  "dream_interval_hours": 3,
+  "dco": false
 }
