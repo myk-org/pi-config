@@ -91,6 +91,17 @@ export function getProjectTmpDir(cwd: string): string {
   return dir;
 }
 
+/** Parse start time (field 22) from /proc stat content — handles comm fields with spaces */
+export function parseProcStartTime(statContent: string): string | null {
+  // Field 2 (comm) is wrapped in parens and may contain spaces/parens.
+  // Find the LAST ')' to reliably skip it, then split remaining fields.
+  const closeParenIdx = statContent.lastIndexOf(")");
+  if (closeParenIdx < 0) return null;
+  const fields = statContent.slice(closeParenIdx + 2).split(" ");
+  // After comm: field 3=state(idx 0), field 4=ppid(idx 1), ... field 22=starttime(idx 19)
+  return fields[19] || null;
+}
+
 /** Safely call ctx.getSystemPromptOptions() — returns null if unavailable. */
 export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; skills?: any[]; selectedTools?: any[]; promptGuidelines?: any[] } | null {
   try {
