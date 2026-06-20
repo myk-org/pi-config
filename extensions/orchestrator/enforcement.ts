@@ -467,18 +467,22 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Dangerous command confirmation
-    if (DANGEROUS.some((p) => p.test(command))) {
+    // Collapse bash line continuations (backslash-newline) before splitting
+    const normalized = command.replace(/\\\r?\n/g, " ");
+    // Split on statement separators to avoid matching across unrelated statements
+    const statements = normalized.split(/\n|;|&&|\|\|/).map(s => s.trim()).filter(Boolean);
+    if (statements.some((stmt) => DANGEROUS.some((p) => p.test(stmt)))) {
       if (!ctx.hasUI)
         return {
           block: true,
-          reason: "Dangerous command blocked (no UI for confirmation)",
+          reason: "Dangerous command blocked (no UI for confirmation). Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user.",
         };
 
       const ok = await ctx.ui.select(
         `⚠️ Dangerous command:\n\n  ${command}\n\nAllow?`,
         ["Yes", "No"],
       );
-      if (ok !== "Yes") return { block: true, reason: "Blocked by user" };
+      if (ok !== "Yes") return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
     }
 
     return undefined;
