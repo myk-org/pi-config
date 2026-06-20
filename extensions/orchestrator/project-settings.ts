@@ -118,7 +118,7 @@ export function clearSettingsCache(): void {
 }
 
 /**
- * Get a setting value. Resolution: project file → env var → default.
+ * Get a setting value. Resolution: project file → global ~/.pi/pi-config-settings.json → env var → default.
  */
 export function getSetting(cwd: string, key: "commit_trailer"): boolean | string;
 export function getSetting(cwd: string, key: "allow_push_to_protected_branches"): boolean;
