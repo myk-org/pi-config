@@ -72,6 +72,7 @@ function parseNumEnv(name: string): number | undefined {
 let cachedCwd = "";
 let cachedSettings: ProjectSettings = {};
 let cachedMtime = 0;
+let cachedGlobalMtime = 0;
 let lastMtimeCheck = 0;
 const MTIME_CHECK_INTERVAL_MS = 30_000; // Check file mtime at most every 30s
 
@@ -87,6 +88,10 @@ function getSettings(cwd: string): ProjectSettings {
       const settingsPath = getSettingsPath(cwd);
       cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
+    try {
+      const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+      cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
+    } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
     return cachedSettings;
   }
@@ -94,11 +99,15 @@ function getSettings(cwd: string): ProjectSettings {
   if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
+  const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
   let mtime = 0;
+  let globalMtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
-  if (mtime === cachedMtime) return cachedSettings;
+  try { if (existsSync(globalPath)) globalMtime = statSync(globalPath).mtimeMs; } catch {}
+  if (mtime === cachedMtime && globalMtime === cachedGlobalMtime) return cachedSettings;
   cachedSettings = { ...loadGlobalSettings(), ...loadProjectSettings(cwd) };
   cachedMtime = mtime;
+  cachedGlobalMtime = globalMtime;
   return cachedSettings;
 }
 

@@ -33,7 +33,7 @@ Before every commit, check if DCO is enabled:
 # Check if DCO is enabled (any of these means enabled):
 cat .pi/pi-config-settings.json 2>/dev/null | grep -q '"dco".*true' && DCO=true
 [ -z "$DCO" ] && cat ~/.pi/pi-config-settings.json 2>/dev/null | grep -q '"dco".*true' && DCO=true
-[ -z "$DCO" ] && [ "$PI_DCO" = "true" ] && DCO=true
+[ -z "$DCO" ] && case "${PI_DCO,,}" in true|1|yes|on) DCO=true;; esac
 ```
 
 When DCO is enabled, add `--signoff` to all commit commands:
