@@ -527,6 +527,17 @@ export default function (pi: ExtensionAPI) {
 	let currentInbound: InboundContext | null = null;
 	let processingInbound = false;
 
+	let lastPoolSnapshot = "";
+	function maybeRefreshWidget(): void {
+		if (!currentCtx?.hasUI) return;
+		let pc = 0;
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) pc++;
+		const key = `pending=${pc}|` + [...peerCards.entries()].map(([k, v]) => `${k}:${v.staleCount}`).sort().join(",");
+		if (key === lastPoolSnapshot) return;
+		lastPoolSnapshot = key;
+		try { installPoolWidget(currentCtx); } catch {}
+	}
+
 	// Phase A stub handlers — each just acks valid envelopes. Phase B replaces these.
 	function ackOk(socket: net.Socket, msg_id: string): void {
 		try {
@@ -567,7 +578,7 @@ export default function (pi: ExtensionAPI) {
 			fulfilled: false,
 		};
 		inboundQueue.set(env.msg_id, inbound);
-		if (currentCtx?.hasUI) { try { installPoolWidget(currentCtx); } catch {} }
+		maybeRefreshWidget();
 
 		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
 		if (processingInbound) {
@@ -604,7 +615,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		} catch (err) {
 			inboundQueue.delete(env.msg_id);
-			if (currentCtx?.hasUI) { try { installPoolWidget(currentCtx); } catch {} }
+			maybeRefreshWidget();
 			currentInbound = null;
 			processingInbound = false;
 			nack(socket, env.msg_id, "internal error");
@@ -1577,7 +1588,7 @@ export default function (pi: ExtensionAPI) {
 
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
-		if (currentCtx?.hasUI) { try { installPoolWidget(currentCtx); } catch {} }
+		maybeRefreshWidget();
 		currentInbound = null;
 
 		// FIFO drain: pick the next queued (oldest unfulfilled) inbound
