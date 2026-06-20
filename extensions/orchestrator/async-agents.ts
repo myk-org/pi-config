@@ -586,6 +586,7 @@ export function registerAsyncAgents(
           try {
             const stat = fs.readFileSync(`/proc/${parentPid}/stat`, "utf-8");
             const currentStartTime = parseProcStartTime(stat);
+            if (!currentStartTime) continue; // parse failed — can't verify, skip conservatively
             if (currentStartTime === parentStartTime) continue; // alive, same process
           } catch {} // /proc not found = dead
           // Parent dead or PID reused — zombie, delete
