@@ -253,11 +253,19 @@ To add a custom rule, create a `.md` file in the appropriate directory:
 ```bash
 # User-level rule (applies to all projects)
 mkdir -p ~/.pi/agent/rules
-echo '# My Rule\n\nYour orchestrator instructions here.' > ~/.pi/agent/rules/75-my-rule.md
+cat > ~/.pi/agent/rules/75-my-rule.md << 'EOF'
+# My Rule
+
+Your orchestrator instructions here.
+EOF
 
 # Project-level rule (applies to current project only)
 mkdir -p .pi/rules
-echo '# Project Rule\n\nProject-specific instructions.' > .pi/rules/90-project-rule.md
+cat > .pi/rules/90-project-rule.md << 'EOF'
+# Project Rule
+
+Project-specific instructions.
+EOF
 ```
 
 Rules auto-load alphabetically. Same-filename entries are overridden (project > user > package). Missing directories are silently skipped.

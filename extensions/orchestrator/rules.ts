@@ -117,25 +117,36 @@ export function registerRules(
       const projectRulesDir = path.join(ctx.cwd, ".pi", "rules");
 
       // Collect rules from all layers — later layers override same-filename entries
-      const ruleFiles = new Map<string, string>(); // filename → full path
+      const ruleCandidates = new Map<string, string[]>(); // filename → paths in precedence order
       for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
         try {
           for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
-            ruleFiles.set(f, path.join(dir, f));
+            const existing = ruleCandidates.get(f) || [];
+            existing.push(path.join(dir, f));
+            ruleCandidates.set(f, existing);
           }
         } catch (e: any) {
           if (e?.code !== "ENOENT") console.debug("[rules] failed to read", dir, e?.message?.slice(0, 100));
         }
       }
 
-      if (ruleFiles.size > 0) {
-        const sorted = [...ruleFiles.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      if (ruleCandidates.size > 0) {
+        const sorted = [...ruleCandidates.entries()].sort((a, b) => a[0].localeCompare(b[0]));
         const ruleContents: string[] = [];
-        for (const [fileName, filePath] of sorted) {
-          try {
-            ruleContents.push(fs.readFileSync(filePath, "utf-8"));
-          } catch (e: any) {
-            console.debug(`[rules] skipping ${fileName}:`, e?.message?.slice(0, 100));
+        for (const [fileName, candidates] of sorted) {
+          // Try from highest precedence (last) to lowest (first)
+          let loaded = false;
+          for (let i = candidates.length - 1; i >= 0; i--) {
+            try {
+              ruleContents.push(fs.readFileSync(candidates[i], "utf-8"));
+              loaded = true;
+              break;
+            } catch (e: any) {
+              console.debug(`[rules] ${fileName} failed from ${candidates[i]}:`, e?.message?.slice(0, 100));
+            }
+          }
+          if (!loaded) {
+            console.debug(`[rules] ${fileName}: all candidates failed, skipping`);
           }
         }
         if (ruleContents.length > 0) {
