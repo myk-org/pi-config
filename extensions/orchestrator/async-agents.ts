@@ -585,7 +585,7 @@ export function registerAsyncAgents(
           // Check if parent pi process is alive via /proc/PID/stat starttime
           try {
             const stat = fs.readFileSync(`/proc/${parentPid}/stat`, "utf-8");
-            const currentStartTime = stat.split(" ")[21];
+            const currentStartTime = parseProcStartTime(stat);
             if (currentStartTime === parentStartTime) continue; // alive, same process
           } catch {} // /proc not found = dead
           // Parent dead or PID reused — zombie, delete

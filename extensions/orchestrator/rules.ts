@@ -286,30 +286,32 @@ export function registerRules(
       if (taskFocusJustFired) {
         taskFocusJustFired = false;
       } else if (!hadToolCalls) {
-        // Check for active tasks via pi-tasks TaskStore
+        // Check for active tasks — session-scoped task file only
         const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
-        if (fs.existsSync(tasksDir)) {
-          const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith(".json"));
-          for (const tf of taskFiles) {
-            try {
-              const data = JSON.parse(fs.readFileSync(path.join(tasksDir, tf), "utf-8"));
-              const tasks = data.tasks || [];
-              const activeTasks = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
-              if (activeTasks.length > 0) {
-                const summary = activeTasks
-                  .slice(0, 3)
-                  .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
-                  .join(", ");
-                pi.sendMessage({
-                  customType: "task-focus-enforcement",
-                  content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
-                  display: true,
-                }, { triggerTurn: true, deliverAs: "followUp" });
-                taskFocusJustFired = true;
-                break; // Only fire once per turn
-              }
-            } catch { continue; }
-          }
+        const sessionId = ctx.sessionManager?.getSessionId?.();
+        const candidates: string[] = [];
+        if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+        candidates.push(path.join(tasksDir, "tasks.json"));
+        for (const taskFile of candidates) {
+          try {
+            if (!fs.existsSync(taskFile)) continue;
+            const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
+            const tasks = data.tasks || [];
+            const activeTasks = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
+            if (activeTasks.length > 0) {
+              const summary = activeTasks
+                .slice(0, 3)
+                .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
+                .join(", ");
+              pi.sendMessage({
+                customType: "task-focus-enforcement",
+                content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
+                display: true,
+              }, { triggerTurn: true, deliverAs: "followUp" });
+              taskFocusJustFired = true;
+              break;
+            }
+          } catch { continue; }
         }
       }
     } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
