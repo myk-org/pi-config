@@ -11,6 +11,7 @@
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { resolveRepoRoot } from "./utils.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface ProjectSettings {
@@ -24,7 +25,7 @@ interface ProjectSettings {
 const SETTINGS_FILENAME = "pi-config-settings.json";
 
 function getSettingsPath(cwd: string): string {
-  return join(cwd, ".pi", SETTINGS_FILENAME);
+  return join(resolveRepoRoot(cwd), ".pi", SETTINGS_FILENAME);
 }
 
 function parseSettingsFile(filePath: string): ProjectSettings {
