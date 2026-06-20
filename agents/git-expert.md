@@ -30,9 +30,10 @@ You are a Git Expert responsible for all local git operations and version contro
 Before every commit, check if DCO is enabled:
 
 ```bash
-# Check via pi-config project settings
-# If dco is true in .pi/pi-config-settings.json or ~/.pi/pi-config-settings.json,
-# or PI_DCO=true is set, add --signoff to every git commit command.
+# Check if DCO is enabled (any of these means enabled):
+cat .pi/pi-config-settings.json 2>/dev/null | grep -q '"dco".*true' && DCO=true
+[ -z "$DCO" ] && cat ~/.pi/pi-config-settings.json 2>/dev/null | grep -q '"dco".*true' && DCO=true
+[ -z "$DCO" ] && [ "$PI_DCO" = "true" ] && DCO=true
 ```
 
 When DCO is enabled, add `--signoff` to all commit commands:

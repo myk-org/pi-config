@@ -3,8 +3,9 @@
  *
  * Resolution order:
  * 1. Project .pi/pi-config-settings.json (wins if set)
- * 2. Global env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS)
- * 3. Default (only dream_interval_hours has a default of 3)
+ * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
+ * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO)
+ * 4. Default (only dream_interval_hours has a default of 3)
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -26,11 +27,10 @@ function getSettingsPath(cwd: string): string {
   return join(cwd, ".pi", SETTINGS_FILENAME);
 }
 
-function loadProjectSettings(cwd: string): ProjectSettings {
-  const settingsPath = getSettingsPath(cwd);
-  if (!existsSync(settingsPath)) return {};
+function parseSettingsFile(filePath: string): ProjectSettings {
+  if (!existsSync(filePath)) return {};
   try {
-    const raw = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
     const result: ProjectSettings = {};
     if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
@@ -41,29 +41,18 @@ function loadProjectSettings(cwd: string): ProjectSettings {
     }
     if (typeof raw.dco === "boolean") result.dco = raw.dco;
     return result;
-  } catch {
+  } catch (e: any) {
+    console.debug(`[project-settings] failed to parse ${filePath}:`, e?.message?.slice(0, 100));
     return {};
   }
 }
 
+function loadProjectSettings(cwd: string): ProjectSettings {
+  return parseSettingsFile(getSettingsPath(cwd));
+}
+
 function loadGlobalSettings(): ProjectSettings {
-  const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
-  if (!existsSync(globalPath)) return {};
-  try {
-    const raw = JSON.parse(readFileSync(globalPath, "utf-8"));
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
-    const result: ProjectSettings = {};
-    if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
-    if (typeof raw.allow_push_to_protected_branches === "boolean") result.allow_push_to_protected_branches = raw.allow_push_to_protected_branches;
-    if (typeof raw.use_worktrees === "boolean") result.use_worktrees = raw.use_worktrees;
-    if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
-      result.dream_interval_hours = raw.dream_interval_hours;
-    }
-    if (typeof raw.dco === "boolean") result.dco = raw.dco;
-    return result;
-  } catch {
-    return {};
-  }
+  return parseSettingsFile(join(homedir(), ".pi", SETTINGS_FILENAME));
 }
 
 function parseBoolEnv(name: string): boolean | undefined {
@@ -108,9 +97,7 @@ function getSettings(cwd: string): ProjectSettings {
   let mtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
   if (mtime === cachedMtime) return cachedSettings;
-  const projectSettings2 = loadProjectSettings(cwd);
-  const globalSettings2 = loadGlobalSettings();
-  cachedSettings = { ...globalSettings2, ...projectSettings2 };
+  cachedSettings = { ...loadGlobalSettings(), ...loadProjectSettings(cwd) };
   cachedMtime = mtime;
   return cachedSettings;
 }
