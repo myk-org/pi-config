@@ -130,14 +130,17 @@ export function registerRules(
 
       if (ruleFiles.size > 0) {
         const sorted = [...ruleFiles.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-        try {
-          extra +=
-            "\n\n" +
-            sorted
-              .map(([, filePath]) => fs.readFileSync(filePath, "utf-8"))
-              .join("\n\n");
-        } catch (e: any) {
-          console.debug("[rules] failed to read rule file:", e?.message?.slice(0, 100));
+        const ruleContents: string[] = [];
+        for (const [fileName, filePath] of sorted) {
+          try {
+            ruleContents.push(fs.readFileSync(filePath, "utf-8"));
+          } catch (e: any) {
+            console.debug(`[rules] skipping ${fileName}:`, e?.message?.slice(0, 100));
+          }
+        }
+        if (ruleContents.length > 0) {
+          extra += "\n\n" + ruleContents.join("\n\n");
+        } else {
           extra +=
             "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
         }
