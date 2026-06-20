@@ -145,6 +145,19 @@ Returns JSON with:
 > addressed or dismissed, it must be re-evaluated and fixed again. The `is_auto_skipped`
 > flag does not apply to Qodo sources.
 >
+> 🚨 **MANDATORY: Read the FULL Qodo sticky JSON data before acting.**
+> Qodo sticky findings contain critical fields beyond the title:
+>
+> - `code_diff` — the exact code the finding references (THIS is what you must fix)
+> - `evidence` — Qodo's explanation of why this is a problem
+> - `evidence_refs` — links to the specific file/line ranges involved
+> - `agent_prompt` — Qodo's suggested fix approach
+>
+> **NEVER match findings by title alone.** Two findings with the same title
+> (e.g., "Deploy ownership conflict") can reference completely different code.
+> Always read `code_diff` and `evidence_refs` to understand what SPECIFIC code
+> the finding is about before deciding it was "already addressed."
+>
 > 1. **Qodo comments → auto-approved based on finding type:**
 >    - `qodo_bug` → **MUST address.** Fix the code. No skip allowed.
 >    - `qodo_rule_violation` → **MUST address.** Fix the code. No skip allowed.
@@ -287,7 +300,9 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 **After ALL fixes are applied, verify EVERY finding from ALL sources (human, Qodo, CodeRabbit):**
 
 1. **Read each finding's FULL description** — not just the title. Two findings with similar titles can reference completely different code.
-2. **Read the code block** in the finding — the specific file, line range, and code snippet the reviewer referenced.
+2. **Read the code block** in the finding — for Qodo sticky findings, this is the `code_diff` field.
+   Also read `evidence_refs` for the exact file/line references. These fields tell you what SPECIFIC
+   code the reviewer flagged — the title alone is NOT enough to identify the finding.
 3. **Check the ACTUAL file** at that location — does the problematic code still exist?
    - If YES → the finding is NOT addressed. Fix it.
    - If NO → the finding is addressed.
