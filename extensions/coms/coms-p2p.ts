@@ -1019,12 +1019,12 @@ export default function (pi: ExtensionAPI) {
 			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
 			const leftFill = theme.fg("dim", "━");
 			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
-			const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} pending)` : "";
+			const pendingSuffix = ` (${pendingCount} pending)`;
 			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
 			const rightTagVisLen = identity ? nameLen + 4 : 0;
 			const remaining = safeWidth - 9 /* "┏━ coms ━" */ - rightTagVisLen - 1 /* "┓" */;
 			if (identity && remaining >= 1) {
-				const pendingPart = pendingCount > 0 ? theme.fg("warning", pendingSuffix) : "";
+				const pendingPart = pendingCount > 0 ? theme.fg("warning", pendingSuffix) : theme.fg("dim", pendingSuffix);
 				const rightTag =
 					theme.fg("dim", " ") +
 					hexFg(identity.color, identity.name) +
