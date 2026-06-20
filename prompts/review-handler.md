@@ -309,7 +309,7 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 2. **Read the code block** in the finding — for Qodo sticky findings, check the `code_diff` field first.
    If `code_diff` is empty (not all findings have fenced diff blocks), fall back to
    `evidence_refs` (check each entry — entries that contain file/line references like
-   `file.py[L1-L2]` are code locations to verify; skip non-location entries),
+   `file[28-52]` or `file[R28-52]` are code locations to verify; skip non-location entries),
    `path`/`line`/`end_line` (if present — can be empty/null), and the finding body.
    If `path`/`line` are missing, derive locations from `evidence_refs` file/line entries.
    Never skip verification because `code_diff` is empty — use the other fields instead.
