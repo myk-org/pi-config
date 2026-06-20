@@ -120,21 +120,27 @@ export function registerRules(
       const ruleFiles = new Map<string, string>(); // filename → full path
       for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
         try {
-          for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md")).sort()) {
+          for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
             ruleFiles.set(f, path.join(dir, f));
           }
-        } catch {
-          // Directory missing — silently skip
+        } catch (e: any) {
+          if (e?.code !== "ENOENT") console.debug("[rules] failed to read", dir, e?.message?.slice(0, 100));
         }
       }
 
       if (ruleFiles.size > 0) {
         const sorted = [...ruleFiles.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-        extra +=
-          "\n\n" +
-          sorted
-            .map(([, filePath]) => fs.readFileSync(filePath, "utf-8"))
-            .join("\n\n");
+        try {
+          extra +=
+            "\n\n" +
+            sorted
+              .map(([, filePath]) => fs.readFileSync(filePath, "utf-8"))
+              .join("\n\n");
+        } catch (e: any) {
+          console.debug("[rules] failed to read rule file:", e?.message?.slice(0, 100));
+          extra +=
+            "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+        }
       } else {
         extra +=
           "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
