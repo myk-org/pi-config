@@ -49,7 +49,7 @@ Read the issue(s) or task the user wants to work on. Analyze:
   - Multiple **coders** for independent issues/features
   - A **planner** + **coder** for complex architecture work
   - A **coder** + **test-writer** for test-heavy features
-  - An **e2e-tester** when the project requires live/E2E verification (dedicated peer runs and verifies E2E scenarios)
+  - An **e2e-tester** — **MANDATORY** if Dev Server Operations or E2E Verification sections exist below (dedicated peer runs and verifies E2E scenarios after deploy)
   - A single **coder** for simple tasks
 - **Name each peer** with a meaningful name reflecting its role (e.g., `coder-api`, `coder-frontend`, `planner`, `test-writer`)
 
