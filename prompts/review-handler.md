@@ -279,7 +279,7 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 - **For Qodo sticky findings:** Before fixing or deciding a finding is "already addressed",
   read the `code_diff`, `evidence`, `evidence_refs`, and `agent_prompt` fields from the JSON.
   These fields — not the title — define what the finding is about. Never dismiss by title alone.
-  If `code_diff` is empty, use `evidence_refs` + `path`/`line` + the finding body to locate the code.
+  If `code_diff` is empty, use `evidence_refs` + `path`/`line`/`end_line` + the finding body to locate the code.
 - If the reviewer provides a specific code suggestion or diff, implement IT exactly — not your own interpretation
 - Do NOT simplify, minimize, or "half-fix" the suggestion
 - After fixing, verify your code matches what the reviewer asked for, not just "addresses the concern"
@@ -306,7 +306,7 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 1. **Read each finding's FULL description** — not just the title. Two findings with similar titles can reference completely different code.
 2. **Read the code block** in the finding — for Qodo sticky findings, check the `code_diff` field first.
    If `code_diff` is empty (not all findings have fenced diff blocks), fall back to
-   `evidence_refs`, `path`/`line`, and the finding body to locate the exact code.
+   `evidence_refs`, `path`/`line`/`end_line`, and the finding body to locate the exact code.
    Never skip verification because `code_diff` is empty — use the other fields instead.
    The title alone is NEVER enough.
 3. **Check the ACTUAL file** at that location — does the problematic code still exist?
