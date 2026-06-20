@@ -154,4 +154,9 @@ export const DANGEROUS = [
   /\b(chmod|chown)\b.*777/i,
   /\bmkfs\b/i,
   /\bdd\b.*\bof=\/dev\//i,
+  /\bgit\s+reset\s+--hard\b/i,
+  /\bgit\s+clean\s+-[a-z]*f/i,
+  /\bfind\b.*\s-delete\b/i,
+  /\bfind\b.*-exec\s+rm\b/i,
+  /\bxargs\s+rm\b/i,
 ];
