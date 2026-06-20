@@ -467,8 +467,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Dangerous command confirmation
+    // Collapse bash line continuations (backslash-newline) before splitting
+    const normalized = command.replace(/\\\r?\n/g, " ");
     // Split on statement separators to avoid matching across unrelated statements
-    const statements = command.split(/\n|;|&&|\|\|/).map(s => s.trim()).filter(Boolean);
+    const statements = normalized.split(/\n|;|&&|\|\|/).map(s => s.trim()).filter(Boolean);
     if (statements.some((stmt) => DANGEROUS.some((p) => p.test(stmt)))) {
       if (!ctx.hasUI)
         return {
