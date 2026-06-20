@@ -439,7 +439,7 @@ export default function (pi: ExtensionAPI) {
 	// ━━ Pool snapshot diff (used to gate widget renders) ━━━━━━━━━━━━━━━━━━━
 
 	function poolSnapshotKey(): string {
-		const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
+		const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled && i !== currentInbound).length;
 		const arr = [...peerCards.values()]
 			.map(c => `${c.session_id}|${c.name}|${c.color}|${c.model}|${c.context_used_pct}|${c.queue_depth}|${c.status}|${c.purpose}|${c.explicit ? 1 : 0}`)
 			.sort();
@@ -965,7 +965,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms-net ");
 			const leftFill = theme.fg("dim", "━");
-			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
+			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled && i !== currentInbound).length;
 			const pendingSuffix = ` (${pendingCount} pending)`;
 			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
 			const rightTagVisLen = identity ? nameLen + 3 : 0;

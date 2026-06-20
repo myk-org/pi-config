@@ -1020,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
 			const leftFill = theme.fg("dim", "━");
-			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
+			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled && i !== currentInbound).length;
 			const pendingSuffix = ` (${pendingCount} pending)`;
 			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
 			const rightTagVisLen = identity ? nameLen + 3 : 0;
