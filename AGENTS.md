@@ -183,8 +183,17 @@ pi-config/
 
 ### Modifying Orchestrator Rules
 
-- Edit files in the `rules/` directory.
+Rules are loaded from three directories (later layers override same-filename entries):
+
+| Layer | Path | Scope | Number range |
+|-------|------|-------|--------------|
+| Package | `<pi-config>/rules/` | All users, all projects | `00-69` |
+| User | `~/.pi/agent/rules/` | All projects for this user | `70-89` |
+| Project | `<project>/.pi/rules/` | Current project only | `90-99` |
+
 - Rules auto-load in **alphabetical order** (hence the numeric prefixes).
+- Same-filename override: project > user > package.
+- Missing directories are silently skipped.
 - Changes take effect on the **next pi session** — no restart of running sessions.
 
 ### Async-Only Agents

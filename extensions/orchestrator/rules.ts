@@ -7,6 +7,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
@@ -108,19 +109,61 @@ export function registerRules(
     let extra = "";
 
     // Orchestrator rules — skip for specialist agents
+    // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
+    // Same-filename override: project > user > package
     if (!isSubagent) {
-      const rulesDir = path.resolve(__dirname, "..", "..", "rules");
-      try {
-        const files = fs
-          .readdirSync(rulesDir)
-          .filter((f) => f.endsWith(".md"))
-          .sort();
-        extra +=
-          "\n\n" +
-          files
-            .map((f) => fs.readFileSync(path.join(rulesDir, f), "utf-8"))
-            .join("\n\n");
-      } catch {
+      const packageRulesDir = path.resolve(__dirname, "..", "..", "rules");
+      const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
+      const projectRulesDir = path.join(ctx.cwd, ".pi", "rules");
+
+      // Collect rules from all layers — later layers override same-filename entries
+      const ruleCandidates = new Map<string, string[]>(); // filename → paths in precedence order
+      for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
+        try {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
+            const f = entry.name;
+            const existing = ruleCandidates.get(f) || [];
+            existing.push(path.join(dir, f));
+            ruleCandidates.set(f, existing);
+          }
+        } catch (e: any) {
+          if (e?.code !== "ENOENT") console.debug("[rules] failed to read", dir, e?.message?.slice(0, 100));
+        }
+      }
+
+      if (ruleCandidates.size > 0) {
+        const sorted = [...ruleCandidates.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        const ruleContents: string[] = [];
+        for (const [fileName, candidates] of sorted) {
+          // Try from highest precedence (last) to lowest (first)
+          let loaded = false;
+          for (let i = candidates.length - 1; i >= 0; i--) {
+            try {
+              const stat = fs.statSync(candidates[i]);
+              if (stat.size > 128 * 1024) {
+                console.debug(`[rules] ${fileName} skipped (${Math.round(stat.size / 1024)}KB > 128KB limit)`);
+                loaded = true; // Mark as loaded to prevent lower-precedence fallback
+                break;
+              }
+              ruleContents.push(fs.readFileSync(candidates[i], "utf-8"));
+              loaded = true;
+              break;
+            } catch (e: any) {
+              console.debug(`[rules] ${fileName} failed from ${candidates[i]}:`, e?.message?.slice(0, 100));
+            }
+          }
+          if (!loaded) {
+            console.debug(`[rules] ${fileName}: all candidates failed, skipping`);
+          }
+        }
+        if (ruleContents.length > 0) {
+          extra += "\n\n" + ruleContents.join("\n\n");
+        } else {
+          extra +=
+            "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
+        }
+      } else {
         extra +=
           "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
       }
