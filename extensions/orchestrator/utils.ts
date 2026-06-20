@@ -2,7 +2,7 @@
  * Shared utilities used across orchestrator modules.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -66,21 +66,27 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 }
 
 /** Resolve to the main git repo root when cwd is a worktree. */
+const repoRootCache = new Map<string, string>();
+
 export function resolveRepoRoot(cwd: string): string {
+  const key = path.resolve(cwd);
+  const cached = repoRootCache.get(key);
+  if (cached !== undefined) return cached;
   try {
-    const gitCommonDir = require("node:child_process")
-      .execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf-8", timeout: 3000 })
-      .trim();
+    const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf-8", timeout: 3000 }).trim();
     if (gitCommonDir && !gitCommonDir.startsWith("fatal")) {
-      return path.dirname(path.resolve(cwd, gitCommonDir));
+      const root = path.dirname(path.resolve(cwd, gitCommonDir));
+      repoRootCache.set(key, root);
+      return root;
     }
   } catch {}
+  repoRootCache.set(key, cwd);
   return cwd;
 }
 
 /** Get project-scoped temp dir under <cwd>/.pi/tmp/ */
 export function getProjectTmpDir(cwd: string): string {
-  const dir = path.join(resolveRepoRoot(cwd), ".pi", "tmp");
+  const dir = path.join(cwd, ".pi", "tmp");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

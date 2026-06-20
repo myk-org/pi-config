@@ -417,10 +417,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         }
 
         // DCO enforcement — inject --signoff when dco setting is enabled
-        if (getSetting(gitCwd, "dco") && !command.includes("--signoff")) {
+        if (getSetting(gitCwd, "dco") && !command.includes("--signoff") && !command.includes("-s")) {
           event.input.command = event.input.command.replace(
-            /\bgit\s+commit\b/,
-            "git commit --signoff",
+            /\bgit\b((?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*\s+)commit\b/,
+            "git$1commit --signoff",
           );
         }
       }
