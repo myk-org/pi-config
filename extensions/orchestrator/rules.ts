@@ -7,6 +7,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
@@ -108,19 +109,33 @@ export function registerRules(
     let extra = "";
 
     // Orchestrator rules — skip for specialist agents
+    // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
+    // Same-filename override: project > user > package
     if (!isSubagent) {
-      const rulesDir = path.resolve(__dirname, "..", "..", "rules");
-      try {
-        const files = fs
-          .readdirSync(rulesDir)
-          .filter((f) => f.endsWith(".md"))
-          .sort();
+      const packageRulesDir = path.resolve(__dirname, "..", "..", "rules");
+      const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
+      const projectRulesDir = path.join(ctx.cwd, ".pi", "rules");
+
+      // Collect rules from all layers — later layers override same-filename entries
+      const ruleFiles = new Map<string, string>(); // filename → full path
+      for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
+        try {
+          for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md")).sort()) {
+            ruleFiles.set(f, path.join(dir, f));
+          }
+        } catch {
+          // Directory missing — silently skip
+        }
+      }
+
+      if (ruleFiles.size > 0) {
+        const sorted = [...ruleFiles.entries()].sort((a, b) => a[0].localeCompare(b[0]));
         extra +=
           "\n\n" +
-          files
-            .map((f) => fs.readFileSync(path.join(rulesDir, f), "utf-8"))
+          sorted
+            .map(([, filePath]) => fs.readFileSync(filePath, "utf-8"))
             .join("\n\n");
-      } catch {
+      } else {
         extra +=
           "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";
       }
