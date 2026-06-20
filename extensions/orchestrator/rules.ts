@@ -120,7 +120,9 @@ export function registerRules(
       const ruleCandidates = new Map<string, string[]>(); // filename → paths in precedence order
       for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
         try {
-          for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+            const f = entry.name;
             const existing = ruleCandidates.get(f) || [];
             existing.push(path.join(dir, f));
             ruleCandidates.set(f, existing);
@@ -138,6 +140,11 @@ export function registerRules(
           let loaded = false;
           for (let i = candidates.length - 1; i >= 0; i--) {
             try {
+              const stat = fs.statSync(candidates[i]);
+              if (stat.size > 128 * 1024) {
+                console.debug(`[rules] ${fileName} skipped (${Math.round(stat.size / 1024)}KB > 128KB limit)`);
+                continue;
+              }
               ruleContents.push(fs.readFileSync(candidates[i], "utf-8"));
               loaded = true;
               break;
