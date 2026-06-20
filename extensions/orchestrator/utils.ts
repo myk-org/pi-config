@@ -65,9 +65,22 @@ export function getPiInvocation(args: string[]): { command: string; args: string
   return { command: "pi", args };
 }
 
+/** Resolve to the main git repo root when cwd is a worktree. */
+export function resolveRepoRoot(cwd: string): string {
+  try {
+    const gitCommonDir = require("node:child_process")
+      .execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf-8", timeout: 3000 })
+      .trim();
+    if (gitCommonDir && !gitCommonDir.startsWith("fatal")) {
+      return path.dirname(path.resolve(cwd, gitCommonDir));
+    }
+  } catch {}
+  return cwd;
+}
+
 /** Get project-scoped temp dir under <cwd>/.pi/tmp/ */
 export function getProjectTmpDir(cwd: string): string {
-  const dir = path.join(cwd, ".pi", "tmp");
+  const dir = path.join(resolveRepoRoot(cwd), ".pi", "tmp");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

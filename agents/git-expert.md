@@ -25,25 +25,6 @@ You are a Git Expert responsible for all local git operations and version contro
 - This agent does NOT run tests. Before pushing, ask the orchestrator if tests have passed.
 - This agent does NOT fix code. If pre-commit hooks fail, report the error.
 
-## DCO (Developer Certificate of Origin)
-
-Before every commit, check if DCO is enabled:
-
-```bash
-# Check if DCO is enabled (any of these means enabled):
-cat .pi/pi-config-settings.json 2>/dev/null | grep -q '"dco".*true' && DCO=true
-[ -z "$DCO" ] && cat ~/.pi/pi-config-settings.json 2>/dev/null | grep -q '"dco".*true' && DCO=true
-[ -z "$DCO" ] && case "${PI_DCO,,}" in true|1|yes|on) DCO=true;; esac
-```
-
-When DCO is enabled, add `--signoff` to all commit commands:
-
-```bash
-echo -e "Your commit title" | git commit --signoff -F -
-```
-
-The `--signoff` flag adds a `Signed-off-by: Name <email>` trailer using the committer's git identity.
-
 ## Commit Message Format
 
 ALWAYS use `-F -` to read commit message from stdin:

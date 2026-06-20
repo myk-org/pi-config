@@ -415,6 +415,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             }
           }
         }
+
+        // DCO enforcement — inject --signoff when dco setting is enabled
+        if (getSetting(gitCwd, "dco") && !command.includes("--signoff")) {
+          event.input.command = event.input.command.replace(
+            /\bgit\s+commit\b/,
+            "git commit --signoff",
+          );
+        }
       }
 
       // Block pushes to protected branches
