@@ -527,6 +527,17 @@ export default function (pi: ExtensionAPI) {
 	let currentInbound: InboundContext | null = null;
 	let processingInbound = false;
 
+	let lastPoolSnapshot = "";
+	function maybeRefreshWidget(): void {
+		if (!currentCtx?.hasUI) return;
+		let pc = 0;
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) pc++;
+		const key = `pending=${pc}|` + [...peerCards.entries()].map(([k, v]) => `${k}:${v.staleCount}`).sort().join(",");
+		if (key === lastPoolSnapshot) return;
+		lastPoolSnapshot = key;
+		try { installPoolWidget(currentCtx); } catch {}
+	}
+
 	// Phase A stub handlers — each just acks valid envelopes. Phase B replaces these.
 	function ackOk(socket: net.Socket, msg_id: string): void {
 		try {
@@ -567,6 +578,7 @@ export default function (pi: ExtensionAPI) {
 			fulfilled: false,
 		};
 		inboundQueue.set(env.msg_id, inbound);
+		maybeRefreshWidget();
 
 		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
 		if (processingInbound) {
@@ -603,6 +615,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		} catch (err) {
 			inboundQueue.delete(env.msg_id);
+			maybeRefreshWidget();
 			currentInbound = null;
 			processingInbound = false;
 			nack(socket, env.msg_id, "internal error");
@@ -1018,13 +1031,18 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
 			const leftFill = theme.fg("dim", "━");
-			const nameLen = identity ? identity.name.length : 0;
-			const rightTagVisLen = identity ? nameLen + 4 : 0;
+			let pendingCount = 0;
+			for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) pendingCount++;
+			const pendingSuffix = ` (${pendingCount} pending)`;
+			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
+			const rightTagVisLen = identity ? nameLen + 3 : 0;
 			const remaining = safeWidth - 9 /* "┏━ coms ━" */ - rightTagVisLen - 1 /* "┓" */;
 			if (identity && remaining >= 1) {
+				const pendingPart = pendingCount > 0 ? theme.fg("warning", pendingSuffix) : theme.fg("dim", pendingSuffix);
 				const rightTag =
 					theme.fg("dim", " ") +
 					hexFg(identity.color, identity.name) +
+					pendingPart +
 					theme.fg("dim", " ━");
 				const middle = theme.fg("dim", "━".repeat(remaining));
 				const right = theme.fg("dim", "┓");
@@ -1571,6 +1589,7 @@ export default function (pi: ExtensionAPI) {
 
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
+		maybeRefreshWidget();
 		currentInbound = null;
 
 		// FIFO drain: pick the next queued (oldest unfulfilled) inbound
