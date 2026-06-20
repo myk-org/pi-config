@@ -567,6 +567,7 @@ export default function (pi: ExtensionAPI) {
 			fulfilled: false,
 		};
 		inboundQueue.set(env.msg_id, inbound);
+		if (currentCtx?.hasUI) { try { installPoolWidget(currentCtx); } catch {} }
 
 		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
 		if (processingInbound) {
@@ -603,6 +604,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		} catch (err) {
 			inboundQueue.delete(env.msg_id);
+			if (currentCtx?.hasUI) { try { installPoolWidget(currentCtx); } catch {} }
 			currentInbound = null;
 			processingInbound = false;
 			nack(socket, env.msg_id, "internal error");
@@ -1021,7 +1023,7 @@ export default function (pi: ExtensionAPI) {
 			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
 			const pendingSuffix = ` (${pendingCount} pending)`;
 			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
-			const rightTagVisLen = identity ? nameLen + 4 : 0;
+			const rightTagVisLen = identity ? nameLen + 3 : 0;
 			const remaining = safeWidth - 9 /* "┏━ coms ━" */ - rightTagVisLen - 1 /* "┓" */;
 			if (identity && remaining >= 1) {
 				const pendingPart = pendingCount > 0 ? theme.fg("warning", pendingSuffix) : theme.fg("dim", pendingSuffix);
@@ -1575,6 +1577,7 @@ export default function (pi: ExtensionAPI) {
 
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
+		if (currentCtx?.hasUI) { try { installPoolWidget(currentCtx); } catch {} }
 		currentInbound = null;
 
 		// FIFO drain: pick the next queued (oldest unfulfilled) inbound

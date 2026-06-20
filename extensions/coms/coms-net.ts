@@ -439,10 +439,11 @@ export default function (pi: ExtensionAPI) {
 	// ━━ Pool snapshot diff (used to gate widget renders) ━━━━━━━━━━━━━━━━━━━
 
 	function poolSnapshotKey(): string {
+		const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
 		const arr = [...peerCards.values()]
 			.map(c => `${c.session_id}|${c.name}|${c.color}|${c.model}|${c.context_used_pct}|${c.queue_depth}|${c.status}|${c.purpose}|${c.explicit ? 1 : 0}`)
 			.sort();
-		return arr.join("\n");
+		return `pending=${pendingCount}\n` + arr.join("\n");
 	}
 
 	function maybeRequestRender(): void {
@@ -573,6 +574,7 @@ export default function (pi: ExtensionAPI) {
 			fulfilled: false,
 		};
 		inboundQueue.set(msg_id, inbound);
+		maybeRequestRender();
 
 		// If already processing another inbound, just queue — agent_end will drain FIFO.
 		if (processingInbound) {
@@ -622,6 +624,7 @@ export default function (pi: ExtensionAPI) {
 			} catch { /* best-effort */ }
 		} catch (err) {
 			inboundQueue.delete(msg_id);
+			maybeRequestRender();
 			currentInbound = null;
 			processingInbound = false;
 			audit("prompt_in_failed", { msg_id, reason: safeError(err) });
@@ -965,7 +968,7 @@ export default function (pi: ExtensionAPI) {
 			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
 			const pendingSuffix = ` (${pendingCount} pending)`;
 			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
-			const rightTagVisLen = identity ? nameLen + 4 : 0;
+			const rightTagVisLen = identity ? nameLen + 3 : 0;
 			// "┏━ coms-net ━" prefix has 13 visible cells.
 			const remaining = safeWidth - 13 - rightTagVisLen - 1; // -1 for "┓"
 			if (identity && remaining >= 1) {
