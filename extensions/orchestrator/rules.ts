@@ -121,7 +121,7 @@ export function registerRules(
       for (const dir of [packageRulesDir, userRulesDir, projectRulesDir]) {
         try {
           for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+            if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".md")) continue;
             const f = entry.name;
             const existing = ruleCandidates.get(f) || [];
             existing.push(path.join(dir, f));
@@ -143,7 +143,8 @@ export function registerRules(
               const stat = fs.statSync(candidates[i]);
               if (stat.size > 128 * 1024) {
                 console.debug(`[rules] ${fileName} skipped (${Math.round(stat.size / 1024)}KB > 128KB limit)`);
-                continue;
+                loaded = true; // Mark as loaded to prevent lower-precedence fallback
+                break;
               }
               ruleContents.push(fs.readFileSync(candidates[i], "utf-8"));
               loaded = true;
