@@ -9,6 +9,7 @@
 
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface ProjectSettings {
@@ -16,6 +17,7 @@ interface ProjectSettings {
   allow_push_to_protected_branches?: boolean;
   use_worktrees?: boolean;
   dream_interval_hours?: number;
+  dco?: boolean;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -37,6 +39,27 @@ function loadProjectSettings(cwd: string): ProjectSettings {
     if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
       result.dream_interval_hours = raw.dream_interval_hours;
     }
+    if (typeof raw.dco === "boolean") result.dco = raw.dco;
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function loadGlobalSettings(): ProjectSettings {
+  const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+  if (!existsSync(globalPath)) return {};
+  try {
+    const raw = JSON.parse(readFileSync(globalPath, "utf-8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+    const result: ProjectSettings = {};
+    if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
+    if (typeof raw.allow_push_to_protected_branches === "boolean") result.allow_push_to_protected_branches = raw.allow_push_to_protected_branches;
+    if (typeof raw.use_worktrees === "boolean") result.use_worktrees = raw.use_worktrees;
+    if (typeof raw.dream_interval_hours === "number" && Number.isFinite(raw.dream_interval_hours)) {
+      result.dream_interval_hours = raw.dream_interval_hours;
+    }
+    if (typeof raw.dco === "boolean") result.dco = raw.dco;
     return result;
   } catch {
     return {};
@@ -67,7 +90,9 @@ function getSettings(cwd: string): ProjectSettings {
   const now = Date.now();
   // Different cwd — always reload
   if (cwd !== cachedCwd) {
-    cachedSettings = loadProjectSettings(cwd);
+    const projectSettings = loadProjectSettings(cwd);
+    const globalSettings = loadGlobalSettings();
+    cachedSettings = { ...globalSettings, ...projectSettings };
     cachedCwd = cwd;
     try {
       const settingsPath = getSettingsPath(cwd);
@@ -83,7 +108,9 @@ function getSettings(cwd: string): ProjectSettings {
   let mtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
   if (mtime === cachedMtime) return cachedSettings;
-  cachedSettings = loadProjectSettings(cwd);
+  const projectSettings2 = loadProjectSettings(cwd);
+  const globalSettings2 = loadGlobalSettings();
+  cachedSettings = { ...globalSettings2, ...projectSettings2 };
   cachedMtime = mtime;
   return cachedSettings;
 }
@@ -101,6 +128,7 @@ export function getSetting(cwd: string, key: "commit_trailer"): boolean | string
 export function getSetting(cwd: string, key: "allow_push_to_protected_branches"): boolean;
 export function getSetting(cwd: string, key: "use_worktrees"): boolean;
 export function getSetting(cwd: string, key: "dream_interval_hours"): number;
+export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number {
   const settings = getSettings(cwd);
 
@@ -132,6 +160,12 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       const env = parseNumEnv("PI_DREAM_INTERVAL_HOURS");
       if (env !== undefined) return env;
       return 3; // default: 3 hours
+    }
+    case "dco": {
+      if (settings.dco !== undefined) return settings.dco;
+      const env = parseBoolEnv("PI_DCO");
+      if (env !== undefined) return env;
+      return false; // default: disabled
     }
     default:
       return false;
