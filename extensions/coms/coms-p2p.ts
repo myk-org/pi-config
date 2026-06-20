@@ -1018,13 +1018,17 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
 			const leftFill = theme.fg("dim", "━");
-			const nameLen = identity ? identity.name.length : 0;
+			const pendingCount = [...inboundQueue.values()].filter(i => !i.fulfilled).length;
+			const pendingSuffix = pendingCount > 0 ? ` (${pendingCount} pending)` : "";
+			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
 			const rightTagVisLen = identity ? nameLen + 4 : 0;
 			const remaining = safeWidth - 9 /* "┏━ coms ━" */ - rightTagVisLen - 1 /* "┓" */;
 			if (identity && remaining >= 1) {
+				const pendingPart = pendingCount > 0 ? theme.fg("warning", pendingSuffix) : "";
 				const rightTag =
 					theme.fg("dim", " ") +
 					hexFg(identity.color, identity.name) +
+					pendingPart +
 					theme.fg("dim", " ━");
 				const middle = theme.fg("dim", "━".repeat(remaining));
 				const right = theme.fg("dim", "┓");
