@@ -155,8 +155,8 @@ export const DANGEROUS = [
   /\bmkfs\b/i,
   /\bdd\b.*\bof=\/dev\//i,
   /\bgit\s+reset\s+--hard\b/i,
-  /\bgit\s+clean\s+-[a-z]*f/i,
+  /\bgit\s+clean\s+(?:-[a-z]*f|--force)/i,
   /\bfind\b.*\s-delete\b/i,
-  /\bfind\b.*-exec\s+rm\b/i,
-  /\bxargs\s+rm\b/i,
+  /\bfind\b.*-exec(?:dir)?\s+(?:\/\S+\/)?rm\b/i,
+  /\bxargs\s+(?:-\S+\s+)*(?:\/\S+\/)?rm\b/i,
 ];

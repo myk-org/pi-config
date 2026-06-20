@@ -471,7 +471,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       if (!ctx.hasUI)
         return {
           block: true,
-          reason: "Dangerous command blocked (no UI for confirmation). Do NOT retry with an equivalent command — report this block to the user.",
+          reason: "Dangerous command blocked (no UI for confirmation). Do NOT retry with an equivalent command — stop and report this block.",
         };
 
       const ok = await ctx.ui.select(
