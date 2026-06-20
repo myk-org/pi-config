@@ -467,7 +467,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Dangerous command confirmation
-    if (DANGEROUS.some((p) => p.test(command))) {
+    // Split on statement separators to avoid matching across unrelated statements
+    const statements = command.split(/\n|;|&&|\|\|/).map(s => s.trim()).filter(Boolean);
+    if (statements.some((stmt) => DANGEROUS.some((p) => p.test(stmt)))) {
       if (!ctx.hasUI)
         return {
           block: true,
