@@ -11,18 +11,15 @@ PI_PKG_DIR="$HOME/.pi/agent/git/github.com"
 
 if [ ! -d "$PI_PKG_DIR/myk-org/pi-config" ]; then
     pi install git:github.com/myk-org/pi-config
-else
-    pi update git:github.com/myk-org/pi-config
 fi
-
-# Update myk-pi-tools to latest from local pi-config source
-uv tool install --force myk-pi-tools --from "$PI_PKG_DIR/myk-org/pi-config" 2>/dev/null || true
 
 if [ ! -d "$PI_PKG_DIR/myk-org/pi-vertex-claude" ]; then
     pi install git:github.com/myk-org/pi-vertex-claude
-else
-    pi update git:github.com/myk-org/pi-vertex-claude
 fi
+
+# Update all installed packages + myk-pi-tools
+pi update --all
+uv tool install --force myk-pi-tools --from "$PI_PKG_DIR/myk-org/pi-config" 2>/dev/null || true
 
 # Register pi packages if not already present
 # (installed globally in Docker image, just need pi to know about them)

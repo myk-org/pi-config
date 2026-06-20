@@ -32,7 +32,7 @@ const taskStoreReady: Promise<void> = (async () => {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
-import { getPiInvocation, getProjectTmpDir } from "./utils.js";
+import { getPiInvocation, getProjectTmpDir, parseProcStartTime } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -81,7 +81,14 @@ function readAsyncStatus(workerDir: string): any | null {
 
 /** Derive a stable directory name from a session file path. */
 function sessionResultsDirName(): string {
-  return `async-results-pid-${process.pid}`;
+  let startTime = "";
+  try {
+    const stat = fs.readFileSync(`/proc/${process.pid}/stat`, "utf-8");
+    startTime = parseProcStartTime(stat) || "";
+  } catch {}
+  return startTime
+    ? `async-results-pid-${process.pid}-${startTime}`
+    : `async-results-pid-${process.pid}`;
 }
 
 export function formatDuration(ms: number): string {
@@ -420,7 +427,7 @@ export function registerAsyncAgents(
     let parentStartTime = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        parentStartTime = fs.readFileSync(`/proc/${process.pid}/stat`, "utf-8").split(" ")[21] || "";
+        parentStartTime = parseProcStartTime(fs.readFileSync(`/proc/${process.pid}/stat`, "utf-8")) || "";
         if (parentStartTime) break;
       } catch { /* retry */ }
     }
@@ -578,7 +585,8 @@ export function registerAsyncAgents(
           // Check if parent pi process is alive via /proc/PID/stat starttime
           try {
             const stat = fs.readFileSync(`/proc/${parentPid}/stat`, "utf-8");
-            const currentStartTime = stat.split(" ")[21];
+            const currentStartTime = parseProcStartTime(stat);
+            if (!currentStartTime) continue; // parse failed — can't verify, skip conservatively
             if (currentStartTime === parentStartTime) continue; // alive, same process
           } catch {} // /proc not found = dead
           // Parent dead or PID reused — zombie, delete

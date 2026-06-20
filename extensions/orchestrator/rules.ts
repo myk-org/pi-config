@@ -74,6 +74,7 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
+  let taskFocusJustFired = false;
 
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
@@ -275,6 +276,45 @@ export function registerRules(
         lastInjectedMemories = [];
       }
     } catch (e: any) { console.debug("[rules] telemetry usage detection failed:", e?.message?.slice(0, 100)); }
+
+    // Task-focus enforcement: if this turn had no tool calls but tasks are active,
+    // the LLM likely answered a side question and forgot to resume work.
+    // Inject a follow-up to force it back on track.
+    try {
+      const turnToolResults = (_event as any).toolResults;
+      const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
+      if (taskFocusJustFired) {
+        taskFocusJustFired = false;
+      } else if (!hadToolCalls) {
+        // Check for active tasks — session-scoped task file only
+        const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
+        const sessionId = ctx.sessionManager?.getSessionId?.();
+        const candidates: string[] = [];
+        if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+        candidates.push(path.join(tasksDir, "tasks.json"));
+        for (const taskFile of candidates) {
+          try {
+            if (!fs.existsSync(taskFile)) continue;
+            const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
+            const tasks = data.tasks || [];
+            const activeTasks = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
+            if (activeTasks.length > 0) {
+              const summary = activeTasks
+                .slice(0, 3)
+                .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
+                .join(", ");
+              pi.sendMessage({
+                customType: "task-focus-enforcement",
+                content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
+                display: true,
+              }, { triggerTurn: true, deliverAs: "followUp" });
+              taskFocusJustFired = true;
+              break;
+            }
+          } catch { continue; }
+        }
+      }
+    } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
 
     // Check what files were modified in this turn by looking at tool results
     const toolResults = (_event as any).toolResults;

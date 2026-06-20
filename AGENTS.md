@@ -226,7 +226,7 @@ All async agent temp files live under project-scoped subdirectories:
 ├── nvim-qf-<pid>-<ts>.json      # Nvim quickfix data (ephemeral)
 ├── async-cfg-<id>.json          # Async runner config (ephemeral)
 ├── subagent-<random>/           # Subagent prompt temp dir (ephemeral)
-├── async-results-pid-<pid>/     # Async agent completion results (picked up by poller)
+├── async-results-pid-<pid>-<starttime>/  # Async agent completion results (starttime prevents container PID collisions)
 └── worker-<id>/                 # Async agent working dir
     ├── status.json              # Agent state (running/complete/failed)
     ├── session.json             # Parent PID + starttime for zombie detection
@@ -365,6 +365,7 @@ Clean-room TypeScript implementation under MIT — not a code translation.
 - `before_agent_start`: injects situation report + vector-matched memories + session history
 - Social closer gate: skips search for trivial messages ("ok", "thanks", "👍")
 - `turn_end`: file-change memory reminders (vector search on modified file paths)
+- `turn_end`: task-focus enforcement — if turn had no tool calls but active tasks exist, injects follow-up to force LLM to resume work
 - Retrieval telemetry: logs injected memories to `.pi/data/memory-telemetry.jsonl`
 - Ground Truth instruction: tells LLM to trust injected context as authoritative
 
