@@ -145,6 +145,19 @@ Returns JSON with:
 > addressed or dismissed, it must be re-evaluated and fixed again. The `is_auto_skipped`
 > flag does not apply to Qodo sources.
 >
+> 🚨 **MANDATORY: Read the FULL Qodo sticky JSON data before acting.**
+> Qodo sticky findings contain critical fields beyond the title:
+>
+> - `code_diff` — the exact code the finding references (THIS is what you must fix)
+> - `evidence` — Qodo's explanation of why this is a problem
+> - `evidence_refs` — links to the specific file/line ranges involved
+> - `agent_prompt` — Qodo's suggested fix approach
+>
+> **NEVER match findings by title alone.** Two findings with the same title
+> (e.g., "Deploy ownership conflict") can reference completely different code.
+> Always read `code_diff` and `evidence_refs` to understand what SPECIFIC code
+> the finding is about before deciding it was "already addressed."
+>
 > 1. **Qodo comments → auto-approved based on finding type:**
 >    - `qodo_bug` → **MUST address.** Fix the code. No skip allowed.
 >    - `qodo_rule_violation` → **MUST address.** Fix the code. No skip allowed.
@@ -263,6 +276,12 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 
 **When fixing review comments (MANDATORY):**
 
+- **For Qodo sticky findings:** Before fixing or deciding a finding is "already addressed",
+  read the `code_diff`, `evidence`, `evidence_refs`, and `agent_prompt` fields from the JSON.
+  These fields — not the title — define what the finding is about. Never dismiss by title alone.
+  If `code_diff` is empty, use `evidence_refs` (check **every** entry, not just the first),
+  `path`/`line`/`end_line` (if present — these can be empty/null), and the finding body to locate the code.
+  If `path`/`line` are missing, derive locations from `evidence_refs` alone or search for the code snippet from `evidence`.
 - If the reviewer provides a specific code suggestion or diff, implement IT exactly — not your own interpretation
 - Do NOT simplify, minimize, or "half-fix" the suggestion
 - After fixing, verify your code matches what the reviewer asked for, not just "addresses the concern"
@@ -287,7 +306,14 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 **After ALL fixes are applied, verify EVERY finding from ALL sources (human, Qodo, CodeRabbit):**
 
 1. **Read each finding's FULL description** — not just the title. Two findings with similar titles can reference completely different code.
-2. **Read the code block** in the finding — the specific file, line range, and code snippet the reviewer referenced.
+2. **Read the code block** in the finding — for Qodo sticky findings, check the `code_diff` field first.
+   If `code_diff` is empty (not all findings have fenced diff blocks), fall back to
+   `evidence_refs` (check each entry — entries that contain file/line references like
+   `file[28-52]` or `file[R28-52]` are code locations to verify; skip non-location entries),
+   `path`/`line`/`end_line` (if present — can be empty/null), and the finding body.
+   If `path`/`line` are missing, derive locations from `evidence_refs` file/line entries.
+   Never skip verification because `code_diff` is empty — use the other fields instead.
+   The title alone is NEVER enough.
 3. **Check the ACTUAL file** at that location — does the problematic code still exist?
    - If YES → the finding is NOT addressed. Fix it.
    - If NO → the finding is addressed.
