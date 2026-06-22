@@ -975,6 +975,13 @@ def process_and_categorize(
                     db_record = replied_sticky[sticky_key]
                     enriched["previous_reply"] = db_record.get("reply") or ""
 
+        # qodo_reply items are Qodo's responses to our consolidated comments.
+        # They're informational context, not findings to fix — auto-skip them.
+        if source == "qodo" and enriched.get("type") == "qodo_reply":
+            enriched["is_auto_skipped"] = True
+            enriched["status"] = "skipped"
+            enriched["reply"] = "Qodo reply — informational context, not a finding to fix"
+
         # Check for previously dismissed similar comment (only if status is pending)
         # Qodo sticky findings are never auto-skipped — they persist intentionally
         # until properly resolved and must always be re-evaluated.
