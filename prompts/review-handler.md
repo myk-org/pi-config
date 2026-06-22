@@ -148,10 +148,20 @@ Returns JSON with:
 > 🚨 **MANDATORY: Read the FULL Qodo sticky JSON data before acting.**
 > Qodo sticky findings contain critical fields beyond the title:
 >
-> - `code_diff` — the exact code the finding references (THIS is what you must fix)
-> - `evidence` — Qodo's explanation of why this is a problem
-> - `evidence_refs` — links to the specific file/line ranges involved
-> - `agent_prompt` — Qodo's suggested fix approach
+> 🚨 **ALL fields below are MANDATORY — read EVERY field before acting on a finding.**
+> Skipping any field is a violation. Each field provides critical context.
+>
+> - `code_diff` — the exact code the finding references. THIS is what you must fix.
+> - `evidence` — Qodo's explanation of why this is a problem. Read to understand the root cause.
+> - `evidence_refs` — links to the specific file/line ranges involved. Check EVERY entry.
+> - `agent_prompt` — Qodo's suggested fix approach. Follow it unless you have a better solution.
+> - `qodo_response` — Qodo's reply to our previous fix. **Read this FIRST when present.**
+>   Tells you whether Qodo accepted the fix or pushed back.
+>   **If Qodo pushed back, your previous fix was insufficient — make a DIFFERENT fix.**
+>   Do NOT repeat the same reply or approach.
+> - `previous_reply` — What we previously replied to this finding. Shows the full conversation:
+>   we said `previous_reply` → Qodo responded `qodo_response`. Use both to understand context
+>   and avoid repeating the same fix that Qodo already rejected.
 >
 > **NEVER match findings by title alone.** Two findings with the same title
 > (e.g., "Deploy ownership conflict") can reference completely different code.
@@ -201,6 +211,14 @@ Returns JSON with:
 >    - This means the autoqodo polling loop will re-surface findings where Qodo disagrees
 >      with our fix, requiring re-evaluation and a new code fix or spec update
 >    - Pushback keywords: "still present", "not fixed", "disagree", "issue remains", etc.
+>
+>    🚨 **When processing a finding with `qodo_response`:**
+>    1. Read `qodo_response` FIRST — understand what Qodo said about your previous fix
+>    2. If Qodo accepted ("looks good", "addressed", "thanks") — the finding may still
+>       be unresolved in the sticky (Qodo doesn't always auto-resolve). Reply referencing
+>       the acceptance.
+>    3. If Qodo pushed back — your previous fix was wrong or incomplete. Make a NEW,
+>       DIFFERENT fix that addresses Qodo's specific concern. Do NOT repeat the same approach.
 >
 > Combined behavior:
 >
@@ -287,8 +305,12 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 
 **When fixing review comments (MANDATORY):**
 
-- **For Qodo sticky findings:** Before fixing or deciding a finding is "already addressed",
-  read the `code_diff`, `evidence`, `evidence_refs`, and `agent_prompt` fields from the JSON.
+- **For Qodo findings:** Before fixing or deciding a finding is "already addressed",
+  read the `code_diff`, `evidence`, `evidence_refs`, `agent_prompt`, `qodo_response`, and
+  `previous_reply` fields from the JSON.
+  🚨 **If `qodo_response` exists, read it FIRST** — it contains Qodo's feedback on your previous fix.
+  If Qodo pushed back, your previous approach failed — make a DIFFERENT fix.
+  `previous_reply` shows what you said before so you don't repeat it.
   These fields — not the title — define what the finding is about. Never dismiss by title alone.
   If `code_diff` is empty, use `evidence_refs` (check **every** entry, not just the first),
   `path`/`line`/`end_line` (if present — these can be empty/null), and the finding body to locate the code.

@@ -665,7 +665,8 @@ _QODO_REPLY_QUOTE_RE = re.compile(r"^>\s*(.+)$", re.MULTILINE)
 _QODO_MENTION_RE = re.compile(r"@?qodo-code-review|code-review\[bot\]")
 # Match finding title in quoted text: > **Finding Title** or > ### `path:line` (type) — Title
 _QUOTED_FINDING_TITLE_RE = re.compile(r"\*\*([^*]+)\*\*")
-_QUOTED_HEADING_TITLE_RE = re.compile(r"###\s+`[^`]+`\s*(?:\([^)]*\))?\s*(?:—|-)\s*(.+)")
+# Captures: group(1)=path:line, group(2)=title
+_QUOTED_HEADING_FULL_RE = re.compile(r"###\s+`([^`]+)`\s*(?:\([^)]*\))?\s*(?:—|-)\s*(.+)")
 
 
 def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
@@ -715,11 +716,18 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
         if "The following review comments were reviewed" not in quoted_text:
             continue
 
-        # Extract finding title from quoted text (try heading format first, then bold)
-        title_match = _QUOTED_HEADING_TITLE_RE.search(quoted_text)
-        if not title_match:
+        # Extract path:line and title from quoted heading
+        # Heading format: ### `path:line` (type) — title
+        heading_match = _QUOTED_HEADING_FULL_RE.search(quoted_text)
+        quoted_location = ""
+        quoted_title = ""
+        if heading_match:
+            quoted_location = heading_match.group(1).strip()  # e.g. "fetch.py:803"
+            quoted_title = heading_match.group(2).strip()
+        else:
+            # Fallback: try bold title
             title_match = _QUOTED_FINDING_TITLE_RE.search(quoted_text)
-        quoted_title = title_match.group(1).strip() if title_match else ""
+            quoted_title = title_match.group(1).strip() if title_match else ""
 
         # Extract Qodo's response: non-quoted lines (strip leading/trailing blank lines)
         response_lines = []
@@ -731,6 +739,7 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
 
         if qodo_response:
             results.append({
+                "quoted_location": quoted_location,
                 "quoted_title": quoted_title,
                 "qodo_response": qodo_response,
                 "comment_id": comment.get("id"),
@@ -793,36 +802,39 @@ def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[di
 
 
 def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: list[dict[str, Any]]) -> None:
-    """Enrich sticky findings with qodo_response from matching reply comments.
+    """Enrich qodo findings with qodo_response from matching reply comments.
 
-    Matches replies to findings by comparing the quoted title in the reply
-    to the extracted title from the finding body. Modifies findings in-place.
+    Matches replies to findings using path:line from the quoted heading
+    (primary) or title comparison (fallback). Modifies findings in-place.
     """
     for finding in findings:
-        finding_title = _extract_sticky_title(finding.get("body", ""))
-        if not finding_title:
-            continue
-
         if not finding.get("already_replied"):
             continue
 
-        for reply in replies:
-            # Match by normalized title prefix comparison (titles may be truncated to 100 chars)
-            normalized_quoted = _extract_sticky_title(f"**{reply.get('quoted_title', '')}**")
-            if not normalized_quoted:
-                continue
+        finding_path = finding.get("path") or ""
+        finding_line = finding.get("line")
+        finding_loc = f"{finding_path}:{finding_line}" if finding_path and finding_line else ""
 
-            # Use prefix matching to handle truncated titles from consolidated comments
-            # Use prefix matching to handle truncated titles from consolidated comments
-            # When equal length, use exact equality (startswith is trivially true)
-            if len(normalized_quoted) == len(finding_title):
-                if normalized_quoted != finding_title:
-                    continue
-            else:
-                shorter = min(normalized_quoted, finding_title, key=len)
-                longer = max(normalized_quoted, finding_title, key=len)
-                if not (longer.startswith(shorter) and len(shorter) > 10):
-                    continue
+        for reply in replies:
+            matched = False
+            reply_loc = reply.get("quoted_location") or ""
+
+            # Primary: match by path:line from the quoted heading
+            if reply_loc and finding_loc and reply_loc == finding_loc:
+                matched = True
+            elif not matched and reply.get("quoted_title"):
+                # Fallback: title prefix match (titles may be truncated to 100 chars)
+                finding_title = _extract_sticky_title(finding.get("body", ""))
+                quoted_title = reply.get("quoted_title", "").strip().lower()
+                if finding_title and quoted_title and len(quoted_title) > 10:
+                    if len(quoted_title) == len(finding_title):
+                        matched = quoted_title == finding_title
+                    else:
+                        shorter = min(quoted_title, finding_title, key=len)
+                        longer = max(quoted_title, finding_title, key=len)
+                        matched = longer.startswith(shorter)
+
+            if matched:
                 finding["qodo_response"] = reply["qodo_response"]
                 break
 
@@ -877,7 +889,8 @@ def process_and_categorize(
             dismissed_by_key = {}
 
     # Preload already-replied Qodo sticky findings for dedup (exact match only)
-    replied_sticky: set[tuple[int, str, str]] = set()
+    # Maps (comment_id, body, code_diff) -> DB record (includes reply text)
+    replied_sticky: dict[tuple[int, str, str], dict[str, Any]] = {}
     if db and pr_number:
         try:
             for c in db.get_replied_sticky_findings(owner, repo, pr_number):
@@ -885,7 +898,16 @@ def process_and_categorize(
                 body = c.get("body") or ""
                 code_diff = c.get("code_diff") or ""
                 if cid is not None:
-                    replied_sticky.add((int(cid), body, code_diff))
+                    rs_key = (int(cid), body, code_diff)
+                    existing = replied_sticky.get(rs_key)
+                    if existing is None:
+                        replied_sticky[rs_key] = c
+                    else:
+                        # Prefer records with meaningful replies
+                        existing_reply = existing.get("reply") or ""
+                        new_reply = c.get("reply") or ""
+                        if "Already replied" in existing_reply and "Already replied" not in new_reply and new_reply:
+                            replied_sticky[rs_key] = c
         except Exception as e:
             print_stderr(f"Warning: Failed to preload replied sticky findings: {e}")
 
@@ -916,8 +938,12 @@ def process_and_categorize(
             cid = thread.get("comment_id")
             thread_body = thread.get("body") or ""
             thread_code_diff = thread.get("code_diff") or ""
-            if cid is not None and (int(cid), thread_body, thread_code_diff) in replied_sticky:
-                enriched["already_replied"] = True
+            if cid is not None:
+                sticky_key = (int(cid), thread_body, thread_code_diff)
+                if sticky_key in replied_sticky:
+                    enriched["already_replied"] = True
+                    db_record = replied_sticky[sticky_key]
+                    enriched["previous_reply"] = db_record.get("reply") or ""
 
         # Check for previously dismissed similar comment (only if status is pending)
         # Qodo sticky findings are never auto-skipped — they persist intentionally
