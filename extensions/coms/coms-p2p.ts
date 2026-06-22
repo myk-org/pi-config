@@ -318,7 +318,13 @@ function pruneDeadEntries(project: string): RegistryEntry[] {
 		// Fall back to started_at if heartbeat_at is missing (agent hasn't completed first keepalive cycle)
 		const lastSeen = entry.heartbeat_at ?? entry.started_at;
 		if (lastSeen) {
-			const age = now - new Date(lastSeen).getTime();
+			const lastSeenMs = new Date(lastSeen).getTime();
+			if (isNaN(lastSeenMs)) {
+				// Invalid timestamp — treat as stale, remove entry
+				removeRegistryEntry(project, entry.session_id);
+				continue;
+			}
+			const age = now - lastSeenMs;
 			if (age > staleThresholdMs) {
 				// Heartbeat/start too old — agent likely crashed without cleanup
 				removeRegistryEntry(project, entry.session_id);
