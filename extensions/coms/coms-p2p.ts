@@ -303,7 +303,12 @@ function pruneDeadEntries(project: string): RegistryEntry[] {
 	const now = Date.now();
 	const staleThresholdMs = KEEPALIVE_INTERVAL_MS * 2;
 	for (const entry of entries) {
-		if (!entry.endpoint || !fs.existsSync(entry.endpoint)) {
+		if (!entry.endpoint) {
+			removeRegistryEntry(project, entry.session_id);
+			continue;
+		}
+		// On Windows, endpoints are named pipes — fs.existsSync doesn't apply
+		if (process.platform !== "win32" && !fs.existsSync(entry.endpoint)) {
 			// Socket gone — agent is dead
 			removeRegistryEntry(project, entry.session_id);
 			continue;
@@ -315,8 +320,12 @@ function pruneDeadEntries(project: string): RegistryEntry[] {
 			if (heartbeatAge > staleThresholdMs) {
 				// Heartbeat too old — agent likely crashed without cleanup
 				removeRegistryEntry(project, entry.session_id);
-				try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
-				try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
+				// Only unlink sockets under the expected coms sockets directory
+				const socketsDir = path.join(COMS_DIR, "sockets");
+				if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
+					try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
+					try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
+				}
 				continue;
 			}
 		}
@@ -1191,13 +1200,20 @@ export default function (pi: ExtensionAPI) {
 			const byName = localEntries.filter((e) => e.name === target);
 			if (byName.length === 1) return byName[0];
 			if (byName.length > 1) {
-				// Ambiguous — log and return first match
+				// Ambiguous — sort deterministically: freshest heartbeat first, session_id tiebreaker
+				byName.sort((a, b) => {
+					const ha = a.heartbeat_at ? new Date(a.heartbeat_at).getTime() : 0;
+					const hb = b.heartbeat_at ? new Date(b.heartbeat_at).getTime() : 0;
+					if (hb !== ha) return hb - ha; // freshest first
+					return a.session_id.localeCompare(b.session_id); // stable tiebreak
+				});
 				try {
 					pi.appendEntry("coms-log", {
 						event: "ambiguous_target",
 						target,
 						matches: byName.length,
 						selected_session: byName[0].session_id,
+						selected_heartbeat: byName[0].heartbeat_at ?? null,
 					});
 				} catch { /* best-effort */ }
 				return byName[0];
