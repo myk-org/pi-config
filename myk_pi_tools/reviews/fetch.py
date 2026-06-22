@@ -799,13 +799,19 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
         if not finding_title:
             continue
 
+        if not finding.get("already_replied"):
+            continue
+
         for reply in replies:
-            # Match by exact normalized title comparison
+            # Match by normalized title prefix comparison (titles may be truncated to 100 chars)
             normalized_quoted = _extract_sticky_title(f"**{reply.get('quoted_title', '')}**")
             if not normalized_quoted:
                 continue
 
-            if normalized_quoted == finding_title:
+            # Use prefix matching to handle truncated titles from consolidated comments
+            shorter = min(normalized_quoted, finding_title, key=len)
+            longer = max(normalized_quoted, finding_title, key=len)
+            if longer.startswith(shorter) and len(shorter) > 10:
                 finding["qodo_response"] = reply["qodo_response"]
                 break
 
