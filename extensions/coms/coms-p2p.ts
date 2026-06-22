@@ -343,9 +343,15 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		candidates.push(entry);
 	}
 
-	// Phase 2: Parallel socket probes (all candidates at once)
+	// Phase 2: Parallel socket probes (capped at 10 concurrent to avoid EMFILE)
 	if (candidates.length === 0) return [];
-	const results = await Promise.all(candidates.map(entry => probeStaleSocket(entry.endpoint)));
+	const PROBE_CONCURRENCY = 10;
+	const results: ("in_use" | "stale")[] = [];
+	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
+		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
+		const batchResults = await Promise.all(batch.map(entry => probeStaleSocket(entry.endpoint)));
+		results.push(...batchResults);
+	}
 	const live: RegistryEntry[] = [];
 	for (let i = 0; i < candidates.length; i++) {
 		if (results[i] === "stale") {
