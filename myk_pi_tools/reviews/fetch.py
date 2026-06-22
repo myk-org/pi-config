@@ -813,7 +813,12 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
 
         finding_path = finding.get("path") or ""
         finding_line = finding.get("line")
-        finding_loc = f"{finding_path}:{finding_line}" if finding_path and finding_line else ""
+        if finding_path and finding_line:
+            finding_loc = f"{finding_path}:{finding_line}"
+        elif finding_path:
+            finding_loc = finding_path
+        else:
+            finding_loc = ""
 
         for reply in replies:
             matched = False
