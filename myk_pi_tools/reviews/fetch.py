@@ -700,7 +700,7 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
         if is_qodo_sticky_comment(body):
             continue
 
-        # Must contain a blockquote that references @qodo-code-review (our consolidated comment)
+        # Must contain a blockquote that references our consolidated comment
         if not _QODO_MENTION_RE.search(body):
             continue
 
@@ -710,6 +710,10 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
 
         # Reconstruct quoted text to extract the finding title
         quoted_text = "\n".join(quoted_lines)
+
+        # Must quote our consolidated comment marker (not just any blockquote)
+        if "The following review comments were reviewed" not in quoted_text:
+            continue
 
         # Extract finding title from quoted text (try heading format first, then bold)
         title_match = _QUOTED_HEADING_TITLE_RE.search(quoted_text)
@@ -809,9 +813,16 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
                 continue
 
             # Use prefix matching to handle truncated titles from consolidated comments
-            shorter = min(normalized_quoted, finding_title, key=len)
-            longer = max(normalized_quoted, finding_title, key=len)
-            if longer.startswith(shorter) and len(shorter) > 10:
+            # Use prefix matching to handle truncated titles from consolidated comments
+            # When equal length, use exact equality (startswith is trivially true)
+            if len(normalized_quoted) == len(finding_title):
+                if normalized_quoted != finding_title:
+                    continue
+            else:
+                shorter = min(normalized_quoted, finding_title, key=len)
+                longer = max(normalized_quoted, finding_title, key=len)
+                if not (longer.startswith(shorter) and len(shorter) > 10):
+                    continue
                 finding["qodo_response"] = reply["qodo_response"]
                 break
 
@@ -1162,6 +1173,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         print_stderr(f"Found {len(all_threads)} {label} thread(s)")
 
         # Skip bot comment fetching when filtering by specific user
+        qodo_replies: list[dict[str, Any]] = []
         if not user:
             # Fetch CodeRabbit body-embedded comments from review bodies
             print_stderr("Fetching CodeRabbit body-embedded comments...")
@@ -1176,12 +1188,11 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
             if qodo_sticky_findings:
                 print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
 
-                # Fetch Qodo replies to our consolidated comments and enrich findings
+                # Fetch Qodo replies (enrichment happens after process_and_categorize sets already_replied)
                 print_stderr("Fetching Qodo reply comments...")
                 qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number)
                 if qodo_replies:
                     print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
-                    _enrich_findings_with_qodo_replies(qodo_sticky_findings, qodo_replies)
 
                 all_threads = merge_threads(all_threads, qodo_sticky_findings)
 
@@ -1249,6 +1260,10 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         # Process and categorize threads
         print_stderr("Categorizing threads by source...")
         categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
+
+        # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
+        if qodo_replies:
+            _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
 
         # Build final output
         final_output = {
