@@ -92,6 +92,7 @@ interface RegistryEntry {
 	purpose: string;
 	model: string;
 	color: string;
+	/** Informational only — not used for liveness checks (socket existence + heartbeat used instead). */
 	pid: number;
 	endpoint: string;
 	cwd: string;
@@ -229,14 +230,14 @@ function projectAgentsDir(project: string): string {
 	return path.join(COMS_DIR, "projects", project, "agents");
 }
 
-function registryFilePath(project: string, name: string): string {
-	return path.join(projectAgentsDir(project), `${name}.json`);
+function registryFilePath(project: string, sessionId: string): string {
+	return path.join(projectAgentsDir(project), `${sessionId}.json`);
 }
 
 function writeRegistryAtomic(entry: RegistryEntry, project: string): string {
 	const dir = projectAgentsDir(project);
 	fs.mkdirSync(dir, { recursive: true });
-	const final = registryFilePath(project, entry.name);
+	const final = registryFilePath(project, entry.session_id);
 	const tmp = `${final}.tmp`;
 	fs.writeFileSync(tmp, JSON.stringify(entry, null, 2));
 	fs.renameSync(tmp, final);
@@ -288,9 +289,9 @@ function readAllRegistryEntriesAcrossProjects(): RegistryEntry[] {
 	return out;
 }
 
-function removeRegistryEntry(project: string, name: string): void {
+function removeRegistryEntry(project: string, sessionId: string): void {
 	try {
-		fs.unlinkSync(registryFilePath(project, name));
+		fs.unlinkSync(registryFilePath(project, sessionId));
 	} catch {
 		// best-effort
 	}
@@ -299,31 +300,29 @@ function removeRegistryEntry(project: string, name: string): void {
 function pruneDeadEntries(project: string): RegistryEntry[] {
 	const entries = readAllRegistryEntries(project);
 	const live: RegistryEntry[] = [];
+	const now = Date.now();
+	const staleThresholdMs = KEEPALIVE_INTERVAL_MS * 2;
 	for (const entry of entries) {
-		try {
-			process.kill(entry.pid, 0);
-			live.push(entry);
-		} catch (e: any) {
-			if (e && e.code === "ESRCH") {
-				removeRegistryEntry(project, entry.name);
-			} else {
-				// EPERM means the process exists but we can't signal it — treat as live.
-				live.push(entry);
+		if (!entry.endpoint || !fs.existsSync(entry.endpoint)) {
+			// Socket gone — agent is dead
+			removeRegistryEntry(project, entry.session_id);
+			continue;
+		}
+		// Socket exists — check heartbeat freshness to detect crashed agents
+		// whose socket files were left behind (SIGKILL, OOM, etc.)
+		if (entry.heartbeat_at) {
+			const heartbeatAge = now - new Date(entry.heartbeat_at).getTime();
+			if (heartbeatAge > staleThresholdMs) {
+				// Heartbeat too old — agent likely crashed without cleanup
+				removeRegistryEntry(project, entry.session_id);
+				try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
+				try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
+				continue;
 			}
 		}
+		live.push(entry);
 	}
 	return live;
-}
-
-function resolveUniqueName(project: string, desiredName: string): string {
-	// Returns a name that doesn't collide with any LIVE registered agent.
-	// pruneDeadEntries auto-removes ESRCH entries; we only care about live ones.
-	const liveEntries = pruneDeadEntries(project);
-	const liveNames = new Set(liveEntries.map(e => e.name));
-	if (!liveNames.has(desiredName)) return desiredName;
-	let n = 2;
-	while (liveNames.has(`${desiredName}${n}`)) n++;
-	return `${desiredName}${n}`;
 }
 
 function pruneDeadEntriesAllProjects(): RegistryEntry[] {
@@ -774,15 +773,7 @@ export default function (pi: ExtensionAPI) {
 		const session_id = ulid();
 
 		const defaultName = `agent-${session_id.slice(-6)}`;
-		const desiredName = flags.name || fm.name || defaultName;
-		const name = resolveUniqueName(project, desiredName);
-		if (name !== desiredName) {
-			try {
-				pi.appendEntry("coms-log", { event: "name_collision", desired: desiredName, assigned: name, project });
-			} catch {
-				// best-effort
-			}
-		}
+		const name = flags.name || fm.name || defaultName;
 		const purpose = flags.purpose || fm.description || "";
 
 		// Color: validate at every level; fall through invalid hex to next.
@@ -986,7 +977,7 @@ export default function (pi: ExtensionAPI) {
 		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
+			if (identity && sid === identity.session_id) continue;
 			seenSessions.add(sid);
 			rows.push({
 				name: card.name,
@@ -1003,7 +994,7 @@ export default function (pi: ExtensionAPI) {
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
-			if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
+			if (identity && entry.session_id === identity.session_id) continue;
 			if (!includeExplicit && entry.explicit) continue;
 			if (seenSessions.has(entry.session_id)) continue;
 			if (seenNames.has(entry.name)) continue;
@@ -1163,7 +1154,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
+			if (identity && sid === identity.session_id) continue;
 			if (!seenSessions.has(sid)) {
 				card.staleCount = (card.staleCount ?? 0) + 1;
 				if (card.staleCount > 6) {
@@ -1190,18 +1181,35 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function resolveTarget(target: string): RegistryEntry | null {
-		// Prefer name match within current project.
+		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
 			const localEntries = pruneDeadEntries(identity.project);
-			const byName = localEntries.find((e) => e.name === target);
-			if (byName) return byName;
+			// Try session_id match first (always unambiguous)
+			const bySession = localEntries.find((e) => e.session_id === target);
+			if (bySession) return bySession;
+			// Name match — warn if ambiguous
+			const byName = localEntries.filter((e) => e.name === target);
+			if (byName.length === 1) return byName[0];
+			if (byName.length > 1) {
+				// Ambiguous — log and return first match
+				try {
+					pi.appendEntry("coms-log", {
+						event: "ambiguous_target",
+						target,
+						matches: byName.length,
+						selected_session: byName[0].session_id,
+					});
+				} catch { /* best-effort */ }
+				return byName[0];
+			}
 		}
-		// Fall back to scanning all projects by session_id (or name as last resort).
+		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
 			const entries = pruneDeadEntries(proj);
 			const bySession = entries.find((e) => e.session_id === target);
 			if (bySession) return bySession;
 		}
+		// Fall back to name match across projects.
 		for (const proj of listProjects()) {
 			const entries = pruneDeadEntries(proj);
 			const byName = entries.find((e) => e.name === target);
@@ -1231,7 +1239,7 @@ export default function (pi: ExtensionAPI) {
 			for (const proj of projects) {
 				for (const entry of pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
-					if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
+					if (identity && entry.session_id === identity.session_id) continue;
 					collected.push({ entry, project: proj });
 				}
 			}
@@ -1680,7 +1688,7 @@ export default function (pi: ExtensionAPI) {
 			if (process.platform !== "win32") {
 				try { fs.unlinkSync(identity.endpoint); } catch { /* ignore */ }
 			}
-			try { removeRegistryEntry(identity.project, identity.name); } catch { /* ignore */ }
+			try { removeRegistryEntry(identity.project, identity.session_id); } catch { /* ignore */ }
 			try {
 				pi.appendEntry("coms-log", { event: "shutdown", session_id: identity.session_id });
 			} catch { /* best-effort */ }
