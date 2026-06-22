@@ -17,7 +17,7 @@ $ARGUMENTS
 > Do not silently skip steps or apply manual fixes that hide the root cause.
 
 Generates a project-specific **coms feature manager** prompt from the template.
-The coms feature manager pattern uses pi's coms system (`coms_send`/`coms_await`/`coms_list`)
+The coms feature manager pattern uses pi's coms system (`coms_send`/`coms_list` — responses auto-deliver as followUp)
 to coordinate between a manager agent (reviewer) and a coder agent (implementer).
 
 ## What This Creates
