@@ -106,7 +106,17 @@ def _has_actionable_comments(pr_number: str, output_dir: str) -> bool:
 
 
 def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
-    """Check if fetched reviews have actionable Qodo comments (not auto-skipped)."""
+    """Check if fetched reviews have actionable Qodo comments.
+
+    A comment is actionable if:
+    - Not auto-skipped AND not already replied (new finding), OR
+    - Not auto-skipped AND already replied AND qodo_response contains
+      pushback keywords (Qodo disagrees with our previous fix)
+
+    Already-replied findings WITHOUT pushback are not actionable in the poll
+    — they're waiting for Qodo to re-review after our push. The review handler
+    still processes them as mandatory when they appear in the sticky.
+    """
     import json
     from pathlib import Path
 
@@ -122,7 +132,16 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
         return True
 
     for comment in data.get("qodo", []):
-        if not comment.get("is_auto_skipped"):
+        if comment.get("is_auto_skipped"):
+            continue
+
+        # New finding — not yet replied to
+        if not comment.get("already_replied"):
+            return True
+
+        # Already replied — only actionable if Qodo pushed back
+        qodo_response = comment.get("qodo_response", "")
+        if qodo_response and _PUSHBACK_KEYWORDS.search(qodo_response):
             return True
 
     return False
