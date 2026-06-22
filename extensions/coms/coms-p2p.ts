@@ -349,8 +349,8 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	const results: ("in_use" | "stale")[] = [];
 	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
 		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
-		const batchResults = await Promise.all(batch.map(entry => probeStaleSocket(entry.endpoint)));
-		results.push(...batchResults);
+		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint)));
+		results.push(...batchResults.map(r => r.status === "fulfilled" ? r.value : "in_use" as const));
 	}
 	const live: RegistryEntry[] = [];
 	for (let i = 0; i < candidates.length; i++) {
