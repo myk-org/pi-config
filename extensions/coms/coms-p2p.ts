@@ -315,10 +315,12 @@ function pruneDeadEntries(project: string): RegistryEntry[] {
 		}
 		// Socket exists — check heartbeat freshness to detect crashed agents
 		// whose socket files were left behind (SIGKILL, OOM, etc.)
-		if (entry.heartbeat_at) {
-			const heartbeatAge = now - new Date(entry.heartbeat_at).getTime();
-			if (heartbeatAge > staleThresholdMs) {
-				// Heartbeat too old — agent likely crashed without cleanup
+		// Fall back to started_at if heartbeat_at is missing (agent hasn't completed first keepalive cycle)
+		const lastSeen = entry.heartbeat_at ?? entry.started_at;
+		if (lastSeen) {
+			const age = now - new Date(lastSeen).getTime();
+			if (age > staleThresholdMs) {
+				// Heartbeat/start too old — agent likely crashed without cleanup
 				removeRegistryEntry(project, entry.session_id);
 				// Only unlink sockets under the expected coms sockets directory
 				const socketsDir = path.join(COMS_DIR, "sockets");
@@ -328,6 +330,10 @@ function pruneDeadEntries(project: string): RegistryEntry[] {
 				}
 				continue;
 			}
+		} else {
+			// No timestamp at all — malformed entry, remove it
+			removeRegistryEntry(project, entry.session_id);
+			continue;
 		}
 		live.push(entry);
 	}
