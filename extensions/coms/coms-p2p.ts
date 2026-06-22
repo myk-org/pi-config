@@ -1208,8 +1208,10 @@ export default function (pi: ExtensionAPI) {
 			if (byName.length > 1) {
 				// Ambiguous — sort deterministically: freshest heartbeat first, session_id tiebreaker
 				byName.sort((a, b) => {
-					const ha = a.heartbeat_at ? new Date(a.heartbeat_at).getTime() : 0;
-					const hb = b.heartbeat_at ? new Date(b.heartbeat_at).getTime() : 0;
+					const haRaw = a.heartbeat_at ? new Date(a.heartbeat_at).getTime() : 0;
+					const hbRaw = b.heartbeat_at ? new Date(b.heartbeat_at).getTime() : 0;
+					const ha = isNaN(haRaw) ? 0 : haRaw;
+					const hb = isNaN(hbRaw) ? 0 : hbRaw;
 					if (hb !== ha) return hb - ha; // freshest first
 					return a.session_id.localeCompare(b.session_id); // stable tiebreak
 				});
