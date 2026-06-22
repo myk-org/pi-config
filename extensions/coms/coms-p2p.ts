@@ -231,6 +231,10 @@ function projectAgentsDir(project: string): string {
 }
 
 function registryFilePath(project: string, sessionId: string): string {
+	// Guard against path traversal from malformed session_id
+	if (sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("..")) {
+		throw new Error(`Invalid session_id: ${sessionId}`);
+	}
 	return path.join(projectAgentsDir(project), `${sessionId}.json`);
 }
 
@@ -299,37 +303,33 @@ function removeRegistryEntry(project: string, sessionId: string): void {
 
 async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	const entries = readAllRegistryEntries(project);
-	const live: RegistryEntry[] = [];
 	const now = Date.now();
 	const staleThresholdMs = KEEPALIVE_INTERVAL_MS * 2;
+	const socketsDir = path.join(COMS_DIR, "sockets");
+
+	// Phase 1: Sync pre-filter (fast — no I/O)
+	const candidates: RegistryEntry[] = [];
 	for (const entry of entries) {
-		if (!entry.endpoint) {
+		if (!entry.endpoint || typeof entry.endpoint !== "string") {
 			removeRegistryEntry(project, entry.session_id);
 			continue;
 		}
 		// On Windows, endpoints are named pipes — fs.existsSync doesn't apply
 		if (process.platform !== "win32" && !fs.existsSync(entry.endpoint)) {
-			// Socket gone — agent is dead
 			removeRegistryEntry(project, entry.session_id);
 			continue;
 		}
-		// Socket exists — check heartbeat freshness to detect crashed agents
-		// whose socket files were left behind (SIGKILL, OOM, etc.)
-		// Fall back to started_at if heartbeat_at is missing (agent hasn't completed first keepalive cycle)
+		// Check heartbeat/started_at freshness
 		const lastSeen = entry.heartbeat_at ?? entry.started_at;
 		if (lastSeen) {
 			const lastSeenMs = new Date(lastSeen).getTime();
 			if (isNaN(lastSeenMs)) {
-				// Invalid timestamp — treat as stale, remove entry
 				removeRegistryEntry(project, entry.session_id);
 				continue;
 			}
 			const age = now - lastSeenMs;
 			if (age > staleThresholdMs) {
-				// Heartbeat/start too old — agent likely crashed without cleanup
 				removeRegistryEntry(project, entry.session_id);
-				// Only unlink sockets under the expected coms sockets directory
-				const socketsDir = path.join(COMS_DIR, "sockets");
 				if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
 					try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
 					try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
@@ -337,23 +337,27 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 				continue;
 			}
 		} else {
-			// No timestamp at all — malformed entry, remove it
 			removeRegistryEntry(project, entry.session_id);
 			continue;
 		}
-		// Socket file exists and heartbeat is fresh — verify socket is actually reachable
-		const verdict = await probeStaleSocket(entry.endpoint);
-		if (verdict === "stale") {
-			// Socket exists but nobody is listening — crashed without cleanup
+		candidates.push(entry);
+	}
+
+	// Phase 2: Parallel socket probes (all candidates at once)
+	if (candidates.length === 0) return [];
+	const results = await Promise.all(candidates.map(entry => probeStaleSocket(entry.endpoint)));
+	const live: RegistryEntry[] = [];
+	for (let i = 0; i < candidates.length; i++) {
+		if (results[i] === "stale") {
+			const entry = candidates[i];
 			removeRegistryEntry(project, entry.session_id);
-			const socketsDir = path.join(COMS_DIR, "sockets");
 			if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
 				try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
 				try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
 			}
-			continue;
+		} else {
+			live.push(candidates[i]);
 		}
-		live.push(entry);
 	}
 	return live;
 }
@@ -397,11 +401,11 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 		});
 		sock.once("error", (err: any) => {
 			clearTimeout(timer);
-			if (err && err.code === "ECONNREFUSED") {
+			if (err && (err.code === "ECONNREFUSED" || err.code === "ENOENT")) {
 				finish("stale");
 			} else {
-				// ENOENT or other — treat as stale (file may be gone or unusable)
-				finish("stale");
+				// Transient errors (EMFILE, EACCES, etc.) — treat as live to avoid false pruning
+				finish("in_use");
 			}
 		});
 	});
