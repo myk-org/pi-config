@@ -662,7 +662,7 @@ fetch_coderabbit_outside_diff_comments = fetch_coderabbit_body_comments
 
 # Pattern: Qodo replies to our consolidated comments by quoting them in a blockquote
 _QODO_REPLY_QUOTE_RE = re.compile(r"^>\s*(.+)$", re.MULTILINE)
-_QODO_MENTION_RE = re.compile(r"@qodo-code-review")
+_QODO_MENTION_RE = re.compile(r"@?qodo-code-review|code-review\[bot\]")
 # Match finding title in quoted text: > **Finding Title** or > ### `path:line` (type) — Title
 _QUOTED_FINDING_TITLE_RE = re.compile(r"\*\*([^*]+)\*\*")
 _QUOTED_HEADING_TITLE_RE = re.compile(r"###\s+`[^`]+`\s*(?:\([^)]*\))?\s*(?:—|-)\s*(.+)")
