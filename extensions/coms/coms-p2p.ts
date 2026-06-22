@@ -8,7 +8,7 @@
  * ~/.pi/coms/projects/<project>/agents/<name>.json.
  *
  * Phase A (foundation): identity resolution, registry I/O, transport bind/send,
- * connection handlers. Phase B: tools (coms_list/send/get/await), agent_end
+ * connection handlers. Phase B: tools (coms_list/send/get), agent_end
  * response capture. Phase C: live pool widget, ping + keepalive cycles, /coms
  * slash command, clean shutdown lifecycle.
  *
@@ -692,8 +692,32 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				// ignore
 			}
-			// Delete after timeout window — coms_get/coms_await may still poll
-			setTimeout(() => { pendingReplies.delete(env.msg_id); }, TIMEOUT_MS).unref();
+
+			// Auto-deliver response as followUp so the LLM sees it without polling
+			const targetName = pending.target_name ?? "peer";
+			const responseText = env.error
+				? `[coms response from ${targetName}] Error: ${env.error}`
+				: typeof env.response === "string"
+					? `[coms response from ${targetName}] ${env.response}`
+					: `[coms response from ${targetName}] ${JSON.stringify(env.response, null, 2)}`;
+			try {
+				pi.sendMessage(
+					{
+						customType: "coms-response",
+						content: responseText,
+						display: true,
+						details: {
+							msg_id: env.msg_id,
+							target_name: targetName,
+							error: env.error ?? null,
+						},
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch { /* best-effort */ }
+
+			// Clean up immediately since response was delivered
+			setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
 		} else {
 			try {
 				pi.appendEntry("coms-log", { event: "orphan_response", msg_id: env.msg_id });
@@ -1357,7 +1381,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Coms Send",
 		description:
 			"Send a prompt to a peer agent. Returns synchronously with a msg_id once the receiver acks. " +
-			"Use coms_get (non-blocking) or coms_await (blocking) with the msg_id to retrieve the response. " +
+			"The response auto-delivers as a followUp message when the peer replies — no polling needed. Use coms_get for non-blocking status checks if needed. " +
 			"Throws if the receiver is unreachable or rejects the envelope.\n\n" +
 			"When delegating multiple work items, use the `tasks` parameter to include structured task definitions. " +
 			"The peer receives them as an instruction to create tasks via TaskCreate and track progress in their task widget.",
@@ -1516,59 +1540,6 @@ export default function (pi: ExtensionAPI) {
 			const status = d?.status ?? "?";
 			const color = status === "complete" ? "success" : status === "pending" ? "warning" : "error";
 			return new Text(theme.fg(color, status), 0, 0);
-		},
-	});
-
-	pi.registerTool({
-		name: "coms_await",
-		label: "Coms Await",
-		description:
-			"Block until a pending coms_send reply lands or the timeout fires. Default timeout 30 minutes (PI_COMS_TIMEOUT_MS).",
-		parameters: Type.Object({
-			msg_id: Type.String({ description: "msg_id returned by coms_send." }),
-			timeout_ms: Type.Optional(Type.Number({ description: "Override the default timeout (ms)." })),
-		}),
-		async execute(_callId, params) {
-			const entry = pendingReplies.get(params.msg_id);
-			if (!entry) {
-				return {
-					content: [{ type: "text" as const, text: `coms_await: unknown msg_id ${params.msg_id}` }],
-					details: { error: "unknown msg_id" },
-				};
-			}
-			const timeoutMs = typeof params.timeout_ms === "number" && params.timeout_ms > 0
-				? params.timeout_ms
-				: TIMEOUT_MS;
-
-			const timed = new Promise<{ error: string }>((resolve) => {
-				const t = setTimeout(() => resolve({ error: "timeout" }), timeoutMs);
-				try { (t as any).unref?.(); } catch { /* ignore */ }
-			});
-
-			const winner = await Promise.race([entry.promise, timed]);
-			if ((winner as any).error) {
-				return {
-					content: [{ type: "text" as const, text: `coms_await: error — ${(winner as any).error}` }],
-					details: { error: (winner as any).error },
-				};
-			}
-			const resp = (winner as any).response;
-			return {
-				content: [{ type: "text" as const, text: typeof resp === "string" ? resp : JSON.stringify(resp, null, 2) }],
-				details: { response: resp },
-			};
-		},
-		renderCall(args, theme) {
-			const id = (args as any).msg_id ?? "?";
-			return new Text(
-				theme.fg("toolTitle", theme.bold("coms_await ")) + theme.fg("warning", id),
-				0, 0,
-			);
-		},
-		renderResult(result, _options, theme) {
-			const d = result.details as any;
-			if (d?.error) return new Text(theme.fg("error", `✗ ${d.error}`), 0, 0);
-			return new Text(theme.fg("success", "✓ response received"), 0, 0);
 		},
 	});
 
