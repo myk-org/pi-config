@@ -297,7 +297,7 @@ function removeRegistryEntry(project: string, sessionId: string): void {
 	}
 }
 
-function pruneDeadEntries(project: string): RegistryEntry[] {
+async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	const entries = readAllRegistryEntries(project);
 	const live: RegistryEntry[] = [];
 	const now = Date.now();
@@ -341,12 +341,24 @@ function pruneDeadEntries(project: string): RegistryEntry[] {
 			removeRegistryEntry(project, entry.session_id);
 			continue;
 		}
+		// Socket file exists and heartbeat is fresh — verify socket is actually reachable
+		const verdict = await probeStaleSocket(entry.endpoint);
+		if (verdict === "stale") {
+			// Socket exists but nobody is listening — crashed without cleanup
+			removeRegistryEntry(project, entry.session_id);
+			const socketsDir = path.join(COMS_DIR, "sockets");
+			if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
+				try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
+				try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
+			}
+			continue;
+		}
 		live.push(entry);
 	}
 	return live;
 }
 
-function pruneDeadEntriesAllProjects(): RegistryEntry[] {
+async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
 	const root = path.join(COMS_DIR, "projects");
 	let projects: string[];
 	try {
@@ -361,7 +373,7 @@ function pruneDeadEntriesAllProjects(): RegistryEntry[] {
 		} catch {
 			continue;
 		}
-		out.push(...pruneDeadEntries(p));
+		out.push(...await pruneDeadEntries(p));
 	}
 	return out;
 }
@@ -1131,8 +1143,8 @@ export default function (pi: ExtensionAPI) {
 		if (!identity) return;
 		const projectFilter = displayProject ?? identity.project;
 		const live = projectFilter === "*"
-			? pruneDeadEntriesAllProjects()
-			: pruneDeadEntries(projectFilter);
+			? await pruneDeadEntriesAllProjects()
+			: await pruneDeadEntries(projectFilter);
 
 		const peers = live.filter((e) =>
 			e.session_id !== identity!.session_id && (includeExplicit || !e.explicit),
@@ -1201,10 +1213,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function resolveTarget(target: string): RegistryEntry | null {
+	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
-			const localEntries = pruneDeadEntries(identity.project);
+			const localEntries = await pruneDeadEntries(identity.project);
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.session_id === target);
 			if (bySession) return bySession;
@@ -1235,13 +1247,13 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
-			const entries = pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj);
 			const bySession = entries.find((e) => e.session_id === target);
 			if (bySession) return bySession;
 		}
 		// Fall back to name match across projects.
 		for (const proj of listProjects()) {
-			const entries = pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj);
 			const byName = entries.find((e) => e.name === target);
 			if (byName) return byName;
 		}
@@ -1267,7 +1279,7 @@ export default function (pi: ExtensionAPI) {
 
 			const collected: { entry: RegistryEntry; project: string }[] = [];
 			for (const proj of projects) {
-				for (const entry of pruneDeadEntries(proj)) {
+				for (const entry of await pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
 					if (identity && entry.session_id === identity.session_id) continue;
 					collected.push({ entry, project: proj });
@@ -1353,7 +1365,7 @@ export default function (pi: ExtensionAPI) {
 			if (!identity) {
 				throw new Error("coms not initialised");
 			}
-			const target = resolveTarget(params.target);
+			const target = await resolveTarget(params.target);
 			if (!target) {
 				throw new Error(`coms: no live agent matching "${params.target}"`);
 			}
