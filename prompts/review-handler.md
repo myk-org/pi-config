@@ -201,13 +201,24 @@ Returns JSON with:
 >    - OR the code does not match the spec — FIX THE CODE
 >    - NEVER post the same reply again. That means you haven't actually addressed it.
 >
+>    🚨 **STICKY FINDINGS ARE ALWAYS ACTIONABLE — NEVER SKIP.**
+>    If a finding appears in the Qodo sticky comment, it MUST be addressed with a code fix
+>    or spec update. `already_replied`, `previous_reply`, and `qodo_response` are CONTEXT
+>    for making a better fix — they are NOT reasons to skip.
+>    When a sticky finding has `previous_reply` + `qodo_response`, the AI MUST:
+>    1. Read `previous_reply` — what we said before
+>    2. Read `qodo_response` — what Qodo said back
+>    3. Make a DIFFERENT fix that addresses Qodo's specific concern
+>    Repeating the same reply or approach is a HARD VIOLATION.
+>
 >    **Qodo reply detection (consolidated comment responses):**
 >    When we post consolidated PR comments mentioning `@qodo-code-review`, Qodo may
 >    reply in a new issue comment quoting our response. These replies are now detected
 >    automatically:
 >    - Sticky findings are enriched with a `qodo_response` field containing Qodo's reply text
 >    - If Qodo's reply indicates **pushback** (e.g., "still present", "not addressed",
->      "disagree"), the finding is treated as **actionable** even if `already_replied=True`
+>      "disagree"), the finding is treated as **actionable** — `already_replied` is NOT
+>      a reason to skip. The finding MUST be re-fixed.
 >    - This means the autoqodo polling loop will re-surface findings where Qodo disagrees
 >      with our fix, requiring re-evaluation and a new code fix or spec update
 >    - Pushback keywords: "still present", "not fixed", "disagree", "issue remains", etc.
@@ -483,6 +494,14 @@ AUTOMATIC. If something is stuck, stale, or unclear — keep polling
 silently. Do NOT invent questions like "PRs are stuck, what do you
 want to do?" or "Should I keep polling?" or any variation. The loop
 runs silently until an exit condition is met. Period.**
+
+> **Exception: `qodo_requirement_gap` spec changes require user approval.**
+> When a `qodo_requirement_gap` finding needs an issue spec update (not a code fix),
+> the AI MUST ask the user before changing the spec. This is the ONLY exception to
+> the 'no user interaction in Phase 9' rule.
+>
+> - Code fix for a requirement gap → do it automatically, no user interaction needed
+> - Issue spec update for a requirement gap → ask user first via ask_user
 
 After the review flow completes (Phases 1-8), enter a polling loop
 to watch for new comments from auto-approved sources (CodeRabbit if autorabbit,
