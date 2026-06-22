@@ -95,13 +95,13 @@ def _has_actionable_comments(pr_number: str, output_dir: str) -> bool:
 
 # Pushback indicators in Qodo responses — Qodo disagrees with our fix/decision
 _PUSHBACK_KEYWORDS = re.compile(
-    r"(still (?:present|exists?|unresolved|open|not (?:fixed|addressed|resolved))"
-    r"|not (?:fully |completely )?(?:addressed|resolved|fixed)"
-    r"|disagree|incorrect|wrong|issue (?:remains|persists)"
-    r"|does not (?:address|fix|resolve)"
-    r"|should (?:still|be)"
-    r"|recommend (?:re-?evaluating|revisiting)"
-    r"|re-?open)",
+    r"(\bstill (?:present|exists?|unresolved|open|not (?:fixed|addressed|resolved))\b"
+    r"|\bnot (?:fully |completely )?(?:addressed|resolved|fixed)\b"
+    r"|\bdisagree\b|\bincorrect\b|\bwrong\b|\bissue (?:remains|persists)\b"
+    r"|\bdoes not (?:address|fix|resolve)\b"
+    r"|\bshould still\b"
+    r"|\brecommend (?:re-?evaluating|revisiting)\b"
+    r"|\bre-?open\b)",
     re.IGNORECASE,
 )
 

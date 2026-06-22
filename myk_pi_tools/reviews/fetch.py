@@ -663,8 +663,9 @@ fetch_coderabbit_outside_diff_comments = fetch_coderabbit_body_comments
 # Pattern: Qodo replies to our consolidated comments by quoting them in a blockquote
 _QODO_REPLY_QUOTE_RE = re.compile(r"^>\s*(.+)$", re.MULTILINE)
 _QODO_MENTION_RE = re.compile(r"@qodo-code-review")
-# Match finding title in quoted text: > **Finding Title**
+# Match finding title in quoted text: > **Finding Title** or > ### `path:line` (type) — Title
 _QUOTED_FINDING_TITLE_RE = re.compile(r"\*\*([^*]+)\*\*")
+_QUOTED_HEADING_TITLE_RE = re.compile(r"###\s+`[^`]+`\s*(?:\([^)]*\))?\s*(?:—|-)\s*(.+)")
 
 
 def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
@@ -672,6 +673,11 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
 
     Scans issue comments for Qodo bot replies that quote our @qodo-code-review
     consolidated posts. Extracts the quoted finding title and Qodo's response.
+
+    Note: These replies are used for enrichment only — they are matched back to
+    sticky findings via ``_enrich_findings_with_qodo_replies`` and do not produce
+    independent ``qodo_reply`` thread types. This is by design: Qodo replies
+    add context to existing findings rather than standing as separate threads.
 
     Returns:
         List of dicts with keys: quoted_title, qodo_response, comment_id.
@@ -705,8 +711,10 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
         # Reconstruct quoted text to extract the finding title
         quoted_text = "\n".join(quoted_lines)
 
-        # Extract finding title from quoted text
-        title_match = _QUOTED_FINDING_TITLE_RE.search(quoted_text)
+        # Extract finding title from quoted text (try heading format first, then bold)
+        title_match = _QUOTED_HEADING_TITLE_RE.search(quoted_text)
+        if not title_match:
+            title_match = _QUOTED_FINDING_TITLE_RE.search(quoted_text)
         quoted_title = title_match.group(1).strip() if title_match else ""
 
         # Extract Qodo's response: non-quoted lines (strip leading/trailing blank lines)
@@ -792,12 +800,12 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
             continue
 
         for reply in replies:
-            quoted_title = reply.get("quoted_title", "").strip().lower()
-            if not quoted_title:
+            # Match by exact normalized title comparison
+            normalized_quoted = _extract_sticky_title(f"**{reply.get('quoted_title', '')}**")
+            if not normalized_quoted:
                 continue
 
-            # Match by normalized title comparison
-            if quoted_title == finding_title or quoted_title in finding_title or finding_title in quoted_title:
+            if normalized_quoted == finding_title:
                 finding["qodo_response"] = reply["qodo_response"]
                 break
 
