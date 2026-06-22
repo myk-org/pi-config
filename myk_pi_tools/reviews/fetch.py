@@ -662,26 +662,31 @@ fetch_coderabbit_outside_diff_comments = fetch_coderabbit_body_comments
 
 # Pattern: Qodo replies to our consolidated comments by quoting them in a blockquote
 _QODO_REPLY_QUOTE_RE = re.compile(r"^>\s*(.+)$", re.MULTILINE)
-_QODO_MENTION_RE = re.compile(r"@?qodo-code-review|code-review\[bot\]")
 # Match finding title in quoted text: > **Finding Title** or > ### `path:line` (type) — Title
 _QUOTED_FINDING_TITLE_RE = re.compile(r"\*\*([^*]+)\*\*")
 # Captures: group(1)=path:line, group(2)=title
 _QUOTED_HEADING_FULL_RE = re.compile(r"###\s+`([^`]+)`\s*(?:\([^)]*\))?\s*(?:—|-)\s*(.+)")
+# Marker that identifies our consolidated PR comments (posted by review-handler)
+_CONSOLIDATED_COMMENT_MARKER = "The following review comments were reviewed"
 
 
 def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
     """Fetch Qodo replies to our consolidated PR comments.
 
-    Scans issue comments for Qodo bot replies that quote our @qodo-code-review
-    consolidated posts. Extracts the quoted finding title and Qodo's response.
+    Scans issue comments for Qodo bot replies that quote our consolidated
+    review posts. Identifies replies by the presence of the consolidated comment
+    marker ("The following review comments were reviewed") in the quoted text.
 
-    Note: These replies are used for enrichment only — they are matched back to
-    sticky findings via ``_enrich_findings_with_qodo_replies`` and do not produce
-    independent ``qodo_reply`` thread types. This is by design: Qodo replies
-    add context to existing findings rather than standing as separate threads.
+    Each reply is returned as a thread-like dict with type ``qodo_reply`` and
+    linkage to the original finding via ``quoted_location`` (path:line) and
+    ``quoted_title``. These are used both for enrichment (attaching
+    ``qodo_response`` to existing findings) and as first-class threads in
+    the categorized output.
 
     Returns:
-        List of dicts with keys: quoted_title, qodo_response, comment_id.
+        List of thread-like dicts with keys: thread_id, node_id, comment_id,
+        author, path, line, body, source, type, quoted_location, quoted_title,
+        qodo_response.
     """
     endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
     comments = run_gh_api(endpoint, paginate=True)
@@ -701,10 +706,6 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
         if is_qodo_sticky_comment(body):
             continue
 
-        # Must contain a blockquote that references our consolidated comment
-        if not _QODO_MENTION_RE.search(body):
-            continue
-
         quoted_lines = _QODO_REPLY_QUOTE_RE.findall(body)
         if not quoted_lines:
             continue
@@ -712,8 +713,9 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
         # Reconstruct quoted text to extract the finding title
         quoted_text = "\n".join(quoted_lines)
 
-        # Must quote our consolidated comment marker (not just any blockquote)
-        if "The following review comments were reviewed" not in quoted_text:
+        # Must quote our consolidated comment marker — this is the definitive
+        # identifier, not the bot mention (GitHub strips @ from quoted mentions)
+        if _CONSOLIDATED_COMMENT_MARKER not in quoted_text:
             continue
 
         # Extract path:line and title from quoted heading
@@ -738,11 +740,34 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
         qodo_response = "\n".join(response_lines).strip()
 
         if qodo_response:
+            # Parse path and line from quoted_location (e.g., "fetch.py:803")
+            reply_path = ""
+            reply_line = None
+            if quoted_location:
+                parts = quoted_location.rsplit(":", 1)
+                reply_path = parts[0]
+                if len(parts) == 2:
+                    try:
+                        reply_line = int(parts[1])
+                    except (ValueError, TypeError):
+                        pass
+
             results.append({
+                "thread_id": None,
+                "node_id": None,
+                "comment_id": comment.get("id"),
+                "author": author,
+                "path": reply_path,
+                "line": reply_line,
+                "body": qodo_response,
+                "source": "qodo",
+                "type": "qodo_reply",
+                "priority": "LOW",
+                "reply": None,
+                "status": "pending",
                 "quoted_location": quoted_location,
                 "quoted_title": quoted_title,
                 "qodo_response": qodo_response,
-                "comment_id": comment.get("id"),
             })
 
     return results
@@ -1219,13 +1244,14 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
             if qodo_sticky_findings:
                 print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
 
-                # Fetch Qodo replies (enrichment happens after process_and_categorize sets already_replied)
-                print_stderr("Fetching Qodo reply comments...")
-                qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number)
-                if qodo_replies:
-                    print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
-
                 all_threads = merge_threads(all_threads, qodo_sticky_findings)
+
+            # Fetch Qodo replies to our consolidated comments (independent of sticky findings)
+            print_stderr("Fetching Qodo reply comments...")
+            qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number)
+            if qodo_replies:
+                print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
+                all_threads = merge_threads(all_threads, qodo_replies)
 
         # If review URL provided, also fetch specific thread(s)
         specific_threads: list[dict[str, Any]] = []
