@@ -248,7 +248,21 @@ Where `{current_github_user}` is obtained from:
 gh api user --jq '.login'
 ```
 
-Parse the JSON output. For the `human` list, categorize each thread:
+Also fetch ALL unresolved review threads from all authors (for dedup in Phase 2):
+
+```bash
+myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}/all-unresolved https://github.com/{owner}/{repo}/pull/{pr_number}
+```
+
+This second call omits `--user` and `--include-resolved`, so it returns only currently-unresolved
+threads from every author (humans, Qodo, CodeRabbit, etc.). The output is passed to
+reviewers in Phase 2 so they can avoid raising duplicate findings.
+
+Parse the JSON output from the `--user` fetch (`${PROJECT_TMP_DIR}`). This file is used
+for resolved/unresolved categorization below. The all-unresolved fetch (`${PROJECT_TMP_DIR}/all-unresolved`)
+is used separately in Phase 2 for dedup context — do NOT use it here.
+
+For the `human` list, categorize each thread:
 
 **Unresolved threads:**
 
@@ -279,13 +293,28 @@ with `taskId` linking each to its task:
 
 Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
 
+Before spawning reviewers, read the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`
+(the output of the second `reviews fetch` call — NOT the `--user` fetch used in Phase 1c)
+and format the existing comments as a block of context. Build an `EXISTING_COMMENTS` string
+listing each unresolved thread with its file path, line number, author, and body.
+
+> **Note:** Some comment types (e.g., Qodo sticky findings without code refs) may have an empty
+> `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
+> `"(no line)"` when line is missing or null.
+
+Then include it in every reviewer's task prompt:
+
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
 ])
 ```
+
+Where `<EXISTING_COMMENTS>` is replaced with the formatted unresolved comments from
+`${PROJECT_TMP_DIR}/all-unresolved/`. If no unresolved comments exist, replace with
+"No existing unresolved comments found."
 
 Each reviewer runs in the cloned repo directory (`REVIEW_DIR`) and has full access to:
 
@@ -310,6 +339,17 @@ Task 8 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
 Mark Task 8 as `in_progress`.
 
 Merge and deduplicate the findings from all 3 reviewers AND the past review comment analysis from Task 4 into a single combined findings list.
+
+Reviewers were already instructed in Phase 2 to skip findings that duplicate existing
+unresolved PR comments. However, verify that no duplicates slipped through by comparing
+the merged findings against the all-unresolved list from `${PROJECT_TMP_DIR}/all-unresolved/`.
+Drop any **`[NEW]`** finding (from Phase 2 reviewers) that raises the same issue as an
+existing unresolved comment.
+
+> **IMPORTANT:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]` items from
+> Task 4 are NEVER dropped by dedup. These represent the current user's own prior review
+> comments that naturally appear in the all-unresolved list — removing them would lose
+> tracking of unresolved prior findings. Dedup applies ONLY to `[NEW]` findings.
 
 Mark Task 8 as `completed`.
 
