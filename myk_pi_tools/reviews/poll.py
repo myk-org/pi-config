@@ -109,7 +109,8 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
     """Check if fetched reviews have actionable Qodo comments.
 
     Sticky findings are ALWAYS actionable — already_replied is context only.
-    Only is_auto_skipped items (qodo_reply threads, dismissed comments) are skipped.
+    Only is_auto_skipped items are skipped (qodo_reply threads).
+    Note: dismissal-based auto-skip does not apply to qodo sources.
     """
     import json
     from pathlib import Path
