@@ -92,6 +92,7 @@ interface RegistryEntry {
 	purpose: string;
 	model: string;
 	color: string;
+	/** Informational only — not used for liveness checks (socket existence + heartbeat used instead). */
 	pid: number;
 	endpoint: string;
 	cwd: string;
@@ -229,14 +230,18 @@ function projectAgentsDir(project: string): string {
 	return path.join(COMS_DIR, "projects", project, "agents");
 }
 
-function registryFilePath(project: string, name: string): string {
-	return path.join(projectAgentsDir(project), `${name}.json`);
+function registryFilePath(project: string, sessionId: string): string {
+	// Guard against path traversal from malformed session_id
+	if (sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("..")) {
+		throw new Error(`Invalid session_id: ${sessionId}`);
+	}
+	return path.join(projectAgentsDir(project), `${sessionId}.json`);
 }
 
 function writeRegistryAtomic(entry: RegistryEntry, project: string): string {
 	const dir = projectAgentsDir(project);
 	fs.mkdirSync(dir, { recursive: true });
-	const final = registryFilePath(project, entry.name);
+	const final = registryFilePath(project, entry.session_id);
 	const tmp = `${final}.tmp`;
 	fs.writeFileSync(tmp, JSON.stringify(entry, null, 2));
 	fs.renameSync(tmp, final);
@@ -288,45 +293,82 @@ function readAllRegistryEntriesAcrossProjects(): RegistryEntry[] {
 	return out;
 }
 
-function removeRegistryEntry(project: string, name: string): void {
+function removeRegistryEntry(project: string, sessionId: string): void {
 	try {
-		fs.unlinkSync(registryFilePath(project, name));
+		fs.unlinkSync(registryFilePath(project, sessionId));
 	} catch {
 		// best-effort
 	}
 }
 
-function pruneDeadEntries(project: string): RegistryEntry[] {
+async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	const entries = readAllRegistryEntries(project);
-	const live: RegistryEntry[] = [];
+	const now = Date.now();
+	const staleThresholdMs = KEEPALIVE_INTERVAL_MS * 2;
+	const socketsDir = path.join(COMS_DIR, "sockets");
+
+	// Phase 1: Sync pre-filter (fast — no I/O)
+	const candidates: RegistryEntry[] = [];
 	for (const entry of entries) {
-		try {
-			process.kill(entry.pid, 0);
-			live.push(entry);
-		} catch (e: any) {
-			if (e && e.code === "ESRCH") {
-				removeRegistryEntry(project, entry.name);
-			} else {
-				// EPERM means the process exists but we can't signal it — treat as live.
-				live.push(entry);
+		if (!entry.endpoint || typeof entry.endpoint !== "string") {
+			removeRegistryEntry(project, entry.session_id);
+			continue;
+		}
+		// On Windows, endpoints are named pipes — fs.existsSync doesn't apply
+		if (process.platform !== "win32" && !fs.existsSync(entry.endpoint)) {
+			removeRegistryEntry(project, entry.session_id);
+			continue;
+		}
+		// Check heartbeat/started_at freshness
+		const lastSeen = entry.heartbeat_at ?? entry.started_at;
+		if (lastSeen) {
+			const lastSeenMs = new Date(lastSeen).getTime();
+			if (isNaN(lastSeenMs)) {
+				removeRegistryEntry(project, entry.session_id);
+				continue;
 			}
+			const age = now - lastSeenMs;
+			if (age > staleThresholdMs) {
+				removeRegistryEntry(project, entry.session_id);
+				if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
+					try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
+					try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
+				}
+				continue;
+			}
+		} else {
+			removeRegistryEntry(project, entry.session_id);
+			continue;
+		}
+		candidates.push(entry);
+	}
+
+	// Phase 2: Parallel socket probes (capped at 10 concurrent to avoid EMFILE)
+	if (candidates.length === 0) return [];
+	const PROBE_CONCURRENCY = 10;
+	const results: ("in_use" | "stale")[] = [];
+	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
+		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
+		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint)));
+		results.push(...batchResults.map(r => r.status === "fulfilled" ? r.value : "in_use" as const));
+	}
+	const live: RegistryEntry[] = [];
+	for (let i = 0; i < candidates.length; i++) {
+		if (results[i] === "stale") {
+			const entry = candidates[i];
+			removeRegistryEntry(project, entry.session_id);
+			if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
+				try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
+				try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
+			}
+		} else {
+			live.push(candidates[i]);
 		}
 	}
 	return live;
 }
 
-function resolveUniqueName(project: string, desiredName: string): string {
-	// Returns a name that doesn't collide with any LIVE registered agent.
-	// pruneDeadEntries auto-removes ESRCH entries; we only care about live ones.
-	const liveEntries = pruneDeadEntries(project);
-	const liveNames = new Set(liveEntries.map(e => e.name));
-	if (!liveNames.has(desiredName)) return desiredName;
-	let n = 2;
-	while (liveNames.has(`${desiredName}${n}`)) n++;
-	return `${desiredName}${n}`;
-}
-
-function pruneDeadEntriesAllProjects(): RegistryEntry[] {
+async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
 	const root = path.join(COMS_DIR, "projects");
 	let projects: string[];
 	try {
@@ -341,7 +383,7 @@ function pruneDeadEntriesAllProjects(): RegistryEntry[] {
 		} catch {
 			continue;
 		}
-		out.push(...pruneDeadEntries(p));
+		out.push(...await pruneDeadEntries(p));
 	}
 	return out;
 }
@@ -365,11 +407,11 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 		});
 		sock.once("error", (err: any) => {
 			clearTimeout(timer);
-			if (err && err.code === "ECONNREFUSED") {
+			if (err && (err.code === "ECONNREFUSED" || err.code === "ENOENT")) {
 				finish("stale");
 			} else {
-				// ENOENT or other — treat as stale (file may be gone or unusable)
-				finish("stale");
+				// Transient errors (EMFILE, EACCES, etc.) — treat as live to avoid false pruning
+				finish("in_use");
 			}
 		});
 	});
@@ -774,15 +816,7 @@ export default function (pi: ExtensionAPI) {
 		const session_id = ulid();
 
 		const defaultName = `agent-${session_id.slice(-6)}`;
-		const desiredName = flags.name || fm.name || defaultName;
-		const name = resolveUniqueName(project, desiredName);
-		if (name !== desiredName) {
-			try {
-				pi.appendEntry("coms-log", { event: "name_collision", desired: desiredName, assigned: name, project });
-			} catch {
-				// best-effort
-			}
-		}
+		const name = flags.name || fm.name || defaultName;
 		const purpose = flags.purpose || fm.description || "";
 
 		// Color: validate at every level; fall through invalid hex to next.
@@ -986,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
 		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
+			if (identity && sid === identity.session_id) continue;
 			seenSessions.add(sid);
 			rows.push({
 				name: card.name,
@@ -1003,7 +1037,7 @@ export default function (pi: ExtensionAPI) {
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
-			if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
+			if (identity && entry.session_id === identity.session_id) continue;
 			if (!includeExplicit && entry.explicit) continue;
 			if (seenSessions.has(entry.session_id)) continue;
 			if (seenNames.has(entry.name)) continue;
@@ -1119,8 +1153,8 @@ export default function (pi: ExtensionAPI) {
 		if (!identity) return;
 		const projectFilter = displayProject ?? identity.project;
 		const live = projectFilter === "*"
-			? pruneDeadEntriesAllProjects()
-			: pruneDeadEntries(projectFilter);
+			? await pruneDeadEntriesAllProjects()
+			: await pruneDeadEntries(projectFilter);
 
 		const peers = live.filter((e) =>
 			e.session_id !== identity!.session_id && (includeExplicit || !e.explicit),
@@ -1163,7 +1197,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
+			if (identity && sid === identity.session_id) continue;
 			if (!seenSessions.has(sid)) {
 				card.staleCount = (card.staleCount ?? 0) + 1;
 				if (card.staleCount > 6) {
@@ -1189,21 +1223,47 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function resolveTarget(target: string): RegistryEntry | null {
-		// Prefer name match within current project.
+	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
+		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
-			const localEntries = pruneDeadEntries(identity.project);
-			const byName = localEntries.find((e) => e.name === target);
-			if (byName) return byName;
+			const localEntries = await pruneDeadEntries(identity.project);
+			// Try session_id match first (always unambiguous)
+			const bySession = localEntries.find((e) => e.session_id === target);
+			if (bySession) return bySession;
+			// Name match — warn if ambiguous
+			const byName = localEntries.filter((e) => e.name === target);
+			if (byName.length === 1) return byName[0];
+			if (byName.length > 1) {
+				// Ambiguous — sort deterministically: freshest heartbeat first, session_id tiebreaker
+				byName.sort((a, b) => {
+					const haRaw = a.heartbeat_at ? new Date(a.heartbeat_at).getTime() : 0;
+					const hbRaw = b.heartbeat_at ? new Date(b.heartbeat_at).getTime() : 0;
+					const ha = isNaN(haRaw) ? 0 : haRaw;
+					const hb = isNaN(hbRaw) ? 0 : hbRaw;
+					if (hb !== ha) return hb - ha; // freshest first
+					return a.session_id.localeCompare(b.session_id); // stable tiebreak
+				});
+				try {
+					pi.appendEntry("coms-log", {
+						event: "ambiguous_target",
+						target,
+						matches: byName.length,
+						selected_session: byName[0].session_id,
+						selected_heartbeat: byName[0].heartbeat_at ?? null,
+					});
+				} catch { /* best-effort */ }
+				return byName[0];
+			}
 		}
-		// Fall back to scanning all projects by session_id (or name as last resort).
+		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
-			const entries = pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj);
 			const bySession = entries.find((e) => e.session_id === target);
 			if (bySession) return bySession;
 		}
+		// Fall back to name match across projects.
 		for (const proj of listProjects()) {
-			const entries = pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj);
 			const byName = entries.find((e) => e.name === target);
 			if (byName) return byName;
 		}
@@ -1229,9 +1289,9 @@ export default function (pi: ExtensionAPI) {
 
 			const collected: { entry: RegistryEntry; project: string }[] = [];
 			for (const proj of projects) {
-				for (const entry of pruneDeadEntries(proj)) {
+				for (const entry of await pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
-					if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
+					if (identity && entry.session_id === identity.session_id) continue;
 					collected.push({ entry, project: proj });
 				}
 			}
@@ -1315,7 +1375,7 @@ export default function (pi: ExtensionAPI) {
 			if (!identity) {
 				throw new Error("coms not initialised");
 			}
-			const target = resolveTarget(params.target);
+			const target = await resolveTarget(params.target);
 			if (!target) {
 				throw new Error(`coms: no live agent matching "${params.target}"`);
 			}
@@ -1680,7 +1740,7 @@ export default function (pi: ExtensionAPI) {
 			if (process.platform !== "win32") {
 				try { fs.unlinkSync(identity.endpoint); } catch { /* ignore */ }
 			}
-			try { removeRegistryEntry(identity.project, identity.name); } catch { /* ignore */ }
+			try { removeRegistryEntry(identity.project, identity.session_id); } catch { /* ignore */ }
 			try {
 				pi.appendEntry("coms-log", { event: "shutdown", session_id: identity.session_id });
 			} catch { /* best-effort */ }
