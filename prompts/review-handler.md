@@ -191,6 +191,17 @@ Returns JSON with:
 >    - OR the code does not match the spec — FIX THE CODE
 >    - NEVER post the same reply again. That means you haven't actually addressed it.
 >
+>    **Qodo reply detection (consolidated comment responses):**
+>    When we post consolidated PR comments mentioning `@qodo-code-review`, Qodo may
+>    reply in a new issue comment quoting our response. These replies are now detected
+>    automatically:
+>    - Sticky findings are enriched with a `qodo_response` field containing Qodo's reply text
+>    - If Qodo's reply indicates **pushback** (e.g., "still present", "not addressed",
+>      "disagree"), the finding is treated as **actionable** even if `already_replied=True`
+>    - This means the autoqodo polling loop will re-surface findings where Qodo disagrees
+>      with our fix, requiring re-evaluation and a new code fix or spec update
+>    - Pushback keywords: "still present", "not fixed", "disagree", "issue remains", etc.
+>
 > Combined behavior:
 >
 > 1. **Human comments** → ALWAYS follow the normal decision flow (never auto-approved).

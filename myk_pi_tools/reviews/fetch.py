@@ -660,6 +660,73 @@ def fetch_coderabbit_body_comments(owner: str, repo: str, pr_number: str) -> lis
 fetch_coderabbit_outside_diff_comments = fetch_coderabbit_body_comments
 
 
+# Pattern: Qodo replies to our consolidated comments by quoting them in a blockquote
+_QODO_REPLY_QUOTE_RE = re.compile(r"^>\s*(.+)$", re.MULTILINE)
+_QODO_MENTION_RE = re.compile(r"@qodo-code-review")
+# Match finding title in quoted text: > **Finding Title**
+_QUOTED_FINDING_TITLE_RE = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
+    """Fetch Qodo replies to our consolidated PR comments.
+
+    Scans issue comments for Qodo bot replies that quote our @qodo-code-review
+    consolidated posts. Extracts the quoted finding title and Qodo's response.
+
+    Returns:
+        List of dicts with keys: quoted_title, qodo_response, comment_id.
+    """
+    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+    comments = run_gh_api(endpoint, paginate=True)
+
+    if comments is None or not isinstance(comments, list):
+        return []
+
+    results: list[dict[str, Any]] = []
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in ("qodo-code-review[bot]", "qodo-code-review"):
+            continue
+
+        body = comment.get("body", "")
+        # Skip sticky comments — we only want reply comments
+        if is_qodo_sticky_comment(body):
+            continue
+
+        # Must contain a blockquote that references @qodo-code-review (our consolidated comment)
+        if not _QODO_MENTION_RE.search(body):
+            continue
+
+        quoted_lines = _QODO_REPLY_QUOTE_RE.findall(body)
+        if not quoted_lines:
+            continue
+
+        # Reconstruct quoted text to extract the finding title
+        quoted_text = "\n".join(quoted_lines)
+
+        # Extract finding title from quoted text
+        title_match = _QUOTED_FINDING_TITLE_RE.search(quoted_text)
+        quoted_title = title_match.group(1).strip() if title_match else ""
+
+        # Extract Qodo's response: non-quoted lines (strip leading/trailing blank lines)
+        response_lines = []
+        for line in body.split("\n"):
+            stripped = line.strip()
+            if not stripped.startswith(">"):
+                response_lines.append(line)
+        qodo_response = "\n".join(response_lines).strip()
+
+        if qodo_response:
+            results.append({
+                "quoted_title": quoted_title,
+                "qodo_response": qodo_response,
+                "comment_id": comment.get("id"),
+            })
+
+    return results
+
+
 def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
     """Fetch unresolved findings from Qodo's sticky summary comment.
 
@@ -711,6 +778,28 @@ def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[di
             results.append(thread_data)
 
     return results
+
+
+def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: list[dict[str, Any]]) -> None:
+    """Enrich sticky findings with qodo_response from matching reply comments.
+
+    Matches replies to findings by comparing the quoted title in the reply
+    to the extracted title from the finding body. Modifies findings in-place.
+    """
+    for finding in findings:
+        finding_title = _extract_sticky_title(finding.get("body", ""))
+        if not finding_title:
+            continue
+
+        for reply in replies:
+            quoted_title = reply.get("quoted_title", "").strip().lower()
+            if not quoted_title:
+                continue
+
+            # Match by normalized title comparison
+            if quoted_title == finding_title or quoted_title in finding_title or finding_title in quoted_title:
+                finding["qodo_response"] = reply["qodo_response"]
+                break
 
 
 def process_and_categorize(
@@ -1072,6 +1161,14 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
             qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number)
             if qodo_sticky_findings:
                 print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
+
+                # Fetch Qodo replies to our consolidated comments and enrich findings
+                print_stderr("Fetching Qodo reply comments...")
+                qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number)
+                if qodo_replies:
+                    print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
+                    _enrich_findings_with_qodo_replies(qodo_sticky_findings, qodo_replies)
+
                 all_threads = merge_threads(all_threads, qodo_sticky_findings)
 
         # If review URL provided, also fetch specific thread(s)

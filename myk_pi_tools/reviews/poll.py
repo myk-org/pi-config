@@ -11,6 +11,7 @@ on "no new comments" -- sleeps and retries.
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -92,8 +93,31 @@ def _has_actionable_comments(pr_number: str, output_dir: str) -> bool:
     return False
 
 
+# Pushback indicators in Qodo responses — Qodo disagrees with our fix/decision
+_PUSHBACK_KEYWORDS = re.compile(
+    r"(still (?:present|exists?|unresolved|open|not (?:fixed|addressed|resolved))"
+    r"|not (?:fully |completely )?(?:addressed|resolved|fixed)"
+    r"|disagree|incorrect|wrong|issue (?:remains|persists)"
+    r"|does not (?:address|fix|resolve)"
+    r"|should (?:still|be)"
+    r"|recommend (?:re-?evaluating|revisiting)"
+    r"|re-?open)",
+    re.IGNORECASE,
+)
+
+
+def _is_qodo_pushback(qodo_response: str) -> bool:
+    """Detect if a Qodo response indicates pushback (disagreement with our fix)."""
+    return bool(_PUSHBACK_KEYWORDS.search(qodo_response))
+
+
 def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
-    """Check if fetched reviews have actionable Qodo comments (not auto-skipped)."""
+    """Check if fetched reviews have actionable Qodo comments.
+
+    A comment is actionable if:
+    - Not auto-skipped AND not already replied, OR
+    - Already replied but Qodo pushed back (qodo_response indicates disagreement)
+    """
     import json
     from pathlib import Path
 
@@ -109,7 +133,16 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
         return True
 
     for comment in data.get("qodo", []):
-        if not comment.get("is_auto_skipped") and not comment.get("already_replied"):
+        if comment.get("is_auto_skipped"):
+            continue
+
+        # Not yet replied — actionable
+        if not comment.get("already_replied"):
+            return True
+
+        # Already replied but Qodo pushed back — treat as actionable
+        qodo_response = comment.get("qodo_response", "")
+        if qodo_response and _is_qodo_pushback(qodo_response):
             return True
 
     return False
