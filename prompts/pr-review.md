@@ -258,7 +258,11 @@ This second call omits `--user` and `--include-resolved`, so it returns only cur
 threads from every author (humans, Qodo, CodeRabbit, etc.). The output is passed to
 reviewers in Phase 2 so they can avoid raising duplicate findings.
 
-Parse the JSON output. For the `human` list, categorize each thread:
+Parse the JSON output from the `--user` fetch (`${PROJECT_TMP_DIR}`). This file is used
+for resolved/unresolved categorization below. The all-unresolved fetch (`${PROJECT_TMP_DIR}/all-unresolved`)
+is used separately in Phase 2 for dedup context — do NOT use it here.
+
+For the `human` list, categorize each thread:
 
 **Unresolved threads:**
 
@@ -290,8 +294,13 @@ with `taskId` linking each to its task:
 Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
 
 Before spawning reviewers, read the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`
+(the output of the second `reviews fetch` call — NOT the `--user` fetch used in Phase 1c)
 and format the existing comments as a block of context. Build an `EXISTING_COMMENTS` string
 listing each unresolved thread with its file path, line number, author, and body.
+
+> **Note:** Some comment types (e.g., Qodo sticky findings without code refs) may have an empty
+> `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
+> `"(no line)"` when line is missing or null.
 
 Then include it in every reviewer's task prompt:
 
@@ -334,7 +343,13 @@ Merge and deduplicate the findings from all 3 reviewers AND the past review comm
 Reviewers were already instructed in Phase 2 to skip findings that duplicate existing
 unresolved PR comments. However, verify that no duplicates slipped through by comparing
 the merged findings against the all-unresolved list from `${PROJECT_TMP_DIR}/all-unresolved/`.
-Drop any finding that raises the same issue as an existing unresolved comment.
+Drop any **`[NEW]`** finding (from Phase 2 reviewers) that raises the same issue as an
+existing unresolved comment.
+
+> **IMPORTANT:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]` items from
+> Task 4 are NEVER dropped by dedup. These represent the current user's own prior review
+> comments that naturally appear in the all-unresolved list — removing them would lose
+> tracking of unresolved prior findings. Dedup applies ONLY to `[NEW]` findings.
 
 Mark Task 8 as `completed`.
 
