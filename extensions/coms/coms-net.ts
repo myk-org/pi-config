@@ -7,7 +7,7 @@
  * Bun HTTP/SSE hub instead of per-agent Unix sockets / named pipes. The
  * user-facing tool surface is renamed for total separation from v1:
  *
- *   tools         coms_net_list / coms_net_send / coms_net_get / coms_net_await
+ *   tools         coms_net_list / coms_net_send / coms_net_get
  *   slash command /coms-net
  *   widget key    "coms-net-pool"   (placement: belowEditor only)
  *   audit channel "coms-net-log"
@@ -607,7 +607,7 @@ export default function (pi: ExtensionAPI) {
 					content: buildInboundContent(
 						`[inbound coms-net message from ${senderName} @ ${senderCwd}]\n` +
 						`[reply by writing a normal assistant message — your turn output is auto-returned to ${senderName}. ` +
-						`DO NOT call coms_net_send/coms_net_await/coms_net_get to reply; that creates a ping-pong loop.]`,
+						`DO NOT call coms_net_send/coms_net_get to reply; that creates a ping-pong loop.]`,
 						promptText, tasks),
 					display: true,
 					details: {
@@ -646,8 +646,32 @@ export default function (pi: ExtensionAPI) {
 		if (pending) {
 			pending.result = { response: responseVal, error: errVal };
 			try { pending.resolve(pending.result); } catch { /* ignore */ }
-			// Delete after a delay — coms_net_get poll has time to read the result
-			setTimeout(() => { pendingReplies.delete(msg_id); }, MESSAGE_TIMEOUT_MS).unref();
+
+			// Auto-deliver response as followUp so the LLM sees it without polling
+			const targetName = pending.target_name ?? "peer";
+			const responseText = errVal
+				? `[coms response from ${targetName}] Error: ${errVal}`
+				: typeof responseVal === "string"
+					? `[coms response from ${targetName}] ${responseVal}`
+					: `[coms response from ${targetName}] ${JSON.stringify(responseVal, null, 2)}`;
+			try {
+				pi.sendMessage(
+					{
+						customType: "coms-response",
+						content: responseText,
+						display: true,
+						details: {
+							msg_id,
+							target_name: targetName,
+							error: errVal,
+						},
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch { /* best-effort */ }
+
+			// Clean up after short delay — coms_net_get may still poll briefly
+			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
 			try {
 				pi.appendEntry("coms-net-log", {
 					event: "response_in",
@@ -1122,7 +1146,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"INITIATE a new outbound message to a peer agent on the coms-net hub. " +
 			"Returns synchronously with a msg_id once the server queues the prompt. " +
-			"Use coms_net_get (non-blocking) or coms_net_await (blocking) with that msg_id to retrieve the peer's reply.\n\n" +
+			"The response auto-delivers as a followUp message when the peer replies \u2014 no polling needed. Use coms_net_get for non-blocking status checks if needed.\n\n" +
 			"⚠️  DO NOT call this tool to REPLY to an inbound message. " +
 			"When you receive a `[from <peer>] …` follow-up, just write your answer as your normal assistant message — " +
 			"the coms-net extension automatically captures the final assistant text at the end of your turn and " +
@@ -1251,7 +1275,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Coms Net Get",
 		description:
 			"Non-blocking poll of a reply to YOUR OWN coms_net_send. Returns status pending|complete|error and (when complete) the response. " +
-			"Same caveat as coms_net_await: only use msg_ids you got back from coms_net_send, never msg_ids from an inbound `[from <peer>] …` prompt — " +
+			"Only use msg_ids you got back from coms_net_send, never msg_ids from an inbound `[from <peer>] …` prompt — " +
 			"those belong to the peer, and replying to them happens automatically via your normal assistant message at end of turn.",
 		parameters: Type.Object({
 			msg_id: Type.String({ description: "msg_id returned by coms_net_send." }),
@@ -1315,101 +1339,6 @@ export default function (pi: ExtensionAPI) {
 				: status === "pending" || status === "queued" || status === "delivered" ? "warning"
 				: "error";
 			return new Text(theme.fg(color, status), 0, 0);
-		},
-	});
-
-	pi.registerTool({
-		name: "coms_net_await",
-		label: "Coms Net Await",
-		description:
-			"Block until the reply to YOUR OWN outbound coms_net_send arrives, or the timeout fires (default 30 min). " +
-			"Only call this with a msg_id that YOU received as the return value of a coms_net_send call you just made.\n\n" +
-			"⚠️  Do NOT call this with a msg_id that came in via an inbound `[from <peer>] …` prompt — those msg_ids belong to the *peer's* outbound, not yours. " +
-			"To reply to an inbound message, do nothing special: just answer normally as your assistant message, " +
-			"and the extension will auto-submit your final text back to the caller when your turn ends.",
-		parameters: Type.Object({
-			msg_id: Type.String({ description: "msg_id returned by coms_net_send." }),
-			timeout_ms: Type.Optional(Type.Number({ description: "Override the default timeout (ms). Server cap applies." })),
-		}),
-		async execute(_callId, params) {
-			const msg_id = (params as any).msg_id as string;
-			const timeoutMs = typeof (params as any).timeout_ms === "number" && (params as any).timeout_ms > 0
-				? (params as any).timeout_ms
-				: MESSAGE_TIMEOUT_MS;
-
-			// Local SSE-resolved fast path.
-			const pending = pendingReplies.get(msg_id);
-			if (pending && pending.result) {
-				const r = pending.result;
-				if (r.error) {
-					return {
-						content: [{ type: "text" as const, text: `coms_net_await: error — ${r.error}` }],
-						details: { error: r.error },
-					};
-				}
-				const resp = r.response;
-				return {
-					content: [{ type: "text" as const, text: typeof resp === "string" ? resp : JSON.stringify(resp, null, 2) }],
-					details: { response: resp },
-				};
-			}
-
-			// Race local pending promise against server long-poll, capped at timeoutMs.
-			const localPromise: Promise<{ response?: any; error?: string | null }> = pending
-				? pending.promise
-				: new Promise(() => { /* never resolves on its own; SSE will */ });
-
-			// Server long-poll. Cap server timeout to the requested timeout (server enforces its own max too).
-			const serverTimeoutMs = Math.min(timeoutMs, MESSAGE_TIMEOUT_MS);
-			const ac = new AbortController();
-			const serverPromise = httpFetch(
-				"GET",
-				`/v1/messages/${encodeURIComponent(msg_id)}/await?timeout_ms=${serverTimeoutMs}`,
-				undefined,
-				{ timeoutMs: serverTimeoutMs + 5_000, signal: ac.signal },
-			).then((data: any) => {
-				if (data?.status === "complete") return { response: data.response, error: null };
-				if (data?.status === "error") return { response: null, error: data.error ?? "error" };
-				if (data?.status === "timeout") return { response: null, error: "timeout" };
-				return { response: data?.response, error: data?.error ?? null };
-			}).catch((err) => {
-				if (err instanceof HttpError && err.status === 404) {
-					return { response: null, error: "unknown msg_id" };
-				}
-				return { response: null, error: safeError(err) };
-			});
-
-			const timeoutPromise = new Promise<{ error: string }>((resolve) => {
-				const t = setTimeout(() => resolve({ error: "timeout" }), timeoutMs);
-				try { (t as any).unref?.(); } catch { /* ignore */ }
-			});
-
-			const winner = await Promise.race([localPromise, serverPromise, timeoutPromise]);
-			try { ac.abort(); } catch { /* ignore */ }
-
-			if ((winner as any).error) {
-				return {
-					content: [{ type: "text" as const, text: `coms_net_await: error — ${(winner as any).error}` }],
-					details: { error: (winner as any).error },
-				};
-			}
-			const resp = (winner as any).response;
-			return {
-				content: [{ type: "text" as const, text: typeof resp === "string" ? resp : JSON.stringify(resp, null, 2) }],
-				details: { response: resp },
-			};
-		},
-		renderCall(args, theme) {
-			const id = (args as any).msg_id ?? "?";
-			return new Text(
-				theme.fg("toolTitle", theme.bold("coms_net_await ")) + theme.fg("warning", id),
-				0, 0,
-			);
-		},
-		renderResult(result, _options, theme) {
-			const d = result.details as any;
-			if (d?.error) return new Text(theme.fg("error", `✗ ${d.error}`), 0, 0);
-			return new Text(theme.fg("success", "✓ response received"), 0, 0);
 		},
 	});
 
@@ -1492,7 +1421,7 @@ export default function (pi: ExtensionAPI) {
 						content: buildInboundContent(
 						`[inbound coms-net message from ${next.sender_name} @ ${next.sender_cwd}]\n` +
 						`[reply by writing a normal assistant message — your turn output is auto-returned to ${next.sender_name}. ` +
-						`DO NOT call coms_net_send/coms_net_await/coms_net_get to reply; that creates a ping-pong loop.]`,
+						`DO NOT call coms_net_send/coms_net_get to reply; that creates a ping-pong loop.]`,
 						next.prompt, next.tasks),
 						display: true,
 						details: {

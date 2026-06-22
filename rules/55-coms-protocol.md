@@ -40,7 +40,6 @@ coms_net_list      # Networked peers
 | List peers | `coms_list` | `coms_net_list` |
 | Send message | `coms_send` | `coms_net_send` |
 | Poll for response | `coms_get` | `coms_net_get` |
-| Block until response | `coms_await` | `coms_net_await` |
 
 ---
 
@@ -73,14 +72,14 @@ When you receive an inbound message, it appears as:
 
 ## Outbound Messages — How to Initiate
 
-To START a new conversation with a peer, use the send tool then await the response.
+To START a new conversation with a peer, use the send tool then **end your turn**. The response auto-delivers as a followUp message when the peer replies — no polling or blocking needed.
 
 ### Example: Outbound conversation (P2P)
 
 ```text
 1. coms_list                          # Find available peers
 2. coms_send(peer="pi-2", msg="...")  # Send the question
-3. coms_await                         # Wait for response (ESC to interrupt)
+3. (end turn)                         # Response arrives as followUp automatically
 ```
 
 ### Example: Outbound conversation (Networked)
@@ -88,8 +87,10 @@ To START a new conversation with a peer, use the send tool then await the respon
 ```text
 1. coms_net_list                          # Find available peers
 2. coms_net_send(peer="pi-2", msg="...")  # Send the question
-3. coms_net_await                         # Wait for response (ESC to interrupt)
+3. (end turn)                             # Response arrives as followUp automatically
 ```
+
+Use `coms_get` / `coms_net_get` for non-blocking status checks if needed.
 
 ---
 
@@ -122,8 +123,7 @@ The peer sees the tasks in their task widget and can track progress. Tasks are c
 
 ## Key Rules
 
-1. **`coms_await` / `coms_net_await` are interruptible** — user can press ESC to cancel.
-   Use them freely for outbound conversations.
+1. **Responses auto-deliver** — after `coms_send` / `coms_net_send`, end your turn. The peer's response arrives as a followUp message automatically.
 2. **Never call send tools to reply** to inbound messages — your assistant text is the reply
 3. **Always check peers first** — use list tools before sending to verify the peer exists
 4. **Try both systems** — when asked to interact with peers without specifying which system, try `coms_` first, then `coms_net_` if it fails (or vice versa)

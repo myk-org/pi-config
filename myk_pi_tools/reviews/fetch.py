@@ -670,7 +670,9 @@ _QUOTED_HEADING_FULL_RE = re.compile(r"###\s+`([^`]+)`\s*(?:\([^)]*\))?\s*(?:—
 _CONSOLIDATED_COMMENT_MARKER = "The following review comments were reviewed"
 
 
-def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
+def fetch_qodo_reply_comments(
+    owner: str, repo: str, pr_number: str, *, comments: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """Fetch Qodo replies to our consolidated PR comments.
 
     Scans issue comments for Qodo bot replies that quote our consolidated
@@ -683,13 +685,17 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
     ``qodo_response`` to existing findings) and as first-class threads in
     the categorized output.
 
+    Args:
+        comments: Pre-fetched issue comments. If None, fetches from API.
+
     Returns:
         List of thread-like dicts with keys: thread_id, node_id, comment_id,
         author, path, line, body, source, type, quoted_location, quoted_title,
         qodo_response.
     """
-    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-    comments = run_gh_api(endpoint, paginate=True)
+    if comments is None:
+        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+        comments = run_gh_api(endpoint, paginate=True)
 
     if comments is None or not isinstance(comments, list):
         return []
@@ -773,13 +779,19 @@ def fetch_qodo_reply_comments(owner: str, repo: str, pr_number: str) -> list[dic
     return results
 
 
-def fetch_qodo_sticky_findings(owner: str, repo: str, pr_number: str) -> list[dict[str, Any]]:
+def fetch_qodo_sticky_findings(
+    owner: str, repo: str, pr_number: str, *, comments: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """Fetch unresolved findings from Qodo's sticky summary comment.
+
+    Args:
+        comments: Pre-fetched issue comments. If None, fetches from API.
 
     Returns thread-like dicts for each unresolved finding.
     """
-    endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-    comments = run_gh_api(endpoint, paginate=True)
+    if comments is None:
+        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+        comments = run_gh_api(endpoint, paginate=True)
 
     if comments is None or not isinstance(comments, list):
         return []
@@ -1245,9 +1257,14 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
                 print_stderr(f"Found {len(body_comment_threads)} body-embedded comment(s)")
                 all_threads = merge_threads(all_threads, body_comment_threads)
 
+            # Fetch issue comments once for both sticky and reply parsing
+            issue_comments = run_gh_api(
+                f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
+            )
+
             # Fetch Qodo sticky comment findings
             print_stderr("Fetching Qodo sticky comment findings...")
-            qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number)
+            qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number, comments=issue_comments)
             if qodo_sticky_findings:
                 print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
 
@@ -1255,7 +1272,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
 
             # Fetch Qodo replies to our consolidated comments (independent of sticky findings)
             print_stderr("Fetching Qodo reply comments...")
-            qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number)
+            qodo_replies = fetch_qodo_reply_comments(owner, repo, pr_number, comments=issue_comments)
             if qodo_replies:
                 print_stderr(f"Found {len(qodo_replies)} Qodo reply comment(s)")
                 all_threads = merge_threads(all_threads, qodo_replies)
