@@ -622,6 +622,7 @@ def run(json_path: str) -> None:
                 "qodo_finding",
                 "qodo_ux_issue",
                 "qodo_cross_repo",
+                "qodo_reply",
             ):
                 if status == "pending":
                     pending_count += 1
@@ -795,6 +796,7 @@ def run(json_path: str) -> None:
                 "qodo_finding",
                 "qodo_ux_issue",
                 "qodo_cross_repo",
+                "qodo_reply",
             ):
                 qodo_sticky_count += 1
 

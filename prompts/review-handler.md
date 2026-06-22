@@ -148,10 +148,20 @@ Returns JSON with:
 > 🚨 **MANDATORY: Read the FULL Qodo sticky JSON data before acting.**
 > Qodo sticky findings contain critical fields beyond the title:
 >
-> - `code_diff` — the exact code the finding references (THIS is what you must fix)
-> - `evidence` — Qodo's explanation of why this is a problem
-> - `evidence_refs` — links to the specific file/line ranges involved
-> - `agent_prompt` — Qodo's suggested fix approach
+> 🚨 **ALL fields below are MANDATORY — read EVERY field before acting on a finding.**
+> Skipping any field is a violation. Each field provides critical context.
+>
+> - `code_diff` — the exact code the finding references. THIS is what you must fix.
+> - `evidence` — Qodo's explanation of why this is a problem. Read to understand the root cause.
+> - `evidence_refs` — links to the specific file/line ranges involved. Check EVERY entry.
+> - `agent_prompt` — Qodo's suggested fix approach. Follow it unless you have a better solution.
+> - `qodo_response` — Qodo's reply to our previous fix. **Read this FIRST when present.**
+>   Tells you whether Qodo accepted the fix or pushed back.
+>   **If Qodo pushed back, your previous fix was insufficient — make a DIFFERENT fix.**
+>   Do NOT repeat the same reply or approach.
+> - `previous_reply` — What we previously replied to this finding. Shows the full conversation:
+>   we said `previous_reply` → Qodo responded `qodo_response`. Use both to understand context
+>   and avoid repeating the same fix that Qodo already rejected.
 >
 > **NEVER match findings by title alone.** Two findings with the same title
 > (e.g., "Deploy ownership conflict") can reference completely different code.
@@ -190,6 +200,36 @@ Returns JSON with:
 >    - The spec does not match the code — FIX THE SPEC (gh issue edit)
 >    - OR the code does not match the spec — FIX THE CODE
 >    - NEVER post the same reply again. That means you haven't actually addressed it.
+>
+>    🚨 **STICKY FINDINGS ARE ALWAYS ACTIONABLE — NEVER SKIP.**
+>    If a finding appears in the Qodo sticky comment, it MUST be addressed with a code fix
+>    or spec update. `already_replied`, `previous_reply`, and `qodo_response` are CONTEXT
+>    for making a better fix — they are NOT reasons to skip.
+>    When a sticky finding has `previous_reply` + `qodo_response`, the AI MUST:
+>    1. Read `previous_reply` — what we said before
+>    2. Read `qodo_response` — what Qodo said back
+>    3. Make a DIFFERENT fix that addresses Qodo's specific concern
+>    Repeating the same reply or approach is a HARD VIOLATION.
+>
+>    **Qodo reply detection (consolidated comment responses):**
+>    When we post consolidated PR comments mentioning `@qodo-code-review`, Qodo may
+>    reply in a new issue comment quoting our response. These replies are now detected
+>    automatically:
+>    - Sticky findings are enriched with a `qodo_response` field containing Qodo's reply text
+>    - If Qodo's reply indicates **pushback** (e.g., "still present", "not addressed",
+>      "disagree"), the finding is treated as **actionable** — `already_replied` is NOT
+>      a reason to skip. The finding MUST be re-fixed.
+>    - This means the autoqodo polling loop will re-surface findings where Qodo disagrees
+>      with our fix, requiring re-evaluation and a new code fix or spec update
+>    - Pushback keywords: "still present", "not fixed", "disagree", "issue remains", etc.
+>
+>    🚨 **When processing a finding with `qodo_response`:**
+>    1. Read `qodo_response` FIRST — understand what Qodo said about your previous fix
+>    2. If Qodo accepted ("looks good", "addressed", "thanks") — the finding may still
+>       be unresolved in the sticky (Qodo doesn't always auto-resolve). Reply referencing
+>       the acceptance.
+>    3. If Qodo pushed back — your previous fix was wrong or incomplete. Make a NEW,
+>       DIFFERENT fix that addresses Qodo's specific concern. Do NOT repeat the same approach.
 >
 > Combined behavior:
 >
@@ -276,8 +316,12 @@ all replies, every code suggestion/diff, and all referenced locations. Do NOT su
 
 **When fixing review comments (MANDATORY):**
 
-- **For Qodo sticky findings:** Before fixing or deciding a finding is "already addressed",
-  read the `code_diff`, `evidence`, `evidence_refs`, and `agent_prompt` fields from the JSON.
+- **For Qodo findings:** Before fixing or deciding a finding is "already addressed",
+  read the `code_diff`, `evidence`, `evidence_refs`, `agent_prompt`, `qodo_response`, and
+  `previous_reply` fields from the JSON.
+  🚨 **If `qodo_response` exists, read it FIRST** — it contains Qodo's feedback on your previous fix.
+  If Qodo pushed back, your previous approach failed — make a DIFFERENT fix.
+  `previous_reply` shows what you said before so you don't repeat it.
   These fields — not the title — define what the finding is about. Never dismiss by title alone.
   If `code_diff` is empty, use `evidence_refs` (check **every** entry, not just the first),
   `path`/`line`/`end_line` (if present — these can be empty/null), and the finding body to locate the code.
@@ -450,6 +494,14 @@ AUTOMATIC. If something is stuck, stale, or unclear — keep polling
 silently. Do NOT invent questions like "PRs are stuck, what do you
 want to do?" or "Should I keep polling?" or any variation. The loop
 runs silently until an exit condition is met. Period.**
+
+> **Exception: `qodo_requirement_gap` spec changes require user approval.**
+> When a `qodo_requirement_gap` finding needs an issue spec update (not a code fix),
+> the AI MUST ask the user before changing the spec. This is the ONLY exception to
+> the 'no user interaction in Phase 9' rule.
+>
+> - Code fix for a requirement gap → do it automatically, no user interaction needed
+> - Issue spec update for a requirement gap → ask user first via ask_user
 
 After the review flow completes (Phases 1-8), enter a polling loop
 to watch for new comments from auto-approved sources (CodeRabbit if autorabbit,

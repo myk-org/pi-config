@@ -11,6 +11,7 @@ on "no new comments" -- sleeps and retries.
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -31,6 +32,18 @@ from myk_pi_tools.reviews.fetch import run as fetch_run
 
 _RATE_LIMIT_BUFFER_SECONDS = 30
 _POLL_SLEEP_SECONDS = 300  # 5 minutes between cycles when no rate limit
+
+# Pushback indicators in Qodo responses — Qodo disagrees with our fix/decision
+_PUSHBACK_KEYWORDS = re.compile(
+    r"(\bstill (?:present|exists?|unresolved|open|not (?:fixed|addressed|resolved))\b"
+    r"|\bnot (?:fully |completely )?(?:addressed|resolved|fixed)\b"
+    r"|\bdisagree\b|\bincorrect\b|\bwrong\b|\bissue (?:remains|persists)\b"
+    r"|\bdoes not (?:address|fix|resolve)\b"
+    r"|\bshould still\b"
+    r"|\brecommend (?:re-?evaluating|revisiting)\b"
+    r"|\bre-?open\b)",
+    re.IGNORECASE,
+)
 
 
 def _print_poll_summary(pr_number: str, output_dir: str) -> None:
@@ -93,7 +106,12 @@ def _has_actionable_comments(pr_number: str, output_dir: str) -> bool:
 
 
 def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
-    """Check if fetched reviews have actionable Qodo comments (not auto-skipped)."""
+    """Check if fetched reviews have actionable Qodo comments.
+
+    Sticky findings are ALWAYS actionable — already_replied is context only.
+    Only is_auto_skipped items are skipped (qodo_reply threads).
+    Note: dismissal-based auto-skip does not apply to qodo sources.
+    """
     import json
     from pathlib import Path
 
@@ -109,7 +127,7 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
         return True
 
     for comment in data.get("qodo", []):
-        if not comment.get("is_auto_skipped") and not comment.get("already_replied"):
+        if not comment.get("is_auto_skipped"):
             return True
 
     return False
