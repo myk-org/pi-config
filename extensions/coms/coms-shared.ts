@@ -244,8 +244,12 @@ export function pruneStaleRegistry(): void {
                                 try { fs.unlinkSync(fp); } catch {}
                                 continue;
                             }
-                            // Socket exists — try connect to verify
-                            const sock = net.createConnection(endpoint);
+                            // Socket exists — try connect to verify.
+                            // Prefer the ping endpoint (.ping) which runs on a separate
+                            // thread and is immune to main-thread event-loop blocks.
+                            const pingEndpoint = `${endpoint}.ping`;
+                            const probeEndpoint = fs.existsSync(pingEndpoint) ? pingEndpoint : endpoint;
+                            const sock = net.createConnection(probeEndpoint);
                             sock.setTimeout(500);
                             sock.on("connect", () => sock.destroy()); // alive
                             sock.on("error", (err: any) => {
@@ -256,15 +260,18 @@ export function pruneStaleRegistry(): void {
                                     // Only unlink socket if it's under the coms sockets dir
                                     if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
                                         try { fs.unlinkSync(endpoint); } catch {}
+                                        try { fs.unlinkSync(`${endpoint}.ping`); } catch {}
                                     }
                                 }
                             });
                             sock.on("timeout", () => {
                                 sock.destroy();
+                                // Timeout means peer may be busy — only remove registry
+                                // entry, NOT the socket file. The peer's keepalive can
+                                // self-heal the registry, but a deleted socket file is
+                                // permanent and kills the peer's connectivity.
                                 try { fs.unlinkSync(fp); } catch {}
-                                if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
-                                    try { fs.unlinkSync(endpoint); } catch {}
-                                }
+                                // Do NOT unlink endpoint or endpoint.ping on timeout
                             });
                         } catch (e: any) {
                             if (e?.code === "ESRCH" || e instanceof SyntaxError) {
