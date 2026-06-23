@@ -315,7 +315,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             if (trailerSetting.includes(",")) {
               // Multiple trailer name options — ask user directly
               const options = trailerSetting.split(",").map(s => s.trim()).filter(Boolean);
-              if (options.length === 0) return undefined;  // malformed setting, skip trailer
+              if (options.length === 0) {
+                return {
+                  block: true,
+                  reason: `⛔ Malformed commit_trailer setting: "${trailerSetting}" — no valid trailer names found. Fix the setting in .pi/pi-config-settings.json or PI_COMMIT_TRAILER env var.`,
+                };
+              }
               if (options.length === 1) {
                 trailerName = options[0];
               } else if (cachedTrailerSelection && options.includes(cachedTrailerSelection)) {
