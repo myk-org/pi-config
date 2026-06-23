@@ -863,6 +863,22 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// 2b. Reject duplicate names — each peer must have a unique name in the project.
+		const existingEntries = readAllRegistryEntries(project);
+		for (const existing of existingEntries) {
+			if (existing.name === name && existing.session_id !== session_id) {
+				// Verify the existing peer is actually alive (socket exists and responds)
+				if (existing.endpoint && fs.existsSync(existing.endpoint)) {
+					const verdict = await probeStaleSocket(existing.endpoint);
+					if (verdict === "in_use") {
+							throw new Error(`name "${name}" is already taken by a live peer. Use --cname to pick a different name.`);
+					}
+				}
+				// Existing entry is dead — clean it up and continue
+				removeRegistryEntry(project, existing.session_id);
+			}
+		}
+
 		// 3. Bind the endpoint.
 		try {
 			server = await bindEndpoint(endpoint, connHandler);
