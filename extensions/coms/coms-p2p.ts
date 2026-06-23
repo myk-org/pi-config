@@ -1270,6 +1270,26 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// Dedup peerCards by name — when a peer reloads, it gets a new session_id.
+		// Both old (stale) and new (alive) entries exist briefly. Keep the one with
+		// lower staleCount (fresher). This prevents brief duplicate display in the widget.
+		const nameToSid = new Map<string, string>();
+		for (const [sid, card] of peerCards.entries()) {
+			const existing = nameToSid.get(card.name);
+			if (existing) {
+				const prevCard = peerCards.get(existing)!;
+				if (card.staleCount < prevCard.staleCount) {
+					peerCards.delete(existing);
+					nameToSid.set(card.name, sid);
+				} else {
+					peerCards.delete(sid);
+				}
+				changed = true;
+			} else {
+				nameToSid.set(card.name, sid);
+			}
+		}
+
 		if (changed && currentCtx?.hasUI) {
 			installPoolWidget(currentCtx);
 		}
