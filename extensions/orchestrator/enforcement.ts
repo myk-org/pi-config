@@ -318,7 +318,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
               if (options.length === 0) {
                 return {
                   block: true,
-                  reason: `⛔ Malformed commit_trailer setting: "${trailerSetting}" — no valid trailer names found. Fix the setting in .pi/pi-config-settings.json or PI_COMMIT_TRAILER env var.`,
+                  reason: `⛔ Malformed commit_trailer setting: "${trailerSetting.replace(/[\x00-\x1f\x7f-\x9f]/g, "")}" — no valid trailer names found. Fix the setting in .pi/pi-config-settings.json or PI_COMMIT_TRAILER env var.`,
                 };
               }
               if (options.length === 1) {
