@@ -824,6 +824,7 @@ export default function (pi: ExtensionAPI) {
 		applyExtensionDefaults(import.meta.url, ctx);
 		currentCtx = ctx;
 		shuttingDown = false;
+		peerCards.clear();
 
 		// 1. Resolve identity from CLI flags > frontmatter > defaults.
 		const flags = readCliFlags(pi);
