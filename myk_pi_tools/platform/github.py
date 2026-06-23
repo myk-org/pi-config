@@ -440,6 +440,36 @@ class GitHubPlatform(Platform):
             pass
         return None
 
+    def post_review_batch(
+        self,
+        pr_number: int,
+        commit_sha: str,
+        comments: list[dict[str, Any]],
+        review_body: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Post all comments as a single GitHub review (batch API call).
+
+        Uses POST /repos/{owner}/{repo}/pulls/{pr_number}/reviews which
+        accepts multiple inline comments in one request.
+        """
+        payload = {
+            "commit_id": commit_sha,
+            "body": review_body,
+            "event": "COMMENT",
+            "comments": [{"path": c["path"], "line": c["line"], "body": c["body"], "side": "RIGHT"} for c in comments],
+        }
+        result = self._run_api(
+            f"/repos/{self._owner}/{self._repo}/pulls/{pr_number}/reviews",
+            method="POST",
+            input_data=json.dumps(payload),
+        )
+        if result is not None:
+            posted = [{"path": c["path"], "line": c["line"]} for c in comments]
+            return posted, []
+        else:
+            failed = [{"path": c["path"], "line": c["line"]} for c in comments]
+            return [], failed
+
     def lookup_thread_id_from_node_id(self, node_id: str) -> str | None:
         """Look up thread_id from a review comment node_id via GraphQL."""
         query = """

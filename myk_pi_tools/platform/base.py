@@ -129,3 +129,33 @@ class Platform(ABC):
     @abstractmethod
     def get_pr_number_for_branch(self, branch: str) -> int | None:
         """Find the PR/MR number for a given branch. Returns None if not found."""
+
+    def post_review_batch(
+        self,
+        pr_number: int,
+        commit_sha: str,
+        comments: list[dict[str, Any]],
+        review_body: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Post multiple inline comments as a review. Returns (posted, failed) lists.
+
+        Each comment dict must have keys: path, line, body.
+
+        Default implementation posts comments individually and then
+        posts the review summary as a separate PR comment.
+        GitHub overrides this to use the batch review API (single POST).
+        """
+        posted: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for c in comments:
+            try:
+                result_id = self.post_review_comment(pr_number, commit_sha, c["path"], c["line"], c["body"])
+                if result_id:
+                    posted.append({"path": c["path"], "line": c["line"]})
+                else:
+                    failed.append({"path": c["path"], "line": c["line"]})
+            except Exception as e:
+                failed.append({"path": c["path"], "line": c["line"], "error": str(e)})
+        if review_body:
+            self.post_pr_comment(pr_number, review_body)
+        return posted, failed

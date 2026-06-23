@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from myk_pi_tools.platform.base import Platform
 
 
 @dataclass
@@ -260,15 +262,19 @@ def generate_review_body(comments: list[Comment]) -> str:
 
 
 def post_review(
-    repo_full_name: str,
-    pr_number: str,
+    platform: Platform,
+    pr_number: int,
     commit_sha: str,
     comments: list[Comment],
 ) -> ReviewResult:
-    """Post a review with inline comments to GitHub.
+    """Post a review with inline comments using the Platform protocol.
+
+    Uses Platform.post_review_batch() which handles batching per-platform:
+    GitHub posts all comments in a single review API call, while the default
+    implementation posts comments individually.
 
     Args:
-        repo_full_name: Repository in owner/repo format.
+        platform: Platform instance (GitHub, GitLab, etc.).
         pr_number: PR number.
         commit_sha: Commit SHA to comment on.
         comments: List of comments to post.
@@ -278,61 +284,26 @@ def post_review(
     """
     review_body = generate_review_body(comments)
 
-    # Build review payload
-    payload = {
-        "commit_id": commit_sha,
-        "body": review_body,
-        "event": "COMMENT",
-        "comments": [
-            {
-                "path": c.path,
-                "line": c.line,
-                "body": c.body,
-                "side": "RIGHT",
-            }
-            for c in comments
-        ],
-    }
+    comment_dicts = [{"path": c.path, "line": c.line, "body": c.body} for c in comments]
 
     try:
-        subprocess.run(
-            [
-                "gh",
-                "api",
-                f"/repos/{repo_full_name}/pulls/{pr_number}/reviews",
-                "-X",
-                "POST",
-                "--input",
-                "-",
-            ],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120,
-        )
-
-        posted = [{"path": c.path, "line": c.line} for c in comments]
-        return ReviewResult(
-            status="success",
-            comment_count=len(comments),
-            posted=posted,
-        )
-
-    except subprocess.CalledProcessError as e:
+        posted, failed = platform.post_review_batch(pr_number, commit_sha, comment_dicts, review_body)
+    except Exception as e:
         return ReviewResult(
             status="failed",
             comment_count=len(comments),
             failed=[{"path": c.path, "line": c.line} for c in comments],
-            error=e.stderr,
+            error=str(e),
         )
-    except subprocess.TimeoutExpired:
-        return ReviewResult(
-            status="failed",
-            comment_count=len(comments),
-            failed=[{"path": c.path, "line": c.line} for c in comments],
-            error="GitHub API request timed out after 120 seconds",
-        )
+
+    status = "success" if not failed else "failed"
+    return ReviewResult(
+        status=status,
+        comment_count=len(comments),
+        posted=posted,
+        failed=failed,
+        error=f"{len(failed)} comment(s) failed to post" if failed else None,
+    )
 
 
 def run(owner_repo: str, pr_number: str, commit_sha: str, json_file: str) -> None:
@@ -368,8 +339,15 @@ def run(owner_repo: str, pr_number: str, commit_sha: str, json_file: str) -> Non
 
     print(f"Posting review with {len(comments)} comment(s) on PR #{pr_number}...", file=sys.stderr)
 
+    # Create platform (GitHub-only for now; GitLab support will be added
+    # when the CLI command gains --platform or URL detection)
+    from myk_pi_tools.platform.github import GitHubPlatform
+
+    owner, repo = owner_repo.split("/", 1)
+    platform = GitHubPlatform(owner=owner, repo=repo)
+
     # Post review
-    result = post_review(owner_repo, pr_number, commit_sha, comments)
+    result = post_review(platform, int(pr_number), commit_sha, comments)
 
     # Output result as JSON
     output = {

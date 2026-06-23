@@ -9,6 +9,10 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from myk_pi_tools.platform.base import Platform
 
 
 @dataclass
@@ -20,6 +24,7 @@ class PRInfo:
     pr_number: int
     platform: str = "github"
     project_path: str = ""  # Full path for GitLab nested groups
+    host: str = ""  # Hostname for GitLab (e.g., gitlab.com)
 
     @property
     def repo_full_name(self) -> str:
@@ -66,7 +71,7 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
             input_arg,
         )
         if gitlab_match:
-            _host = gitlab_match.group(1)  # noqa: F841
+            host = gitlab_match.group(1)
             project_path = gitlab_match.group(2)
             mr_number = int(gitlab_match.group(3))
             # For GitLab, owner is the namespace, repo is the last segment
@@ -79,6 +84,7 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
                 pr_number=mr_number,
                 platform="gitlab",
                 project_path=project_path,
+                host=host,
             )
 
         # Check if it's a GitHub URL
@@ -174,6 +180,23 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
     # Extract owner and repo
     owner, repo = repo_full_name.split("/", 1)
     return PRInfo(owner=owner, repo=repo, pr_number=int(pr_number_str), platform="github", project_path=repo_full_name)
+
+
+def create_platform(pr_info: PRInfo) -> Platform:
+    """Create a Platform instance from PRInfo.
+
+    Single dispatch point — all business logic calls this instead of
+    branching on pr_info.platform.
+    """
+    from myk_pi_tools.platform.github import GitHubPlatform
+    from myk_pi_tools.platform.gitlab import GitLabPlatform
+
+    if pr_info.platform == "gitlab":
+        return GitLabPlatform(
+            host=pr_info.host,
+            project_path=pr_info.project_path,
+        )
+    return GitHubPlatform(owner=pr_info.owner, repo=pr_info.repo)
 
 
 def _print_usage(command_name: str) -> None:
