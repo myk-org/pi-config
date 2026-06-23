@@ -1074,7 +1074,7 @@ export default function (pi: ExtensionAPI) {
 		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
+			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
 			seenSessions.add(sid);
 			rows.push({
 				name: card.name,
@@ -1112,7 +1112,7 @@ export default function (pi: ExtensionAPI) {
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
-			if (identity && entry.session_id === identity.session_id) continue;
+			if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
 			if (!includeExplicit && entry.explicit) continue;
 			if (seenSessions.has(entry.session_id)) continue;
 			if (seenNames.has(entry.name)) continue;
@@ -1232,7 +1232,7 @@ export default function (pi: ExtensionAPI) {
 			: await pruneDeadEntries(projectFilter);
 
 		const peers = live.filter((e) =>
-			e.session_id !== identity!.session_id && (includeExplicit || !e.explicit),
+			e.session_id !== identity!.session_id && e.name !== identity!.name && (includeExplicit || !e.explicit),
 		);
 
 		const results = await Promise.allSettled(peers.map(async (peer) => {
@@ -1272,7 +1272,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
+			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
 			if (!seenSessions.has(sid)) {
 				card.staleCount = (card.staleCount ?? 0) + 1;
 				if (card.staleCount > 6) {
@@ -1385,7 +1385,7 @@ export default function (pi: ExtensionAPI) {
 			for (const proj of projects) {
 				for (const entry of await pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
-					if (identity && entry.session_id === identity.session_id) continue;
+					if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
 					collected.push({ entry, project: proj });
 				}
 			}
