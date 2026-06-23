@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from myk_pi_tools.platform.base import Platform
 
 # HTML comment marker in CodeRabbit's summary comment
 SUMMARY_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
@@ -59,6 +63,37 @@ def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, s
         return comment_id, body, updated_at, ""
     except (json.JSONDecodeError, KeyError):
         return None, None, None, "Failed to parse CodeRabbit comment data"
+
+
+def find_summary_comment_via_platform(
+    platform: Platform, pr_number: int
+) -> tuple[int | None, str | None, str | None, str]:
+    """Find the CodeRabbit summary comment using Platform protocol.
+
+    Returns (comment_id, comment_body, updated_at, error) where error is empty string on success.
+    """
+    comments = platform.fetch_issue_comments(pr_number)
+    if not comments:
+        return None, None, None, "No comments found on this PR"
+
+    # Find the last comment with the summary marker
+    summary = None
+    for comment in comments:
+        body = comment.get("body", "")
+        if SUMMARY_MARKER in body:
+            summary = comment
+
+    if summary is None:
+        return None, None, None, "No CodeRabbit summary comment found on this PR"
+
+    comment_id = summary.get("id")
+    body = summary.get("body")
+    updated_at = summary.get("updated_at")
+
+    if comment_id is None or body is None:
+        return None, None, None, "No CodeRabbit summary comment found on this PR"
+
+    return comment_id, body, updated_at, ""
 
 
 def validate_owner_repo(owner_repo: str) -> bool:

@@ -17,7 +17,7 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from myk_pi_tools.coderabbit.approved import is_approved
+from myk_pi_tools.coderabbit.approved import is_approved_via_platform
 from myk_pi_tools.coderabbit.rate_limit import (
     _RATE_LIMITED_MARKER,
     _REVIEWS_PAUSED_FALLBACK_HEADING,
@@ -470,7 +470,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
 
         # Step 2: Check if CodeRabbit approved
         print_stderr("[poll] Checking CodeRabbit approval...")
-        if is_approved(owner_repo, int(pr_number)):
+        if is_approved_via_platform(_platform, int(pr_number)):
             print_stderr("[poll] CodeRabbit approved \u2014 no actionable comments.")
             print('{"approved": true}')
             return 0
@@ -527,7 +527,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
 
             # Step 5: Check approval again after trigger (new review might approve)
             print_stderr("[poll] Re-checking approval after rate limit trigger...")
-            if is_approved(owner_repo, int(pr_number)):
+            if is_approved_via_platform(_platform, int(pr_number)):
                 print_stderr("[poll] CodeRabbit approved \u2014 no actionable comments.")
                 print('{"approved": true}')
                 return 0
@@ -564,7 +564,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
 
                     # Re-check approval after resume (CodeRabbit may immediately approve)
                     print_stderr("[poll] Re-checking approval after resume trigger...")
-                    if is_approved(owner_repo, int(pr_number)):
+                    if is_approved_via_platform(_platform, int(pr_number)):
                         print_stderr("[poll] CodeRabbit approved — no actionable comments.")
                         print('{"approved": true}')
                         return 0
