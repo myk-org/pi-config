@@ -869,21 +869,30 @@ export default function (pi: ExtensionAPI) {
 			if (existing.name === name && existing.session_id !== session_id) {
 				// Verify the existing peer is actually alive via .ping endpoint.
 				if (typeof existing.endpoint === "string" && existing.endpoint) {
-					let alive = false;
 					const pingEp = `${existing.endpoint}.ping`;
 					const hasPing = process.platform === "win32" || fs.existsSync(pingEp);
 					const hasMain = process.platform === "win32" || fs.existsSync(existing.endpoint);
 
+					let pingResult: "in_use" | "stale" = "stale";
+					let mainResult: "in_use" | "stale" = "stale";
+
 					if (hasPing) {
-						alive = (await probeStaleSocket(pingEp)) === "in_use";
+						pingResult = await probeStaleSocket(pingEp);
 					}
-					// Fall back to main endpoint if .ping missing or probe failed
-					if (!alive && hasMain) {
-						alive = (await probeStaleSocket(existing.endpoint)) === "in_use";
+					if (hasMain) {
+						mainResult = await probeStaleSocket(existing.endpoint);
 					}
 
-					if (alive) {
-						throw new Error(`name "${name}" is already taken by a live peer. Use --cname to pick a different name.`);
+					// "stale" means ECONNREFUSED/ENOENT — definitively dead.
+					// "in_use" means connected OR transient error — not confirmed dead.
+					if (pingResult === "in_use" || mainResult === "in_use") {
+						// At least one probe couldn't confirm the peer is dead.
+						// If either actually connected (not just error), it's definitely alive.
+						// Either way, reject — better to false-reject than allow duplicate names.
+						throw new Error(
+							`name "${name}" is already taken by an existing peer (probe: ping=${pingResult}, main=${mainResult}). ` +
+							`Use --cname to pick a different name, or stop the other peer first.`
+						);
 					}
 
 					if (!hasPing && !hasMain) {
