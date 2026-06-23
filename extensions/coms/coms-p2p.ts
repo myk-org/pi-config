@@ -950,9 +950,46 @@ export default function (pi: ExtensionAPI) {
 		// Update ping worker card periodically
 		cardUpdateTimer = setInterval(updatePingWorkerCard, 5000);
 		try { (cardUpdateTimer as any).unref?.(); } catch { /* ignore */ }
-		keepaliveTimer = setInterval(() => {
+		keepaliveTimer = setInterval(async () => {
 			if (!identity) return;
 			try {
+				// Socket self-heal: if our socket file was deleted (e.g., by pruneStaleRegistry
+				// timeout), the net.Server is orphaned — listening on an inode with no filesystem
+				// entry. Re-bind the server and ping worker on the same endpoint path.
+				if (process.platform !== "win32" && !fs.existsSync(identity.endpoint)) {
+					try {
+						pi.appendEntry("coms-log", { event: "self_heal_socket", session_id: identity.session_id, reason: "socket file missing" });
+						// Close old server
+						if (server) {
+							try { server.close(); } catch { /* ignore */ }
+							server = null;
+						}
+						// Re-bind new server on same endpoint
+						server = await bindEndpoint(identity.endpoint, connHandler);
+						// Restart ping worker
+						if (pingWorker) {
+							try { pingWorker.postMessage({ type: "shutdown" }); } catch {}
+							pingWorker = null;
+							pingWorkerReady = false;
+						}
+						const pingEndpoint = `${identity.endpoint}.ping`;
+						try {
+							pingWorker = createPingWorker(pingEndpoint);
+							pingWorker.on("message", (msg: any) => {
+								if (msg.type === "ready") {
+									pingWorkerReady = true;
+									updatePingWorkerCard();
+								}
+								if (msg.type === "error") console.debug("[coms] ping worker error:", msg.message);
+							});
+							pingWorker.on("error", () => { pingWorkerReady = false; });
+							pingWorker.on("exit", () => { pingWorkerReady = false; pingWorker = null; });
+						} catch { /* best-effort */ }
+					} catch (err) {
+						pi.appendEntry("coms-log", { event: "self_heal_socket_failed", session_id: identity.session_id, reason: err instanceof Error ? err.message : String(err) });
+					}
+				}
+
 				const ctx = currentCtx;
 				// Detect missing-registry BEFORE writing so the self_heal audit only
 				// fires when something actually went wrong (file unlinked under us).
