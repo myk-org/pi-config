@@ -15,6 +15,7 @@ import re
 import sys
 import time
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from myk_pi_tools.coderabbit.approved import is_approved
 from myk_pi_tools.coderabbit.rate_limit import (
@@ -28,6 +29,9 @@ from myk_pi_tools.coderabbit.rate_limit import (
 )
 from myk_pi_tools.coderabbit.utils import find_summary_comment
 from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
+
+if TYPE_CHECKING:
+    from myk_pi_tools.platform.base import Platform
 from myk_pi_tools.reviews.fetch import run as fetch_run
 
 _RATE_LIMIT_BUFFER_SECONDS = 30
@@ -137,16 +141,16 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
 _QODO_REVIEWING_MARKERS = ("Looking for bugs?", "review agent")
 
 
-def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
+def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, platform: Platform, comments: list | None = None) -> bool:
     """Check if Qodo is currently reviewing the PR.
 
     Qodo posts a transient comment while reviewing (e.g., "Looking for bugs?").
     If this comment exists, the sticky is about to be updated — we should wait.
     Matches author (qodo-code-review[bot]) and known substring markers.
     """
+    _ = owner, repo  # Unused — kept for call-site clarity
     if comments is None:
-        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-        comments = run_gh_api(endpoint, paginate=True)
+        comments = platform.fetch_issue_comments(int(pr_number))
     if not comments or not isinstance(comments, list):
         return False
 
@@ -162,7 +166,9 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | N
     return False
 
 
-def _is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | None = None) -> dict | None:
+def _is_qodo_approved(
+    owner: str, repo: str, pr_number: str, platform: Platform, comments: list | None = None
+) -> dict | None:
     """Check if Qodo has approved the PR.
 
     Returns a summary dict if approved, None if not approved.
@@ -182,12 +188,9 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | No
     """
     from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
 
-    # Get PR head SHA
-    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
-    pr_data = run_gh_api(pr_endpoint)
-    if not isinstance(pr_data, dict):
-        return None
-    head_sha = pr_data.get("head", {}).get("sha", "")
+    # Get PR head SHA via platform
+    metadata = platform.fetch_pr_metadata(int(pr_number))
+    head_sha = metadata.head_sha
     if not head_sha:
         return None
 
@@ -202,8 +205,7 @@ def _is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | No
 
     # Find the Qodo sticky comment
     if comments is None:
-        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-        comments = run_gh_api(endpoint, paginate=True)
+        comments = platform.fetch_issue_comments(int(pr_number))
     if not comments or not isinstance(comments, list):
         return None
 
@@ -364,7 +366,7 @@ def _print_approval_summary(approval: dict) -> None:
     print_stderr("")
 
 
-def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, output_dir: str) -> int:
+def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, output_dir: str, platform: Platform) -> int:
     """Poll for Qodo reviews in a loop until approved or new comments.
 
     Flow per cycle:
@@ -388,9 +390,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
             has_actionable = _has_actionable_qodo_comments(pr_number, output_dir)
             if has_actionable:
                 # Before returning, check if Qodo is mid-review — if so, wait for it to finish
-                _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-                _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
-                if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
+                _pr_comments = platform.fetch_issue_comments(int(pr_number))
+                if _is_qodo_reviewing(owner, repo, pr_number, platform, comments=_pr_comments):
                     print_stderr(
                         "[poll] Qodo is currently reviewing —"
                         " waiting for review to complete before processing findings."
@@ -407,16 +408,15 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
         # This prevents approving before processing new findings
         if fetch_result == 0:
             # Fetch PR comments once — reused by mid-review and approval checks
-            _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-            _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
+            _pr_comments = platform.fetch_issue_comments(int(pr_number))
             # Don't check approval if Qodo is mid-review — sticky is about to change
-            if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
+            if _is_qodo_reviewing(owner, repo, pr_number, platform, comments=_pr_comments):
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
             else:
                 print_stderr("[poll] Checking Qodo approval...")
-                approval = _is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
+                approval = _is_qodo_approved(owner, repo, pr_number, platform, comments=_pr_comments)
                 if approval:
                     reason = approval.get("reason", "unknown")
                     if reason == "all_resolved":
@@ -450,8 +450,14 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
     # Get PR info
     owner, repo, pr_number = get_pr_info(review_url)
 
+    from myk_pi_tools.pr.common import create_platform
+    from myk_pi_tools.reviews.fetch import _build_pr_info
+
+    _pr_info = _build_pr_info(owner, repo, pr_number, review_url)
+    _platform = create_platform(_pr_info)
+
     if source == "qodo":
-        return _run_qodo_poll(review_url, owner, repo, pr_number, output_dir)
+        return _run_qodo_poll(review_url, owner, repo, pr_number, output_dir, _platform)
 
     # CodeRabbit poll (source == "coderabbit" or "all")
     owner_repo = f"{owner}/{repo}"

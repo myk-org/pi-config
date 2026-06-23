@@ -18,9 +18,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bs4 import BeautifulSoup
+
+if TYPE_CHECKING:
+    from myk_pi_tools.pr.common import PRInfo
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
@@ -102,16 +105,31 @@ def check_dependencies() -> None:
 
 
 def parse_pr_url(url: str) -> tuple[str, str, str] | None:
-    """Parse a GitHub PR URL into (owner, repo, pr_number).
+    """Parse a GitHub PR or GitLab MR URL into (owner, repo, pr_number).
 
     Supports formats:
         https://github.com/OWNER/REPO/pull/NUMBER
         https://github.com/OWNER/REPO/pull/NUMBER#pullrequestreview-XXX
         https://github.com/OWNER/REPO/pull/NUMBER#discussion_rXXX
+        https://{host}/{path}/-/merge_requests/{number}
 
     Returns:
         Tuple of (owner, repo, pr_number) or None if URL doesn't match.
     """
+    # GitLab MR URL: https://{host}/{path}/-/merge_requests/{number}
+    gitlab_match = re.match(
+        r"^(?:https?://)?[^/]+/(.+)/-/merge_requests/(\d+)(?:[/?#].*)?$",
+        url,
+    )
+    if gitlab_match:
+        project_path = gitlab_match.group(1)
+        mr_number = gitlab_match.group(2)
+        # Split project path: last segment is repo, rest is owner/namespace
+        parts = project_path.rsplit("/", 1)
+        owner = parts[0] if len(parts) > 1 else ""
+        repo = parts[-1]
+        return owner, repo, mr_number
+
     match = re.match(r"https?://github\.com/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/(\d+)", url)
     if match:
         return match.group(1), match.group(2), match.group(3)
@@ -253,6 +271,30 @@ def get_pr_info(pr_url: str = "") -> tuple[str, str, str]:
 
     owner, repo = owner_repo
     return owner, repo, pr_number
+
+
+def _build_pr_info(owner: str, repo: str, pr_number: str, url: str = "") -> PRInfo:
+    """Build a PRInfo from individual fields for platform creation."""
+    from myk_pi_tools.pr.common import PRInfo
+
+    is_gitlab = bool(url and re.search(r"/-/merge_requests/\d+", url))
+    platform = "gitlab" if is_gitlab else "github"
+    project_path = f"{owner}/{repo}"
+
+    # Extract host from GitLab URL
+    host = ""
+    if is_gitlab and url:
+        host_match = re.match(r"^(?:https?://)?([^/]+)/", url)
+        host = host_match.group(1) if host_match else ""
+
+    return PRInfo(
+        owner=owner,
+        repo=repo,
+        pr_number=int(pr_number),
+        platform=platform,
+        project_path=project_path,
+        host=host,
+    )
 
 
 def detect_source(author: str | None) -> str:
@@ -1258,9 +1300,11 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
                 all_threads = merge_threads(all_threads, body_comment_threads)
 
             # Fetch issue comments once for both sticky and reply parsing
-            issue_comments = run_gh_api(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
-            )
+            from myk_pi_tools.pr.common import create_platform
+
+            _pr_info = _build_pr_info(owner, repo, pr_number, review_url)
+            _platform = create_platform(_pr_info)
+            issue_comments = _platform.fetch_issue_comments(int(pr_number))
 
             # Fetch Qodo sticky comment findings
             print_stderr("Fetching Qodo sticky comment findings...")
