@@ -129,8 +129,14 @@ pi-config/
 │   ├── coderabbit/
 │   ├── db/
 │   ├── memory/
+│   ├── platform/
+│   │   ├── __init__.py              # Re-exports: Platform, detect_platform, ReviewThread, PRMetadata, ChangedFile
+│   │   ├── base.py                  # Platform ABC + platform-neutral dataclasses
+│   │   ├── detect.py                # detect_platform() factory — strict detection, no fallbacks
+│   │   ├── github.py                # GitHubPlatform implementation (uses gh)
+│   │   └── gitlab.py                # GitLabPlatform implementation (uses glab)
 │   ├── pr/
-│   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db)
+│   │   └── pr_review_store.py       # PR review comment tracking (pr-reviews.db, platform column)
 │   ├── release/
 │   └── reviews/
 ├── scripts/                         # Utility scripts
