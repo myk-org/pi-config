@@ -75,6 +75,7 @@ class GitHubPlatform(Platform):
 
         kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": timeout, "cwd": self._cwd}
         if input_data:
+            cmd.extend(["--input", "-"])
             kwargs["input"] = input_data
 
         try:

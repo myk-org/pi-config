@@ -182,6 +182,48 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
     return PRInfo(owner=owner, repo=repo, pr_number=int(pr_number_str), platform="github", project_path=repo_full_name)
 
 
+def build_pr_info(owner: str, repo: str, pr_number: int | str, url: str = "") -> PRInfo:
+    """Build a PRInfo from individual fields, auto-detecting platform from URL.
+
+    If a URL is provided, platform is detected from the URL pattern.
+    Otherwise defaults to github.
+    """
+    import re as _re
+
+    pr_num = int(pr_number) if isinstance(pr_number, str) else pr_number
+
+    # Check if URL is a GitLab MR URL
+    gitlab_match = (
+        _re.match(
+            r"^(?:https?://)?([^/]+)/(.+)/-/merge_requests/(\d+)(?:[/?#].*)?$",
+            url,
+        )
+        if url
+        else None
+    )
+
+    if gitlab_match:
+        host = gitlab_match.group(1)
+        project_path = gitlab_match.group(2)
+        parts = project_path.rsplit("/", 1)
+        return PRInfo(
+            owner=parts[0] if len(parts) > 1 else "",
+            repo=parts[-1],
+            pr_number=int(gitlab_match.group(3)),
+            platform="gitlab",
+            project_path=project_path,
+            host=host,
+        )
+
+    return PRInfo(
+        owner=owner,
+        repo=repo,
+        pr_number=pr_num,
+        platform="github",
+        project_path=f"{owner}/{repo}",
+    )
+
+
 def create_platform(pr_info: PRInfo) -> Platform:
     """Create a Platform instance from PRInfo.
 

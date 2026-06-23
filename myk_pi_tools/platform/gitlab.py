@@ -86,6 +86,7 @@ class GitLabPlatform(Platform):
 
         kwargs: dict[str, Any] = {"capture_output": True, "text": True, "timeout": timeout, "cwd": self._cwd}
         if input_data:
+            cmd.extend(["--input", "-"])
             kwargs["input"] = input_data
 
         try:
@@ -297,7 +298,7 @@ class GitLabPlatform(Platform):
         return comments
 
     def post_review_comment(self, pr_number: int, commit_sha: str, path: str, line: int, body: str) -> str:  # noqa: ARG002
-        """Post an inline comment as a new MR discussion with position."""
+        """Post inline comment. For batch use, prefer post_review_batch() which fetches metadata once."""
         # First fetch MR metadata for diff_refs
         metadata = self.fetch_pr_metadata(pr_number)
 
@@ -378,6 +379,46 @@ class GitLabPlatform(Platform):
             _print_stderr(f"Error: Failed to post MR comment on {self._project_path}!{pr_number}")
             return ""
         return str(result.get("id", ""))
+
+    def post_review_batch(
+        self,
+        pr_number: int,
+        commit_sha: str,  # noqa: ARG002
+        comments: list[dict[str, Any]],
+        review_body: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Post multiple inline comments. Fetches metadata once for all comments."""
+        metadata = self.fetch_pr_metadata(pr_number)
+        posted: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+
+        for c in comments:
+            payload = {
+                "body": c["body"],
+                "position": {
+                    "base_sha": metadata.base_sha,
+                    "start_sha": metadata.start_sha,
+                    "head_sha": metadata.head_sha,
+                    "position_type": "text",
+                    "new_path": c["path"],
+                    "old_path": c["path"],
+                    "new_line": c["line"],
+                },
+            }
+            result = self._run_api(
+                f"projects/{self._encoded_path}/merge_requests/{pr_number}/discussions",
+                method="POST",
+                input_data=json.dumps(payload),
+            )
+            if result:
+                posted.append({"path": c["path"], "line": c["line"]})
+            else:
+                failed.append({"path": c["path"], "line": c["line"]})
+
+        if review_body:
+            self.post_pr_comment(pr_number, review_body)
+
+        return posted, failed
 
     def get_pr_url(self, pr_number: int) -> str:
         return f"https://{self._host}/{self._project_path}/-/merge_requests/{pr_number}"

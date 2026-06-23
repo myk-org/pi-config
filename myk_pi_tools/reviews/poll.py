@@ -194,12 +194,16 @@ def _is_qodo_approved(
     if not head_sha:
         return None
 
-    # Get commit date for PR HEAD
-    commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
-    commit_data = run_gh_api(commit_endpoint)
-    if not isinstance(commit_data, dict):
-        return None
-    commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
+    # Get commit date — platform-specific
+    commit_date = ""
+    if platform.name == "github":
+        commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
+        commit_data = run_gh_api(commit_endpoint)
+        if isinstance(commit_data, dict):
+            commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
+    else:
+        # GitLab: use MR updated_at as proxy for latest activity
+        commit_date = metadata.raw.get("updated_at", "")
     if not commit_date:
         return None
 
@@ -450,10 +454,9 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
     # Get PR info
     owner, repo, pr_number = get_pr_info(review_url)
 
-    from myk_pi_tools.pr.common import create_platform
-    from myk_pi_tools.reviews.fetch import _build_pr_info
+    from myk_pi_tools.pr.common import build_pr_info, create_platform
 
-    _pr_info = _build_pr_info(owner, repo, pr_number, review_url)
+    _pr_info = build_pr_info(owner, repo, pr_number, review_url)
     _platform = create_platform(_pr_info)
 
     if source == "qodo":

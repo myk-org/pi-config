@@ -146,10 +146,6 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
     return True, data
 
 
-# TODO: Migrate post_thread_reply() and resolve_thread() to use Platform protocol
-# (platform.reply_to_thread() / platform.resolve_thread()) once those methods exist.
-
-
 def post_thread_reply(thread_id: str, body: str) -> bool:
     """Post a reply to a review thread using GraphQL.
 
@@ -378,8 +374,6 @@ def _chunk_sections(
 
 
 def _post_chunk(
-    owner: str,  # noqa: ARG001 — kept for API stability, platform handles routing
-    repo: str,  # noqa: ARG001
     pr_number: str | int,
     reviewer: str,
     chunk: list[tuple[str, dict[str, Any]]],
@@ -392,8 +386,6 @@ def _post_chunk(
     """Post a single consolidated comment chunk to a pull request.
 
     Args:
-        owner: Repository owner.
-        repo: Repository name.
         pr_number: Pull request number.
         reviewer: Reviewer username.
         chunk: List of (section_text, entry) tuples for this chunk.
@@ -401,6 +393,7 @@ def _post_chunk(
         chunk_idx: Zero-based index of this chunk.
         total_chunks: Total number of chunks being posted.
         max_len: Maximum allowed body length.
+        platform: Platform instance for API calls.
 
     Returns:
         Tuple of (success, list of posted_at update dicts).
@@ -437,8 +430,6 @@ def _post_chunk(
 
 
 def post_body_comment_replies(
-    owner: str,
-    repo: str,
     pr_number: str | int,
     body_comments: dict[str, list[dict[str, Any]]],
     platform: Any = None,
@@ -450,11 +441,10 @@ def post_body_comment_replies(
     Chunks into multiple comments if the combined body exceeds GitHub's size limit.
 
     Args:
-        owner: Repository owner
-        repo: Repository name
         pr_number: Pull request number
         body_comments: Dict mapping reviewer username to list of entry dicts
             Each entry has {"data": thread_data, "cat": category, "idx": index}
+        platform: Platform instance for API calls.
 
     Returns:
         Tuple of (number of chunks successfully posted, list of posted_at updates)
@@ -484,7 +474,7 @@ def post_body_comment_replies(
         # Post each chunk
         for chunk_idx, chunk in enumerate(chunks):
             success, chunk_updates = _post_chunk(
-                owner, repo, pr_number, reviewer, chunk, header, chunk_idx, len(chunks), max_len, platform=platform
+                pr_number, reviewer, chunk, header, chunk_idx, len(chunks), max_len, platform=platform
             )
             if success:
                 posted += 1
@@ -530,10 +520,9 @@ def run(json_path: str) -> None:
     eprint(f"Processing reviews for {owner}/{repo}#{pr_number}")
 
     # Create platform for API calls
-    from myk_pi_tools.pr.common import create_platform
-    from myk_pi_tools.reviews.fetch import _build_pr_info
+    from myk_pi_tools.pr.common import build_pr_info, create_platform
 
-    _pr_info = _build_pr_info(owner, repo, str(pr_number))
+    _pr_info = build_pr_info(owner, repo, str(pr_number))
     _platform = create_platform(_pr_info)
 
     # Categories to process
@@ -827,9 +816,7 @@ def run(json_path: str) -> None:
     if body_comments_by_reviewer:
         total_body = sum(len(c) for c in body_comments_by_reviewer.values())
         eprint(f"\nPosting consolidated replies for {total_body} body comment(s)...")
-        _, body_updates = post_body_comment_replies(
-            owner, repo, pr_number, body_comments_by_reviewer, platform=_platform
-        )
+        _, body_updates = post_body_comment_replies(pr_number, body_comments_by_reviewer, platform=_platform)
         updates.extend(body_updates)
 
         # Count successfully posted body comments by type
