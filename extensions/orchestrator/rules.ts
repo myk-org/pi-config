@@ -74,13 +74,11 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
-  let lastTaskFocusReminderAt = 0;
 
 
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
     rebuildDone = false;
-    lastTaskFocusReminderAt = 0;
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
@@ -282,20 +280,28 @@ export function registerRules(
     // Task-focus enforcement: if this turn had no tool calls but tasks are active,
     // the LLM likely answered a side question and forgot to resume work.
     // Inject a follow-up to force it back on track.
-    // After firing, cooldown for 2 minutes to prevent rapid re-firing.
-    // Cooldown resets immediately when the LLM does actual work (tool calls).
-    // After cooldown expires, re-fire if tasks are still active — prevents
-    // permanent suppression when the LLM ignores reminders.
+    // Only fire after user messages — not after follow-ups (reminders, async
+    // results, coms inbound). This prevents infinite reminder loops naturally:
+    // the reminder triggers a follow-up turn, which is not user-triggered.
     try {
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
-      // Reset cooldown when LLM does actual work
-      if (hadToolCalls) {
-        lastTaskFocusReminderAt = 0;
-      }
-      const cooldownMs = 120_000; // 2 minutes
-      const coolingDown = lastTaskFocusReminderAt > 0 && (Date.now() - lastTaskFocusReminderAt) < cooldownMs;
-      if (!hadToolCalls && !coolingDown) {
+      // Check if this turn was triggered by a user message
+      let userTriggered = false;
+      try {
+        const branch = ctx.sessionManager.getBranch();
+        for (let i = branch.length - 1; i >= 0; i--) {
+          const entry = branch[i];
+          // Skip assistant messages (current turn's response)
+          if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
+          // Found the triggering entry
+          if (entry.type === "message" && (entry as any).message?.role === "user") {
+            userTriggered = true;
+          }
+          break;
+        }
+      } catch { /* best-effort */ }
+      if (!hadToolCalls && userTriggered) {
         // Check for active tasks — session-scoped task file only
         const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
         const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -318,7 +324,6 @@ export function registerRules(
                 content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
                 display: true,
               }, { triggerTurn: true, deliverAs: "followUp" });
-              lastTaskFocusReminderAt = Date.now();
               break;
             }
           } catch { continue; }
