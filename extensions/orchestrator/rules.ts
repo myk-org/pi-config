@@ -74,7 +74,7 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
-  let taskFocusJustFired = false;
+  let lastTaskFocusReminderAt = 0;
 
 
   // Run full rebuild on session start (once per session, not every turn)
@@ -281,19 +281,20 @@ export function registerRules(
     // Task-focus enforcement: if this turn had no tool calls but tasks are active,
     // the LLM likely answered a side question and forgot to resume work.
     // Inject a follow-up to force it back on track.
-    // After firing, suppress until the LLM actually does work (has tool calls),
-    // preventing infinite reminder loops when the LLM responds without acting.
+    // After firing, cooldown for 2 minutes to prevent rapid re-firing.
+    // Cooldown resets immediately when the LLM does actual work (tool calls).
+    // After cooldown expires, re-fire if tasks are still active — prevents
+    // permanent suppression when the LLM ignores reminders.
     try {
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
-      if (taskFocusJustFired) {
-        // Reminder was fired last turn — check if LLM acted on it
-        if (hadToolCalls) {
-          // LLM did work — reset, allow future reminders
-          taskFocusJustFired = false;
-        }
-        // Either way, don't fire again this turn
-      } else if (!hadToolCalls) {
+      // Reset cooldown when LLM does actual work
+      if (hadToolCalls) {
+        lastTaskFocusReminderAt = 0;
+      }
+      const cooldownMs = 120_000; // 2 minutes
+      const coolingDown = lastTaskFocusReminderAt > 0 && (Date.now() - lastTaskFocusReminderAt) < cooldownMs;
+      if (!hadToolCalls && !coolingDown) {
         // Check for active tasks — session-scoped task file only
         const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
         const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -316,7 +317,7 @@ export function registerRules(
                 content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
                 display: true,
               }, { triggerTurn: true, deliverAs: "followUp" });
-              taskFocusJustFired = true;
+              lastTaskFocusReminderAt = Date.now();
               break;
             }
           } catch { continue; }
