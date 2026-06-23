@@ -868,7 +868,7 @@ export default function (pi: ExtensionAPI) {
 		for (const existing of existingEntries) {
 			if (existing.name === name && existing.session_id !== session_id) {
 				// Verify the existing peer is actually alive (socket exists and responds)
-				if (existing.endpoint && fs.existsSync(existing.endpoint)) {
+				if (typeof existing.endpoint === "string" && existing.endpoint && (process.platform === "win32" || fs.existsSync(existing.endpoint))) {
 					const verdict = await probeStaleSocket(existing.endpoint);
 					if (verdict === "in_use") {
 							throw new Error(`name "${name}" is already taken by a live peer. Use --cname to pick a different name.`);
@@ -1294,13 +1294,18 @@ export default function (pi: ExtensionAPI) {
 			const existing = nameToSid.get(card.name);
 			if (existing) {
 				const prevCard = peerCards.get(existing)!;
-				if (card.staleCount < prevCard.staleCount) {
+				// Only dedup when one is clearly stale (reload artifact).
+				// If both are alive (staleCount 0), keep both — they're distinct peers.
+				if (card.staleCount === 0 && prevCard.staleCount === 0) {
+					// Both alive — keep both, skip dedup
+				} else if (card.staleCount < prevCard.staleCount) {
 					peerCards.delete(existing);
 					nameToSid.set(card.name, sid);
+					changed = true;
 				} else {
 					peerCards.delete(sid);
+					changed = true;
 				}
-				changed = true;
 			} else {
 				nameToSid.set(card.name, sid);
 			}
