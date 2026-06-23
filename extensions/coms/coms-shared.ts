@@ -247,46 +247,15 @@ export function pruneStaleRegistry(): void {
                             // Socket exists — try connect to verify.
                             // Prefer the ping endpoint (.ping) which runs on a separate
                             // thread and is immune to main-thread event-loop blocks.
-                            // Probe liveness: try .ping endpoint first (immune to
-                            // main-thread blocks), fall back to main endpoint.
+                            // Probe liveness via .ping endpoint (immune to main-thread blocks).
                             const pingEndpoint = `${endpoint}.ping`;
-                            const hasPing = fs.existsSync(pingEndpoint);
-                            const probeEndpoint = hasPing ? pingEndpoint : endpoint;
-                            const sock = net.createConnection(probeEndpoint);
+                            const sock = net.createConnection(pingEndpoint);
                             sock.setTimeout(500);
                             sock.on("connect", () => sock.destroy()); // alive
                             sock.on("error", (err: any) => {
                                 sock.destroy();
                                 // Only prune on definitive dead signals
                                 if (err?.code === "ECONNREFUSED" || err?.code === "ENOENT") {
-                                    // If we probed .ping and it failed, try main endpoint
-                                    // before pruning — .ping may be stale while main is alive
-                                    if (hasPing && probeEndpoint !== endpoint) {
-                                        const fallback = net.createConnection(endpoint);
-                                        fallback.setTimeout(500);
-                                        fallback.on("connect", () => {
-                                            fallback.destroy(); // alive via main — don't prune
-                                            // Clean up stale .ping socket
-                                            try { fs.unlinkSync(pingEndpoint); } catch {}
-                                        });
-                                        fallback.on("error", (fallbackErr: any) => {
-                                            fallback.destroy();
-                                            // Only prune on definitive dead signals
-                                            if (fallbackErr?.code === "ECONNREFUSED" || fallbackErr?.code === "ENOENT") {
-                                                try { fs.unlinkSync(fp); } catch {}
-                                                if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
-                                                    try { fs.unlinkSync(endpoint); } catch {}
-                                                    try { fs.unlinkSync(pingEndpoint); } catch {}
-                                                }
-                                            }
-                                        });
-                                        fallback.on("timeout", () => {
-                                            fallback.destroy();
-                                            // Main timed out — only remove registry, not sockets
-                                            try { fs.unlinkSync(fp); } catch {}
-                                        });
-                                        return;
-                                    }
                                     try { fs.unlinkSync(fp); } catch {}
                                     if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
                                         try { fs.unlinkSync(endpoint); } catch {}

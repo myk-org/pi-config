@@ -867,23 +867,11 @@ export default function (pi: ExtensionAPI) {
 		const existingEntries = readAllRegistryEntries(project);
 		for (const existing of existingEntries) {
 			if (existing.name === name && existing.session_id !== session_id) {
-				// Verify the existing peer is actually alive.
-				// Probe .ping endpoint first (separate thread, immune to main-thread blocks),
-				// fall back to main endpoint.
+				// Verify the existing peer is actually alive via .ping endpoint.
 				if (typeof existing.endpoint === "string" && existing.endpoint) {
 					const pingEp = `${existing.endpoint}.ping`;
-					const mainExists = process.platform === "win32" || fs.existsSync(existing.endpoint);
-					const pingExists = process.platform !== "win32" && fs.existsSync(pingEp);
-
-					let alive = false;
-					if (pingExists) {
-						alive = (await probeStaleSocket(pingEp)) === "in_use";
-					}
-					if (!alive && mainExists) {
-						alive = (await probeStaleSocket(existing.endpoint)) === "in_use";
-					}
-
-					if (alive) {
+					if ((process.platform === "win32" || fs.existsSync(pingEp)) &&
+						(await probeStaleSocket(pingEp)) === "in_use") {
 						throw new Error(`name "${name}" is already taken by a live peer. Use --cname to pick a different name.`);
 					}
 				}
