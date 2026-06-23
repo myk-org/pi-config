@@ -409,6 +409,34 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 	});
 }
 
+/**
+ * Strict liveness probe — only returns "alive" on actual successful TCP connect.
+ * Unlike probeStaleSocket which treats transient errors as "in_use" (safe for
+ * pruning decisions), this function treats ANY error as "dead" (safe for
+ * duplicate-name rejection where false positives block startup).
+ */
+function probeAlive(endpoint: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const sock = net.createConnection({ path: endpoint });
+		let settled = false;
+		const finish = (alive: boolean) => {
+			if (settled) return;
+			settled = true;
+			try { sock.destroy(); } catch { /* ignore */ }
+			resolve(alive);
+		};
+		const timer = setTimeout(() => finish(false), 500);
+		sock.once("connect", () => {
+			clearTimeout(timer);
+			finish(true);
+		});
+		sock.once("error", () => {
+			clearTimeout(timer);
+			finish(false);
+		});
+	});
+}
+
 async function bindEndpoint(
 	endpoint: string,
 	connHandler: (socket: net.Socket) => void,
@@ -873,24 +901,19 @@ export default function (pi: ExtensionAPI) {
 					const hasPing = process.platform === "win32" || fs.existsSync(pingEp);
 					const hasMain = process.platform === "win32" || fs.existsSync(existing.endpoint);
 
-					let pingResult: "in_use" | "stale" = "stale";
-					let mainResult: "in_use" | "stale" = "stale";
-
+					// Use strict probe — only "alive" on actual TCP connect.
+					// Transient errors (EMFILE, EACCES) resolve to false, not blocking startup.
+					let alive = false;
 					if (hasPing) {
-						pingResult = await probeStaleSocket(pingEp);
+						alive = await probeAlive(pingEp);
 					}
-					if (hasMain) {
-						mainResult = await probeStaleSocket(existing.endpoint);
+					if (!alive && hasMain) {
+						alive = await probeAlive(existing.endpoint);
 					}
 
-					// "stale" = ECONNREFUSED, ENOENT, or 250ms timeout — peer unresponsive.
-					// "in_use" = connected OR transient error (EMFILE, etc.) — not confirmed dead.
-					if (pingResult === "in_use" || mainResult === "in_use") {
-						// At least one probe couldn't confirm the peer is dead.
-						// If either actually connected (not just error), it's definitely alive.
-						// Either way, reject — better to false-reject than allow duplicate names.
+					if (alive) {
 						throw new Error(
-							`name "${name}" is already taken by an existing peer (probe: ping=${pingResult}, main=${mainResult}). ` +
+							`name "${name}" is already taken by a live peer. ` +
 							`Use --cname to pick a different name, or stop the other peer first.`
 						);
 					}
