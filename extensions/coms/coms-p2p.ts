@@ -823,6 +823,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 		currentCtx = ctx;
+		shuttingDown = false;
 
 		// 1. Resolve identity from CLI flags > frontmatter > defaults.
 		const flags = readCliFlags(pi);
@@ -1050,6 +1051,27 @@ export default function (pi: ExtensionAPI) {
 			});
 		}
 
+		// Dedup by name — after reload, a peer may have two entries (old stale + new alive)
+		// Keep the alive entry over the stale one
+		const nameMap = new Map<string, number>();
+		for (let i = 0; i < rows.length; i++) {
+			const existing = nameMap.get(rows[i].name);
+			if (existing !== undefined) {
+				// Prefer non-stale, then non-pending, then higher pct
+				const prev = rows[existing];
+				const curr = rows[i];
+				const prevScore = (prev.stale ? 0 : 2) + (prev.pending ? 0 : 1);
+				const currScore = (curr.stale ? 0 : 2) + (curr.pending ? 0 : 1);
+				if (currScore > prevScore || (currScore === prevScore && (curr.pct ?? 0) > (prev.pct ?? 0))) {
+					rows[existing] = curr; // replace with better entry
+				}
+				rows.splice(i, 1);
+				i--; // adjust index after splice
+			} else {
+				nameMap.set(rows[i].name, i);
+			}
+		}
+
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
@@ -1220,6 +1242,25 @@ export default function (pi: ExtensionAPI) {
 					peerCards.delete(sid);
 				}
 				changed = true;
+			}
+		}
+
+		// Dedup peerCards by name — keep the freshest entry (staleCount 0) over stale ones
+		const nameToSid = new Map<string, string>();
+		for (const [sid, card] of peerCards.entries()) {
+			const existing = nameToSid.get(card.name);
+			if (existing) {
+				const prevCard = peerCards.get(existing)!;
+				// Keep the one with lower staleCount (more alive)
+				if (card.staleCount < prevCard.staleCount) {
+					peerCards.delete(existing);
+					nameToSid.set(card.name, sid);
+				} else {
+					peerCards.delete(sid);
+				}
+				changed = true;
+			} else {
+				nameToSid.set(card.name, sid);
 			}
 		}
 

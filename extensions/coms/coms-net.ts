@@ -826,6 +826,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 		currentCtx = ctx;
+		shuttingDown = false;
 
 		// 1. Resolve identity from CLI > frontmatter > defaults.
 		const flags = readCliFlags(pi);
