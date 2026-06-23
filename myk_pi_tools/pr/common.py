@@ -13,11 +13,13 @@ from dataclasses import dataclass
 
 @dataclass
 class PRInfo:
-    """Parsed PR information from arguments."""
+    """Parsed PR/MR information from arguments."""
 
     owner: str
     repo: str
-    pr_number: str
+    pr_number: int
+    platform: str = "github"
+    project_path: str = ""  # Full path for GitLab nested groups
 
     @property
     def repo_full_name(self) -> str:
@@ -46,7 +48,7 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
     """
     if len(args) == 2:
         repo_full_name = args[0]
-        pr_number = args[1]
+        pr_number_str = args[1]
     elif len(args) == 1:
         input_arg = args[0]
 
@@ -58,6 +60,27 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
                 _print_usage(command_name)
             sys.exit(0)
 
+        # Check if it's a GitLab MR URL (check first — more specific pattern)
+        gitlab_match = re.match(
+            r"^(?:https?://)?([^/]+)/(.+)/-/merge_requests/(\d+)(?:[/?#].*)?$",
+            input_arg,
+        )
+        if gitlab_match:
+            _host = gitlab_match.group(1)  # noqa: F841
+            project_path = gitlab_match.group(2)
+            mr_number = int(gitlab_match.group(3))
+            # For GitLab, owner is the namespace, repo is the last segment
+            parts = project_path.rsplit("/", 1)
+            owner = parts[0] if len(parts) > 1 else ""
+            repo = parts[-1]
+            return PRInfo(
+                owner=owner,
+                repo=repo,
+                pr_number=mr_number,
+                platform="gitlab",
+                project_path=project_path,
+            )
+
         # Check if it's a GitHub URL
         url_match = re.search(
             r"^(?:https?://)?github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$",
@@ -66,12 +89,14 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
         if url_match:
             owner = url_match.group(1)
             repo = url_match.group(2)
-            pr_number = url_match.group(3)
-            return PRInfo(owner=owner, repo=repo, pr_number=pr_number)
+            pr_number = int(url_match.group(3))
+            return PRInfo(
+                owner=owner, repo=repo, pr_number=pr_number, platform="github", project_path=f"{owner}/{repo}"
+            )
 
         # Check if it's just a number (PR number only)
         if re.match(r"^\d+$", input_arg):
-            pr_number = input_arg
+            pr_number_str = input_arg
             # Get repo from current git context
             try:
                 result = subprocess.run(
@@ -119,6 +144,10 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
                 f"  pr {command_name} https://github.com/owner/repo/pull/123",
                 file=sys.stderr,
             )
+            print(
+                f"  pr {command_name} https://gitlab.com/group/project/-/merge_requests/42",
+                file=sys.stderr,
+            )
             print(f"  pr {command_name} <pr_number>", file=sys.stderr)
             sys.exit(1)
     else:
@@ -135,16 +164,16 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
         sys.exit(1)
 
     # Validate PR number is numeric
-    if not re.match(r"^\d+$", pr_number):
+    if not re.match(r"^\d+$", pr_number_str):
         print(
-            f"Error: PR number must be numeric, got: {pr_number}",
+            f"Error: PR number must be numeric, got: {pr_number_str}",
             file=sys.stderr,
         )
         sys.exit(1)
 
     # Extract owner and repo
     owner, repo = repo_full_name.split("/", 1)
-    return PRInfo(owner=owner, repo=repo, pr_number=pr_number)
+    return PRInfo(owner=owner, repo=repo, pr_number=int(pr_number_str), platform="github", project_path=repo_full_name)
 
 
 def _print_usage(command_name: str) -> None:
@@ -157,6 +186,10 @@ def _print_usage(command_name: str) -> None:
     print(f"  pr {command_name} <owner/repo> <pr_number>", file=sys.stderr)
     print(
         f"  pr {command_name} https://github.com/owner/repo/pull/123",
+        file=sys.stderr,
+    )
+    print(
+        f"  pr {command_name} https://gitlab.com/group/project/-/merge_requests/42",
         file=sys.stderr,
     )
     print(f"  pr {command_name} <pr_number>", file=sys.stderr)
