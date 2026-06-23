@@ -952,11 +952,12 @@ export default function (pi: ExtensionAPI) {
 		try { (cardUpdateTimer as any).unref?.(); } catch { /* ignore */ }
 		keepaliveTimer = setInterval(async () => {
 			if (!identity) return;
+			if (shuttingDown) return;
 			try {
 				// Socket self-heal: if our socket file was deleted (e.g., by pruneStaleRegistry
 				// timeout), the net.Server is orphaned — listening on an inode with no filesystem
 				// entry. Re-bind the server and ping worker on the same endpoint path.
-				if (process.platform !== "win32" && !fs.existsSync(identity.endpoint)) {
+				if (!shuttingDown && process.platform !== "win32" && !fs.existsSync(identity.endpoint)) {
 					try {
 						pi.appendEntry("coms-log", { event: "self_heal_socket", session_id: identity.session_id, reason: "socket file missing" });
 						// Close old server
@@ -966,9 +967,14 @@ export default function (pi: ExtensionAPI) {
 						}
 						// Re-bind new server on same endpoint
 						server = await bindEndpoint(identity.endpoint, connHandler);
-						// Restart ping worker
+						// Restart ping worker — terminate old one and remove its
+						// event handlers to prevent late exit/error from clobbering
+						// the new worker's state.
 						if (pingWorker) {
-							try { pingWorker.postMessage({ type: "shutdown" }); } catch {}
+							const oldWorker = pingWorker;
+							oldWorker.removeAllListeners();
+							try { oldWorker.postMessage({ type: "shutdown" }); } catch {}
+							try { oldWorker.terminate(); } catch {}
 							pingWorker = null;
 							pingWorkerReady = false;
 						}
