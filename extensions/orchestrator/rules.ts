@@ -74,6 +74,7 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
+  let taskFocusJustFired = false;
 
 
   // Run full rebuild on session start (once per session, not every turn)
@@ -280,27 +281,19 @@ export function registerRules(
     // Task-focus enforcement: if this turn had no tool calls but tasks are active,
     // the LLM likely answered a side question and forgot to resume work.
     // Inject a follow-up to force it back on track.
-    // Don't re-fire if the triggering message was the reminder itself — only
-    // re-fire after a real interaction (user input, async result, coms inbound).
+    // After firing, suppress until the LLM actually does work (has tool calls),
+    // preventing infinite reminder loops when the LLM responds without acting.
     try {
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
-      // Check if this turn was triggered by our own reminder — if so, skip.
-      // Walk the session branch backwards to find the most recent custom entry.
-      let triggeredByReminder = false;
-      try {
-        const branch = ctx.sessionManager.getBranch();
-        for (let i = branch.length - 1; i >= 0; i--) {
-          const entry = branch[i];
-          if (entry.type === "custom" && (entry as any).customType === "task-focus-enforcement") {
-            triggeredByReminder = true;
-            break;
-          }
-          // Stop scanning at the first user or assistant message (only check recent custom entries)
-          if (entry.type === "message") break;
+      if (taskFocusJustFired) {
+        // Reminder was fired last turn — check if LLM acted on it
+        if (hadToolCalls) {
+          // LLM did work — reset, allow future reminders
+          taskFocusJustFired = false;
         }
-      } catch { /* best-effort */ }
-      if (!hadToolCalls && !triggeredByReminder) {
+        // Either way, don't fire again this turn
+      } else if (!hadToolCalls) {
         // Check for active tasks — session-scoped task file only
         const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
         const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -323,6 +316,7 @@ export function registerRules(
                 content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
                 display: true,
               }, { triggerTurn: true, deliverAs: "followUp" });
+              taskFocusJustFired = true;
               break;
             }
           } catch { continue; }

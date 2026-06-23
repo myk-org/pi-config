@@ -1338,12 +1338,13 @@ function staleScanTick(): void {
 	// Detect time jump (suspend/resume): if elapsed >> expected interval,
 	// skip this tick to let agents heartbeat back in.
 	if (elapsed > Math.max(STALE_SCAN_INTERVAL_MS * 3, 30_000)) {
+		const ts = nowIso();
 		for (const [, p] of state.projects) {
 			for (const [, entry] of p.agents) {
-				entry.last_seen_at = nowIso();
-				if (entry.status === "stale") {
-					entry.status = "online";
-				}
+				entry.last_seen_at = ts;
+				// Don't change status here — let the next heartbeat trigger the
+				// stale→online transition, which handleHeartbeat() will broadcast
+				// to SSE consumers.
 			}
 		}
 		logLine("⏸", C_YELLOW, "time-jump", `detected ${Math.round(elapsed / 1000)}s gap — resetting agent timestamps`);
