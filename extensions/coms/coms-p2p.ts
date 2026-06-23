@@ -945,7 +945,8 @@ export default function (pi: ExtensionAPI) {
 			// hasUI may be false in some contexts — non-fatal.
 		}
 
-		// 7. Start ping + keepalive cycles.
+		// 7. Start ping + keepalive cycles (skip in one-shot modes).
+		if (ctx.mode !== "print" && ctx.mode !== "json") {
 		pingTimer = setInterval(() => { refreshPool().catch(() => {}); }, PING_INTERVAL_MS);
 		try { (pingTimer as any).unref?.(); } catch { /* ignore */ }
 		// Update ping worker card periodically
@@ -1035,6 +1036,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Kick one ping cycle immediately so the widget populates fast.
 		refreshPool().catch(() => {});
+		} // end mode guard for timers
 	});
 
 	// ━━ Helpers used by tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1081,7 +1083,7 @@ export default function (pi: ExtensionAPI) {
 		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
+			if (identity && sid === identity.session_id) continue;
 			seenSessions.add(sid);
 			rows.push({
 				name: card.name,
@@ -1095,31 +1097,10 @@ export default function (pi: ExtensionAPI) {
 			});
 		}
 
-		// Dedup by name — after reload, a peer may have two entries (old stale + new alive)
-		// Keep the alive entry over the stale one
-		const nameMap = new Map<string, number>();
-		for (let i = 0; i < rows.length; i++) {
-			const existing = nameMap.get(rows[i].name);
-			if (existing !== undefined) {
-				// Prefer non-stale, then non-pending, then higher pct
-				const prev = rows[existing];
-				const curr = rows[i];
-				const prevScore = (prev.stale ? 0 : 2) + (prev.pending ? 0 : 1);
-				const currScore = (curr.stale ? 0 : 2) + (curr.pending ? 0 : 1);
-				if (currScore > prevScore || (currScore === prevScore && (curr.pct ?? 0) > (prev.pct ?? 0))) {
-					rows[existing] = curr; // replace with better entry
-				}
-				rows.splice(i, 1);
-				i--; // adjust index after splice
-			} else {
-				nameMap.set(rows[i].name, i);
-			}
-		}
-
 		// Registry-only entries that aren't yet in peerCards → pending
 		const seenNames = new Set(rows.map((r) => r.name));
 		for (const entry of registryEntries) {
-			if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
+			if (identity && entry.session_id === identity.session_id) continue;
 			if (!includeExplicit && entry.explicit) continue;
 			if (seenSessions.has(entry.session_id)) continue;
 			if (seenNames.has(entry.name)) continue;
@@ -1239,7 +1220,7 @@ export default function (pi: ExtensionAPI) {
 			: await pruneDeadEntries(projectFilter);
 
 		const peers = live.filter((e) =>
-			e.session_id !== identity!.session_id && e.name !== identity!.name && (includeExplicit || !e.explicit),
+			e.session_id !== identity!.session_id && (includeExplicit || !e.explicit),
 		);
 
 		const results = await Promise.allSettled(peers.map(async (peer) => {
@@ -1279,32 +1260,13 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && (sid === identity.session_id || card.name === identity.name)) continue;
+			if (identity && sid === identity.session_id) continue;
 			if (!seenSessions.has(sid)) {
 				card.staleCount = (card.staleCount ?? 0) + 1;
 				if (card.staleCount > 6) {
 					peerCards.delete(sid);
 				}
 				changed = true;
-			}
-		}
-
-		// Dedup peerCards by name — keep the freshest entry (staleCount 0) over stale ones
-		const nameToSid = new Map<string, string>();
-		for (const [sid, card] of peerCards.entries()) {
-			const existing = nameToSid.get(card.name);
-			if (existing) {
-				const prevCard = peerCards.get(existing)!;
-				// Keep the one with lower staleCount (more alive)
-				if (card.staleCount < prevCard.staleCount) {
-					peerCards.delete(existing);
-					nameToSid.set(card.name, sid);
-				} else {
-					peerCards.delete(sid);
-				}
-				changed = true;
-			} else {
-				nameToSid.set(card.name, sid);
 			}
 		}
 
@@ -1392,7 +1354,7 @@ export default function (pi: ExtensionAPI) {
 			for (const proj of projects) {
 				for (const entry of await pruneDeadEntries(proj)) {
 					if (entry.explicit && !includeExp) continue;
-					if (identity && (entry.session_id === identity.session_id || entry.name === identity.name)) continue;
+					if (identity && entry.session_id === identity.session_id) continue;
 					collected.push({ entry, project: proj });
 				}
 			}

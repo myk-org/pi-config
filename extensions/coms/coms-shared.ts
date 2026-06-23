@@ -269,13 +269,15 @@ export function pruneStaleRegistry(): void {
                                             // Clean up stale .ping socket
                                             try { fs.unlinkSync(pingEndpoint); } catch {}
                                         });
-                                        fallback.on("error", () => {
+                                        fallback.on("error", (fallbackErr: any) => {
                                             fallback.destroy();
-                                            // Both dead — prune everything
-                                            try { fs.unlinkSync(fp); } catch {}
-                                            if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
-                                                try { fs.unlinkSync(endpoint); } catch {}
-                                                try { fs.unlinkSync(pingEndpoint); } catch {}
+                                            // Only prune on definitive dead signals
+                                            if (fallbackErr?.code === "ECONNREFUSED" || fallbackErr?.code === "ENOENT") {
+                                                try { fs.unlinkSync(fp); } catch {}
+                                                if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
+                                                    try { fs.unlinkSync(endpoint); } catch {}
+                                                    try { fs.unlinkSync(pingEndpoint); } catch {}
+                                                }
                                             }
                                         });
                                         fallback.on("timeout", () => {
