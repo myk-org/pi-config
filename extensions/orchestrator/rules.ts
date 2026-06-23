@@ -74,7 +74,7 @@ export function registerRules(
 ): void {
   const isSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let rebuildDone = false;
-  let taskFocusJustFired = false;
+
 
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
@@ -280,12 +280,27 @@ export function registerRules(
     // Task-focus enforcement: if this turn had no tool calls but tasks are active,
     // the LLM likely answered a side question and forgot to resume work.
     // Inject a follow-up to force it back on track.
+    // Don't re-fire if the triggering message was the reminder itself — only
+    // re-fire after a real interaction (user input, async result, coms inbound).
     try {
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
-      if (taskFocusJustFired) {
-        taskFocusJustFired = false;
-      } else if (!hadToolCalls) {
+      // Check if this turn was triggered by our own reminder — if so, skip.
+      // Walk the session branch backwards to find the most recent custom entry.
+      let triggeredByReminder = false;
+      try {
+        const branch = ctx.sessionManager.getBranch();
+        for (let i = branch.length - 1; i >= 0; i--) {
+          const entry = branch[i];
+          if (entry.type === "custom" && (entry as any).customType === "task-focus-enforcement") {
+            triggeredByReminder = true;
+            break;
+          }
+          // Stop scanning at the first user or assistant message (only check recent custom entries)
+          if (entry.type === "message") break;
+        }
+      } catch { /* best-effort */ }
+      if (!hadToolCalls && !triggeredByReminder) {
         // Check for active tasks — session-scoped task file only
         const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
         const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -308,7 +323,6 @@ export function registerRules(
                 content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
                 display: true,
               }, { triggerTurn: true, deliverAs: "followUp" });
-              taskFocusJustFired = true;
               break;
             }
           } catch { continue; }
