@@ -869,14 +869,34 @@ export default function (pi: ExtensionAPI) {
 			if (existing.name === name && existing.session_id !== session_id) {
 				// Verify the existing peer is actually alive via .ping endpoint.
 				if (typeof existing.endpoint === "string" && existing.endpoint) {
+					let alive = false;
 					const pingEp = `${existing.endpoint}.ping`;
-					if ((process.platform === "win32" || fs.existsSync(pingEp)) &&
-						(await probeStaleSocket(pingEp)) === "in_use") {
+					const hasPing = process.platform === "win32" || fs.existsSync(pingEp);
+					const hasMain = process.platform === "win32" || fs.existsSync(existing.endpoint);
+
+					if (hasPing) {
+						alive = (await probeStaleSocket(pingEp)) === "in_use";
+					}
+					// Fall back to main endpoint if .ping missing or probe failed
+					if (!alive && hasMain) {
+						alive = (await probeStaleSocket(existing.endpoint)) === "in_use";
+					}
+
+					if (alive) {
 						throw new Error(`name "${name}" is already taken by a live peer. Use --cname to pick a different name.`);
 					}
+
+					if (!hasPing && !hasMain) {
+						// No socket files at all — definitely dead
+						removeRegistryEntry(project, existing.session_id);
+					} else {
+						// Probe(s) returned stale — remove registry, peer is dead
+						removeRegistryEntry(project, existing.session_id);
+					}
+				} else {
+					// No valid endpoint — remove stale entry
+					removeRegistryEntry(project, existing.session_id);
 				}
-				// Both probes failed or no endpoint — existing entry is dead, clean up
-				removeRegistryEntry(project, existing.session_id);
 			}
 		}
 
