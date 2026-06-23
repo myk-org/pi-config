@@ -409,6 +409,34 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 	});
 }
 
+/**
+ * Strict liveness probe — only returns "alive" on actual successful TCP connect.
+ * Unlike probeStaleSocket which treats transient errors as "in_use" (safe for
+ * pruning decisions), this function treats ANY error as "dead" (safe for
+ * duplicate-name rejection where false positives block startup).
+ */
+function probeAlive(endpoint: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const sock = net.createConnection({ path: endpoint });
+		let settled = false;
+		const finish = (alive: boolean) => {
+			if (settled) return;
+			settled = true;
+			try { sock.destroy(); } catch { /* ignore */ }
+			resolve(alive);
+		};
+		const timer = setTimeout(() => finish(false), 500);
+		sock.once("connect", () => {
+			clearTimeout(timer);
+			finish(true);
+		});
+		sock.once("error", () => {
+			clearTimeout(timer);
+			finish(false);
+		});
+	});
+}
+
 async function bindEndpoint(
 	endpoint: string,
 	connHandler: (socket: net.Socket) => void,
@@ -823,6 +851,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 		currentCtx = ctx;
+		shuttingDown = false;
+		peerCards.clear();
 
 		// 1. Resolve identity from CLI flags > frontmatter > defaults.
 		const flags = readCliFlags(pi);
@@ -859,6 +889,47 @@ export default function (pi: ExtensionAPI) {
 		} catch (err) {
 			ctx.ui?.notify?.(`📡 coms: failed to create dirs — ${err instanceof Error ? err.message : String(err)}`, "error");
 			return;
+		}
+
+		// 2b. Reject duplicate names — each peer must have a unique name in the project.
+		const existingEntries = readAllRegistryEntries(project);
+		for (const existing of existingEntries) {
+			if (existing.name === name && existing.session_id !== session_id) {
+				// Verify the existing peer is actually alive via .ping endpoint.
+				if (typeof existing.endpoint === "string" && existing.endpoint) {
+					const pingEp = `${existing.endpoint}.ping`;
+					const hasPing = process.platform === "win32" || fs.existsSync(pingEp);
+					const hasMain = process.platform === "win32" || fs.existsSync(existing.endpoint);
+
+					// Use strict probe — only "alive" on actual TCP connect.
+					// Transient errors (EMFILE, EACCES) resolve to false, not blocking startup.
+					let alive = false;
+					if (hasPing) {
+						alive = await probeAlive(pingEp);
+					}
+					if (!alive && hasMain) {
+						alive = await probeAlive(existing.endpoint);
+					}
+
+					if (alive) {
+						throw new Error(
+							`name "${name}" is already taken by a live peer. ` +
+							`Use --cname to pick a different name, or stop the other peer first.`
+						);
+					}
+
+					if (!hasPing && !hasMain) {
+						// No socket files at all — definitely dead
+						removeRegistryEntry(project, existing.session_id);
+					} else {
+						// Probe(s) returned stale — remove registry, peer is dead
+						removeRegistryEntry(project, existing.session_id);
+					}
+				} else {
+					// No valid endpoint — remove stale entry
+					removeRegistryEntry(project, existing.session_id);
+				}
+			}
 		}
 
 		// 3. Bind the endpoint.
@@ -943,15 +1014,59 @@ export default function (pi: ExtensionAPI) {
 			// hasUI may be false in some contexts — non-fatal.
 		}
 
-		// 7. Start ping + keepalive cycles.
+		// 7. Start ping + keepalive cycles (skip in one-shot modes).
+		if (ctx.mode !== "print" && ctx.mode !== "json") {
 		pingTimer = setInterval(() => { refreshPool().catch(() => {}); }, PING_INTERVAL_MS);
 		try { (pingTimer as any).unref?.(); } catch { /* ignore */ }
 		// Update ping worker card periodically
 		cardUpdateTimer = setInterval(updatePingWorkerCard, 5000);
 		try { (cardUpdateTimer as any).unref?.(); } catch { /* ignore */ }
-		keepaliveTimer = setInterval(() => {
+		keepaliveTimer = setInterval(async () => {
 			if (!identity) return;
+			if (shuttingDown) return;
 			try {
+				// Socket self-heal: if our socket file was deleted (e.g., by pruneStaleRegistry
+				// timeout), the net.Server is orphaned — listening on an inode with no filesystem
+				// entry. Re-bind the server and ping worker on the same endpoint path.
+				if (!shuttingDown && process.platform !== "win32" && !fs.existsSync(identity.endpoint)) {
+					try {
+						pi.appendEntry("coms-log", { event: "self_heal_socket", session_id: identity.session_id, reason: "socket file missing" });
+						// Close old server
+						if (server) {
+							try { server.close(); } catch { /* ignore */ }
+							server = null;
+						}
+						// Re-bind new server on same endpoint
+						server = await bindEndpoint(identity.endpoint, connHandler);
+						// Restart ping worker — terminate old one and remove its
+						// event handlers to prevent late exit/error from clobbering
+						// the new worker's state.
+						if (pingWorker) {
+							const oldWorker = pingWorker;
+							oldWorker.removeAllListeners();
+							try { oldWorker.postMessage({ type: "shutdown" }); } catch {}
+							try { oldWorker.terminate(); } catch {}
+							pingWorker = null;
+							pingWorkerReady = false;
+						}
+						const pingEndpoint = `${identity.endpoint}.ping`;
+						try {
+							pingWorker = createPingWorker(pingEndpoint);
+							pingWorker.on("message", (msg: any) => {
+								if (msg.type === "ready") {
+									pingWorkerReady = true;
+									updatePingWorkerCard();
+								}
+								if (msg.type === "error") console.debug("[coms] ping worker error:", msg.message);
+							});
+							pingWorker.on("error", () => { pingWorkerReady = false; });
+							pingWorker.on("exit", () => { pingWorkerReady = false; pingWorker = null; });
+						} catch { /* best-effort */ }
+					} catch (err) {
+						pi.appendEntry("coms-log", { event: "self_heal_socket_failed", session_id: identity.session_id, reason: err instanceof Error ? err.message : String(err) });
+					}
+				}
+
 				const ctx = currentCtx;
 				// Detect missing-registry BEFORE writing so the self_heal audit only
 				// fires when something actually went wrong (file unlinked under us).
@@ -990,6 +1105,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Kick one ping cycle immediately so the widget populates fast.
 		refreshPool().catch(() => {});
+		} // end mode guard for timers
 	});
 
 	// ━━ Helpers used by tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1220,6 +1336,31 @@ export default function (pi: ExtensionAPI) {
 					peerCards.delete(sid);
 				}
 				changed = true;
+			}
+		}
+
+		// Dedup peerCards by name — when a peer reloads, it gets a new session_id.
+		// Both old (stale) and new (alive) entries exist briefly. Keep the one with
+		// lower staleCount (fresher). This prevents brief duplicate display in the widget.
+		const nameToSid = new Map<string, string>();
+		for (const [sid, card] of peerCards.entries()) {
+			const existing = nameToSid.get(card.name);
+			if (existing) {
+				const prevCard = peerCards.get(existing)!;
+				// Only dedup when one is clearly stale (reload artifact).
+				// If both are alive (staleCount 0), keep both — they're distinct peers.
+				if (card.staleCount === 0 && prevCard.staleCount === 0) {
+					// Both alive — keep both, skip dedup
+				} else if (card.staleCount < prevCard.staleCount) {
+					peerCards.delete(existing);
+					nameToSid.set(card.name, sid);
+					changed = true;
+				} else {
+					peerCards.delete(sid);
+					changed = true;
+				}
+			} else {
+				nameToSid.set(card.name, sid);
 			}
 		}
 

@@ -564,6 +564,56 @@ def run(json_path: str) -> None:
         )
         sys.exit(1)
 
+    # Enforce: Qodo sticky findings MUST have status "addressed" (code was changed).
+    # "skipped", "not_addressed", or any other status is rejected.
+    # This is enforced in code because LLMs find ways to bypass prompt rules.
+    _QODO_STICKY_TYPES = {
+        "qodo_bug",
+        "qodo_rule_violation",
+        "qodo_requirement_gap",
+        "qodo_finding",
+        "qodo_ux_issue",
+        "qodo_cross_repo",
+    }
+    sticky_errors: list[str] = []
+    for cat in categories:
+        for comment in data.get(cat, []):
+            comment_type = comment.get("type", "")
+            if comment_type not in _QODO_STICKY_TYPES:
+                continue
+            status = comment.get("status", "pending")
+            if status == "pending":
+                continue  # Not processed yet — OK
+            if comment.get("is_auto_skipped"):
+                continue  # Auto-skipped from previous cycle — OK
+            if status != "addressed":
+                path = comment.get("path", "unknown")
+                line = comment.get("line", "")
+                location = f"{path}:{line}" if line else path
+                sticky_errors.append(
+                    f"{location}: Qodo sticky ({comment_type}) has status '{status}' — "
+                    f"MUST be 'addressed'. Qodo sticky findings require a code fix. "
+                    f"Fix the code, commit, then set status to 'addressed'."
+                )
+    if sticky_errors:
+        eprint(f"\n{'=' * 70}")
+        eprint(f"BLOCKED: {len(sticky_errors)} Qodo sticky finding(s) not addressed.")
+        eprint(f"{'=' * 70}\n")
+        for err in sticky_errors:
+            eprint(f"  ✗ {err}")
+        eprint(
+            "\n"
+            "Qodo sticky findings MUST be fixed with code changes.\n"
+            "  - 'skipped' is NOT allowed — fix the code\n"
+            "  - 'not_addressed' is NOT allowed — fix the code\n"
+            "  - 'by design' is NOT a valid reason — fix the code or update the issue spec\n"
+            "  - If the issue spec needs updating, do it AND fix the code, then set 'addressed'\n"
+            "\n"
+            "NEVER set a Qodo sticky finding to anything other than 'addressed'.\n"
+            "This is enforced in code and cannot be bypassed."
+        )
+        sys.exit(1)
+
     # Counters for summary
     addressed_count = 0
     skipped_count = 0
