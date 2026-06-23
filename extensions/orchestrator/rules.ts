@@ -292,10 +292,13 @@ export function registerRules(
         const branch = ctx.sessionManager.getBranch();
         for (let i = branch.length - 1; i >= 0; i--) {
           const entry = branch[i];
+          // Skip non-message entries (tool results, custom entries, memory injections)
+          if (entry.type !== "message") continue;
+          const role = (entry as any).message?.role;
           // Skip assistant messages (current turn's response)
-          if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
-          // Found the triggering entry
-          if (entry.type === "message" && (entry as any).message?.role === "user") {
+          if (role === "assistant") continue;
+          // Found a non-assistant message — check if it's from the user
+          if (role === "user") {
             userTriggered = true;
           }
           break;
