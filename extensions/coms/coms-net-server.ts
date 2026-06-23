@@ -1328,9 +1328,27 @@ let staleScanTimer: ReturnType<typeof setInterval> | null = null;
 let ttlScanTimer: ReturnType<typeof setInterval> | null = null;
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
+let lastStaleScanAt = Date.now();
 
 function staleScanTick(): void {
 	const now = Date.now();
+	const elapsed = now - lastStaleScanAt;
+	lastStaleScanAt = now;
+
+	// Detect time jump (suspend/resume): if elapsed >> expected interval,
+	// skip this tick to let agents heartbeat back in.
+	if (elapsed > Math.max(STALE_SCAN_INTERVAL_MS * 3, 30_000)) {
+		for (const [, p] of state.projects) {
+			for (const [, entry] of p.agents) {
+				entry.last_seen_at = nowIso();
+				if (entry.status === "stale") {
+					entry.status = "online";
+				}
+			}
+		}
+		logLine("⏸", C_YELLOW, "time-jump", `detected ${Math.round(elapsed / 1000)}s gap — resetting agent timestamps`);
+		return;
+	}
 	for (const [projectName, p] of state.projects) {
 		for (const [sid, entry] of p.agents) {
 			const last = Date.parse(entry.last_seen_at);
@@ -1429,6 +1447,7 @@ function keepaliveTick(): void {
 }
 
 function startLoops(): void {
+	lastStaleScanAt = Date.now();
 	staleScanTimer = setInterval(staleScanTick, STALE_SCAN_INTERVAL_MS);
 	ttlScanTimer = setInterval(ttlScanTick, TTL_SCAN_INTERVAL_MS);
 	keepaliveTimer = setInterval(keepaliveTick, SSE_KEEPALIVE_MS);
