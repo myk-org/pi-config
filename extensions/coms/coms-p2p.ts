@@ -303,8 +303,6 @@ function removeRegistryEntry(project: string, sessionId: string): void {
 
 async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	const entries = readAllRegistryEntries(project);
-	const now = Date.now();
-	const staleThresholdMs = KEEPALIVE_INTERVAL_MS * 2;
 	const socketsDir = path.join(COMS_DIR, "sockets");
 
 	// Phase 1: Sync pre-filter (fast — no I/O)
@@ -319,21 +317,15 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 			removeRegistryEntry(project, entry.session_id);
 			continue;
 		}
-		// Check heartbeat/started_at freshness
+		// Check heartbeat/started_at structural validity (malformed = remove, missing = remove)
+		// Timestamp staleness is NOT checked here — stale entries go to Phase 2 for socket probing.
+		// This prevents false pruning after laptop suspend/resume when all timestamps are stale
+		// but peers are still alive.
 		const lastSeen = entry.heartbeat_at ?? entry.started_at;
 		if (lastSeen) {
 			const lastSeenMs = new Date(lastSeen).getTime();
 			if (isNaN(lastSeenMs)) {
 				removeRegistryEntry(project, entry.session_id);
-				continue;
-			}
-			const age = now - lastSeenMs;
-			if (age > staleThresholdMs) {
-				removeRegistryEntry(project, entry.session_id);
-				if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
-					try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
-					try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
-				}
 				continue;
 			}
 		} else {
