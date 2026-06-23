@@ -80,6 +80,7 @@ export function registerRules(
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
     rebuildDone = false;
+    lastTaskFocusReminderAt = 0;
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
