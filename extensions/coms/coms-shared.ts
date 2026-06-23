@@ -254,13 +254,12 @@ export function pruneStaleRegistry(): void {
                             sock.on("connect", () => sock.destroy()); // alive
                             sock.on("error", (err: any) => {
                                 sock.destroy();
-                                // Only prune on definitive dead signals
+                                // Only prune registry on definitive dead signals.
+                                // Never delete socket files — that's destructive and
+                                // irreversible, killing live peers whose ping worker
+                                // may have crashed while the main server is still alive.
                                 if (err?.code === "ECONNREFUSED" || err?.code === "ENOENT") {
                                     try { fs.unlinkSync(fp); } catch {}
-                                    if (endpoint.includes(path.join(".pi", "coms", "sockets"))) {
-                                        try { fs.unlinkSync(endpoint); } catch {}
-                                        try { fs.unlinkSync(`${endpoint}.ping`); } catch {}
-                                    }
                                 }
                             });
                             sock.on("timeout", () => {
