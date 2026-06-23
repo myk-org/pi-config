@@ -883,8 +883,8 @@ export default function (pi: ExtensionAPI) {
 						mainResult = await probeStaleSocket(existing.endpoint);
 					}
 
-					// "stale" means ECONNREFUSED/ENOENT — definitively dead.
-					// "in_use" means connected OR transient error — not confirmed dead.
+					// "stale" = ECONNREFUSED, ENOENT, or 250ms timeout — peer unresponsive.
+					// "in_use" = connected OR transient error (EMFILE, etc.) — not confirmed dead.
 					if (pingResult === "in_use" || mainResult === "in_use") {
 						// At least one probe couldn't confirm the peer is dead.
 						// If either actually connected (not just error), it's definitely alive.
