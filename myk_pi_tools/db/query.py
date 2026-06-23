@@ -229,7 +229,7 @@ class ReviewDB:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def get_dismissed_comments(self, owner: str, repo: str) -> list[dict[str, Any]]:
+    def get_dismissed_comments(self, owner: str, repo: str, platform: str = "github") -> list[dict[str, Any]]:
         """Get dismissed comments for a repository, constrained by type for safety.
 
         Retrieves comments that were dismissed during review processing:
@@ -274,6 +274,7 @@ class ReviewDB:
                 FROM comments c
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ?
+                  AND r.platform = ?
                   AND (
                       c.status IN ('not_addressed', 'skipped')
                       OR (c.status = 'addressed'
@@ -287,7 +288,7 @@ class ReviewDB:
                   )
                 ORDER BY c.path, c.line
                 """,
-                (owner, repo),
+                (owner, repo, platform),
             )
             results = []
             for row in cursor.fetchall():
@@ -309,7 +310,9 @@ class ReviewDB:
         finally:
             conn.close()
 
-    def get_replied_sticky_findings(self, owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
+    def get_replied_sticky_findings(
+        self, owner: str, repo: str, pr_number: int, platform: str = "github"
+    ) -> list[dict[str, Any]]:
         """Get Qodo sticky findings that were already replied to for a specific PR.
 
         Returns comments from the DB where:
@@ -345,13 +348,14 @@ class ReviewDB:
                 FROM comments c
                 JOIN reviews r ON c.review_id = r.id
                 WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+                  AND r.platform = ?
                   AND c.source = 'qodo'
                   AND (c.status IN ('addressed', 'not_addressed', 'skipped')
                        OR (c.status = 'failed' AND c.posted_at IS NOT NULL AND c.posted_at != ''))
                   AND c.comment_id IS NOT NULL
                 ORDER BY c.posted_at DESC
                 """,
-                (owner, repo, pr_number),
+                (owner, repo, pr_number, platform),
             )
             results = []
             for row in cursor.fetchall():
