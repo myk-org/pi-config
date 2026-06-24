@@ -55,11 +55,11 @@ Single extension that provides:
 | `/implement <task>` | scout → planner → worker |
 | `/scout-and-plan <task>` | scout → planner |
 | `/implement-and-review <task>` | worker → 3 reviewers → worker |
-| `/pr-review [number\|url]` | Fetch PR diff, check past review comments, review with guidelines, post and track comments |
+| `/pr-review [number\|url]` | Fetch PR/MR diff, check past review comments, review with guidelines, post and track comments. Supports GitHub PR and GitLab MR URLs (platform auto-detected from URL) |
 | `/release [flags]` | Create GitHub release with changelog and version bumping |
 | `/review-local [branch]` | Review local uncommitted or branch changes |
-| `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
-| `/refine-review <url>` | Refine and improve existing PR review comments |
+| `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR/MR review comments, fix approved items |
+| `/refine-review <url>` | Refine and improve existing PR/MR review comments |
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/create-coms-feature-manager` | Generate a coms feature-manager prompt customized for the current project (source template: `templates/coms-feature-manager-prompt.md`) |
 | `/query-db <command>` | Query the review comments database |
@@ -191,6 +191,8 @@ Add retry logic to the HTTP client in src/api.py
 
 ```text
 /pr-review 42
+/pr-review https://github.com/org/repo/pull/42
+/pr-review https://gitlab.com/group/project/-/merge_requests/42
 /release --dry-run
 /review-local main
 /query-db stats
@@ -663,6 +665,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 - [pi](https://github.com/badlogic/pi-mono)
 - `gh` CLI (for GitHub operations)
+- `glab` CLI (for GitLab operations — MR reviews, pipelines)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)
 

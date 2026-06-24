@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     pr_number INTEGER NOT NULL,
     owner TEXT NOT NULL,
     repo TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'github',
     commit_sha TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -50,7 +51,7 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE INDEX IF NOT EXISTS idx_comments_review_id ON comments(review_id);
 CREATE INDEX IF NOT EXISTS idx_comments_source ON comments(source);
 CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
-CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(owner, repo, pr_number);
+CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(owner, repo, pr_number, platform);
 CREATE INDEX IF NOT EXISTS idx_reviews_commit ON reviews(commit_sha);
 """
 
@@ -143,14 +144,16 @@ def get_current_commit_sha(cwd: Path | None = None) -> str:
         return "unknown"
 
 
-def insert_review(conn: sqlite3.Connection, owner: str, repo: str, pr_number: int, commit_sha: str) -> int:
+def insert_review(
+    conn: sqlite3.Connection, owner: str, repo: str, pr_number: int, commit_sha: str, platform: str = "github"
+) -> int:
     """Insert a new review record. Always appends, never updates."""
     cursor = conn.cursor()
     created_at = datetime.now(UTC).isoformat()
 
     cursor.execute(
-        "INSERT INTO reviews (owner, repo, pr_number, commit_sha, created_at) VALUES (?, ?, ?, ?, ?)",
-        (owner, repo, pr_number, commit_sha, created_at),
+        "INSERT INTO reviews (owner, repo, pr_number, platform, commit_sha, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (owner, repo, pr_number, platform, commit_sha, created_at),
     )
     review_id = cursor.lastrowid
     if not review_id:
@@ -241,7 +244,9 @@ def store_reviews(json_path: Path) -> None:
 
         # Insert new review record (append-only, never update)
         # RuntimeError in insert_review handles invalid lastrowid
-        review_id = insert_review(conn, owner, repo, pr_number, commit_sha)
+        platform = metadata.get("platform", "github")
+
+        review_id = insert_review(conn, owner, repo, pr_number, commit_sha, platform=platform)
 
         # Count comments by source
         counts: dict[str, int] = {"human": 0, "qodo": 0, "coderabbit": 0}

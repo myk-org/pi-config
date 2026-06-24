@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [{ name = "myk-org" }]
-keywords = ["pi", "cli", "github", "code-review"]
+keywords = ["pi", "cli", "github", "gitlab", "code-review"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",

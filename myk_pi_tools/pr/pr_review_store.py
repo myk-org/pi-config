@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     owner TEXT NOT NULL,
     repo TEXT NOT NULL,
     pr_number INTEGER NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'github',
     head_sha TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -40,7 +41,7 @@ CREATE TABLE IF NOT EXISTS pr_comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_pr_comments_review_id ON pr_comments(review_id);
-CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(owner, repo, pr_number);
+CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(owner, repo, pr_number, platform);
 CREATE INDEX IF NOT EXISTS idx_pr_comments_posted_at ON pr_comments(posted_at);
 """
 
@@ -90,6 +91,7 @@ def store_pr_review(
     pr_number: int,
     comments: list[dict[str, Any]],
     head_sha: str | None = None,
+    platform: str = "github",
 ) -> None:
     """Store posted PR review comments to the database.
 
@@ -101,6 +103,7 @@ def store_pr_review(
                   path, line, body, severity, posted_at.
         head_sha: Git commit SHA for the reviewed code. Auto-detected
                   from local git HEAD if not provided.
+        platform: Code hosting platform (e.g. 'github', 'gitlab').
     """
     db_path = _get_db_path()
     # Ensure directory exists
@@ -128,8 +131,8 @@ def store_pr_review(
 
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO pr_reviews (owner, repo, pr_number, head_sha, created_at) VALUES (?, ?, ?, ?, ?)",
-            (owner, repo, pr_number, head_sha, created_at),
+            "INSERT INTO pr_reviews (owner, repo, pr_number, platform, head_sha, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (owner, repo, pr_number, platform, head_sha, created_at),
         )
         review_id = cursor.lastrowid
         if not review_id:
@@ -223,9 +226,10 @@ def run_store(json_path: str) -> int:
             return 1
 
     head_sha = metadata.get("head_sha") or metadata.get("commit_sha")
+    platform = metadata.get("platform", "github")
 
     try:
-        store_pr_review(owner, repo, pr_number, comments, head_sha=head_sha)
+        store_pr_review(owner, repo, pr_number, comments, head_sha=head_sha, platform=platform)
     except RuntimeError as e:
         log(f"Error: {e}")
         return 1

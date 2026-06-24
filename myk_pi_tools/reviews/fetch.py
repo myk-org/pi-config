@@ -18,9 +18,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bs4 import BeautifulSoup
+
+if TYPE_CHECKING:
+    pass
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
@@ -102,16 +105,31 @@ def check_dependencies() -> None:
 
 
 def parse_pr_url(url: str) -> tuple[str, str, str] | None:
-    """Parse a GitHub PR URL into (owner, repo, pr_number).
+    """Parse a GitHub PR or GitLab MR URL into (owner, repo, pr_number).
 
     Supports formats:
         https://github.com/OWNER/REPO/pull/NUMBER
         https://github.com/OWNER/REPO/pull/NUMBER#pullrequestreview-XXX
         https://github.com/OWNER/REPO/pull/NUMBER#discussion_rXXX
+        https://{host}/{path}/-/merge_requests/{number}
 
     Returns:
         Tuple of (owner, repo, pr_number) or None if URL doesn't match.
     """
+    # GitLab MR URL: https://{host}/{path}/-/merge_requests/{number}
+    gitlab_match = re.match(
+        r"^(?:https?://)?[^/]+/(.+)/-/merge_requests/(\d+)(?:[/?#].*)?$",
+        url,
+    )
+    if gitlab_match:
+        project_path = gitlab_match.group(1)
+        mr_number = gitlab_match.group(2)
+        # Split project path: last segment is repo, rest is owner/namespace
+        parts = project_path.rsplit("/", 1)
+        owner = parts[0] if len(parts) > 1 else ""
+        repo = parts[-1]
+        return owner, repo, mr_number
+
     match = re.match(r"https?://github\.com/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/(\d+)", url)
     if match:
         return match.group(1), match.group(2), match.group(3)
@@ -167,7 +185,7 @@ def get_pr_info(pr_url: str = "") -> tuple[str, str, str]:
         parsed = parse_pr_url(pr_url)
         if parsed:
             return parsed
-        print_stderr(f"Warning: '{pr_url}' did not match a GitHub PR URL pattern, falling back to branch detection")
+        print_stderr(f"Warning: '{pr_url}' did not match a known PR/MR URL pattern, falling back to branch detection")
 
     # Get current branch
     try:
@@ -213,6 +231,38 @@ def get_pr_info(pr_url: str = "") -> tuple[str, str, str]:
                 break
         except subprocess.TimeoutExpired:
             continue
+
+    # Try glab if gh didn't find anything
+    if pr_number is None:
+        try:
+            result = subprocess.run(
+                ["glab", "mr", "list", "--source-branch", current_branch, "--state", "opened", "--output", "json"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json as _json
+
+                mrs = _json.loads(result.stdout)
+                if mrs and len(mrs) > 0:
+                    pr_number = str(mrs[0].get("iid", ""))
+                    # Get project path from glab
+                    repo_result = subprocess.run(
+                        ["glab", "repo", "view", "--output", "json"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if repo_result.returncode == 0 and repo_result.stdout.strip():
+                        repo_data = _json.loads(repo_result.stdout)
+                        full_path = repo_data.get("full_path") or repo_data.get("path_with_namespace", "")
+                        if full_path:
+                            parts = full_path.rsplit("/", 1)
+                            owner = parts[0] if len(parts) > 1 else ""
+                            repo = parts[-1]
+        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, ValueError):
+            pass
 
     if pr_number is None:
         tried = "origin"
@@ -1258,9 +1308,11 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
                 all_threads = merge_threads(all_threads, body_comment_threads)
 
             # Fetch issue comments once for both sticky and reply parsing
-            issue_comments = run_gh_api(
-                f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
-            )
+            from myk_pi_tools.pr.common import build_pr_info, create_platform
+
+            _pr_info = build_pr_info(owner, repo, pr_number, review_url)
+            _platform = create_platform(_pr_info)
+            issue_comments = _platform.fetch_issue_comments(int(pr_number))
 
             # Fetch Qodo sticky comment findings
             print_stderr("Fetching Qodo sticky comment findings...")

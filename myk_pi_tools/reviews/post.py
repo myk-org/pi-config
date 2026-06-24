@@ -374,8 +374,6 @@ def _chunk_sections(
 
 
 def _post_chunk(
-    owner: str,
-    repo: str,
     pr_number: str | int,
     reviewer: str,
     chunk: list[tuple[str, dict[str, Any]]],
@@ -383,12 +381,11 @@ def _post_chunk(
     chunk_idx: int,
     total_chunks: int,
     max_len: int,
+    platform: Any = None,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Post a single consolidated comment chunk to a pull request.
 
     Args:
-        owner: Repository owner.
-        repo: Repository name.
         pr_number: Pull request number.
         reviewer: Reviewer username.
         chunk: List of (section_text, entry) tuples for this chunk.
@@ -396,6 +393,7 @@ def _post_chunk(
         chunk_idx: Zero-based index of this chunk.
         total_chunks: Total number of chunks being posted.
         max_len: Maximum allowed body length.
+        platform: Platform instance for API calls.
 
     Returns:
         Tuple of (success, list of posted_at update dicts).
@@ -411,14 +409,8 @@ def _post_chunk(
 
     posted_updates: list[dict[str, Any]] = []
     try:
-        result = subprocess.run(
-            ["gh", "api", f"repos/{owner}/{repo}/issues/{pr_number}/comments", "-f", f"body={chunk_body}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode == 0:
+        comment_id = platform.post_pr_comment(int(pr_number), chunk_body) if platform else ""
+        if comment_id:
             chunk_count = len(chunk)
             eprint(f"Posted consolidated reply for {chunk_count} body comment(s) mentioning @{reviewer}")
             ts = get_utc_timestamp()
@@ -430,18 +422,17 @@ def _post_chunk(
                     "ts": ts,
                 })
             return True, posted_updates
-        eprint(f"Error posting consolidated reply for @{reviewer}: {result.stderr}")
+        eprint(f"Error posting consolidated reply for @{reviewer}")
         return False, []
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except Exception as e:
         eprint(f"Error posting consolidated reply for @{reviewer}: {e}")
         return False, []
 
 
 def post_body_comment_replies(
-    owner: str,
-    repo: str,
     pr_number: str | int,
     body_comments: dict[str, list[dict[str, Any]]],
+    platform: Any = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     """Post consolidated PR comments for body comments (outside_diff, major, minor, nitpick, duplicate, qodo sticky).
 
@@ -450,11 +441,10 @@ def post_body_comment_replies(
     Chunks into multiple comments if the combined body exceeds GitHub's size limit.
 
     Args:
-        owner: Repository owner
-        repo: Repository name
         pr_number: Pull request number
         body_comments: Dict mapping reviewer username to list of entry dicts
             Each entry has {"data": thread_data, "cat": category, "idx": index}
+        platform: Platform instance for API calls.
 
     Returns:
         Tuple of (number of chunks successfully posted, list of posted_at updates)
@@ -484,7 +474,7 @@ def post_body_comment_replies(
         # Post each chunk
         for chunk_idx, chunk in enumerate(chunks):
             success, chunk_updates = _post_chunk(
-                owner, repo, pr_number, reviewer, chunk, header, chunk_idx, len(chunks), max_len
+                pr_number, reviewer, chunk, header, chunk_idx, len(chunks), max_len, platform=platform
             )
             if success:
                 posted += 1
@@ -528,6 +518,12 @@ def run(json_path: str) -> None:
 
     eprint("Posting review comments...")
     eprint(f"Processing reviews for {owner}/{repo}#{pr_number}")
+
+    # Create platform for API calls
+    from myk_pi_tools.pr.common import build_pr_info, create_platform
+
+    _pr_info = build_pr_info(owner, repo, str(pr_number))
+    _platform = create_platform(_pr_info)
 
     # Categories to process
     categories = ["human", "qodo", "coderabbit"]
@@ -820,7 +816,7 @@ def run(json_path: str) -> None:
     if body_comments_by_reviewer:
         total_body = sum(len(c) for c in body_comments_by_reviewer.values())
         eprint(f"\nPosting consolidated replies for {total_body} body comment(s)...")
-        _, body_updates = post_body_comment_replies(owner, repo, pr_number, body_comments_by_reviewer)
+        _, body_updates = post_body_comment_replies(pr_number, body_comments_by_reviewer, platform=_platform)
         updates.extend(body_updates)
 
         # Count successfully posted body comments by type
