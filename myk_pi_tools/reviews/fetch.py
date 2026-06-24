@@ -881,6 +881,35 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
                 break
 
 
+def auto_skip_replied_findings(findings: list[dict[str, Any]]) -> int:
+    """Auto-skip already-replied Qodo sticky findings where Qodo didn't push back.
+
+    Prevents re-posting duplicate consolidated comments for findings we already
+    replied to and Qodo silently accepted (no qodo_response). Runs in all modes
+    (not just autoqodo) — already-replied findings without pushback should never
+    be re-processed regardless of invocation mode.
+
+    Findings WITH qodo_response remain actionable — Qodo pushed back and needs a re-fix.
+
+    Returns the count of findings that were auto-skipped.
+    """
+    count = 0
+    for finding in findings:
+        if (
+            finding.get("already_replied")
+            and not finding.get("qodo_response")
+            and not finding.get("is_auto_skipped")
+            and finding.get("status") == "pending"
+        ):
+            finding["is_auto_skipped"] = True
+            finding["status"] = "skipped"
+            finding["skip_reason"] = "Already replied, Qodo did not push back"
+            count += 1
+    if count:
+        print_stderr(f"Auto-skipped {count} previously replied finding(s) (Qodo silent acceptance)")
+    return count
+
+
 def process_and_categorize(
     threads: list[dict[str, Any]], owner: str, repo: str, pr_number: int | None = None
 ) -> dict[str, list[dict[str, Any]]]:
@@ -995,8 +1024,9 @@ def process_and_categorize(
             enriched["reply"] = "Qodo reply — informational context, not a finding to fix"
 
         # Check for previously dismissed similar comment (only if status is pending)
-        # Qodo sticky findings are never auto-skipped — they persist intentionally
-        # until properly resolved and must always be re-evaluated.
+        # Qodo sticky findings are not auto-skipped by the dismissed-comment check below —
+        # dedup for already-replied sticky findings is handled separately by
+        # auto_skip_replied_findings() post-enrichment.
         if (
             source != "qodo"
             and (dismissed_by_path or dismissed_by_comment_id or dismissed_by_key)
@@ -1345,6 +1375,9 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
         if qodo_replies:
             _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
+
+        # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
+        auto_skip_replied_findings(categorized.get("qodo", []))
 
         # Build final output
         final_output = {

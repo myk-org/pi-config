@@ -140,10 +140,12 @@ Returns JSON with:
 >
 > If autoqodo mode is ON:
 >
-> **Qodo sticky findings are NEVER auto-skipped.** Unlike CodeRabbit, Qodo sticky
-> findings persist intentionally until resolved. Even if a finding was previously
-> addressed or dismissed, it must be re-evaluated and fixed again. The `is_auto_skipped`
-> flag does not apply to Qodo sources.
+> **Qodo sticky findings with `is_auto_skipped=true` are auto-skipped.** When a finding
+> has `already_replied=true` and Qodo did not push back (no `qodo_response`), it is
+> auto-skipped — Qodo's silence is treated as implicit acceptance. These findings are
+> presented in the table as auto-skipped but are NOT actionable.
+> Findings where Qodo DID push back (`qodo_response` exists) remain actionable and
+> MUST be re-fixed with a different approach.
 >
 > 🚨 **MANDATORY: Read the FULL Qodo sticky JSON data before acting.**
 > Qodo sticky findings contain critical fields beyond the title:
@@ -201,15 +203,15 @@ Returns JSON with:
 >    - OR the code does not match the spec — FIX THE CODE
 >    - NEVER post the same reply again. That means you haven't actually addressed it.
 >
->    🚨 **STICKY FINDINGS ARE ALWAYS ACTIONABLE — NEVER SKIP.**
->    If a finding appears in the Qodo sticky comment, it MUST be addressed with a code fix
->    or spec update. `already_replied`, `previous_reply`, and `qodo_response` are CONTEXT
->    for making a better fix — they are NOT reasons to skip.
->    When a sticky finding has `previous_reply` + `qodo_response`, the AI MUST:
->    1. Read `previous_reply` — what we said before
->    2. Read `qodo_response` — what Qodo said back
->    3. Make a DIFFERENT fix that addresses Qodo's specific concern
+>    🚨 **STICKY FINDINGS WITH `qodo_response` ARE ALWAYS ACTIONABLE.**
+>    If a sticky finding has `qodo_response` (Qodo pushed back), it MUST be re-fixed
+>    with a different approach. `previous_reply` shows what you said before, `qodo_response`
+>    shows Qodo's pushback — use both to make a BETTER fix.
 >    Repeating the same reply or approach is a HARD VIOLATION.
+>
+>    **STICKY FINDINGS WITHOUT `qodo_response` are auto-skipped by the code.**
+>    If `already_replied=true` and no `qodo_response`, the finding is `is_auto_skipped=true`.
+>    Qodo's silence = implicit acceptance. Do NOT re-process these.
 >
 >    **Qodo reply detection (consolidated comment responses):**
 >    When we post consolidated PR comments mentioning `@qodo-code-review`, Qodo may
