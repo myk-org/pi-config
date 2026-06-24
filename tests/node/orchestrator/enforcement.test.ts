@@ -74,8 +74,8 @@ describe("isReadOnlyStatement", () => {
     assert.ok(isReadOnlyStatement("rg --type ts 'sudo' src/"));
   });
 
-  it("returns false for echo (not in read-only list — can pipe to shell)", () => {
-    assert.ok(!isReadOnlyStatement('echo "hello world"'));
+  it("returns true for echo with harmless text", () => {
+    assert.ok(isReadOnlyStatement('echo "hello world"'));
   });
 
   it("returns false for rm -rf (not read-only)", () => {
@@ -98,9 +98,9 @@ describe("isReadOnlyStatement", () => {
     assert.ok(isReadOnlyStatement("grep $(echo foo) file"));
   });
 
-  it("returns false for echo even with single-quoted content", () => {
-    // echo is not in READ_ONLY_COMMANDS — can pipe to shell interpreters
-    assert.ok(!isReadOnlyStatement("echo '$(rm -rf /)'"));
+  it("returns true for echo with single-quoted dangerous pattern", () => {
+    // Single quotes suppress expansion, so '$(rm -rf /)' is a literal string
+    assert.ok(isReadOnlyStatement("echo '$(rm -rf /)'"));
   });
 
   it("handles full path to read-only command", () => {
@@ -256,5 +256,17 @@ describe("pipe splitting integration", () => {
 
   it("echo 'safe' && git reset --hard DOES trigger", () => {
     assert.ok(wouldTriggerDangerous("echo 'safe' && git reset --hard"));
+  });
+
+  it("echo payload | bash DOES trigger (bash is dangerous)", () => {
+    assert.ok(wouldTriggerDangerous('echo "rm -rf /" | bash'));
+  });
+
+  it("echo payload | sh DOES trigger", () => {
+    assert.ok(wouldTriggerDangerous('echo "payload" | sh'));
+  });
+
+  it("cat file | zsh DOES trigger", () => {
+    assert.ok(wouldTriggerDangerous("cat file | zsh"));
   });
 });

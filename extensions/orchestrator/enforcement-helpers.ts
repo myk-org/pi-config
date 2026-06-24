@@ -15,6 +15,7 @@ import { DANGEROUS } from "./git-helpers.js";
 export const READ_ONLY_COMMANDS = new Set([
   "grep", "egrep", "fgrep", "rg", "ag", "ack",
   "cat", "head", "tail", "less", "more", "wc",
+  "echo", "printf",
 ]);
 
 /**
