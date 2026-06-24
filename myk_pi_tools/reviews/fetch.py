@@ -1287,7 +1287,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         print_stderr(f"Found {len(all_threads)} {label} thread(s)")
 
         # Skip bot comment fetching when filtering by specific user
-        qodo_replies: list[dict[str, Any]] = []
+        qodo_replies: list[dict[str, Any]] | None = None
         if not user:
             # Fetch CodeRabbit body-embedded comments from review bodies
             print_stderr("Fetching CodeRabbit body-embedded comments...")
@@ -1382,9 +1382,11 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
 
         # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
-        # Always call enrichment (even with empty replies) so _enrichment_checked is set
-        # on already_replied findings, enabling auto-skip for the "Qodo silent" case.
-        _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies or [])
+        # Only run enrichment when reply fetch was actually attempted (not user-specific mode).
+        # When qodo_replies is None (fetch skipped), enrichment doesn't run and
+        # _enrichment_checked isn't set, preventing incorrect auto-skip.
+        if qodo_replies is not None:
+            _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
 
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
         auto_skip_replied_findings(categorized.get("qodo", []))
