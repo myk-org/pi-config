@@ -838,19 +838,19 @@ def fetch_qodo_sticky_findings(
     return results
 
 
-def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: list[dict[str, Any]]) -> int:
+def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: list[dict[str, Any]]) -> None:
     """Enrich qodo findings with qodo_response from matching reply comments.
 
     Matches replies to findings using path:line from the quoted heading
     (primary) or title comparison (fallback). Modifies findings in-place.
     Marks matched replies with _matched=True.
 
-    Returns the number of unmatched replies (replies that exist but couldn't
-    be matched to any finding).
     """
     for finding in findings:
         if not finding.get("already_replied"):
             continue
+
+        finding["_enrichment_checked"] = True
 
         finding_path = finding.get("path") or ""
         finding_line = finding.get("line")
@@ -882,15 +882,12 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
 
             if matched:
                 finding["qodo_response"] = reply["qodo_response"]
-                reply["_matched"] = True
                 break
 
-    # Count unmatched replies — these indicate potential missed pushback
-    unmatched = sum(1 for r in replies if not r.get("_matched"))
-    return unmatched
+    return None
 
 
-def auto_skip_replied_findings(findings: list[dict[str, Any]], unmatched_replies: int = 0) -> int:
+def auto_skip_replied_findings(findings: list[dict[str, Any]]) -> int:
     """Auto-skip already-replied Qodo sticky findings where Qodo didn't push back.
 
     Prevents re-posting duplicate consolidated comments for findings we already
@@ -898,26 +895,17 @@ def auto_skip_replied_findings(findings: list[dict[str, Any]], unmatched_replies
     (not just autoqodo) — already-replied findings without pushback should never
     be re-processed regardless of invocation mode.
 
+    Only skips findings that passed through enrichment (_enrichment_checked=True),
+    ensuring the enrichment step had a chance to set qodo_response if a reply existed.
     Findings WITH qodo_response remain actionable — Qodo pushed back and needs a re-fix.
-
-    If unmatched_replies > 0, auto-skip is disabled because unmatched Qodo replies
-    may contain pushback that failed to match to a finding. In this case, findings
-    remain actionable to prevent silently dropping pushback.
 
     Returns the count of findings that were auto-skipped.
     """
-    # If there are unmatched Qodo replies, don't auto-skip — pushback may be missed
-    if unmatched_replies > 0:
-        print_stderr(
-            f"Warning: {unmatched_replies} Qodo reply(s) couldn't be matched to findings"
-            " — skipping auto-skip to prevent missed pushback"
-        )
-        return 0
-
     count = 0
     for finding in findings:
         if (
             finding.get("already_replied")
+            and finding.get("_enrichment_checked")
             and not finding.get("qodo_response")
             and not finding.get("is_auto_skipped")
             and finding.get("status") == "pending"
@@ -1394,12 +1382,11 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
 
         # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
-        _unmatched_replies = 0
         if qodo_replies:
-            _unmatched_replies = _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
+            _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
 
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
-        auto_skip_replied_findings(categorized.get("qodo", []), unmatched_replies=_unmatched_replies)
+        auto_skip_replied_findings(categorized.get("qodo", []))
 
         # Build final output
         final_output = {
