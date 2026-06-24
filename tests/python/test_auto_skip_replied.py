@@ -76,8 +76,8 @@ class TestAutoSkipRepliedFindings:
         count = auto_skip_replied_findings(findings)
         assert count == 0
 
-    def test_mixed_findings(self) -> None:
-        """Mix of already-replied (no response), already-replied (with response), and new."""
+    def test_mixed_silent_accept_is_skipped(self) -> None:
+        """In a mixed list, the silent-accept finding is auto-skipped."""
         findings: list[dict[str, Any]] = [
             {"already_replied": True, "status": "pending", "body": "Silent accept"},
             {"already_replied": True, "qodo_response": "Not fixed", "status": "pending", "body": "Pushback"},
@@ -87,8 +87,26 @@ class TestAutoSkipRepliedFindings:
         assert count == 1
         assert findings[0]["is_auto_skipped"] is True
         assert findings[0]["status"] == "skipped"
+
+    def test_mixed_pushback_remains_actionable(self) -> None:
+        """In a mixed list, the pushback finding stays pending."""
+        findings: list[dict[str, Any]] = [
+            {"already_replied": True, "status": "pending", "body": "Silent accept"},
+            {"already_replied": True, "qodo_response": "Not fixed", "status": "pending", "body": "Pushback"},
+            {"status": "pending", "body": "New finding"},
+        ]
+        auto_skip_replied_findings(findings)
         assert not findings[1].get("is_auto_skipped")
         assert findings[1]["status"] == "pending"
+
+    def test_mixed_new_finding_remains_actionable(self) -> None:
+        """In a mixed list, the new finding stays pending."""
+        findings: list[dict[str, Any]] = [
+            {"already_replied": True, "status": "pending", "body": "Silent accept"},
+            {"already_replied": True, "qodo_response": "Not fixed", "status": "pending", "body": "Pushback"},
+            {"status": "pending", "body": "New finding"},
+        ]
+        auto_skip_replied_findings(findings)
         assert not findings[2].get("is_auto_skipped")
         assert findings[2]["status"] == "pending"
 
@@ -139,3 +157,22 @@ class TestAutoSkipRepliedFindings:
         findings: list[dict[str, Any]] = []
         count = auto_skip_replied_findings(findings)
         assert count == 0
+
+    def test_unmatched_replies_disables_auto_skip(self) -> None:
+        """When unmatched replies exist, auto-skip is disabled to prevent missed pushback."""
+        findings: list[dict[str, Any]] = [
+            {"already_replied": True, "status": "pending", "body": "Would normally be skipped"},
+        ]
+        count = auto_skip_replied_findings(findings, unmatched_replies=1)
+        assert count == 0
+        assert not findings[0].get("is_auto_skipped")
+        assert findings[0]["status"] == "pending"
+
+    def test_zero_unmatched_replies_allows_auto_skip(self) -> None:
+        """When all replies matched (unmatched=0), auto-skip works normally."""
+        findings: list[dict[str, Any]] = [
+            {"already_replied": True, "status": "pending", "body": "Should be skipped"},
+        ]
+        count = auto_skip_replied_findings(findings, unmatched_replies=0)
+        assert count == 1
+        assert findings[0]["is_auto_skipped"] is True
