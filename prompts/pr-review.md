@@ -302,13 +302,33 @@ listing each unresolved thread with its file path, line number, author, and body
 > `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
 > `"(no line)"` when line is missing or null.
 
-Then include it in every reviewer's task prompt:
+Also build a `PR_DESCRIPTION_VERIFICATION` block to include in each reviewer's task. Use this
+exact text:
+
+> MANDATORY: Verify the PR description matches the actual diff.
+>
+> 1. Run: `gh pr view {pr_number} --repo {owner}/{repo} --json body,title --jq '{title: .title, body: .body}'`
+>    to read the PR description.
+> 2. Compare every claim in the description (files changed, classes added,
+>    methods implemented, tests written) against the actual git diff.
+>    Report [CRITICAL] for any file, class, method, or test mentioned in
+>    the description that does NOT exist in the diff.
+> 3. If the PR references an issue (Closes #N, Fixes #N), run:
+>    `gh issue view N --repo {owner}/{repo} --json body --jq .body`
+>    and verify the issue deliverables are implemented in the diff.
+>    Report [CRITICAL] for unimplemented deliverables.
+> 4. Do NOT report [CRITICAL] for vague/aspirational description text —
+>    only flag specific concrete claims (file names, class names, function
+>    names, test names, feature descriptions) that are verifiably absent
+>    from the diff.
+
+Then include both `EXISTING_COMMENTS` and `PR_DESCRIPTION_VERIFICATION` in every reviewer's task prompt:
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
 ])
 ```
 

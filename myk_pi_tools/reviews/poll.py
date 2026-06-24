@@ -133,8 +133,10 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
     return False
 
 
-# Qodo posts a transient comment while reviewing — detect by heading text (resilient to body changes)
-_QODO_REVIEWING_MARKERS = ("Looking for bugs?", "review agent")
+# Qodo posts a transient comment while reviewing — detect by heading only
+# "Looking for bugs?" is the <h3> heading in Qodo's transient comment.
+# Do NOT add broad markers — they false-positive against PR summary/description text.
+_QODO_REVIEWING_MARKERS = ("Looking for bugs?",)
 
 
 def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
