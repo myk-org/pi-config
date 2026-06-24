@@ -22,6 +22,7 @@ import {
   isGitRepo,
   runGit,
 } from "./git-helpers.js";
+import { isReadOnlyStatement, isRmInProjectTmp } from "./enforcement-helpers.js";
 
 /** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
 function normalizeForRepeatCheck(command: string): string {
@@ -447,9 +448,24 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Dangerous command confirmation
     // Collapse bash line continuations (backslash-newline) before splitting
     const normalized = command.replace(/\\\r?\n/g, " ");
-    // Split on statement separators to avoid matching across unrelated statements
-    const statements = normalized.split(/\n|;|&&|\|\|/).map(s => s.trim()).filter(Boolean);
-    if (statements.some((stmt) => DANGEROUS.some((p) => p.test(stmt)))) {
+    // Split on statement separators AND pipes to isolate individual commands.
+    // NOTE: || must appear before | in the regex so the engine matches || greedily first.
+    // NOTE: Pipe split does not respect shell quoting (e.g., echo "a|b" splits incorrectly).
+    // This biases toward false positives (extra prompts), which is acceptable for security.
+    // Do NOT add quoting awareness here — it would flip the bias toward false negatives.
+    const statements = normalized.split(/\n|;|&&|\|\||\|/).map(s => s.trim()).filter(Boolean);
+    const hasDangerous = statements.some((stmt) => {
+      // Skip read-only commands with no dangerous subshells
+      if (isReadOnlyStatement(stmt)) return false;
+      return DANGEROUS.some((p) => p.test(stmt));
+    });
+    if (hasDangerous) {
+      // Allow rm -rf targeting only .pi/tmp/ paths without confirmation
+      const allRmInTmp = statements
+        .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))
+        .every((stmt) => isRmInProjectTmp(stmt, ctx.cwd));
+      if (allRmInTmp) return undefined;
+
       if (!ctx.hasUI)
         return {
           block: true,

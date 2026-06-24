@@ -149,7 +149,7 @@ export function hasGitSub(command: string, sub: string): boolean {
 }
 
 export const DANGEROUS = [
-  /\brm\s+(-rf?|--recursive)/i,
+  /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
   /\bsudo\b/i,
   /\b(chmod|chown)\b.*777/i,
   /\bmkfs\b/i,
@@ -159,4 +159,5 @@ export const DANGEROUS = [
   /\bfind\b[\s\S]*\s-delete\b/i,
   /\bfind\b[\s\S]*-exec(?:dir)?\s+(?:\/\S+\/)?rm\b/i,
   /\bxargs\s+(?:-\S+\s+)*(?:\/\S+\/)?rm\b/i,
+  /(?:^|[\s|])(ba|da|z|k|c|tc|fi)?sh\s*$/i,
 ];
