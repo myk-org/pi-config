@@ -45,6 +45,7 @@ pi-config/
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
+│   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
@@ -146,7 +147,12 @@ pi-config/
 ├── README.md                        # Project README
 ├── AGENTS.md                        # This file
 ├── pi-config-settings.example.json    # Example project settings file
+├── tests/                           # Test suite
+│   ├── node/                        # Node.js tests (tsx + node:test)
+│   │   └── orchestrator/            # Orchestrator extension tests
+│   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
+├── tox.toml                         # Test runner config (Python + Node environments)
 └── pyproject.toml                   # Python project config (myk_pi_tools)
 ```
 
@@ -239,6 +245,10 @@ Checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` fie
 Dead parent = zombie = delete.
 
 **Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — returns `<cwd>/.pi/tmp/`, creates dir if missing.
+
+**Enforcement:** Recursive removal (`rm -rf`) targeting paths within `.pi/tmp/` is silently allowed without dangerous-command confirmation.
+Paths are resolved via `realpathSync()` to prevent symlink traversal.
+Read-only commands (`grep`, `cat`, etc.) containing dangerous patterns in their arguments are also excluded from confirmation prompts.
 
 ### Mode-Aware Guards (`ctx.mode`)
 
@@ -466,9 +476,15 @@ Served via [GitHub Pages](https://myk-org.github.io/pi-config/).
 ## Running Tests
 
 ```bash
+# All tests (Python + Node)
+tox
+
 # Linting / pre-commit checks
 pre-commit run --all-files
 
-# Python tests
+# Python tests only
 uv run pytest
+
+# Node tests only
+npx tsx --test tests/node/**/*.test.ts
 ```

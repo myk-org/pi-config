@@ -1,0 +1,12 @@
+[tox]
+env_list = ["py", "node"]
+
+[env.py]
+skip_install = true
+allowlist_externals = ["uv"]
+commands = [["uv", "run", "pytest", { replace = "posargs", default = [], extend = true }]]
+
+[env.node]
+skip_install = true
+allowlist_externals = ["npx"]
+commands = [["npx", "tsx", "--test", "tests/node/**/*.test.ts"]]

@@ -149,7 +149,7 @@ export function hasGitSub(command: string, sub: string): boolean {
 }
 
 export const DANGEROUS = [
-  /\brm\s+(-rf?|--recursive)/i,
+  /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
   /\bsudo\b/i,
   /\b(chmod|chown)\b.*777/i,
   /\bmkfs\b/i,
