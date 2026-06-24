@@ -301,22 +301,22 @@ listing each unresolved thread with its file path, line number, author, and body
 > **Note:** Some comment types (e.g., Qodo sticky findings without code refs) may have an empty
 > `path` or `null` line number. Use `"(no file)"` as fallback when path is missing and
 > `"(no line)"` when line is missing or null.
->
-> Also build a `PR_DESCRIPTION_VERIFICATION` block to include in each reviewer's task. Use this
-> exact text:
->
+
+Also build a `PR_DESCRIPTION_VERIFICATION` block to include in each reviewer's task. Use this
+exact text:
+
 > MANDATORY: Verify the PR description matches the actual diff.
 >
-> 1. Run: gh pr view --json body,title --jq '{title: .title, body: .body}'
->    to read the PR description.
+> 1. Run: gh pr view {pr_number} --repo {owner}/{repo} --json body,title
+>    --jq '{title: .title, body: .body}' to read the PR description.
 > 2. Compare every claim in the description (files changed, classes added,
 >    methods implemented, tests written) against the actual git diff.
 >    Report [CRITICAL] for any file, class, method, or test mentioned in
 >    the description that does NOT exist in the diff.
 > 3. If the PR references an issue (Closes #N, Fixes #N), run:
->    gh issue view N --json body --jq .body and verify the issue
->    deliverables are implemented in the diff. Report [CRITICAL] for
->    unimplemented deliverables.
+>    gh issue view N --repo {owner}/{repo} --json body --jq .body and
+>    verify the issue deliverables are implemented in the diff. Report
+>    [CRITICAL] for unimplemented deliverables.
 > 4. Do NOT report [CRITICAL] for vague/aspirational description text —
 >    only flag specific concrete claims (file names, class names, function
 >    names, test names, feature descriptions) that are verifiably absent
