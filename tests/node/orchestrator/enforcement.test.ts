@@ -187,6 +187,14 @@ describe("isRmInProjectTmp", () => {
     }
   });
 
+  it("allows rm -rf targeting .pi/tmp/ inside worktree path", () => {
+    // Simulates worktree: cwd is project root, path goes through .worktrees/pr-42/.pi/tmp/
+    const worktreeTmp = join(testDir, ".worktrees", "pr-42", ".pi", "tmp", "worker-1");
+    mkdirSync(worktreeTmp, { recursive: true });
+    writeFileSync(join(worktreeTmp, "output.log"), "test");
+    assert.ok(isRmInProjectTmp(`rm -rf ${worktreeTmp}`, testDir));
+  });
+
   it("handles PROJECT_TMP_DIR env var substitution", () => {
     assert.ok(isRmInProjectTmp("rm -rf ${PROJECT_TMP_DIR}/worker-123", testDir));
   });

@@ -82,7 +82,7 @@ export function isReadOnlyStatement(stmt: string): boolean {
 }
 
 /** Pattern matching direct recursive rm commands (subset of DANGEROUS patterns). */
-const RM_PATTERN = /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i;
+const RM_PATTERN = /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i;
 
 /**
  * Check if a dangerous rm command only targets paths within .pi/tmp/.
@@ -104,7 +104,7 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 
   for (const token of tokens) {
     if (!pastRm) {
-      if (token === "rm") pastRm = true;
+      if (token === "rm" || token.endsWith("/rm")) pastRm = true;
       continue;
     }
     if (token === "--") {
