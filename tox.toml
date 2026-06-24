@@ -3,8 +3,8 @@ env_list = ["py", "node"]
 
 [env.py]
 skip_install = true
-allowlist_externals = ["uv"]
-commands = [["uv", "run", "pytest", { replace = "posargs", default = [], extend = true }]]
+allowlist_externals = ["env"]
+commands = [["env", "-u", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT={env_dir}", "uv", "run", "--group", "tests", "pytest", { replace = "posargs", default = [], extend = true }]]
 
 [env.node]
 skip_install = true
