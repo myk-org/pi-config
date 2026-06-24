@@ -516,6 +516,7 @@ Qodo if autoqodo, both if both flags active).
 - Agent: `worker`
 - Task: `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+  `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 - async: true
 - **No timeout** — the poll can take 30+ minutes (rate limit waits). NEVER set a timeout.
 
@@ -524,6 +525,7 @@ Qodo if autoqodo, both if both flags active).
 - Agent: `worker`
 - Task: `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
   `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+  `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 - async: true
 - **No timeout** — the poll loops internally until new Qodo comments appear. NEVER set a timeout.
 
@@ -531,8 +533,10 @@ Qodo if autoqodo, both if both flags active).
 
 1. `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source coderabbit [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+   `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 1. `Run: myk-pi-tools reviews poll --output-dir ${PROJECT_TMP_DIR} --source qodo [same arguments as Phase 1].`
    `Return the EXACT raw stdout output — do NOT summarize, interpret, or rephrase it.`
+   `IMPORTANT: Do NOT set a timeout on the bash call — this command sleeps 300s between cycles and can run for 30+ minutes.`
 
 When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn that agent.
 The other agent keeps running independently.
