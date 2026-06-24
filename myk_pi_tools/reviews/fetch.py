@@ -1382,8 +1382,9 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         categorized = process_and_categorize(all_threads, owner, repo, pr_number=int(pr_number))
 
         # Enrich qodo findings with Qodo replies AFTER process_and_categorize sets already_replied
-        if qodo_replies:
-            _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies)
+        # Always call enrichment (even with empty replies) so _enrichment_checked is set
+        # on already_replied findings, enabling auto-skip for the "Qodo silent" case.
+        _enrich_findings_with_qodo_replies(categorized.get("qodo", []), qodo_replies or [])
 
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
         auto_skip_replied_findings(categorized.get("qodo", []))

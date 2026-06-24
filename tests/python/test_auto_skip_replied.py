@@ -201,3 +201,17 @@ class TestAutoSkipRepliedFindings:
         count = auto_skip_replied_findings(findings)
         assert count == 1
         assert findings[0]["is_auto_skipped"] is True
+
+    def test_enrichment_with_empty_replies_sets_checked(self) -> None:
+        """When no Qodo replies exist, enrichment still sets _enrichment_checked."""
+        from myk_pi_tools.reviews.fetch import _enrich_findings_with_qodo_replies
+
+        findings: list[dict[str, Any]] = [
+            {"already_replied": True, "status": "pending", "body": "Silent Qodo"},
+        ]
+        _enrich_findings_with_qodo_replies(findings, [])
+        assert findings[0].get("_enrichment_checked") is True
+        # Now auto-skip should work
+        count = auto_skip_replied_findings(findings)
+        assert count == 1
+        assert findings[0]["is_auto_skipped"] is True
