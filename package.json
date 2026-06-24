@@ -1,6 +1,6 @@
 {
   "name": "pi-orchestrator-config",
-  "version": "3.10.5",
+  "version": "3.10.6",
   "description": "Orchestrator pattern for pi: specialist subagents, enforcement, code review loop, workflow commands",
   "keywords": [
     "pi-package"
