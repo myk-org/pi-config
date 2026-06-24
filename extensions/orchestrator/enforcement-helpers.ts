@@ -14,8 +14,7 @@ import { DANGEROUS } from "./git-helpers.js";
  */
 export const READ_ONLY_COMMANDS = new Set([
   "grep", "egrep", "fgrep", "rg", "ag", "ack",
-  "cat", "head", "tail", "less", "more",
-  "echo", "printf", "wc",
+  "cat", "head", "tail", "less", "more", "wc",
 ]);
 
 /**
@@ -51,12 +50,20 @@ export function extractSubshells(stmt: string): string[] {
       i = j;
       continue;
     }
-    // Backtick substitution
+    // Backtick substitution — skip escaped backticks (\`)
     if (withoutSingleQuoted[i] === "`") {
-      const end = withoutSingleQuoted.indexOf("`", i + 1);
-      if (end !== -1) {
-        results.push(withoutSingleQuoted.slice(i + 1, end));
-        i = end + 1;
+      let j = i + 1;
+      while (j < withoutSingleQuoted.length) {
+        if (withoutSingleQuoted[j] === "\\" && j + 1 < withoutSingleQuoted.length) {
+          j += 2; // skip escaped character
+          continue;
+        }
+        if (withoutSingleQuoted[j] === "`") break;
+        j++;
+      }
+      if (j < withoutSingleQuoted.length) {
+        results.push(withoutSingleQuoted.slice(i + 1, j));
+        i = j + 1;
         continue;
       }
     }

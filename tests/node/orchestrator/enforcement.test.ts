@@ -74,8 +74,8 @@ describe("isReadOnlyStatement", () => {
     assert.ok(isReadOnlyStatement("rg --type ts 'sudo' src/"));
   });
 
-  it("returns true for echo with harmless text", () => {
-    assert.ok(isReadOnlyStatement('echo "hello world"'));
+  it("returns false for echo (not in read-only list — can pipe to shell)", () => {
+    assert.ok(!isReadOnlyStatement('echo "hello world"'));
   });
 
   it("returns false for rm -rf (not read-only)", () => {
@@ -98,9 +98,9 @@ describe("isReadOnlyStatement", () => {
     assert.ok(isReadOnlyStatement("grep $(echo foo) file"));
   });
 
-  it("returns true for grep with dangerous pattern inside single quotes subshell", () => {
-    // Single quotes suppress expansion, so '$(rm -rf /)' is a literal string
-    assert.ok(isReadOnlyStatement("echo '$(rm -rf /)'"));
+  it("returns false for echo even with single-quoted content", () => {
+    // echo is not in READ_ONLY_COMMANDS — can pipe to shell interpreters
+    assert.ok(!isReadOnlyStatement("echo '$(rm -rf /)'"));
   });
 
   it("handles full path to read-only command", () => {
