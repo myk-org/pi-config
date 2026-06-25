@@ -153,6 +153,7 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
 _QODO_REVIEWING_MARKERS = ("Looking for bugs?",)
 
 _QODO_STUCK_TIMEOUT_SECONDS = 3600  # 1 hour — if "Looking for bugs" persists, Qodo is stuck
+_QODO_RETRIGGER_COOLDOWN_SECONDS = 1801  # ~30 min cooldown between re-trigger attempts (+1s for strict > comparison)
 
 
 def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
@@ -446,7 +447,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                             _qodo_reviewing_since = time.time()  # Reset timer on success
                         else:
                             # Cooldown: retry after ~30 min (shift timer to 30 min before threshold)
-                            _qodo_reviewing_since = time.time() - _QODO_STUCK_TIMEOUT_SECONDS + 1801
+                            _qodo_reviewing_since = (
+                                time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
+                            )
                     print_stderr(
                         "[poll] Qodo is currently reviewing —"
                         " waiting for review to complete before processing findings."
@@ -476,7 +479,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                         _qodo_reviewing_since = time.time()  # Reset timer on success
                     else:
                         # Cooldown: retry after ~30 min (shift timer to 30 min before threshold)
-                        _qodo_reviewing_since = time.time() - _QODO_STUCK_TIMEOUT_SECONDS + 1801
+                        _qodo_reviewing_since = (
+                            time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
+                        )
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
