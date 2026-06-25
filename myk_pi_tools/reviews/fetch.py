@@ -1338,17 +1338,22 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
             or "Dismissed</code>" in current_body
         )
         if not has_resolved and total_findings == 0:
-            # Qodo finished reviewing and found nothing — approved (no findings)
-            return {
-                "approved": True,
-                "reason": "no_findings",
-                "total_findings": 0,
-                "resolved_count": 0,
-                "unresolved_count": 0,
-            }
-        if not has_resolved:
-            print_stderr("[poll] Sticky has no resolved findings — empty review.")
-            return None
+            # Verify the sticky explicitly shows zero findings (not a parse failure)
+            # Look for Qodo's finding count indicators like "Bugs (0)"
+            _has_zero_counts = bool(re.search(r"\(\s*0\s*\)", current_body))
+            if _has_zero_counts:
+                # Qodo finished reviewing and found nothing — approved (no findings)
+                return {
+                    "approved": True,
+                    "reason": "no_findings",
+                    "total_findings": 0,
+                    "resolved_count": 0,
+                    "unresolved_count": 0,
+                }
+            else:
+                msg = "[poll] Sticky has no resolved findings and no zero-count indicators"
+                print_stderr(f"{msg} — cannot determine approval.")
+                return None
 
         # All checks passed — fully approved by Qodo
         return {
