@@ -308,7 +308,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                 _approval_detail = is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
                 if _approval_detail:
                     print_approval_summary(_approval_detail)
-                fetch_result["qodo_cleanup_response"] = _cleanup_response
+                fetch_result["qodo_cleanup_response"] = ""  # Clear — stale when approved
                 print(json.dumps(fetch_result, indent=2))
                 return 0
             else:
