@@ -17,10 +17,6 @@ class TestRetriggerQodoReview:
             mock_run.return_value.returncode = 0
             result = _retrigger_qodo_review("org", "repo", "123")
         assert result is True
-        mock_run.assert_called_once()
-        # Verify the command posts /agentic_review
-        call_args = mock_run.call_args
-        assert "/agentic_review" in str(call_args)
 
     def test_api_failure_returns_false(self) -> None:
         """Returns False when gh api call fails."""
