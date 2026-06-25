@@ -1268,8 +1268,7 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
     - reason: str ("all_resolved")
     - total_findings: int (total in sticky, resolved + unresolved)
     - resolved_count: int (resolved/dismissed by Qodo)
-    - unresolved_count: int (still open in sticky)
-    - findings: list of dicts with title, status, reply (from DB for already-replied)
+    - unresolved_count: int (0 when approved)
     """
     from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
 
