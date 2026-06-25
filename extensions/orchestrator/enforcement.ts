@@ -97,9 +97,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Set comment signature env var for CLI tools to read
     if (getSetting(ctx.cwd, "comment_signature")) {
       const modelId = (ctx as any).model?.id || "unknown";
-      process.env.PI_COMMENT_SIGNATURE_LINE = `Assisted-by: PI (${modelId})`;
+      process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
     } else {
-      delete process.env.PI_COMMENT_SIGNATURE_LINE;
+      delete process.env.PI_COMMENT_SIGNATURE;
     }
   });
 

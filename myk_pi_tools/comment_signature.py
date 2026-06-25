@@ -1,6 +1,6 @@
 """Comment signature injection for AI-posted PR comments.
 
-Reads PI_COMMENT_SIGNATURE_LINE env var (set by the pi extension on session_start)
+Reads PI_COMMENT_SIGNATURE env var (set by the pi extension on session_start)
 and appends a signature line to comment bodies.
 """
 
@@ -22,7 +22,7 @@ def append_signature(body: str) -> str:
         Body with signature appended, or unchanged if env var is not set
         or signature already present.
     """
-    signature = os.environ.get("PI_COMMENT_SIGNATURE_LINE")
+    signature = os.environ.get("PI_COMMENT_SIGNATURE")
     if not signature:
         return body
     # Check if signature is already present (idempotent — prevents duplicates on retry)

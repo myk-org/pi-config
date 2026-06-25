@@ -169,8 +169,6 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
     }
     case "comment_signature": {
       if (settings.comment_signature !== undefined) return settings.comment_signature;
-      const env = parseBoolEnv("PI_COMMENT_SIGNATURE");
-      if (env !== undefined) return env;
       return false; // default: disabled
     }
     default:
