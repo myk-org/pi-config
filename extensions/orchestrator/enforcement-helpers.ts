@@ -125,6 +125,8 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
       continue;
     }
     if (!pastSeparator && token.startsWith("-")) continue;
+    // Skip shell redirections (2>/dev/null, >/dev/null, 2>&1, &>/dev/null, etc.)
+    if (/^[0-9]*>|^&>|^[0-9]*</.test(token)) continue;
     // Strip surrounding quotes — prevents false positives on rm -rf ".pi/tmp/foo"
     paths.push(token.replace(/^["']|["']$/g, ""));
   }
