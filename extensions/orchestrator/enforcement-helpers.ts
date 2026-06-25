@@ -101,6 +101,10 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   // Only applies to direct rm commands, not find/xargs variants
   if (!RM_PATTERN.test(stmt)) return false;
 
+  // Ensure rm is the actual command, not an argument to another command (e.g., xargs rm)
+  const firstWord = stmt.trim().split(/\s+/)[0];
+  if (firstWord !== "rm" && !firstWord?.endsWith("/rm")) return false;
+
   // Don't silently allow if the statement also matches other DANGEROUS patterns
   // (e.g., sudo rm -rf .pi/tmp/foo — sudo should still trigger confirmation)
   if (/\bsudo\b/i.test(stmt)) return false;
@@ -145,11 +149,25 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
       // Use realpathSync to resolve symlinks — prevents symlink traversal attacks
       resolved = realpathSync(path.resolve(cwd, expanded));
     } catch {
-      // Path doesn't exist. For explicit /tmp/<something> paths, use lexical resolution
-      // (no symlink risk since the target doesn't exist). Only when the original path
-      // explicitly starts with /tmp/ — not paths that resolve there via traversal.
+      // Path doesn't exist. For /tmp paths, validate the existing parent via realpathSync
+      // to catch symlinked parents (e.g., /tmp/evil-link -> / where evil-link exists).
       const lexical = path.resolve(cwd, expanded);
-      if (expanded.startsWith("/tmp/") && lexical.startsWith("/tmp/") && lexical !== "/tmp" && lexical.length > 5) {
+      if (lexical.startsWith("/tmp/") && lexical !== "/tmp" && lexical.length > 5) {
+        // Block paths containing traversal sequences — even if they resolve under /tmp/,
+        // they may have escaped and re-entered via ..
+        if (expanded.includes("..")) {
+          return false;
+        }
+        // Validate that the existing parent resolves under /tmp
+        const parentDir = path.dirname(lexical);
+        try {
+          const resolvedParent = realpathSync(parentDir);
+          if (!resolvedParent.startsWith("/tmp")) {
+            return false; // Parent symlinks outside /tmp
+          }
+        } catch {
+          // Parent also doesn't exist — safe (entire path is non-existent)
+        }
         resolved = lexical;
       } else {
         return false;

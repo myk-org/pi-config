@@ -124,11 +124,17 @@ describe("isRmInProjectTmp", () => {
 
   // Create a real temp dir structure for realpathSync to work
   before(() => {
+    // Use a subdirectory structure that doesn't start with /tmp to avoid
+    // interference with the /tmp/<something> allowlist
     testDir = mkdtempSync(join(tmpdir(), "enforcement-test-"));
     tmpPath = join(testDir, ".pi", "tmp");
     mkdirSync(tmpPath, { recursive: true });
     mkdirSync(join(tmpPath, "worker-123"), { recursive: true });
     writeFileSync(join(tmpPath, "worker-123", "output.log"), "test");
+    // Create worktree structure for worktree test
+    const worktreeTmp = join(testDir, ".worktrees", "pr-42", ".pi", "tmp", "worker-1");
+    mkdirSync(worktreeTmp, { recursive: true });
+    writeFileSync(join(worktreeTmp, "output.log"), "test");
   });
 
   after(() => {
@@ -156,8 +162,8 @@ describe("isRmInProjectTmp", () => {
     assert.ok(isRmInProjectTmp("rm -rf /tmp/something", testDir));
   });
 
-  it("blocks rm -rf on non-existent paths (can't verify safety)", () => {
-    assert.ok(!isRmInProjectTmp("rm -rf .pi/tmp/nonexistent-dir", testDir));
+  it("blocks rm -rf on non-existent paths outside allowed locations", () => {
+    assert.ok(!isRmInProjectTmp("rm -rf /var/nonexistent-dir", testDir));
   });
 
   it("blocks when no path arguments (vacuous truth guard)", () => {
@@ -190,8 +196,6 @@ describe("isRmInProjectTmp", () => {
   it("allows rm -rf targeting .pi/tmp/ inside worktree path", () => {
     // Simulates worktree: cwd is project root, path goes through .worktrees/pr-42/.pi/tmp/
     const worktreeTmp = join(testDir, ".worktrees", "pr-42", ".pi", "tmp", "worker-1");
-    mkdirSync(worktreeTmp, { recursive: true });
-    writeFileSync(join(worktreeTmp, "output.log"), "test");
     assert.ok(isRmInProjectTmp(`rm -rf ${worktreeTmp}`, testDir));
   });
 

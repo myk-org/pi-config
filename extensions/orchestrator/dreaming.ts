@@ -123,6 +123,17 @@ export function registerDreaming(
     if (!id) {
       dreamInFlight = false;
       updateDreamStatus();
+    } else {
+      // Safety fallback: if onComplete never fires (runner crash/hang),
+      // reset dreamInFlight after 30 min so future dreams aren't blocked.
+      const fallbackTimer = setTimeout(() => {
+        if (dreamInFlight) {
+          dreamInFlight = false;
+          updateDreamStatus();
+          console.debug("[dreaming] fallback: reset dreamInFlight after 30 min (onComplete never fired)");
+        }
+      }, 30 * 60 * 1000);
+      if (fallbackTimer.unref) fallbackTimer.unref();
     }
   }
 

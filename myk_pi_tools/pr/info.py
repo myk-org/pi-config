@@ -54,6 +54,12 @@ def fetch_pr_info(pr_info: PRInfo) -> dict[str, Any]:
             timeout=60,
         )
         return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(
+            f"Error: Invalid JSON response from GitHub API for {pr_info.repo_full_name}#{pr_info.pr_number}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except FileNotFoundError:
         print(
             "Error: GitHub CLI (gh) not found. Install gh to fetch PR info.",
