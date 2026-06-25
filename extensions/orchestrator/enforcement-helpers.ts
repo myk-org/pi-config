@@ -109,13 +109,22 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   // (e.g., sudo rm -rf .pi/tmp/foo — sudo should still trigger confirmation)
   if (/\bsudo\b/i.test(stmt)) return false;
 
+  // Reject statements containing subshells or process substitutions — these could
+  // embed arbitrary commands that bypass the allowlist check
+  if (extractSubshells(stmt).length > 0) return false;
+
   // Parse arguments: split on whitespace, skip flags, handle -- separator
   const tokens = stmt.trim().split(/\s+/);
   const paths: string[] = [];
   let pastSeparator = false;
   let pastRm = false;
+  let skipNext = false;
 
   for (const token of tokens) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
     if (!pastRm) {
       if (token === "rm" || token.endsWith("/rm")) pastRm = true;
       continue;
@@ -125,8 +134,14 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
       continue;
     }
     if (!pastSeparator && token.startsWith("-")) continue;
-    // Skip shell redirections (2>/dev/null, >/dev/null, 2>&1, &>/dev/null, etc.)
-    if (/^[0-9]*>|^&>|^[0-9]*</.test(token)) continue;
+    // Skip shell redirections — handle both joined (2>/dev/null) and spaced (2> /dev/null)
+    if (/^[0-9]*>{1,2}|^&>|^[0-9]*</.test(token)) {
+      // If the token is ONLY the operator (no target attached), skip the next token too
+      if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(token)) {
+        skipNext = true;
+      }
+      continue;
+    }
     // Strip surrounding quotes — prevents false positives on rm -rf ".pi/tmp/foo"
     paths.push(token.replace(/^["']|["']$/g, ""));
   }

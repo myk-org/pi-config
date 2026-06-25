@@ -256,8 +256,24 @@ describe("isRmInProjectTmp — redirects", () => {
     assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} &>/dev/null`, redirectTestDir));
   });
 
-  it("blocks rm -rf with only redirects and no paths", () => {
+  it("blocks rm -rf with only redirects, no paths", () => {
     assert.ok(!isRmInProjectTmp("rm -rf 2>/dev/null", redirectTestDir));
+  });
+
+  it("allows rm -rf with spaced 2> /dev/null redirect", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} 2> /dev/null`, redirectTestDir));
+  });
+
+  it("allows rm -rf with spaced > /dev/null redirect", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} > /dev/null`, redirectTestDir));
+  });
+
+  it("blocks rm -rf with >(malicious) process substitution", () => {
+    assert.ok(!isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} >(malicious)`, redirectTestDir));
+  });
+
+  it("blocks rm -rf with 2>$(evil) command substitution in redirect", () => {
+    assert.ok(!isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} 2>$(evil)`, redirectTestDir));
   });
 });
 
