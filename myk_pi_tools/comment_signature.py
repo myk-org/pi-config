@@ -10,7 +10,7 @@ import os
 
 
 def append_signature(body: str) -> str:
-    """Append AI signature to a comment body if PI_COMMENT_SIGNATURE_LINE is set.
+    """Append AI signature to a comment body if PI_COMMENT_SIGNATURE is set.
 
     Idempotent — checks for existing signature before appending to prevent
     duplicate signatures on retries/updates.
