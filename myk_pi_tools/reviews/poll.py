@@ -445,8 +445,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                         if _retrigger_qodo_review(owner, repo, pr_number):
                             _qodo_reviewing_since = time.time()  # Reset timer on success
                         else:
-                            # Cooldown: shift timer forward by 30 min to avoid retrying every cycle
-                            _qodo_reviewing_since = time.time() - _QODO_STUCK_TIMEOUT_SECONDS + 1800
+                            # Cooldown: retry after ~30 min (shift timer to 30 min before threshold)
+                            _qodo_reviewing_since = time.time() - _QODO_STUCK_TIMEOUT_SECONDS + 1801
                     print_stderr(
                         "[poll] Qodo is currently reviewing —"
                         " waiting for review to complete before processing findings."
@@ -475,8 +475,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                     if _retrigger_qodo_review(owner, repo, pr_number):
                         _qodo_reviewing_since = time.time()  # Reset timer on success
                     else:
-                        # Cooldown: shift timer forward by 30 min to avoid retrying every cycle
-                        _qodo_reviewing_since = time.time() - _QODO_STUCK_TIMEOUT_SECONDS + 1800
+                        # Cooldown: retry after ~30 min (shift timer to 30 min before threshold)
+                        _qodo_reviewing_since = time.time() - _QODO_STUCK_TIMEOUT_SECONDS + 1801
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
