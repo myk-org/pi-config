@@ -1259,13 +1259,13 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
     Returns a summary dict if approved, None if not approved.
 
     Approved when:
-    1. Sticky comment has 0 unresolved findings (or all unresolved are already replied to)
+    1. Sticky comment has 0 unresolved findings (literal 0 from Qodo)
     2. Sticky has at least one resolved/dismissed finding (not empty)
     3. Sticky updated_at is AFTER PR head commit date (Qodo finished reviewing latest)
 
     Returns dict with keys:
     - approved: True
-    - reason: str ("all_resolved" or "stale_sticky")
+    - reason: str ("all_resolved")
     - total_findings: int (total in sticky, resolved + unresolved)
     - resolved_count: int (resolved/dismissed by Qodo)
     - unresolved_count: int (still open in sticky)
@@ -1328,68 +1328,6 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
         total_findings = resolved_count + len(unresolved)
 
         if len(unresolved) > 0:
-            # Check if all unresolved findings were already replied to (stale sticky)
-            try:
-                from myk_pi_tools.db.query import ReviewDB as _ReviewDB
-
-                db = _ReviewDB(db_path=None)
-                replied = db.get_replied_sticky_findings(owner, repo, int(pr_number))
-
-                # Build lookup: (comment_id, body, code_diff) -> DB record
-                replied_map: dict[tuple[int, str, str], dict] = {}
-                for r in replied:
-                    cid = r.get("comment_id")
-                    rbody = r.get("body") or ""
-                    rcode_diff = r.get("code_diff") or ""
-                    if cid is not None:
-                        key = (int(cid), rbody, rcode_diff)
-                        existing = replied_map.get(key)
-                        if existing is None:
-                            replied_map[key] = r
-                        else:
-                            # Prefer records with meaningful replies over dedup artifacts
-                            existing_reply = existing.get("reply") or ""
-                            new_reply = r.get("reply") or ""
-                            if "Already replied" in existing_reply and "Already replied" not in new_reply and new_reply:
-                                replied_map[key] = r
-
-                # Check each unresolved finding
-                sticky_id = int(comment.get("id", 0))
-                all_replied = True
-                findings_summary = []
-                for finding in unresolved:
-                    finding_body = f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}"
-                    finding_code_diff = finding.get("code_diff") or ""
-                    key = (sticky_id, finding_body, finding_code_diff)
-                    db_record = replied_map.get(key)
-                    if db_record and db_record.get("status") == "addressed":
-                        findings_summary.append({
-                            "title": finding.get("title", ""),
-                            "finding_type": finding.get("finding_type", ""),
-                            "status": db_record.get("status", "unknown"),
-                            "reply": db_record.get("reply", ""),
-                        })
-                    else:
-                        all_replied = False
-                        break
-
-                if all_replied:
-                    print_stderr(
-                        f"[poll] Sticky has {len(unresolved)} unresolved finding(s),"
-                        f" but all already replied to (stale sticky)."
-                    )
-                    print_stderr("[poll] Treating stale sticky as approved.")
-                    return {
-                        "approved": True,
-                        "reason": "stale_sticky",
-                        "total_findings": total_findings,
-                        "resolved_count": resolved_count,
-                        "unresolved_count": len(unresolved),
-                        "findings": findings_summary,
-                    }
-            except Exception as e:
-                print_stderr(f"[poll] Warning: Could not check replied sticky findings: {e}")
-
             print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
             return None
 
@@ -1411,7 +1349,6 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
             "total_findings": total_findings,
             "resolved_count": resolved_count,
             "unresolved_count": 0,
-            "findings": [],
         }
 
     # No sticky comment found
@@ -1424,33 +1361,12 @@ def print_approval_summary(approval: dict) -> None:
     total = approval.get("total_findings", 0)
     resolved = approval.get("resolved_count", 0)
     unresolved = approval.get("unresolved_count", 0)
-    findings = approval.get("findings", [])
-
     print_stderr("")
     print_stderr("[poll] === Qodo Approval Summary ===")
     print_stderr(f"  Total findings: {total} ({resolved} resolved by Qodo, {unresolved} still in sticky)")
 
     if reason == "all_resolved":
         print_stderr("  Status: All findings resolved/dismissed by Qodo ✅")
-    elif reason == "stale_sticky":
-        print_stderr("  Status: Stale sticky — all unresolved findings already replied to")
-        if findings:
-            print_stderr("")
-            print_stderr("  Unresolved findings (already replied):")
-            for i, f in enumerate(findings, 1):
-                title = f.get("title", "unknown")
-                status = f.get("status", "unknown")
-                finding_type = f.get("finding_type", "")
-                reply = f.get("reply", "")
-                status_icon = {"addressed": "✅", "not_addressed": "⚠️", "skipped": "⏭️"}.get(status, "❓")
-                type_tag = f" [{finding_type}]" if finding_type else ""
-                print_stderr(f"    {i}. {status_icon} [{status}]{type_tag} {title}")
-                if reply:
-                    # Show first line of reply, truncated
-                    reason_line = reply.split("\n")[0].strip()
-                    if len(reason_line) > 100:
-                        reason_line = reason_line[:97] + "..."
-                    print_stderr(f"       Reply: {reason_line}")
 
     print_stderr("")
 
