@@ -43,7 +43,7 @@ class TestRetriggerQodoReview:
 class TestRequestQodoStickyCleanup:
     """Test the sticky cleanup request helper."""
 
-    def test_posts_comment_and_returns_reply(self) -> None:
+    def test_returns_reply_on_successful_cleanup(self) -> None:
         """Returns reply body when Qodo responds to cleanup request."""
         with (
             patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,

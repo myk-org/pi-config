@@ -136,6 +136,16 @@ class TestParseQodoStickyComment:
         assert findings[0]["finding_type"] == "Requirement gap"
         assert findings[0]["category"] == "Quality"
 
+    def test_single_category_tag_no_type_emoji(self) -> None:
+        """Single non-type-emoji code tag is assigned as type (positional fallback)."""
+        html = self._make_sticky(
+            "<details><summary>  1.  <b>Title</b> <code>≡ Correctness</code></summary>\ndesc\n</details>"
+        )
+        findings = parse_qodo_sticky_comment(html)
+        assert len(findings) == 1
+        assert findings[0]["finding_type"] == "Correctness"
+        assert findings[0]["category"] == ""
+
     def test_reverse_order_no_emoji_fallback(self) -> None:
         """When category tag appears before type tag with no emojis, positional assignment still works."""
         html = self._make_sticky(

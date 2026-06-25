@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 
 from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
 
+_QODO_AUTHORS = {"qodo-code-review[bot]", "qodo-code-review"}
+
 
 def post_and_wait_for_qodo_reply(
     owner: str,
@@ -82,10 +84,17 @@ def post_and_wait_for_qodo_reply(
 
             for comment in comments:
                 author = comment.get("user", {}).get("login") if comment.get("user") else None
-                if author != "qodo-code-review[bot]":
+                if author not in _QODO_AUTHORS:
                     continue
                 created = comment.get("created_at", "")
-                if created <= post_time:
+                if not created:
+                    continue
+                try:
+                    created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
+                    if created_dt <= post_dt:
+                        continue
+                except (ValueError, TypeError):
                     continue
                 body = comment.get("body", "")
                 if all(line in body for line in match_lines):
