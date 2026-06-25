@@ -28,10 +28,16 @@ def reviews_fetch(review_url: str, include_resolved: bool, user: str | None, out
     REVIEW_URL: Optional specific review URL for context
     (e.g., #pullrequestreview-XXX or #discussion_rXXX)
     """
+    import json
+
     from myk_pi_tools.reviews.fetch import run
 
-    exit_code = run(review_url, include_resolved=include_resolved, user=user, output_dir=output_dir)
-    sys.exit(exit_code)
+    result = run(review_url, include_resolved=include_resolved, user=user, output_dir=output_dir)
+    if isinstance(result, dict):
+        print(json.dumps(result, indent=2))
+        sys.exit(0)
+    else:
+        sys.exit(result)
 
 
 @reviews.command("poll")

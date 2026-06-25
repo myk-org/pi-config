@@ -1253,7 +1253,13 @@ def fetch_review_body(owner: str, repo: str, pr_number: str, review_id: str) -> 
     return result if isinstance(result, dict) else None
 
 
-def run(review_url: str = "", include_resolved: bool = False, user: str | None = None, *, output_dir: str) -> int:
+def run(
+    review_url: str = "",
+    include_resolved: bool = False,
+    user: str | None = None,
+    *,
+    output_dir: str,
+) -> dict[str, Any] | int:
     """Main entry point.
 
     Args:
@@ -1433,10 +1439,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         if auto_skipped:
             print_stderr(f"Auto-skipped {auto_skipped} previously dismissed comment(s)")
 
-        # Output to stdout
-        print(json.dumps(final_output, indent=2))
-
-        return 0
+        return final_output
 
     finally:
         cleanup()

@@ -11,6 +11,7 @@ on "no new comments" -- sleeps and retries.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 import subprocess
 import sys
@@ -430,8 +431,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
         # Step 1: Fetch reviews first
         print_stderr("[poll] Fetching reviews...")
         fetch_result = fetch_run(review_url, output_dir=output_dir)
+        fetch_ok = isinstance(fetch_result, dict)
 
-        if fetch_result == 0:
+        if fetch_ok:
             _print_poll_summary(pr_number, output_dir)
             has_actionable = _has_actionable_qodo_comments(pr_number, output_dir)
             if has_actionable:
@@ -457,15 +459,18 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                 else:
                     _qodo_reviewing_since = None  # Reset — Qodo finished reviewing
                     print_stderr("[poll] Found actionable Qodo comments.")
+                    assert isinstance(fetch_result, dict)
+                    fetch_result["approved"] = False
+                    print(json.dumps(fetch_result, indent=2))
                     return 0
             else:
                 print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
         else:
-            print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
+            print_stderr(f"[poll] Fetch failed (exit code {fetch_result}). Will retry in {_POLL_SLEEP_SECONDS}s...")
 
         # Step 2: Only check approval AFTER confirming 0 new comments
         # This prevents approving before processing new findings
-        if fetch_result == 0:
+        if fetch_ok:
             # Fetch PR comments once — reused by mid-review and approval checks
             _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
             _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
@@ -499,7 +504,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                         print_stderr(f"[poll] Qodo approved — {reason}.")
                     # Print approval summary
                     _print_approval_summary(approval)
-                    print('{"approved": true}')
+                    assert isinstance(fetch_result, dict)
+                    fetch_result["approved"] = True
+                    print(json.dumps(fetch_result, indent=2))
                     return 0
 
         # No actionable result — sleep and loop
@@ -538,24 +545,34 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
         print_stderr("[poll] Checking CodeRabbit approval...")
         if is_approved(owner_repo, int(pr_number)):
             print_stderr("[poll] CodeRabbit approved \u2014 no actionable comments.")
-            print('{"approved": true}')
+            # Fetch reviews data for the approval output
+            _approval_data = fetch_run(review_url, output_dir=output_dir)
+            if isinstance(_approval_data, dict):
+                _approval_data["approved"] = True
+                print(json.dumps(_approval_data, indent=2))
+            else:
+                print(json.dumps({"approved": True}, indent=2))
             return 0
 
         # Step 3: Fetch reviews — get actionable comments before waiting on rate limit
         print_stderr("[poll] Fetching reviews...")
         fetch_result = fetch_run(review_url, output_dir=output_dir)
+        fetch_ok = isinstance(fetch_result, dict)
 
-        if fetch_result == 0:
+        if fetch_ok:
             _print_poll_summary(pr_number, output_dir)
             # Check if there are actionable (non-auto-skipped) comments
             # fetch_run saves JSON to a predictable path
             has_actionable = _has_actionable_comments(pr_number, output_dir)
             if has_actionable:
+                assert isinstance(fetch_result, dict)
+                fetch_result["approved"] = False
+                print(json.dumps(fetch_result, indent=2))
                 return 0
             print_stderr("[poll] All fetched comments are auto-skipped (previously addressed). No new comments.")
         else:
             # Fetch failed -- log and retry
-            print_stderr(f"[poll] Fetch failed with exit code {fetch_result}. Will retry in {_POLL_SLEEP_SECONDS}s...")
+            print_stderr(f"[poll] Fetch failed (exit code {fetch_result}). Will retry in {_POLL_SLEEP_SECONDS}s...")
 
         # Step 4: Check CodeRabbit rate limit
         print_stderr("[poll] Checking CodeRabbit rate limit...")
@@ -595,7 +612,12 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
             print_stderr("[poll] Re-checking approval after rate limit trigger...")
             if is_approved(owner_repo, int(pr_number)):
                 print_stderr("[poll] CodeRabbit approved \u2014 no actionable comments.")
-                print('{"approved": true}')
+                _approval_data = fetch_run(review_url, output_dir=output_dir)
+                if isinstance(_approval_data, dict):
+                    _approval_data["approved"] = True
+                    print(json.dumps(_approval_data, indent=2))
+                else:
+                    print(json.dumps({"approved": True}, indent=2))
                 return 0
 
         elif (
@@ -632,7 +654,12 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                     print_stderr("[poll] Re-checking approval after resume trigger...")
                     if is_approved(owner_repo, int(pr_number)):
                         print_stderr("[poll] CodeRabbit approved — no actionable comments.")
-                        print('{"approved": true}')
+                        _approval_data = fetch_run(review_url, output_dir=output_dir)
+                        if isinstance(_approval_data, dict):
+                            _approval_data["approved"] = True
+                            print(json.dumps(_approval_data, indent=2))
+                        else:
+                            print(json.dumps({"approved": True}, indent=2))
                         return 0
                 else:
                     print_stderr("[poll] Warning: Failed to post resume trigger. Will retry next cycle.")

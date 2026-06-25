@@ -546,19 +546,16 @@ The other agent keeps running independently.
 **While waiting for the async result**, the session remains interactive — the user
 can continue working. When the result surfaces, process it:
 
-Check the poll RAW output (not the worker's summary — look for the exact JSON string):
+Check the poll JSON output — it always contains an `approved` key:
 
-- If output contains the EXACT string `"approved": true`: **EXIT the loop**.
-  **CRITICAL:** Only exit on the literal JSON `{"approved": true}` from the CLI output.
-  Do NOT exit because the worker says "approved" or "0 comments" in its summary.
+- If `"approved": true` in the JSON: **EXIT the loop**.
+  The JSON contains both the approval status AND the reviews data
+  (metadata, human, qodo, coderabbit) — no separate fetch needed.
 
   **On exit, display the Remaining Findings Summary (MANDATORY):**
 
-  The `{"approved": true}` response does NOT contain finding details.
-  Instead, read the last saved reviews JSON file — its path was in the
-  `metadata.json_path` field from the most recent `reviews fetch` or `reviews poll` output.
-  If the JSON file was already deleted by `reviews store`, re-fetch with:
-  `myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}` (passing the same arguments used in Phase 1, if any)
+  The approval JSON includes the reviews data directly — use it for the summary.
+  The `metadata.json_path` field contains the path to the saved JSON file.
 
   Display remaining findings in a table:
 
@@ -586,7 +583,7 @@ Check the poll RAW output (not the worker's summary — look for the exact JSON 
 
 **The loop MUST run until one of these conditions is met:**
 
-1. **All auto-approved reviewers approved** — `reviews poll` returns `{"approved": true}`. Exit and notify the user.
+1. **All auto-approved reviewers approved** — `reviews poll` returns JSON with `"approved": true`. Exit and notify the user.
 2. **User explicitly stops** — user presses `Ctrl+C` or sends "stop", "exit", "done", or "quit".
 
 **No other reason is valid to exit the loop.**
