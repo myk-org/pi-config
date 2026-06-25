@@ -1532,6 +1532,7 @@ def run(
             "qodo": categorized["qodo"],
             "coderabbit": categorized["coderabbit"],
             "approved": _is_approved,
+            "qodo_cleanup_response": "",
         }
 
         # Save to file atomically

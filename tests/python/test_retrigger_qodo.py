@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import subprocess
-import time
 from unittest.mock import patch
 
 from myk_pi_tools.reviews.poll import (
-    _QODO_RETRIGGER_COOLDOWN_SECONDS,
-    _QODO_STUCK_TIMEOUT_SECONDS,
+    _request_qodo_sticky_cleanup,
     _retrigger_qodo_review,
 )
 
@@ -42,38 +40,51 @@ class TestRetriggerQodoReview:
         assert result is False
 
 
-class TestStuckReviewConstants:
-    """Test stuck review detection constants and timer math."""
+class TestRequestQodoStickyCleanup:
+    """Test the sticky cleanup request helper."""
 
-    def test_stuck_timeout_is_one_hour(self) -> None:
-        """Stuck timeout is 3600 seconds (1 hour)."""
-        assert _QODO_STUCK_TIMEOUT_SECONDS == 3600
+    def test_posts_comment_and_returns_reply(self) -> None:
+        """Returns reply body when Qodo responds to cleanup request."""
+        with (
+            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("myk_pi_tools.reviews.ask_qodo.run_gh_api") as mock_api,
+            patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
+        ):
+            mock_run.return_value.returncode = 0
+            # Simulate Qodo's reply containing our quoted cleanup text
+            mock_api.return_value = [
+                {
+                    "user": {"login": "qodo-code-review[bot]"},
+                    "created_at": "2099-01-01T00:00:00Z",
+                    "body": (
+                        "> Please re-evaluate all remaining sticky findings against the current code.\n"
+                        "> For each finding, check if the referenced code has been fixed in subsequent commits.\n"
+                        "> Remove findings that are fully addressed."
+                        " Keep any findings where the issue is still present in the code.\n\n"
+                        "finding 1: fixed\nfinding 2: still open"
+                    ),
+                }
+            ]
+            result = _request_qodo_sticky_cleanup("org", "repo", "1")
+        assert "finding 1: fixed" in result
+        assert "finding 2: still open" in result
 
-    def test_cooldown_exceeds_half_timeout(self) -> None:
-        """Cooldown is roughly half the timeout (~30 min) so retries aren't too frequent."""
-        assert _QODO_RETRIGGER_COOLDOWN_SECONDS > _QODO_STUCK_TIMEOUT_SECONDS / 2 - 100
-        assert _QODO_RETRIGGER_COOLDOWN_SECONDS < _QODO_STUCK_TIMEOUT_SECONDS
+    def test_returns_empty_on_post_failure(self) -> None:
+        """Returns empty string when comment post fails."""
+        with patch("myk_pi_tools.reviews.ask_qodo.subprocess.run", side_effect=subprocess.CalledProcessError(1, "gh")):
+            result = _request_qodo_sticky_cleanup("org", "repo", "1")
+        assert result == ""
 
-    def test_cooldown_accounts_for_strict_comparison(self) -> None:
-        """Cooldown is > 1800 to account for strict > comparison in stuck check."""
-        assert _QODO_RETRIGGER_COOLDOWN_SECONDS > 1800
-
-    def test_failed_retrigger_timer_math(self) -> None:
-        """On failed re-trigger, timer shifts forward so next retry is in ~30 min."""
-        now = time.time()
-        # Simulate: reviewing_since was set 1 hour ago, re-trigger failed
-        shifted = now - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
-        # Time until next trigger: timeout - (now - shifted)
-        elapsed = now - shifted
-        remaining = _QODO_STUCK_TIMEOUT_SECONDS - elapsed
-        # Should be approximately cooldown seconds from now
-        assert abs(remaining - _QODO_RETRIGGER_COOLDOWN_SECONDS) < 1
-
-    def test_successful_retrigger_resets_fully(self) -> None:
-        """On successful re-trigger, timer resets to now — next trigger in 1 full hour."""
-        now = time.time()
-        # Simulate: reset to now
-        reset_time = now
-        elapsed = now - reset_time
-        remaining = _QODO_STUCK_TIMEOUT_SECONDS - elapsed
-        assert abs(remaining - _QODO_STUCK_TIMEOUT_SECONDS) < 1
+    def test_returns_empty_on_timeout(self) -> None:
+        """Returns empty string when no reply within timeout."""
+        with (
+            patch("myk_pi_tools.reviews.ask_qodo.subprocess.run") as mock_run,
+            patch("myk_pi_tools.reviews.ask_qodo.run_gh_api", return_value=[]),
+            patch("myk_pi_tools.reviews.ask_qodo.time.sleep"),
+            patch("myk_pi_tools.reviews.ask_qodo.time.time") as mock_time,
+        ):
+            mock_run.return_value.returncode = 0
+            # Simulate timeout: first call returns start time, subsequent calls exceed timeout
+            mock_time.side_effect = [0, 0, 700]
+            result = _request_qodo_sticky_cleanup("org", "repo", "1")
+        assert result == ""
