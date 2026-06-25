@@ -575,6 +575,21 @@ Check the poll JSON output — it always contains an `approved` key:
   - **Why remaining** = the status + reason (from the reply field)
   - If zero remaining findings: show `## Remaining Findings (0)` with "All findings resolved."
   - This is the ONLY user-facing output on exit — no per-cycle summaries, no fix history
+- If `"qodo_cleanup_response"` is not empty in the JSON: **MUST be addressed.**
+  This is Qodo's reply to our sticky cleanup request — it lists which findings
+  are fixed and which are still open.
+
+  **For each item Qodo listed:**
+  - Qodo says "fixed" / "looks fixed" / "addressed" → no code change needed
+  - Qodo says "still open" / "still relevant" / "still actionable" → MUST fix the code, commit, push
+  - If you don't understand what Qodo wants for a specific finding → use
+    `myk-pi-tools reviews ask-qodo "<question>"` to ask Qodo directly.
+    The command posts the question to @qodo-code-review and waits up to 10 minutes
+    for Qodo's reply. Read the reply and act on it.
+
+  **Every item in `qodo_cleanup_response` MUST be addressed. No skipping.**
+  After fixing all still-open items, commit and push, then re-spawn the poll.
+
 - If **new comments found from auto-approved sources**: Run Phases 2-8 again with
   auto-approve behavior for the relevant sources.
   After completing, spawn another async worker (go to 9a+9b again).
