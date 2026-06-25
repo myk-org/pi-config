@@ -442,8 +442,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                         _qodo_reviewing_since = time.time()
                     elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
                         print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
-                        _retrigger_qodo_review(owner, repo, pr_number)
-                        _qodo_reviewing_since = time.time()  # Reset timer after re-trigger
+                        if _retrigger_qodo_review(owner, repo, pr_number):
+                            _qodo_reviewing_since = time.time()  # Reset timer only on success
                     print_stderr(
                         "[poll] Qodo is currently reviewing —"
                         " waiting for review to complete before processing findings."
@@ -469,8 +469,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                     _qodo_reviewing_since = time.time()
                 elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
                     print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
-                    _retrigger_qodo_review(owner, repo, pr_number)
-                    _qodo_reviewing_since = time.time()  # Reset timer after re-trigger
+                    if _retrigger_qodo_review(owner, repo, pr_number):
+                        _qodo_reviewing_since = time.time()  # Reset timer only on success
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
