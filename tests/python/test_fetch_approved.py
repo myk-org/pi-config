@@ -56,7 +56,7 @@ class TestIsQodoApproved:
         sticky_body = (
             "<h3>Code Review by Qodo</h3>\n"
             "<!-- QODO_CODE_REVIEW_STICKY -->\n"
-            "<details><summary>🐞 <b>Bug title</b></summary>\n"
+            "<details><summary>1. Bug title <code>🐞 Bug</code> <code>Category</code></summary>\n"
             "description\n</details>\n"
         )
         responses = {
@@ -108,5 +108,49 @@ class TestIsQodoApproved:
     def test_not_approved_when_api_fails(self) -> None:
         """Returns None when API call fails."""
         with patch("myk_pi_tools.reviews.fetch.run_gh_api", return_value=None):
+            result = is_qodo_approved("org", "repo", "1")
+        assert result is None
+
+    def test_approved_no_findings(self) -> None:
+        """Returns approved with reason no_findings when Qodo found zero issues."""
+        sticky_body = (
+            "<h3>Code Review by Qodo</h3>\n"
+            "<code>\U0001f41e Bugs (0)</code>\n"
+            "<code>\U0001f4d8 Rule violations (0)</code>\n"
+        )
+        responses = {
+            "/pulls/": {"head": {"sha": "abc123"}},
+            "/commits/": {"commit": {"committer": {"date": "2026-01-01T00:00:00Z"}}},
+            "/comments": [
+                {
+                    "user": {"login": "qodo-code-review[bot]"},
+                    "body": sticky_body,
+                    "updated_at": "2026-01-02T00:00:00Z",
+                    "id": 124,
+                }
+            ],
+        }
+        with patch("myk_pi_tools.reviews.fetch.run_gh_api", side_effect=self._mock_api(responses)):
+            result = is_qodo_approved("org", "repo", "1")
+        assert result is not None
+        assert result["approved"] is True
+        assert result["reason"] == "no_findings"
+
+    def test_not_approved_empty_sticky(self) -> None:
+        """Returns None when sticky has no count indicators (parse failure or mid-review)."""
+        sticky_body = "<h3>Code Review by Qodo</h3>\n<!-- QODO_CODE_REVIEW_STICKY -->\n"
+        responses = {
+            "/pulls/": {"head": {"sha": "abc123"}},
+            "/commits/": {"commit": {"committer": {"date": "2026-01-01T00:00:00Z"}}},
+            "/comments": [
+                {
+                    "user": {"login": "qodo-code-review[bot]"},
+                    "body": sticky_body,
+                    "updated_at": "2026-01-02T00:00:00Z",
+                    "id": 125,
+                }
+            ],
+        }
+        with patch("myk_pi_tools.reviews.fetch.run_gh_api", side_effect=self._mock_api(responses)):
             result = is_qodo_approved("org", "repo", "1")
         assert result is None

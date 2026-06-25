@@ -99,8 +99,12 @@ def _extract_agent_prompt(raw_section: str) -> str:
 
 
 def is_qodo_sticky_comment(body: str) -> bool:
-    """Check if a comment body is a Qodo sticky summary comment."""
-    return QODO_STICKY_HEADER in body and "<summary>" in body
+    """Check if a comment body is a Qodo sticky summary comment.
+
+    Matches the <h3>Code Review by Qodo</h3> header that only appears
+    in the real sticky comment, not in Qodo replies or PR summaries.
+    """
+    return f"<h3>{QODO_STICKY_HEADER}</h3>" in body
 
 
 def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:

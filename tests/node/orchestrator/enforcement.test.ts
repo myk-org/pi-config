@@ -6,7 +6,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
 import {
   READ_ONLY_COMMANDS,
@@ -223,6 +223,58 @@ describe("isRmInProjectTmp", () => {
     assert.ok(isRmInProjectTmp(`rm -rf "${join(tmpPath, "worker-123")}"`, testDir));
   });
 
+});
+
+// ── isRmInProjectTmp — redirects ──
+// Separate describe with testDir under $HOME (NOT /tmp/) so redirect tokens
+// like 2>/dev/null don't accidentally pass the /tmp/<something> allowlist.
+
+describe("isRmInProjectTmp — redirects", () => {
+  let redirectTestDir: string;
+  let redirectTmpPath: string;
+
+  before(() => {
+    redirectTestDir = mkdtempSync(join(homedir(), ".enforcement-test-"));
+    redirectTmpPath = join(redirectTestDir, ".pi", "tmp");
+    mkdirSync(redirectTmpPath, { recursive: true });
+    mkdirSync(join(redirectTmpPath, "worker-123"), { recursive: true });
+  });
+
+  after(() => {
+    rmSync(redirectTestDir, { recursive: true, force: true });
+  });
+
+  it("allows rm -rf with 2>/dev/null redirect", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} 2>/dev/null`, redirectTestDir));
+  });
+
+  it("allows rm -rf with >/dev/null 2>&1 redirects", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} >/dev/null 2>&1`, redirectTestDir));
+  });
+
+  it("allows rm -rf with &>/dev/null redirect", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} &>/dev/null`, redirectTestDir));
+  });
+
+  it("blocks rm -rf with only redirects, no paths", () => {
+    assert.ok(!isRmInProjectTmp("rm -rf 2>/dev/null", redirectTestDir));
+  });
+
+  it("allows rm -rf with spaced 2> /dev/null redirect", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} 2> /dev/null`, redirectTestDir));
+  });
+
+  it("allows rm -rf with spaced > /dev/null redirect", () => {
+    assert.ok(isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} > /dev/null`, redirectTestDir));
+  });
+
+  it("blocks rm -rf with >(malicious) process substitution", () => {
+    assert.ok(!isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} >(malicious)`, redirectTestDir));
+  });
+
+  it("blocks rm -rf with 2>$(evil) command substitution in redirect", () => {
+    assert.ok(!isRmInProjectTmp(`rm -rf ${join(redirectTmpPath, "worker-123")} 2>$(evil)`, redirectTestDir));
+  });
 });
 
 // ── Integration: pipe splitting + read-only detection ──
