@@ -1362,7 +1362,7 @@ def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | Non
                     finding_code_diff = finding.get("code_diff") or ""
                     key = (sticky_id, finding_body, finding_code_diff)
                     db_record = replied_map.get(key)
-                    if db_record:
+                    if db_record and db_record.get("status") == "addressed":
                         findings_summary.append({
                             "title": finding.get("title", ""),
                             "finding_type": finding.get("finding_type", ""),
@@ -1497,6 +1497,7 @@ def run(
 
         # Skip bot comment fetching when filtering by specific user
         qodo_replies: list[dict[str, Any]] | None = None
+        issue_comments: list[dict[str, Any]] | None = None
         if not user:
             # Fetch CodeRabbit body-embedded comments from review bodies
             print_stderr("Fetching CodeRabbit body-embedded comments...")
@@ -1601,7 +1602,7 @@ def run(
         auto_skip_replied_findings(categorized.get("qodo", []))
 
         # Check Qodo approval status
-        _approval = is_qodo_approved(owner, repo, str(pr_number))
+        _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
         _is_approved = bool(_approval and _approval.get("approved"))
 
         # Build final output
