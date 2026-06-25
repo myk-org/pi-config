@@ -1253,7 +1253,130 @@ def fetch_review_body(owner: str, repo: str, pr_number: str, review_id: str) -> 
     return result if isinstance(result, dict) else None
 
 
-def run(review_url: str = "", include_resolved: bool = False, user: str | None = None, *, output_dir: str) -> int:
+def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | None = None) -> dict | None:
+    """Check if Qodo has approved the PR.
+
+    Returns a summary dict if approved, None if not approved.
+
+    Approved when:
+    1. Sticky comment has 0 unresolved findings (literal 0 from Qodo)
+    2. Sticky has at least one resolved/dismissed finding (not empty)
+    3. Sticky updated_at is AFTER PR head commit date (Qodo finished reviewing latest)
+
+    Returns dict with keys:
+    - approved: True
+    - reason: str ("all_resolved")
+    - total_findings: int (total in sticky, resolved + unresolved)
+    - resolved_count: int (resolved/dismissed by Qodo)
+    - unresolved_count: int (0 when approved)
+    """
+    from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+
+    # Get PR head SHA
+    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+    pr_data = run_gh_api(pr_endpoint)
+    if not isinstance(pr_data, dict):
+        return None
+    head_sha = pr_data.get("head", {}).get("sha", "")
+    if not head_sha:
+        return None
+
+    # Get commit date for PR HEAD
+    commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
+    commit_data = run_gh_api(commit_endpoint)
+    if not isinstance(commit_data, dict):
+        return None
+    commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
+    if not commit_date:
+        return None
+
+    # Find the Qodo sticky comment
+    if comments is None:
+        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+        comments = run_gh_api(endpoint, paginate=True)
+    if not comments or not isinstance(comments, list):
+        return None
+
+    _QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in _QODO_USERS:
+            continue
+
+        body = comment.get("body", "")
+        if not is_qodo_sticky_comment(body):
+            continue
+
+        # Check sticky was updated AFTER the commit
+        sticky_updated = comment.get("updated_at", "")
+        if not sticky_updated or sticky_updated < commit_date:
+            print_stderr(f"[poll] Sticky updated {sticky_updated} but commit at {commit_date} — not yet reviewed.")
+            return None
+
+        # Parse for unresolved findings
+        unresolved = parse_qodo_sticky_comment(body)
+
+        # Count resolved findings from the sticky body
+        import re as _re
+
+        _prev_re = _re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", _re.MULTILINE)
+        _prev_match = _prev_re.search(body)
+        current_body = body[: _prev_match.start()] if _prev_match else body
+        resolved_count = current_body.count("Resolved</code>") + current_body.count("Dismissed</code>")
+        total_findings = resolved_count + len(unresolved)
+
+        if len(unresolved) > 0:
+            print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
+            return None
+
+        # Check at least one resolved/dismissed finding exists
+        has_resolved = (
+            "✓ Resolved" in current_body
+            or "Resolved</code>" in current_body
+            or "✗ Dismissed" in current_body
+            or "Dismissed</code>" in current_body
+        )
+        if not has_resolved:
+            print_stderr("[poll] Sticky has no resolved findings — empty review.")
+            return None
+
+        # All checks passed — fully approved by Qodo
+        return {
+            "approved": True,
+            "reason": "all_resolved",
+            "total_findings": total_findings,
+            "resolved_count": resolved_count,
+            "unresolved_count": 0,
+        }
+
+    # No sticky comment found
+    return None
+
+
+def print_approval_summary(approval: dict) -> None:
+    """Print a summary of the Qodo approval status."""
+    reason = approval.get("reason", "unknown")
+    total = approval.get("total_findings", 0)
+    resolved = approval.get("resolved_count", 0)
+    unresolved = approval.get("unresolved_count", 0)
+    print_stderr("")
+    print_stderr("[poll] === Qodo Approval Summary ===")
+    print_stderr(f"  Total findings: {total} ({resolved} resolved by Qodo, {unresolved} still in sticky)")
+
+    if reason == "all_resolved":
+        print_stderr("  Status: All findings resolved/dismissed by Qodo ✅")
+
+    print_stderr("")
+
+
+def run(
+    review_url: str = "",
+    include_resolved: bool = False,
+    user: str | None = None,
+    *,
+    output_dir: str,
+) -> dict[str, Any] | int:
     """Main entry point.
 
     Args:
@@ -1263,7 +1386,8 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         output_dir: Directory for output JSON file.
 
     Returns:
-        Exit code (0 for success, 1 for error).
+        dict with keys (metadata, human, qodo, coderabbit) on success,
+        or int exit code (1) on error.
     """
     try:
         check_dependencies()
@@ -1288,6 +1412,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
 
         # Skip bot comment fetching when filtering by specific user
         qodo_replies: list[dict[str, Any]] | None = None
+        issue_comments: list[dict[str, Any]] | None = None
         if not user:
             # Fetch CodeRabbit body-embedded comments from review bodies
             print_stderr("Fetching CodeRabbit body-embedded comments...")
@@ -1391,6 +1516,10 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
         auto_skip_replied_findings(categorized.get("qodo", []))
 
+        # Check Qodo approval status
+        _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
+        _is_approved = bool(_approval and _approval.get("approved"))
+
         # Build final output
         final_output = {
             "metadata": {
@@ -1402,6 +1531,8 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
             "human": categorized["human"],
             "qodo": categorized["qodo"],
             "coderabbit": categorized["coderabbit"],
+            "approved": _is_approved,
+            "qodo_cleanup_response": "",
         }
 
         # Save to file atomically
@@ -1423,9 +1554,9 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         print_stderr(f"Saved to: {json_path}")
 
         # Count by category
-        human_count = len(final_output["human"])
-        qodo_count = len(final_output["qodo"])
-        coderabbit_count = len(final_output["coderabbit"])
+        human_count = len(categorized["human"])
+        qodo_count = len(categorized["qodo"])
+        coderabbit_count = len(categorized["coderabbit"])
         print_stderr(f"Categories: human={human_count}, qodo={qodo_count}, coderabbit={coderabbit_count}")
 
         # Count auto-skipped comments
@@ -1433,10 +1564,7 @@ def run(review_url: str = "", include_resolved: bool = False, user: str | None =
         if auto_skipped:
             print_stderr(f"Auto-skipped {auto_skipped} previously dismissed comment(s)")
 
-        # Output to stdout
-        print(json.dumps(final_output, indent=2))
-
-        return 0
+        return final_output
 
     finally:
         cleanup()

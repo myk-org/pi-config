@@ -28,10 +28,16 @@ def reviews_fetch(review_url: str, include_resolved: bool, user: str | None, out
     REVIEW_URL: Optional specific review URL for context
     (e.g., #pullrequestreview-XXX or #discussion_rXXX)
     """
+    import json
+
     from myk_pi_tools.reviews.fetch import run
 
-    exit_code = run(review_url, include_resolved=include_resolved, user=user, output_dir=output_dir)
-    sys.exit(exit_code)
+    result = run(review_url, include_resolved=include_resolved, user=user, output_dir=output_dir)
+    if isinstance(result, dict):
+        print(json.dumps(result, indent=2))
+        sys.exit(0)
+    else:
+        sys.exit(result)
 
 
 @reviews.command("poll")
@@ -124,6 +130,22 @@ def reviews_status(pr: int | None, output_dir: str) -> None:
     from myk_pi_tools.reviews.status import run
 
     run(pr_number=pr, output_dir=output_dir)
+
+
+@reviews.command("ask-qodo")
+@click.argument("args", nargs=-1)
+def reviews_ask_qodo(args: tuple[str, ...]) -> None:
+    """Ask Qodo a question about the current PR and wait for reply.
+
+    Posts @qodo-code-review comment with your question, waits up to 10 min for reply.
+
+    Usage:
+        reviews ask-qodo "What specific edge cases are missing for finding 11?"
+        reviews ask-qodo --pr owner/repo 559 "What edge cases are missing?"
+    """
+    from myk_pi_tools.reviews.ask_qodo import run
+
+    run(list(args))
 
 
 @reviews.command("store")

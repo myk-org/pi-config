@@ -546,19 +546,16 @@ The other agent keeps running independently.
 **While waiting for the async result**, the session remains interactive — the user
 can continue working. When the result surfaces, process it:
 
-Check the poll RAW output (not the worker's summary — look for the exact JSON string):
+Check the poll JSON output — it always contains an `approved` key:
 
-- If output contains the EXACT string `"approved": true`: **EXIT the loop**.
-  **CRITICAL:** Only exit on the literal JSON `{"approved": true}` from the CLI output.
-  Do NOT exit because the worker says "approved" or "0 comments" in its summary.
+- If `"approved": true` in the JSON: **EXIT the loop**.
+  The JSON contains both the approval status AND the reviews data
+  (metadata, human, qodo, coderabbit) — no separate fetch needed.
 
   **On exit, display the Remaining Findings Summary (MANDATORY):**
 
-  The `{"approved": true}` response does NOT contain finding details.
-  Instead, read the last saved reviews JSON file — its path was in the
-  `metadata.json_path` field from the most recent `reviews fetch` or `reviews poll` output.
-  If the JSON file was already deleted by `reviews store`, re-fetch with:
-  `myk-pi-tools reviews fetch --output-dir ${PROJECT_TMP_DIR}` (passing the same arguments used in Phase 1, if any)
+  The approval JSON includes the reviews data directly — use it for the summary.
+  The `metadata.json_path` field contains the path to the saved JSON file.
 
   Display remaining findings in a table:
 
@@ -578,15 +575,31 @@ Check the poll RAW output (not the worker's summary — look for the exact JSON 
   - **Why remaining** = the status + reason (from the reply field)
   - If zero remaining findings: show `## Remaining Findings (0)` with "All findings resolved."
   - This is the ONLY user-facing output on exit — no per-cycle summaries, no fix history
-- If **new comments found from auto-approved sources**: Run Phases 2-8 again with
-  auto-approve behavior for the relevant sources.
-  After completing, spawn another async worker (go to 9a+9b again).
+
+- If `"approved": false`: **Process ALL actionable items in the JSON.**
+
+  🚨 **MANDATORY: Process EVERY actionable item — review thread comments, sticky findings,
+  AND cleanup response. Do NOT cherry-pick one type and skip others. Do NOT treat the
+  checks below as mutually exclusive — they ALL apply in the same cycle.**
+
+  1. **Review thread comments** (items with `thread_id`): Run Phases 2-8 for each.
+  2. **Sticky findings** (items without `thread_id`, type starts with `qodo_`): Run Phases 2-8 for each.
+  3. **`qodo_cleanup_response`** (if not empty): Address every item Qodo listed:
+     - Qodo says "fixed" / "looks fixed" / "addressed" → no code change needed
+     - Qodo says "still open" / "still relevant" / "still actionable" → MUST fix the code, commit, push
+     - If you don't understand what Qodo wants for a specific finding → use
+       `myk-pi-tools reviews ask-qodo "<question>"` to ask Qodo directly.
+       The command posts the question to @qodo-code-review and waits up to 10 minutes
+       for Qodo's reply. Read the reply and act on it.
+     - Every item in `qodo_cleanup_response` MUST be addressed. No skipping.
+
+  After fixing ALL items, commit and push, then re-spawn the poll.
 
 #### 9c: Exit Conditions (MANDATORY)
 
 **The loop MUST run until one of these conditions is met:**
 
-1. **All auto-approved reviewers approved** — `reviews poll` returns `{"approved": true}`. Exit and notify the user.
+1. **All auto-approved reviewers approved** — `reviews poll` returns JSON with `"approved": true`. Exit and notify the user.
 2. **User explicitly stops** — user presses `Ctrl+C` or sends "stop", "exit", "done", or "quit".
 
 **No other reason is valid to exit the loop.**

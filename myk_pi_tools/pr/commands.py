@@ -81,3 +81,20 @@ def pr_store_review(json_file: str) -> None:
 
     exit_code = run_store(json_file)
     sys.exit(exit_code)
+
+
+@pr.command("info")
+@click.argument("args", nargs=-1)
+def pr_info(args: tuple[str, ...]) -> None:
+    """Fetch PR information as structured JSON.
+
+    Returns author, head SHA, base ref, title, state, labels, assignees.
+
+    Usage:
+        pr info <owner/repo> <pr_number>
+        pr info https://github.com/owner/repo/pull/123
+        pr info <pr_number>
+    """
+    from myk_pi_tools.pr.info import run
+
+    run(list(args))

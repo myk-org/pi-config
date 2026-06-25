@@ -93,12 +93,17 @@ export function isReadOnlyStatement(stmt: string): boolean {
 const RM_PATTERN = /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i;
 
 /**
- * Check if a dangerous rm command only targets paths within .pi/tmp/.
+ * Check if a dangerous rm command only targets paths within .pi/tmp/ or /tmp/<something>.
  * Returns true if the command should be silently allowed.
+ * Note: bare /tmp (without subpath) is NOT allowed — only /tmp/<file-or-folder>.
  */
 export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   // Only applies to direct rm commands, not find/xargs variants
   if (!RM_PATTERN.test(stmt)) return false;
+
+  // Ensure rm is the actual command, not an argument to another command (e.g., xargs rm)
+  const firstWord = stmt.trim().split(/\s+/)[0];
+  if (firstWord !== "rm" && !firstWord?.endsWith("/rm")) return false;
 
   // Don't silently allow if the statement also matches other DANGEROUS patterns
   // (e.g., sudo rm -rf .pi/tmp/foo — sudo should still trigger confirmation)
@@ -129,11 +134,11 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 
   // Resolve and substitute PROJECT_TMP_DIR env var
   const projectTmpDir = path.join(cwd, ".pi", "tmp");
-  let resolvedCwd: string;
+  let resolvedCwd: string | null;
   try {
     resolvedCwd = realpathSync(cwd);
   } catch {
-    return false;
+    resolvedCwd = null; // cwd doesn't exist — project tmp checks will all fail
   }
 
   for (const p of paths) {
@@ -144,17 +149,44 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
       // Use realpathSync to resolve symlinks — prevents symlink traversal attacks
       resolved = realpathSync(path.resolve(cwd, expanded));
     } catch {
-      // Path doesn't exist — non-existent paths can't be symlink escapes,
-      // but also can't be verified as safe. Fall through to normal prompt.
-      return false;
+      // Path doesn't exist. For /tmp paths, validate the existing parent via realpathSync
+      // to catch symlinked parents (e.g., /tmp/evil-link -> / where evil-link exists).
+      const lexical = path.resolve(cwd, expanded);
+      if (lexical.startsWith("/tmp/") && lexical !== "/tmp" && lexical.length > 5) {
+        // Block paths containing traversal sequences — even if they resolve under /tmp/,
+        // they may have escaped and re-entered via ..
+        if (expanded.includes("..")) {
+          return false;
+        }
+        // Validate that the existing parent resolves under /tmp
+        const parentDir = path.dirname(lexical);
+        try {
+          const resolvedParent = realpathSync(parentDir);
+          // Resolve /tmp itself to handle systems where /tmp is a symlink (e.g., /private/tmp on macOS)
+          let resolvedTmp: string;
+          try { resolvedTmp = realpathSync("/tmp"); } catch { resolvedTmp = "/tmp"; }
+          if (!resolvedParent.startsWith(resolvedTmp + "/") && resolvedParent !== resolvedTmp) {
+            return false; // Parent symlinks outside /tmp
+          }
+        } catch {
+          // Parent also doesn't exist — safe (entire path is non-existent)
+        }
+        resolved = lexical;
+      } else {
+        return false;
+      }
     }
 
-    // Both conditions required:
-    // 1. Path is within the project (starts with cwd)
-    // 2. Path goes through .pi/tmp/ (our designated temp directory)
-    if (!resolved.startsWith(resolvedCwd + path.sep) && resolved !== resolvedCwd) return false;
-    if (!resolved.includes(`${path.sep}.pi${path.sep}tmp${path.sep}`) &&
-        !resolved.endsWith(`${path.sep}.pi${path.sep}tmp`)) return false;
+    // Check if path is in an allowed temp location:
+    // A) Project .pi/tmp/ — path within project AND goes through .pi/tmp/
+    // B) System /tmp/<something> — path under /tmp/ but NOT /tmp itself
+    const inProjectTmp = resolvedCwd !== null &&
+      (resolved.startsWith(resolvedCwd + path.sep) || resolved === resolvedCwd) &&
+      (resolved.includes(`${path.sep}.pi${path.sep}tmp${path.sep}`) ||
+       resolved.endsWith(`${path.sep}.pi${path.sep}tmp`));
+    const inSystemTmp = resolved.startsWith("/tmp/") && resolved !== "/tmp" && resolved.length > 5;
+
+    if (!inProjectTmp && !inSystemTmp) return false;
   }
 
   return true;

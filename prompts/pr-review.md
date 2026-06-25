@@ -139,61 +139,35 @@ Mark Task 1 as `in_progress`.
 
 If the raw arguments are empty:
 
-1. Detect PR from current branch:
+1. If the raw arguments do NOT contain a PR number or URL, detect from current branch:
 
    ```bash
-   gh pr view --json number,headRefOid
+   myk-pi-tools pr info $(gh pr view --json number --jq '.number')
    ```
 
-2. Get base repository context (where PR targets):
-
-   The base repository (where the PR is opened) is determined by the current working directory context.
-   When you run `gh pr view` from a cloned repository, it operates in that repository's context.
-
-   To get `owner` and `repo`:
+2. Fetch PR metadata using the CLI:
 
    ```bash
-   gh repo view --json owner,name
+   myk-pi-tools pr info <cleaned_arguments>
    ```
 
-   This returns the base repository information regardless of whether the PR comes from a fork.
+   This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
+   `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
 
-   **Note:** `baseRepository` is NOT available in `gh pr view --json`. For fork PRs, `headRepository` would incorrectly point to the fork, not the target repository.
-
-3. Extract and store:
-
-   - `pr_number` from the PR JSON response
-   - `owner` from `gh repo view` → `owner.login`
-   - `repo` from `gh repo view` → `name`
-   - `head_sha` from `headRefOid`
-
-4. Use `{pr_number}` for subsequent CLI commands
+3. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
 
 If the raw arguments contain a PR number or URL:
 
-1. If the argument is a URL (contains `github.com`):
-   - Extract `owner`, `repo`, and `pr_number` directly from the URL pattern
-     `https://github.com/{owner}/{repo}/pull/{pr_number}`
-   - Get `head_sha`:
+1. Fetch PR metadata using the CLI:
 
-     ```bash
-     gh pr view {pr_number} --repo {owner}/{repo} --json headRefOid --jq '.headRefOid'
-     ```
+   ```bash
+   myk-pi-tools pr info <cleaned_arguments>
+   ```
 
-1. If the argument is a bare PR number:
-   - Get `owner` and `repo` from the current repository context:
+   This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
+   `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
 
-     ```bash
-     gh repo view --json owner,name
-     ```
-
-   - Get `head_sha`:
-
-     ```bash
-     gh pr view {pr_number} --json headRefOid --jq '.headRefOid'
-     ```
-
-1. Store `owner`, `repo`, `pr_number`, and `head_sha` — these are used by Phase 1c and Phase 5.
+2. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
 
 Mark Task 1 as `completed`.
 

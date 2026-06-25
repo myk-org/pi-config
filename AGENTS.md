@@ -39,7 +39,7 @@ pi-config/
 │   │   ├── index.ts                 # Main entry — imports and wires all modules
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
-│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery)
+│   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks)
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
@@ -246,7 +246,7 @@ Dead parent = zombie = delete.
 
 **Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — returns `<cwd>/.pi/tmp/`, creates dir if missing.
 
-**Enforcement:** Recursive removal (`rm -rf`) targeting paths within `.pi/tmp/` is silently allowed without dangerous-command confirmation.
+**Enforcement:** Recursive removal (`rm -rf`) targeting paths within `.pi/tmp/` or `/tmp/<something>` (but not bare `/tmp`) is silently allowed without dangerous-command confirmation.
 Paths are resolved via `realpathSync()` to prevent symlink traversal.
 Read-only commands (`grep`, `cat`, etc.) containing dangerous patterns in their arguments are also excluded from confirmation prompts.
 
@@ -436,6 +436,7 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `use_worktrees` | boolean | disabled | `PI_USE_WORKTREES` | Force worktree-only workflow |
 | `dream_interval_hours` | number | 3 | `PI_DREAM_INTERVAL_HOURS` | Dream frequency |
 | `dco` | boolean | disabled | `PI_DCO` | Add --signoff to all commits (DCO) |
+| `comment_signature` | boolean | disabled | — | Append AI signature to all PR comments |
 
 Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 

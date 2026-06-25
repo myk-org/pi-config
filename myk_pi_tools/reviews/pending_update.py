@@ -153,9 +153,11 @@ def update_comment_body(node_id: str | None, refined_body: str) -> str:
         print_stderr("Error: node_id is required")
         return "error"
 
+    from myk_pi_tools.comment_signature import append_signature
+
     payload = json.dumps({
         "query": _UPDATE_COMMENT_MUTATION,
-        "variables": {"id": node_id, "body": refined_body},
+        "variables": {"id": node_id, "body": append_signature(refined_body)},
     })
 
     try:

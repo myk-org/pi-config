@@ -20,6 +20,7 @@ interface ProjectSettings {
   use_worktrees?: boolean;
   dream_interval_hours?: number;
   dco?: boolean;
+  comment_signature?: boolean;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -41,6 +42,7 @@ function parseSettingsFile(filePath: string): ProjectSettings {
       result.dream_interval_hours = raw.dream_interval_hours;
     }
     if (typeof raw.dco === "boolean") result.dco = raw.dco;
+    if (typeof raw.comment_signature === "boolean") result.comment_signature = raw.comment_signature;
     return result;
   } catch (e: any) {
     console.debug(`[project-settings] failed to parse ${filePath}:`, e?.message?.slice(0, 100));
@@ -126,6 +128,7 @@ export function getSetting(cwd: string, key: "allow_push_to_protected_branches")
 export function getSetting(cwd: string, key: "use_worktrees"): boolean;
 export function getSetting(cwd: string, key: "dream_interval_hours"): number;
 export function getSetting(cwd: string, key: "dco"): boolean;
+export function getSetting(cwd: string, key: "comment_signature"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number {
   const settings = getSettings(cwd);
 
@@ -162,6 +165,10 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       if (settings.dco !== undefined) return settings.dco;
       const env = parseBoolEnv("PI_DCO");
       if (env !== undefined) return env;
+      return false; // default: disabled
+    }
+    case "comment_signature": {
+      if (settings.comment_signature !== undefined) return settings.comment_signature;
       return false; // default: disabled
     }
     default:
