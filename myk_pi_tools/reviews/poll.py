@@ -548,16 +548,14 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
             # Fetch reviews data for the approval output
             _approval_data = fetch_run(review_url, output_dir=output_dir)
             if not isinstance(_approval_data, dict):
-                # Retry once — fetch must succeed for complete approval output
+                # Retry once
                 _approval_data = fetch_run(review_url, output_dir=output_dir)
             if isinstance(_approval_data, dict):
                 _approval_data["approved"] = True
                 print(json.dumps(_approval_data, indent=2))
-            else:
-                # Last resort — emit minimal approval so poll exits
-                print_stderr("[poll] Warning: fetch failed on approval — emitting minimal JSON")
-                print(json.dumps({"approved": True}, indent=2))
-            return 0
+                return 0
+            # Fetch failed — do NOT approve without data, keep polling
+            print_stderr("[poll] Warning: approval detected but fetch failed — will retry next cycle")
 
         # Step 3: Fetch reviews — get actionable comments before waiting on rate limit
         print_stderr("[poll] Fetching reviews...")
@@ -619,16 +617,14 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                 print_stderr("[poll] CodeRabbit approved \u2014 no actionable comments.")
                 _approval_data = fetch_run(review_url, output_dir=output_dir)
                 if not isinstance(_approval_data, dict):
-                    # Retry once — fetch must succeed for complete approval output
+                    # Retry once
                     _approval_data = fetch_run(review_url, output_dir=output_dir)
                 if isinstance(_approval_data, dict):
                     _approval_data["approved"] = True
                     print(json.dumps(_approval_data, indent=2))
-                else:
-                    # Last resort — emit minimal approval so poll exits
-                    print_stderr("[poll] Warning: fetch failed on approval — emitting minimal JSON")
-                    print(json.dumps({"approved": True}, indent=2))
-                return 0
+                    return 0
+                # Fetch failed — do NOT approve without data, keep polling
+                print_stderr("[poll] Warning: approval detected but fetch failed — will retry next cycle")
 
         elif (
             comment_id is not None
@@ -666,16 +662,14 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                         print_stderr("[poll] CodeRabbit approved — no actionable comments.")
                         _approval_data = fetch_run(review_url, output_dir=output_dir)
                         if not isinstance(_approval_data, dict):
-                            # Retry once — fetch must succeed for complete approval output
+                            # Retry once
                             _approval_data = fetch_run(review_url, output_dir=output_dir)
                         if isinstance(_approval_data, dict):
                             _approval_data["approved"] = True
                             print(json.dumps(_approval_data, indent=2))
-                        else:
-                            # Last resort — emit minimal approval so poll exits
-                            print_stderr("[poll] Warning: fetch failed on approval — emitting minimal JSON")
-                            print(json.dumps({"approved": True}, indent=2))
-                        return 0
+                            return 0
+                        # Fetch failed — do NOT approve without data, keep polling
+                        print_stderr("[poll] Warning: approval detected but fetch failed — will retry next cycle")
                 else:
                     print_stderr("[poll] Warning: Failed to post resume trigger. Will retry next cycle.")
 
