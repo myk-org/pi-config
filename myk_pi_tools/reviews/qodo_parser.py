@@ -44,25 +44,6 @@ _FENCED_DIFF_RE = re.compile(r"```diff\n(.*?)```", re.DOTALL)
 # Pattern to extract fenced code blocks (``` ... ```)
 _FENCED_CODE_RE = re.compile(r"```(?!\w)\n(.*?)```", re.DOTALL)
 
-# Finding type keywords from Qodo sticky <code> tags
-_FINDING_TYPES = (
-    "Bug",
-    "Rule violation",
-    "Requirement gap",
-    "UX issue",
-    "Cross-repo conflict",
-)
-
-# Finding category keywords from Qodo sticky <code> tags
-_FINDING_CATEGORIES = (
-    "Correctness",
-    "Security",
-    "Reliability",
-    "Performance",
-    "Maintainability",
-    "Observability",
-)
-
 
 def _strip_blockquote_prefix(text: str) -> str:
     """Strip leading `> ` or `>` markdown blockquote prefix from each line."""
@@ -177,10 +158,14 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
                     is_resolved = True
                 elif "Dismissed" in text:
                     is_dismissed = True
-                elif any(t in text for t in _FINDING_TYPES):
-                    finding_type = re.sub(r"[^\w\s-]", "", text).strip()
-                elif any(c in text for c in _FINDING_CATEGORIES):
-                    category = re.sub(r"[^\w\s]", "", text).strip()
+                else:
+                    # Dynamic: first non-status tag is type, second is category
+                    cleaned = re.sub(r"[^\w\s-]", "", text).strip()
+                    if cleaned:
+                        if not finding_type:
+                            finding_type = cleaned
+                        elif not category:
+                            category = cleaned
 
         if strikethrough_title is not None:
             title = strikethrough_title
