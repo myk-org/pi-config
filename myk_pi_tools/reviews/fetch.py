@@ -1269,7 +1269,8 @@ def run(
         output_dir: Directory for output JSON file.
 
     Returns:
-        Exit code (0 for success, 1 for error).
+        dict with keys (metadata, human, qodo, coderabbit) on success,
+        or int exit code (1) on error.
     """
     try:
         check_dependencies()
