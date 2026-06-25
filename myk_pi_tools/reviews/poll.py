@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -256,9 +258,11 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     _cleanup_requested = False  # Track if we already asked Qodo to clean up stickies
     _cleanup_response = ""  # Qodo's reply to our cleanup request
     cycle = 0
+    _result: dict | None = None
 
     while True:
         cycle += 1
+        has_actionable = False
         print_stderr(f"[poll] Cycle {cycle} for {owner_repo}#{pr_number} (source: qodo)...")
 
         # Step 1: Fetch reviews first
@@ -274,8 +278,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                 fetch_result["approved"] = False
                 fetch_result["qodo_cleanup_response"] = _cleanup_response
                 print_stderr("[poll] Found actionable Qodo comments.")
-                print(json.dumps(fetch_result, indent=2))
-                return 0
+                _result = fetch_result
+                break
             else:
                 print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
         else:
@@ -309,8 +313,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                 if _approval_detail:
                     print_approval_summary(_approval_detail)
                 fetch_result["qodo_cleanup_response"] = ""  # Clear — stale when approved
-                print(json.dumps(fetch_result, indent=2))
-                return 0
+                _result = fetch_result
+                break
             else:
                 _qodo_reviewing_since = None
                 # Check for stale sticky findings and request cleanup
@@ -335,14 +339,33 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                                     if isinstance(_fresh, dict):
                                         _fresh["qodo_cleanup_response"] = _cleanup_response
                                         _fresh["approved"] = False
-                                        print(json.dumps(_fresh, indent=2))
-                                        return 0
-                        except Exception:
-                            pass
+                                        _result = _fresh
+                                        break
+                        except Exception as e:
+                            print_stderr(f"[poll] Cleanup check failed: {e}")
+
+        if _result is not None:
+            break
 
         # No actionable result — sleep and loop
         print_stderr(f"[poll] No new Qodo comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
         time.sleep(_POLL_SLEEP_SECONDS)
+
+    # Single exit path — re-write file and print to stdout
+    _json_path = Path(output_dir) / f"pr-{_result['metadata']['pr_number']}-reviews.json"
+    _fd, _tmp_path = tempfile.mkstemp(
+        prefix=f"pr-{_result['metadata']['pr_number']}-reviews.json.",
+        dir=str(Path(output_dir)),
+    )
+    try:
+        with os.fdopen(_fd, "w") as f:
+            json.dump(_result, f, indent=2)
+        os.replace(_tmp_path, _json_path)
+    except Exception:
+        Path(_tmp_path).unlink(missing_ok=True)
+        raise
+    print(json.dumps(_result, indent=2))
+    return 0
 
 
 def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) -> int:
