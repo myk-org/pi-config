@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from myk_pi_tools.coderabbit.approved import is_approved
 from myk_pi_tools.coderabbit.rate_limit import (
@@ -207,6 +208,44 @@ def _retrigger_qodo_review(owner: str, repo: str, pr_number: str) -> bool:
         return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         print_stderr(f"[poll] Failed to post /agentic_review: {e}")
+        return False
+
+
+def _request_qodo_sticky_cleanup(owner: str, repo: str, pr_number: str) -> bool:
+    """Ask Qodo to re-evaluate sticky findings and remove resolved ones.
+
+    Posts a comment asking @qodo-code-review to check each remaining sticky
+    finding against the current code and remove only those that are fully addressed.
+
+    Returns True if the comment was posted successfully.
+    """
+    body = (
+        "@qodo-code-review\n\n"
+        "Please re-evaluate all remaining sticky findings against the current code.\n"
+        "For each finding, check if the referenced code has been fixed in subsequent commits.\n"
+        "Remove findings that are fully addressed. "
+        "Keep any findings where the issue is still present in the code."
+    )
+    try:
+        subprocess.run(
+            [
+                "gh",
+                "api",
+                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+                "-X",
+                "POST",
+                "-f",
+                f"body={body}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        print_stderr("[poll] Posted sticky cleanup request to @qodo-code-review.")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print_stderr(f"[poll] Failed to post sticky cleanup request: {e}")
         return False
 
 
@@ -422,6 +461,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     """
     owner_repo = f"{owner}/{repo}"
     _qodo_reviewing_since: float | None = None  # Track when "Looking for bugs" first appeared
+    _cleanup_requested = False  # Track if we already asked Qodo to clean up stickies
     cycle = 0
 
     while True:
@@ -508,6 +548,23 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                     fetch_result["approved"] = True
                     print(json.dumps(fetch_result, indent=2))
                     return 0
+
+                # Approval not granted — check for stale sticky findings
+                if not _cleanup_requested and not has_actionable:
+                    _review_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
+                    if _review_path.exists():
+                        try:
+                            _review_data = json.loads(_review_path.read_text())
+                            _has_stale = any(
+                                f.get("is_auto_skipped") and f.get("already_replied")
+                                for f in _review_data.get("qodo", [])
+                            )
+                            if _has_stale:
+                                print_stderr("[poll] Stale sticky findings detected — requesting Qodo cleanup.")
+                                if _request_qodo_sticky_cleanup(owner, repo, pr_number):
+                                    _cleanup_requested = True
+                        except Exception:
+                            pass
 
         # No actionable result — sleep and loop
         print_stderr(f"[poll] No new Qodo comments. Sleeping {_POLL_SLEEP_SECONDS}s before next cycle...")
