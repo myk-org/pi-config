@@ -162,7 +162,7 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
         const parentDir = path.dirname(lexical);
         try {
           const resolvedParent = realpathSync(parentDir);
-          if (!resolvedParent.startsWith("/tmp")) {
+          if (!resolvedParent.startsWith("/tmp/") && resolvedParent !== "/tmp") {
             return false; // Parent symlinks outside /tmp
           }
         } catch {

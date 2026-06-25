@@ -52,17 +52,19 @@ class TestFetchPrInfo:
 class TestRun:
     """Test the run function output."""
 
-    def test_output_contains_author(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Output JSON contains author field from user.login."""
-        mock_api_response = (
+    @staticmethod
+    def _fork_api_response() -> str:
+        return (
             '{"user": {"login": "Chenli-Hu"}, "head": {"sha": "abc",'
             ' "repo": {"full_name": "Chenli-Hu/repo"}}, "base": {"ref": "main",'
             ' "repo": {"full_name": "RedHatQE/repo"}}, "title": "test PR",'
             ' "state": "open", "body": "", "labels": [], "assignees": []}'
         )
 
+    def test_output_contains_author(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Output JSON contains author field from user.login."""
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value.stdout = mock_api_response
+            mock_run.return_value.stdout = self._fork_api_response()
             mock_run.return_value.returncode = 0
 
             run(["RedHatQE/repo", "503"])
@@ -71,7 +73,31 @@ class TestRun:
 
         output = json.loads(capsys.readouterr().out)
         assert output["author"] == "Chenli-Hu"
+
+    def test_output_contains_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Output JSON contains owner extracted from base repo."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.stdout = self._fork_api_response()
+            mock_run.return_value.returncode = 0
+
+            run(["RedHatQE/repo", "503"])
+
+        import json
+
+        output = json.loads(capsys.readouterr().out)
         assert output["owner"] == "RedHatQE"
+
+    def test_output_detects_fork(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """is_fork is True when head and base repos differ."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.stdout = self._fork_api_response()
+            mock_run.return_value.returncode = 0
+
+            run(["RedHatQE/repo", "503"])
+
+        import json
+
+        output = json.loads(capsys.readouterr().out)
         assert output["is_fork"] is True
 
     def test_output_detects_non_fork(self, capsys: pytest.CaptureFixture[str]) -> None:

@@ -42,6 +42,7 @@ export function registerDreaming(
   let lastCtx: any = null;
 
   let dreamInFlight = false;
+  let currentDreamId = "";
 
   function updateDreamStatus() {
     try {
@@ -58,6 +59,7 @@ export function registerDreaming(
     if (dreamInFlight) return; // Prevent concurrent dreams
     dreamInFlight = true;
     updateDreamStatus();
+    currentDreamId = "";  // Reset until we get the ID from spawnAsyncAgent
     const { agents } = discoverAgents(cwd, "user");
     const topicsDir = path.join(cwd, ".pi", "memory", "topics");
     const { id } = spawnAsyncAgent(
@@ -120,14 +122,17 @@ export function registerDreaming(
     );
     // Dream runs as fireAndForget async agent.
     // onComplete callback triggers rebuildAndOrganize when dream finishes.
+    currentDreamId = id;
     if (!id) {
       dreamInFlight = false;
       updateDreamStatus();
     } else {
       // Safety fallback: if onComplete never fires (runner crash/hang),
       // reset dreamInFlight after 30 min so future dreams aren't blocked.
+      // Capture the current dream ID to avoid cross-run races.
+      const dreamId = id;
       const fallbackTimer = setTimeout(() => {
-        if (dreamInFlight) {
+        if (dreamInFlight && currentDreamId === dreamId) {
           dreamInFlight = false;
           updateDreamStatus();
           console.debug("[dreaming] fallback: reset dreamInFlight after 30 min (onComplete never fired)");
