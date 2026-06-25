@@ -1253,6 +1253,208 @@ def fetch_review_body(owner: str, repo: str, pr_number: str, review_id: str) -> 
     return result if isinstance(result, dict) else None
 
 
+def is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | None = None) -> dict | None:
+    """Check if Qodo has approved the PR.
+
+    Returns a summary dict if approved, None if not approved.
+
+    Approved when:
+    1. Sticky comment has 0 unresolved findings (or all unresolved are already replied to)
+    2. Sticky has at least one resolved/dismissed finding (not empty)
+    3. Sticky updated_at is AFTER PR head commit date (Qodo finished reviewing latest)
+
+    Returns dict with keys:
+    - approved: True
+    - reason: str ("all_resolved" or "stale_sticky")
+    - total_findings: int (total in sticky, resolved + unresolved)
+    - resolved_count: int (resolved/dismissed by Qodo)
+    - unresolved_count: int (still open in sticky)
+    - findings: list of dicts with title, status, reply (from DB for already-replied)
+    """
+    from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+
+    # Get PR head SHA
+    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+    pr_data = run_gh_api(pr_endpoint)
+    if not isinstance(pr_data, dict):
+        return None
+    head_sha = pr_data.get("head", {}).get("sha", "")
+    if not head_sha:
+        return None
+
+    # Get commit date for PR HEAD
+    commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
+    commit_data = run_gh_api(commit_endpoint)
+    if not isinstance(commit_data, dict):
+        return None
+    commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
+    if not commit_date:
+        return None
+
+    # Find the Qodo sticky comment
+    if comments is None:
+        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+        comments = run_gh_api(endpoint, paginate=True)
+    if not comments or not isinstance(comments, list):
+        return None
+
+    _QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
+
+    for comment in comments:
+        author = comment.get("user", {}).get("login") if comment.get("user") else None
+        if author not in _QODO_USERS:
+            continue
+
+        body = comment.get("body", "")
+        if not is_qodo_sticky_comment(body):
+            continue
+
+        # Check sticky was updated AFTER the commit
+        sticky_updated = comment.get("updated_at", "")
+        if not sticky_updated or sticky_updated < commit_date:
+            print_stderr(f"[poll] Sticky updated {sticky_updated} but commit at {commit_date} — not yet reviewed.")
+            return None
+
+        # Parse for unresolved findings
+        unresolved = parse_qodo_sticky_comment(body)
+
+        # Count resolved findings from the sticky body
+        import re as _re
+
+        _prev_re = _re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", _re.MULTILINE)
+        _prev_match = _prev_re.search(body)
+        current_body = body[: _prev_match.start()] if _prev_match else body
+        resolved_count = current_body.count("Resolved</code>") + current_body.count("Dismissed</code>")
+        total_findings = resolved_count + len(unresolved)
+
+        if len(unresolved) > 0:
+            # Check if all unresolved findings were already replied to (stale sticky)
+            try:
+                from myk_pi_tools.db.query import ReviewDB as _ReviewDB
+
+                db = _ReviewDB(db_path=None)
+                replied = db.get_replied_sticky_findings(owner, repo, int(pr_number))
+
+                # Build lookup: (comment_id, body, code_diff) -> DB record
+                replied_map: dict[tuple[int, str, str], dict] = {}
+                for r in replied:
+                    cid = r.get("comment_id")
+                    rbody = r.get("body") or ""
+                    rcode_diff = r.get("code_diff") or ""
+                    if cid is not None:
+                        key = (int(cid), rbody, rcode_diff)
+                        existing = replied_map.get(key)
+                        if existing is None:
+                            replied_map[key] = r
+                        else:
+                            # Prefer records with meaningful replies over dedup artifacts
+                            existing_reply = existing.get("reply") or ""
+                            new_reply = r.get("reply") or ""
+                            if "Already replied" in existing_reply and "Already replied" not in new_reply and new_reply:
+                                replied_map[key] = r
+
+                # Check each unresolved finding
+                sticky_id = int(comment.get("id", 0))
+                all_replied = True
+                findings_summary = []
+                for finding in unresolved:
+                    finding_body = f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}"
+                    finding_code_diff = finding.get("code_diff") or ""
+                    key = (sticky_id, finding_body, finding_code_diff)
+                    db_record = replied_map.get(key)
+                    if db_record:
+                        findings_summary.append({
+                            "title": finding.get("title", ""),
+                            "finding_type": finding.get("finding_type", ""),
+                            "status": db_record.get("status", "unknown"),
+                            "reply": db_record.get("reply", ""),
+                        })
+                    else:
+                        all_replied = False
+                        break
+
+                if all_replied:
+                    print_stderr(
+                        f"[poll] Sticky has {len(unresolved)} unresolved finding(s),"
+                        f" but all already replied to (stale sticky)."
+                    )
+                    print_stderr("[poll] Treating stale sticky as approved.")
+                    return {
+                        "approved": True,
+                        "reason": "stale_sticky",
+                        "total_findings": total_findings,
+                        "resolved_count": resolved_count,
+                        "unresolved_count": len(unresolved),
+                        "findings": findings_summary,
+                    }
+            except Exception as e:
+                print_stderr(f"[poll] Warning: Could not check replied sticky findings: {e}")
+
+            print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
+            return None
+
+        # Check at least one resolved/dismissed finding exists
+        has_resolved = (
+            "✓ Resolved" in current_body
+            or "Resolved</code>" in current_body
+            or "✗ Dismissed" in current_body
+            or "Dismissed</code>" in current_body
+        )
+        if not has_resolved:
+            print_stderr("[poll] Sticky has no resolved findings — empty review.")
+            return None
+
+        # All checks passed — fully approved by Qodo
+        return {
+            "approved": True,
+            "reason": "all_resolved",
+            "total_findings": total_findings,
+            "resolved_count": resolved_count,
+            "unresolved_count": 0,
+            "findings": [],
+        }
+
+    # No sticky comment found
+    return None
+
+
+def print_approval_summary(approval: dict) -> None:
+    """Print a summary of the Qodo approval status."""
+    reason = approval.get("reason", "unknown")
+    total = approval.get("total_findings", 0)
+    resolved = approval.get("resolved_count", 0)
+    unresolved = approval.get("unresolved_count", 0)
+    findings = approval.get("findings", [])
+
+    print_stderr("")
+    print_stderr("[poll] === Qodo Approval Summary ===")
+    print_stderr(f"  Total findings: {total} ({resolved} resolved by Qodo, {unresolved} still in sticky)")
+
+    if reason == "all_resolved":
+        print_stderr("  Status: All findings resolved/dismissed by Qodo ✅")
+    elif reason == "stale_sticky":
+        print_stderr("  Status: Stale sticky — all unresolved findings already replied to")
+        if findings:
+            print_stderr("")
+            print_stderr("  Unresolved findings (already replied):")
+            for i, f in enumerate(findings, 1):
+                title = f.get("title", "unknown")
+                status = f.get("status", "unknown")
+                finding_type = f.get("finding_type", "")
+                reply = f.get("reply", "")
+                status_icon = {"addressed": "✅", "not_addressed": "⚠️", "skipped": "⏭️"}.get(status, "❓")
+                type_tag = f" [{finding_type}]" if finding_type else ""
+                print_stderr(f"    {i}. {status_icon} [{status}]{type_tag} {title}")
+                if reply:
+                    # Show first line of reply, truncated
+                    reason_line = reply.split("\n")[0].strip()
+                    if len(reason_line) > 100:
+                        reason_line = reason_line[:97] + "..."
+                    print_stderr(f"       Reply: {reason_line}")
+
+    print_stderr("")
+
+
 def run(
     review_url: str = "",
     include_resolved: bool = False,
@@ -1398,6 +1600,10 @@ def run(
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
         auto_skip_replied_findings(categorized.get("qodo", []))
 
+        # Check Qodo approval status
+        _approval = is_qodo_approved(owner, repo, str(pr_number))
+        _is_approved = bool(_approval and _approval.get("approved"))
+
         # Build final output
         final_output = {
             "metadata": {
@@ -1409,6 +1615,7 @@ def run(
             "human": categorized["human"],
             "qodo": categorized["qodo"],
             "coderabbit": categorized["coderabbit"],
+            "approved": _is_approved,
         }
 
         # Save to file atomically
@@ -1430,9 +1637,9 @@ def run(
         print_stderr(f"Saved to: {json_path}")
 
         # Count by category
-        human_count = len(final_output["human"])
-        qodo_count = len(final_output["qodo"])
-        coderabbit_count = len(final_output["coderabbit"])
+        human_count = len(categorized["human"])
+        qodo_count = len(categorized["qodo"])
+        coderabbit_count = len(categorized["coderabbit"])
         print_stderr(f"Categories: human={human_count}, qodo={qodo_count}, coderabbit={coderabbit_count}")
 
         # Count auto-skipped comments

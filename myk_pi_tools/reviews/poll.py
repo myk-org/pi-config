@@ -30,7 +30,7 @@ from myk_pi_tools.coderabbit.rate_limit import (
     run_trigger,
 )
 from myk_pi_tools.coderabbit.utils import find_summary_comment
-from myk_pi_tools.reviews.fetch import get_pr_info, print_stderr, run_gh_api
+from myk_pi_tools.reviews.fetch import get_pr_info, is_qodo_approved, print_approval_summary, print_stderr, run_gh_api
 from myk_pi_tools.reviews.fetch import run as fetch_run
 
 _RATE_LIMIT_BUFFER_SECONDS = 30
@@ -176,7 +176,9 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | N
         if author != "qodo-code-review[bot]":
             continue
         body = comment.get("body", "")
-        if any(marker in body for marker in _QODO_REVIEWING_MARKERS):
+        # Only match transient review comments — they start with <h3> heading.
+        # Don't match reply comments that quote the phrase in prose text.
+        if any(f"<h3>{marker}</h3>" in body or body.strip().startswith(marker) for marker in _QODO_REVIEWING_MARKERS):
             print_stderr("[poll] Qodo review in progress (Looking for bugs).")
             return True
 
@@ -249,208 +251,6 @@ def _request_qodo_sticky_cleanup(owner: str, repo: str, pr_number: str) -> bool:
         return False
 
 
-def _is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | None = None) -> dict | None:
-    """Check if Qodo has approved the PR.
-
-    Returns a summary dict if approved, None if not approved.
-
-    Approved when:
-    1. Sticky comment has 0 unresolved findings (or all unresolved are already replied to)
-    2. Sticky has at least one resolved/dismissed finding (not empty)
-    3. Sticky updated_at is AFTER PR head commit date (Qodo finished reviewing latest)
-
-    Returns dict with keys:
-    - approved: True
-    - reason: str ("all_resolved" or "stale_sticky")
-    - total_findings: int (total in sticky, resolved + unresolved)
-    - resolved_count: int (resolved/dismissed by Qodo)
-    - unresolved_count: int (still open in sticky)
-    - findings: list of dicts with title, status, reply (from DB for already-replied)
-    """
-    from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
-
-    # Get PR head SHA
-    pr_endpoint = f"/repos/{owner}/{repo}/pulls/{pr_number}"
-    pr_data = run_gh_api(pr_endpoint)
-    if not isinstance(pr_data, dict):
-        return None
-    head_sha = pr_data.get("head", {}).get("sha", "")
-    if not head_sha:
-        return None
-
-    # Get commit date for PR HEAD
-    commit_endpoint = f"/repos/{owner}/{repo}/commits/{head_sha}"
-    commit_data = run_gh_api(commit_endpoint)
-    if not isinstance(commit_data, dict):
-        return None
-    commit_date = commit_data.get("commit", {}).get("committer", {}).get("date", "")
-    if not commit_date:
-        return None
-
-    # Find the Qodo sticky comment
-    if comments is None:
-        endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-        comments = run_gh_api(endpoint, paginate=True)
-    if not comments or not isinstance(comments, list):
-        return None
-
-    QODO_USERS = {"qodo-code-review[bot]", "qodo-code-review"}
-
-    for comment in comments:
-        author = comment.get("user", {}).get("login") if comment.get("user") else None
-        if author not in QODO_USERS:
-            continue
-
-        body = comment.get("body", "")
-        if not is_qodo_sticky_comment(body):
-            continue
-
-        # Check sticky was updated AFTER the commit
-        sticky_updated = comment.get("updated_at", "")
-        if not sticky_updated or sticky_updated < commit_date:
-            print_stderr(f"[poll] Sticky updated {sticky_updated} but commit at {commit_date} — not yet reviewed.")
-            return None
-
-        # Parse for unresolved findings
-        unresolved = parse_qodo_sticky_comment(body)
-
-        # Count resolved findings from the sticky body
-        import re as _re
-
-        _prev_re = _re.compile(r"^\s*<!-- FOLDED_SECTION_START -->\s*$", _re.MULTILINE)
-        _prev_match = _prev_re.search(body)
-        current_body = body[: _prev_match.start()] if _prev_match else body
-        resolved_count = current_body.count("Resolved</code>") + current_body.count("Dismissed</code>")
-        total_findings = resolved_count + len(unresolved)
-
-        if len(unresolved) > 0:
-            # Check if all unresolved findings were already replied to (stale sticky)
-            try:
-                from myk_pi_tools.db.query import ReviewDB
-
-                db = ReviewDB(db_path=None)
-                replied = db.get_replied_sticky_findings(owner, repo, int(pr_number))
-
-                # Build lookup: (comment_id, body, code_diff) -> DB record
-                replied_map: dict[tuple[int, str, str], dict] = {}
-                for r in replied:
-                    cid = r.get("comment_id")
-                    rbody = r.get("body") or ""
-                    rcode_diff = r.get("code_diff") or ""
-                    if cid is not None:
-                        key = (int(cid), rbody, rcode_diff)
-                        existing = replied_map.get(key)
-                        if existing is None:
-                            replied_map[key] = r
-                        else:
-                            # Prefer records with meaningful replies over dedup artifacts
-                            existing_reply = existing.get("reply") or ""
-                            new_reply = r.get("reply") or ""
-                            if "Already replied" in existing_reply and "Already replied" not in new_reply and new_reply:
-                                replied_map[key] = r
-
-                # Check each unresolved finding
-                sticky_id = int(comment.get("id", 0))
-                all_replied = True
-                findings_summary = []
-                for finding in unresolved:
-                    finding_body = f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}"
-                    finding_code_diff = finding.get("code_diff") or ""
-                    key = (sticky_id, finding_body, finding_code_diff)
-                    db_record = replied_map.get(key)
-                    if db_record:
-                        findings_summary.append({
-                            "title": finding.get("title", ""),
-                            "finding_type": finding.get("finding_type", ""),
-                            "status": db_record.get("status", "unknown"),
-                            "reply": db_record.get("reply", ""),
-                        })
-                    else:
-                        all_replied = False
-                        break
-
-                if all_replied:
-                    print_stderr(
-                        f"[poll] Sticky has {len(unresolved)} unresolved finding(s),"
-                        f" but all already replied to (stale sticky)."
-                    )
-                    print_stderr("[poll] Treating stale sticky as approved.")
-                    return {
-                        "approved": True,
-                        "reason": "stale_sticky",
-                        "total_findings": total_findings,
-                        "resolved_count": resolved_count,
-                        "unresolved_count": len(unresolved),
-                        "findings": findings_summary,
-                    }
-            except Exception as e:
-                print_stderr(f"[poll] Warning: Could not check replied sticky findings: {e}")
-
-            print_stderr(f"[poll] Sticky has {len(unresolved)} unresolved finding(s).")
-            return None
-
-        # Check at least one resolved/dismissed finding exists
-        has_resolved = (
-            "✓ Resolved" in current_body
-            or "Resolved</code>" in current_body
-            or "✗ Dismissed" in current_body
-            or "Dismissed</code>" in current_body
-        )
-        if not has_resolved:
-            print_stderr("[poll] Sticky has no resolved findings — empty review.")
-            return None
-
-        # All checks passed — fully approved by Qodo
-        return {
-            "approved": True,
-            "reason": "all_resolved",
-            "total_findings": total_findings,
-            "resolved_count": resolved_count,
-            "unresolved_count": 0,
-            "findings": [],
-        }
-
-    # No sticky comment found
-    return None
-
-
-def _print_approval_summary(approval: dict) -> None:
-    """Print a summary of the Qodo approval status."""
-    reason = approval.get("reason", "unknown")
-    total = approval.get("total_findings", 0)
-    resolved = approval.get("resolved_count", 0)
-    unresolved = approval.get("unresolved_count", 0)
-    findings = approval.get("findings", [])
-
-    print_stderr("")
-    print_stderr("[poll] === Qodo Approval Summary ===")
-    print_stderr(f"  Total findings: {total} ({resolved} resolved by Qodo, {unresolved} still in sticky)")
-
-    if reason == "all_resolved":
-        print_stderr("  Status: All findings resolved/dismissed by Qodo ✅")
-    elif reason == "stale_sticky":
-        print_stderr("  Status: Stale sticky — all unresolved findings already replied to")
-        if findings:
-            print_stderr("")
-            print_stderr("  Unresolved findings (already replied):")
-            for i, f in enumerate(findings, 1):
-                title = f.get("title", "unknown")
-                status = f.get("status", "unknown")
-                finding_type = f.get("finding_type", "")
-                reply = f.get("reply", "")
-                status_icon = {"addressed": "✅", "not_addressed": "⚠️", "skipped": "⏭️"}.get(status, "❓")
-                type_tag = f" [{finding_type}]" if finding_type else ""
-                print_stderr(f"    {i}. {status_icon} [{status}]{type_tag} {title}")
-                if reply:
-                    # Show first line of reply, truncated
-                    reason_line = reply.split("\n")[0].strip()
-                    if len(reason_line) > 100:
-                        reason_line = reason_line[:97] + "..."
-                    print_stderr(f"       Reply: {reason_line}")
-
-    print_stderr("")
-
-
 def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, output_dir: str) -> int:
     """Poll for Qodo reviews in a loop until approved or new comments.
 
@@ -477,79 +277,48 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
             _print_poll_summary(pr_number, output_dir)
             has_actionable = _has_actionable_qodo_comments(pr_number, output_dir)
             if has_actionable:
-                # Before returning, check if Qodo is mid-review — if so, wait for it to finish
-                _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-                _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
-                if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
-                    if _qodo_reviewing_since is None:
-                        _qodo_reviewing_since = time.time()
-                    elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
-                        print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
-                        if _retrigger_qodo_review(owner, repo, pr_number):
-                            _qodo_reviewing_since = time.time()  # Reset timer on success
-                        else:
-                            # Cooldown: retry after ~30 min (shift timer to 30 min before threshold)
-                            _qodo_reviewing_since = (
-                                time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
-                            )
-                    print_stderr(
-                        "[poll] Qodo is currently reviewing —"
-                        " waiting for review to complete before processing findings."
-                    )
-                else:
-                    _qodo_reviewing_since = None  # Reset — Qodo finished reviewing
-                    print_stderr("[poll] Found actionable Qodo comments.")
-                    assert isinstance(fetch_result, dict)
-                    fetch_result["approved"] = False
-                    print(json.dumps(fetch_result, indent=2))
-                    return 0
+                assert isinstance(fetch_result, dict)
+                fetch_result["approved"] = False
+                print_stderr("[poll] Found actionable Qodo comments.")
+                print(json.dumps(fetch_result, indent=2))
+                return 0
             else:
                 print_stderr("[poll] No actionable Qodo comments (all auto-skipped or none found).")
         else:
             print_stderr(f"[poll] Fetch failed (exit code {fetch_result}). Will retry in {_POLL_SLEEP_SECONDS}s...")
 
-        # Step 2: Only check approval AFTER confirming 0 new comments
-        # This prevents approving before processing new findings
+        # Step 2: Check approval and handle stuck reviews
         if fetch_ok:
-            # Fetch PR comments once — reused by mid-review and approval checks
+            # Check for stuck Qodo reviews (mid-review detection)
             _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
             _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
-            # Don't check approval if Qodo is mid-review — sticky is about to change
             if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
                 if _qodo_reviewing_since is None:
                     _qodo_reviewing_since = time.time()
                 elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
                     print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
                     if _retrigger_qodo_review(owner, repo, pr_number):
-                        _qodo_reviewing_since = time.time()  # Reset timer on success
+                        _qodo_reviewing_since = time.time()
                     else:
-                        # Cooldown: retry after ~30 min (shift timer to 30 min before threshold)
                         _qodo_reviewing_since = (
                             time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
                         )
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
-            else:
-                _qodo_reviewing_since = None  # Reset — Qodo finished reviewing
+            elif isinstance(fetch_result, dict) and fetch_result.get("approved"):
+                _qodo_reviewing_since = None
                 print_stderr("[poll] Checking Qodo approval...")
-                approval = _is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
-                if approval:
-                    reason = approval.get("reason", "unknown")
-                    if reason == "all_resolved":
-                        print_stderr("[poll] Qodo approved — all findings resolved.")
-                    elif reason == "stale_sticky":
-                        print_stderr("[poll] Qodo approved — stale sticky, all unresolved findings already replied to.")
-                    else:
-                        print_stderr(f"[poll] Qodo approved — {reason}.")
-                    # Print approval summary
-                    _print_approval_summary(approval)
-                    assert isinstance(fetch_result, dict)
-                    fetch_result["approved"] = True
-                    print(json.dumps(fetch_result, indent=2))
-                    return 0
-
-                # Approval not granted — check for stale sticky findings
+                print_stderr("[poll] Qodo approved — all findings resolved.")
+                # Get approval details for summary
+                _approval_detail = is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
+                if _approval_detail:
+                    print_approval_summary(_approval_detail)
+                print(json.dumps(fetch_result, indent=2))
+                return 0
+            else:
+                _qodo_reviewing_since = None
+                # Check for stale sticky findings and request cleanup
                 if not _cleanup_requested and not has_actionable:
                     _review_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
                     if _review_path.exists():
