@@ -208,7 +208,11 @@ def _retrigger_qodo_review(owner: str, repo: str, pr_number: str) -> bool:
         )
         print_stderr("[poll] Posted /agentic_review to re-trigger stuck Qodo review.")
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else ""
+        print_stderr(f"[poll] Failed to post /agentic_review (rc={e.returncode}): {stderr}")
+        return False
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print_stderr(f"[poll] Failed to post /agentic_review: {e}")
         return False
 
@@ -246,7 +250,11 @@ def _request_qodo_sticky_cleanup(owner: str, repo: str, pr_number: str) -> bool:
         )
         print_stderr("[poll] Posted sticky cleanup request to @qodo-code-review.")
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else ""
+        print_stderr(f"[poll] Failed to post sticky cleanup request (rc={e.returncode}): {stderr}")
+        return False
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print_stderr(f"[poll] Failed to post sticky cleanup request: {e}")
         return False
 
