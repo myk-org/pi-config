@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -151,6 +152,8 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
 # Do NOT add broad markers — they false-positive against PR summary/description text.
 _QODO_REVIEWING_MARKERS = ("Looking for bugs?",)
 
+_QODO_STUCK_TIMEOUT_SECONDS = 3600  # 1 hour — if "Looking for bugs" persists, Qodo is stuck
+
 
 def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
     """Check if Qodo is currently reviewing the PR.
@@ -175,6 +178,34 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | N
             return True
 
     return False
+
+
+def _retrigger_qodo_review(owner: str, repo: str, pr_number: str) -> bool:
+    """Post /agentic_review comment to re-trigger a stuck Qodo review.
+
+    Returns True if the comment was posted successfully.
+    """
+    try:
+        subprocess.run(
+            [
+                "gh",
+                "api",
+                f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+                "-X",
+                "POST",
+                "-f",
+                "body=/agentic_review",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        print_stderr("[poll] Posted /agentic_review to re-trigger stuck Qodo review.")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print_stderr(f"[poll] Failed to post /agentic_review: {e}")
+        return False
 
 
 def _is_qodo_approved(owner: str, repo: str, pr_number: str, comments: list | None = None) -> dict | None:
@@ -388,6 +419,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     3. If not approved, sleep and retry
     """
     owner_repo = f"{owner}/{repo}"
+    _qodo_reviewing_since: float | None = None  # Track when "Looking for bugs" first appeared
     cycle = 0
 
     while True:
@@ -406,11 +438,18 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                 _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
                 _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
                 if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
+                    if _qodo_reviewing_since is None:
+                        _qodo_reviewing_since = time.time()
+                    elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
+                        print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
+                        _retrigger_qodo_review(owner, repo, pr_number)
+                        _qodo_reviewing_since = time.time()  # Reset timer after re-trigger
                     print_stderr(
                         "[poll] Qodo is currently reviewing —"
                         " waiting for review to complete before processing findings."
                     )
                 else:
+                    _qodo_reviewing_since = None  # Reset — Qodo finished reviewing
                     print_stderr("[poll] Found actionable Qodo comments.")
                     return 0
             else:
@@ -426,10 +465,17 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
             _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
             # Don't check approval if Qodo is mid-review — sticky is about to change
             if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
+                if _qodo_reviewing_since is None:
+                    _qodo_reviewing_since = time.time()
+                elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
+                    print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
+                    _retrigger_qodo_review(owner, repo, pr_number)
+                    _qodo_reviewing_since = time.time()  # Reset timer after re-trigger
                 print_stderr(
                     "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
                 )
             else:
+                _qodo_reviewing_since = None  # Reset — Qodo finished reviewing
                 print_stderr("[poll] Checking Qodo approval...")
                 approval = _is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
                 if approval:
