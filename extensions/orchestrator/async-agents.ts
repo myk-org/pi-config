@@ -56,6 +56,7 @@ export interface AsyncJob {
   durationMs?: number;
   delivered?: boolean;
   fireAndForget?: boolean;
+  onComplete?: () => void;
   groupId?: string;
   taskId?: string;
   cwd?: string;
@@ -128,7 +129,7 @@ export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -266,7 +267,12 @@ export function registerAsyncAgents(
 
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
-      for (const j of groupJobs) j.delivered = true;
+      for (const j of groupJobs) {
+        if (j.onComplete) {
+          try { j.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${j.id}: ${e?.message}`); }
+        }
+        j.delivered = true;
+      }
       // Clean up result files for fire-and-forget groups
       for (const j of groupJobs) {
         const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
@@ -379,6 +385,10 @@ export function registerAsyncAgents(
         }, { triggerTurn: true, deliverAs: "followUp" });
       }
 
+      // Invoke onComplete callback if registered (e.g., dreaming → rebuildAndOrganize)
+      if (job.onComplete) {
+        try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+      }
       job.delivered = true;
       // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
@@ -411,7 +421,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -529,6 +539,7 @@ export function registerAsyncAgents(
       startedAt: Date.now(),
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
+      onComplete: options?.onComplete,
       groupId: options?.groupId,
       taskId: options?.taskId,
       cwd,

@@ -31,7 +31,7 @@ const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
 
 export function registerDreaming(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string; onComplete?: () => void }) => { id: string; error?: string },
 ): void {
   // Only the orchestrator (top-level pi) runs dreaming — skip in subagent children
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -42,7 +42,6 @@ export function registerDreaming(
   let lastCtx: any = null;
 
   let dreamInFlight = false;
-  let activePollInterval: ReturnType<typeof setInterval> | null = null;
 
   function updateDreamStatus() {
     try {
@@ -109,41 +108,19 @@ export function registerDreaming(
       `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
       cwd,
       agents,
-      { fireAndForget: true, name: "Dream" },
+      {
+        fireAndForget: true,
+        name: "Dream",
+        onComplete: () => {
+          dreamInFlight = false;
+          updateDreamStatus();
+          try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
+        },
+      },
     );
-    // Poll the async agent status file until dream completes
-    if (id) {
-      // Scan project dir for the worker's status file
-      const projectDir = getProjectTmpDir(cwd);
-      const statusPath = path.join(projectDir, id, "status.json");
-      const pollStart = Date.now();
-      const POLL_TIMEOUT_MS = 30 * 60 * 1000; // 30 min max
-      if (activePollInterval) clearInterval(activePollInterval);
-      const pollInterval = setInterval(() => {
-        try {
-          // Timeout guard — don't poll forever
-          if (Date.now() - pollStart > POLL_TIMEOUT_MS) {
-            clearInterval(pollInterval);
-            activePollInterval = null;
-            dreamInFlight = false;
-            updateDreamStatus();
-            console.debug("[dreaming] poll timed out after 30 min");
-            return;
-          }
-          if (!fs.existsSync(statusPath)) return;
-          const status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
-          if (status.state === "complete" || status.state === "failed") {
-            clearInterval(pollInterval);
-            activePollInterval = null;
-            dreamInFlight = false;
-            updateDreamStatus();
-            try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
-          }
-        } catch { /* poll is best-effort */ }
-      }, 15_000); // Check every 15 seconds
-      if (pollInterval.unref) pollInterval.unref();
-      activePollInterval = pollInterval;
-    } else {
+    // Dream runs as fireAndForget async agent.
+    // onComplete callback triggers rebuildAndOrganize when dream finishes.
+    if (!id) {
       dreamInFlight = false;
       updateDreamStatus();
     }
@@ -245,7 +222,6 @@ export function registerDreaming(
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
-    if (activePollInterval) { clearInterval(activePollInterval); activePollInterval = null; }
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
     // Skip dreaming in one-shot modes (print/json)
     if (ctx.mode === "print" || ctx.mode === "json") return;

@@ -152,8 +152,8 @@ describe("isRmInProjectTmp", () => {
     assert.ok(!isRmInProjectTmp("rm -rf .pi/tmp/../../etc/passwd", testDir));
   });
 
-  it("blocks rm -rf targeting paths outside project", () => {
-    assert.ok(!isRmInProjectTmp("rm -rf /tmp/something", testDir));
+  it("allows rm -rf targeting /tmp/<something>", () => {
+    assert.ok(isRmInProjectTmp("rm -rf /tmp/something", testDir));
   });
 
   it("blocks rm -rf on non-existent paths (can't verify safety)", () => {
@@ -201,6 +201,18 @@ describe("isRmInProjectTmp", () => {
 
   it("blocks sudo rm -rf even when targeting .pi/tmp/", () => {
     assert.ok(!isRmInProjectTmp(`sudo rm -rf ${join(tmpPath, "worker-123")}`, testDir));
+  });
+
+  it("allows rm -rf /tmp/somefile", () => {
+    assert.ok(isRmInProjectTmp("rm -rf /tmp/test-output-123", "/repo"));
+  });
+
+  it("blocks rm -rf /tmp (bare /tmp without subpath)", () => {
+    assert.ok(!isRmInProjectTmp("rm -rf /tmp", "/repo"));
+  });
+
+  it("allows rm -rf /tmp/nested/path", () => {
+    assert.ok(isRmInProjectTmp("rm -rf /tmp/pi-test/output.log", "/repo"));
   });
 
   it("allows rm -rf with quoted path in .pi/tmp/", () => {
