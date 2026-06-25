@@ -56,7 +56,7 @@ class TestIsQodoApproved:
         sticky_body = (
             "<h3>Code Review by Qodo</h3>\n"
             "<!-- QODO_CODE_REVIEW_STICKY -->\n"
-            "<details><summary>🐞 <b>Bug title</b></summary>\n"
+            "<details><summary>1. Bug title <code>🐞 Bug</code> <code>Category</code></summary>\n"
             "description\n</details>\n"
         )
         responses = {
