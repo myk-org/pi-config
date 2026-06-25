@@ -159,13 +159,23 @@ def parse_qodo_sticky_comment(body: str) -> list[dict[str, Any]]:
                 elif "Dismissed" in text:
                     is_dismissed = True
                 else:
-                    # Dynamic: first non-status tag is type, second is category
+                    # Dynamic: type tags have known emoji prefixes (🐞📘📎📜),
+                    # category tags have other emoji prefixes (≡⛨☼➹⚙◔▣✧).
+                    # Fall back to positional assignment if no emoji detected.
                     cleaned = re.sub(r"[^\w\s-]", "", text).strip()
-                    if cleaned:
-                        if not finding_type:
-                            finding_type = cleaned
-                        elif not category:
-                            category = cleaned
+                    if not cleaned:
+                        continue
+                    # Check for type-indicator emojis in raw text
+                    _type_emojis = ("🐞", "📘", "📎", "📜", "⚠")
+                    _has_type_emoji = any(e in text for e in _type_emojis)
+                    if _has_type_emoji and not finding_type:
+                        finding_type = cleaned
+                    elif not _has_type_emoji and not category:
+                        category = cleaned
+                    elif not finding_type:
+                        finding_type = cleaned
+                    elif not category:
+                        category = cleaned
 
         if strikethrough_title is not None:
             title = strikethrough_title
