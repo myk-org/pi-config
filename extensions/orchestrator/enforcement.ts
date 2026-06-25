@@ -92,8 +92,15 @@ function resolveEffectiveCwd(command: string, sessionCwd: string): string {
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
 
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
     cachedTrailerSelection = null;
+    // Set comment signature env var for CLI tools to read
+    if (getSetting(ctx.cwd, "comment_signature")) {
+      const modelId = (ctx as any).model?.id || "unknown";
+      process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
+    } else {
+      delete process.env.PI_COMMENT_SIGNATURE;
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {

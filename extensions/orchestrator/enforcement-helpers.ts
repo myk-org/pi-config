@@ -162,7 +162,10 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
         const parentDir = path.dirname(lexical);
         try {
           const resolvedParent = realpathSync(parentDir);
-          if (!resolvedParent.startsWith("/tmp/") && resolvedParent !== "/tmp") {
+          // Resolve /tmp itself to handle systems where /tmp is a symlink (e.g., /private/tmp on macOS)
+          let resolvedTmp: string;
+          try { resolvedTmp = realpathSync("/tmp"); } catch { resolvedTmp = "/tmp"; }
+          if (!resolvedParent.startsWith(resolvedTmp + "/") && resolvedParent !== resolvedTmp) {
             return false; // Parent symlinks outside /tmp
           }
         } catch {

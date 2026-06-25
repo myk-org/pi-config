@@ -276,7 +276,9 @@ def post_review(
     Returns:
         ReviewResult with status and details.
     """
-    review_body = generate_review_body(comments)
+    from myk_pi_tools.comment_signature import append_signature
+
+    review_body = append_signature(generate_review_body(comments))
 
     # Build review payload
     payload = {
@@ -287,7 +289,7 @@ def post_review(
             {
                 "path": c.path,
                 "line": c.line,
-                "body": c.body,
+                "body": append_signature(c.body),
                 "side": "RIGHT",
             }
             for c in comments

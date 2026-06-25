@@ -151,6 +151,9 @@ def post_thread_reply(thread_id: str, body: str) -> bool:
 
     Returns True on success, False on failure.
     """
+    from myk_pi_tools.comment_signature import append_signature
+
+    body = append_signature(body)
     # GitHub comment bodies have a size limit (~65KB); truncate to avoid failures
     max_len = 60000
     if len(body) > max_len:
@@ -401,7 +404,9 @@ def _post_chunk(
         Tuple of (success, list of posted_at update dicts).
     """
     truncated_suffix = "\n...[truncated]"
-    chunk_body = header + "".join(text for text, _ in chunk).strip()
+    from myk_pi_tools.comment_signature import append_signature
+
+    chunk_body = append_signature(header + "".join(text for text, _ in chunk).strip())
     if total_chunks > 1:
         chunk_body = f"(Part {chunk_idx + 1}/{total_chunks})\n\n" + chunk_body
 

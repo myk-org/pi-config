@@ -436,6 +436,7 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `use_worktrees` | boolean | disabled | `PI_USE_WORKTREES` | Force worktree-only workflow |
 | `dream_interval_hours` | number | 3 | `PI_DREAM_INTERVAL_HOURS` | Dream frequency |
 | `dco` | boolean | disabled | `PI_DCO` | Add --signoff to all commits (DCO) |
+| `comment_signature` | boolean | disabled | `PI_COMMENT_SIGNATURE` | Append AI signature to all PR comments |
 
 Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
