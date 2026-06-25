@@ -16,6 +16,12 @@
   "devDependencies": {
     "tsx": "^4.0.0"
   },
+  "allowScripts": {
+    "onnxruntime-node": true,
+    "sharp": true,
+    "protobufjs": true,
+    "esbuild": true
+  },
   "overrides": {
     "undici": ">=6.27.0 <9.0.0"
   },
