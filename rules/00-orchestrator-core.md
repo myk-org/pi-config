@@ -16,6 +16,8 @@ The orchestrator delegates — never implements directly.
 **Allowed direct actions:** read files, run `mcpl`, ask questions, analyze, plan,
 route to agents via `subagent`, execute slash commands AND all their internal operations.
 
+Never use edit, write, or bash directly — delegate to specialists. Exception: `mcpl` via bash for MCP discovery.
+
 **Always delegate via `subagent`:**
 
 - Code changes (edit/write) → language specialist
