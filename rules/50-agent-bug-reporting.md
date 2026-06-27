@@ -73,6 +73,9 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 
 ## Impact
 [How this affects users/workflows]
+
+## Context
+[Any additional context about when/how the bug was discovered]
 ```
 
 ## Key Rules

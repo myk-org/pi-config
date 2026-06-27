@@ -71,6 +71,9 @@ When user confirms, **delegate to git-expert**: fetch main (`git fetch origin ma
 
 Branch types: `feat/`, `fix/`, `refactor/`, `docs/` — always prefixed with `issue-<N>-`.
 
+After creating the issue, present the issue number, title, and URL, then ask:
+'Do you want to work on it now?' Wait for explicit confirmation before creating the branch or starting implementation.
+
 ---
 
 ## Issue Format

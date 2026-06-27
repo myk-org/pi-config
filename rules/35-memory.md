@@ -149,5 +149,6 @@ Triggered by `/dream` (manual) or session shutdown (automatic).
 ## Skill Creation (Procedural Memory)
 
 Memory stores facts; **skills store procedures.**
-When you complete a multi-step workflow (3+ steps, trial-and-error, or non-obvious commands), save it as a skill via `/create-skill <name>`.
+When you complete a multi-step workflow (3+ steps, or doing the same multi-step task for the second time,
+trial-and-error, or non-obvious commands), save it as a skill via `/create-skill <name>`.
 Don't create skills for simple one-step tasks or standard workflows already covered by existing skills.

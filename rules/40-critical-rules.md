@@ -1,6 +1,6 @@
 # Critical Rules
 
-## Questions Are Not Instructions
+## Questions Are Not Instructions (MANDATORY)
 
 When the user asks a question, ONLY answer it. Do not modify files, run state-changing commands,
 create branches/PRs/issues, or take any action beyond reading/searching.
@@ -8,7 +8,7 @@ A question mark means answer only — the user will tell you when to act.
 
 ---
 
-## Task Focus
+## Task Focus (MANDATORY)
 
 When executing a multi-step workflow, never abandon it for a side question. Answer the question,
 then immediately resume the workflow from where you left off. After every response, ask yourself:
@@ -16,7 +16,7 @@ was I in a workflow? If yes, what's the next step?
 
 ---
 
-## Parallel Execution
+## Parallel Execution (MANDATORY)
 
 Before every response, identify operations that can run in parallel and execute them all in one message.
 
@@ -26,7 +26,9 @@ Before every response, identify operations that can run in parallel and execute 
 ### Async Agents
 
 Use `async: true` for independent tasks (reviews, research, polling, monitoring, CI checks) — any task where you don't need the result immediately.
+Only use sync when the very next step depends on this agent's output.
 After spawning async agents, end your turn — results arrive automatically as a follow-up message.
+(`fireAndForget: true` agents are silent — no follow-up.)
 
 Do NOT write bash loops, sleep commands, or poll for results after spawning async agents.
 
@@ -62,6 +64,7 @@ git worktree remove .worktrees/pr-42  # when done
 ## User Interaction
 
 When you need user input (approvals, selections, confirmations), always use the `ask_user` tool — never ask via plain text in your response.
+Provide clear options; include 'no'/'cancel' when appropriate.
 
 ---
 
@@ -83,7 +86,9 @@ After presenting your analysis, respect the user's decision.
 
 ## External Code Security Audit
 
-Before adopting external code from an untrusted source, delegate a full security audit to `security-auditor` and only proceed if the verdict is safe.
+Before adopting external code from an untrusted source, delegate a full security audit to `security-auditor`
+and only proceed if verdict is ✅ SAFE or ⚠️ CAUTION with acceptable risks.
+If ❌ UNSAFE — do not use, inform the user with findings.
 
 | Source | Audit approach |
 | --------------- | --------------------------------------------------------------------------- |
