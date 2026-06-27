@@ -202,6 +202,16 @@ Rules are loaded from three directories (later layers override same-filename ent
 - Missing directories are silently skipped.
 - Changes take effect on the **next pi session** — no restart of running sessions.
 
+### Writing Effective Rules
+
+- Fewer lines = more compliance. Compress rules to one sentence per concept.
+- Reserve MANDATORY/NEVER/FORBIDDEN for actions that cause data loss, security issues, or irreversible changes. When everything is critical, nothing stands out.
+- Use precise language — ambiguous rules get exploited. "Never use bash" contradicts "slash commands execute directly" unless scoped: "Outside slash commands, never use bash."
+- Keep one ❌/✅ anti-pattern example per section only when it shows a specific recurring mistake. Generic examples ("DO answer the question") add nothing.
+- Merge related sub-sections that say the same thing from different angles into one section.
+- Use numbered checklists instead of ASCII flowcharts — fewer tokens, easier to follow sequentially.
+- Never move rules between files, only compress within each file.
+
 ### Async-Only Agents
 
 Some agents are enforced to only run with `async: true` — sync calls are automatically
@@ -221,39 +231,31 @@ waiting for long-running agents.
 
 ### Project-Scoped Temp Directories
 
-All async agent temp files live under project-scoped subdirectories:
+All async agent temp files live under `.pi/tmp/`:
 
 ```text
 .pi/tmp/
-├── debug.log                    # Async debug log
-├── cron-<pid>-<suffix>.json     # Cron task state (session-unique suffix prevents container PID collisions)
-├── .repeat-<pid>.json           # Repeat command detection
-├── nvim-<pid>-<ts>.lua          # Nvim integration (ephemeral)
-├── nvim-qf-<pid>-<ts>.json      # Nvim quickfix data (ephemeral)
-├── async-cfg-<id>.json          # Async runner config (ephemeral)
-├── subagent-<random>/           # Subagent prompt temp dir (ephemeral)
-├── async-results-pid-<pid>-<starttime>/  # Async agent completion results (starttime prevents container PID collisions)
-└── worker-<id>/                 # Async agent working dir
-    ├── status.json              # Agent state (running/complete/failed)
-    ├── session.json             # Parent PID + starttime for zombie detection
-    ├── output.log               # Agent output
-    └── system-prompt.md         # Agent system prompt
+├── debug.log                                 # Async debug log
+├── cron-<pid>-<suffix>.json                  # Cron task state
+├── async-results-pid-<pid>-<starttime>/      # Async agent completion results
+└── worker-<id>/                              # Async agent working dir
+    ├── status.json                           # Agent state (running/complete/failed)
+    ├── session.json                          # Parent PID + starttime for zombie detection
+    ├── output.log                            # Agent output
+    └── system-prompt.md                      # Agent system prompt
 ```
 
-**Zombie cleanup:** On `session_start`, scans project dir for dead agents.
-Checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` field 22.
-Dead parent = zombie = delete.
+**Zombie cleanup:** On `session_start`, checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` — dead parent = zombie = delete.
 
 **Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — returns `<cwd>/.pi/tmp/`, creates dir if missing.
 
-**Enforcement:** Recursive removal (`rm -rf`) targeting paths within `.pi/tmp/` or `/tmp/<something>` (but not bare `/tmp`) is silently allowed without dangerous-command confirmation.
-Paths are resolved via `realpathSync()` to prevent symlink traversal.
-Read-only commands (`grep`, `cat`, etc.) containing dangerous patterns in their arguments are also excluded from confirmation prompts.
+**Enforcement:** `rm -rf` within `.pi/tmp/` or `/tmp/<something>` is silently allowed
+(paths resolved via `realpathSync()` to prevent symlink traversal).
+Read-only commands with dangerous patterns in args are also excluded from confirmation.
 
 ### Mode-Aware Guards (`ctx.mode`)
 
-Pi runs in four modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured output), `"print"` (one-shot).
-Use `ctx.mode` to skip features that only make sense in interactive mode:
+Modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured output), `"print"` (one-shot).
 
 | Feature | Guard | Reason |
 |---------|-------|--------|
@@ -262,8 +264,7 @@ Use `ctx.mode` to skip features that only make sense in interactive mode:
 | Cron scheduling | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no timers |
 | Dreaming (auto-dream timer) | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no background work |
 
-**Keep `ctx.hasUI`** for simple UI guard checks (`notify`, `select`, `confirm`) — these work in both TUI and RPC modes.
-**Use `ctx.mode`** when the distinction between interactive and one-shot matters.
+Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`); use `ctx.mode` when interactive vs. one-shot distinction matters.
 
 ### Adding an Extension Command
 
@@ -290,46 +291,21 @@ Known extension commands:
 
 ### Adding a Prompt Template
 
-1. Create a `.md` file in `prompts/` with YAML frontmatter:
-
-   ```markdown
-   ---
-   description: "Short description of what this command does — /command-name <args>"
-   ---
-   ```
-
-2. **MUST include the bug reporting policy blockquote** after the
-   Raw Arguments section — this is mandatory for every prompt template.
-   The Raw Arguments block (`## Raw Arguments` + `$ARGUMENTS`) comes first
-   (pi substitutes it at load time), then the command title, then the policy:
-
-   ```markdown
-   > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug while executing this command — DO NOT work around it silently. Ask the user: "Should I create a GitHub issue for this?" Route to `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
-   ```
-
+1. Create a `.md` file in `prompts/` with YAML frontmatter (`description: "..."`).
+2. **MUST include the bug reporting policy blockquote** after `## Raw Arguments` / `$ARGUMENTS` —
+   mandatory for every template. See any existing prompt in `prompts/` for the exact format.
 3. Write the prompt body after the blockquote.
-
-4. **If the prompt accepts arguments**, add autocomplete support in
-   `extensions/orchestrator/extended-autocomplete.ts` — add an entry to the
-   `completions` map and include the command name in `promptTemplateCommands`.
-   This gives users Tab-completion for your command's arguments.
+4. **If the prompt accepts arguments**, add autocomplete in `extensions/orchestrator/extended-autocomplete.ts` — add to `completions` map and `promptTemplateCommands`.
 
 ### Adding a Source Template
 
-Source templates live in `templates/` and serve as immutable inputs for `/create-*` slash commands.
-The `/create-*` prompt reads the template, analyzes the current project, fills in placeholders,
-and writes a customized version to the project's `.pi/prompts/` directory.
+Source templates in `templates/` are immutable inputs for `/create-*` slash commands.
+The `/create-*` prompt reads the template, fills `{{PLACEHOLDER}}` values, and writes to `.pi/prompts/`.
 
-**Naming convention:** `create-X.md` (prompt) → `X-prompt.md` (template)
+**Naming convention:** `create-X.md` (prompt) → `X-prompt.md` (template). Example: `prompts/create-coms-feature-manager.md` → `templates/coms-feature-manager-prompt.md`.
 
-Example: `prompts/create-coms-feature-manager.md` reads from `templates/coms-feature-manager-prompt.md`
-
-**Rules:**
-
-- ✅ Templates are immutable — never modify them at runtime
-- ✅ Use `{{PLACEHOLDER}}` syntax for values the `/create-*` command fills in
-- ✅ Use `[OPTIONAL]` markers for sections that may not apply to all projects
-- ❌ Templates are NOT slash commands — they have no YAML frontmatter
+Templates are immutable (never modify at runtime), use `{{PLACEHOLDER}}` for dynamic values,
+`[OPTIONAL]` for conditional sections, and have no YAML frontmatter (they are not slash commands).
 
 ### Modifying Slash Command Arguments
 
@@ -343,87 +319,44 @@ or extension command):
 
 ### Memory Evolution — Scored Learning, Situation Reports, Memory Tree
 
-Three-layer memory system with scored,
-prioritized, topic-organized context injection.
+Scored, prioritized, topic-organized memory system. Architecture inspired by [OpenHuman](https://github.com/tinyhumansai/openhuman) — clean-room TypeScript, MIT licensed.
 
-Architecture inspired by [OpenHuman](https://github.com/tinyhumansai/openhuman).
-Clean-room TypeScript implementation under MIT — not a code translation.
+**Layer 1 — Scored Memory** (`memory-scoring.ts`): Stability formula
+`cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)` across 6 categories with decay half-lives
+(preference=90d, lesson=60d, done=14d). Lifecycle: active → provisional → candidate → dropped.
+Per-category budget caps, pinned/forgotten overrides. Storage: `.pi/memory/memory-scores.json`.
 
-**Layer 1 — Scored Memory** (`memory-scoring.ts`):
+**Layer 2 — Situation Reports** (`situation-report.ts`): Token-budgeted context injected into system prompt.
+Sections by priority: preferences → lessons → mistakes → patterns → decisions → completions;
+lower-priority sections truncated when budget exceeded.
 
-- Stability formula: `cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)`
-- 6 categories with decay half-lives (preference=90d, lesson=60d, done=14d)
-- Lifecycle states: active → provisional → candidate → dropped
-- Per-category budget caps, pinned/forgotten overrides
-- Companion file: `.pi/memory/memory-scores.json`
-
-**Layer 2 — Situation Reports** (`situation-report.ts`):
-
-- Token-budgeted context replaces raw memory dump in system prompt
-- Sections by priority: preferences → lessons → mistakes → patterns → decisions → completions
-- Lower-priority sections truncated when budget exceeded
-
-**Layer 3 — Memory Tree** (`memory-tree.ts`):
-
-- Entries organized into topic files under `.pi/memory/topics/`
-- Each topic limited to ~3000 tokens
-- Topics have hotness scores (reinforcement frequency)
-- Cold topics archived automatically (no reinforcement for 2× half-life)
+**Layer 3 — Memory Tree** (`memory-tree.ts`): Entries organized into topic files under
+`.pi/memory/topics/` (~3000 tokens each). Topics have hotness scores;
+cold topics auto-archived after 2× half-life without reinforcement.
 
 **Auto-Injection Pipeline** (`rules.ts`):
 
-- `before_agent_start`: injects situation report + vector-matched memories + session history
-- Social closer gate: skips search for trivial messages ("ok", "thanks", "👍")
-- `turn_end`: file-change memory reminders (vector search on modified file paths)
-- `turn_end`: task-focus enforcement — if turn had no tool calls but active tasks exist, injects follow-up to force LLM to resume work
-- Retrieval telemetry: logs injected memories to `.pi/data/memory-telemetry.jsonl`
-- Ground Truth instruction: tells LLM to trust injected context as authoritative
+- `before_agent_start`: injects situation report + vector-matched memories + session history (skips trivial messages like "ok", "thanks")
+- `turn_end`: file-change memory reminders (vector search on modified paths) + task-focus enforcement (no tool calls but active tasks → injects follow-up)
+- Retrieval telemetry logged to `.pi/data/memory-telemetry.jsonl`; Ground Truth instruction tells LLM to trust injected context
 
-**Layer 4 — Vector Embeddings** (`memory-embeddings.ts`):
+**Layer 4 — Vector Embeddings** (`memory-embeddings.ts`): Model `Xenova/bge-small-en-v1.5` (384 dims, local ONNX).
+Storage: `.pi/memory/embeddings.json`. Embeds on write with dedup
+(≥0.85 similarity → reinforce instead of add), hybrid keyword+vector search, keyword-only fallback. No API keys.
 
-- Model: `Xenova/bge-small-en-v1.5` (384 dims, runs locally via @huggingface/transformers ONNX)
-- Storage: `.pi/memory/embeddings.json`
-- Embed on write: `memory_add` embeds each entry immediately
-- Dedup on write: `memory_add` checks vector similarity (≥0.85) before inserting — reinforces existing entry if near-duplicate found in same category
-- Semantic search: `memory_search` embeds query, cosine similarity against stored vectors
-- Hybrid results: union of vector + keyword matches, deduplicated
-- Fallback: keyword-only search when @huggingface/transformers is unavailable
-- Migration: first `memory_search` call embeds all existing entries missing from store
-- No API keys needed — runs entirely locally
+**Memory Tools** (`memory-tools.ts`): `memory_search` (hybrid search), `memory_reinforce` (bump evidence),
+`memory_add` (write + dedup), `memory_remove` (delete), `memory_edit` (update/invalidate),
+`memory_reflect` (synthesize answer), `memory_consolidate` (analyze/merge/deduplicate),
+`memory_topics` (list topics + hotness).
 
-**Memory Tools** (`memory-tools.ts`):
+**Session Search** (`session-search.ts`): Keyword search over past conversation summaries,
+indexed on shutdown, auto-injected for relevant sessions. Storage: `.pi/data/session-search.json`.
 
-- `memory_search`: hybrid keyword + vector search across all topic entries
-- `memory_reinforce`: bump evidence count to prevent decay
-- `memory_add`: LLM-initiated memory writes (pinned or learned); near-duplicate detection via vector similarity (≥0.85) auto-reinforces instead of adding
-- `memory_remove`: LLM-initiated entry removal
-- `memory_edit`: update content in-place or invalidate/supersede entries
-- `memory_reflect`: synthesize a coherent answer from recalled memories
-- `memory_consolidate`: analyze all memories, identify contradictions, merge duplicates, suggest skills
-- `memory_topics`: list topic files with hotness scores
+**PR Review Store** (`myk_pi_tools/pr/pr_review_store.py`): Tracks PR review comments in SQLite (`.pi/data/pr-reviews.db`).
 
-**Session Search** (`session-search.ts`):
+**Capacity Signal** (`situation-report.ts`): Header shows usage % (e.g. `[72% — 1,224/1,700 tokens]`), consolidation warning at >80%.
 
-- JSON-based keyword search over past conversation summaries
-- Indexed on session shutdown from compaction summaries
-- Auto-injected in `before_agent_start` for relevant past sessions
-- Storage: `.pi/data/session-search.json`
-
-**PR Review Store** (`myk_pi_tools/pr/pr_review_store.py`):
-
-- Tracks PR review comments in a local SQLite database
-- Storage: `.pi/data/pr-reviews.db`
-
-**Capacity Signal** (`situation-report.ts`):
-
-- Header shows usage %: `# Project Memory [72% — 1,224/1,700 tokens]`
-- Consolidation warning injected when usage exceeds 80%
-
-**Preference Auto-Extraction** (`preference-extractor.ts`):
-
-- Detects "I prefer...", "always use...", "never..." in user messages
-- Auto-adds to memory with explicit cue weight
-- Reinforces existing preferences on repetition
+**Preference Auto-Extraction** (`preference-extractor.ts`): Detects "I prefer…"/"always use…"/"never…" patterns, auto-adds to memory, reinforces on repetition.
 
 ### Project-Level Settings
 
@@ -453,24 +386,15 @@ These npm packages are installed alongside pi-config (via Dockerfile + `entrypoi
 
 ## Docker / Dockerfile
 
-This repo includes a `Dockerfile` for running pi in a sandboxed container.
-The image is published at `ghcr.io/myk-org/pi-config:latest`.
-
-**When adding a new feature that requires a new CLI tool or system dependency:**
-
-- ✅ Update the `Dockerfile` to install the new tool
-- ✅ Update the README Docker section if new mounts or env vars are needed
-- ❌ Never assume a tool exists in the container — check the Dockerfile
+Image: `ghcr.io/myk-org/pi-config:latest`. When adding features requiring new CLI tools or system dependencies,
+update the `Dockerfile` (and README Docker section if new mounts/env vars are needed) —
+never assume a tool exists in the container.
 
 ## Generated Documentation (`docs/`)
 
-The `docs/` directory contains documentation generated by [docsfy](https://github.com/myk-org/docsfy).
-Served via [GitHub Pages](https://myk-org.github.io/pi-config/).
-
-**Rules:**
-
-- ❌ **NEVER** edit files in `docs/` manually — they are regenerated and will be overwritten
-- ✅ To update docs, re-run `docsfy generate` to regenerate from source
+Generated by [docsfy](https://github.com/myk-org/docsfy),
+served via [GitHub Pages](https://myk-org.github.io/pi-config/).
+Never edit `docs/` manually — re-run `docsfy generate` to update.
 
 ---
 
