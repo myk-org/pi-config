@@ -78,7 +78,8 @@ After creating the issue, present the issue number, title, and URL, then ask:
 
 ## Issue Format
 
-Delegate to `github-expert` with: type (fix/feat/refactor/docs), problem description, root cause analysis (affected files, functions, lines, and why), proposed fix, and requirements.
+Delegate to `github-expert` with: type (fix/feat/refactor/docs), problem description, root cause analysis for bugs/fixes
+(affected files, functions, lines, and why), proposed approach, and requirements.
 
 **Every issue MUST include a `## Done` section with checkboxes** — the contract for when the issue can be closed:
 
