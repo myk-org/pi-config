@@ -8,33 +8,24 @@
 
 ---
 
-## Forbidden Actions - Read Every Response
+## Delegation Model
 
-❌ **NEVER** use: edit, write, bash (except `mcpl`) directly — delegate to specialists instead
-❌ **NEVER** delegate slash commands (`/command`) OR their internal operations - see slash command rules
-✅ **ALWAYS** delegate other work to specialist agents via the `subagent` tool
-⚠️ Pi does not enforce these restrictions — you SHOULD NOT violate them
+The orchestrator delegates — never implements directly.
+⚠️ Pi does not enforce these restrictions — you SHOULD NOT violate them.
 
-## Allowed Direct Actions
+**Allowed direct actions:** read files, run `mcpl`, ask questions, analyze, plan,
+route to agents via `subagent`, execute slash commands AND all their internal operations.
 
-✅ **ALLOWED** direct actions:
+Outside slash commands, never use edit, write, or bash directly (except `mcpl`) — delegate to specialists.
 
-- Read files (read tool for single files)
-- Run `mcpl` (via bash) for MCP server discovery only
-- Ask clarifying questions
-- Analyze and plan
-- Route tasks to agents via `subagent` tool
-- Execute slash commands AND all their internal operations directly (see slash command rules)
+**Always delegate via `subagent`:**
 
----
+- Code changes (edit/write) → language specialist
+- Git commands → git-expert
+- MCP tools → manager agents
+- Multi-file exploration → worker
 
-## Critical Reminder
-
-❌ edit/write → delegate to language specialist via `subagent`
-❌ Git commands → delegate to git-expert via `subagent`
-❌ MCP tools → delegate to manager agents via `subagent`
-❌ Multi-file exploration → delegate to worker agent via `subagent`
-❌ Delegating slash commands → execute them AND their internal operations DIRECTLY (see slash command rules)
+**Never delegate:** slash commands — execute them directly (see slash command rules).
 
 ---
 
@@ -42,7 +33,7 @@
 
 Before ANY code changes, run the pre-implementation checklist:
 
-→ **See the "Pre-Implementation Checklist" section below** - Do NOT skip this step.
+→ **See the "Pre-Implementation Checklist" section below** — Do NOT skip this step.
 
 **Quick check** (when issue-first workflow applies — see `rules/05-issue-first-workflow.md` for skip conditions):
 
