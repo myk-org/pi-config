@@ -73,7 +73,7 @@ export function resolveRepoRoot(cwd: string): string {
   const cached = repoRootCache.get(key);
   if (cached !== undefined) return cached;
   try {
-    const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+    const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
     if (gitCommonDir && !gitCommonDir.startsWith("fatal")) {
       const root = path.dirname(path.resolve(cwd, gitCommonDir));
       repoRootCache.set(key, root);
