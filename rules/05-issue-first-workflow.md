@@ -11,7 +11,7 @@
 
 Before ANY code changes, complete this checklist:
 
-1. **Should this workflow be skipped?** (see "SKIP this workflow for" list below)
+1. **Should this workflow be skipped?** (see "SKIP" list below)
    - YES → Do directly, skip remaining steps
    - NO → Continue checklist
 
@@ -49,95 +49,35 @@ An issue without root cause analysis is a TODO, not a useful issue.
 
 ## When This Workflow Applies
 
-**USE this workflow for:**
+**USE for:**
 
-- New features or enhancements
-- Bug fixes that require code changes
+- New features, enhancements, bug fixes requiring code changes
 - Refactoring tasks
-- Any request that will modify multiple files
-- Tasks that benefit from tracking and documentation
+- Multi-file modifications
+- Tasks benefiting from tracking/documentation
 
-**SKIP this workflow for:**
+**SKIP for:**
 
 - Trivial fixes (typos, single-line changes)
-- Questions or explanations (no code changes)
-- Exploration or research tasks
-- When user explicitly says "just do it" or "quick fix"
-- Urgent hotfixes where user indicates time pressure
-
----
-
-## Workflow
-
-```text
-User Request
-     ↓
-Analyze and understand the request
-     ↓
-Should skip workflow? ──YES──→ Do it directly (skip workflow)
-     │
-    NO
-     ↓
-Investigate root cause:
-  - Read relevant source code
-  - Identify affected files/functions
-  - Understand current behavior
-  - Form conceptual fix approach
-     ↓
-Delegate to github-expert to create issue with:
-  - Type (fix/feat/refactor/docs)
-  - Problem/feature description
-  - Root cause analysis (for bugs/fixes — affected files, functions, why)
-  - Proposed fix approach
-  - Requirements
-  - Deliverables checklist
-     ↓
-Ask: "Issue #N created. Do you want to work on it now?"
-     ↓
-     │
-  ┌──┴──┐
- YES    NO
-  │      │
-  ↓      └──→ Done (user triggers later)
-Fetch main & create issue branch
-     ↓
-Work on the issue
-  - Check off items as completed
-  - Follow code review loop
-     ↓
-All items done → Close issue
-```
+- Questions, explanations, exploration (no code changes)
+- User says "just do it" / "quick fix"
+- Urgent hotfixes with time pressure
 
 ---
 
 ## Branch Workflow
 
-When user confirms they want to work on the issue, **delegate to git-expert**:
+When user confirms, **delegate to git-expert**: fetch main (`git fetch origin main`), create branch (`git checkout -b <type>/issue-<N>-<short-desc> origin/main`).
 
-1. **Fetch main**: `git fetch origin main`
-2. **Create issue branch**: `git checkout -b <type>/issue-<number>-<short-description> origin/main`
-
-**Branch naming:**
-
-- `feat/issue-70-issue-first-workflow`
-- `fix/issue-42-memory-leak`
-- `refactor/issue-99-cleanup-utils`
-- `docs/issue-15-update-readme`
+Branch types: `feat/`, `fix/`, `refactor/`, `docs/` — always prefixed with `issue-<N>-`.
 
 ---
 
 ## Issue Format
 
-The `github-expert` agent handles issue formatting. When delegating issue creation, provide:
+Delegate to `github-expert` with: type (fix/feat/refactor/docs), problem description, root cause analysis (affected files, functions, why), proposed fix, and requirements.
 
-- Type (fix/feat/refactor/docs)
-- Problem/feature description
-- Root cause analysis (for bugs/fixes) — affected files, functions, lines, and why it happens
-- Proposed fix approach
-- Requirements list
-- **Deliverables checklist (MANDATORY)** — every issue MUST have a `## Done` section with checkboxes
-
-**Every issue MUST include a `## Done` section with checkboxes** that define what "done" means:
+**Every issue MUST include a `## Done` section with checkboxes** — the contract for when the issue can be closed:
 
 ```markdown
 ## Done
@@ -147,82 +87,29 @@ The `github-expert` agent handles issue formatting. When delegating issue creati
 - [ ] Deliverable 3
 ```
 
-These checkboxes are the **contract** for when the issue can be closed.
-
 ---
 
 ## Tracking Progress
 
-**As you work on the issue:**
-
-1. **Check off deliverables** - Update the issue to mark completed items
-2. **Follow code review loop** - All code changes go through the review loop (see `rules/20-code-review-loop.md`)
-3. **Update issue with progress** - Add comments if significant updates occur
-
-**When all deliverables are complete:**
-
-1. **Verify ALL checkboxes in the `## Done` section are checked** — if any are unchecked, the issue MUST NOT be closed
-2. Ensure code review passed
-3. Ensure tests pass (if applicable)
-4. Close the issue with a summary comment
-
-🚨 **NEVER close an issue with unchecked deliverables.** An issue with unchecked boxes is NOT done.
-If deliverables are no longer needed, explicitly remove them or mark as N/A before closing.
+Check off deliverables in the issue as you complete them.
+All code changes go through the review loop (see `rules/20-code-review-loop.md`).
+When all deliverables are complete, verify all `## Done` checkboxes are checked, ensure reviews/tests pass, then close with a summary comment.
+🚨 **NEVER close an issue with unchecked deliverables** — remove or mark N/A first if no longer needed.
 
 ---
 
 ## Integration with Code Review Loop
 
-The issue-first workflow integrates with the existing code review loop:
-
-```text
-Issue created & branch ready
-          ↓
-    ┌─────────────────────────────────┐
-    │     CODE REVIEW LOOP            │
-    │  (from 20-code-review-loop.md)  │
-    │                                 │
-    │  Write code → Review → Fix     │
-    │       ↓                         │
-    │  Tests pass?                    │
-    │       ↓                         │
-    │     YES                         │
-    └─────────────────────────────────┘
-          ↓
-Check off deliverable in issue
-          ↓
-More deliverables? ──YES──→ Next item (loop)
-          │
-         NO
-          ↓
-Close issue
-```
-
----
-
-## Asking User to Work on Issue
-
-After creating the issue, always ask:
-
-> **Issue #N created: [title]**
->
-> URL: [issue URL]
->
-> Do you want to work on it now?
-
-Wait for explicit confirmation before:
-
-- Creating the branch
-- Starting any implementation work
+Each deliverable follows the code review loop defined in `rules/20-code-review-loop.md`; once all deliverables pass review, close the issue.
 
 ---
 
 ## Edge Cases
 
-| Scenario                           | Behavior                                     |
-|------------------------------------|----------------------------------------------|
-| User says "just fix it"            | Skip workflow, do directly                   |
-| User provides partial requirements | Ask clarifying questions, then create issue  |
-| Issue already exists               | Ask if user wants to continue existing issue |
-| Urgent/hotfix request              | Skip workflow, note in commit message        |
-| Multiple unrelated requests        | Create separate issues for each              |
+| Scenario | Behavior |
+|---|---|
+| User says "just fix it" | Skip workflow, do directly |
+| Partial requirements | Ask clarifying questions, then create issue |
+| Issue already exists | Ask to continue existing issue |
+| Urgent/hotfix | Skip workflow, note in commit message |
+| Multiple unrelated requests | Create separate issues for each |

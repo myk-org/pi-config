@@ -5,8 +5,6 @@
 > **If you are a SPECIALIST AGENT:**
 > IGNORE this rule. This is for the ORCHESTRATOR only.
 
----
-
 When the orchestrator discovers a logic flaw or bug in an agent's configuration or instructions, follow this workflow.
 
 ## Agents Covered by This Rule
@@ -40,60 +38,20 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 
 **NOT covered:** Built-in pi agents or agents from other sources.
 
----
-
 ## When to Trigger
 
-**Trigger this process when you discover:**
-
-- Flawed logic in an agent's instructions (in `agents/` directory - see scope list above)
-- An agent producing incorrect results due to its configuration
-- An agent's behavior contradicting its intended purpose
-- Agent instructions that cause systematic errors
-
-**DO NOT trigger for:**
-
-- Runtime errors (network failures, missing files, etc.)
-- External tool failures
-- User code bugs (those are normal review feedback)
-- Expected behavior that user disagrees with
-- Bugs in built-in pi agents (not in this repository)
-
----
+**Trigger** when you find flawed logic, incorrect results, contradictory behavior, or systematic errors in an agent's instructions (in `agents/` directory — see scope list above).
+**Do NOT trigger** for runtime/external failures, user code bugs, expected behavior the user disagrees with, or bugs in built-in pi agents.
 
 ## Workflow
 
-```text
-┌─────────────────────────────────────────────────┐
-│  Orchestrator discovers agent logic bug         │
-│                    ↓                            │
-│  ASK USER: "I found a logic bug in [agent].     │
-│             Do you want me to create a          │
-│             GitHub issue for this?"             │
-│                    ↓                            │
-│          User responds YES/NO                   │
-│                    │                            │
-│           ┌────────┴────────┐                   │
-│          YES              NO                    │
-│           │                 │                   │
-│           ↓                 ↓                   │
-│  Delegate to github-expert  │                   │
-│  to create issue            │                   │
-│           │                 │                   │
-│           └────────┬────────┘                   │
-│                    ↓                            │
-│  Continue with original task                    │
-│  (fix bug or apply workaround)                  │
-└─────────────────────────────────────────────────┘
-```
-
----
+1. **Ask user:** "I found a logic bug in [agent]. Do you want me to create a GitHub issue for this?"
+2. **If yes:** Delegate to `github-expert` to create the issue in `myk-org/pi-config`.
+3. **Continue** with the original task (fix bug or apply workaround) regardless of the answer.
 
 ## Issue Creation Format
 
-**Repository:** `myk-org/pi-config`
-
-**Title format:** `bug(agents): [agent-name] - brief description`
+**Title:** `bug(agents): [agent-name] - brief description`
 
 **Body template:**
 
@@ -102,50 +60,23 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 [Agent name from agents/ directory]
 
 ## Bug Description
-[Clear description of the logic flaw in the agent's instructions]
+[Clear description of the logic flaw]
 
 ## Expected Behavior
-[What the agent should do according to its purpose]
+[What the agent should do]
 
 ## Actual Behavior
-[What the agent actually does due to the flawed logic]
+[What the agent actually does]
+
+## Suggested Fix
+[Proposed change, if known]
 
 ## Impact
 [How this affects users/workflows]
-
-## Suggested Fix
-[Proposed change to agent instructions, if known]
-
-## Context
-[Any additional context about when/how the bug was discovered]
 ```
-
----
-
-## Example Interaction
-
-```text
-Orchestrator: "I found a logic bug in git-expert. The merged branch
-check incorrectly flags fresh branches as 'already merged' when the
-branch HEAD equals main HEAD, even though the branch has never been
-merged.
-
-Do you want me to create a GitHub issue for this?"
-
-User: "yes"
-
-Orchestrator: [Delegates to github-expert with issue details]
-Orchestrator: "Issue #42 created: bug(agents): git-expert - false
-positive on merged branch detection. Now let me fix the bug with a
-workaround..."
-```
-
----
 
 ## Key Rules
 
-1. **Always ask first** - Never auto-create issues without user confirmation
-2. **Use github-expert** - Delegate issue creation to github-expert agent (don't use gh commands directly)
-3. **Continue working** - After issue creation (or skip), continue with the original task
-4. **Be specific** - Clearly identify which agent and which part of its logic is flawed
-5. **Suggest fixes** - If you know how to fix the agent's instructions, include it in the issue
+Always ask user before creating an issue — never auto-create.
+Delegate issue creation to `github-expert` (don't use `gh` commands directly).
+Be specific about which agent and which logic is flawed, and suggest a fix if you know one.
