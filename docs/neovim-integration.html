@@ -294,148 +294,7 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="neovim-integration-and-quickfix-support">Neovim Integration and Quickfix Support</h1>
-<p>When you run pi inside a Neovim <code>:terminal</code> buffer, it automatically detects the parent Neovim instance and unlocks the ability to send file lists directly to Neovim's quickfix window — letting you jump between changed files without leaving your editor.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>Neovim 0.5+ with the <code>--remote-expr</code> server feature (included in all modern builds)</li>
-<li>Pi must be started from a Neovim <code>:terminal</code> buffer (not an external terminal)</li>
-<li>A git repository with changed files (for <code>/nvim-changed-files</code>)</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>Open a terminal inside Neovim and start pi:</p>
-<div class="highlight"><pre><span></span><code><span class="p">:</span>terminal <span class="nb">pi</span>
-</code></pre></div>
 
-<p>Then, inside the pi session, run:</p>
-<div class="highlight"><pre><span></span><code>/nvim-changed-files
-</code></pre></div>
-
-<p>Your quickfix window opens instantly with every file changed on your branch. Press <code>Enter</code> on any entry to jump to that file.</p>
-<h2 id="how-automatic-detection-works">How Automatic Detection Works</h2>
-<p>Pi checks for the <code>NVIM</code> environment variable, which Neovim sets automatically in every <code>:terminal</code> buffer. If <code>NVIM</code> is present, pi registers the Neovim integration commands. If it's absent (you're running pi in a regular terminal), the commands simply don't appear — no configuration needed.</p>
-<blockquote>
-<p><strong>Note:</strong> The integration only activates for the main pi session, not for background subagents. This prevents background tasks from interfering with your quickfix list.</p>
-</blockquote>
-<h2 id="sending-changed-files-to-quickfix">Sending Changed Files to Quickfix</h2>
-<p>The <code>/nvim-changed-files</code> command collects all files that differ from the default branch and sends them to your quickfix list.</p>
-<h3 id="what-it-detects">What It Detects</h3>
-<table>
-<thead>
-<tr>
-<th>Scenario</th>
-<th>Files Shown</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>On a feature branch</td>
-<td>All committed changes vs <code>origin/main</code> (or <code>origin/master</code>) <strong>plus</strong> any uncommitted working tree changes</td>
-</tr>
-<tr>
-<td>On <code>main</code> or <code>master</code></td>
-<td>Uncommitted changes only (working tree diff against <code>HEAD</code>)</td>
-</tr>
-</tbody>
-</table>
-<p>Each quickfix entry shows the file path and its git status — <code>modified</code>, <code>added</code>, <code>deleted</code>, <code>renamed</code>, or <code>copied</code>.</p>
-<h3 id="navigating-the-quickfix-list">Navigating the Quickfix List</h3>
-<p>Once <code>/nvim-changed-files</code> populates the quickfix window, use standard Neovim quickfix commands:</p>
-<table>
-<thead>
-<tr>
-<th>Command</th>
-<th>Action</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>:cnext</code> / <code>:cprev</code></td>
-<td>Jump to the next / previous file</td>
-</tr>
-<tr>
-<td><code>:cfirst</code> / <code>:clast</code></td>
-<td>Jump to the first / last file</td>
-</tr>
-<tr>
-<td><code>:copen</code></td>
-<td>Reopen the quickfix window if you closed it</td>
-</tr>
-<tr>
-<td><code>:cclose</code></td>
-<td>Close the quickfix window</td>
-</tr>
-<tr>
-<td><code>Enter</code> (in quickfix window)</td>
-<td>Open the file under the cursor</td>
-</tr>
-</tbody>
-</table>
-<blockquote>
-<p><strong>Tip:</strong> Map <code>:cnext</code> and <code>:cprev</code> to convenient keybindings for fast navigation. For example, add to your Neovim config:
-<code>vim
-nnoremap ]q :cnext&lt;CR&gt;
-nnoremap [q :cprev&lt;CR&gt;</code></p>
-</blockquote>
-<h2 id="typical-workflow">Typical Workflow</h2>
-<ol>
-<li>Start pi in a Neovim terminal: <code>:terminal pi</code></li>
-<li>Ask pi to implement a feature or fix a bug.</li>
-<li>Run <code>/nvim-changed-files</code> to see which files were modified.</li>
-<li>Navigate the quickfix list to review each change in your editor.</li>
-<li>Make manual adjustments if needed, then return to the pi terminal buffer to continue.</li>
-</ol>
-<p>This is especially useful after pi completes a multi-file change — you get an instant overview of every touched file without running <code>git diff --name-only</code> yourself.</p>
-<h2 id="how-pi-communicates-with-neovim">How Pi Communicates with Neovim</h2>
-<p>Pi communicates with the parent Neovim instance using Neovim's built-in RPC mechanism. The <code>NVIM</code> environment variable contains the path to Neovim's Unix domain socket. Pi uses <code>nvim --server &lt;socket&gt; --remote-expr</code> to execute Lua code in the parent Neovim process, which populates the quickfix list via <code>vim.fn.setqflist()</code> and opens it with <code>vim.cmd("copen")</code>.</p>
-<p>All file paths are resolved to absolute paths before being sent, so quickfix entries work correctly regardless of your working directory.</p>
-<blockquote>
-<p><strong>Note:</strong> The RPC call has a 5-second timeout. If Neovim is unresponsive (e.g., running a blocking plugin), pi displays a warning notification and continues without interruption.</p>
-</blockquote>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="combining-with-code-reviews">Combining with Code Reviews</h3>
-<p>After running a code review with pi's review system, use <code>/nvim-changed-files</code> to load all modified files into quickfix. This gives you a checklist-style workflow — open each changed file, review pi's modifications, and move to the next one.</p>
-<p>For details on the review system, see <a href="code-review-loop.html">Running the Automated Code Review Loop</a>.</p>
-<h3 id="using-with-background-agents">Using with Background Agents</h3>
-<p>Background agents (spawned via async delegation) do not interact with your Neovim quickfix list — only the main session has access. After a background agent completes its work, you can run <code>/nvim-changed-files</code> from the main session to see what changed.</p>
-<p>For more on background agents, see <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>.</p>
-<h3 id="running-pi-outside-neovim">Running Pi Outside Neovim</h3>
-<p>If you run pi in a standalone terminal (outside Neovim), the <code>/nvim-changed-files</code> command is not registered. Pi gracefully skips all Neovim integration when the <code>NVIM</code> environment variable is absent — no errors, no warnings, no performance impact.</p>
-<h2 id="troubleshooting">Troubleshooting</h2>
-<table>
-<thead>
-<tr>
-<th>Problem</th>
-<th>Solution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>/nvim-changed-files</code> doesn't appear as a command</td>
-<td>Verify you started pi from inside a Neovim <code>:terminal</code>. Check that <code>echo $NVIM</code> prints a socket path in your terminal.</td>
-</tr>
-<tr>
-<td>"No changed files found" notification</td>
-<td>You're on the default branch with no uncommitted changes, or git can't detect a diff base. Ensure you're on a feature branch with committed or staged changes.</td>
-</tr>
-<tr>
-<td>"Failed to send quickfix to nvim" warning</td>
-<td>The Neovim RPC call timed out or failed. Check that the parent Neovim instance is still running and responsive. Restarting Neovim and pi resolves most cases.</td>
-</tr>
-<tr>
-<td>Quickfix shows files but paths are wrong</td>
-<td>Make sure pi's working directory matches your project root. Pi resolves all paths to absolute paths, but a mismatched <code>cwd</code> can produce unexpected results.</td>
-</tr>
-</tbody>
-</table>
-<h2 id="related-pages">Related Pages</h2>
-<ul>
-<li><a href="code-review-loop.html">Running the Automated Code Review Loop</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
-<li><a href="first-workflow.html">Your First Coding Workflow</a></li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
-</ul>
                 </div>
             </article>
             <nav class="page-nav">
@@ -453,41 +312,12 @@ nnoremap [q :cprev&lt;CR&gt;</code></p>
 
             </nav>
 
-            <aside class="toc-sidebar">
-                <div class="toc-container">
-                    <h3>On this page</h3>
-                    <div class="toc">
-<ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#how-automatic-detection-works">How Automatic Detection Works</a></li>
-<li><a href="#sending-changed-files-to-quickfix">Sending Changed Files to Quickfix</a><ul>
-<li><a href="#what-it-detects">What It Detects</a></li>
-<li><a href="#navigating-the-quickfix-list">Navigating the Quickfix List</a></li>
-</ul>
-</li>
-<li><a href="#typical-workflow">Typical Workflow</a></li>
-<li><a href="#how-pi-communicates-with-neovim">How Pi Communicates with Neovim</a></li>
-<li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#combining-with-code-reviews">Combining with Code Reviews</a></li>
-<li><a href="#using-with-background-agents">Using with Background Agents</a></li>
-<li><a href="#running-pi-outside-neovim">Running Pi Outside Neovim</a></li>
-</ul>
-</li>
-<li><a href="#troubleshooting">Troubleshooting</a></li>
-<li><a href="#related-pages">Related Pages</a></li>
-</ul>
-</div>
-
-                </div>
-            </aside>
-
 
         </main>
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.9.1</span>
+            <span class="footer-version">Generated from version 3.11.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
