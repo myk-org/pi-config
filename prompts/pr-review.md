@@ -364,11 +364,25 @@ Each finding shows its source:
 - `[PREV-NO-FIX]` — resolved without code change or valid response
 - `[NEW]` — new finding from current code analysis
 
-Ask which to post:
+**Auto-post previous findings:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]`
+findings are **automatically included** in the post list — they are the user's own prior
+comments that remain unaddressed and MUST be re-raised. Do NOT ask the user to select these.
+Show them in the list marked as "(auto-post)" so the user knows they'll be re-raised.
 
-- 'all' = Post all
-- 'none' = Skip posting
-- Specific numbers = Post only those
+**Numbering:** Display two separate numbered sections. First, previous findings with their
+own numbering (P1, P2, ...) marked "(auto-post)". Second, new findings with their own
+numbering (1, 2, ...) for user selection. This avoids ambiguity — user selections always
+refer to the `[NEW]` numbering.
+
+**User selects from `[NEW]` findings only:**
+
+- 'all' = Post all new findings (previous findings are always auto-posted regardless)
+- 'none' = Skip posting new findings (previous findings are still auto-posted)
+- Specific numbers = Post only those new findings (numbers refer to the `[NEW]` list)
+
+If there are ZERO `[NEW]` findings, skip user selection entirely — auto-post the
+previous findings and proceed directly to Phase 5 (the auto-post path still generates
+the comments JSON and posts them — see Phase 5)
 
 Mark Task 9 as `completed`.
 
@@ -376,7 +390,9 @@ Mark Task 9 as `completed`.
 
 Mark Task 10 as `in_progress`.
 
-If user selected findings, write JSON to temp file:
+Write JSON to temp file for ALL findings to be posted — this includes both user-selected
+`[NEW]` findings AND auto-posted `[PREV-*]` findings. If only `[PREV-*]` findings exist
+(zero `[NEW]` findings, selection was skipped), still generate the JSON for the auto-posted items:
 
 Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
 
