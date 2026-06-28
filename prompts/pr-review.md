@@ -364,11 +364,19 @@ Each finding shows its source:
 - `[PREV-NO-FIX]` — resolved without code change or valid response
 - `[NEW]` — new finding from current code analysis
 
-Ask which to post:
+**Auto-post previous findings:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]`
+findings are **automatically included** in the post list — they are the user's own prior
+comments that remain unaddressed and MUST be re-raised. Do NOT ask the user to select these.
+Show them in the list marked as "(auto-post)" so the user knows they'll be re-raised.
 
-- 'all' = Post all
-- 'none' = Skip posting
-- Specific numbers = Post only those
+**User selects from `[NEW]` findings only:**
+
+- 'all' = Post all new findings
+- 'none' = Skip posting new findings (previous findings are still auto-posted)
+- Specific numbers = Post only those new findings
+
+If there are ZERO `[NEW]` findings, skip user selection entirely — just auto-post the
+previous findings and proceed to Phase 5
 
 Mark Task 9 as `completed`.
 
