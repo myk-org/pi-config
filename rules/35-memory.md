@@ -36,6 +36,7 @@ call `memory_search` first. Supports keyword and category-filtered queries.
 **MANDATORY:** When you learn something worth remembering — preferences, corrections, conventions, completed work — add it immediately.
 Keep entries short (~100 chars), specific, actionable.
 Use `pinned: true` ONLY when user explicitly says "remember this". Duplicates are auto-reinforced.
+When a correction is mechanical (can be checked by code), add `trigger` + `action` params — see "Code-Enforced Memories" below.
 
 ### `memory_remove` — Remove Outdated Memories
 
@@ -111,6 +112,38 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 | User corrects you | `lesson` | Learned |
 | Multiple fix attempts | `mistake` | Learned |
 | User states a preference | `preference` | Learned |
+
+---
+
+## Code-Enforced Memories (Enforcement Layer)
+
+Some memories can be **code-enforced** — the LLM cannot ignore them because runtime hooks
+check and act on them. Use enforcement when a rule is **mechanical** (can be checked by code).
+
+Add enforcement by passing `trigger`, `action`, and optionally `verifier` to `memory_add`:
+
+```text
+memory_add(text="...", category="lesson",
+  trigger="bash_contains git add .",
+  action="block")
+```
+
+**When to add enforcement (AI decides automatically):**
+
+| Pattern | Enforcement | Example |
+|---------|-------------|--------|
+| User corrects a specific command/tool usage | `trigger` + `block` | "never use git add ." |
+| User wants something to run after a specific action | `trigger` + `run_after <cmd>` | "always deploy after code changes" |
+| User wants a warning about a specific pattern | `trigger` + `warn` | "warn when modifying config files" |
+| User wants tool A called before tool B | `verifier` | "always ask_user before gh pr merge" |
+| General knowledge / context / facts | **No enforcement** | "buildah chown breaks cache mounts" |
+
+**Rule of thumb:** If you can express it as "when X happens, do/block/warn Y" — add enforcement.
+If it's knowledge that informs decisions but can't be checked mechanically — plain memory only.
+
+**Trigger types:** `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <glob>`
+**Action types:** `block` (prevent), `run_after <command>` (execute after), `warn` (append warning)
+**Verifier:** `tool_called <tool> before <command>` (checked at turn_end, forces retry on violation)
 
 ---
 
