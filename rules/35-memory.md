@@ -124,6 +124,14 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 | Something failed or took multiple attempts | `memory_add` as `mistake` |
 | PR merged / technical decision made / non-obvious pattern found | `memory_add` as `done` / `decision` / `pattern` |
 
+**NEVER memorize:**
+
+- Ideas or requests the user rejected, abandoned, or said "nevermind" to
+- Unfinished conversations where no conclusion was reached
+- User requirements that were never implemented
+
+Only memorize **outcomes** (what happened), not **intentions** (what was discussed but dropped).
+
 **Save immediately — do NOT wait for `/dream` or session shutdown.**
 
 ---
@@ -143,6 +151,10 @@ uv run myk-pi-tools memory <command>   # Commands: add, forget, show, migrate, p
 Background async agent that reads the session, extracts things worth remembering, adds/deduplicates/reorganizes topic files, and removes stale entries. **NEVER removes Pinned entries.**
 Triggered by `/dream` (manual) or session shutdown (automatic).
 **ALWAYS run as async + fireAndForget** — never block the session.
+
+**Dreaming follows the same NEVER memorize rules as per-turn self-improvement:**
+do NOT extract rejected/abandoned ideas, unfinished conversations, or unimplemented requirements.
+Only extract outcomes, not intentions.
 
 ---
 
