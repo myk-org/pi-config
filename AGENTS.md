@@ -44,8 +44,9 @@ pi-config/
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
-│   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
+│   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
 │   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
+│   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
@@ -337,7 +338,10 @@ cold topics auto-archived after 2× half-life without reinforcement.
 **Auto-Injection Pipeline** (`rules.ts`):
 
 - `before_agent_start`: injects situation report + vector-matched memories + session history (skips trivial messages like "ok", "thanks")
-- `turn_end`: file-change memory reminders (vector search on modified paths) + task-focus enforcement (no tool calls but active tasks → injects follow-up)
+- `tool_result`: memory-based enforcement (trigger matching → block/run_after/warn)
+- `turn_end`: file-change memory reminders (vector search on modified paths) + task-focus enforcement
+  (no tool calls but active tasks → injects follow-up) + semantic enforcement verifier checking
+  (retries turn on violations)
 - Retrieval telemetry logged to `.pi/data/memory-telemetry.jsonl`; Ground Truth instruction tells LLM to trust injected context
 
 **Layer 4 — Vector Embeddings** (`memory-embeddings.ts`): Model `Xenova/bge-small-en-v1.5` (384 dims, local ONNX).

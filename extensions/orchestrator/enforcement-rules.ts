@@ -10,10 +10,12 @@ import { execSync } from "node:child_process";
 import {
   loadScores,
   getActiveEntries,
+  entryHash,
   type ScoredEntry,
   type EnforcementTrigger,
   type EnforcementAction,
 } from "./memory-scoring.js";
+import { readAllTopicEntries } from "./memory-tree.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -45,16 +47,22 @@ export interface ActionResult {
  */
 export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
   const active = getActiveEntries(cwd);
+  // Build hash→text lookup from topic files
+  const topicEntries = readAllTopicEntries(cwd);
+  const hashToText = new Map<string, string>();
+  for (const te of topicEntries) {
+    const line = `- [${te.category}] ${te.text}`;
+    hashToText.set(entryHash(line), te.text);
+  }
+
   const result: EnforcedEntry[] = [];
 
   for (const { hash, entry } of active) {
     if (!entry.trigger || !entry.action) continue;
 
-    // Reconstruct the text from topic files for display
-    // (hash is derived from the canonical line "- [category] text")
     result.push({
       hash,
-      text: hash, // Will be resolved from topic files if needed
+      text: hashToText.get(hash) || hash,
       trigger: entry.trigger,
       action: entry.action,
       actionCommand: entry.actionCommand,
