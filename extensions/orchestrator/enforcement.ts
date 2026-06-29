@@ -539,6 +539,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       if (!Array.isArray(details?.results) && details?.results) {
         console.debug(`[enforcement] subagent details.results is ${typeof details.results} (expected array), skipping bash extraction`);
       }
+      const nonBlockEntries = entries.filter(e => e.action !== "block");
+      const seen = new Set<string>();
       const bashCommands: string[] = [];
       for (const r of results) {
         const msgs = Array.isArray(r?.messages) ? r.messages : [];
@@ -546,19 +548,32 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           if (msg?.role !== "assistant") continue;
           const parts = Array.isArray(msg?.content) ? msg.content : [];
           for (const part of parts) {
+            if (part?.type !== "toolCall") continue;
             // Check both field naming conventions (name/arguments and toolName/args)
-            const toolName = part?.name || part?.toolName;
-            const toolArgs = part?.arguments || part?.args;
-            if (part?.type === "toolCall" && toolName === "bash" && toolArgs?.command) {
-              bashCommands.push(toolArgs.command);
+            const partToolName = part?.name || part?.toolName;
+            const partToolArgs = part?.arguments || part?.args;
+            if (partToolName === "bash" && partToolArgs?.command) {
+              bashCommands.push(partToolArgs.command);
+            }
+            // Also check non-bash tool calls against tool_name/file_modified triggers
+            if (partToolName && partToolName !== "bash") {
+              const toolMatches = matchToolCall(
+                nonBlockEntries,
+                partToolName,
+                partToolArgs || {},
+              );
+              for (const m of toolMatches) {
+                if (!seen.has(m.rule.hash)) {
+                  seen.add(m.rule.hash);
+                  matches.push(m);
+                }
+              }
             }
           }
         }
       }
-      const nonBlockEntries = entries.filter(e => e.action !== "block");
       if (bashCommands.length > 0) {
-        // Primary: match against ALL structured bash commands
-        const seen = new Set<string>();
+        // Match against ALL structured bash commands
         for (const cmd of bashCommands) {
           const cmdMatches = matchBashCommand(nonBlockEntries, cmd);
           for (const m of cmdMatches) {
