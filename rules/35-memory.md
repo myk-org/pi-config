@@ -124,6 +124,14 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 | Something failed or took multiple attempts | `memory_add` as `mistake` |
 | PR merged / technical decision made / non-obvious pattern found | `memory_add` as `done` / `decision` / `pattern` |
 
+**NEVER memorize:**
+
+- Ideas or requests the user rejected, abandoned, or said "nevermind" to
+- Unfinished conversations where no conclusion was reached
+- User requirements that were never implemented
+
+Only memorize **outcomes** (what happened), not **intentions** (what was discussed but dropped).
+
 **Save immediately — do NOT wait for `/dream` or session shutdown.**
 
 ---
