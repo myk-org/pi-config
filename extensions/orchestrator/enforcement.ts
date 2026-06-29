@@ -532,8 +532,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     let matches = matchToolCall(entries, toolName, input);
 
     // For subagent results, extract actual bash commands from the subagent's
-    // tool call messages (structured data). Falls back to result text if no
-    // structured tool calls are found (compaction, truncation).
+    // tool call messages (structured data only — no prose text fallback).
     if (toolName === "subagent" && matches.length === 0) {
       const details = (event as any).details;
       const results = details?.results || [];
