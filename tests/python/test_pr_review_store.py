@@ -268,10 +268,12 @@ def test_store_skipped_without_reason_raises(db_path: Path) -> None:  # noqa: AR
     with pytest.raises(ValueError, match="requires a non-empty skip_reason"):
         store_pr_review("org", "repo", 1, comments, head_sha="sha1")
 
-    # Also test with empty / whitespace-only skip_reason
-    comments_ws = [{"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped", "skip_reason": "  "}]
+
+def test_store_skipped_whitespace_reason_raises(db_path: Path) -> None:  # noqa: ARG001
+    """Passing status='skipped' with whitespace-only skip_reason raises ValueError."""
+    comments = [{"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped", "skip_reason": "  "}]
     with pytest.raises(ValueError, match="requires a non-empty skip_reason"):
-        store_pr_review("org", "repo", 2, comments_ws, head_sha="sha2")
+        store_pr_review("org", "repo", 2, comments, head_sha="sha2")
 
 
 def test_cli_get_skipped(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG001
