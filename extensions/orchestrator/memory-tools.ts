@@ -277,6 +277,31 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
       }
 
+      // Validate enforcement parameters
+      if (params.trigger) {
+        const validPrefixes = ["bash_contains ", "bash_regex ", "tool_name ", "file_modified "];
+        if (!validPrefixes.some(p => params.trigger!.startsWith(p))) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid trigger format "${params.trigger}". Must start with: ${validPrefixes.map(p => p.trim()).join(", ")}`,
+            }],
+          };
+        }
+      }
+      if (params.action) {
+        const validActions = ["block", "warn"];
+        const isRunAfter = params.action.startsWith("run_after ");
+        if (!validActions.includes(params.action) && !isRunAfter) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid action "${params.action}". Valid: block, warn, run_after <command>`,
+            }],
+          };
+        }
+      }
+
       // Canonical line (no pinned marker) — used for hashing/scoring
       const canonicalLine = `- [${category}] ${text}`;
       // File line — includes pinned marker for display

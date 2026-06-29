@@ -109,6 +109,29 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
 
+    // Memory-based enforcement — block rules checked before execution
+    try {
+      const entries = loadEnforcedEntries(ctx.cwd);
+      const blockEntries = entries.filter(e => e.action === "block");
+      if (blockEntries.length > 0) {
+        const matches = matchToolCall(blockEntries, "bash", { command: command });
+        if (matches.length > 0) {
+          const rule = matches[0].rule;
+          return { block: true, reason: `⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` };
+        }
+        // Also check non-bash tool_name and file_modified triggers
+        if (!isToolCallEventType("bash", event)) {
+          const toolName = (event as any).toolName || "";
+          const input = (event as any).input || {};
+          const toolMatches = matchToolCall(blockEntries, toolName, input);
+          if (toolMatches.length > 0) {
+            const rule = toolMatches[0].rule;
+            return { block: true, reason: `⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` };
+          }
+        }
+      }
+    } catch { /* enforcement should never break normal flow */ }
+
     // Block repeated identical commands (polling-by-spam) — orchestrator only
     if (process.env.PI_SUBAGENT_CHILD !== "1") {
       ensureRepeatFile(ctx.cwd);
@@ -502,8 +525,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     let entries: ReturnType<typeof loadEnforcedEntries>;
     try {
       entries = loadEnforcedEntries(ctx.cwd);
-    } catch {
-      return; // No enforcement if loading fails
+    } catch (e: any) {
+      console.debug("[enforcement] loadEnforcedEntries failed:", e?.message?.slice(0, 100));
+      return;
     }
     if (entries.length === 0) return;
 
@@ -515,14 +539,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     for (const { rule } of matches) {
       if (rule.action === "block") {
-        // Block: mark result as error with enforcement message
-        return {
-          content: [
-            ...currentContent,
-            { type: "text", text: `\n⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` },
-          ],
-          isError: true,
-        };
+        // Block is handled in tool_call hook (before execution)
+        // tool_result only handles run_after and warn
+        continue;
       }
 
       if (rule.action === "run_after" && rule.actionCommand && !(event as any).isError) {

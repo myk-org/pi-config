@@ -96,9 +96,12 @@ function matchBashTrigger(
   }
   if (trigger.startsWith("bash_regex ")) {
     const pattern = trigger.slice("bash_regex ".length);
+    // Guard against ReDoS: limit pattern length
+    if (pattern.length > 200) return null;
     try {
       const re = new RegExp(pattern);
-      const m = command.match(re);
+      // Use a bounded match — limit input to first 4000 chars
+      const m = command.slice(0, 4000).match(re);
       if (m) return m[0];
     } catch {
       // Invalid regex — skip
@@ -200,6 +203,19 @@ export function executeAction(
   command: string,
   cwd: string,
 ): ActionResult {
+  // Safety: reject commands that match dangerous patterns
+  const BLOCKED_PATTERNS = [
+    /\bcurl\b.*\|\s*(?:bash|sh|zsh)\b/i,    // curl | bash
+    /\bwget\b.*\|\s*(?:bash|sh|zsh)\b/i,    // wget | bash
+    /\brm\s+(-[rf]+\s+)*\//,                 // rm -rf /
+    /\bsudo\b/,                               // sudo
+    /\bchmod\s+[0-7]*7[0-7]*\b/,             // world-writable chmod
+  ];
+  for (const pattern of BLOCKED_PATTERNS) {
+    if (pattern.test(command)) {
+      return { output: `Blocked: enforcement command matches dangerous pattern: ${pattern}`, success: false };
+    }
+  }
   try {
     const output = execSync(command, {
       cwd,
