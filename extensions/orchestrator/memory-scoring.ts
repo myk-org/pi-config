@@ -141,9 +141,11 @@ export function calculateStability(
 /**
  * Determine lifecycle state from a stability score.
  */
-export function lifecycleFromScore(score: number, userState: UserState): LifecycleState {
+export function lifecycleFromScore(score: number, userState: UserState, entry?: ScoredEntry): LifecycleState {
   if (userState === "pinned") return "active";
   if (userState === "forgotten") return "dropped";
+  // Enforced entries (with trigger/action/verifier) never decay below active
+  if (entry && (entry.trigger || entry.verifier)) return "active";
   if (score >= PINNED_SCORE) return "active";
   if (score >= TAU_PROMOTE) return "active";
   if (score >= TAU_PROVISIONAL) return "provisional";
@@ -251,7 +253,7 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
         existing.class,
         existing.userState,
       );
-      existing.lifecycle = lifecycleFromScore(existing.score, existing.userState);
+      existing.lifecycle = lifecycleFromScore(existing.score, existing.userState, existing);
     } else {
       // New entry — initialize
       const userState: UserState = entry.section === "pinned" ? "pinned" : "auto";
@@ -351,7 +353,7 @@ export function reinforce(cwd: string, entryLine: string): boolean {
     entry.class,
     entry.userState,
   );
-  entry.lifecycle = lifecycleFromScore(entry.score, entry.userState);
+  entry.lifecycle = lifecycleFromScore(entry.score, entry.userState, entry);
   saveScores(cwd, scores);
   return true;
 }
