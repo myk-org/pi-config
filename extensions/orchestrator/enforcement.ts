@@ -5,7 +5,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { loadEnforcedEntries, matchToolCall, executeAction } from "./enforcement-rules.js";
+import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -527,7 +527,21 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
     if (entries.length === 0) return;
 
-    const matches = matchToolCall(entries, toolName, input);
+    let matches = matchToolCall(entries, toolName, input);
+
+    // For subagent results, also check bash_contains triggers against the
+    // result content — subagents run git commit/push internally and the
+    // orchestrator only sees the result text, not the bash commands.
+    if (toolName === "subagent" && matches.length === 0) {
+      const resultText = ((event as any).content || [])
+        .filter((c: any) => c.type === "text")
+        .map((c: any) => c.text || "")
+        .join("\n");
+      if (resultText) {
+        matches = matchBashCommand(entries.filter(e => e.action !== "block"), resultText);
+      }
+    }
+
     if (matches.length === 0) return;
 
     const currentContent = (event as any).content || [];

@@ -223,6 +223,18 @@ export function matchToolCall(
       const fileHit = matchFileTrigger(rule.trigger, input.path);
       if (fileHit) {
         matches.push({ rule, matched: fileHit });
+        continue;
+      }
+    }
+
+    // Check bash_contains/bash_regex in subagent task text
+    // Subagents run git commit/push — the orchestrator sees the subagent
+    // tool_result but not the bash commands inside. Match against the
+    // task description to catch delegated commands.
+    if (toolName === "subagent" && input?.task) {
+      const bashHit = matchBashTrigger(rule.trigger, input.task);
+      if (bashHit) {
+        matches.push({ rule, matched: bashHit });
       }
     }
   }
