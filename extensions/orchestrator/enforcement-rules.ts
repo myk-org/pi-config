@@ -29,6 +29,15 @@ export interface EnforcedEntry {
   entry: ScoredEntry;
 }
 
+/** Verifier-only entry — has a verifier but trigger/action are optional */
+export interface VerifierEntry {
+  hash: string;
+  text: string;
+  trigger?: EnforcementTrigger;
+  verifier: string;
+  entry: ScoredEntry;
+}
+
 export interface TriggerMatch {
   rule: EnforcedEntry;
   matched: string; // what part of the input matched
@@ -79,7 +88,7 @@ export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
  * Reads active entries with a `verifier` field directly, without requiring
  * `trigger` and `action` (which loadEnforcedEntries demands).
  */
-export function loadVerifierEntries(cwd: string): EnforcedEntry[] {
+export function loadVerifierEntries(cwd: string): VerifierEntry[] {
   const active = getActiveEntries(cwd);
   const topicEntries = readAllTopicEntries(cwd);
   const hashToText = new Map<string, string>();
@@ -88,7 +97,7 @@ export function loadVerifierEntries(cwd: string): EnforcedEntry[] {
     hashToText.set(entryHash(line), te.text);
   }
 
-  const result: EnforcedEntry[] = [];
+  const result: VerifierEntry[] = [];
 
   for (const { hash, entry } of active) {
     if (!entry.verifier) continue;
@@ -96,9 +105,7 @@ export function loadVerifierEntries(cwd: string): EnforcedEntry[] {
     result.push({
       hash,
       text: hashToText.get(hash) || hash,
-      trigger: entry.trigger || ("" as any),
-      action: entry.action || ("warn" as any),
-      actionCommand: entry.actionCommand,
+      trigger: entry.trigger,
       verifier: entry.verifier,
       entry,
     });

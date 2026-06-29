@@ -339,51 +339,34 @@ export function registerRules(
 
     // Semantic enforcement: check verifier rules against this turn's tool calls
     try {
-      const { loadVerifierEntries, matchToolCall } = await import("./enforcement-rules.js");
+      const { loadVerifierEntries } = await import("./enforcement-rules.js");
       const verifierEntries = loadVerifierEntries(ctx.cwd);
       if (verifierEntries.length > 0) {
         const turnToolResults = (_event as any).toolResults || [];
         const violations: string[] = [];
 
         for (const rule of verifierEntries) {
-          if (!rule.verifier) continue;
-
-          // Check if the trigger was activated this turn
-          let triggered = false;
-          for (const tr of turnToolResults) {
-            const trName = (tr as any)?.toolName || "";
-            const trInput = (tr as any)?.input || {};
-            if (matchToolCall([rule], trName, trInput).length > 0) {
-              triggered = true;
-              break;
-            }
-          }
-          if (!triggered) continue;
-
           // Verifier format: "tool_called <tool> before <command>"
-          // Check if the required tool was called before the triggering tool
           const verifierMatch = rule.verifier.match(/^tool_called (\S+) before (.+)$/);
-          if (verifierMatch) {
-            const requiredTool = verifierMatch[1];
-            const beforeCommand = verifierMatch[2];
+          if (!verifierMatch) continue;
 
-            // Find index of the triggering command and the required tool
-            let requiredIdx = -1;
-            let triggerIdx = -1;
-            for (let i = 0; i < turnToolResults.length; i++) {
-              const trName = (turnToolResults[i] as any)?.toolName || "";
-              const trInput = (turnToolResults[i] as any)?.input || {};
-              if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
-              // `includes` is intentionally used here — beforeCommand is a specific
-              // command substring (e.g. "gh pr merge") that we want to find anywhere
-              // in the bash command string. This is correct for our use case.
-              if (trName === "bash" && trInput?.command?.includes(beforeCommand) && triggerIdx === -1) triggerIdx = i;
-            }
+          const requiredTool = verifierMatch[1];
+          const beforeCommand = verifierMatch[2];
 
-            // Violation: trigger was called but required tool was not called before it
-            if (triggerIdx >= 0 && (requiredIdx < 0 || requiredIdx >= triggerIdx)) {
-              violations.push(rule.verifier);
-            }
+          // Find indices: where the triggering command appeared, and where the required tool was called
+          let requiredIdx = -1;
+          let triggerIdx = -1;
+          for (let i = 0; i < turnToolResults.length; i++) {
+            const trName = (turnToolResults[i] as any)?.toolName || "";
+            const trInput = (turnToolResults[i] as any)?.input || {};
+            if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
+            // beforeCommand is a specific substring (e.g. "gh pr merge")
+            if (trName === "bash" && trInput?.command?.includes(beforeCommand) && triggerIdx === -1) triggerIdx = i;
+          }
+
+          // Violation: the command ran but the required tool was not called before it
+          if (triggerIdx >= 0 && (requiredIdx < 0 || requiredIdx >= triggerIdx)) {
+            violations.push(rule.verifier);
           }
         }
 
