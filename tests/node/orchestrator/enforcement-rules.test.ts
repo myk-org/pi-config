@@ -5,13 +5,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 import {
   matchBashCommand,
   matchToolCall,
   executeAction,
+  loadEnforcedEntries,
+  loadVerifierEntries,
   type EnforcedEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.ts";
-import type { ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.ts";
+import { entryHash, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.ts";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -239,5 +243,189 @@ describe("matchToolCall — file_modified exact path", () => {
       path: "path/to/Makefile",
     });
     assert.equal(matches.length, 0);
+  });
+});
+
+// ── loadEnforcedEntries — filesystem integration ───────────────────────────
+
+describe("loadEnforcedEntries — returns entries with trigger and action", () => {
+  const entryText = "test rule";
+  const entryLine = "- [lesson] test rule";
+  const hash = entryHash(entryLine);
+  const now = new Date().toISOString();
+
+  function makeTmpDir(): string {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "enforcement-test-"));
+    const memoryDir = path.join(tmpDir, ".pi", "memory");
+    const topicsDir = path.join(memoryDir, "topics");
+    fs.mkdirSync(topicsDir, { recursive: true });
+    return tmpDir;
+  }
+
+  it("returns entry with trigger and action", () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const scoresFile = {
+        entries: {
+          [hash]: {
+            class: "lesson",
+            score: 1.0,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: now,
+            lastReinforced: now,
+            userState: "auto",
+            lifecycle: "active",
+            trigger: "bash_contains test",
+            action: "block",
+          },
+        },
+        lastRebuild: now,
+      };
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
+        JSON.stringify(scoresFile),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
+        "# Lessons\n- [lesson] test rule\n",
+      );
+
+      const entries = loadEnforcedEntries(tmpDir);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].text, entryText);
+      assert.equal(entries[0].trigger, "bash_contains test");
+      assert.equal(entries[0].action, "block");
+      assert.equal(entries[0].hash, hash);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes entries without trigger or action", () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const scoresFile = {
+        entries: {
+          [hash]: {
+            class: "lesson",
+            score: 1.0,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: now,
+            lastReinforced: now,
+            userState: "auto",
+            lifecycle: "active",
+            // No trigger or action
+          },
+        },
+        lastRebuild: now,
+      };
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
+        JSON.stringify(scoresFile),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
+        "# Lessons\n- [lesson] test rule\n",
+      );
+
+      const entries = loadEnforcedEntries(tmpDir);
+      assert.equal(entries.length, 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── loadVerifierEntries — filesystem integration ───────────────────────────
+
+describe("loadVerifierEntries — returns entries with verifier field", () => {
+  const entryText = "always ask before merging";
+  const entryLine = "- [lesson] always ask before merging";
+  const hash = entryHash(entryLine);
+  const now = new Date().toISOString();
+
+  function makeTmpDir(): string {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "verifier-test-"));
+    const memoryDir = path.join(tmpDir, ".pi", "memory");
+    const topicsDir = path.join(memoryDir, "topics");
+    fs.mkdirSync(topicsDir, { recursive: true });
+    return tmpDir;
+  }
+
+  it("returns entry with verifier field", () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const scoresFile = {
+        entries: {
+          [hash]: {
+            class: "lesson",
+            score: 1.0,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: now,
+            lastReinforced: now,
+            userState: "auto",
+            lifecycle: "active",
+            verifier: "tool_called ask_user before gh pr merge",
+          },
+        },
+        lastRebuild: now,
+      };
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
+        JSON.stringify(scoresFile),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
+        "# Lessons\n- [lesson] always ask before merging\n",
+      );
+
+      const entries = loadVerifierEntries(tmpDir);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].text, entryText);
+      assert.equal(entries[0].verifier, "tool_called ask_user before gh pr merge");
+      assert.equal(entries[0].hash, hash);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes entries without verifier", () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const scoresFile = {
+        entries: {
+          [hash]: {
+            class: "lesson",
+            score: 1.0,
+            evidenceCount: 1,
+            cue: "explicit",
+            firstSeen: now,
+            lastReinforced: now,
+            userState: "auto",
+            lifecycle: "active",
+            trigger: "bash_contains test",
+            action: "warn",
+            // No verifier
+          },
+        },
+        lastRebuild: now,
+      };
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
+        JSON.stringify(scoresFile),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
+        "# Lessons\n- [lesson] always ask before merging\n",
+      );
+
+      const entries = loadVerifierEntries(tmpDir);
+      assert.equal(entries.length, 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
