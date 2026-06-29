@@ -300,6 +300,14 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
             }],
           };
         }
+        if (isRunAfter && !params.action.slice("run_after ".length).trim()) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid action "${params.action}". run_after requires a command (e.g., 'run_after .dev/deploy-all.sh')`,
+            }],
+          };
+        }
       }
 
       // Canonical line (no pinned marker) — used for hashing/scoring
