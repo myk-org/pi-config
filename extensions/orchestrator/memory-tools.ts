@@ -330,31 +330,33 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
             const existingLine = `- [${vm.category}] ${vm.text}`;
             if (reinforce(cwd, existingLine)) {
               // Merge enforcement fields into existing entry if new entry has them
-              if (params.trigger || params.verifier) {
+              let merged = false;
+              if (params.trigger || params.action || params.verifier) {
                 const scores = loadScores(cwd);
                 const existingHash = entryHash(existingLine);
                 const existingEntry = scores.entries[existingHash];
                 if (existingEntry) {
                   if (params.trigger) {
                     existingEntry.trigger = params.trigger as any;
-                    if (params.action) {
-                      if (params.action.startsWith("run_after ")) {
-                        existingEntry.action = "run_after";
-                        existingEntry.actionCommand = params.action.slice("run_after ".length);
-                      } else if (params.action === "block" || params.action === "warn") {
-                        existingEntry.action = params.action;
-                      }
+                  }
+                  if (params.action) {
+                    if (params.action.startsWith("run_after ")) {
+                      existingEntry.action = "run_after";
+                      existingEntry.actionCommand = params.action.slice("run_after ".length);
+                    } else if (params.action === "block" || params.action === "warn") {
+                      existingEntry.action = params.action;
                     }
                   }
                   if (params.verifier) {
                     existingEntry.verifier = params.verifier;
                   }
                   saveScores(cwd, scores);
+                  merged = true;
                 }
               }
               // Remove the just-embedded entry since we're reinforcing instead of adding
               await removeEmbedding(cwd, text, category);
-              const enforcementNote = (params.trigger || params.verifier) ? " (enforcement fields merged)" : "";
+              const enforcementNote = merged ? " (enforcement fields merged)" : "";
               return {
                 content: [{
                   type: "text",
@@ -376,30 +378,32 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           // Reinforce instead of duplicating — always use canonical line (no pinned marker)
           reinforce(cwd, canonicalLine);
           // Merge enforcement fields into existing entry if new entry has them
-          if (params.trigger || params.verifier) {
+          let merged = false;
+          if (params.trigger || params.action || params.verifier) {
             const scores = loadScores(cwd);
             const existingHash = entryHash(canonicalLine);
             const existingEntry = scores.entries[existingHash];
             if (existingEntry) {
               if (params.trigger) {
                 existingEntry.trigger = params.trigger as any;
-                if (params.action) {
-                  if (params.action.startsWith("run_after ")) {
-                    existingEntry.action = "run_after";
-                    existingEntry.actionCommand = params.action.slice("run_after ".length);
-                  } else if (params.action === "block" || params.action === "warn") {
-                    existingEntry.action = params.action;
-                  }
+              }
+              if (params.action) {
+                if (params.action.startsWith("run_after ")) {
+                  existingEntry.action = "run_after";
+                  existingEntry.actionCommand = params.action.slice("run_after ".length);
+                } else if (params.action === "block" || params.action === "warn") {
+                  existingEntry.action = params.action;
                 }
               }
               if (params.verifier) {
                 existingEntry.verifier = params.verifier;
               }
               saveScores(cwd, scores);
+              merged = true;
             }
           }
           // No removeEmbedding here — same text/category key as existing entry, embedding is still valid
-          const enforcementNote = (params.trigger || params.verifier) ? " (enforcement fields merged)" : "";
+          const enforcementNote = merged ? " (enforcement fields merged)" : "";
           return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}` }] };
         }
       }
