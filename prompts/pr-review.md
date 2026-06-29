@@ -360,6 +360,21 @@ existing unresolved comment.
 > comments that naturally appear in the all-unresolved list — removing them would lose
 > tracking of unresolved prior findings. Dedup applies ONLY to `[NEW]` findings.
 
+**Previously skipped findings dedup:** Also check the PR review database for findings
+the user previously skipped on this same PR. Run:
+
+```bash
+myk-pi-tools pr get-skipped-comments {owner} {repo} {pr_number}
+```
+
+This returns a JSON array of previously skipped comments with `path`, `line`, `body`,
+`severity`, `skip_reason`, and `head_sha`.
+
+For each `[NEW]` finding, compare against the skipped list using path + body similarity
+(same file and similar description = match). Matched findings are auto-skipped with
+`"Auto-skipped (previously dismissed): <skip_reason>"`. The user still sees them in the
+Phase 4 table and can override by selecting them explicitly.
+
 Mark Task 8 as `completed`.
 
 ### Phase 4: User Selection — Task 9
@@ -397,7 +412,41 @@ refer to the `[NEW]` numbering.
 
 If there are ZERO `[NEW]` findings, skip user selection entirely — auto-post the
 previous findings and proceed directly to Phase 5 (the auto-post path still generates
-the comments JSON and posts them — see Phase 5)
+the comments JSON and posts them — see Phase 5).
+
+**Skip reason collection (MANDATORY when findings are skipped):**
+
+After the user selects which findings to post, derive the skipped set (total findings
+minus posted findings). If the skipped set is non-empty:
+
+1. Ask the user for skip reasons via `ask_user`:
+
+   ```text
+   You skipped findings 2, 4, 5. Why?
+   Give one reason for all, or per-finding (e.g., "2: not relevant, 4 and 5: style only")
+   ```
+
+2. AI refines each reason — make it concise, technical, and useful for future reference:
+   - User: "don't care" → "Style-only finding — no functional impact"
+   - User: "we do it this way" → "Intentional pattern — project convention"
+   - User: "already covered" → "Already validated by existing test coverage"
+
+3. AI classifies each refined reason (no user interaction):
+   - **Finding-specific** — references specific code, line, variable, or one-off context.
+     Store in DB only (same-PR dedup).
+   - **Generalizable** — references a project-wide pattern, convention, or category of
+     findings (e.g., "don't flag snake_case", "print() is intentional in CLI modules").
+     Store in DB AND append to `.pi/data/review-guidelines.md`.
+
+4. For generalizable reasons, append one line per finding to `.pi/data/review-guidelines.md`
+   (create the file if it doesn't exist). Format:
+
+   ```markdown
+   - Do not flag <finding type> — <refined reason>
+   ```
+
+   This file is read by all 3 reviewer agents before reviewing, so the same class of
+   finding won't be raised again on future PRs in this repo.
 
 Mark Task 9 as `completed`.
 
@@ -421,14 +470,15 @@ Mark Task 10 as `completed`.
 
 Mark Task 11 as `in_progress`.
 
-After posting comments, store them in the PR review database for future cycle tracking:
+After posting comments, store ALL findings (posted AND skipped) in the PR review database
+for future cycle tracking and same-PR dedup of skipped findings.
 
-1. Write a JSON file with the posted comments:
+1. Write a JSON file with ALL findings:
 
 ```bash
 cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
 {
-  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
+  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}", "author": "{author}"},
   "comments": [
     {
       "thread_id": null,
@@ -437,12 +487,26 @@ cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
       "line": 42,
       "body": "Comment body as posted",
       "severity": "WARNING",
-      "posted_at": "<ISO timestamp>"
+      "posted_at": "<ISO timestamp>",
+      "status": "posted"
+    },
+    {
+      "thread_id": null,
+      "comment_id": null,
+      "path": "file.py",
+      "line": 99,
+      "body": "Finding description that was skipped",
+      "severity": "SUGGESTION",
+      "posted_at": null,
+      "status": "skipped",
+      "skip_reason": "Refined skip reason from Phase 4"
     }
   ]
 }
 EOF
 ```
+
+Use `{author}` from Phase 0 (`myk-pi-tools pr info` returns `author` field).
 
 1. Store to database:
 
@@ -451,7 +515,8 @@ myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 ```
 
 **This step is MANDATORY — never skip it.** The database is used by future `/pr-review`
-runs to track which comments were posted and verify they were addressed.
+runs to track which comments were posted, verify they were addressed, and auto-skip
+previously dismissed findings.
 
 Mark Task 11 as `completed`.
 

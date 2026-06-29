@@ -57,7 +57,7 @@ The command saves the review data to a JSON file and outputs the file path to st
 
 The JSON file contains:
 
-- `metadata`: owner, repo, pr_number, review_id, username, json_path
+- `metadata`: owner, repo, pr_number, review_id, username, author, json_path
 - `comments`: array of pending review comments with id, path, line, body, diff_hunk
 - `diff`: PR diff text for context
 
@@ -165,7 +165,7 @@ for future `/pr-review` cycle tracking:
 ```bash
 cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
 {
-  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}"},
+  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": {pr_number}, "head_sha": "{head_sha}", "author": "{author}"},
   "comments": [
     {
       "thread_id": null,

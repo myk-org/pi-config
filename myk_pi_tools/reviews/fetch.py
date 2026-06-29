@@ -1414,6 +1414,14 @@ def run(
 
         print_stderr(f"Repository: {owner}/{repo}, PR: {pr_number}")
 
+        # Fetch PR author
+        pr_author: str | None = None
+        author_data = run_gh_api(f"/repos/{owner}/{repo}/pulls/{pr_number}")
+        if isinstance(author_data, dict):
+            pr_author = author_data.get("user", {}).get("login") if author_data.get("user") else None
+        else:
+            print_stderr(f"Warning: Could not fetch PR author (API returned {type(author_data).__name__})")
+
         # Ensure output directory exists
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1542,6 +1550,7 @@ def run(
                 "owner": owner,
                 "repo": repo,
                 "pr_number": int(pr_number),
+                "author": pr_author,
                 "json_path": str(json_path),
             },
             "human": categorized["human"],
