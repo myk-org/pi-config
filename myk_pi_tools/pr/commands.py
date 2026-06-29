@@ -83,6 +83,26 @@ def pr_store_review(json_file: str) -> None:
     sys.exit(exit_code)
 
 
+@pr.command("get-skipped-comments")
+@click.argument("owner")
+@click.argument("repo")
+@click.argument("pr_number", type=int)
+def pr_get_skipped(owner: str, repo: str, pr_number: int) -> None:
+    """Get previously skipped review comments for a PR.
+
+    Outputs JSON array of skipped comments with path, line, body,
+    severity, skip_reason, and head_sha.
+    """
+    import json
+    import sys
+
+    from myk_pi_tools.pr.pr_review_store import get_skipped_comments
+
+    results = get_skipped_comments(owner, repo, pr_number)
+    print(json.dumps(results, indent=2))
+    sys.exit(0)
+
+
 @pr.command("info")
 @click.argument("args", nargs=-1)
 def pr_info(args: tuple[str, ...]) -> None:

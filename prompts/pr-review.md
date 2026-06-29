@@ -364,8 +364,11 @@ existing unresolved comment.
 the user previously skipped on this same PR. Run:
 
 ```bash
-myk-pi-tools db query "SELECT path, line, body, severity, skip_reason FROM pr_comments c JOIN pr_reviews r ON c.review_id = r.id WHERE r.owner='{owner}' AND r.repo='{repo}' AND r.pr_number={pr_number} AND c.status='skipped'" --json --db-path .pi/data/pr-reviews.db
+myk-pi-tools pr get-skipped-comments {owner} {repo} {pr_number}
 ```
+
+This returns a JSON array of previously skipped comments with `path`, `line`, `body`,
+`severity`, `skip_reason`, and `head_sha`.
 
 For each `[NEW]` finding, compare against the skipped list using path + body similarity
 (same file and similar description = match). Matched findings are auto-skipped with

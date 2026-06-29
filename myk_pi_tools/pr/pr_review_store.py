@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+VALID_STATUSES = {"posted", "skipped"}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pr_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,6 +180,8 @@ def store_pr_review(
         skipped_count = 0
         for comment in comments:
             status = comment.get("status", "posted")
+            if status not in VALID_STATUSES:
+                raise ValueError(f"Invalid status '{status}', must be one of {VALID_STATUSES}")
             if status == "skipped":
                 skipped_count += 1
             else:
