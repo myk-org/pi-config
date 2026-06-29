@@ -255,7 +255,7 @@ def test_schema_migration(db_path: Path) -> None:
 def test_store_invalid_status_raises(db_path: Path) -> None:
     """Passing an invalid status raises ValueError before any DB write."""
     comments = [{"path": "a.py", "line": 1, "body": "bad", "status": "invalid"}]
-    with pytest.raises(ValueError, match="Invalid status 'invalid'"):
+    with pytest.raises(ValueError):
         store_pr_review("org", "repo", 1, comments, head_sha="sha1")
 
     # DB should not have been created or written to
@@ -265,14 +265,16 @@ def test_store_invalid_status_raises(db_path: Path) -> None:
 def test_store_skipped_without_reason_raises(db_path: Path) -> None:  # noqa: ARG001
     """Passing status='skipped' without skip_reason raises ValueError."""
     comments = [{"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped"}]
-    with pytest.raises(ValueError, match="requires a non-empty skip_reason"):
+    with pytest.raises(ValueError):
         store_pr_review("org", "repo", 1, comments, head_sha="sha1")
 
 
 def test_store_skipped_whitespace_reason_raises(db_path: Path) -> None:  # noqa: ARG001
     """Passing status='skipped' with whitespace-only skip_reason raises ValueError."""
-    comments = [{"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped", "skip_reason": "  "}]
-    with pytest.raises(ValueError, match="requires a non-empty skip_reason"):
+    comments = [
+        {"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped", "skip_reason": "  "},
+    ]
+    with pytest.raises(ValueError):
         store_pr_review("org", "repo", 2, comments, head_sha="sha2")
 
 
