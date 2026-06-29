@@ -144,8 +144,8 @@ export function calculateStability(
 export function lifecycleFromScore(score: number, userState: UserState, entry?: ScoredEntry): LifecycleState {
   if (userState === "pinned") return "active";
   if (userState === "forgotten") return "dropped";
-  // Enforced entries (with trigger/action/verifier) never decay below active
-  if (entry && (entry.trigger || entry.verifier)) return "active";
+  // Enforced entries never decay below active — require trigger+action or verifier
+  if (entry && ((entry.trigger && entry.action) || entry.verifier)) return "active";
   if (score >= PINNED_SCORE) return "active";
   if (score >= TAU_PROMOTE) return "active";
   if (score >= TAU_PROVISIONAL) return "provisional";
