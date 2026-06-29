@@ -339,7 +339,7 @@ export function registerRules(
 
     // Semantic enforcement: check verifier rules against this turn's tool calls
     try {
-      const { loadVerifierEntries } = await import("./enforcement-rules.js");
+      const { loadVerifierEntries, matchToolCall } = await import("./enforcement-rules.js");
       const verifierEntries = loadVerifierEntries(ctx.cwd);
       if (verifierEntries.length > 0) {
         const turnToolResults = (_event as any).toolResults || [];
@@ -360,16 +360,16 @@ export function registerRules(
             const trName = (turnToolResults[i] as any)?.toolName || "";
             const trInput = (turnToolResults[i] as any)?.input || {};
             if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
-            // Match beforeCommand as a word-boundary pattern (e.g. "gh pr merge")
-            // to avoid false matches on substrings like "gh pr merge-base"
-            if (trName === "bash" && trInput?.command && triggerIdx === -1) {
-              try {
-                const escaped = beforeCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-                if (new RegExp(`\\b${escaped}\\b`).test(trInput.command)) triggerIdx = i;
-              } catch {
-                // Fallback to includes if regex fails
-                if (trInput.command.includes(beforeCommand)) triggerIdx = i;
-              }
+            // Use matchToolCall for consistent trigger detection across all trigger types
+            if (triggerIdx === -1 && rule.trigger) {
+              // Import type needed for the cast
+              const triggerEntry = { ...rule, action: rule.entry?.action || "warn" } as any;
+              const hit = matchToolCall([triggerEntry], trName, trInput);
+              if (hit.length > 0) triggerIdx = i;
+            }
+            // Fallback: if no trigger field, match beforeCommand in bash commands
+            if (triggerIdx === -1 && trName === "bash" && trInput?.command?.includes(beforeCommand)) {
+              triggerIdx = i;
             }
           }
 

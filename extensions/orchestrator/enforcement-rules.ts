@@ -236,6 +236,17 @@ export function executeAction(
   command: string,
   cwd: string,
 ): ActionResult {
+  // Optional allowlist — if PI_ENFORCEMENT_ALLOWED_COMMANDS is set,
+  // only permit commands matching an allowed prefix
+  const allowedEnv = process.env.PI_ENFORCEMENT_ALLOWED_COMMANDS;
+  if (allowedEnv) {
+    const allowlist = allowedEnv.split(":").map(s => s.trim()).filter(Boolean);
+    const permitted = allowlist.some(allowed => command === allowed || command.startsWith(allowed + " "));
+    if (!permitted) {
+      return { output: `Blocked: command not in PI_ENFORCEMENT_ALLOWED_COMMANDS allowlist`, success: false };
+    }
+  }
+
   // Safety: reject commands that match dangerous patterns
   const BLOCKED_PATTERNS = [
     /\bcurl\b.*\|\s*(?:bash|sh|zsh)\b/i,    // curl | bash
