@@ -527,6 +527,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
     if (entries.length === 0) return;
 
+
+
     let matches = matchToolCall(entries, toolName, input);
 
     // For subagent results, also check bash_contains triggers against the

@@ -55,7 +55,12 @@ export interface ActionResult {
  * Reads from the existing memory-scores.json — no separate storage.
  */
 export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
-  const active = getActiveEntries(cwd);
+  // Load ALL entries with trigger+action, not just active/provisional.
+  // Enforced rules are code-checked — lifecycle decay should not disable them.
+  const scores = loadScores(cwd);
+  const all = Object.entries(scores.entries)
+    .filter(([, e]) => e.lifecycle !== "dropped" && e.userState !== "forgotten")
+    .map(([hash, entry]) => ({ hash, entry }));
   // Build hash→text lookup from topic files
   const topicEntries = readAllTopicEntries(cwd);
   const hashToText = new Map<string, string>();
@@ -66,7 +71,7 @@ export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
 
   const result: EnforcedEntry[] = [];
 
-  for (const { hash, entry } of active) {
+  for (const { hash, entry } of all) {
     if (!entry.trigger || !entry.action) continue;
 
     result.push({
@@ -89,7 +94,11 @@ export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
  * `trigger` and `action` (which loadEnforcedEntries demands).
  */
 export function loadVerifierEntries(cwd: string): VerifierEntry[] {
-  const active = getActiveEntries(cwd);
+  // Same as loadEnforcedEntries — enforced rules bypass lifecycle decay
+  const scores = loadScores(cwd);
+  const all = Object.entries(scores.entries)
+    .filter(([, e]) => e.lifecycle !== "dropped" && e.userState !== "forgotten")
+    .map(([hash, entry]) => ({ hash, entry }));
   const topicEntries = readAllTopicEntries(cwd);
   const hashToText = new Map<string, string>();
   for (const te of topicEntries) {
@@ -99,7 +108,7 @@ export function loadVerifierEntries(cwd: string): VerifierEntry[] {
 
   const result: VerifierEntry[] = [];
 
-  for (const { hash, entry } of active) {
+  for (const { hash, entry } of all) {
     if (!entry.verifier) continue;
 
     result.push({
