@@ -531,16 +531,31 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     let matches = matchToolCall(entries, toolName, input);
 
-    // For subagent results, also check bash_contains triggers against the
-    // result content — subagents run git commit/push internally and the
-    // orchestrator only sees the result text, not the bash commands.
+    // For subagent results, extract actual bash commands from the subagent's
+    // tool call messages (structured data, not prose text matching).
     if (toolName === "subagent" && matches.length === 0) {
-      const resultText = ((event as any).content || [])
-        .filter((c: any) => c.type === "text")
-        .map((c: any) => c.text || "")
-        .join("\n");
-      if (resultText) {
-        matches = matchBashCommand(entries.filter(e => e.action !== "block"), resultText);
+      const details = (event as any).details;
+      const results = details?.results || [];
+      const bashCommands: string[] = [];
+      for (const r of results) {
+        for (const msg of r?.messages || []) {
+          if (msg?.role !== "assistant") continue;
+          for (const part of msg?.content || []) {
+            if (part?.type === "toolCall" && part?.name === "bash" && part?.arguments?.command) {
+              bashCommands.push(part.arguments.command);
+            }
+          }
+        }
+      }
+      if (bashCommands.length > 0) {
+        const nonBlockEntries = entries.filter(e => e.action !== "block");
+        for (const cmd of bashCommands) {
+          const cmdMatches = matchBashCommand(nonBlockEntries, cmd);
+          if (cmdMatches.length > 0) {
+            matches = cmdMatches;
+            break;
+          }
+        }
       }
     }
 

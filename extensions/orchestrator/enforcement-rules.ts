@@ -236,16 +236,8 @@ export function matchToolCall(
       }
     }
 
-    // Check bash_contains/bash_regex in subagent task text
-    // Subagents run git commit/push — the orchestrator sees the subagent
-    // tool_result but not the bash commands inside. Match against the
-    // task description to catch delegated commands.
-    if (toolName === "subagent" && input?.task) {
-      const bashHit = matchBashTrigger(rule.trigger, input.task);
-      if (bashHit) {
-        matches.push({ rule, matched: bashHit });
-      }
-    }
+    // Subagent matching is handled in the tool_result hook via structured
+    // tool call extraction from subagent messages (not task text matching).
   }
   return matches;
 }

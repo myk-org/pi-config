@@ -137,48 +137,10 @@ describe("matchToolCall — bash trigger via bash tool", () => {
   });
 });
 
-// ── matchToolCall — subagent task text matches bash_contains trigger ───────
 
-describe("matchToolCall — subagent task text matches bash_contains trigger", () => {
-  const entry = makeEntry("bash_contains git commit");
+// Subagent matching uses structured tool call extraction (tool_result hook),
+// not task text matching. See enforcement.ts for the implementation.
 
-  it("matches when subagent task contains the trigger text", () => {
-    const matches = matchToolCall([entry], "subagent", {
-      task: "Stage files and git commit -m 'test'",
-      agent: "git-expert",
-      cwd: "/tmp",
-    });
-    assert.equal(matches.length, 1);
-    assert.equal(matches[0].matched, "git commit");
-    assert.strictEqual(matches[0].rule, entry);
-  });
-
-  it("does not match when subagent task does not contain trigger text", () => {
-    const matches = matchToolCall([entry], "subagent", {
-      task: "Run tests",
-      agent: "test-runner",
-      cwd: "/tmp",
-    });
-    assert.equal(matches.length, 0);
-  });
-});
-
-// ── matchToolCall — subagent task text does not match unrelated trigger ────
-
-describe("matchToolCall — subagent task text does not match unrelated trigger", () => {
-  const entry = makeEntry("bash_contains rm -rf");
-
-  it("does not match when subagent task has no relation to trigger", () => {
-    const matches = matchToolCall([entry], "subagent", {
-      task: "git push origin main",
-      agent: "git-expert",
-      cwd: "/tmp",
-    });
-    assert.equal(matches.length, 0);
-  });
-});
-
-// ── matchBashCommand — matches against subagent result text ────────────────
 
 describe("matchBashCommand — matches against subagent result text", () => {
   const entry = makeEntry("bash_contains Committed", "warn");
