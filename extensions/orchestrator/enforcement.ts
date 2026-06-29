@@ -565,16 +565,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           }
         }
       }
-      // Fallback: match against result text if no structured commands found
-      if (matches.length === 0) {
-        const resultText = ((event as any).content || [])
-          .filter((c: any) => c.type === "text")
-          .map((c: any) => c.text || "")
-          .join("\n");
-        if (resultText) {
-          matches = matchBashCommand(nonBlockEntries, resultText);
-        }
-      }
+      // No fallback to prose text — only structured tool calls are reliable.
+      // Prose matching causes false positives (e.g., "git status" in a sentence).
     }
 
     if (matches.length === 0) return;
