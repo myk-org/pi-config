@@ -329,12 +329,36 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
             const existingLine = `- [${vm.category}] ${vm.text}`;
             if (reinforce(cwd, existingLine)) {
+              // Merge enforcement fields into existing entry if new entry has them
+              if (params.trigger || params.verifier) {
+                const scores = loadScores(cwd);
+                const existingHash = entryHash(existingLine);
+                const existingEntry = scores.entries[existingHash];
+                if (existingEntry) {
+                  if (params.trigger) {
+                    existingEntry.trigger = params.trigger as any;
+                    if (params.action) {
+                      if (params.action.startsWith("run_after ")) {
+                        existingEntry.action = "run_after";
+                        existingEntry.actionCommand = params.action.slice("run_after ".length);
+                      } else if (params.action === "block" || params.action === "warn") {
+                        existingEntry.action = params.action;
+                      }
+                    }
+                  }
+                  if (params.verifier) {
+                    existingEntry.verifier = params.verifier;
+                  }
+                  saveScores(cwd, scores);
+                }
+              }
               // Remove the just-embedded entry since we're reinforcing instead of adding
               await removeEmbedding(cwd, text, category);
+              const enforcementNote = (params.trigger || params.verifier) ? " (enforcement fields merged)" : "";
               return {
                 content: [{
                   type: "text",
-                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}`,
+                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}${enforcementNote}`,
                 }],
               };
             }
@@ -351,8 +375,32 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         if (te.text === text && te.category === category) {
           // Reinforce instead of duplicating — always use canonical line (no pinned marker)
           reinforce(cwd, canonicalLine);
+          // Merge enforcement fields into existing entry if new entry has them
+          if (params.trigger || params.verifier) {
+            const scores = loadScores(cwd);
+            const existingHash = entryHash(canonicalLine);
+            const existingEntry = scores.entries[existingHash];
+            if (existingEntry) {
+              if (params.trigger) {
+                existingEntry.trigger = params.trigger as any;
+                if (params.action) {
+                  if (params.action.startsWith("run_after ")) {
+                    existingEntry.action = "run_after";
+                    existingEntry.actionCommand = params.action.slice("run_after ".length);
+                  } else if (params.action === "block" || params.action === "warn") {
+                    existingEntry.action = params.action;
+                  }
+                }
+              }
+              if (params.verifier) {
+                existingEntry.verifier = params.verifier;
+              }
+              saveScores(cwd, scores);
+            }
+          }
           // No removeEmbedding here — same text/category key as existing entry, embedding is still valid
-          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
+          const enforcementNote = (params.trigger || params.verifier) ? " (enforcement fields merged)" : "";
+          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}` }] };
         }
       }
 
