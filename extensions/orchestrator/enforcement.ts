@@ -533,7 +533,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // For subagent results, extract actual bash commands from the subagent's
     // tool call messages (structured data only — no prose text fallback).
-    if (toolName === "subagent" && matches.length === 0) {
+    if (toolName === "subagent") {
       const details = (event as any).details;
       const results = details?.results || [];
       const bashCommands: string[] = [];
