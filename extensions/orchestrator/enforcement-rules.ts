@@ -242,8 +242,9 @@ export function executeAction(
   if (allowedEnv) {
     const allowlist = allowedEnv.split(":").map(s => s.trim()).filter(Boolean);
     // Exact match only — no prefix matching to prevent shell chaining bypass
-    // (e.g., ".dev/deploy-all.sh && rm -rf /" must not match ".dev/deploy-all.sh")
-    const permitted = allowlist.some(allowed => command === allowed);
+    // Both sides trimmed to avoid whitespace mismatches from storage
+    const commandTrimmed = command.trim();
+    const permitted = allowlist.some(allowed => commandTrimmed === allowed);
     if (!permitted) {
       return { output: `Blocked: command not in PI_ENFORCEMENT_ALLOWED_COMMANDS allowlist`, success: false };
     }
