@@ -237,7 +237,7 @@ export function executeAction(
   cwd: string,
 ): ActionResult {
   // Optional allowlist — if PI_ENFORCEMENT_ALLOWED_COMMANDS is set,
-  // only permit commands matching an allowed prefix
+  // only permit exact-match commands (colon-separated)
   const allowedEnv = process.env.PI_ENFORCEMENT_ALLOWED_COMMANDS;
   if (allowedEnv) {
     const allowlist = allowedEnv.split(":").map(s => s.trim()).filter(Boolean);
