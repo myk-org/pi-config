@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from myk_pi_tools.pr.commands import pr
 from myk_pi_tools.pr.pr_review_store import (
     get_skipped_comments,
+    run_store,
     store_pr_review,
 )
 
@@ -246,3 +250,71 @@ def test_schema_migration(db_path: Path) -> None:
     assert reviews[1]["author"] == "migrator"
 
     conn.close()
+
+
+def test_store_invalid_status_raises(db_path: Path) -> None:
+    """Passing an invalid status raises ValueError before any DB write."""
+    comments = [{"path": "a.py", "line": 1, "body": "bad", "status": "invalid"}]
+    with pytest.raises(ValueError, match="Invalid status 'invalid'"):
+        store_pr_review("org", "repo", 1, comments, head_sha="sha1")
+
+    # DB should not have been created or written to
+    assert not db_path.exists()
+
+
+def test_store_skipped_without_reason_raises(db_path: Path) -> None:  # noqa: ARG001
+    """Passing status='skipped' without skip_reason raises ValueError."""
+    comments = [{"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped"}]
+    with pytest.raises(ValueError, match="requires a non-empty skip_reason"):
+        store_pr_review("org", "repo", 1, comments, head_sha="sha1")
+
+    # Also test with empty / whitespace-only skip_reason
+    comments_ws = [{"path": "a.py", "line": 1, "body": "needs reason", "status": "skipped", "skip_reason": "  "}]
+    with pytest.raises(ValueError, match="requires a non-empty skip_reason"):
+        store_pr_review("org", "repo", 2, comments_ws, head_sha="sha2")
+
+
+def test_cli_get_skipped(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG001
+    """CLI get-skipped-comments returns JSON output with exit code 0."""
+    comments = [
+        {
+            "path": "x.py",
+            "line": 1,
+            "body": "skip me",
+            "severity": "nitpick",
+            "status": "skipped",
+            "skip_reason": "dup",
+        },
+    ]
+    store_pr_review("org", "repo", 55, comments, head_sha="bbb2222")
+
+    runner = CliRunner()
+    result = runner.invoke(pr, ["get-skipped-comments", "org", "repo", "55"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert len(data) == 1
+    assert data[0]["path"] == "x.py"
+    assert data[0]["skip_reason"] == "dup"
+
+
+def test_run_store_with_author(db_path: Path, tmp_path: Path) -> None:
+    """run_store() reads author from metadata and stores it in pr_reviews."""
+    json_data = {
+        "metadata": {
+            "owner": "org",
+            "repo": "repo",
+            "pr_number": 10,
+            "head_sha": "abc123",
+            "author": "janedoe",
+        },
+        "comments": [{"path": "f.py", "line": 1, "body": "ok", "severity": "info"}],
+    }
+    json_file = tmp_path / "review.json"
+    json_file.write_text(json.dumps(json_data))
+
+    exit_code = run_store(str(json_file))
+    assert exit_code == 0
+
+    reviews = _query_all(db_path, "pr_reviews")
+    assert len(reviews) == 1
+    assert reviews[0]["author"] == "janedoe"

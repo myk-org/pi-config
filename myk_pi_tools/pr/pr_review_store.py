@@ -105,6 +105,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 
     for table, col_name, sql in _MIGRATIONS:
         if table not in table_columns:
+            # table names come from hardcoded _MIGRATIONS — safe, PRAGMA can't be parameterized
             cursor = conn.execute(f"PRAGMA table_info({table})")
             table_columns[table] = {row[1] for row in cursor.fetchall()}
 
@@ -158,6 +159,15 @@ def store_pr_review(
         head_sha = _get_current_commit_sha(cwd=project_root)
     created_at = datetime.now(UTC).isoformat()
 
+    # Validate all comments before touching the database
+    for i, comment in enumerate(comments):
+        status = comment.get("status", "posted")
+        if status not in VALID_STATUSES:
+            raise ValueError(f"Invalid status '{status}' in comment[{i}], must be one of {VALID_STATUSES}")
+        skip_reason = comment.get("skip_reason", "").strip()
+        if status == "skipped" and not skip_reason:
+            raise ValueError("status='skipped' requires a non-empty skip_reason")
+
     log(f"Storing {len(comments)} PR review comment(s) for {owner}/{repo}#{pr_number}...")
     log(f"Database: {db_path}")
 
@@ -180,8 +190,6 @@ def store_pr_review(
         skipped_count = 0
         for comment in comments:
             status = comment.get("status", "posted")
-            if status not in VALID_STATUSES:
-                raise ValueError(f"Invalid status '{status}', must be one of {VALID_STATUSES}")
             if status == "skipped":
                 skipped_count += 1
             else:
@@ -241,6 +249,7 @@ def get_skipped_comments(
     conn.row_factory = sqlite3.Row
     try:
         _run_migrations(conn)
+        conn.commit()
         cursor = conn.execute(
             """
             SELECT c.path, c.line, c.body, c.severity, c.skip_reason, r.head_sha
@@ -254,8 +263,7 @@ def get_skipped_comments(
         )
         return [dict(row) for row in cursor.fetchall()]
     except sqlite3.Error as e:
-        log(f"Warning: Failed to query skipped comments: {e}")
-        return []
+        raise RuntimeError(f"Failed to query skipped comments: {e}") from e
     finally:
         conn.close()
 
@@ -324,7 +332,7 @@ def run_store(json_path: str) -> int:
 
     try:
         store_pr_review(owner, repo, pr_number, comments, head_sha=head_sha, author=author)
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         log(f"Error: {e}")
         return 1
     return 0

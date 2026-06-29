@@ -98,7 +98,11 @@ def pr_get_skipped(owner: str, repo: str, pr_number: int) -> None:
 
     from myk_pi_tools.pr.pr_review_store import get_skipped_comments
 
-    results = get_skipped_comments(owner, repo, pr_number)
+    try:
+        results = get_skipped_comments(owner, repo, pr_number)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
     print(json.dumps(results, indent=2))
     sys.exit(0)
 
