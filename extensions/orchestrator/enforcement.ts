@@ -536,6 +536,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     if (toolName === "subagent") {
       const details = (event as any).details;
       const results = Array.isArray(details?.results) ? details.results : [];
+      if (!Array.isArray(details?.results) && details?.results) {
+        console.debug("[enforcement] subagent details.results is not an array, skipping extraction");
+      }
       const bashCommands: string[] = [];
       for (const r of results) {
         const msgs = Array.isArray(r?.messages) ? r.messages : [];
