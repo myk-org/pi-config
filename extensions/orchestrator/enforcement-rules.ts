@@ -230,6 +230,47 @@ export function matchToolCall(
 }
 
 /**
+ * Check verifier rules against a turn's tool results.
+ * Returns list of violated verifier strings.
+ */
+export function checkVerifiers(
+  verifierEntries: VerifierEntry[],
+  toolResults: Array<{ toolName: string; input: Record<string, any> }>,
+): string[] {
+  const violations: string[] = [];
+
+  for (const rule of verifierEntries) {
+    const m = rule.verifier.match(/^tool_called (\S+) before (.+)$/);
+    if (!m) continue;
+
+    const requiredTool = m[1];
+    const beforeCommand = m[2];
+
+    let requiredIdx = -1;
+    let triggerIdx = -1;
+    for (let i = 0; i < toolResults.length; i++) {
+      const trName = toolResults[i].toolName;
+      const trInput = toolResults[i].input || {};
+      if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
+      if (triggerIdx === -1 && rule.trigger) {
+        const triggerEntry = { ...rule, action: (rule as any).entry?.action || "warn" } as any;
+        const hit = matchToolCall([triggerEntry], trName, trInput);
+        if (hit.length > 0) triggerIdx = i;
+      }
+      if (triggerIdx === -1 && trName === "bash" && trInput?.command?.includes(beforeCommand)) {
+        triggerIdx = i;
+      }
+    }
+
+    if (triggerIdx >= 0 && (requiredIdx < 0 || requiredIdx >= triggerIdx)) {
+      violations.push(rule.verifier);
+    }
+  }
+
+  return violations;
+}
+
+/**
  * Execute a run_after action command.
  */
 export function executeAction(

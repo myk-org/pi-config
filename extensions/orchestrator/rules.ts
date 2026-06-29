@@ -339,45 +339,14 @@ export function registerRules(
 
     // Semantic enforcement: check verifier rules against this turn's tool calls
     try {
-      const { loadVerifierEntries, matchToolCall } = await import("./enforcement-rules.js");
+      const { loadVerifierEntries, checkVerifiers } = await import("./enforcement-rules.js");
       const verifierEntries = loadVerifierEntries(ctx.cwd);
       if (verifierEntries.length > 0) {
-        const turnToolResults = (_event as any).toolResults || [];
-        const violations: string[] = [];
-
-        for (const rule of verifierEntries) {
-          // Verifier format: "tool_called <tool> before <command>"
-          const verifierMatch = rule.verifier.match(/^tool_called (\S+) before (.+)$/);
-          if (!verifierMatch) continue;
-
-          const requiredTool = verifierMatch[1];
-          const beforeCommand = verifierMatch[2];
-
-          // Find indices: where the triggering command appeared, and where the required tool was called
-          let requiredIdx = -1;
-          let triggerIdx = -1;
-          for (let i = 0; i < turnToolResults.length; i++) {
-            const trName = (turnToolResults[i] as any)?.toolName || "";
-            const trInput = (turnToolResults[i] as any)?.input || {};
-            if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
-            // Use matchToolCall for consistent trigger detection across all trigger types
-            if (triggerIdx === -1 && rule.trigger) {
-              // Import type needed for the cast
-              const triggerEntry = { ...rule, action: rule.entry?.action || "warn" } as any;
-              const hit = matchToolCall([triggerEntry], trName, trInput);
-              if (hit.length > 0) triggerIdx = i;
-            }
-            // Fallback: if no trigger field, match beforeCommand in bash commands
-            if (triggerIdx === -1 && trName === "bash" && trInput?.command?.includes(beforeCommand)) {
-              triggerIdx = i;
-            }
-          }
-
-          // Violation: the command ran but the required tool was not called before it
-          if (triggerIdx >= 0 && (requiredIdx < 0 || requiredIdx >= triggerIdx)) {
-            violations.push(rule.verifier);
-          }
-        }
+        const turnToolResults = ((_event as any).toolResults || []).map((tr: any) => ({
+          toolName: tr?.toolName || "",
+          input: tr?.input || {},
+        }));
+        const violations = checkVerifiers(verifierEntries, turnToolResults);
 
         if (violations.length > 0) {
           pi.sendMessage({

@@ -13,7 +13,9 @@ import {
   executeAction,
   loadEnforcedEntries,
   loadVerifierEntries,
+  checkVerifiers,
   type EnforcedEntry,
+  type VerifierEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { entryHash, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 
@@ -427,5 +429,65 @@ describe("loadVerifierEntries — returns entries with verifier field", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── checkVerifiers tests ──────────────────────────────────────────────
+
+// checkVerifiers + VerifierEntry imported with the main block above
+
+function makeVerifierEntry(verifier: string, trigger?: string): VerifierEntry {
+  return {
+    hash: "test",
+    text: "test verifier",
+    trigger: trigger as any,
+    verifier,
+    entry: stubScoredEntry(trigger || "bash_contains test"),
+  };
+}
+
+describe("checkVerifiers — violation detected", () => {
+  it("detects violation when required tool not called before command", () => {
+    const entries = [makeVerifierEntry("tool_called ask_user before gh pr merge")];
+    const toolResults = [
+      { toolName: "bash", input: { command: "gh pr merge 42 --squash" } },
+    ];
+    const violations = checkVerifiers(entries, toolResults);
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0], "tool_called ask_user before gh pr merge");
+  });
+});
+
+describe("checkVerifiers — no violation when tool called first", () => {
+  it("passes when required tool is called before command", () => {
+    const entries = [makeVerifierEntry("tool_called ask_user before gh pr merge")];
+    const toolResults = [
+      { toolName: "ask_user", input: { question: "merge?" } },
+      { toolName: "bash", input: { command: "gh pr merge 42 --squash" } },
+    ];
+    const violations = checkVerifiers(entries, toolResults);
+    assert.equal(violations.length, 0);
+  });
+});
+
+describe("checkVerifiers — no violation when command not in turn", () => {
+  it("returns empty when triggering command not found", () => {
+    const entries = [makeVerifierEntry("tool_called ask_user before gh pr merge")];
+    const toolResults = [
+      { toolName: "bash", input: { command: "git status" } },
+    ];
+    const violations = checkVerifiers(entries, toolResults);
+    assert.equal(violations.length, 0);
+  });
+});
+
+describe("checkVerifiers — invalid verifier format skipped", () => {
+  it("skips entries with unrecognized verifier format", () => {
+    const entries = [makeVerifierEntry("some random verifier text")];
+    const toolResults = [
+      { toolName: "bash", input: { command: "anything" } },
+    ];
+    const violations = checkVerifiers(entries, toolResults);
+    assert.equal(violations.length, 0);
   });
 });
