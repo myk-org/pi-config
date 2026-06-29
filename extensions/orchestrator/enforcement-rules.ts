@@ -252,11 +252,8 @@ export function checkVerifiers(
       const trName = toolResults[i].toolName;
       const trInput = toolResults[i].input || {};
       if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
-      if (triggerIdx === -1 && rule.trigger) {
-        const triggerEntry = { ...rule, action: (rule as any).entry?.action || "warn" } as any;
-        const hit = matchToolCall([triggerEntry], trName, trInput);
-        if (hit.length > 0) triggerIdx = i;
-      }
+      // Match beforeCommand in bash commands — this is the triggering event
+      // that the verifier checks (e.g., "gh pr merge" in a bash call)
       if (triggerIdx === -1 && trName === "bash" && trInput?.command?.includes(beforeCommand)) {
         triggerIdx = i;
       }

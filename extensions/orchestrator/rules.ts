@@ -342,18 +342,21 @@ export function registerRules(
       const { loadVerifierEntries, checkVerifiers } = await import("./enforcement-rules.js");
       const verifierEntries = loadVerifierEntries(ctx.cwd);
       if (verifierEntries.length > 0) {
-        const turnToolResults = ((_event as any).toolResults || []).map((tr: any) => ({
-          toolName: tr?.toolName || "",
-          input: tr?.input || {},
-        }));
-        const violations = checkVerifiers(verifierEntries, turnToolResults);
+        const rawResults = (_event as any).toolResults;
+        if (rawResults && Array.isArray(rawResults) && rawResults.length > 0) {
+          const turnToolResults = rawResults.map((tr: any) => ({
+            toolName: tr?.toolName || "",
+            input: tr?.input || {},
+          }));
+          const violations = checkVerifiers(verifierEntries, turnToolResults);
 
-        if (violations.length > 0) {
-          pi.sendMessage({
-            customType: "enforcement-violation",
-            content: `\u26d4 ENFORCEMENT VIOLATION \u2014 fix before continuing:\n\n${violations.map(v => `- ${v}`).join("\n")}`,
-            display: true,
-          }, { triggerTurn: true, deliverAs: "followUp" });
+          if (violations.length > 0) {
+            pi.sendMessage({
+              customType: "enforcement-violation",
+              content: `\u26d4 ENFORCEMENT VIOLATION \u2014 fix before continuing:\n\n${violations.map(v => `- ${v}`).join("\n")}`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+          }
         }
       }
     } catch (e: any) { console.debug("[rules] semantic enforcement failed:", e?.message?.slice(0, 100)); }
