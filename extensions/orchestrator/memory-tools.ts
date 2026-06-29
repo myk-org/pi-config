@@ -249,6 +249,21 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           description: "Pin this memory (never decays, never removed by dreaming). Only when user explicitly says 'remember this'.",
         }),
       ),
+      trigger: Type.Optional(
+        Type.String({
+          description: "Enforcement trigger (e.g., 'bash_contains git add .', 'tool_name write', 'file_modified *.py'). When set, this memory becomes code-enforced.",
+        }),
+      ),
+      action: Type.Optional(
+        Type.String({
+          description: "Enforcement action: 'block' (prevent), 'run_after <command>' (execute after), 'warn' (append warning)",
+        }),
+      ),
+      verifier: Type.Optional(
+        Type.String({
+          description: "Semantic verifier condition (e.g., 'tool_called ask_user before gh pr merge'). Checked at turn_end.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
@@ -352,7 +367,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       // Add score entry — always hash the canonical line (no pinned marker)
       const scores = loadScores(cwd);
       const hash = entryHash(canonicalLine);
-      scores.entries[hash] = {
+      const entry: ScoredEntry = {
         class: category,
         score: isPinned ? PINNED_SCORE : 1.0,
         evidenceCount: 1,
@@ -361,7 +376,26 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         lastReinforced: new Date().toISOString(),
         userState: isPinned ? "pinned" : "auto",
         lifecycle: "active",
-      } as ScoredEntry;
+      };
+
+      // Add enforcement fields if provided
+      if (params.trigger) {
+        entry.trigger = params.trigger as any;
+        // Parse action — "run_after <cmd>" splits into action + actionCommand
+        if (params.action) {
+          if (params.action.startsWith("run_after ")) {
+            entry.action = "run_after";
+            entry.actionCommand = params.action.slice("run_after ".length);
+          } else if (params.action === "block" || params.action === "warn") {
+            entry.action = params.action;
+          }
+        }
+      }
+      if (params.verifier) {
+        entry.verifier = params.verifier;
+      }
+
+      scores.entries[hash] = entry;
       saveScores(cwd, scores);
 
       // Embed the new entry (no-op if already embedded during dedup check above)

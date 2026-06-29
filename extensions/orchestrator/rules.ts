@@ -250,7 +250,10 @@ export function registerRules(
     }
 
     if (!extra && !memories && !contextMemories && !sessionContext) return;
-    return { systemPrompt: memories + contextMemories + sessionContext + event.systemPrompt + extra };
+    // Memories at TAIL position (after system prompt) — research proves tail
+    // gets highest LLM attention (U-shaped attention curve). Rules/extra stay
+    // before the prompt for backwards compatibility.
+    return { systemPrompt: event.systemPrompt + extra + memories + contextMemories + sessionContext };
   });
 
   // Post-turn memory reminder: after a turn completes, check if any tool
@@ -333,6 +336,63 @@ export function registerRules(
         }
       }
     } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
+
+    // Semantic enforcement: check verifier rules against this turn's tool calls
+    try {
+      const { loadVerifierEntries, matchToolCall } = await import("./enforcement-rules.js");
+      const verifierEntries = loadVerifierEntries(ctx.cwd);
+      if (verifierEntries.length > 0) {
+        const turnToolResults = (_event as any).toolResults || [];
+        const violations: string[] = [];
+
+        for (const rule of verifierEntries) {
+          if (!rule.verifier) continue;
+
+          // Check if the trigger was activated this turn
+          let triggered = false;
+          for (const tr of turnToolResults) {
+            const trName = (tr as any)?.toolName || "";
+            const trInput = (tr as any)?.input || {};
+            if (matchToolCall([rule], trName, trInput).length > 0) {
+              triggered = true;
+              break;
+            }
+          }
+          if (!triggered) continue;
+
+          // Verifier format: "tool_called <tool> before <command>"
+          // Check if the required tool was called before the triggering tool
+          const verifierMatch = rule.verifier.match(/^tool_called (\S+) before (.+)$/);
+          if (verifierMatch) {
+            const requiredTool = verifierMatch[1];
+            const beforeCommand = verifierMatch[2];
+
+            // Find index of the triggering command and the required tool
+            let requiredIdx = -1;
+            let triggerIdx = -1;
+            for (let i = 0; i < turnToolResults.length; i++) {
+              const trName = (turnToolResults[i] as any)?.toolName || "";
+              const trInput = (turnToolResults[i] as any)?.input || {};
+              if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
+              if (trInput?.command?.includes(beforeCommand) && triggerIdx === -1) triggerIdx = i;
+            }
+
+            // Violation: trigger was called but required tool was not called before it
+            if (triggerIdx >= 0 && (requiredIdx < 0 || requiredIdx >= triggerIdx)) {
+              violations.push(rule.verifier);
+            }
+          }
+        }
+
+        if (violations.length > 0) {
+          pi.sendMessage({
+            customType: "enforcement-violation",
+            content: `\u26d4 ENFORCEMENT VIOLATION \u2014 fix before continuing:\n\n${violations.map(v => `- ${v}`).join("\n")}`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+        }
+      }
+    } catch (e: any) { console.debug("[rules] semantic enforcement failed:", e?.message?.slice(0, 100)); }
 
     // Check what files were modified in this turn by looking at tool results
     const toolResults = (_event as any).toolResults;

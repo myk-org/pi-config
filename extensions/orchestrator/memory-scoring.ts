@@ -19,6 +19,19 @@ export type CueType = "explicit" | "structural" | "behavioral" | "recurrence";
 export type UserState = "auto" | "pinned" | "forgotten";
 export type LifecycleState = "active" | "provisional" | "candidate" | "dropped";
 
+/** Trigger types for enforcement rules */
+export type EnforcementTrigger =
+  | `bash_contains ${string}`   // matches if bash command contains the string
+  | `bash_regex ${string}`      // matches if bash command matches the regex
+  | `tool_name ${string}`       // matches if tool name equals the string
+  | `file_modified ${string}`;  // matches if a write/edit targets a matching path glob
+
+/** Action types for enforcement rules */
+export type EnforcementAction =
+  | "block"       // block the tool call, return error
+  | "run_after"   // run a command after the tool succeeds
+  | "warn";       // append warning to tool result
+
 export interface ScoredEntry {
   /** Category of the memory */
   class: MemoryCategory;
@@ -36,6 +49,16 @@ export interface ScoredEntry {
   userState: UserState;
   /** Current lifecycle state */
   lifecycle: LifecycleState;
+
+  // ── Enforcement fields (optional) ──────────────────────────────────
+  /** What activates this rule (e.g., 'bash_contains git add .') */
+  trigger?: EnforcementTrigger;
+  /** What to do when triggered: block, run_after, warn */
+  action?: EnforcementAction;
+  /** Command to run (for run_after action) */
+  actionCommand?: string;
+  /** Semantic verifier — condition to check (e.g., 'tool_called ask_user before gh pr merge') */
+  verifier?: string;
 }
 
 export interface ScoresFile {

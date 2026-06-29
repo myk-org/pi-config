@@ -1,10 +1,11 @@
 /**
  * Enforcement handler — blocks forbidden commands (python/pip, git protection,
- * remote script execution, memory writes, dangerous).
+ * remote script execution, memory writes, dangerous) + memory-based enforcement rules.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { loadEnforcedEntries, matchToolCall, executeAction } from "./enforcement-rules.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -487,6 +488,71 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     return undefined;
+  });
+
+  // ── Memory-based enforcement (tool_result hook) ───────────────────
+  // After a tool completes, check if any enforced memory entry's trigger
+  // matches. Executes block/run_after/warn actions.
+  pi.on("tool_result", async (event, ctx) => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+    const toolName = (event as any).toolName as string;
+    const input = (event as any).input || {};
+
+    let entries: ReturnType<typeof loadEnforcedEntries>;
+    try {
+      entries = loadEnforcedEntries(ctx.cwd);
+    } catch {
+      return; // No enforcement if loading fails
+    }
+    if (entries.length === 0) return;
+
+    const matches = matchToolCall(entries, toolName, input);
+    if (matches.length === 0) return;
+
+    const currentContent = (event as any).content || [];
+    const appendMessages: Array<{ type: string; text: string }> = [];
+
+    for (const { rule } of matches) {
+      if (rule.action === "block") {
+        // Block: mark result as error with enforcement message
+        return {
+          content: [
+            ...currentContent,
+            { type: "text", text: `\n⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` },
+          ],
+          isError: true,
+        };
+      }
+
+      if (rule.action === "run_after" && rule.actionCommand && !(event as any).isError) {
+        const result = executeAction(rule.actionCommand, ctx.cwd);
+        if (result.success) {
+          appendMessages.push({
+            type: "text",
+            text: `\n✅ Auto-enforced: ${rule.actionCommand}\n${result.output}`,
+          });
+        } else {
+          appendMessages.push({
+            type: "text",
+            text: `\n❌ Enforcement failed: ${rule.actionCommand}\n${result.output}`,
+          });
+        }
+      }
+
+      if (rule.action === "warn") {
+        appendMessages.push({
+          type: "text",
+          text: `\n⚠️ ENFORCEMENT WARNING: ${rule.text}`,
+        });
+      }
+    }
+
+    if (appendMessages.length > 0) {
+      return {
+        content: [...currentContent, ...appendMessages],
+      };
+    }
   });
 }
 

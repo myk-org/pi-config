@@ -361,6 +361,23 @@ learned from user skip decisions. When a user skips a finding for a generalizabl
 (project convention, intentional pattern), the AI appends a one-line guideline to this file.
 All 3 code-reviewer agents read this file before reviewing and suppress matching findings.
 
+**Layer 5 — Enforcement Rules** (`enforcement-rules.ts`): Code-enforced memory entries that the LLM cannot ignore.
+Memory entries gain optional fields: `trigger` (what activates the rule), `action` (block/run_after/warn),
+`verifier` (semantic condition checked at turn_end). Enforcement hooks:
+
+- `tool_result`: after a tool completes, checks triggers and executes actions (block, run_after, warn)
+- `turn_end`: checks semantic verifiers and forces retry via `sendMessage(triggerTurn: true)` on violations
+
+Trigger types: `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <glob>`.
+Action types: `block` (prevent), `run_after` (execute command after), `warn` (append warning).
+Verifier format: `tool_called <tool> before <command>` (checks tool ordering within a turn).
+
+Entries are added via `memory_add` with optional `trigger`, `action`, `verifier` parameters.
+Stored in the same `memory-scores.json` — no separate storage system.
+
+**Memory injection position**: memories injected at **tail** of system prompt (after rules/instructions).
+Research proves tail position gets highest LLM attention (U-shaped attention curve).
+
 **Capacity Signal** (`situation-report.ts`): Header shows usage % (e.g. `[72% — 1,224/1,700 tokens]`), consolidation warning at >80%.
 
 **Preference Auto-Extraction** (`preference-extractor.ts`): Detects "I prefer…"/"always use…"/"never…" patterns, auto-adds to memory, reinforces on repetition.
