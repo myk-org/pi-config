@@ -14,8 +14,8 @@ import {
   loadEnforcedEntries,
   loadVerifierEntries,
   type EnforcedEntry,
-} from "../../../extensions/orchestrator/enforcement-rules.ts";
-import { entryHash, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.ts";
+} from "../../../extensions/orchestrator/enforcement-rules.js";
+import { entryHash, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
