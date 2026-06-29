@@ -76,9 +76,35 @@ export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
 
 /**
  * Load entries that have semantic verifiers (for turn_end checking).
+ * Reads active entries with a `verifier` field directly, without requiring
+ * `trigger` and `action` (which loadEnforcedEntries demands).
  */
 export function loadVerifierEntries(cwd: string): EnforcedEntry[] {
-  return loadEnforcedEntries(cwd).filter((e) => !!e.verifier);
+  const active = getActiveEntries(cwd);
+  const topicEntries = readAllTopicEntries(cwd);
+  const hashToText = new Map<string, string>();
+  for (const te of topicEntries) {
+    const line = `- [${te.category}] ${te.text}`;
+    hashToText.set(entryHash(line), te.text);
+  }
+
+  const result: EnforcedEntry[] = [];
+
+  for (const { hash, entry } of active) {
+    if (!entry.verifier) continue;
+
+    result.push({
+      hash,
+      text: hashToText.get(hash) || hash,
+      trigger: entry.trigger || ("" as any),
+      action: entry.action || ("warn" as any),
+      actionCommand: entry.actionCommand,
+      verifier: entry.verifier,
+      entry,
+    });
+  }
+
+  return result;
 }
 
 // ── Trigger Matching ───────────────────────────────────────────────────────

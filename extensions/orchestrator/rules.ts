@@ -374,7 +374,10 @@ export function registerRules(
               const trName = (turnToolResults[i] as any)?.toolName || "";
               const trInput = (turnToolResults[i] as any)?.input || {};
               if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
-              if (trInput?.command?.includes(beforeCommand) && triggerIdx === -1) triggerIdx = i;
+              // `includes` is intentionally used here — beforeCommand is a specific
+              // command substring (e.g. "gh pr merge") that we want to find anywhere
+              // in the bash command string. This is correct for our use case.
+              if (trName === "bash" && trInput?.command?.includes(beforeCommand) && triggerIdx === -1) triggerIdx = i;
             }
 
             // Violation: trigger was called but required tool was not called before it

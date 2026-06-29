@@ -105,32 +105,28 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (!isToolCallEventType("bash", event)) return undefined;
-    const command = event.input.command;
-    const cmdLower = command.trim().toLowerCase();
-
-    // Memory-based enforcement — block rules checked before execution
+    // Memory-based enforcement — block rules checked before execution (all tool types)
     try {
       const entries = loadEnforcedEntries(ctx.cwd);
       const blockEntries = entries.filter(e => e.action === "block");
       if (blockEntries.length > 0) {
-        const matches = matchToolCall(blockEntries, "bash", { command: command });
+        const toolName = isToolCallEventType("bash", event) ? "bash"
+          : isToolCallEventType("write", event) ? "write"
+          : isToolCallEventType("edit", event) ? "edit"
+          : isToolCallEventType("read", event) ? "read"
+          : (event as any).toolName || "";
+        const input = (event as any).input || {};
+        const matches = matchToolCall(blockEntries, toolName, input);
         if (matches.length > 0) {
           const rule = matches[0].rule;
           return { block: true, reason: `⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` };
         }
-        // Also check non-bash tool_name and file_modified triggers
-        if (!isToolCallEventType("bash", event)) {
-          const toolName = (event as any).toolName || "";
-          const input = (event as any).input || {};
-          const toolMatches = matchToolCall(blockEntries, toolName, input);
-          if (toolMatches.length > 0) {
-            const rule = toolMatches[0].rule;
-            return { block: true, reason: `⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` };
-          }
-        }
       }
     } catch { /* enforcement should never break normal flow */ }
+
+    if (!isToolCallEventType("bash", event)) return undefined;
+    const command = event.input.command;
+    const cmdLower = command.trim().toLowerCase();
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only
     if (process.env.PI_SUBAGENT_CHILD !== "1") {

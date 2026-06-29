@@ -141,7 +141,7 @@ memory_add(text="...", category="lesson",
 **Rule of thumb:** If you can express it as "when X happens, do/block/warn Y" — add enforcement.
 If it's knowledge that informs decisions but can't be checked mechanically — plain memory only.
 
-**Trigger types:** `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <glob>`
+**Trigger types:** `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <pattern>` (matches file extensions like `*.py` or path substrings like `Dockerfile`)
 **Action types:** `block` (prevent), `run_after <command>` (execute after), `warn` (append warning)
 **Verifier:** `tool_called <tool> before <command>` (checked at turn_end, forces retry on violation)
 
