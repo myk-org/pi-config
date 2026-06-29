@@ -553,12 +553,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
       const nonBlockEntries = entries.filter(e => e.action !== "block");
       if (bashCommands.length > 0) {
-        // Primary: match against structured bash commands
+        // Primary: match against ALL structured bash commands (not just first)
         for (const cmd of bashCommands) {
           const cmdMatches = matchBashCommand(nonBlockEntries, cmd);
-          if (cmdMatches.length > 0) {
-            matches = cmdMatches;
-            break;
+          for (const m of cmdMatches) {
+            if (!matches.some(existing => existing.rule.hash === m.rule.hash)) {
+              matches.push(m);
+            }
           }
         }
       }
