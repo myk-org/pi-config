@@ -353,6 +353,13 @@ Storage: `.pi/memory/embeddings.json`. Embeds on write with dedup
 indexed on shutdown, auto-injected for relevant sessions. Storage: `.pi/data/session-search.json`.
 
 **PR Review Store** (`myk_pi_tools/pr/pr_review_store.py`): Tracks PR review comments in SQLite (`.pi/data/pr-reviews.db`).
+Stores both posted and skipped findings with status/skip_reason columns.
+Skipped findings are auto-matched in subsequent review cycles to avoid re-raising dismissed items.
+
+**Learned Review Preferences** (`.pi/data/review-guidelines.md`): Per-repo review guidelines
+learned from user skip decisions. When a user skips a finding for a generalizable reason
+(project convention, intentional pattern), the AI appends a one-line guideline to this file.
+All 3 code-reviewer agents read this file before reviewing and suppress matching findings.
 
 **Capacity Signal** (`situation-report.ts`): Header shows usage % (e.g. `[72% — 1,224/1,700 tokens]`), consolidation warning at >80%.
 

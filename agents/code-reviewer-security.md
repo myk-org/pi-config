@@ -50,6 +50,13 @@ and conventions.
 
 Do NOT rely on the calling prompt to provide these files — always read them yourself.
 
+## Learned Review Preferences
+
+After reading project guidelines, check if `.pi/data/review-guidelines.md` exists.
+If it does, read it — these are learned review preferences for this project
+(patterns the reviewer has previously evaluated and dismissed).
+Do NOT raise findings that contradict these guidelines.
+
 ## Approach
 
 1. Read project guidelines (see above)
