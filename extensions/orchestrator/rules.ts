@@ -360,8 +360,17 @@ export function registerRules(
             const trName = (turnToolResults[i] as any)?.toolName || "";
             const trInput = (turnToolResults[i] as any)?.input || {};
             if (trName === requiredTool && requiredIdx === -1) requiredIdx = i;
-            // beforeCommand is a specific substring (e.g. "gh pr merge")
-            if (trName === "bash" && trInput?.command?.includes(beforeCommand) && triggerIdx === -1) triggerIdx = i;
+            // Match beforeCommand as a word-boundary pattern (e.g. "gh pr merge")
+            // to avoid false matches on substrings like "gh pr merge-base"
+            if (trName === "bash" && trInput?.command && triggerIdx === -1) {
+              try {
+                const escaped = beforeCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                if (new RegExp(`\\b${escaped}\\b`).test(trInput.command)) triggerIdx = i;
+              } catch {
+                // Fallback to includes if regex fails
+                if (trInput.command.includes(beforeCommand)) triggerIdx = i;
+              }
+            }
           }
 
           // Violation: the command ran but the required tool was not called before it
