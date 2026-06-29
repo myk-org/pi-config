@@ -532,7 +532,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     let matches = matchToolCall(entries, toolName, input);
 
     // For subagent results, extract actual bash commands from the subagent's
-    // tool call messages (structured data, not prose text matching).
+    // tool call messages (structured data). Falls back to result text if no
+    // structured tool calls are found (compaction, truncation).
     if (toolName === "subagent" && matches.length === 0) {
       const details = (event as any).details;
       const results = details?.results || [];
@@ -541,20 +542,34 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         for (const msg of r?.messages || []) {
           if (msg?.role !== "assistant") continue;
           for (const part of msg?.content || []) {
-            if (part?.type === "toolCall" && part?.name === "bash" && part?.arguments?.command) {
-              bashCommands.push(part.arguments.command);
+            // Check both field naming conventions (name/arguments and toolName/args)
+            const toolName = part?.name || part?.toolName;
+            const toolArgs = part?.arguments || part?.args;
+            if (part?.type === "toolCall" && toolName === "bash" && toolArgs?.command) {
+              bashCommands.push(toolArgs.command);
             }
           }
         }
       }
+      const nonBlockEntries = entries.filter(e => e.action !== "block");
       if (bashCommands.length > 0) {
-        const nonBlockEntries = entries.filter(e => e.action !== "block");
+        // Primary: match against structured bash commands
         for (const cmd of bashCommands) {
           const cmdMatches = matchBashCommand(nonBlockEntries, cmd);
           if (cmdMatches.length > 0) {
             matches = cmdMatches;
             break;
           }
+        }
+      }
+      // Fallback: match against result text if no structured commands found
+      if (matches.length === 0) {
+        const resultText = ((event as any).content || [])
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text || "")
+          .join("\n");
+        if (resultText) {
+          matches = matchBashCommand(nonBlockEntries, resultText);
         }
       }
     }
