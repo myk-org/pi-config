@@ -535,12 +535,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // tool call messages (structured data only — no prose text fallback).
     if (toolName === "subagent") {
       const details = (event as any).details;
-      const results = details?.results || [];
+      const results = Array.isArray(details?.results) ? details.results : [];
       const bashCommands: string[] = [];
       for (const r of results) {
-        for (const msg of r?.messages || []) {
+        const msgs = Array.isArray(r?.messages) ? r.messages : [];
+        for (const msg of msgs) {
           if (msg?.role !== "assistant") continue;
-          for (const part of msg?.content || []) {
+          const parts = Array.isArray(msg?.content) ? msg.content : [];
+          for (const part of parts) {
             // Check both field naming conventions (name/arguments and toolName/args)
             const toolName = part?.name || part?.toolName;
             const toolArgs = part?.arguments || part?.args;
