@@ -152,6 +152,10 @@ Background async agent that reads the session, extracts things worth remembering
 Triggered by `/dream` (manual) or session shutdown (automatic).
 **ALWAYS run as async + fireAndForget** — never block the session.
 
+**Dreaming follows the same NEVER memorize rules as per-turn self-improvement:**
+do NOT extract rejected/abandoned ideas, unfinished conversations, or unimplemented requirements.
+Only extract outcomes, not intentions.
+
 ---
 
 ## Skill Creation (Procedural Memory)
