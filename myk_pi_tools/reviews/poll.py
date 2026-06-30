@@ -179,10 +179,6 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | N
         if author != "qodo-code-review[bot]":
             continue
         body = comment.get("body", "")
-        # Debug: log qodo comment bodies that contain any reviewing keyword
-        body_lower = body.lower()
-        if any(kw.lower() in body_lower for kw in ("looking for bugs", "busy working", "is busy", "agents are on it")):
-            print_stderr(f"[poll] DEBUG qodo comment body (first 500 chars): {body[:500]}")
         # Only match transient review comments — they start with <h3> heading.
         # Don't match reply comments that quote the phrase in prose text.
         if any(f"<h3>{marker}</h3>" in body or body.strip().startswith(marker) for marker in _QODO_REVIEWING_MARKERS):

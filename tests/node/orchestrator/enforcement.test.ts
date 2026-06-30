@@ -443,6 +443,12 @@ describe("checkPythonPipBlock", () => {
   it("blocks python after semicolon", () => {
     assert.ok(checkPythonPipBlock("ls; python3 -c 'pass'"));
   });
+  it("blocks python after &&", () => {
+    assert.ok(checkPythonPipBlock("ls && python3 -c 'pass'"));
+  });
+  it("blocks pip after ||", () => {
+    assert.ok(checkPythonPipBlock("false || pip install requests"));
+  });
   it("allows uv run python3", () => {
     assert.equal(checkPythonPipBlock("uv run python3 -c 'pass'"), undefined);
   });
