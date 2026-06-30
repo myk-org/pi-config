@@ -43,7 +43,8 @@ _POLL_SLEEP_SECONDS = 300  # 5 minutes between cycles when no rate limit
 _PUSHBACK_KEYWORDS = re.compile(
     r"(\bstill (?:present|exists?|unresolved|open|not (?:fixed|addressed|resolved))\b"
     r"|\bnot (?:fully |completely )?(?:addressed|resolved|fixed)\b"
-    r"|\bdisagree\b|\bincorrect\b|\bwrong\b|\bissue (?:remains|persists)\b"
+    r"|\bdisagree\b|\bissue (?:remains|persists)\b"
+    r"|\b(?:is|that'?s|this is|are) (?:incorrect|wrong)\b"
     r"|\bdoes not (?:address|fix|resolve)\b"
     r"|\bshould still\b"
     r"|\brecommend (?:re-?evaluating|revisiting)\b"
