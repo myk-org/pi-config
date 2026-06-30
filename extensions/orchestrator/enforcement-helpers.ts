@@ -189,6 +189,24 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
           // Parent also doesn't exist — safe (entire path is non-existent)
         }
         resolved = lexical;
+      } else if (resolvedCwd !== null &&
+        (lexical.startsWith(resolvedCwd + path.sep) || lexical === resolvedCwd) &&
+        (lexical.includes(`${path.sep}.pi${path.sep}tmp${path.sep}`) ||
+         lexical.endsWith(`${path.sep}.pi${path.sep}tmp`))) {
+        // Non-existent path within project .pi/tmp/ — validate parent exists under project
+        if (expanded.includes("..")) {
+          return false;
+        }
+        const parentDir = path.dirname(lexical);
+        try {
+          const resolvedParent = realpathSync(parentDir);
+          if (!resolvedParent.startsWith(resolvedCwd + path.sep) && resolvedParent !== resolvedCwd) {
+            return false; // Parent symlinks outside project
+          }
+        } catch {
+          // Parent also doesn't exist — safe (entire path is non-existent)
+        }
+        resolved = lexical;
       } else {
         return false;
       }

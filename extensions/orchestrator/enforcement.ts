@@ -249,7 +249,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   // Block git add . / git add -A
   if (
     hasGitSub(command, "add") &&
-    /\bgit\b.*\badd\b\s+(\.|--all|-A)\b/.test(command)
+    /\bgit\b.*\badd\b\s+(\.(?:\s|$)|--all\b|-A\b)/.test(command)
   ) {
     return {
       block: true,
@@ -259,7 +259,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
 
   // Block staging gitignored files
-  if (hasGitSub(command, "add") && !/\bgit\b.*\badd\b\s+(\.|--all|-A)\b/.test(command)) {
+  if (hasGitSub(command, "add") && !/\bgit\b.*\badd\b\s+(\.(?:\s|$)|--all\b|-A\b)/.test(command)) {
     // Extract file paths from git add command
     const addMatch = command.match(/\bgit\b.*\badd\b\s+(.+)/);
     if (addMatch) {
@@ -393,8 +393,10 @@ function checkTempFileEnforcement(command: string, cwd: string): EnforcementResu
 
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
+  // Strip heredoc content — heredoc text is not executable
+  const cmdForDangerCheck = command.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
   // Collapse bash line continuations (backslash-newline) before splitting
-  const normalized = command.replace(/\\\r?\n/g, " ");
+  const normalized = cmdForDangerCheck.replace(/\\\r?\n/g, " ");
   // Split on statement separators AND pipes to isolate individual commands.
   // NOTE: || must appear before | in the regex so the engine matches || greedily first.
   // NOTE: Pipe split does not respect shell quoting (e.g., echo "a|b" splits incorrectly).
