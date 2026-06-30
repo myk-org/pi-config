@@ -69,6 +69,7 @@ Single extension that provides:
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
+| `reload_session` tool | AI-callable tool to reload extensions, skills, prompts, and rules after deploying changes — no manual `/reload` needed |
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |

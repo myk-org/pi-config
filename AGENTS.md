@@ -53,7 +53,7 @@ pi-config/
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
-│   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
+│   │   ├── session-validation.ts    # Session start tool checks + reload_session tool + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command — unified session status snapshot
 │   │   ├── status-line.ts           # Git status, notifications, container indicator, last-activity timestamp
