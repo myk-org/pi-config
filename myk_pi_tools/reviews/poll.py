@@ -45,11 +45,12 @@ _PUSHBACK_KEYWORDS = re.compile(
     r"|\bnot (?:fully |completely )?(?:addressed|resolved|fixed)\b"
     r"|\bdisagree\b|\bissue (?:remains|persists)\b"
     r"|\b(?:is|that'?s|this is|are) (?:incorrect|wrong)\b"
+    r"|^\s*(?:incorrect|wrong)\.?\s*$"
     r"|\bdoes not (?:address|fix|resolve)\b"
     r"|\bshould still\b"
     r"|\brecommend (?:re-?evaluating|revisiting)\b"
     r"|\bre-?open\b)",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
