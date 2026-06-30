@@ -7,7 +7,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync } from "node:fs";
-import * as path from "node:path";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir } from "./utils.js";
@@ -23,17 +22,21 @@ import {
   isGitRepo,
   runGit,
 } from "./git-helpers.js";
-import { isReadOnlyStatement, isRmInProjectTmp } from "./enforcement-helpers.js";
+import {
+  checkPythonPipBlock,
+  checkRemoteExecBlock,
+  checkTempFileEnforcement,
+  hasGitAddBulk,
+  isReadOnlyStatement,
+  isRmInProjectTmp,
+  normalizeForRepeatCheck,
+  resolveEffectiveCwd,
+  stripHeredocBodies,
+  escapeForDoubleQuote,
+  escapeForSingleQuote,
+} from "./enforcement-helpers.js";
 
 type EnforcementResult = { block: true; reason: string } | undefined;
-
-/** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
-function normalizeForRepeatCheck(command: string): string {
-  return command
-    .replace(/^\s*cd\s+\S+\s*&&\s*/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 // Repeat detection via temp file — immune to module reload / closure issues
 // Repeat detection file — set to project dir on first use
@@ -41,16 +44,6 @@ let REPEAT_FILE = "";
 
 /** Cached trailer selection for comma-separated commit_trailer values (reset on session_start) */
 let cachedTrailerSelection: string | null = null;
-
-/** Escape a string for safe inclusion in double-quoted shell strings */
-function escapeForDoubleQuote(s: string): string {
-  return s.replace(/[\\"`$!]/g, "\\$&");
-}
-
-/** Escape a string for safe inclusion in single-quoted shell strings */
-function escapeForSingleQuote(s: string): string {
-  return s.replace(/'/g, "'\\''");
-}
 
 function ensureRepeatFile(cwd: string): void {
   if (!REPEAT_FILE) {
@@ -74,75 +67,7 @@ function writeRepeatState(state: { lastCmd: string; count: number }): void {
   } catch (e: any) { console.debug("[enforcement] write repeat state failed:", e?.message || e); }
 }
 
-/** Parse bash command for cd target to resolve the effective working directory (worktree support) */
-function resolveEffectiveCwd(command: string, sessionCwd: string): string {
-  // Match: cd /path/to/dir && ..., cd /path/to/dir; ...
-  const cdMatch = command.match(/^\s*cd\s+([^\s;&|]+)/);
-  if (cdMatch) {
-    const target = cdMatch[1].replace(/['"]/g, "");
-    if (target.startsWith("/")) return target;
-    return join(sessionCwd, target);
-  }
-  // Match: git -C /path/to/dir ...
-  const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
-  if (gitCMatch) {
-    const target = gitCMatch[1].replace(/['"]/g, "");
-    if (target.startsWith("/")) return target;
-    return join(sessionCwd, target);
-  }
-  return sessionCwd;
-}
 
-/** Block direct python/pip and pre-commit commands */
-function checkPythonPipBlock(cmdLower: string): EnforcementResult {
-  // Block direct python/pip — check at start or after pipe/semicolon/&& operators
-  if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
-    if (/(?:^|[|;&]\s*)(?:python3?|pip3?)\b/.test(cmdLower)) {
-      return {
-        block: true,
-        reason:
-          "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg",
-      };
-    }
-  }
-
-  // Block direct pre-commit
-  if (cmdLower.startsWith("pre-commit "))
-    return {
-      block: true,
-      reason: "Direct pre-commit forbidden. Use: prek run --all-files",
-    };
-
-  return undefined;
-}
-
-/** Block remote script execution (pipe to shell, process substitution, command substitution/eval) */
-function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
-  // Strip heredoc content before remote-exec checks — heredoc text
-  // (e.g., `cat << 'EOF'\n...curl|bash in docs...\nEOF`) is not executable.
-  const cmdForExecCheck = cmdLower.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
-
-  // Block remote script execution — download first, audit, then run
-  const remoteExecReason = "⛔ Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
-  // Pipe to shell or interpreter: curl ... | sh, curl ... | /bin/bash, curl ... | sudo python3
-  if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
-      /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
-    return { block: true, reason: remoteExecReason };
-  }
-  // Process substitution: bash <(curl ...), source <(curl ...), . <(curl ...)
-  if (/\b(ba|c|da|[akz]|fi|tc)?sh\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
-    return { block: true, reason: remoteExecReason };
-  }
-  // Command substitution / eval: sh -c "$(curl ...)", eval $(curl ...), `curl ...`
-  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
-    return { block: true, reason: remoteExecReason };
-  }
-
-  return undefined;
-}
 
 /** Inject commit trailer into command (Assisted-by, Co-authored-by, etc.) */
 async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
@@ -249,7 +174,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   // Block git add . / git add -A
   if (
     hasGitSub(command, "add") &&
-    /\bgit\b.*\badd\b\s+(?:(?:-\S+\s+)*)(\.(?:\s|$)|--all\b|-A\b)/.test(command)
+    hasGitAddBulk(command)
   ) {
     return {
       block: true,
@@ -259,7 +184,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
 
   // Block staging gitignored files
-  if (hasGitSub(command, "add") && !/\bgit\b.*\badd\b\s+(?:(?:-\S+\s+)*)(\.(?:\s|$)|--all\b|-A\b)/.test(command)) {
+  if (hasGitSub(command, "add") && !hasGitAddBulk(command)) {
     // Extract file paths from git add command
     const addMatch = command.match(/\bgit\b.*\badd\b\s+(.+)/);
     if (addMatch) {
@@ -373,23 +298,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   return undefined;
 }
 
-/** Enforce temp files go to .pi/tmp/ — not bare /tmp/ */
-function checkTempFileEnforcement(command: string, cwd: string): EnforcementResult {
-  // Catches: mktemp /tmp/foo, > /tmp/foo, tee /tmp/foo, cat > /tmp/foo
-  if (/(?:^|[;&|$( \t])mktemp\b/.test(command)) {
-    const expectedTmpDir = path.join(cwd, ".pi", "tmp");
-    const usesEnvVar = /\$\{?PROJECT_TMP_DIR\}?/.test(command);
-    const usesExpectedPath = command.includes(expectedTmpDir);
-    const usesRelativePath = /(?:^|[\s"'=])\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
-    if (!usesEnvVar && !usesExpectedPath && !usesRelativePath) {
-      return {
-        block: true,
-        reason: `⛔ mktemp must use project temp dir. Use: mktemp \${PROJECT_TMP_DIR}/XXXXXX (resolves to ${expectedTmpDir}/)`,
-      };
-    }
-  }
-  return undefined;
-}
+
 
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
@@ -429,12 +338,6 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   }
 
   return undefined;
-}
-
-/** Strip heredoc bodies from command string, preserving commands after the closing delimiter */
-function stripHeredocBodies(cmd: string): string {
-  // Match heredoc opener: <<[-]?['"']?WORD['"']?
-  return cmd.replace(/<<-?\s*['"]?(\w+)['"]?.*\n([\s\S]*?\n)\1(?:\s|$)/gm, "");
 }
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {

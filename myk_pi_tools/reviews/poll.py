@@ -153,18 +153,18 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
 
 
 # Qodo posts a transient comment while reviewing — detect by heading only
-# "Looking for bugs?" is the <h3> heading in Qodo's transient comment.
+# "Looking for bugs?" and "Qodo is busy working" are <h3> headings in Qodo's transient comment.
 # Do NOT add broad markers — they false-positive against PR summary/description text.
-_QODO_REVIEWING_MARKERS = ("Looking for bugs?",)
+_QODO_REVIEWING_MARKERS = ("Looking for bugs?", "Qodo is busy working")
 
-_QODO_STUCK_TIMEOUT_SECONDS = 3600  # 1 hour — if "Looking for bugs" persists, Qodo is stuck
+_QODO_STUCK_TIMEOUT_SECONDS = 3600  # 1 hour — if Qodo's transient comment persists, Qodo is stuck
 _QODO_RETRIGGER_COOLDOWN_SECONDS = 1801  # ~30 min cooldown between re-trigger attempts (+1s for strict > comparison)
 
 
 def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | None = None) -> bool:
     """Check if Qodo is currently reviewing the PR.
 
-    Qodo posts a transient comment while reviewing (e.g., "Looking for bugs?").
+    Qodo posts a transient comment while reviewing (e.g., "Looking for bugs?", "Qodo is busy working").
     If this comment exists, the sticky is about to be updated — we should wait.
     Matches author (qodo-code-review[bot]) and known substring markers.
     """
@@ -179,10 +179,14 @@ def _is_qodo_reviewing(owner: str, repo: str, pr_number: str, comments: list | N
         if author != "qodo-code-review[bot]":
             continue
         body = comment.get("body", "")
+        # Debug: log qodo comment bodies that contain any reviewing keyword
+        body_lower = body.lower()
+        if any(kw.lower() in body_lower for kw in ("looking for bugs", "busy working", "is busy", "agents are on it")):
+            print_stderr(f"[poll] DEBUG qodo comment body (first 500 chars): {body[:500]}")
         # Only match transient review comments — they start with <h3> heading.
         # Don't match reply comments that quote the phrase in prose text.
         if any(f"<h3>{marker}</h3>" in body or body.strip().startswith(marker) for marker in _QODO_REVIEWING_MARKERS):
-            print_stderr("[poll] Qodo review in progress (Looking for bugs).")
+            print_stderr("[poll] Qodo review in progress.")
             return True
 
     return False
@@ -254,7 +258,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     3. If not approved, sleep and retry
     """
     owner_repo = f"{owner}/{repo}"
-    _qodo_reviewing_since: float | None = None  # Track when "Looking for bugs" first appeared
+    _qodo_reviewing_since: float | None = None  # Track when Qodo's transient "reviewing" comment first appeared
     _cleanup_requested = False  # Track if we already asked Qodo to clean up stickies
     _cleanup_response = ""  # Qodo's reply to our cleanup request
     cycle = 0
