@@ -479,6 +479,15 @@ describe("checkPythonPipBlock", () => {
   it("blocks python3 with env var prefix", () => {
     assert.ok(checkPythonPipBlock("LANG=C python3 script.py"));
   });
+  it("blocks python3 after background operator &", () => {
+    assert.ok(checkPythonPipBlock("echo ok & python3 script.py"));
+  });
+  it("blocks python3 with quoted env var", () => {
+    assert.ok(checkPythonPipBlock('VAR="a b" python3 script.py'));
+  });
+  it("allows python3 as argument to other command", () => {
+    assert.equal(checkPythonPipBlock("cat python3.log"), undefined);
+  });
 });
 
 // ── checkRemoteExecBlock ──

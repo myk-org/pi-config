@@ -53,10 +53,11 @@ export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
     // Split on statement separators to get individual commands,
     // then check if the base command (first word) is python/pip.
     // This avoids false positives on python3/pip appearing inside quoted arguments.
-    const statements = cmdLower.split(/\n|;|&&|\|\||\|/).map(s => s.trim()).filter(Boolean);
+    // Split on statement separators including & (background operator)
+    const statements = cmdLower.split(/\n|;|&&|\|\||\||&/).map(s => s.trim()).filter(Boolean);
     for (const stmt of statements) {
-      // Strip leading env var assignments (VAR=val ...)
-      const stripped = stmt.replace(/^\s*(?:\S+=\S*\s+)*/, "");
+      // Strip leading env var assignments: VAR=val, VAR="val", VAR='val'
+      const stripped = stmt.replace(/^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, "");
       const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
       if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
         return {
