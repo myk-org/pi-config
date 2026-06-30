@@ -10,10 +10,22 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export function registerSessionValidation(pi: ExtensionAPI): void {
-  // ── reload_session tool ─────────────────────────────────────────────
-  // Allows the AI to trigger a /reload after deploying changes.
-  // Tools cannot call ctx.reload() directly, so we queue /reload as a follow-up.
+  // ── reload_session tool + command ───────────────────────────────────
+  // Tools cannot call ctx.reload() directly (they get ExtensionContext, not
+  // ExtensionCommandContext). Workaround: register a hidden command that calls
+  // ctx.reload(), then have the tool queue it via sendUserMessage.
   // Pattern from: examples/extensions/reload-runtime.ts
+  //
+  // NOTE: Cannot use built-in "/reload" — it's a TUI-level intercept, not a
+  // registered extension command, so sendUserMessage("/reload") sends it as
+  // text to the LLM instead of triggering reload.
+  pi.registerCommand("reload-session", {
+    description: "Reload extensions, skills, prompts, rules, and themes",
+    handler: async (_args, ctx) => {
+      await ctx.reload();
+    },
+  });
+
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     pi.registerTool({
       name: "reload_session",
@@ -21,9 +33,9 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       description: "Reload extensions, skills, prompts, rules, and themes. Use after deploying code changes that affect the current session.",
       parameters: Type.Object({}),
       async execute() {
-        pi.sendUserMessage("/reload", { deliverAs: "followUp" });
+        pi.sendUserMessage("/reload-session", { deliverAs: "followUp" });
         return {
-          content: [{ type: "text", text: "Queued /reload — session will reload after this turn." }],
+          content: [{ type: "text", text: "Queued /reload-session — session will reload after this turn." }],
           details: {},
         };
       },
