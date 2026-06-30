@@ -247,6 +247,9 @@ function registerCronTool(pi: ExtensionAPI, state: CronInternals): void {
 
       if (action === "list-all") {
         const sections: string[] = [];
+        if (!CRON_FILE) {
+          return { content: [{ type: "text", text: "No scheduled tasks in any session." }] };
+        }
         try {
           const dir = path.dirname(CRON_FILE);
           for (const f of fs.readdirSync(dir)) {
@@ -323,6 +326,10 @@ function registerCronCommand(pi: ExtensionAPI, state: CronInternals): void {
 
       if (sub === "list-all") {
         const sections: string[] = [];
+        if (!CRON_FILE) {
+          if (ctx.hasUI) ctx.ui.notify("No scheduled tasks in any session.", "info");
+          return;
+        }
         try {
           const dir = path.dirname(CRON_FILE);
           for (const f of fs.readdirSync(dir)) {
