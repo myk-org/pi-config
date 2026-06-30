@@ -250,7 +250,10 @@ export function registerRules(
     }
 
     if (!extra && !memories && !contextMemories && !sessionContext) return;
-    return { systemPrompt: memories + contextMemories + sessionContext + event.systemPrompt + extra };
+    // Memories at TAIL position (after system prompt) — research proves tail
+    // gets highest LLM attention (U-shaped attention curve). Rules/extra stay
+    // before the prompt for backwards compatibility.
+    return { systemPrompt: event.systemPrompt + extra + memories + contextMemories + sessionContext };
   });
 
   // Post-turn memory reminder: after a turn completes, check if any tool
@@ -333,6 +336,30 @@ export function registerRules(
         }
       }
     } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
+
+    // Semantic enforcement: check verifier rules against this turn's tool calls
+    try {
+      const { loadVerifierEntries, checkVerifiers } = await import("./enforcement-rules.js");
+      const verifierEntries = loadVerifierEntries(ctx.cwd);
+      if (verifierEntries.length > 0) {
+        const rawResults = (_event as any).toolResults;
+        if (rawResults && Array.isArray(rawResults) && rawResults.length > 0) {
+          const turnToolResults = rawResults.map((tr: any) => ({
+            toolName: tr?.toolName || "",
+            input: tr?.input || {},
+          }));
+          const violations = checkVerifiers(verifierEntries, turnToolResults);
+
+          if (violations.length > 0) {
+            pi.sendMessage({
+              customType: "enforcement-violation",
+              content: `\u26d4 ENFORCEMENT VIOLATION \u2014 fix before continuing:\n\n${violations.map(v => `- ${v}`).join("\n")}`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+          }
+        }
+      }
+    } catch (e: any) { console.debug("[rules] semantic enforcement failed:", e?.message?.slice(0, 100)); }
 
     // Check what files were modified in this turn by looking at tool results
     const toolResults = (_event as any).toolResults;

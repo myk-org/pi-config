@@ -249,6 +249,21 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           description: "Pin this memory (never decays, never removed by dreaming). Only when user explicitly says 'remember this'.",
         }),
       ),
+      trigger: Type.Optional(
+        Type.String({
+          description: "Enforcement trigger (e.g., 'bash_contains git add .', 'tool_name write', 'file_modified *.py'). When set, this memory becomes code-enforced.",
+        }),
+      ),
+      action: Type.Optional(
+        Type.String({
+          description: "Enforcement action: 'block' (prevent), 'run_after <command>' (execute after), 'warn' (append warning)",
+        }),
+      ),
+      verifier: Type.Optional(
+        Type.String({
+          description: "Semantic verifier condition (e.g., 'tool_called ask_user before gh pr merge'). Checked at turn_end.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
@@ -260,6 +275,39 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
       if (!validCategories.includes(category)) {
         return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+      }
+
+      // Validate enforcement parameters
+      if (params.trigger) {
+        const validPrefixes = ["bash_contains ", "bash_regex ", "tool_name ", "file_modified "];
+        if (!validPrefixes.some(p => params.trigger!.startsWith(p))) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid trigger format "${params.trigger}". Must start with: ${validPrefixes.map(p => p.trim()).join(", ")}`,
+            }],
+          };
+        }
+      }
+      if (params.action) {
+        const validActions = ["block", "warn"];
+        const isRunAfter = params.action.startsWith("run_after ");
+        if (!validActions.includes(params.action) && !isRunAfter) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid action "${params.action}". Valid: block, warn, run_after <command>`,
+            }],
+          };
+        }
+        if (isRunAfter && !params.action.slice("run_after ".length).trim()) {
+          return {
+            content: [{
+              type: "text",
+              text: `Invalid action "${params.action}". run_after requires a command (e.g., 'run_after .dev/deploy-all.sh')`,
+            }],
+          };
+        }
       }
 
       // Canonical line (no pinned marker) — used for hashing/scoring
@@ -289,12 +337,38 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
           if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
             const existingLine = `- [${vm.category}] ${vm.text}`;
             if (reinforce(cwd, existingLine)) {
+              // Merge enforcement fields into existing entry if new entry has them
+              let merged = false;
+              if (params.trigger || params.action || params.verifier) {
+                const scores = loadScores(cwd);
+                const existingHash = entryHash(existingLine);
+                const existingEntry = scores.entries[existingHash];
+                if (existingEntry) {
+                  if (params.trigger) {
+                    existingEntry.trigger = params.trigger as any;
+                  }
+                  if (params.action) {
+                    if (params.action.startsWith("run_after ")) {
+                      existingEntry.action = "run_after";
+                      existingEntry.actionCommand = params.action.slice("run_after ".length);
+                    } else if (params.action === "block" || params.action === "warn") {
+                      existingEntry.action = params.action;
+                    }
+                  }
+                  if (params.verifier) {
+                    existingEntry.verifier = params.verifier;
+                  }
+                  saveScores(cwd, scores);
+                  merged = true;
+                }
+              }
               // Remove the just-embedded entry since we're reinforcing instead of adding
               await removeEmbedding(cwd, text, category);
+              const enforcementNote = merged ? " (enforcement fields merged)" : "";
               return {
                 content: [{
                   type: "text",
-                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}`,
+                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}${enforcementNote}`,
                 }],
               };
             }
@@ -311,8 +385,34 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         if (te.text === text && te.category === category) {
           // Reinforce instead of duplicating — always use canonical line (no pinned marker)
           reinforce(cwd, canonicalLine);
+          // Merge enforcement fields into existing entry if new entry has them
+          let merged = false;
+          if (params.trigger || params.action || params.verifier) {
+            const scores = loadScores(cwd);
+            const existingHash = entryHash(canonicalLine);
+            const existingEntry = scores.entries[existingHash];
+            if (existingEntry) {
+              if (params.trigger) {
+                existingEntry.trigger = params.trigger as any;
+              }
+              if (params.action) {
+                if (params.action.startsWith("run_after ")) {
+                  existingEntry.action = "run_after";
+                  existingEntry.actionCommand = params.action.slice("run_after ".length);
+                } else if (params.action === "block" || params.action === "warn") {
+                  existingEntry.action = params.action;
+                }
+              }
+              if (params.verifier) {
+                existingEntry.verifier = params.verifier;
+              }
+              saveScores(cwd, scores);
+              merged = true;
+            }
+          }
           // No removeEmbedding here — same text/category key as existing entry, embedding is still valid
-          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}` }] };
+          const enforcementNote = merged ? " (enforcement fields merged)" : "";
+          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}` }] };
         }
       }
 
@@ -352,7 +452,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       // Add score entry — always hash the canonical line (no pinned marker)
       const scores = loadScores(cwd);
       const hash = entryHash(canonicalLine);
-      scores.entries[hash] = {
+      const entry: ScoredEntry = {
         class: category,
         score: isPinned ? PINNED_SCORE : 1.0,
         evidenceCount: 1,
@@ -361,7 +461,26 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
         lastReinforced: new Date().toISOString(),
         userState: isPinned ? "pinned" : "auto",
         lifecycle: "active",
-      } as ScoredEntry;
+      };
+
+      // Add enforcement fields if provided
+      if (params.trigger) {
+        entry.trigger = params.trigger as any;
+        // Parse action — "run_after <cmd>" splits into action + actionCommand
+        if (params.action) {
+          if (params.action.startsWith("run_after ")) {
+            entry.action = "run_after";
+            entry.actionCommand = params.action.slice("run_after ".length);
+          } else if (params.action === "block" || params.action === "warn") {
+            entry.action = params.action;
+          }
+        }
+      }
+      if (params.verifier) {
+        entry.verifier = params.verifier;
+      }
+
+      scores.entries[hash] = entry;
       saveScores(cwd, scores);
 
       // Embed the new entry (no-op if already embedded during dedup check above)

@@ -44,8 +44,9 @@ pi-config/
 │   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
-│   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous)
+│   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
 │   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
+│   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
 │   │   ├── extended-autocomplete.ts  # Slash command argument completions (agents, branches, PRs, tags)
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
@@ -337,7 +338,10 @@ cold topics auto-archived after 2× half-life without reinforcement.
 **Auto-Injection Pipeline** (`rules.ts`):
 
 - `before_agent_start`: injects situation report + vector-matched memories + session history (skips trivial messages like "ok", "thanks")
-- `turn_end`: file-change memory reminders (vector search on modified paths) + task-focus enforcement (no tool calls but active tasks → injects follow-up)
+- `tool_result`: memory-based enforcement (trigger matching → block/run_after/warn)
+- `turn_end`: file-change memory reminders (vector search on modified paths) + task-focus enforcement
+  (no tool calls but active tasks → injects follow-up) + semantic enforcement verifier checking
+  (retries turn on violations)
 - Retrieval telemetry logged to `.pi/data/memory-telemetry.jsonl`; Ground Truth instruction tells LLM to trust injected context
 
 **Layer 4 — Vector Embeddings** (`memory-embeddings.ts`): Model `Xenova/bge-small-en-v1.5` (384 dims, local ONNX).
@@ -360,6 +364,23 @@ Skipped findings are auto-matched in subsequent review cycles to avoid re-raisin
 learned from user skip decisions. When a user skips a finding for a generalizable reason
 (project convention, intentional pattern), the AI appends a one-line guideline to this file.
 All 3 code-reviewer agents read this file before reviewing and suppress matching findings.
+
+**Layer 5 — Enforcement Rules** (`enforcement-rules.ts`): Code-enforced memory entries that the LLM cannot ignore.
+Memory entries gain optional fields: `trigger` (what activates the rule), `action` (block/run_after/warn),
+`verifier` (semantic condition checked at turn_end). Enforcement hooks:
+
+- `tool_result`: after a tool completes, checks triggers and executes actions (block, run_after, warn)
+- `turn_end`: checks semantic verifiers and forces retry via `sendMessage(triggerTurn: true)` on violations
+
+Trigger types: `bash_contains <str>`, `bash_regex <pattern>`, `tool_name <name>`, `file_modified <glob>`.
+Action types: `block` (prevent), `run_after` (execute command after), `warn` (append warning).
+Verifier format: `tool_called <tool> before <command>` (checks tool ordering within a turn).
+
+Entries are added via `memory_add` with optional `trigger`, `action`, `verifier` parameters.
+Stored in the same `memory-scores.json` — no separate storage system.
+
+**Memory injection position**: memories injected at **tail** of system prompt (after rules/instructions).
+Research proves tail position gets highest LLM attention (U-shaped attention curve).
 
 **Capacity Signal** (`situation-report.ts`): Header shows usage % (e.g. `[72% — 1,224/1,700 tokens]`), consolidation warning at >80%.
 

@@ -1,10 +1,11 @@
 /**
  * Enforcement handler — blocks forbidden commands (python/pip, git protection,
- * remote script execution, memory writes, dangerous).
+ * remote script execution, memory writes, dangerous) + memory-based enforcement rules.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -104,6 +105,25 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    // Memory-based enforcement — block rules checked before execution (all tool types)
+    try {
+      const entries = loadEnforcedEntries(ctx.cwd);
+      const blockEntries = entries.filter(e => e.action === "block");
+      if (blockEntries.length > 0) {
+        const toolName = isToolCallEventType("bash", event) ? "bash"
+          : isToolCallEventType("write", event) ? "write"
+          : isToolCallEventType("edit", event) ? "edit"
+          : isToolCallEventType("read", event) ? "read"
+          : (event as any).toolName || "";
+        const input = (event as any).input || {};
+        const matches = matchToolCall(blockEntries, toolName, input);
+        if (matches.length > 0) {
+          const rule = matches[0].rule;
+          return { block: true, reason: `⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` };
+        }
+      }
+    } catch { /* enforcement should never break normal flow */ }
+
     if (!isToolCallEventType("bash", event)) return undefined;
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
@@ -487,6 +507,127 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     return undefined;
+  });
+
+  // ── Memory-based enforcement (tool_result hook) ───────────────────
+  // After a tool completes, check if any enforced memory entry's trigger
+  // matches. Executes block/run_after/warn actions.
+  pi.on("tool_result", async (event, ctx) => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+    const toolName = (event as any).toolName as string;
+    const input = (event as any).input || {};
+
+    let entries: ReturnType<typeof loadEnforcedEntries>;
+    try {
+      entries = loadEnforcedEntries(ctx.cwd);
+    } catch (e: any) {
+      console.debug("[enforcement] loadEnforcedEntries failed:", e?.message?.slice(0, 100));
+      return;
+    }
+    if (entries.length === 0) return;
+
+
+
+    let matches = matchToolCall(entries, toolName, input);
+
+    // For subagent results, extract actual bash commands from the subagent's
+    // tool call messages (structured data only — no prose text fallback).
+    if (toolName === "subagent") {
+      const details = (event as any).details;
+      const results = Array.isArray(details?.results) ? details.results : [];
+      if (!Array.isArray(details?.results) && details?.results) {
+        console.debug(`[enforcement] subagent details.results is ${typeof details.results} (expected array), skipping bash extraction`);
+      }
+      const nonBlockEntries = entries.filter(e => e.action !== "block");
+      const seen = new Set<string>();
+      const bashCommands: string[] = [];
+      for (const r of results) {
+        const msgs = Array.isArray(r?.messages) ? r.messages : [];
+        for (const msg of msgs) {
+          if (msg?.role !== "assistant") continue;
+          const parts = Array.isArray(msg?.content) ? msg.content : [];
+          for (const part of parts) {
+            if (part?.type !== "toolCall") continue;
+            // Check both field naming conventions (name/arguments and toolName/args)
+            const partToolName = part?.name || part?.toolName;
+            const partToolArgs = part?.arguments || part?.args;
+            if (partToolName === "bash" && partToolArgs?.command) {
+              bashCommands.push(partToolArgs.command);
+            }
+            // Also check non-bash tool calls against tool_name/file_modified triggers
+            if (partToolName && partToolName !== "bash") {
+              const toolMatches = matchToolCall(
+                nonBlockEntries,
+                partToolName,
+                partToolArgs || {},
+              );
+              for (const m of toolMatches) {
+                if (!seen.has(m.rule.hash)) {
+                  seen.add(m.rule.hash);
+                  matches.push(m);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (bashCommands.length > 0) {
+        // Match against ALL structured bash commands
+        for (const cmd of bashCommands) {
+          const cmdMatches = matchBashCommand(nonBlockEntries, cmd);
+          for (const m of cmdMatches) {
+            if (!seen.has(m.rule.hash)) {
+              seen.add(m.rule.hash);
+              matches.push(m);
+            }
+          }
+        }
+      }
+      // No fallback to prose text — only structured tool calls are reliable.
+      // Prose matching causes false positives (e.g., "git status" in a sentence).
+    }
+
+    if (matches.length === 0) return;
+
+    const currentContent = (event as any).content || [];
+    const appendMessages: Array<{ type: string; text: string }> = [];
+
+    for (const { rule } of matches) {
+      if (rule.action === "block") {
+        // Block is handled in tool_call hook (before execution)
+        // tool_result only handles run_after and warn
+        continue;
+      }
+
+      if (rule.action === "run_after" && rule.actionCommand && !(event as any).isError) {
+        const result = executeAction(rule.actionCommand, ctx.cwd);
+        if (result.success) {
+          appendMessages.push({
+            type: "text",
+            text: `\n✅ Auto-enforced: ${rule.actionCommand}\n${result.output}`,
+          });
+        } else {
+          appendMessages.push({
+            type: "text",
+            text: `\n❌ Enforcement failed: ${rule.actionCommand}\n${result.output}`,
+          });
+        }
+      }
+
+      if (rule.action === "warn") {
+        appendMessages.push({
+          type: "text",
+          text: `\n⚠️ ENFORCEMENT WARNING: ${rule.text}`,
+        });
+      }
+    }
+
+    if (appendMessages.length > 0) {
+      return {
+        content: [...currentContent, ...appendMessages],
+      };
+    }
   });
 }
 

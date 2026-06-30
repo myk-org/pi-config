@@ -19,6 +19,19 @@ export type CueType = "explicit" | "structural" | "behavioral" | "recurrence";
 export type UserState = "auto" | "pinned" | "forgotten";
 export type LifecycleState = "active" | "provisional" | "candidate" | "dropped";
 
+/** Trigger types for enforcement rules */
+export type EnforcementTrigger =
+  | `bash_contains ${string}`   // matches if bash command contains the string
+  | `bash_regex ${string}`      // matches if bash command matches the regex
+  | `tool_name ${string}`       // matches if tool name equals the string
+  | `file_modified ${string}`;  // matches if a write/edit targets a matching path glob
+
+/** Action types for enforcement rules */
+export type EnforcementAction =
+  | "block"       // block the tool call, return error
+  | "run_after"   // run a command after the tool succeeds
+  | "warn";       // append warning to tool result
+
 export interface ScoredEntry {
   /** Category of the memory */
   class: MemoryCategory;
@@ -36,6 +49,16 @@ export interface ScoredEntry {
   userState: UserState;
   /** Current lifecycle state */
   lifecycle: LifecycleState;
+
+  // ── Enforcement fields (optional) ──────────────────────────────────
+  /** What activates this rule (e.g., 'bash_contains git add .') */
+  trigger?: EnforcementTrigger;
+  /** What to do when triggered: block, run_after, warn */
+  action?: EnforcementAction;
+  /** Command to run (for run_after action) */
+  actionCommand?: string;
+  /** Semantic verifier — condition to check (e.g., 'tool_called ask_user before gh pr merge') */
+  verifier?: string;
 }
 
 export interface ScoresFile {
@@ -118,9 +141,11 @@ export function calculateStability(
 /**
  * Determine lifecycle state from a stability score.
  */
-export function lifecycleFromScore(score: number, userState: UserState): LifecycleState {
+export function lifecycleFromScore(score: number, userState: UserState, entry?: ScoredEntry): LifecycleState {
   if (userState === "pinned") return "active";
   if (userState === "forgotten") return "dropped";
+  // Enforced entries never decay below active — require trigger+action or verifier
+  if (entry && ((entry.trigger && entry.action) || entry.verifier)) return "active";
   if (score >= PINNED_SCORE) return "active";
   if (score >= TAU_PROMOTE) return "active";
   if (score >= TAU_PROVISIONAL) return "provisional";
@@ -228,7 +253,7 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
         existing.class,
         existing.userState,
       );
-      existing.lifecycle = lifecycleFromScore(existing.score, existing.userState);
+      existing.lifecycle = lifecycleFromScore(existing.score, existing.userState, existing);
     } else {
       // New entry — initialize
       const userState: UserState = entry.section === "pinned" ? "pinned" : "auto";
@@ -249,9 +274,18 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
   }
 
   // Step 2: Remove scores for entries that no longer exist in topics
+  // Preserve entries with enforcement fields — they must not be deleted even
+  // if dreaming rewrites the topic file text (which changes the hash).
   const currentHashes = new Set(parsed.map((e) => entryHash(e.fullLine)));
   for (const hash of Object.keys(scores.entries)) {
     if (!currentHashes.has(hash)) {
+      const entry = scores.entries[hash];
+      if (entry && ((entry.trigger && entry.action) || entry.verifier)) {
+        // Enforced entry (trigger+action or verifier) — keep it
+        // Mark as orphaned so budgeting excludes it
+        (entry as any)._orphaned = true;
+        continue;
+      }
       delete scores.entries[hash];
     }
   }
@@ -259,6 +293,8 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
   // Step 3: Apply per-category budgets
   const byCategory: Record<string, { hash: string; entry: ScoredEntry }[]> = {};
   for (const [hash, entry] of Object.entries(scores.entries)) {
+    // Skip orphaned enforced entries from budgeting — they don't have topic file backing
+    if ((entry as any)._orphaned) continue;
     if (entry.lifecycle === "active") {
       if (!byCategory[entry.class]) byCategory[entry.class] = [];
       byCategory[entry.class]!.push({ hash, entry });
@@ -292,7 +328,10 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
     }
   }
 
-  // Step 6: Save
+  // Step 6: Clean up internal markers and save
+  for (const entry of Object.values(scores.entries)) {
+    delete (entry as any)._orphaned;
+  }
   scores.lastRebuild = new Date(now).toISOString();
   saveScores(cwd, scores);
 
@@ -328,7 +367,7 @@ export function reinforce(cwd: string, entryLine: string): boolean {
     entry.class,
     entry.userState,
   );
-  entry.lifecycle = lifecycleFromScore(entry.score, entry.userState);
+  entry.lifecycle = lifecycleFromScore(entry.score, entry.userState, entry);
   saveScores(cwd, scores);
   return true;
 }

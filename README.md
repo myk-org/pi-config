@@ -27,6 +27,7 @@ Single extension that provides:
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
 | **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
+| **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges ([@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks)) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
