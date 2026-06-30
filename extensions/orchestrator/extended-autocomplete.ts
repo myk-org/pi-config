@@ -72,136 +72,31 @@ function filter(items: AutocompleteItem[], prefix: string): AutocompleteItem[] |
   return filtered.length > 0 ? filtered : null;
 }
 
-// ── Registration ────────────────────────────────────────────────────
+// ── Shared types ────────────────────────────────────────────────────
 
-export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 
-  // Caches (populated lazily on first Tab)
-  const prCache = createCache<AutocompleteItem[]>();
-  let prUrlMap = new Map<string, string>();
-  const branchCache = createCache<AutocompleteItem[]>();
-  const tagCache = createCache<AutocompleteItem[]>();
-  const modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
-  let lastCwd = "";
+interface AutocompleteContext {
+  prCache: Cache<AutocompleteItem[]>;
+  prUrlMap: Map<string, string>;
+  branchCache: Cache<AutocompleteItem[]>;
+  tagCache: Cache<AutocompleteItem[]>;
+  modelCaches: Map<string, Cache<AutocompleteItem[]>>;
+  lastCwd: string;
+  fetchOpenPRs(cwd: string): Promise<void>;
+  fetchBranches(cwd: string): Promise<void>;
+  fetchModels(provider: string, cwd: string): Promise<void>;
+  fetchTags(cwd: string): Promise<void>;
+}
 
-  // ── Fetchers ────────────────────────────────────────────────────
+// ── Completions registration ────────────────────────────────────────
 
-  async function fetchOpenPRs(cwd: string): Promise<void> {
-    if (isFresh(prCache) || prCache.loading) return;
-    prCache.loading = true;
-    try {
-      const result = await pi.exec(
-        "gh", ["pr", "list", "--state", "open", "--limit", "50", "--json", "number,title,url"],
-        { cwd, timeout: 10_000 },
-      );
-      if (result.code === 0) {
-        const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string; url: string }>;
-        prCache.data = prs.map((pr) => ({
-          value: String(pr.number),
-          label: `#${pr.number}`,
-          description: pr.title,
-        }));
-        prCache.timestamp = Date.now();
-        // URL-keyed version for pr-review (uses URL as completion value)
-        prUrlMap = new Map(prs.map((pr) => [String(pr.number), pr.url || String(pr.number)]));
-      }
-    } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
-    prCache.loading = false;
-  }
-
-  async function fetchBranches(cwd: string): Promise<void> {
-    if (isFresh(branchCache) || branchCache.loading) return;
-    branchCache.loading = true;
-    try {
-      const result = await pi.exec(
-        "git", ["branch", "-a", "--format=%(HEAD)|%(refname:short)"],
-        { cwd, timeout: 5_000 },
-      );
-      if (result.code === 0) {
-        const seen = new Set<string>();
-        const items: AutocompleteItem[] = [];
-        for (const line of result.stdout.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const [head, ref] = trimmed.split("|");
-          if (!ref) continue;
-          const name = ref.replace(/^origin\//, "");
-          if (name === "HEAD" || seen.has(name)) continue;
-          seen.add(name);
-          items.push({
-            value: name,
-            label: name,
-            description: head === "*" ? "← current" : undefined,
-          });
-        }
-        branchCache.data = items;
-        branchCache.timestamp = Date.now();
-      }
-    } catch (e: any) { console.debug("[autocomplete] branch fetch failed:", e?.message || e); }
-    branchCache.loading = false;
-  }
-
-  async function fetchModels(provider: string, cwd: string): Promise<void> {
-    let cache = modelCaches.get(provider);
-    if (!cache) {
-      cache = createCache<AutocompleteItem[]>();
-      modelCaches.set(provider, cache);
-    }
-    if (isFresh(cache) || cache.loading) return;
-    cache.loading = true;
-    try {
-      const result = await pi.exec(
-        "myk-pi-tools", ["ai-cli", "models", provider],
-        { cwd, timeout: 30_000 },
-      );
-      if (result.code === 0) {
-        const items: AutocompleteItem[] = [];
-        try {
-          const parsed = JSON.parse(result.stdout);
-          if (Array.isArray(parsed)) {
-            for (const m of parsed) {
-              if (m.id) {
-                items.push({
-                  value: m.id,
-                  label: m.id,
-                  description: m.name || m.id,
-                });
-              }
-            }
-          }
-        } catch (e: any) { console.debug("[autocomplete] model JSON parse failed:", e?.message || e); }
-        cache.data = items;
-        cache.timestamp = Date.now();
-      }
-    } catch (e: any) { console.debug("[autocomplete] model fetch failed:", e?.message || e); }
-    cache.loading = false;
-  }
-
-  async function fetchTags(cwd: string): Promise<void> {
-    if (isFresh(tagCache) || tagCache.loading) return;
-    tagCache.loading = true;
-    try {
-      const result = await pi.exec(
-        "git", ["tag", "--sort=-version:refname", "-l"],
-        { cwd, timeout: 5_000 },
-      );
-      if (result.code === 0) {
-        tagCache.data = result.stdout
-          .split("\n")
-          .map((t) => t.trim())
-          .filter((t) => t.length > 0)
-          .slice(0, 20)
-          .map((t) => ({ value: t, label: t, description: "git tag" }));
-        tagCache.timestamp = Date.now();
-      }
-    } catch (e: any) { console.debug("[autocomplete] tag fetch failed:", e?.message || e); }
-    tagCache.loading = false;
-  }
+function registerCompletions(
+  pi: ExtensionAPI,
+  ctx: AutocompleteContext,
+): Record<string, CompletionFn> {
 
   // ── Completion definitions ──────────────────────────────────────
-
-  type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 
   const completions: Record<string, CompletionFn> = {
     "external-ai": (prefix: string) => {
@@ -222,8 +117,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
           if (knownProviders.includes(base)) { provider = base; break; }
         }
         if (provider) {
-          void fetchModels(provider, lastCwd);
-          const cache = modelCaches.get(provider);
+          void ctx.fetchModels(provider, ctx.lastCwd);
+          const cache = ctx.modelCaches.get(provider);
           if (cache?.data) {
             return filter(cache.data, lastPart);
           }
@@ -240,8 +135,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
           const modelPrefix = lastPart.substring(colonIdx + 1);
           const knownProviders = ["cursor", "claude", "gemini"];
           if (knownProviders.includes(provider)) {
-            void fetchModels(provider, lastCwd);
-            const cache = modelCaches.get(provider);
+            void ctx.fetchModels(provider, ctx.lastCwd);
+            const cache = ctx.modelCaches.get(provider);
             if (cache?.data) {
               const items = cache.data.map((m) => ({
                 ...m,
@@ -265,20 +160,20 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     },
 
     "pr-review": (prefix: string) => {
-      void fetchOpenPRs(lastCwd);
-      if (!prCache.data) return null;
-      const filtered = filter(prCache.data, prefix.replace(/^#/, ""));
-      return filtered ? filtered.map((item) => ({ ...item, value: prUrlMap.get(item.value) || item.value })) : null;
+      void ctx.fetchOpenPRs(ctx.lastCwd);
+      if (!ctx.prCache.data) return null;
+      const filtered = filter(ctx.prCache.data, prefix.replace(/^#/, ""));
+      return filtered ? filtered.map((item) => ({ ...item, value: ctx.prUrlMap.get(item.value) || item.value })) : null;
     },
 
     "coderabbit-rate-limit": (prefix: string) => {
-      void fetchOpenPRs(lastCwd);
-      return prCache.data ? filter(prCache.data, prefix.replace(/^#/, "")) : null;
+      void ctx.fetchOpenPRs(ctx.lastCwd);
+      return ctx.prCache.data ? filter(ctx.prCache.data, prefix.replace(/^#/, "")) : null;
     },
 
     "review-local": (prefix: string) => {
-      void fetchBranches(lastCwd);
-      return branchCache.data ? filter(branchCache.data, prefix) : null;
+      void ctx.fetchBranches(ctx.lastCwd);
+      return ctx.branchCache.data ? filter(ctx.branchCache.data, prefix) : null;
     },
 
     "release": (prefix: string) => {
@@ -296,8 +191,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
 
       // After --target: show branch completions
       if (prevPart === "--target") {
-        void fetchBranches(lastCwd);
-        return branchCache.data ? filter(branchCache.data, lastPart) : null;
+        void ctx.fetchBranches(ctx.lastCwd);
+        return ctx.branchCache.data ? filter(ctx.branchCache.data, lastPart) : null;
       }
 
       // After --tag-match: free-text pattern, no completions
@@ -310,8 +205,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       const availableFlags = RELEASE_FLAGS.filter((f) => !usedFlags.has(f.value.trim()));
 
       // Fetch tags
-      void fetchTags(lastCwd);
-      const tags = tagCache.data || [];
+      void ctx.fetchTags(ctx.lastCwd);
+      const tags = ctx.tagCache.data || [];
 
       // Combine flags and tags
       const combined = [...availableFlags, ...tags];
@@ -389,8 +284,16 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
     return originalRegisterCommand(name, options);
   };
 
-  // ── Mechanism 2: autocomplete provider for prompt templates ─────
-  //
+  return completions;
+}
+
+// ── Prompt template interceptor ─────────────────────────────────────
+
+function setupPromptTemplateInterceptor(
+  pi: ExtensionAPI,
+  ctx: AutocompleteContext,
+  completions: Record<string, CompletionFn>,
+): void {
   // Prompt templates (acpx-prompt, review-local, etc.) are registered by
   // pi itself — not through our registerCommand wrapper. We intercept
   // them in the autocomplete provider, which runs before the built-in.
@@ -404,35 +307,35 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   // /external-ai-models-refresh command — clears cache and re-fetches
   pi.registerCommand("external-ai-models-refresh", {
     description: "Refresh AI CLI model cache (cursor, claude, gemini)",
-    async handler(_args, ctx) {
-      modelCaches.clear();
-      ctx.ui.notify("Refreshing AI CLI models...", "info");
+    async handler(_args, handlerCtx) {
+      ctx.modelCaches.clear();
+      handlerCtx.ui.notify("Refreshing AI CLI models...", "info");
       await Promise.allSettled(
-        ["cursor", "claude", "gemini"].map((p) => fetchModels(p, ctx.cwd)),
+        ["cursor", "claude", "gemini"].map((p) => ctx.fetchModels(p, handlerCtx.cwd)),
       );
       const counts = ["cursor", "claude", "gemini"]
-        .map((p) => `${p}: ${modelCaches.get(p)?.data?.length ?? 0}`)
+        .map((p) => `${p}: ${ctx.modelCaches.get(p)?.data?.length ?? 0}`)
         .join(", ");
-      ctx.ui.notify(`AI CLI models refreshed (${counts})`, "info");
+      handlerCtx.ui.notify(`AI CLI models refreshed (${counts})`, "info");
     },
   });
 
   let modelsPrefetched = false;
 
-  pi.on("session_start", (_event, ctx) => {
-    lastCwd = ctx.cwd;
+  pi.on("session_start", (_event, sessionCtx) => {
+    ctx.lastCwd = sessionCtx.cwd;
 
     // Pre-fetch AI CLI models once on first start (not on /new)
     if (!modelsPrefetched) {
       modelsPrefetched = true;
       for (const provider of ["cursor", "claude", "gemini"]) {
-        void fetchModels(provider, ctx.cwd);
+        void ctx.fetchModels(provider, sessionCtx.cwd);
       }
     }
 
-    if (ctx.mode !== "tui") return;
+    if (sessionCtx.mode !== "tui") return;
 
-    ctx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({
+    sessionCtx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({
       async getSuggestions(
         lines: string[],
         cursorLine: number,
@@ -487,4 +390,136 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       },
     }));
   });
+}
+
+// ── Registration ────────────────────────────────────────────────────
+
+export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  // Shared mutable context — caches, fetchers, and state passed to extracted functions
+  const ctx = {} as AutocompleteContext;
+  ctx.prCache = createCache<AutocompleteItem[]>();
+  ctx.prUrlMap = new Map<string, string>();
+  ctx.branchCache = createCache<AutocompleteItem[]>();
+  ctx.tagCache = createCache<AutocompleteItem[]>();
+  ctx.modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
+  ctx.lastCwd = "";
+
+  // ── Fetchers (close over pi and ctx) ────────────────────────────
+
+  ctx.fetchOpenPRs = async (cwd: string) => {
+    if (isFresh(ctx.prCache) || ctx.prCache.loading) return;
+    ctx.prCache.loading = true;
+    try {
+      const result = await pi.exec(
+        "gh", ["pr", "list", "--state", "open", "--limit", "50", "--json", "number,title,url"],
+        { cwd, timeout: 10_000 },
+      );
+      if (result.code === 0) {
+        const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string; url: string }>;
+        ctx.prCache.data = prs.map((pr) => ({
+          value: String(pr.number),
+          label: `#${pr.number}`,
+          description: pr.title,
+        }));
+        ctx.prCache.timestamp = Date.now();
+        // URL-keyed version for pr-review (uses URL as completion value)
+        ctx.prUrlMap = new Map(prs.map((pr) => [String(pr.number), pr.url || String(pr.number)]));
+      }
+    } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
+    ctx.prCache.loading = false;
+  };
+
+  ctx.fetchBranches = async (cwd: string) => {
+    if (isFresh(ctx.branchCache) || ctx.branchCache.loading) return;
+    ctx.branchCache.loading = true;
+    try {
+      const result = await pi.exec(
+        "git", ["branch", "-a", "--format=%(HEAD)|%(refname:short)"],
+        { cwd, timeout: 5_000 },
+      );
+      if (result.code === 0) {
+        const seen = new Set<string>();
+        const items: AutocompleteItem[] = [];
+        for (const line of result.stdout.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const [head, ref] = trimmed.split("|");
+          if (!ref) continue;
+          const name = ref.replace(/^origin\//, "");
+          if (name === "HEAD" || seen.has(name)) continue;
+          seen.add(name);
+          items.push({
+            value: name,
+            label: name,
+            description: head === "*" ? "← current" : undefined,
+          });
+        }
+        ctx.branchCache.data = items;
+        ctx.branchCache.timestamp = Date.now();
+      }
+    } catch (e: any) { console.debug("[autocomplete] branch fetch failed:", e?.message || e); }
+    ctx.branchCache.loading = false;
+  };
+
+  ctx.fetchModels = async (provider: string, cwd: string) => {
+    let cache = ctx.modelCaches.get(provider);
+    if (!cache) {
+      cache = createCache<AutocompleteItem[]>();
+      ctx.modelCaches.set(provider, cache);
+    }
+    if (isFresh(cache) || cache.loading) return;
+    cache.loading = true;
+    try {
+      const result = await pi.exec(
+        "myk-pi-tools", ["ai-cli", "models", provider],
+        { cwd, timeout: 30_000 },
+      );
+      if (result.code === 0) {
+        const items: AutocompleteItem[] = [];
+        try {
+          const parsed = JSON.parse(result.stdout);
+          if (Array.isArray(parsed)) {
+            for (const m of parsed) {
+              if (m.id) {
+                items.push({
+                  value: m.id,
+                  label: m.id,
+                  description: m.name || m.id,
+                });
+              }
+            }
+          }
+        } catch (e: any) { console.debug("[autocomplete] model JSON parse failed:", e?.message || e); }
+        cache.data = items;
+        cache.timestamp = Date.now();
+      }
+    } catch (e: any) { console.debug("[autocomplete] model fetch failed:", e?.message || e); }
+    cache.loading = false;
+  };
+
+  ctx.fetchTags = async (cwd: string) => {
+    if (isFresh(ctx.tagCache) || ctx.tagCache.loading) return;
+    ctx.tagCache.loading = true;
+    try {
+      const result = await pi.exec(
+        "git", ["tag", "--sort=-version:refname", "-l"],
+        { cwd, timeout: 5_000 },
+      );
+      if (result.code === 0) {
+        ctx.tagCache.data = result.stdout
+          .split("\n")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0)
+          .slice(0, 20)
+          .map((t) => ({ value: t, label: t, description: "git tag" }));
+        ctx.tagCache.timestamp = Date.now();
+      }
+    } catch (e: any) { console.debug("[autocomplete] tag fetch failed:", e?.message || e); }
+    ctx.tagCache.loading = false;
+  };
+
+  const completions = registerCompletions(pi, ctx);
+  setupPromptTemplateInterceptor(pi, ctx, completions);
 }

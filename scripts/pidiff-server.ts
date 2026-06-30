@@ -204,9 +204,8 @@ function getChangedFiles(cwd: string, baseRef: string, headRef: string = "HEAD")
   } catch (e: any) { log(`getChangedFiles error (base=${baseRef} head=${headRef}): ${e.message}`); return []; }
 }
 
-function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstaged: FileContentsData[] } {
+function getStagedFiles(cwd: string): FileContentsData[] {
   const staged: FileContentsData[] = [];
-  const unstaged: FileContentsData[] = [];
   const opts = gitShowOpts(cwd);
   try {
     const stagedRaw = gitExec(["diff", "--name-status", "--staged"], cwd);
@@ -217,6 +216,12 @@ function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstage
       ));
     }
   } catch (e: any) { log(`getWorkingTreeFiles staged error: ${e.message}`); }
+  return staged;
+}
+
+function getUnstagedFiles(cwd: string): FileContentsData[] {
+  const unstaged: FileContentsData[] = [];
+  const opts = gitShowOpts(cwd);
   try {
     const unstagedRaw = gitExec(["diff", "--name-status"], cwd);
     if (unstagedRaw) {
@@ -235,7 +240,11 @@ function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstage
       }
     }
   } catch (e: any) { log(`getWorkingTreeFiles unstaged error: ${e.message}`); }
-  return { staged, unstaged };
+  return unstaged;
+}
+
+function getWorkingTreeFiles(cwd: string): { staged: FileContentsData[]; unstaged: FileContentsData[] } {
+  return { staged: getStagedFiles(cwd), unstaged: getUnstagedFiles(cwd) };
 }
 
 // ── Diff modes ──────────────────────────────────────────────────────
