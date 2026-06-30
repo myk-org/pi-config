@@ -30,15 +30,9 @@ import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memor
 
 const NEAR_DUPLICATE_THRESHOLD = 0.85;
 
-export function registerMemoryTools(pi: ExtensionAPI): void {
-  // Only register in the orchestrator, not subagents
-  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+// ── memory_search ────────────────────────────────────────────────────
 
-  // Track whether we've done the initial embedding migration
-  let embeddingsMigrated = false;
-
-  // ── memory_search ────────────────────────────────────────────────────
-
+function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boolean }): void {
   pi.registerTool({
     name: "memory_search",
     label: "Memory Search",
@@ -61,10 +55,10 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       const topicEntries = readAllTopicEntries(cwd);
 
       // Lazy migration: embed any entries missing from the vector store
-      if (!embeddingsMigrated) {
+      if (!state.embeddingsMigrated) {
         try {
           await embedMissing(cwd, topicEntries);
-          embeddingsMigrated = true; // Only mark done on success
+          state.embeddingsMigrated = true; // Only mark done on success
         } catch {
           console.debug("[memory] embedding migration failed, will retry next search");
         }
@@ -162,9 +156,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       return { content: [{ type: "text", text }] };
     },
   });
+}
 
-  // ── memory_reinforce ─────────────────────────────────────────────────
+// ── memory_reinforce ─────────────────────────────────────────────────
 
+function registerMemoryReinforce(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_reinforce",
     label: "Memory Reinforce",
@@ -204,9 +200,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       };
     },
   });
+}
 
-  // ── memory_topics ────────────────────────────────────────────────────
+// ── memory_topics ────────────────────────────────────────────────────
 
+function registerMemoryTopics(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_topics",
     label: "Memory Topics",
@@ -229,9 +227,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       return { content: [{ type: "text", text }] };
     },
   });
+}
 
-  // ── memory_add ──────────────────────────────────────────────────────
+// ── memory_add ──────────────────────────────────────────────────────
 
+function registerMemoryAdd(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_add",
     label: "Memory Add",
@@ -492,9 +492,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       };
     },
   });
+}
 
-  // ── memory_remove ────────────────────────────────────────────────────
+// ── memory_remove ────────────────────────────────────────────────────
 
+function registerMemoryRemove(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_remove",
     label: "Memory Remove",
@@ -567,9 +569,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       };
     },
   });
+}
 
-  // ── memory_reflect ──────────────────────────────────────────────────
+// ── memory_reflect ──────────────────────────────────────────────────
 
+function registerMemoryReflect(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_reflect",
     label: "Memory Reflect",
@@ -624,9 +628,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       return { content: [{ type: "text", text }] };
     },
   });
+}
 
-  // ── memory_edit ─────────────────────────────────────────────────────
+// ── memory_edit ─────────────────────────────────────────────────────
 
+function registerMemoryEdit(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_edit",
     label: "Memory Edit",
@@ -739,9 +745,11 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       return { content: [{ type: "text", text: `Unknown operation: ${op}` }] };
     },
   });
+}
 
-  // ── memory_consolidate ──────────────────────────────────────────────
+// ── memory_consolidate ──────────────────────────────────────────────
 
+function registerMemoryConsolidate(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "memory_consolidate",
     label: "Memory Consolidate",
@@ -791,4 +799,22 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       return { content: [{ type: "text", text: report }] };
     },
   });
+}
+
+// ── registerMemoryTools (entry point) ───────────────────────────────
+
+export function registerMemoryTools(pi: ExtensionAPI): void {
+  // Only register in the orchestrator, not subagents
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  const state = { embeddingsMigrated: false };
+
+  registerMemorySearch(pi, state);
+  registerMemoryReinforce(pi);
+  registerMemoryTopics(pi);
+  registerMemoryAdd(pi);
+  registerMemoryRemove(pi);
+  registerMemoryReflect(pi);
+  registerMemoryEdit(pi);
+  registerMemoryConsolidate(pi);
 }
