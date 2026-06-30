@@ -6,9 +6,30 @@ import { execSync, execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export function registerSessionValidation(pi: ExtensionAPI): void {
+  // ── reload_session tool ─────────────────────────────────────────────
+  // Allows the AI to trigger a /reload after deploying changes.
+  // Tools cannot call ctx.reload() directly, so we queue /reload as a follow-up.
+  // Pattern from: examples/extensions/reload-runtime.ts
+  if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    pi.registerTool({
+      name: "reload_session",
+      label: "Reload Session",
+      description: "Reload extensions, skills, prompts, rules, and themes. Use after deploying code changes that affect the current session.",
+      parameters: Type.Object({}),
+      async execute() {
+        pi.sendUserMessage("/reload", { deliverAs: "followUp" });
+        return {
+          content: [{ type: "text", text: "Queued /reload — session will reload after this turn." }],
+          details: {},
+        };
+      },
+    });
+  }
+
   // ── /repair command ─────────────────────────────────────────────────
   pi.registerCommand("repair", {
     description: "Repair session — fix orphaned tool calls that break API requests",
