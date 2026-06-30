@@ -461,6 +461,24 @@ describe("checkPythonPipBlock", () => {
   it("allows non-python commands", () => {
     assert.equal(checkPythonPipBlock("ls -la"), undefined);
   });
+  it("allows python3 inside quoted argument", () => {
+    assert.equal(checkPythonPipBlock('myk-pi-tools reviews ask-qodo "fix python3 block"'), undefined);
+  });
+  it("allows python3 in git commit message", () => {
+    assert.equal(checkPythonPipBlock('git commit -m "fix python3 issue"'), undefined);
+  });
+  it("allows grep for python3", () => {
+    assert.equal(checkPythonPipBlock("grep python3 file.txt"), undefined);
+  });
+  it("allows echo with python3", () => {
+    assert.equal(checkPythonPipBlock('echo "python3 is blocked"'), undefined);
+  });
+  it("blocks /usr/bin/python3", () => {
+    assert.ok(checkPythonPipBlock("/usr/bin/python3 script.py"));
+  });
+  it("blocks python3 with env var prefix", () => {
+    assert.ok(checkPythonPipBlock("LANG=C python3 script.py"));
+  });
 });
 
 // ── checkRemoteExecBlock ──

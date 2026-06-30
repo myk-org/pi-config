@@ -50,12 +50,21 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
 /** Block direct python/pip and pre-commit commands */
 export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
   if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
-    if (/(?:^|[|;&]\s*)(?:python3?|pip3?)\b/.test(cmdLower)) {
-      return {
-        block: true,
-        reason:
-          "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg",
-      };
+    // Split on statement separators to get individual commands,
+    // then check if the base command (first word) is python/pip.
+    // This avoids false positives on python3/pip appearing inside quoted arguments.
+    const statements = cmdLower.split(/\n|;|&&|\|\||\|/).map(s => s.trim()).filter(Boolean);
+    for (const stmt of statements) {
+      // Strip leading env var assignments (VAR=val ...)
+      const stripped = stmt.replace(/^\s*(?:\S+=\S*\s+)*/, "");
+      const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
+      if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
+        return {
+          block: true,
+          reason:
+            "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg",
+        };
+      }
     }
   }
   if (cmdLower.startsWith("pre-commit "))
