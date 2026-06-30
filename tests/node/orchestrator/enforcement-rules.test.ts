@@ -632,6 +632,7 @@ describe("rebuild — orphan preservation for enforced entries", () => {
       assert.ok(saved.entries[enforcedHash], "enforced orphan (trigger+action) should be preserved");
       assert.equal(saved.entries[enforcedHash].trigger, "bash_contains git push");
       assert.equal(saved.entries[enforcedHash].action, "run_after");
+      assert.equal(saved.entries[enforcedHash].actionCommand, "echo enforced");
 
       // Trigger-only orphan (no action) should be deleted
       assert.equal(saved.entries[triggerOnlyHash], undefined, "trigger-only orphan should be deleted");
