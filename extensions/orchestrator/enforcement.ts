@@ -144,12 +144,98 @@ function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   return undefined;
 }
 
+/** Inject commit trailer into command (Assisted-by, Co-authored-by, etc.) */
+async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
+  const trailerSetting = getSetting(gitCwd, "commit_trailer");
+  if (typeof trailerSetting !== "string") return undefined;
+
+  const modelId = (ctx as any).model?.id;
+  if (!modelId) return undefined;
+
+  const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
+  let trailerName: string;
+
+  if (trailerSetting.includes(",")) {
+    // Multiple trailer name options — ask user directly
+    const options = trailerSetting.split(",").map(s => s.trim()).filter(Boolean);
+    if (options.length === 0) {
+      return {
+        block: true,
+        reason: `⛔ Malformed commit_trailer setting: "${trailerSetting.replace(/[\x00-\x1f\x7f-\x9f]/g, "")}" — no valid trailer names found. Fix the setting in .pi/pi-config-settings.json or PI_COMMIT_TRAILER env var.`,
+      };
+    }
+    if (options.length === 1) {
+      trailerName = options[0];
+    } else if (cachedTrailerSelection && options.includes(cachedTrailerSelection)) {
+      trailerName = cachedTrailerSelection;
+    } else if (!ctx.hasUI) {
+      // No UI available — default to first option
+      trailerName = options[0];
+    } else {
+      const selected = await ctx.ui.select(
+        "Select commit trailer:",
+        options,
+      );
+      if (!selected || !options.includes(selected)) {
+        return {
+          block: true,
+          reason: "Commit trailer selection cancelled by user.",
+        };
+      }
+      trailerName = selected;
+      cachedTrailerSelection = selected;
+    }
+  } else {
+    // Single trailer name
+    trailerName = trailerSetting;
+  }
+
+  // Raw trailer line for duplicate detection (what the commit message should contain)
+  const rawTrailerLine = `${trailerName}: ${piIdentity}`;
+  if (command.includes(rawTrailerLine)) return undefined;
+
+  // Pattern A: echo "..." | git commit -F -
+  const pipeIdx = command.lastIndexOf("|");
+  if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+    const echoPart = command.slice(0, pipeIdx);
+    const gitPart = command.slice(pipeIdx);
+    const lastDoubleQuote = echoPart.lastIndexOf('"');
+    const lastSingleQuote = echoPart.lastIndexOf("'");
+    const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
+    if (lastQuoteIdx > 0) {
+      // Determine quote context for correct escaping
+      const quoteChar = echoPart[lastQuoteIdx];
+      const escaped = quoteChar === "'"
+        ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
+        : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
+      event.input.command =
+        echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+    }
+  }
+  // Pattern B: git commit -m "..." or git commit -m '...'
+  else {
+    const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
+    if (mFlagMatch) {
+      const quoteChar = mFlagMatch[1];
+      const escaped = quoteChar === "'"
+        ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
+        : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
+      const fullMatch = mFlagMatch[0];
+      const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
+      event.input.command =
+        command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
+    }
+  }
+
+  return undefined;
+}
+
 /** Git protection: worktrees, add ., gitignored files, hooks, protected branches, trailers, DCO */
 async function checkGitProtection(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
   if (!isGitRepo(gitCwd)) return undefined;
 
   // Block branch creation AND switching when use_worktrees is enabled
-  if (getSetting(ctx.cwd, "use_worktrees")) {
+  if (getSetting(gitCwd, "use_worktrees")) {
     const mb = getMainBranch(gitCwd) || "main";
     const hint = `Use: git worktree add .worktrees/<name> -b <branch> ${mb}`;
     if (hasGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b.*\s--\s/.test(command)) {
@@ -238,87 +324,9 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
         reason: `⛔ Branch '${branch}' already merged into '${mainBranch}'. Create a new branch.`,
       };
 
-    // Commit trailer injection — setting value is the trailer name (e.g., "Assisted-by")
-    const trailerSetting = getSetting(gitCwd, "commit_trailer");
-    if (typeof trailerSetting === "string") {
-      const modelId = (ctx as any).model?.id;
-      if (modelId) {
-        const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
-        let trailerName: string;
-
-        if (trailerSetting.includes(",")) {
-          // Multiple trailer name options — ask user directly
-          const options = trailerSetting.split(",").map(s => s.trim()).filter(Boolean);
-          if (options.length === 0) {
-            return {
-              block: true,
-              reason: `⛔ Malformed commit_trailer setting: "${trailerSetting.replace(/[\x00-\x1f\x7f-\x9f]/g, "")}" — no valid trailer names found. Fix the setting in .pi/pi-config-settings.json or PI_COMMIT_TRAILER env var.`,
-            };
-          }
-          if (options.length === 1) {
-            trailerName = options[0];
-          } else if (cachedTrailerSelection && options.includes(cachedTrailerSelection)) {
-            trailerName = cachedTrailerSelection;
-          } else if (!ctx.hasUI) {
-            // No UI available — default to first option
-            trailerName = options[0];
-          } else {
-            const selected = await ctx.ui.select(
-              "Select commit trailer:",
-              options,
-            );
-            if (!selected || !options.includes(selected)) {
-              return {
-                block: true,
-                reason: "Commit trailer selection cancelled by user.",
-              };
-            }
-            trailerName = selected;
-            cachedTrailerSelection = selected;
-          }
-        } else {
-          // Single trailer name
-          trailerName = trailerSetting;
-        }
-
-        // Raw trailer line for duplicate detection (what the commit message should contain)
-        const rawTrailerLine = `${trailerName}: ${piIdentity}`;
-        if (command.includes(rawTrailerLine)) return undefined;
-
-        // Pattern A: echo "..." | git commit -F -
-        const pipeIdx = command.lastIndexOf("|");
-        if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
-          const echoPart = command.slice(0, pipeIdx);
-          const gitPart = command.slice(pipeIdx);
-          const lastDoubleQuote = echoPart.lastIndexOf('"');
-          const lastSingleQuote = echoPart.lastIndexOf("'");
-          const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
-          if (lastQuoteIdx > 0) {
-            // Determine quote context for correct escaping
-            const quoteChar = echoPart[lastQuoteIdx];
-            const escaped = quoteChar === "'"
-              ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
-              : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
-            event.input.command =
-              echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
-          }
-        }
-        // Pattern B: git commit -m "..." or git commit -m '...'
-        else {
-          const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
-          if (mFlagMatch) {
-            const quoteChar = mFlagMatch[1];
-            const escaped = quoteChar === "'"
-              ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
-              : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
-            const fullMatch = mFlagMatch[0];
-            const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
-            event.input.command =
-              command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
-          }
-        }
-      }
-    }
+    // Commit trailer injection
+    const trailerResult = await handleCommitTrailer(command, event, ctx, gitCwd);
+    if (trailerResult) return trailerResult;
 
     // DCO enforcement — inject --signoff when dco setting is enabled
     if (getSetting(gitCwd, "dco") && !/(?:^|\s)--signoff(?:\s|$)/.test(command) && !/(?:^|\s)-s(?:\s|$)/.test(command)) {
@@ -372,7 +380,7 @@ function checkTempFileEnforcement(command: string, cwd: string): EnforcementResu
     const expectedTmpDir = path.join(cwd, ".pi", "tmp");
     const usesEnvVar = /\$\{?PROJECT_TMP_DIR\}?/.test(command);
     const usesExpectedPath = command.includes(expectedTmpDir);
-    const usesRelativePath = /\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
+    const usesRelativePath = /(?:^|[\s"'])\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
     if (!usesEnvVar && !usesExpectedPath && !usesRelativePath) {
       return {
         block: true,
