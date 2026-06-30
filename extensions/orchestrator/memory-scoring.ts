@@ -274,9 +274,16 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
   }
 
   // Step 2: Remove scores for entries that no longer exist in topics
+  // Preserve entries with enforcement fields — they must not be deleted even
+  // if dreaming rewrites the topic file text (which changes the hash).
   const currentHashes = new Set(parsed.map((e) => entryHash(e.fullLine)));
   for (const hash of Object.keys(scores.entries)) {
     if (!currentHashes.has(hash)) {
+      const entry = scores.entries[hash];
+      if (entry && (entry.trigger || entry.verifier)) {
+        // Enforced entry — keep it, don't delete
+        continue;
+      }
       delete scores.entries[hash];
     }
   }
