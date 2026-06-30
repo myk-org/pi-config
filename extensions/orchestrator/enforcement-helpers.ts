@@ -5,7 +5,113 @@
 
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
-import { DANGEROUS } from "./git-helpers.js";
+import { join } from "node:path";
+import { DANGEROUS, hasGitSub } from "./git-helpers.js";
+
+export type EnforcementResult = { block: true; reason: string } | undefined;
+
+/** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
+export function normalizeForRepeatCheck(command: string): string {
+  return command
+    .replace(/^\s*cd\s+\S+\s*&&\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Escape a string for safe inclusion in double-quoted shell strings */
+export function escapeForDoubleQuote(s: string): string {
+  return s.replace(/[\\"`$!]/g, "\\$&");
+}
+
+/** Escape a string for safe inclusion in single-quoted shell strings */
+export function escapeForSingleQuote(s: string): string {
+  return s.replace(/'/g, "'\\\''");
+}
+
+/** Parse bash command for cd target to resolve the effective working directory (worktree support) */
+export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
+  // Match: cd /path/to/dir && ..., cd /path/to/dir; ...
+  const cdMatch = command.match(/^\s*cd\s+([^\s;&|]+)/);
+  if (cdMatch) {
+    const target = cdMatch[1].replace(/['"]/g, "");
+    if (target.startsWith("/")) return target;
+    return join(sessionCwd, target);
+  }
+  // Match: git -C /path/to/dir ...
+  const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
+  if (gitCMatch) {
+    const target = gitCMatch[1].replace(/['"]/g, "");
+    if (target.startsWith("/")) return target;
+    return join(sessionCwd, target);
+  }
+  return sessionCwd;
+}
+
+/** Block direct python/pip and pre-commit commands */
+export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
+  if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
+    // Split on statement separators to get individual commands,
+    // then check if the base command (first word) is python/pip.
+    // This avoids false positives on python3/pip appearing inside quoted arguments.
+    // Split on statement separators including & (background operator)
+    const statements = cmdLower.split(/\n|;|&&|\|\||\||&/).map(s => s.trim()).filter(Boolean);
+    for (const stmt of statements) {
+      // Strip leading env var assignments: VAR=val, VAR="val", VAR='val'
+      const stripped = stmt.replace(/^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, "");
+      const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
+      if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
+        return {
+          block: true,
+          reason:
+            "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg",
+        };
+      }
+    }
+  }
+  if (cmdLower.startsWith("pre-commit "))
+    return {
+      block: true,
+      reason: "Direct pre-commit forbidden. Use: prek run --all-files",
+    };
+  return undefined;
+}
+
+/** Block remote script execution (pipe to shell, process substitution, command substitution/eval) */
+export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
+  const cmdForExecCheck = cmdLower.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
+  const remoteExecReason = "\u26d4 Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
+  if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
+      /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
+    return { block: true, reason: remoteExecReason };
+  }
+  if (/\b(ba|c|da|[akz]|fi|tc)?sh\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+    return { block: true, reason: remoteExecReason };
+  }
+  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*(curl|wget)\b/.test(cmdForExecCheck) ||
+      /\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+    return { block: true, reason: remoteExecReason };
+  }
+  return undefined;
+}
+
+/** Enforce temp files go to .pi/tmp/ — not bare /tmp/ */
+export function checkTempFileEnforcement(command: string, cwd: string): EnforcementResult {
+  if (/(?:^|[;&|$( \t])mktemp\b/.test(command)) {
+    const expectedTmpDir = path.join(cwd, ".pi", "tmp");
+    const usesEnvVar = /\$\{?PROJECT_TMP_DIR\}?/.test(command);
+    const usesExpectedPath = command.includes(expectedTmpDir);
+    const usesRelativePath = /(?:^|[\s"'=])\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
+    if (!usesEnvVar && !usesExpectedPath && !usesRelativePath) {
+      return {
+        block: true,
+        reason: `\u26d4 mktemp must use project temp dir. Use: mktemp \${PROJECT_TMP_DIR}/XXXXXX (resolves to ${expectedTmpDir}/)`,
+      };
+    }
+  }
+  return undefined;
+}
 
 /**
  * Read-only commands that cannot modify the filesystem.
@@ -189,6 +295,24 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
           // Parent also doesn't exist — safe (entire path is non-existent)
         }
         resolved = lexical;
+      } else if (resolvedCwd !== null &&
+        (lexical.startsWith(resolvedCwd + path.sep) || lexical === resolvedCwd) &&
+        (lexical.includes(`${path.sep}.pi${path.sep}tmp${path.sep}`) ||
+         lexical.endsWith(`${path.sep}.pi${path.sep}tmp`))) {
+        // Non-existent path within project .pi/tmp/ — validate parent exists under project
+        if (expanded.includes("..")) {
+          return false;
+        }
+        const parentDir = path.dirname(lexical);
+        try {
+          const resolvedParent = realpathSync(parentDir);
+          if (!resolvedParent.startsWith(resolvedCwd + path.sep) && resolvedParent !== resolvedCwd) {
+            return false; // Parent symlinks outside project
+          }
+        } catch {
+          // Parent also doesn't exist — safe (entire path is non-existent)
+        }
+        resolved = lexical;
       } else {
         return false;
       }
@@ -207,4 +331,28 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   }
 
   return true;
+}
+
+/** Check if a git add command uses bulk-stage tokens (., -A, --all) before the -- separator */
+export function hasGitAddBulk(command: string): boolean {
+  if (!hasGitSub(command, "add")) return false;
+  const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);
+  if (!addMatch) return false;
+  const args = addMatch[1];
+  // Split tokens, only check before -- (end-of-options marker)
+  const tokens = args.split(/\s+/);
+  for (const token of tokens) {
+    if (token === "--") break; // Everything after -- is a pathspec
+    if (token === "." || token === "-A" || token === "--all") return true;
+  }
+  return false;
+}
+
+/** Strip heredoc bodies from command string, preserving commands after the closing delimiter */
+export function stripHeredocBodies(cmd: string): string {
+  // Match heredoc: <<DELIM ... DELIM and <<-DELIM ... (tab-indented) DELIM
+  // For <<- (dash form), the closing delimiter can be preceded by tabs only.
+  // Closing delimiter must be on its own line with no trailing content (except newline).
+  return cmd.replace(/<<-(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\2\s*(?=\n|$)/gm, "")
+    .replace(/<<(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\2\s*(?=\n|$)/gm, "");
 }
