@@ -280,8 +280,10 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
   for (const hash of Object.keys(scores.entries)) {
     if (!currentHashes.has(hash)) {
       const entry = scores.entries[hash];
-      if (entry && (entry.trigger || entry.verifier)) {
-        // Enforced entry — keep it, don't delete
+      if (entry && ((entry.trigger && entry.action) || entry.verifier)) {
+        // Enforced entry (trigger+action or verifier) — keep it
+        // Mark as orphaned so budgeting excludes it
+        (entry as any)._orphaned = true;
         continue;
       }
       delete scores.entries[hash];
@@ -291,6 +293,8 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
   // Step 3: Apply per-category budgets
   const byCategory: Record<string, { hash: string; entry: ScoredEntry }[]> = {};
   for (const [hash, entry] of Object.entries(scores.entries)) {
+    // Skip orphaned enforced entries from budgeting — they don't have topic file backing
+    if ((entry as any)._orphaned) continue;
     if (entry.lifecycle === "active") {
       if (!byCategory[entry.class]) byCategory[entry.class] = [];
       byCategory[entry.class]!.push({ hash, entry });
@@ -324,7 +328,10 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
     }
   }
 
-  // Step 6: Save
+  // Step 6: Clean up internal markers and save
+  for (const entry of Object.values(scores.entries)) {
+    delete (entry as any)._orphaned;
+  }
   scores.lastRebuild = new Date(now).toISOString();
   saveScores(cwd, scores);
 
