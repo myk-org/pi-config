@@ -249,7 +249,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   // Block git add . / git add -A
   if (
     hasGitSub(command, "add") &&
-    /\bgit\b.*\badd\b\s+(\.(?:\s|$)|--all\b|-A\b)/.test(command)
+    /\bgit\b.*\badd\b\s+(?:(?:-\S+\s+)*)(\.(?:\s|$)|--all\b|-A\b)/.test(command)
   ) {
     return {
       block: true,
@@ -259,7 +259,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
 
   // Block staging gitignored files
-  if (hasGitSub(command, "add") && !/\bgit\b.*\badd\b\s+(\.(?:\s|$)|--all\b|-A\b)/.test(command)) {
+  if (hasGitSub(command, "add") && !/\bgit\b.*\badd\b\s+(?:(?:-\S+\s+)*)(\.(?:\s|$)|--all\b|-A\b)/.test(command)) {
     // Extract file paths from git add command
     const addMatch = command.match(/\bgit\b.*\badd\b\s+(.+)/);
     if (addMatch) {
@@ -394,7 +394,7 @@ function checkTempFileEnforcement(command: string, cwd: string): EnforcementResu
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
   // Strip heredoc content — heredoc text is not executable
-  const cmdForDangerCheck = command.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
+  const cmdForDangerCheck = stripHeredocBodies(command);
   // Collapse bash line continuations (backslash-newline) before splitting
   const normalized = cmdForDangerCheck.replace(/\\\r?\n/g, " ");
   // Split on statement separators AND pipes to isolate individual commands.
@@ -429,6 +429,12 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   }
 
   return undefined;
+}
+
+/** Strip heredoc bodies from command string, preserving commands after the closing delimiter */
+function stripHeredocBodies(cmd: string): string {
+  // Match heredoc opener: <<[-]?['"']?WORD['"']?
+  return cmd.replace(/<<-?\s*['"]?(\w+)['"]?.*\n([\s\S]*?\n)\1(?:\s|$)/gm, "");
 }
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
