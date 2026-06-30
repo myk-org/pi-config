@@ -380,7 +380,7 @@ function checkTempFileEnforcement(command: string, cwd: string): EnforcementResu
     const expectedTmpDir = path.join(cwd, ".pi", "tmp");
     const usesEnvVar = /\$\{?PROJECT_TMP_DIR\}?/.test(command);
     const usesExpectedPath = command.includes(expectedTmpDir);
-    const usesRelativePath = /(?:^|[\s"'])\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
+    const usesRelativePath = /(?:^|[\s"'=])\.pi\/tmp(?:\/|[\s"']|$)/.test(command);
     if (!usesEnvVar && !usesExpectedPath && !usesRelativePath) {
       return {
         block: true,
