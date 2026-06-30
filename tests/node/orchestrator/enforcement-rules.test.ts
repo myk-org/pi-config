@@ -574,6 +574,7 @@ describe("rebuild — orphan preservation for enforced entries", () => {
           lifecycle: "active",
           trigger: "bash_contains git push",
           action: "run_after",
+          actionCommand: "echo enforced",
         },
         [triggerOnlyHash]: {
           class: "lesson",
