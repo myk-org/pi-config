@@ -17,7 +17,7 @@ import {
   type EnforcedEntry,
   type VerifierEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
-import { entryHash, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { entryHash, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -510,5 +510,155 @@ describe("checkVerifiers — invalid verifier format skipped", () => {
     ];
     const violations = checkVerifiers(entries, toolResults);
     assert.equal(violations.length, 0);
+  });
+});
+
+// ── rebuild — orphan preservation for enforced entries ─────────────────────
+
+describe("rebuild — orphan preservation for enforced entries", () => {
+  const now = new Date().toISOString();
+
+  // Entry that IS in the topic file (normal, no enforcement)
+  const normalText = "normal lesson entry";
+  const normalLine = "- [lesson] normal lesson entry";
+  const normalHash = entryHash(normalLine);
+
+  // Entry NOT in topic file, but has trigger+action (should be preserved)
+  const enforcedText = "always run tests before push";
+  const enforcedLine = "- [lesson] always run tests before push";
+  const enforcedHash = entryHash(enforcedLine);
+
+  // Entry NOT in topic file, has trigger only (no action) (should be deleted)
+  const triggerOnlyText = "trigger only no action";
+  const triggerOnlyLine = "- [lesson] trigger only no action";
+  const triggerOnlyHash = entryHash(triggerOnlyLine);
+
+  // Entry NOT in topic file, has verifier (should be preserved)
+  const verifierText = "ask before merging";
+  const verifierLine = "- [lesson] ask before merging";
+  const verifierHash = entryHash(verifierLine);
+
+  function makeTmpDir(): string {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rebuild-orphan-test-"));
+    const memoryDir = path.join(tmpDir, ".pi", "memory");
+    const topicsDir = path.join(memoryDir, "topics");
+    fs.mkdirSync(topicsDir, { recursive: true });
+
+    // Topic file only contains the normal entry
+    fs.writeFileSync(
+      path.join(topicsDir, "lessons.md"),
+      `# Lessons\n${normalLine}\n`,
+    );
+
+    // Scores file has all four entries
+    const scoresFile = {
+      entries: {
+        [normalHash]: {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 2,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+        },
+        [enforcedHash]: {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+          trigger: "bash_contains git push",
+          action: "run_after",
+        },
+        [triggerOnlyHash]: {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+          trigger: "bash_contains something",
+          // No action — should be deleted
+        },
+        [verifierHash]: {
+          class: "lesson",
+          score: 1.0,
+          evidenceCount: 1,
+          cue: "explicit",
+          firstSeen: now,
+          lastReinforced: now,
+          userState: "auto",
+          lifecycle: "active",
+          verifier: "tool_called ask_user before gh pr merge",
+        },
+      },
+      lastRebuild: now,
+    };
+    fs.writeFileSync(
+      path.join(memoryDir, "memory-scores.json"),
+      JSON.stringify(scoresFile),
+    );
+
+    return tmpDir;
+  }
+
+  it("preserves enforced orphan (trigger+action) and deletes trigger-only orphan", () => {
+    const tmpDir = makeTmpDir();
+    try {
+      // Only pass the entry that's in the topic file
+      rebuild(tmpDir, [
+        { category: "lesson", text: normalText, pinned: false },
+      ]);
+
+      const saved = JSON.parse(
+        fs.readFileSync(
+          path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
+          "utf-8",
+        ),
+      );
+
+      // Normal entry should exist
+      assert.ok(saved.entries[normalHash], "normal entry should exist");
+
+      // Enforced orphan (trigger+action) should be preserved
+      assert.ok(saved.entries[enforcedHash], "enforced orphan (trigger+action) should be preserved");
+      assert.equal(saved.entries[enforcedHash].trigger, "bash_contains git push");
+      assert.equal(saved.entries[enforcedHash].action, "run_after");
+
+      // Trigger-only orphan (no action) should be deleted
+      assert.equal(saved.entries[triggerOnlyHash], undefined, "trigger-only orphan should be deleted");
+
+      // Verifier orphan should be preserved
+      assert.ok(saved.entries[verifierHash], "verifier orphan should be preserved");
+      assert.equal(saved.entries[verifierHash].verifier, "tool_called ask_user before gh pr merge");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans _orphaned flag from saved entries", () => {
+    const tmpDir = makeTmpDir();
+    try {
+      rebuild(tmpDir, [
+        { category: "lesson", text: normalText, pinned: false },
+      ]);
+
+      const raw = fs.readFileSync(
+        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
+        "utf-8",
+      );
+
+      // _orphaned should not appear anywhere in the saved file
+      assert.ok(!raw.includes("_orphaned"), "_orphaned flag should not be present in saved file");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
