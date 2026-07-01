@@ -103,6 +103,8 @@ export function registerPidash(
     return;
   }
 
+  // ── Closure state ──────────────────────────────────────────────────
+
   let ws: any = null;
   let connected = false;
   let connecting = false;
@@ -112,6 +114,8 @@ export function registerPidash(
   let cleanupHeartbeat: (() => void) | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
+  let execCtx: any = null;
+  let pidashCommandCtx: any = null;  // Real ExtensionCommandContext from /pidash handler
 
   // ── Extracted inner functions ──────────────────────────────────────
 
@@ -405,6 +409,8 @@ export function registerPidash(
     if (ctx.hasUI) ctx.ui.notify("Usage: /pidash start|stop|restart|status", "info");
   }
 
+  // ── connect() ──────────────────────────────────────────────────────
+
   async function connect(ctx: any) {
     debugLog(`connect() called, connected=${connected}, connecting=${connecting}, shuttingDown=${shuttingDown}, cwd=${ctx?.cwd}`);
     if (connected || connecting || shuttingDown) return;
@@ -536,6 +542,8 @@ export function registerPidash(
     }
   }
 
+  // ── forward() helper ──────────────────────────────────────────────
+
   // Forward events to daemon
   function forward(type: string) {
     pi.on(type as any, (event: any, ctx: any) => {
@@ -596,173 +604,207 @@ export function registerPidash(
     });
   }
 
-  // Wrap ALL ctx.ui dialog methods for pidash bridging
-  const wrapCtx = (_event: any, ctx: any) => {
-    if (!ctx?.ui || ctx.ui.__pidashWrapped) return;
-    ctx.ui.__pidashWrapped = true;
-    const origSelect = ctx.ui.select.bind(ctx.ui);
-    const origConfirm = ctx.ui.confirm.bind(ctx.ui);
+  // ── Setup functions ────────────────────────────────────────────────
 
-    function raceWithBrowser<T>(
-      askId: string,
-      payload: object,
-      origFn: (...args: any[]) => Promise<T>,
-      origArgs: any[],
-      extractBrowserValue: (r: any) => T,
-      opts?: any,
-    ): Promise<T> {
-      if (ws && connected) ws.send(JSON.stringify({ id: askId, ...payload }));
-      const ac = new AbortController();
-      let browserResolve: ((v: T) => void) | null = null;
-      const unsub = pi.events.on("pidash:ui-response", (data: unknown) => {
-        const r = data as any;
-        if (r.id === askId && browserResolve) { browserResolve(extractBrowserValue(r)); ac.abort(); }
-      });
-      return Promise.race([
-        origFn(...origArgs, { ...opts, signal: opts?.signal || ac.signal }).then((v: T) => {
-          browserResolve = null;
-          pi.events.emit("pidash:ui-dismiss", { type: "ui-dismiss", id: askId });
-          return v;
-        }),
-        new Promise<T>((resolve) => { browserResolve = resolve; }),
-      ]).finally(() => unsub());
+  /** Register wrapCtx on events that provide ctx, bridging TUI dialogs to browser. */
+  function setupCtxWrapping(): void {
+    // Wrap ALL ctx.ui dialog methods for pidash bridging
+    const wrapCtx = (_event: any, ctx: any) => {
+      if (!ctx?.ui || ctx.ui.__pidashWrapped) return;
+      ctx.ui.__pidashWrapped = true;
+      const origSelect = ctx.ui.select.bind(ctx.ui);
+      const origConfirm = ctx.ui.confirm.bind(ctx.ui);
+
+      function raceWithBrowser<T>(
+        askId: string,
+        payload: object,
+        origFn: (...args: any[]) => Promise<T>,
+        origArgs: any[],
+        extractBrowserValue: (r: any) => T,
+        opts?: any,
+      ): Promise<T> {
+        if (ws && connected) ws.send(JSON.stringify({ id: askId, ...payload }));
+        const ac = new AbortController();
+        let browserResolve: ((v: T) => void) | null = null;
+        const unsub = pi.events.on("pidash:ui-response", (data: unknown) => {
+          const r = data as any;
+          if (r.id === askId && browserResolve) { browserResolve(extractBrowserValue(r)); ac.abort(); }
+        });
+        return Promise.race([
+          origFn(...origArgs, { ...opts, signal: opts?.signal || ac.signal }).then((v: T) => {
+            browserResolve = null;
+            pi.events.emit("pidash:ui-dismiss", { type: "ui-dismiss", id: askId });
+            return v;
+          }),
+          new Promise<T>((resolve) => { browserResolve = resolve; }),
+        ]).finally(() => unsub());
+      }
+
+      ctx.ui.select = async (title: string, options: string[], opts?: any) => {
+        const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        return raceWithBrowser<string | undefined>(
+          askId,
+          { type: "extension_ui_request", method: "select", title, options },
+          origSelect, [title, options],
+          (r) => r.cancelled ? undefined : r.value,
+          opts,
+        );
+      };
+
+      ctx.ui.confirm = async (title: string, message: string, opts?: any) => {
+        const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        return raceWithBrowser<boolean>(
+          askId,
+          { type: "extension_ui_request", method: "confirm", title, message },
+          origConfirm, [title, message],
+          (r) => r.confirmed ?? false,
+          opts,
+        );
+      };
+    };
+
+    // Register wrapper on all events that provide ctx
+    for (const evt of ["tool_call", "tool_result", "agent_start", "turn_start"] as const) {
+      pi.on(evt as any, wrapCtx);
     }
-
-    ctx.ui.select = async (title: string, options: string[], opts?: any) => {
-      const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      return raceWithBrowser<string | undefined>(
-        askId,
-        { type: "extension_ui_request", method: "select", title, options },
-        origSelect, [title, options],
-        (r) => r.cancelled ? undefined : r.value,
-        opts,
-      );
-    };
-
-    ctx.ui.confirm = async (title: string, message: string, opts?: any) => {
-      const askId = `dialog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      return raceWithBrowser<boolean>(
-        askId,
-        { type: "extension_ui_request", method: "confirm", title, message },
-        origConfirm, [title, message],
-        (r) => r.confirmed ?? false,
-        opts,
-      );
-    };
-  };
-
-  // Register wrapper on all events that provide ctx
-  for (const evt of ["tool_call", "tool_result", "agent_start", "turn_start"] as const) {
-    pi.on(evt as any, wrapCtx);
   }
 
-  forward("agent_start");
-  forward("agent_end");
+  /** Register all forward() calls and individual pi.on() handlers that forward events to the daemon. */
+  function setupEventForwarding(): void {
+    forward("agent_start");
+    forward("agent_end");
 
-  // Track streaming state for prompt-queued feedback
-  pi.on("agent_start", () => { isStreaming = true; });
-  pi.on("agent_end", () => { isStreaming = false; });
-  forward("turn_start");
-  forward("turn_end");
-  forward("message_start");
-  forward("message_update");
-  forward("message_end");
-  forward("tool_execution_start");
-  forward("tool_execution_update");
-  forward("tool_execution_end");
-  forward("tool_call");
-  forward("tool_result");
+    // Track streaming state for prompt-queued feedback
+    pi.on("agent_start", () => { isStreaming = true; });
+    pi.on("agent_end", () => { isStreaming = false; });
+    forward("turn_start");
+    forward("turn_end");
+    forward("message_start");
+    forward("message_update");
+    forward("message_end");
+    forward("tool_execution_start");
+    forward("tool_execution_update");
+    forward("tool_execution_end");
+    forward("tool_call");
+    forward("tool_result");
 
-  pi.on("model_select", (event: any) => {
-    if (ws && connected) {
+    pi.on("model_select", (event: any) => {
+      if (ws && connected) {
+        ws.send(JSON.stringify({
+          type: "update_info",
+          model: event.model?.name || event.model?.id || "",
+          contextWindow: event.model?.contextWindow || 0,
+        }));
+      }
+    });
+
+    // Sync thinking level on every turn
+    pi.on("turn_end", () => {
+      if (!ws || !connected) return;
+      try {
+        const level = (pi as any).getThinkingLevel?.();
+        if (level) ws.send(JSON.stringify({ type: "update_info", thinkingLevel: level }));
+      } catch {}
+    });
+
+    // Track diff viewer port
+    pi.events.on("diff-viewer:port", (port: unknown) => {
+      if (typeof port === "number") {
+        diffPort = port;
+        if (ws && connected) {
+          ws.send(JSON.stringify({ type: "update_info", diffPort: port }));
+        }
+      }
+    });
+
+    // Forward provider response info to pidash
+    pi.on("after_provider_response" as any, (event: any) => {
+      if (!ws || !connected) return;
+      try {
+        const info: any = { type: "provider_response" };
+        if (event.status) info.status = event.status;
+        if (event.headers) {
+          if (event.headers["x-ratelimit-remaining"]) info.rateLimitRemaining = event.headers["x-ratelimit-remaining"];
+          if (event.headers["x-ratelimit-reset"]) info.rateLimitReset = event.headers["x-ratelimit-reset"];
+          if (event.headers["retry-after"]) info.retryAfter = event.headers["retry-after"];
+          if (event.headers["x-request-id"]) info.requestId = event.headers["x-request-id"];
+        }
+        ws.send(JSON.stringify(info));
+      } catch (e: any) { debugLog(`provider response forward error: ${e.message}`); }
+    });
+  }
+
+  /** Register pi.events.on() listeners for pidash-specific events. */
+  function setupPidashEventListeners(): void {
+    // Forward ask_user requests to the daemon for browser display
+    pi.events.on("pidash:ui-request", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify(data)); } catch {}
+      }
+    });
+
+    // Forward dialog dismissals to the browser
+    pi.events.on("pidash:ui-dismiss", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify(data)); } catch {}
+      }
+    });
+
+    // Forward async agent status to browser
+    pi.events.on("pidash:async-status", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "async-status", ...(data as any) })); } catch {}
+      }
+    });
+
+    // Forward cron status to browser
+    pi.events.on("pidash:cron-status", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "cron-status", ...(data as any) })); } catch {}
+      }
+    });
+
+    // Listen for command handler registrations from other extensions
+    pi.events.on("pidash:register-command", (data: unknown) => {
+      const d = data as { name: string; handler: (args: string, ctx: any) => Promise<void> };
+      if (typeof d?.name === "string" && typeof d?.handler === "function") {
+        if (commandHandlerRegistry.has(d.name)) {
+          debugLog(`command handler overwritten: ${d.name}`);
+        }
+        commandHandlerRegistry.set(d.name, d.handler);
+        debugLog(`registered command handler: ${d.name}`);
+      }
+    });
+
+    // Request existing commands (handles load order — orchestrator may have loaded first)
+    pi.events.emit("pidash:request-commands");
+
+    // Capture command context from orchestrator for switch-session fallback
+    // Only accept real ExtensionCommandContext (has switchSession method)
+    pi.events.on("pidash:command-ctx", (ctx: unknown) => {
+      if (ctx && typeof (ctx as any)?.switchSession === "function") {
+        pidashCommandCtx = ctx as any;
+      }
+    });
+  }
+
+  /** Periodically send git status updates to the daemon. */
+  function setupPeriodicStatus(): void {
+    const statusInterval = setInterval(() => {
+      if (!ws || !connected || !lastCtx) return;
+      const git = getGitStatus(lastCtx.cwd);
       ws.send(JSON.stringify({
         type: "update_info",
-        model: event.model?.name || event.model?.id || "",
-        contextWindow: event.model?.contextWindow || 0,
+        branch: git.branch,
+        gitDirty: git.dirty,
+        gitChanges: git.changes,
       }));
-    }
-  });
+    }, 10000);
+    if (statusInterval.unref) statusInterval.unref();
+  }
 
-  // Sync thinking level on every turn
-  pi.on("turn_end", () => {
-    if (!ws || !connected) return;
-    try {
-      const level = (pi as any).getThinkingLevel?.();
-      if (level) ws.send(JSON.stringify({ type: "update_info", thinkingLevel: level }));
-    } catch {}
-  });
-
-  // Track diff viewer port
-  pi.events.on("diff-viewer:port", (port: unknown) => {
-    if (typeof port === "number") {
-      diffPort = port;
-      if (ws && connected) {
-        ws.send(JSON.stringify({ type: "update_info", diffPort: port }));
-      }
-    }
-  });
-
-  // Forward ask_user requests to the daemon for browser display
-  pi.events.on("pidash:ui-request", (data: unknown) => {
-    if (ws && connected) {
-      try { ws.send(JSON.stringify(data)); } catch {}
-    }
-  });
-
-  // Forward dialog dismissals to the browser
-  pi.events.on("pidash:ui-dismiss", (data: unknown) => {
-    if (ws && connected) {
-      try { ws.send(JSON.stringify(data)); } catch {}
-    }
-  });
-
-  // Forward async agent status to browser
-  pi.events.on("pidash:async-status", (data: unknown) => {
-    if (ws && connected) {
-      try { ws.send(JSON.stringify({ type: "async-status", ...(data as any) })); } catch {}
-    }
-  });
-
-  // Forward cron status to browser
-  pi.events.on("pidash:cron-status", (data: unknown) => {
-    if (ws && connected) {
-      try { ws.send(JSON.stringify({ type: "cron-status", ...(data as any) })); } catch {}
-    }
-  });
-
-  // Forward provider response info to pidash
-  pi.on("after_provider_response" as any, (event: any) => {
-    if (!ws || !connected) return;
-    try {
-      const info: any = { type: "provider_response" };
-      if (event.status) info.status = event.status;
-      if (event.headers) {
-        if (event.headers["x-ratelimit-remaining"]) info.rateLimitRemaining = event.headers["x-ratelimit-remaining"];
-        if (event.headers["x-ratelimit-reset"]) info.rateLimitReset = event.headers["x-ratelimit-reset"];
-        if (event.headers["retry-after"]) info.retryAfter = event.headers["retry-after"];
-        if (event.headers["x-request-id"]) info.requestId = event.headers["x-request-id"];
-      }
-      ws.send(JSON.stringify(info));
-    } catch (e: any) { debugLog(`provider response forward error: ${e.message}`); }
-  });
-
-  // Periodically update git status
-  const statusInterval = setInterval(() => {
-    if (!ws || !connected || !lastCtx) return;
-    const git = getGitStatus(lastCtx.cwd);
-    ws.send(JSON.stringify({
-      type: "update_info",
-      branch: git.branch,
-      gitDirty: git.dirty,
-      gitChanges: git.changes,
-    }));
-  }, 10000);
-  if (statusInterval.unref) statusInterval.unref();
-
-  let execCtx: any = null;
-  let pidashCommandCtx: any = null;  // Real ExtensionCommandContext from /pidash handler
-
-  pi.on("session_start", (_event, ctx) => {
+  /** Handle session_start event — connect or notify session switch. */
+  function handleSessionStart(_event: any, ctx: any): void {
     execCtx = ctx;
     pidashCommandCtx = null;
     debugLog("execCtx created from session_start");
@@ -788,7 +830,45 @@ export function registerPidash(
       }));
       debugLog(`session_switch sent: cwd=${ctx.cwd}`);
     }
-  });
+  }
+
+  /** Handle input event — intercept extension commands from browser. */
+  async function handleBrowserInput(event: any, _ctx: any): Promise<{ action: "handled" } | void> {
+    if ((event as any).streamingBehavior && ws && connected) {
+      try { ws.send(JSON.stringify({ type: "streaming-behavior", behavior: (event as any).streamingBehavior })); }
+      catch (e: any) { debugLog(`streaming-behavior send error: ${e.message}`); }
+    }
+
+    // Intercept extension commands from browser
+    if (event.source !== "extension") return;
+    if (!event.text.startsWith("/")) return;
+
+    const text = event.text.trim();
+    const spaceIdx = text.indexOf(" ");
+    const cmdName = (spaceIdx > 0 ? text.slice(1, spaceIdx) : text.slice(1)).toLowerCase();
+    const arg = spaceIdx > 0 ? text.slice(spaceIdx + 1).trim() : "";
+
+    debugLog(`browser command: /${cmdName} ${arg.slice(0, 80)}`);
+
+    const handler = commandHandlerRegistry.get(cmdName);
+    if (handler) {
+      try {
+        await handler(arg, execCtx);
+      } catch (e: any) {
+        debugLog(`command /${cmdName} error: ${e.message}`);
+      }
+      return { action: "handled" as const };
+    }
+  }
+
+  // ── Wire everything up ─────────────────────────────────────────────
+
+  setupCtxWrapping();
+  setupEventForwarding();
+  setupPidashEventListeners();
+  setupPeriodicStatus();
+
+  pi.on("session_start", handleSessionStart);
 
   // Fallback for /reload — connect on first tool_result if not connected
   pi.on("tool_result", (_event, ctx) => {
@@ -825,57 +905,7 @@ export function registerPidash(
     handler: (args, ctx) => handlePidashCommand(args, ctx),
   });
 
-  // Listen for command handler registrations from other extensions
-  pi.events.on("pidash:register-command", (data: unknown) => {
-    const d = data as { name: string; handler: (args: string, ctx: any) => Promise<void> };
-    if (typeof d?.name === "string" && typeof d?.handler === "function") {
-      if (commandHandlerRegistry.has(d.name)) {
-        debugLog(`command handler overwritten: ${d.name}`);
-      }
-      commandHandlerRegistry.set(d.name, d.handler);
-      debugLog(`registered command handler: ${d.name}`);
-    }
-  });
-
-  // Request existing commands (handles load order — orchestrator may have loaded first)
-  pi.events.emit("pidash:request-commands");
-
-  // Capture command context from orchestrator for switch-session fallback
-  // Only accept real ExtensionCommandContext (has switchSession method)
-  pi.events.on("pidash:command-ctx", (ctx: unknown) => {
-    if (ctx && typeof (ctx as any)?.switchSession === "function") {
-      pidashCommandCtx = ctx as any;
-    }
-  });
-
-  // Forward streamingBehavior to browser for general awareness
-  pi.on("input", async (event, _ctx) => {
-    if ((event as any).streamingBehavior && ws && connected) {
-      try { ws.send(JSON.stringify({ type: "streaming-behavior", behavior: (event as any).streamingBehavior })); }
-      catch (e: any) { debugLog(`streaming-behavior send error: ${e.message}`); }
-    }
-
-    // Intercept extension commands from browser
-    if (event.source !== "extension") return;
-    if (!event.text.startsWith("/")) return;
-
-    const text = event.text.trim();
-    const spaceIdx = text.indexOf(" ");
-    const cmdName = (spaceIdx > 0 ? text.slice(1, spaceIdx) : text.slice(1)).toLowerCase();
-    const arg = spaceIdx > 0 ? text.slice(spaceIdx + 1).trim() : "";
-
-    debugLog(`browser command: /${cmdName} ${arg.slice(0, 80)}`);
-
-    const handler = commandHandlerRegistry.get(cmdName);
-    if (handler) {
-      try {
-        await handler(arg, execCtx);
-      } catch (e: any) {
-        debugLog(`command /${cmdName} error: ${e.message}`);
-      }
-      return { action: "handled" as const };
-    }
-  });
+  pi.on("input", async (event, _ctx) => handleBrowserInput(event, _ctx));
 
   pi.on("session_shutdown", (event) => {
     // Forward shutdown reason to pidash dashboard
