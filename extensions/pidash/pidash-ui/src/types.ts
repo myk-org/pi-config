@@ -49,6 +49,7 @@ export interface TokenUsage {
   cacheRead?: number;
   cacheWrite?: number;
   totalTokens?: number;
+  reasoning?: number;
 }
 
 export interface NotificationPreferences {

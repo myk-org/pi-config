@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 VALID_STATUSES = {"posted", "skipped"}
+VALID_RESOLUTION_STATUSES = {"resolved_fixed", "resolved_accepted", "resolved_bad_fix", "resolved_no_fix"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pr_reviews (
@@ -56,6 +57,8 @@ _MIGRATIONS = [
     ("pr_comments", "skip_reason", "ALTER TABLE pr_comments ADD COLUMN skip_reason TEXT"),
     # pr_reviews migrations
     ("pr_reviews", "author", "ALTER TABLE pr_reviews ADD COLUMN author TEXT"),
+    ("pr_comments", "resolution_status", "ALTER TABLE pr_comments ADD COLUMN resolution_status TEXT"),
+    ("pr_comments", "author_response", "ALTER TABLE pr_comments ADD COLUMN author_response TEXT"),
 ]
 
 
@@ -264,6 +267,126 @@ def get_skipped_comments(
         return [dict(row) for row in cursor.fetchall()]
     except sqlite3.Error as e:
         raise RuntimeError(f"Failed to query skipped comments: {e}") from e
+    finally:
+        conn.close()
+
+
+def update_resolution(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    file_path: str,
+    line: int | None,
+    resolution_status: str,
+    author_response: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Update resolution status for a previously posted comment.
+
+    Matches by owner/repo/pr_number/path/line, updates the most recent match.
+    Resolution decisions are made by the reviewing LLM (Phase 1c), not the PR author.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        pr_number: PR number.
+        file_path: File path of the comment.
+        line: Line number of the comment (None to match any line in file).
+        resolution_status: One of: resolved_fixed, resolved_accepted, resolved_bad_fix, resolved_no_fix.
+        author_response: The PR author's reply text (why they resolved/dismissed).
+
+    Returns:
+        True if a comment was updated, False if no matching comment found.
+    """
+    if resolution_status not in VALID_RESOLUTION_STATUSES:
+        raise ValueError(f"Invalid resolution_status '{resolution_status}', must be one of {VALID_RESOLUTION_STATUSES}")
+
+    if db_path is None:
+        db_path = _get_db_path()
+
+    if not db_path.exists():
+        return False
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        _run_migrations(conn)
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+
+        # Find the most recent matching posted comment
+        query = """
+            SELECT c.id FROM pr_comments c
+            JOIN pr_reviews r ON c.review_id = r.id
+            WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+              AND c.path = ? AND c.status = 'posted'
+        """
+        params: list = [owner, repo, pr_number, file_path]
+        if line is not None:
+            query += " AND c.line = ?"
+            params.append(line)
+        query += " ORDER BY c.id DESC LIMIT 1"
+
+        cursor = conn.execute(query, params)
+        row = cursor.fetchone()
+        if not row:
+            return False
+
+        comment_id = row[0]
+        conn.execute(
+            "UPDATE pr_comments SET resolution_status = ?, author_response = ? WHERE id = ?",
+            (resolution_status, author_response, comment_id),
+        )
+        conn.commit()
+        log(f"Updated resolution for {file_path}:{line} \u2192 {resolution_status}")
+        return True
+    except sqlite3.Error as e:
+        raise RuntimeError(f"Failed to update resolution: {e}") from e
+    finally:
+        conn.close()
+
+
+def get_review_history(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Get ALL past findings for a PR \u2014 posted, skipped, and resolved.
+
+    Returns a comprehensive history of all review findings across all cycles,
+    including resolution status and author responses. This is the single source
+    of truth for reviewers to avoid re-raising dismissed findings.
+
+    Returns:
+        List of dicts with keys: path, line, body, severity, status,
+        skip_reason, resolution_status, author_response, head_sha, created_at.
+    """
+    if db_path is None:
+        db_path = _get_db_path()
+
+    if not db_path.exists():
+        return []
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        _run_migrations(conn)
+        conn.commit()
+        cursor = conn.execute(
+            """
+            SELECT c.path, c.line, c.body, c.severity, c.status,
+                   c.skip_reason, c.resolution_status, c.author_response,
+                   r.head_sha, r.created_at
+            FROM pr_comments c
+            JOIN pr_reviews r ON c.review_id = r.id
+            WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+            ORDER BY r.created_at, c.id
+            """,
+            (owner, repo, pr_number),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        raise RuntimeError(f"Failed to query review history: {e}") from e
     finally:
         conn.close()
 

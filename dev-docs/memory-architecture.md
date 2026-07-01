@@ -56,6 +56,21 @@ indexed on shutdown, auto-injected for relevant sessions. Storage: `.pi/data/ses
 Stores both posted and skipped findings with status/skip_reason columns.
 Skipped findings are auto-matched in subsequent review cycles to avoid re-raising dismissed items.
 
+**Resolution tracking columns:**
+
+- `resolution_status`: LLM evaluation verdict — one of `resolved_fixed`, `resolved_accepted`, `resolved_bad_fix`, `resolved_no_fix`
+- `author_response`: stores the author's reply or fix context for audit trail
+
+**Key functions:**
+
+- `update_resolution()`: writes LLM evaluation verdicts for resolved review threads back to the store
+- `get_review_history()`: returns ALL past findings (posted, skipped, resolved) — single source of truth for review state
+
+**CLI commands:**
+
+- `myk-pi-tools pr update-resolution` — persist resolution verdicts from resolved threads
+- `myk-pi-tools pr get-review-history` — dump full review history (all statuses)
+
 ## Learned Review Preferences
 
 `.pi/data/review-guidelines.md`: Per-repo review guidelines

@@ -167,7 +167,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
                         </span>
                       )}
-                      <span className="truncate">{s.model || "—"}</span>
+                      <span className="truncate">{s.name || s.model || "—"}</span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">
                       {s.branch && (
