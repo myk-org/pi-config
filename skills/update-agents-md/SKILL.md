@@ -46,7 +46,7 @@ Order matters — front-load highest-ROI content. Commands FIRST.
 - Test: `<test command with flags>`
 - Lint: `<lint command with flags>`
 - Type check: `<type check command>`
-- Full verify: `<lint> && <test> && <type check>`
+- Full verify: `<lint command> && <test command> && <type check command>`
 ```
 
 Rules:
@@ -116,7 +116,7 @@ Rules:
 
 ## When Releasing
 - Update version in `<manifest file>`
-- Run full suite: `<test> && <lint> && <type check>`
+- Run full suite: `<test command> && <lint command> && <type check command>`
 - Tag: `git tag -a v<version> -m "Release v<version>"`
 ```
 
