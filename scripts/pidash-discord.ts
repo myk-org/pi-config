@@ -17,7 +17,7 @@ export function setupDiscordBot(opts: {
   const { piClients, piEventHooks, getActiveSessions, log } = opts;
   const _require = createRequire(import.meta.url);
 
-  const DISCORD_ENV_FILE = path.join(process.env.HOME || "~", ".pi", "discord.env");
+  const DISCORD_ENV_FILE = path.join(process.env.HOME || "/tmp", ".pi", "discord.env");
   try {
     for (const line of fs.readFileSync(DISCORD_ENV_FILE, "utf-8").split("\n")) {
       const m = line.match(/^(\w+)=(.*)$/);
@@ -60,7 +60,7 @@ export function setupDiscordBot(opts: {
       const discordOriginatedPrompts = new Set<string>();
 
       // Per-user state — persisted to disk
-      const DISCORD_STATE_FILE = path.join(process.env.HOME || "~", ".pi", "discord-state.json");
+      const DISCORD_STATE_FILE = path.join(process.env.HOME || "/tmp", ".pi", "discord-state.json");
 
       interface DiscordUserState {
         watchedSessionId: string | null;
@@ -164,6 +164,8 @@ export function setupDiscordBot(opts: {
 
           // Typing indicator when AI is working
           if (ev.type === "agent_start" && state.responseChannelId) {
+            // Clear any existing typing interval first (prevents accumulation)
+            if ((state as any)._typingInterval) clearInterval((state as any)._typingInterval);
             const chId = state.responseChannelId;
             const sendTyping = async () => {
               try {
@@ -172,8 +174,14 @@ export function setupDiscordBot(opts: {
               } catch {}
             };
             sendTyping();
-            if ((state as any)._typingInterval) clearInterval((state as any)._typingInterval);
             (state as any)._typingInterval = setInterval(sendTyping, 8000);
+            // Auto-clear after 5 minutes (safety net for leaked intervals)
+            setTimeout(() => {
+              if ((state as any)._typingInterval) {
+                clearInterval((state as any)._typingInterval);
+                (state as any)._typingInterval = null;
+              }
+            }, 5 * 60 * 1000);
           }
           if (ev.type === "agent_end") {
             if ((state as any)._typingInterval) {
@@ -277,15 +285,17 @@ export function setupDiscordBot(opts: {
             const session = client.session;
             const state = getDiscordState(interaction.user.id);
             state.watchedSessionId = session.sessionId;
-            state.responseChannelId = interaction.channelId;
 
             const name = session.cwd.split("/").pop() || session.cwd;
 
-            // Get the user's DM channel for responses
+            // Get the user's DM channel for responses — only set after successful creation
             try {
               const dmChannel = await interaction.user.createDM();
               state.responseChannelId = dmChannel.id;
-            } catch {}
+            } catch {
+              // DM creation failed — keep existing responseChannelId (may be from previous DM)
+              log(`[discord] Failed to create DM for user ${interaction.user.username}`);
+            }
 
             try {
               await interaction.update({
