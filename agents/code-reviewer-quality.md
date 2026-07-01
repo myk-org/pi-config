@@ -61,7 +61,7 @@ Check that new or changed code has corresponding tests:
 - **New exported functions** — should have at least basic tests covering happy path and one error case.
 - **Test location** — check project conventions (e.g., `tests/` folder, co-located `.test.ts` files).
 
-Do NOT flag test gaps for:
+Do NOT flag test gaps for (these exemptions override the rules above):
 
 - Private inner functions that are only called from tested public functions
 - Thin wrappers or delegation-only functions (e.g., registering a handler that calls an extracted function)
