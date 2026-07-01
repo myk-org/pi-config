@@ -16,7 +16,7 @@ Sources: GitHub (2,500-repo analysis), Augment Code (measured eval), Blake Crosl
    - For monorepos, use subdirectory AGENTS.md files scoped to each package — don't put everything in one root file.
 2. Use the **Template** below as starting skeleton
 3. Fill in all **Required Sections** in order
-4. Verify total is 100-150 lines (hard limit — longer files hurt performance)
+4. Verify total is under 150 lines (longer files hurt performance)
 5. Move detailed content to referenced files if needed
 
 ## Mode: Updating Existing AGENTS.md
@@ -36,19 +36,17 @@ Sources: GitHub (2,500-repo analysis), Augment Code (measured eval), Blake Crosl
 
 ## Required Sections (in this order)
 
-> Examples below use npm/Node.js — substitute your project's toolchain (pytest, cargo test, go test, etc.).
-
 Order matters — front-load highest-ROI content. Commands FIRST.
 
 ### 1. Build & Test Commands (HIGHEST ROI)
 
 ```markdown
 ## Commands
-- Build: `npm run build`
-- Test: `npm test -- --verbose`
-- Lint: `npm run lint --fix`
-- Type check: `npx tsc --noEmit`
-- Full verify: `npm run lint && npm test && npx tsc --noEmit`
+- Build: `<build command>`
+- Test: `<test command with flags>`
+- Lint: `<lint command with flags>`
+- Type check: `<type check command>`
+- Full verify: `<lint> && <test> && <type check>`
 ```
 
 Rules:
@@ -62,9 +60,9 @@ Rules:
 ```markdown
 ## Definition of Done
 A task is complete when ALL pass:
-1. `npm run lint` exits 0
-2. `npm test` exits 0 with no failures
-3. `npx tsc --noEmit` exits 0
+1. `<lint command>` exits 0
+2. `<test command>` exits 0 with no failures
+3. `<type check command>` exits 0
 4. Changed files staged and committed
 5. Commit message: `type(scope): description`
 ```
@@ -93,32 +91,32 @@ Rules:
 
 ```markdown
 ## Project
-- Stack: React 18, TypeScript 5, Vite, Tailwind CSS
+- Stack: <technology with version>, <technology with version>, <build tool>
 - Structure: `src/` (app code), `tests/` (tests), `docs/` (documentation)
-- Key deps: react-query for server state, zustand for client state
+- Key deps: <dependency> for <purpose>, <dependency> for <purpose>
 ```
 
 Rules:
 
 - Specific versions and key dependencies
-- "React project" is useless — "React 18 with TypeScript, Vite, and Tailwind CSS" works
+- Vague descriptions ("React project") are useless — include versions and key deps
 - File structure with one-line descriptions
 
 ### 5. Task-Organized Sections
 
 ```markdown
 ## When Writing Code
-- Run `npm run lint` after every file change
+- Run `<lint command>` after every file change
 - Add type hints to all new functions
-- Test: `npm test -- -t "test_<module>"`
+- Test: `<test command for specific module>`
 
 ## When Reviewing Code
-- Check security: `npm audit`
-- Verify coverage: `npm test -- --coverage`
+- Check security: `<security audit command>`
+- Verify coverage: `<test command with coverage flag>`
 
 ## When Releasing
-- Update version in `package.json`
-- Run full suite: `npm test && npm run lint && npx tsc --noEmit`
+- Update version in `<manifest file>`
+- Run full suite: `<test> && <lint> && <type check>`
 - Tag: `git tag -a v<version> -m "Release v<version>"`
 ```
 
@@ -134,7 +132,7 @@ Rules:
 ## Boundaries
 - ✅ Always: run tests before commits, follow naming conventions
 - ⚠️ Ask first: database schema changes, adding dependencies, modifying CI
-- 🚫 Never: commit secrets, edit node_modules/, force push to main
+- 🚫 Never: commit secrets, edit dependency dirs, force push to main
 ```
 
 Rules:
@@ -149,7 +147,7 @@ Rules:
 
 | Metric | Target | Why |
 |--------|--------|-----|
-| Total file | 100-150 lines | Longer files actively hurt (Augment, measured) |
+| Total file | Under 150 lines | Longer files actively hurt (Augment, measured) |
 | Per section | Under 50 lines | Context window truncation risk |
 | Reference files | 3-10 max | Agent reads 90%+ when referenced from AGENTS.md |
 
@@ -218,7 +216,7 @@ When the agent needs to choose what patterns to include:
 
 ---
 
-## Starter Template
+## Template
 
 ````markdown
 # Project Name
