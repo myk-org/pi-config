@@ -8,13 +8,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import type { SessionInfo } from "../extensions/shared/types.ts";
-
 export function setupDiscordBot(opts: {
   piClients: Map<string, any>;
   piEventHooks: Array<(sessionId: string, event: any) => void>;
   getActiveSessions: () => any[];
-  broadcastToBrowsers: (event: object) => void;
   log: (msg: string) => void;
 }): void {
   const { piClients, piEventHooks, getActiveSessions, log } = opts;
@@ -44,7 +41,7 @@ export function setupDiscordBot(opts: {
 
     if (discordAvailable) {
       const {
-        Client: DiscordClient, GatewayIntentBits, Partials, ChannelType,
+        Client: DiscordClient, GatewayIntentBits, Partials,
         REST, Routes, SlashCommandBuilder,
         ActionRowBuilder, ButtonBuilder, ButtonStyle,
       } = _require("discord.js");
@@ -80,8 +77,13 @@ export function setupDiscordBot(opts: {
       }
       function saveDiscordState() {
         try {
-          const obj: Record<string, DiscordUserState> = {};
-          for (const [k, v] of discordUserStates) obj[k] = v;
+          const obj: Record<string, any> = {};
+          for (const [k, v] of discordUserStates) {
+            const clean: any = { ...v };
+            delete clean._typingInterval;
+            delete clean._lastText;
+            obj[k] = clean;
+          }
           fs.writeFileSync(DISCORD_STATE_FILE, JSON.stringify(obj));
         } catch {}
       }
@@ -132,26 +134,6 @@ export function setupDiscordBot(opts: {
         } catch (e: any) {
           log(`[discord] send error: ${e.message}`);
         }
-      }
-
-      function formatDiscordSessionList(): string {
-        const allSessions = getActiveSessions();
-        if (allSessions.length === 0) return "No active sessions.";
-
-        // Find watched session for any user
-        const watchedIds = new Set<string>();
-        for (const state of discordUserStates.values()) {
-          if (state.watchedSessionId) watchedIds.add(state.watchedSessionId);
-        }
-
-        const lines = allSessions.map((s, i) => {
-          const status = s.active ? (s.working ? "[active]" : "[idle]") : "[idle]";
-          const watched = watchedIds.has(s.sessionId) ? " ← watching" : "";
-          const name = s.cwd.split("/").pop() || s.cwd;
-          return `**${i + 1}.** ${name} — ${s.model || "—"} ${s.branch ? `(${s.branch})` : ""} ${status}${watched}`;
-        });
-
-        return `**Sessions (${allSessions.length}):**\n${lines.join("\n")}\n\nUse \`/sessions\` to watch one.`;
       }
 
       // Forward pi events to Discord users watching that session
@@ -399,6 +381,7 @@ export function setupDiscordBot(opts: {
           if (!client) {
             await safeReply("Watched session no longer active.");
             state.watchedSessionId = null;
+            saveDiscordState();
             return;
           }
           const s = client.session;

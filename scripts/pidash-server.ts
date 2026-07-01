@@ -404,7 +404,6 @@ setupDiscordBot({
   piClients,
   piEventHooks,
   getActiveSessions,
-  broadcastToBrowsers,
   log,
 });
 
