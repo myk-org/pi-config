@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { matchesKeybinding } from "@/hooks/useKeybindings";
 import type { SessionInfo } from "@/types";
 
@@ -10,9 +10,9 @@ export function useKeyboardNavigation(opts: {
   watchSession: (s: SessionInfo) => void;
   getKey: (id: string) => string;
   showSwitcher: boolean;
-  setShowSwitcher: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowSwitcher: Dispatch<SetStateAction<boolean>>;
   showSettings: boolean;
-  setShowSettings: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowSettings: Dispatch<SetStateAction<boolean>>;
 }): void {
   const { streaming, session, flatSessions, handleAbort, watchSession, getKey, showSwitcher, setShowSwitcher, showSettings, setShowSettings } = opts;
 
