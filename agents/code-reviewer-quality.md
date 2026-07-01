@@ -52,6 +52,21 @@ Do NOT raise findings that contradict these guidelines.
 - Documentation quality
 - Dead code and unused imports
 
+## Test Coverage (MANDATORY)
+
+Check that new or changed code has corresponding tests:
+
+- **New pure functions** (no side effects, no SDK deps) — MUST have unit tests. Flag missing tests as `[WARNING]`.
+- **Changed function signatures or behavior** — existing tests must be updated. Flag stale tests as `[WARNING]`.
+- **New exported functions** — should have at least basic tests covering happy path and one error case.
+- **Test location** — check project conventions (e.g., `tests/` folder, co-located `.test.ts` files).
+
+Do NOT flag test gaps for:
+
+- Private inner functions that are only called from tested public functions
+- Thin wrappers or delegation-only functions (e.g., registering a handler that calls an extracted function)
+- Configuration files, type definitions, or interfaces
+
 ## Observability & Debugging (MANDATORY)
 
 Always check for these anti-patterns:
