@@ -338,15 +338,15 @@ export function registerPidash(
 
   /** Handle /pidash command (start|stop|restart|status). */
   async function handlePidashCommand(args: string, ctx: any): Promise<void> {
-    execCtx = ctx;
-    pidashCommandCtx = ctx;  // Real ExtensionCommandContext
-    debugLog("pidashCommandCtx captured from /pidash handler");
-
     // Guard: pidash daemon connections only in TUI mode
     if (ctx.mode !== "tui") {
       if (ctx.hasUI) ctx.ui.notify("pidash is only available in TUI mode.", "info");
       return;
     }
+
+    execCtx = ctx;
+    pidashCommandCtx = ctx;  // Real ExtensionCommandContext
+    debugLog("pidashCommandCtx captured from /pidash handler");
 
     const cmd = (args || "").trim().toLowerCase();
 
@@ -798,13 +798,16 @@ export function registerPidash(
   function setupPeriodicStatus(): void {
     const statusInterval = setInterval(() => {
       if (!ws || !connected || !lastCtx) return;
-      const git = getGitStatus(lastCtx.cwd);
-      ws.send(JSON.stringify({
-        type: "update_info",
-        branch: git.branch,
-        gitDirty: git.dirty,
-        gitChanges: git.changes,
-      }));
+      if (lastCtx.mode !== "tui") return;
+      try {
+        const git = getGitStatus(lastCtx.cwd);
+        ws.send(JSON.stringify({
+          type: "update_info",
+          branch: git.branch,
+          gitDirty: git.dirty,
+          gitChanges: git.changes,
+        }));
+      } catch (e: any) { debugLog(`periodic status error: ${e?.message || e}`); }
     }, 10000);
     if (statusInterval.unref) statusInterval.unref();
   }
