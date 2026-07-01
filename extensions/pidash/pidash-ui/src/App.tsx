@@ -45,7 +45,6 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef(false);
-  const replayingRef = useRef(false);
 
   const {
     messages, setMessages, addMsg,
@@ -53,7 +52,6 @@ export function App() {
     tokens, setTokens,
     streaming, setStreaming,
     queuedCount, setQueuedCount,
-    streamingBehavior,
     availableCommands,
     resetHandlerState,
     setLastUserText,
@@ -84,11 +82,8 @@ export function App() {
     setSearchType("all");
     setScrollKey(k => k + 1);
     resetHandlerState();
-    replayingRef.current = true;
     send({ type: "watch", sessionId: s.sessionId });
     send({ type: "pidash-command", sessionId: s.sessionId, command: "list-commands" });
-    // Events from buffer replay arrive synchronously — mark replay done after a short delay
-    setTimeout(() => { replayingRef.current = false; }, 2000);
     // Auto-collapse sidebar on mobile
     if (typeof window !== 'undefined' && window.innerWidth <= 768) setSidebarCollapsed(true);
   }, [send, setMessages, setModel, setTokens, setStreaming, setQueuedCount, resetHandlerState]);

@@ -392,6 +392,8 @@ export function useMessageHandler(
     thinkRef.current = { id: "", text: "", startTs: 0 };
     assistRef.current = { id: "", text: "" };
     lastUserRef.current = "";
+    toolRef.current = { id: "", name: "", startTs: 0, callId: "" };
+    asyncMsgRef.current.clear();
   }, []);
 
   const setLastUserText = useCallback((text: string) => {
