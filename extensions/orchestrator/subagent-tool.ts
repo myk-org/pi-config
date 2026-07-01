@@ -563,6 +563,783 @@ export function registerSubagentTool(
   // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
+  // ── Extracted execute helpers (closure over pi, spawnAsyncAgent, killAsyncAgent) ──
+
+  function executeAsyncKill(
+    params: { asyncKill: string },
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+  ) {
+    const { killed, errors } = killAsyncAgent(params.asyncKill);
+    const lines: string[] = [];
+    if (killed.length > 0) lines.push(`Killed: ${killed.join(", ")}`);
+    if (errors.length > 0) lines.push(errors.join("\n"));
+    return {
+      content: [{ type: "text" as const, text: lines.join("\n") || "No action taken." }],
+      details: mkd("single")([]),
+      isError: errors.length > 0 && killed.length === 0,
+    };
+  }
+
+  function executeAsync(
+    params: any,
+    agents: AgentConfig[],
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+    parentModelId: string | undefined,
+    parentProvider: string | undefined,
+    ctx: any,
+  ) {
+    if (params.chain) {
+      return {
+        content: [{ type: "text" as const, text: "Async mode does not support chain. Use agent + task or tasks array." }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+
+    // Parallel async — spawn each task as a separate async agent
+    if (params.tasks && params.tasks.length > 0) {
+      // Validate all tasks have names
+      const unnamed = params.tasks.filter((t: any) => !(t as any).name);
+      if (unnamed.length > 0) {
+        return {
+          content: [{ type: "text" as const, text: `Async agents require a name for display in status line. Missing name for: ${unnamed.map((t: any) => t.agent).join(", ")}` }],
+          details: mkd("single")([]),
+          isError: true,
+        };
+      }
+      const noTaskId = params.tasks.filter((t: any) => (t as any).taskId == null);
+      if (noTaskId.length > 0) {
+        const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"`;
+        // Force a follow-up turn so the AI MUST deal with this error
+        pi.sendMessage({
+          customType: "subagent-taskid-error",
+          content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs, or pass taskId: "-1" if not linked.`,
+          display: true,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+        return {
+          content: [{ type: "text" as const, text: errorMsg }],
+          details: mkd("single")([]),
+          isError: true,
+        };
+      }
+      for (const t of params.tasks) {
+        const tid = (t as any).taskId as string;
+        const taskErr = validateTaskId(tid, ctx.cwd, ctx.sessionManager?.getSessionId?.());
+        if (taskErr) {
+          pi.sendMessage({
+            customType: "subagent-taskid-error",
+            content: `🚨 CRITICAL: ${taskErr} (agent: ${t.agent}). NO agents were spawned. Fix the taskId and retry.`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+          return {
+            content: [{ type: "text" as const, text: `${taskErr} (agent: ${t.agent})` }],
+            details: mkd("single")([]),
+            isError: true,
+          };
+        }
+      }
+      const results: string[] = [];
+      const errors: string[] = [];
+      // Group parallel async tasks so results are delivered together
+      const groupId = params.tasks.length > 1
+        ? `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        : undefined;
+      for (const t of params.tasks) {
+        const r = spawnAsyncAgent(t.agent, t.task, t.cwd, agents, {
+          fireAndForget: params.fireAndForget,
+          name: (t as any).name,
+          parentModelId,
+          parentProvider,
+          groupId,
+          taskId: (t as any).taskId,
+        });
+        if (r.error) {
+          errors.push(`${t.agent}: ${r.error}`);
+        } else {
+          const label = (t as any).name || t.agent;
+          results.push(`${label} [${r.id}]${r.model ? ` (${r.model})` : ""}`);
+        }
+      }
+      const lines: string[] = [];
+      if (results.length > 0) lines.push(`Spawned ${results.length} async agents:\n${results.map(r => `- ${r}`).join("\n")}`);
+      if (errors.length > 0) lines.push(`Failed:\n${errors.map(e => `- ${e}`).join("\n")}`);
+      lines.push("\nUse /async-status to check progress.");
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+        details: mkd("single")([]),
+        isError: errors.length > 0 && results.length === 0,
+      };
+    }
+
+    // Single async
+    if (!params.agent || !params.task) {
+      return {
+        content: [{ type: "text" as const, text: "Async mode requires agent and task (or tasks array)." }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    if (!params.cwd) {
+      return {
+        content: [{ type: "text" as const, text: MISSING_CWD_ERROR }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    if (!params.name) {
+      return {
+        content: [{ type: "text" as const, text: "Async agents require a name for display in status line (e.g., 'Dream', 'Code Review', 'PR #42')." }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    if (params.taskId == null) {
+      const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
+      // Force a follow-up turn so the AI MUST deal with this error
+      pi.sendMessage({
+        customType: "subagent-taskid-error",
+        content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID, or pass taskId: "-1" if not linked to any task. Do NOT proceed without fixing this.`,
+        display: true,
+      }, { triggerTurn: true, deliverAs: "followUp" });
+      return {
+        content: [{ type: "text" as const, text: errorMsg }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    {
+      const taskErr = validateTaskId(params.taskId, ctx.cwd, ctx.sessionManager?.getSessionId?.());
+      if (taskErr) {
+        pi.sendMessage({
+          customType: "subagent-taskid-error",
+          content: `🚨 CRITICAL: ${taskErr} The agent was NOT spawned. Fix the taskId and retry.`,
+          display: true,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+        return {
+          content: [{ type: "text" as const, text: taskErr }],
+          details: mkd("single")([]),
+          isError: true,
+        };
+      }
+    }
+    const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId });
+    if (result.error) {
+      return {
+        content: [{ type: "text" as const, text: result.error }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    const label = params.name || params.agent;
+    const modelInfo = result.model ? ` (${result.model})` : "";
+    return {
+      content: [{ type: "text" as const, text: `Async agent spawned: ${label} [${result.id}]${modelInfo}\nUse /async-status to check progress. Results will appear when complete.` }],
+      details: mkd("single")([]),
+    };
+  }
+
+  async function executeChain(
+    params: any,
+    agents: AgentConfig[],
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+    signal: AbortSignal | undefined,
+    onUpdate: OnUpdate | undefined,
+    activeAgents: Set<string>,
+    updateWorking: () => void,
+    parentModelId: string | undefined,
+    parentProvider: string | undefined,
+  ) {
+    const results: SingleResult[] = [];
+    let prev = "";
+
+    for (let i = 0; i < params.chain.length; i++) {
+      if (!params.chain[i].cwd) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${MISSING_CWD_ERROR} (chain step ${i + 1}, agent: ${params.chain[i].agent})`,
+            },
+          ],
+          details: mkd("chain")([]),
+          isError: true,
+        };
+      }
+    }
+    // defensive: LLMs may omit schema-required fields
+    const missingChainEstimate = params.chain.find((s: any) => s.estimatedSeconds == null);
+    if (missingChainEstimate) {
+      return {
+        content: [{ type: "text" as const, text: `${MISSING_ESTIMATE_ERROR} (chain step, agent: ${missingChainEstimate.agent})` }],
+        details: mkd("chain")([]),
+        isError: true,
+      };
+    }
+    const invalidChainEstimate = params.chain.find((s: any) => s.estimatedSeconds != null && s.estimatedSeconds <= 0);
+    if (invalidChainEstimate) {
+      return {
+        content: [{ type: "text" as const, text: `estimatedSeconds must be a positive number. (chain step, agent: ${invalidChainEstimate.agent})` }],
+        details: mkd("chain")([]),
+        isError: true,
+      };
+    }
+    // chain runs sequentially — sum all steps
+    const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
+    if (totalChainSeconds >= MAX_SYNC_SECONDS) {
+      return {
+        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
+        details: mkd("chain")([]),
+        isError: true,
+      };
+    }
+
+    for (let i = 0; i < params.chain.length; i++) {
+      const s = params.chain[i];
+      const t = s.task.replace(/\{previous\}/g, prev);
+      const chainUpdate: OnUpdate | undefined = onUpdate
+        ? (p) => {
+            const c = p.details?.results[0];
+            if (c)
+              onUpdate({
+                content: p.content,
+                details: mkd("chain")([...results, c]),
+              });
+          }
+        : undefined;
+      activeAgents.clear();
+      activeAgents.add(s.agent);
+      updateWorking();
+      const r = await runSingleAgent(
+        agents,
+        s.agent,
+        t,
+        s.cwd,
+        i + 1,
+        signal,
+        chainUpdate,
+        mkd("chain"),
+        parentModelId,
+        parentProvider,
+      );
+      activeAgents.delete(s.agent);
+      updateWorking();
+      results.push(r);
+      if (
+        r.exitCode !== 0 ||
+        r.stopReason === "error" ||
+        r.stopReason === "aborted"
+      ) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Chain stopped at step ${i + 1} (${s.agent}): ${r.errorMessage || r.stderr || getFinalOutput(r.messages) || "(no output)"}`,
+            },
+          ],
+          details: mkd("chain")(results),
+          isError: true,
+        };
+      }
+      prev = getFinalOutput(r.messages);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text:
+            getFinalOutput(results[results.length - 1].messages) ||
+            "(no output)",
+        },
+      ],
+      details: mkd("chain")(results),
+    };
+  }
+
+  async function executeParallel(
+    params: any,
+    agents: AgentConfig[],
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+    signal: AbortSignal | undefined,
+    onUpdate: OnUpdate | undefined,
+    activeAgents: Set<string>,
+    updateWorking: () => void,
+    parentModelId: string | undefined,
+    parentProvider: string | undefined,
+  ) {
+    if (params.tasks.length > MAX_PARALLEL_TASKS)
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Too many tasks (${params.tasks.length}). Max ${MAX_PARALLEL_TASKS}.`,
+          },
+        ],
+        details: mkd("parallel")([]),
+        isError: true,
+      };
+    // defensive: LLMs may omit required fields
+    const missingEstimate = params.tasks.find((t: any) => t.estimatedSeconds == null);
+    if (missingEstimate) {
+      return {
+        content: [{ type: "text" as const, text: `${MISSING_ESTIMATE_ERROR} (parallel task, agent: ${missingEstimate.agent})` }],
+        details: mkd("parallel")([]),
+        isError: true,
+      };
+    }
+    const invalidEstimate = params.tasks.find((t: any) => t.estimatedSeconds != null && t.estimatedSeconds <= 0);
+    if (invalidEstimate) {
+      return {
+        content: [{ type: "text" as const, text: `estimatedSeconds must be a positive number. (parallel task, agent: ${invalidEstimate.agent})` }],
+        details: mkd("parallel")([]),
+        isError: true,
+      };
+    }
+    // parallel runs concurrently — use longest task
+    const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
+    if (maxParallelSeconds >= MAX_SYNC_SECONDS) {
+      return {
+        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
+        details: mkd("parallel")([]),
+        isError: true,
+      };
+    }
+    const all: SingleResult[] = params.tasks.map((t: any) => ({
+      agent: t.agent,
+      agentSource: "unknown" as const,
+      task: t.task,
+      exitCode: -1,
+      messages: [],
+      stderr: "",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        turns: 0,
+      },
+    }));
+    const emitAll = () => {
+      if (onUpdate) {
+        const run = all.filter((r) => r.exitCode === -1).length;
+        const done = all.filter((r) => r.exitCode !== -1).length;
+        onUpdate({
+          content: [
+            {
+              type: "text",
+              text: `Parallel: ${done}/${all.length} done, ${run} running...`,
+            },
+          ],
+          details: mkd("parallel")([...all]),
+        });
+      }
+    };
+    for (let i = 0; i < params.tasks.length; i++) {
+      if (!params.tasks[i].cwd) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${MISSING_CWD_ERROR} (parallel task ${i + 1}, agent: ${params.tasks[i].agent})`,
+            },
+          ],
+          details: mkd("parallel")([]),
+          isError: true,
+        };
+      }
+    }
+    const results = await mapWithConcurrency(
+      params.tasks,
+      MAX_CONCURRENCY,
+      async (t: any, i: number) => {
+        const label = t.name || t.agent;
+        activeAgents.add(label);
+        updateWorking();
+        const r = await runSingleAgent(
+          agents,
+          t.agent,
+          t.task,
+          t.cwd,
+          undefined,
+          signal,
+          (p) => {
+            if (p.details?.results[0]) {
+              all[i] = p.details.results[0];
+              emitAll();
+            }
+          },
+          mkd("parallel"),
+          parentModelId,
+          parentProvider,
+        );
+        all[i] = r;
+        activeAgents.delete(t.name || t.agent);
+        updateWorking();
+        emitAll();
+        return r;
+      },
+    );
+    const ok = results.filter((r) => r.exitCode === 0).length;
+    const summaries = results.map((r) => {
+      const o = getFinalOutput(r.messages);
+      const p = o.slice(0, 100) + (o.length > 100 ? "..." : "");
+      return `[${r.agent}] ${r.exitCode === 0 ? "completed" : "failed"}: ${p || "(no output)"}`;
+    });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Parallel: ${ok}/${results.length} succeeded\n\n${summaries.join("\n\n")}`,
+        },
+      ],
+      details: mkd("parallel")(results),
+    };
+  }
+
+  async function executeSingle(
+    params: any,
+    agents: AgentConfig[],
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+    signal: AbortSignal | undefined,
+    onUpdate: OnUpdate | undefined,
+    activeAgents: Set<string>,
+    updateWorking: () => void,
+    parentModelId: string | undefined,
+    parentProvider: string | undefined,
+  ) {
+    if (!params.cwd) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: MISSING_CWD_ERROR,
+          },
+        ],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    if (params.estimatedSeconds == null) {
+      return {
+        content: [{ type: "text" as const, text: MISSING_ESTIMATE_ERROR }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    if (params.estimatedSeconds <= 0) {
+      return {
+        content: [{ type: "text" as const, text: "estimatedSeconds must be a positive number." }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    if (params.estimatedSeconds >= MAX_SYNC_SECONDS) {
+      return {
+        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
+        details: mkd("single")([]),
+        isError: true,
+      };
+    }
+    const label = params.name || params.agent;
+    activeAgents.add(label);
+    updateWorking();
+    const r = await runSingleAgent(
+      agents,
+      params.agent,
+      params.task,
+      params.cwd,
+      undefined,
+      signal,
+      onUpdate,
+      mkd("single"),
+      parentModelId,
+      parentProvider,
+    );
+    activeAgents.delete(label);
+    updateWorking();
+    const err =
+      r.exitCode !== 0 ||
+      r.stopReason === "error" ||
+      r.stopReason === "aborted";
+    if (err)
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Agent ${r.stopReason || "failed"}: ${r.errorMessage || r.stderr || getFinalOutput(r.messages) || "(no output)"}`,
+          },
+        ],
+        details: mkd("single")([r]),
+        isError: true,
+      };
+    return {
+      content: [
+        { type: "text" as const, text: getFinalOutput(r.messages) || "(no output)" },
+      ],
+      details: mkd("single")([r]),
+    };
+  }
+
+  // ── Extracted renderResult helpers ──
+
+  function renderSingleResult(
+    r: SingleResult,
+    expanded: boolean,
+    theme: any,
+    ts: string,
+    mdTheme: any,
+    renderItems: (items: DisplayItem[], limit?: number) => string,
+  ) {
+    const isErr =
+      r.exitCode !== 0 ||
+      r.stopReason === "error" ||
+      r.stopReason === "aborted";
+    const icon = isErr ? theme.fg("error", "✗") : theme.fg("success", "✓");
+    const items = getDisplayItems(r.messages);
+    const final = getFinalOutput(r.messages);
+    if (expanded) {
+      const c = new Container();
+      let h = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+      if (isErr && r.stopReason)
+        h += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
+      c.addChild(new Text(h, 0, 0));
+      if (isErr && r.errorMessage)
+        c.addChild(
+          new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
+        );
+      c.addChild(new Spacer(1));
+      c.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
+      c.addChild(new Text(theme.fg("dim", r.task), 0, 0));
+      c.addChild(new Spacer(1));
+      c.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
+      if (items.length === 0 && !final)
+        c.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+      else {
+        for (const i of items)
+          if (i.type === "toolCall")
+            c.addChild(
+              new Text(
+                theme.fg("muted", "→ ") +
+                  formatToolCall(i.name, i.args, theme.fg.bind(theme)),
+                0,
+                0,
+              ),
+            );
+        if (final) {
+          c.addChild(new Spacer(1));
+          c.addChild(new Markdown(final.trim(), 0, 0, mdTheme));
+        }
+      }
+      const u = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
+      if (u) {
+        c.addChild(new Spacer(1));
+        c.addChild(new Text(theme.fg("dim", u), 0, 0));
+      }
+      return c;
+    }
+    let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+    if (isErr && r.stopReason)
+      t += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
+    if (isErr && r.errorMessage)
+      t += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
+    else if (items.length === 0)
+      t += `\n${theme.fg("muted", "(no output)")}`;
+    else {
+      t += `\n${renderItems(items, COLLAPSED_ITEM_COUNT)}`;
+      if (items.length > COLLAPSED_ITEM_COUNT)
+        t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+    }
+    const u = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
+    if (u) t += `\n${theme.fg("dim", u)}`;
+    return new Text(t, 0, 0);
+  }
+
+  function renderChainResults(
+    details: SubagentDetails,
+    expanded: boolean,
+    theme: any,
+    ts: string,
+    mdTheme: any,
+    renderItems: (items: DisplayItem[], limit?: number) => string,
+    aggUsage: (rs: SingleResult[]) => { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number; durationMs: number },
+  ) {
+    const ok = details.results.filter((r) => r.exitCode === 0).length;
+    const icon =
+      ok === details.results.length
+        ? theme.fg("success", "✓")
+        : theme.fg("error", "✗");
+    if (expanded) {
+      const c = new Container();
+      c.addChild(
+        new Text(
+          `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`,
+          0,
+          0,
+        ),
+      );
+      for (const r of details.results) {
+        const ri =
+          r.exitCode === 0
+            ? theme.fg("success", "✓")
+            : theme.fg("error", "✗");
+        c.addChild(new Spacer(1));
+        c.addChild(
+          new Text(
+            `${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${ri}`,
+            0,
+            0,
+          ),
+        );
+        c.addChild(
+          new Text(
+            theme.fg("muted", "Task: ") + theme.fg("dim", r.task),
+            0,
+            0,
+          ),
+        );
+        for (const i of getDisplayItems(r.messages))
+          if (i.type === "toolCall")
+            c.addChild(
+              new Text(
+                theme.fg("muted", "→ ") +
+                  formatToolCall(i.name, i.args, theme.fg.bind(theme)),
+                0,
+                0,
+              ),
+            );
+        const f = getFinalOutput(r.messages);
+        if (f) {
+          c.addChild(new Spacer(1));
+          c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
+        }
+        const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
+        if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
+      }
+      const tu = formatUsageStats(aggUsage(details.results));
+      if (tu) {
+        c.addChild(new Spacer(1));
+        c.addChild(new Text(theme.fg("dim", `Total: ${tu}`), 0, 0));
+      }
+      return c;
+    }
+    let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`;
+    for (const r of details.results) {
+      const ri =
+        r.exitCode === 0
+          ? theme.fg("success", "✓")
+          : theme.fg("error", "✗");
+      const di = getDisplayItems(r.messages);
+      t += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${ri}`;
+      t +=
+        di.length === 0
+          ? `\n${theme.fg("muted", "(no output)")}`
+          : `\n${renderItems(di, 5)}`;
+    }
+    const tu = formatUsageStats(aggUsage(details.results));
+    if (tu) t += `\n\n${theme.fg("dim", `Total: ${tu}`)}`;
+    t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+    return new Text(t, 0, 0);
+  }
+
+  function renderParallelResults(
+    details: SubagentDetails,
+    expanded: boolean,
+    theme: any,
+    ts: string,
+    mdTheme: any,
+    renderItems: (items: DisplayItem[], limit?: number) => string,
+    aggUsage: (rs: SingleResult[]) => { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number; durationMs: number },
+  ) {
+    const running = details.results.filter((r) => r.exitCode === -1).length;
+    const ok = details.results.filter((r) => r.exitCode === 0).length;
+    const fail = details.results.filter((r) => r.exitCode > 0).length;
+    const isRunning = running > 0;
+    const icon = isRunning
+      ? theme.fg("warning", "⏳")
+      : fail > 0
+        ? theme.fg("warning", "◐")
+        : theme.fg("success", "✓");
+    const status = isRunning
+      ? `${ok + fail}/${details.results.length} done, ${running} running`
+      : `${ok}/${details.results.length} tasks`;
+    if (expanded && !isRunning) {
+      const c = new Container();
+      c.addChild(
+        new Text(
+          `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`,
+          0,
+          0,
+        ),
+      );
+      for (const r of details.results) {
+        const ri =
+          r.exitCode === 0
+            ? theme.fg("success", "✓")
+            : theme.fg("error", "✗");
+        c.addChild(new Spacer(1));
+        c.addChild(
+          new Text(
+            `${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${ri}`,
+            0,
+            0,
+          ),
+        );
+        c.addChild(
+          new Text(
+            theme.fg("muted", "Task: ") + theme.fg("dim", r.task),
+            0,
+            0,
+          ),
+        );
+        for (const i of getDisplayItems(r.messages))
+          if (i.type === "toolCall")
+            c.addChild(
+              new Text(
+                theme.fg("muted", "→ ") +
+                  formatToolCall(i.name, i.args, theme.fg.bind(theme)),
+                0,
+                0,
+              ),
+            );
+        const f = getFinalOutput(r.messages);
+        if (f) {
+          c.addChild(new Spacer(1));
+          c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
+        }
+        const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
+        if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
+      }
+      const tu = formatUsageStats(aggUsage(details.results));
+      if (tu) {
+        c.addChild(new Spacer(1));
+        c.addChild(new Text(theme.fg("dim", `Total: ${tu}`), 0, 0));
+      }
+      return c;
+    }
+    let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
+    for (const r of details.results) {
+      const ri =
+        r.exitCode === -1
+          ? theme.fg("warning", "⏳")
+          : r.exitCode === 0
+            ? theme.fg("success", "✓")
+            : theme.fg("error", "✗");
+      const di = getDisplayItems(r.messages);
+      t += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${ri}`;
+      t +=
+        di.length === 0
+          ? `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`
+          : `\n${renderItems(di, 5)}`;
+    }
+    if (!isRunning) {
+      const tu = formatUsageStats(aggUsage(details.results));
+      if (tu) t += `\n\n${theme.fg("dim", `Total: ${tu}`)}`;
+    }
+    if (!expanded) t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+    return new Text(t, 0, 0);
+  }
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
@@ -626,15 +1403,7 @@ export function registerSubagentTool(
 
       // Kill async agents — early return before mode validation
       if (params.asyncKill) {
-        const { killed, errors } = killAsyncAgent(params.asyncKill);
-        const lines: string[] = [];
-        if (killed.length > 0) lines.push(`Killed: ${killed.join(", ")}`);
-        if (errors.length > 0) lines.push(errors.join("\n"));
-        return {
-          content: [{ type: "text", text: lines.join("\n") || "No action taken." }],
-          details: mkd("single")([]),
-          isError: errors.length > 0 && killed.length === 0,
-        };
+        return executeAsyncKill(params as { asyncKill: string }, mkd);
       }
 
       // Enforce async-only agents — reject sync/chain calls for reviewers etc.
@@ -713,469 +1482,22 @@ export function registerSubagentTool(
 
       // Async mode — spawn in background and return immediately
       if (params.async === true) {
-        if (params.chain) {
-          return {
-            content: [{ type: "text", text: "Async mode does not support chain. Use agent + task or tasks array." }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-
-        // Parallel async — spawn each task as a separate async agent
-        if (params.tasks && params.tasks.length > 0) {
-          // Validate all tasks have names
-          const unnamed = params.tasks.filter(t => !(t as any).name);
-          if (unnamed.length > 0) {
-            return {
-              content: [{ type: "text", text: `Async agents require a name for display in status line. Missing name for: ${unnamed.map(t => t.agent).join(", ")}` }],
-              details: mkd("single")([]),
-              isError: true,
-            };
-          }
-          const noTaskId = params.tasks.filter(t => (t as any).taskId == null);
-          if (noTaskId.length > 0) {
-            const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map(t => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"`;
-            // Force a follow-up turn so the AI MUST deal with this error
-            pi.sendMessage({
-              customType: "subagent-taskid-error",
-              content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map(t => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs, or pass taskId: "-1" if not linked.`,
-              display: true,
-            }, { triggerTurn: true, deliverAs: "followUp" });
-            return {
-              content: [{ type: "text", text: errorMsg }],
-              details: mkd("single")([]),
-              isError: true,
-            };
-          }
-          for (const t of params.tasks) {
-            const tid = (t as any).taskId as string;
-            const taskErr = validateTaskId(tid, ctx.cwd, ctx.sessionManager?.getSessionId?.());
-            if (taskErr) {
-              pi.sendMessage({
-                customType: "subagent-taskid-error",
-                content: `🚨 CRITICAL: ${taskErr} (agent: ${t.agent}). NO agents were spawned. Fix the taskId and retry.`,
-                display: true,
-              }, { triggerTurn: true, deliverAs: "followUp" });
-              return {
-                content: [{ type: "text", text: `${taskErr} (agent: ${t.agent})` }],
-                details: mkd("single")([]),
-                isError: true,
-              };
-            }
-          }
-          const results: string[] = [];
-          const errors: string[] = [];
-          // Group parallel async tasks so results are delivered together
-          const groupId = params.tasks.length > 1
-            ? `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-            : undefined;
-          for (const t of params.tasks) {
-            const r = spawnAsyncAgent(t.agent, t.task, t.cwd, agents, {
-              fireAndForget: params.fireAndForget,
-              name: (t as any).name,
-              parentModelId,
-              parentProvider,
-              groupId,
-              taskId: (t as any).taskId,
-            });
-            if (r.error) {
-              errors.push(`${t.agent}: ${r.error}`);
-            } else {
-              const label = (t as any).name || t.agent;
-              results.push(`${label} [${r.id}]${r.model ? ` (${r.model})` : ""}`);
-            }
-          }
-          const lines: string[] = [];
-          if (results.length > 0) lines.push(`Spawned ${results.length} async agents:\n${results.map(r => `- ${r}`).join("\n")}`);
-          if (errors.length > 0) lines.push(`Failed:\n${errors.map(e => `- ${e}`).join("\n")}`);
-          lines.push("\nUse /async-status to check progress.");
-          return {
-            content: [{ type: "text", text: lines.join("\n") }],
-            details: mkd("single")([]),
-            isError: errors.length > 0 && results.length === 0,
-          };
-        }
-
-        // Single async
-        if (!params.agent || !params.task) {
-          return {
-            content: [{ type: "text", text: "Async mode requires agent and task (or tasks array)." }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        if (!params.cwd) {
-          return {
-            content: [{ type: "text", text: MISSING_CWD_ERROR }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        if (!params.name) {
-          return {
-            content: [{ type: "text", text: "Async agents require a name for display in status line (e.g., 'Dream', 'Code Review', 'PR #42')." }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        if (params.taskId == null) {
-          const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
-          // Force a follow-up turn so the AI MUST deal with this error
-          pi.sendMessage({
-            customType: "subagent-taskid-error",
-            content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID, or pass taskId: "-1" if not linked to any task. Do NOT proceed without fixing this.`,
-            display: true,
-          }, { triggerTurn: true, deliverAs: "followUp" });
-          return {
-            content: [{ type: "text", text: errorMsg }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        {
-          const taskErr = validateTaskId(params.taskId, ctx.cwd, ctx.sessionManager?.getSessionId?.());
-          if (taskErr) {
-            pi.sendMessage({
-              customType: "subagent-taskid-error",
-              content: `🚨 CRITICAL: ${taskErr} The agent was NOT spawned. Fix the taskId and retry.`,
-              display: true,
-            }, { triggerTurn: true, deliverAs: "followUp" });
-            return {
-              content: [{ type: "text", text: taskErr }],
-              details: mkd("single")([]),
-              isError: true,
-            };
-          }
-        }
-        const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId });
-        if (result.error) {
-          return {
-            content: [{ type: "text", text: result.error }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        const label = params.name || params.agent;
-        const modelInfo = result.model ? ` (${result.model})` : "";
-        return {
-          content: [{ type: "text", text: `Async agent spawned: ${label} [${result.id}]${modelInfo}\nUse /async-status to check progress. Results will appear when complete.` }],
-          details: mkd("single")([]),
-        };
+        return executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx);
       }
 
       // Chain mode
       if (params.chain && params.chain.length > 0) {
-        const results: SingleResult[] = [];
-        let prev = "";
-
-        for (let i = 0; i < params.chain.length; i++) {
-          if (!params.chain[i].cwd) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `${MISSING_CWD_ERROR} (chain step ${i + 1}, agent: ${params.chain[i].agent})`,
-                },
-              ],
-              details: mkd("chain")([]),
-              isError: true,
-            };
-          }
-        }
-        // defensive: LLMs may omit schema-required fields
-        const missingChainEstimate = params.chain.find(s => s.estimatedSeconds == null);
-        if (missingChainEstimate) {
-          return {
-            content: [{ type: "text", text: `${MISSING_ESTIMATE_ERROR} (chain step, agent: ${missingChainEstimate.agent})` }],
-            details: mkd("chain")([]),
-            isError: true,
-          };
-        }
-        const invalidChainEstimate = params.chain.find(s => s.estimatedSeconds != null && s.estimatedSeconds <= 0);
-        if (invalidChainEstimate) {
-          return {
-            content: [{ type: "text", text: `estimatedSeconds must be a positive number. (chain step, agent: ${invalidChainEstimate.agent})` }],
-            details: mkd("chain")([]),
-            isError: true,
-          };
-        }
-        // chain runs sequentially — sum all steps
-        const totalChainSeconds = params.chain.reduce((sum: number, s) => sum + s.estimatedSeconds, 0);
-        if (totalChainSeconds >= MAX_SYNC_SECONDS) {
-          return {
-            content: [{ type: "text", text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
-            details: mkd("chain")([]),
-            isError: true,
-          };
-        }
-
-        for (let i = 0; i < params.chain.length; i++) {
-          const s = params.chain[i];
-          const t = s.task.replace(/\{previous\}/g, prev);
-          const chainUpdate: OnUpdate | undefined = onUpdate
-            ? (p) => {
-                const c = p.details?.results[0];
-                if (c)
-                  onUpdate({
-                    content: p.content,
-                    details: mkd("chain")([...results, c]),
-                  });
-              }
-            : undefined;
-          activeAgents.clear();
-          activeAgents.add(s.agent);
-          updateWorking();
-          const r = await runSingleAgent(
-            agents,
-            s.agent,
-            t,
-            s.cwd,
-            i + 1,
-            signal,
-            chainUpdate,
-            mkd("chain"),
-            parentModelId,
-            parentProvider,
-          );
-          activeAgents.delete(s.agent);
-          updateWorking();
-          results.push(r);
-          if (
-            r.exitCode !== 0 ||
-            r.stopReason === "error" ||
-            r.stopReason === "aborted"
-          ) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Chain stopped at step ${i + 1} (${s.agent}): ${r.errorMessage || r.stderr || getFinalOutput(r.messages) || "(no output)"}`,
-                },
-              ],
-              details: mkd("chain")(results),
-              isError: true,
-            };
-          }
-          prev = getFinalOutput(r.messages);
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                getFinalOutput(results[results.length - 1].messages) ||
-                "(no output)",
-            },
-          ],
-          details: mkd("chain")(results),
-        };
+        return executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider);
       }
 
       // Parallel mode
       if (params.tasks && params.tasks.length > 0) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS)
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Too many tasks (${params.tasks.length}). Max ${MAX_PARALLEL_TASKS}.`,
-              },
-            ],
-            details: mkd("parallel")([]),
-          };
-        // defensive: LLMs may omit required fields
-        const missingEstimate = params.tasks.find(t => t.estimatedSeconds == null);
-        if (missingEstimate) {
-          return {
-            content: [{ type: "text", text: `${MISSING_ESTIMATE_ERROR} (parallel task, agent: ${missingEstimate.agent})` }],
-            details: mkd("parallel")([]),
-            isError: true,
-          };
-        }
-        const invalidEstimate = params.tasks.find(t => t.estimatedSeconds != null && t.estimatedSeconds <= 0);
-        if (invalidEstimate) {
-          return {
-            content: [{ type: "text", text: `estimatedSeconds must be a positive number. (parallel task, agent: ${invalidEstimate.agent})` }],
-            details: mkd("parallel")([]),
-            isError: true,
-          };
-        }
-        // parallel runs concurrently — use longest task
-        const maxParallelSeconds = Math.max(...params.tasks.map(t => t.estimatedSeconds!));
-        if (maxParallelSeconds >= MAX_SYNC_SECONDS) {
-          return {
-            content: [{ type: "text", text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
-            details: mkd("parallel")([]),
-            isError: true,
-          };
-        }
-        const all: SingleResult[] = params.tasks.map((t) => ({
-          agent: t.agent,
-          agentSource: "unknown" as const,
-          task: t.task,
-          exitCode: -1,
-          messages: [],
-          stderr: "",
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            cost: 0,
-            contextTokens: 0,
-            turns: 0,
-          },
-        }));
-        const emitAll = () => {
-          if (onUpdate) {
-            const run = all.filter((r) => r.exitCode === -1).length;
-            const done = all.filter((r) => r.exitCode !== -1).length;
-            onUpdate({
-              content: [
-                {
-                  type: "text",
-                  text: `Parallel: ${done}/${all.length} done, ${run} running...`,
-                },
-              ],
-              details: mkd("parallel")([...all]),
-            });
-          }
-        };
-        for (let i = 0; i < params.tasks.length; i++) {
-          if (!params.tasks[i].cwd) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `${MISSING_CWD_ERROR} (parallel task ${i + 1}, agent: ${params.tasks[i].agent})`,
-                },
-              ],
-              details: mkd("parallel")([]),
-              isError: true,
-            };
-          }
-        }
-        const results = await mapWithConcurrency(
-          params.tasks,
-          MAX_CONCURRENCY,
-          async (t, i) => {
-            const label = t.name || t.agent;
-            activeAgents.add(label);
-            updateWorking();
-            const r = await runSingleAgent(
-              agents,
-              t.agent,
-              t.task,
-              t.cwd,
-              undefined,
-              signal,
-              (p) => {
-                if (p.details?.results[0]) {
-                  all[i] = p.details.results[0];
-                  emitAll();
-                }
-              },
-              mkd("parallel"),
-              parentModelId,
-              parentProvider,
-            );
-            all[i] = r;
-            activeAgents.delete(t.name || t.agent);
-            updateWorking();
-            emitAll();
-            return r;
-          },
-        );
-        const ok = results.filter((r) => r.exitCode === 0).length;
-        const summaries = results.map((r) => {
-          const o = getFinalOutput(r.messages);
-          const p = o.slice(0, 100) + (o.length > 100 ? "..." : "");
-          return `[${r.agent}] ${r.exitCode === 0 ? "completed" : "failed"}: ${p || "(no output)"}`;
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Parallel: ${ok}/${results.length} succeeded\n\n${summaries.join("\n\n")}`,
-            },
-          ],
-          details: mkd("parallel")(results),
-        };
+        return executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider);
       }
 
       // Single mode
       if (params.agent && params.task) {
-        if (!params.cwd) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: MISSING_CWD_ERROR,
-              },
-            ],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        if (params.estimatedSeconds == null) {
-          return {
-            content: [{ type: "text", text: MISSING_ESTIMATE_ERROR }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        if (params.estimatedSeconds <= 0) {
-          return {
-            content: [{ type: "text", text: "estimatedSeconds must be a positive number." }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        if (params.estimatedSeconds >= MAX_SYNC_SECONDS) {
-          return {
-            content: [{ type: "text", text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
-            details: mkd("single")([]),
-            isError: true,
-          };
-        }
-        const label = params.name || params.agent;
-        activeAgents.add(label);
-        updateWorking();
-        const r = await runSingleAgent(
-          agents,
-          params.agent,
-          params.task,
-          params.cwd,
-          undefined,
-          signal,
-          onUpdate,
-          mkd("single"),
-          parentModelId,
-          parentProvider,
-        );
-        activeAgents.delete(label);
-        updateWorking();
-        const err =
-          r.exitCode !== 0 ||
-          r.stopReason === "error" ||
-          r.stopReason === "aborted";
-        if (err)
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Agent ${r.stopReason || "failed"}: ${r.errorMessage || r.stderr || getFinalOutput(r.messages) || "(no output)"}`,
-              },
-            ],
-            details: mkd("single")([r]),
-            isError: true,
-          };
-        return {
-          content: [
-            { type: "text", text: getFinalOutput(r.messages) || "(no output)" },
-          ],
-          details: mkd("single")([r]),
-        };
+        return executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider);
       }
 
       return {
@@ -1288,240 +1610,17 @@ export function registerSubagentTool(
 
       // Single
       if (details.mode === "single" && details.results.length === 1) {
-        const r = details.results[0];
-        const isErr =
-          r.exitCode !== 0 ||
-          r.stopReason === "error" ||
-          r.stopReason === "aborted";
-        const icon = isErr ? theme.fg("error", "✗") : theme.fg("success", "✓");
-        const items = getDisplayItems(r.messages);
-        const final = getFinalOutput(r.messages);
-        if (expanded) {
-          const c = new Container();
-          let h = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
-          if (isErr && r.stopReason)
-            h += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
-          c.addChild(new Text(h, 0, 0));
-          if (isErr && r.errorMessage)
-            c.addChild(
-              new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
-            );
-          c.addChild(new Spacer(1));
-          c.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
-          c.addChild(new Text(theme.fg("dim", r.task), 0, 0));
-          c.addChild(new Spacer(1));
-          c.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
-          if (items.length === 0 && !final)
-            c.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
-          else {
-            for (const i of items)
-              if (i.type === "toolCall")
-                c.addChild(
-                  new Text(
-                    theme.fg("muted", "→ ") +
-                      formatToolCall(i.name, i.args, theme.fg.bind(theme)),
-                    0,
-                    0,
-                  ),
-                );
-            if (final) {
-              c.addChild(new Spacer(1));
-              c.addChild(new Markdown(final.trim(), 0, 0, mdTheme));
-            }
-          }
-          const u = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
-          if (u) {
-            c.addChild(new Spacer(1));
-            c.addChild(new Text(theme.fg("dim", u), 0, 0));
-          }
-          return c;
-        }
-        let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
-        if (isErr && r.stopReason)
-          t += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
-        if (isErr && r.errorMessage)
-          t += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
-        else if (items.length === 0)
-          t += `\n${theme.fg("muted", "(no output)")}`;
-        else {
-          t += `\n${renderItems(items, COLLAPSED_ITEM_COUNT)}`;
-          if (items.length > COLLAPSED_ITEM_COUNT)
-            t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-        }
-        const u = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
-        if (u) t += `\n${theme.fg("dim", u)}`;
-        return new Text(t, 0, 0);
+        return renderSingleResult(details.results[0], expanded, theme, ts, mdTheme, renderItems);
       }
 
       // Chain
       if (details.mode === "chain") {
-        const ok = details.results.filter((r) => r.exitCode === 0).length;
-        const icon =
-          ok === details.results.length
-            ? theme.fg("success", "✓")
-            : theme.fg("error", "✗");
-        if (expanded) {
-          const c = new Container();
-          c.addChild(
-            new Text(
-              `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`,
-              0,
-              0,
-            ),
-          );
-          for (const r of details.results) {
-            const ri =
-              r.exitCode === 0
-                ? theme.fg("success", "✓")
-                : theme.fg("error", "✗");
-            c.addChild(new Spacer(1));
-            c.addChild(
-              new Text(
-                `${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${ri}`,
-                0,
-                0,
-              ),
-            );
-            c.addChild(
-              new Text(
-                theme.fg("muted", "Task: ") + theme.fg("dim", r.task),
-                0,
-                0,
-              ),
-            );
-            for (const i of getDisplayItems(r.messages))
-              if (i.type === "toolCall")
-                c.addChild(
-                  new Text(
-                    theme.fg("muted", "→ ") +
-                      formatToolCall(i.name, i.args, theme.fg.bind(theme)),
-                    0,
-                    0,
-                  ),
-                );
-            const f = getFinalOutput(r.messages);
-            if (f) {
-              c.addChild(new Spacer(1));
-              c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
-            }
-            const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
-            if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
-          }
-          const tu = formatUsageStats(aggUsage(details.results));
-          if (tu) {
-            c.addChild(new Spacer(1));
-            c.addChild(new Text(theme.fg("dim", `Total: ${tu}`), 0, 0));
-          }
-          return c;
-        }
-        let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${ok}/${details.results.length} steps`)}`;
-        for (const r of details.results) {
-          const ri =
-            r.exitCode === 0
-              ? theme.fg("success", "✓")
-              : theme.fg("error", "✗");
-          const di = getDisplayItems(r.messages);
-          t += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${ri}`;
-          t +=
-            di.length === 0
-              ? `\n${theme.fg("muted", "(no output)")}`
-              : `\n${renderItems(di, 5)}`;
-        }
-        const tu = formatUsageStats(aggUsage(details.results));
-        if (tu) t += `\n\n${theme.fg("dim", `Total: ${tu}`)}`;
-        t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-        return new Text(t, 0, 0);
+        return renderChainResults(details, expanded, theme, ts, mdTheme, renderItems, aggUsage);
       }
 
       // Parallel
       if (details.mode === "parallel") {
-        const running = details.results.filter((r) => r.exitCode === -1).length;
-        const ok = details.results.filter((r) => r.exitCode === 0).length;
-        const fail = details.results.filter((r) => r.exitCode > 0).length;
-        const isRunning = running > 0;
-        const icon = isRunning
-          ? theme.fg("warning", "⏳")
-          : fail > 0
-            ? theme.fg("warning", "◐")
-            : theme.fg("success", "✓");
-        const status = isRunning
-          ? `${ok + fail}/${details.results.length} done, ${running} running`
-          : `${ok}/${details.results.length} tasks`;
-        if (expanded && !isRunning) {
-          const c = new Container();
-          c.addChild(
-            new Text(
-              `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`,
-              0,
-              0,
-            ),
-          );
-          for (const r of details.results) {
-            const ri =
-              r.exitCode === 0
-                ? theme.fg("success", "✓")
-                : theme.fg("error", "✗");
-            c.addChild(new Spacer(1));
-            c.addChild(
-              new Text(
-                `${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${ri}`,
-                0,
-                0,
-              ),
-            );
-            c.addChild(
-              new Text(
-                theme.fg("muted", "Task: ") + theme.fg("dim", r.task),
-                0,
-                0,
-              ),
-            );
-            for (const i of getDisplayItems(r.messages))
-              if (i.type === "toolCall")
-                c.addChild(
-                  new Text(
-                    theme.fg("muted", "→ ") +
-                      formatToolCall(i.name, i.args, theme.fg.bind(theme)),
-                    0,
-                    0,
-                  ),
-                );
-            const f = getFinalOutput(r.messages);
-            if (f) {
-              c.addChild(new Spacer(1));
-              c.addChild(new Markdown(f.trim(), 0, 0, mdTheme));
-            }
-            const su = formatUsageStats({ ...r.usage, durationMs: r.durationMs }, r.model);
-            if (su) c.addChild(new Text(theme.fg("dim", su), 0, 0));
-          }
-          const tu = formatUsageStats(aggUsage(details.results));
-          if (tu) {
-            c.addChild(new Spacer(1));
-            c.addChild(new Text(theme.fg("dim", `Total: ${tu}`), 0, 0));
-          }
-          return c;
-        }
-        let t = `${ts}${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
-        for (const r of details.results) {
-          const ri =
-            r.exitCode === -1
-              ? theme.fg("warning", "⏳")
-              : r.exitCode === 0
-                ? theme.fg("success", "✓")
-                : theme.fg("error", "✗");
-          const di = getDisplayItems(r.messages);
-          t += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${ri}`;
-          t +=
-            di.length === 0
-              ? `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`
-              : `\n${renderItems(di, 5)}`;
-        }
-        if (!isRunning) {
-          const tu = formatUsageStats(aggUsage(details.results));
-          if (tu) t += `\n\n${theme.fg("dim", `Total: ${tu}`)}`;
-        }
-        if (!expanded) t += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-        return new Text(t, 0, 0);
+        return renderParallelResults(details, expanded, theme, ts, mdTheme, renderItems, aggUsage);
       }
 
       const t = result.content[0];
