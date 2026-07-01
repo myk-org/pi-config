@@ -342,6 +342,12 @@ export function registerPidash(
     pidashCommandCtx = ctx;  // Real ExtensionCommandContext
     debugLog("pidashCommandCtx captured from /pidash handler");
 
+    // Guard: pidash daemon connections only in TUI mode
+    if (ctx.mode !== "tui") {
+      if (ctx.hasUI) ctx.ui.notify("pidash is only available in TUI mode.", "info");
+      return;
+    }
+
     const cmd = (args || "").trim().toLowerCase();
 
     if (cmd === "stop") {
