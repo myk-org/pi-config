@@ -17,7 +17,13 @@ export function setupDiscordBot(opts: {
   const { piClients, piEventHooks, getActiveSessions, log } = opts;
   const _require = createRequire(import.meta.url);
 
-  const DISCORD_ENV_FILE = path.join(process.env.HOME || "/tmp", ".pi", "discord.env");
+  const homeDir = process.env.HOME;
+  if (!homeDir) {
+    log("[discord] HOME not set — Discord bot disabled (cannot store credentials securely)");
+    return;
+  }
+
+  const DISCORD_ENV_FILE = path.join(homeDir, ".pi", "discord.env");
   try {
     for (const line of fs.readFileSync(DISCORD_ENV_FILE, "utf-8").split("\n")) {
       const m = line.match(/^(\w+)=(.*)$/);
@@ -60,7 +66,7 @@ export function setupDiscordBot(opts: {
       const discordOriginatedPrompts = new Set<string>();
 
       // Per-user state — persisted to disk
-      const DISCORD_STATE_FILE = path.join(process.env.HOME || "/tmp", ".pi", "discord-state.json");
+      const DISCORD_STATE_FILE = path.join(homeDir, ".pi", "discord-state.json");
 
       interface DiscordUserState {
         watchedSessionId: string | null;
@@ -81,6 +87,7 @@ export function setupDiscordBot(opts: {
           for (const [k, v] of discordUserStates) {
             const clean: any = { ...v };
             delete clean._typingInterval;
+            delete clean._typingSafetyTimer;
             delete clean._lastText;
             obj[k] = clean;
           }
@@ -164,8 +171,9 @@ export function setupDiscordBot(opts: {
 
           // Typing indicator when AI is working
           if (ev.type === "agent_start" && state.responseChannelId) {
-            // Clear any existing typing interval first (prevents accumulation)
+            // Clear any existing typing interval and safety timer
             if ((state as any)._typingInterval) clearInterval((state as any)._typingInterval);
+            if ((state as any)._typingSafetyTimer) clearTimeout((state as any)._typingSafetyTimer);
             const chId = state.responseChannelId;
             const sendTyping = async () => {
               try {
@@ -176,17 +184,22 @@ export function setupDiscordBot(opts: {
             sendTyping();
             (state as any)._typingInterval = setInterval(sendTyping, 8000);
             // Auto-clear after 5 minutes (safety net for leaked intervals)
-            setTimeout(() => {
+            (state as any)._typingSafetyTimer = setTimeout(() => {
               if ((state as any)._typingInterval) {
                 clearInterval((state as any)._typingInterval);
                 (state as any)._typingInterval = null;
               }
+              (state as any)._typingSafetyTimer = null;
             }, 5 * 60 * 1000);
           }
           if (ev.type === "agent_end") {
             if ((state as any)._typingInterval) {
               clearInterval((state as any)._typingInterval);
               (state as any)._typingInterval = null;
+            }
+            if ((state as any)._typingSafetyTimer) {
+              clearTimeout((state as any)._typingSafetyTimer);
+              (state as any)._typingSafetyTimer = null;
             }
           }
 
