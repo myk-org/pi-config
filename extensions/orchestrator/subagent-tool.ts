@@ -875,6 +875,7 @@ export function registerSubagentTool(
           },
         ],
         details: mkd("parallel")([]),
+        isError: true,
       };
     // defensive: LLMs may omit required fields
     const missingEstimate = params.tasks.find((t: any) => t.estimatedSeconds == null);
