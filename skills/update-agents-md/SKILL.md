@@ -143,7 +143,9 @@ Rules:
 
 ---
 
-## Size Budget
+## Size Budget (for generated AGENTS.md files)
+
+These limits apply to the AGENTS.md files you CREATE, not to this skill guide.
 
 | Metric | Target | Why |
 |--------|--------|-----|
