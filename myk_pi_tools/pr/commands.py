@@ -125,7 +125,7 @@ def pr_get_skipped(owner: str, repo: str, pr_number: int) -> None:
     "--response-file",
     "response_file",
     default=None,
-    type=click.Path(exists=True),
+    type=click.Path(exists=True, dir_okay=False, readable=True),
     help="Read author response from file (avoids shell quoting issues)",
 )
 def pr_update_resolution(
@@ -151,7 +151,11 @@ def pr_update_resolution(
     if response_file:
         from pathlib import Path
 
-        author_response = Path(response_file).read_text(encoding="utf-8").strip()
+        try:
+            author_response = Path(response_file).read_text(encoding="utf-8").strip()
+        except OSError as e:
+            print(f"Error reading response file: {e}", file=sys.stderr)
+            sys.exit(1)
 
     try:
         updated = update_resolution(owner, repo, pr_number, file_path, line, resolution_status, author_response)
