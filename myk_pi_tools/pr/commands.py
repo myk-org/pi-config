@@ -121,6 +121,13 @@ def pr_get_skipped(owner: str, repo: str, pr_number: int) -> None:
     help="Resolution status",
 )
 @click.option("--response", "author_response", default=None, help="PR author's reply text")
+@click.option(
+    "--response-file",
+    "response_file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Read author response from file (avoids shell quoting issues)",
+)
 def pr_update_resolution(
     owner: str,
     repo: str,
@@ -129,6 +136,7 @@ def pr_update_resolution(
     line: int | None,
     resolution_status: str,
     author_response: str | None,
+    response_file: str | None,
 ) -> None:
     """Update resolution status for a previously posted review comment.
 
@@ -138,6 +146,12 @@ def pr_update_resolution(
     import sys
 
     from myk_pi_tools.pr.pr_review_store import update_resolution
+
+    # --response-file takes precedence over --response
+    if response_file:
+        from pathlib import Path
+
+        author_response = Path(response_file).read_text(encoding="utf-8").strip()
 
     try:
         updated = update_resolution(owner, repo, pr_number, file_path, line, resolution_status, author_response)

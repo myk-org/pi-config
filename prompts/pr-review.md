@@ -261,9 +261,11 @@ After evaluating each resolved thread, persist YOUR verdict to the PR review dat
 For each resolved thread that was previously posted by us (matched in the `--user` fetch),
 call:
 
-```bash
-myk-pi-tools pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response "{author_response}"
-```
+To store the verdict, write the author's response to a temp file first (to avoid shell quoting issues),
+then run the CLI:
+
+1. Write `{author_response}` text to `${PROJECT_TMP_DIR}/resolution-response.txt` using the `write` tool
+2. Run: `myk-pi-tools pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response-file ${PROJECT_TMP_DIR}/resolution-response.txt`
 
 Where:
 

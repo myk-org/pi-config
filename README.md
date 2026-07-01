@@ -544,6 +544,25 @@ PI_PIDIFF_ENABLE=false pi
 | `cr` | CodeRabbit CLI — local AI code reviews |
 | `curl` | HTTP requests |
 
+#### `myk-pi-tools` subcommands
+
+| Command | Description |
+|---------|-------------|
+| `myk-pi-tools pr diff` | Fetch PR diff and metadata |
+| `myk-pi-tools pr info` | Fetch PR information as structured JSON |
+| `myk-pi-tools pr post-comment` | Post inline comments to a PR |
+| `myk-pi-tools pr store-pr-review` | Store posted PR review comments to `pr-reviews.db` |
+| `myk-pi-tools pr update-resolution` | Update resolution status for a previously posted review comment. Used by Phase 1c of `/pr-review` to persist LLM evaluation verdicts |
+| `myk-pi-tools pr get-review-history` | Return complete review history for a PR as JSON (posted, skipped, resolved findings). Used by reviewers to avoid re-raising dismissed findings |
+| `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR |
+| `myk-pi-tools pr claude-md` | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository |
+| `myk-pi-tools release create` | Create a GitHub release with changelog |
+| `myk-pi-tools db` | Review database query commands |
+| `myk-pi-tools reviews` | Review handling commands |
+| `myk-pi-tools memory` | Project memory commands — persistent per-repo learning |
+| `myk-pi-tools ai-cli` | AI CLI commands (cursor, claude, gemini) |
+| `myk-pi-tools coderabbit` | CodeRabbit commands |
+
 ### What's protected
 
 **Filesystem isolation** — the container cannot access anything outside the mounted volumes:

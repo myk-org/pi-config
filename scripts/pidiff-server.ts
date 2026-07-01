@@ -457,7 +457,7 @@ function getGitIgnoredDirs(worktreePath: string): Set<string> {
       for (const line of raw.split("\n")) {
         const trimmed = line.replace(/\/$/, "");
         if (trimmed) {
-          const topLevel = trimmed.split(path.sep)[0];
+          const topLevel = trimmed.split("/")[0];
           if (topLevel) dirs.add(topLevel);
         }
       }
