@@ -6,7 +6,7 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 
 - All tests: `tox`
 - Pre-commit: `pre-commit run --all-files`
-- Python tests: `uv run pytest`
+- Python tests: `uv run --group tests pytest`
 - Node tests: `npx tsx --test tests/node/**/*.test.ts`
 - Full verify: `pre-commit run --all-files && tox`
 
@@ -15,7 +15,7 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 A change is complete when ALL pass:
 
 1. `pre-commit run --all-files` exits 0
-2. `uv run pytest` exits 0
+2. `uv run --group tests pytest` exits 0
 3. `npx tsx --test tests/node/**/*.test.ts` exits 0
 4. AGENTS.md / README.md updated if structure/commands/features changed
 5. Files committed with message: `type(scope): description`
@@ -82,7 +82,7 @@ Writing effective rules:
 ## When Modifying Extensions
 
 - Extension commands: see `dev-docs/extension-commands.md`
-- Async agents & runtime: see `dev-docs/async-internals.md`
+- Async agents, async-only list, temp dirs: see `dev-docs/async-internals.md`
 - Memory system: see `dev-docs/memory-architecture.md`
 - Project settings: see `dev-docs/project-settings.md`
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
