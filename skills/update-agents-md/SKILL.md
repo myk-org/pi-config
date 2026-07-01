@@ -13,6 +13,7 @@ Sources: GitHub (2,500-repo analysis), Augment Code (measured eval), Blake Crosl
 ## Mode: Creating New AGENTS.md
 
 1. Scan the repo — identify tech stack, build system, test framework, file structure
+   - For monorepos, use subdirectory AGENTS.md files scoped to each package — don't put everything in one root file.
 2. Use the **Template** below as starting skeleton
 3. Fill in all **Required Sections** in order
 4. Verify total is 100-150 lines (hard limit — longer files hurt performance)
@@ -34,6 +35,8 @@ Sources: GitHub (2,500-repo analysis), Augment Code (measured eval), Blake Crosl
 ---
 
 ## Required Sections (in this order)
+
+> Examples below use npm/Node.js — substitute your project's toolchain (pytest, cargo test, go test, etc.).
 
 Order matters — front-load highest-ROI content. Commands FIRST.
 
@@ -183,7 +186,7 @@ When the agent needs to choose what patterns to include:
 | "Be careful with X" | Not a constraint — no trigger, no action | "Run `cmd` before X. Abort if Y." |
 | Contradictory priorities without ordering | Agent skips verification, rushes to code | Number priorities: P1 > P2 > P3 |
 | Style guide without enforcement command | No verification mechanism | Add the lint command that enforces it |
-| 15+ "don'ts" without "dos" | Agent overexplores, stays conservative | Pair each prohibition with alternative |
+| 15+ "don'ts" without "dos" | Agent overexplores, stays conservative | See Boundaries rules above |
 | Architecture overview essays | Agent reads 100K+ tokens of docs | Keep to 2-3 sentences, reference files for details |
 
 ---
@@ -192,7 +195,7 @@ When the agent needs to choose what patterns to include:
 
 - Fewer lines = more compliance. One sentence per concept.
 - Reserve MANDATORY/NEVER/FORBIDDEN for data loss, security, or irreversible actions. When everything is critical, nothing stands out.
-- Use precise language — ambiguous rules get exploited. Scope restrictions clearly.
+- Use precise language — ambiguous rules get exploited. Scope restrictions clearly (e.g., 'Outside slash commands, never use bash' not 'never use bash').
 - One ❌/✅ example per section only when it shows a specific recurring mistake.
 - Merge sub-sections that say the same thing from different angles.
 - Numbered checklists over ASCII flowcharts — fewer tokens, easier to follow.
@@ -207,11 +210,11 @@ When the agent needs to choose what patterns to include:
 | Codex CLI | AGENTS.md | Yes (native) |
 | Cursor | `.cursor/rules` | Yes (native) |
 | GitHub Copilot | `.github/copilot-instructions.md` | Yes (native) |
-| Claude Code | CLAUDE.md | Via `@AGENTS.md` import |
+| Claude Code | CLAUDE.md | Yes (native + CLAUDE.md) |
 | Gemini CLI | GEMINI.md | Configurable |
 | Windsurf | `.windsurfrules` | Yes (native) |
 
-**Strategy:** Write AGENTS.md as the canonical source. For Claude Code, use `CLAUDE.md` with `@AGENTS.md` to import. Don't maintain parallel copies that drift apart.
+**Strategy:** Write AGENTS.md as canonical source. Claude Code reads both AGENTS.md and CLAUDE.md natively — use CLAUDE.md for Claude-specific overrides only.
 
 ---
 
