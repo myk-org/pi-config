@@ -121,10 +121,18 @@ export const MIN_PI_VERSION = "0.80.3";
 /** Get the installed pi version from its package.json. */
 export function getPiVersion(): string | null {
   try {
-    const piPkgPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
-    const pkg = JSON.parse(fs.readFileSync(piPkgPath, "utf-8"));
-    return pkg.version || null;
-  } catch { return null; }
+    // Resolve from pi's own install location (process.argv[1] → dist/cli.js → package root)
+    const piScript = process.argv[1];
+    if (piScript) {
+      const realPath = fs.realpathSync(piScript);
+      const piPkgPath = path.join(path.dirname(path.dirname(realPath)), "package.json");
+      if (fs.existsSync(piPkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(piPkgPath, "utf-8"));
+        if (pkg.name === "@earendil-works/pi-coding-agent" && pkg.version) return pkg.version;
+      }
+    }
+  } catch {}
+  return null;
 }
 
 /** Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b. */
