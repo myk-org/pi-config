@@ -7,6 +7,7 @@
 
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as net from "node:net";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -149,12 +150,23 @@ export function killDaemonByPid(pidFile: string, log: (msg: string) => void): bo
     const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
     if (isNaN(pid)) { log(`invalid PID in ${pidFile}`); return false; }
     try { process.kill(pid, 0); } catch { log(`PID ${pid} not running`); fs.unlinkSync(pidFile); return false; }
+    // Verify PID belongs to a pidiff-server to avoid killing unrelated processes
+    try {
+      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, "utf-8");
+      if (!cmdline.includes("pidiff-server")) {
+        log(`PID ${pid} is not a pidiff-server process — skipping kill`);
+        fs.unlinkSync(pidFile);
+        return false;
+      }
+    } catch { /* /proc not available (non-Linux) — proceed with kill */ }
     process.kill(pid, "SIGTERM");
     log(`killed daemon PID ${pid}`);
     // Wait briefly for process to exit
+    // Sync sleep without spawning shell processes
+    const waitBuf = new Int32Array(new SharedArrayBuffer(4));
     for (let i = 0; i < 10; i++) {
       try { process.kill(pid, 0); } catch { break; }
-      execSync("sleep 0.1", { stdio: "ignore" });
+      Atomics.wait(waitBuf, 0, 0, 100);
     }
     // Force kill if still alive
     try { process.kill(pid, "SIGKILL"); } catch {}
@@ -168,7 +180,7 @@ export function killDaemonByPid(pidFile: string, log: (msg: string) => void): bo
 /** Find a free TCP port by binding to port 0. */
 export function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
-    const srv = require("node:net").createServer();
+    const srv = net.createServer();
     srv.listen(0, "127.0.0.1", () => {
       const port = srv.address().port;
       srv.close(() => resolve(port));
@@ -203,7 +215,7 @@ export function readLockfile(lockDir: string): { port: number; pid: number | nul
       if (isNaN(pid)) pid = null;
     }
     return { port, pid };
-  } catch { return null; }
+  } catch (e: any) { console.debug(`[daemon-manager] readLockfile error: ${e?.message}`); return null; }
 }
 
 /** Clean up lockfiles. */

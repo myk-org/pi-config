@@ -350,6 +350,11 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
     piClients.delete(piClient.session.sessionId);
     log(`session disconnected: ${piClient.session.sessionId}`);
     broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
+    // Exit when last pi session disconnects — no sessions = no reason to keep running
+    if (piClients.size === 0) {
+      log("last session disconnected — shutting down");
+      process.exit(0);
+    }
   },
 
   onBrowserWatch: (ws, watchId, client) => {
@@ -632,9 +637,7 @@ if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
 
 // ── Start ───────────────────────────────────────────────────────────
 
-start();
-
-// Write PID file for lockfile-based management
+// Write PID file for lockfile-based management (before start so /pidiff stop works during startup)
 if (PROJECT_CWD) {
   const pidDir = path.join(PROJECT_CWD, ".pi", "tmp");
   try {
@@ -643,3 +646,12 @@ if (PROJECT_CWD) {
     log(`PID file written: ${pidDir}/pidiff.pid (PID ${process.pid})`);
   } catch (e: any) { log(`PID file write error: ${e.message}`); }
 }
+
+// Clean PID file on exit to prevent stale PID issues
+process.on("exit", () => {
+  if (PROJECT_CWD) {
+    try { fs.unlinkSync(path.join(PROJECT_CWD, ".pi", "tmp", "pidiff.pid")); } catch {}
+  }
+});
+
+start();

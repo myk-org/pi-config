@@ -113,6 +113,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
     if (connected || connecting || shuttingDown) return;
     connecting = true;
     lastCtx = ctx;
+    if (!lockDir) { log("connect: lockDir not set (session_start not fired yet)"); connecting = false; return; }
 
     // Try to discover port from lockfile
     let port = activePort;
@@ -129,14 +130,17 @@ export function registerPidiff(pi: ExtensionAPI): void {
     }
 
     if (!running) {
-      if (!spawning) {
-        spawning = true;
-        log("spawning daemon...");
-        port = await findFreePort();
-        log(`allocated free port: ${port}`);
-        doSpawn(port, ctx.cwd);
-        writeLockfile(lockDir, port, null, log);
+      if (spawning) {
+        log("daemon already spawning, waiting...");
+        connecting = false;
+        return;
       }
+      spawning = true;
+      log("spawning daemon...");
+      port = await findFreePort();
+      log(`allocated free port: ${port}`);
+      doSpawn(port, ctx.cwd);
+      writeLockfile(lockDir, port, null, log);
       const ready = await waitForDaemon(port, 60, log);
       spawning = false;
       if (!ready) { connecting = false; return; }
@@ -331,6 +335,8 @@ export function registerPidiff(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", () => {
+    // Server auto-exits when last pi session disconnects (onPiClose in pidiff-server.ts).
+    // No need to kill here — just disconnect and let the server decide.
     shuttingDown = true;
     cleanupReconnect();
     if (cleanupHeartbeat) { cleanupHeartbeat(); cleanupHeartbeat = null; }
