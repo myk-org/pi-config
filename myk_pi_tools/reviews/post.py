@@ -47,6 +47,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.reviews.fetch import QODO_STICKY_TYPES
+
 # Lazy reply patterns that indicate the AI didn't write a real response
 _LAZY_REPLY_PATTERNS = [
     "previously addressed",
@@ -572,19 +574,11 @@ def run(json_path: str) -> None:
     # Enforce: Qodo sticky findings MUST have status "addressed" (code was changed).
     # "skipped", "not_addressed", or any other status is rejected.
     # This is enforced in code because LLMs find ways to bypass prompt rules.
-    _QODO_STICKY_TYPES = {
-        "qodo_bug",
-        "qodo_rule_violation",
-        "qodo_requirement_gap",
-        "qodo_finding",
-        "qodo_ux_issue",
-        "qodo_cross_repo",
-    }
     sticky_errors: list[str] = []
     for cat in categories:
         for comment in data.get(cat, []):
             comment_type = comment.get("type", "")
-            if comment_type not in _QODO_STICKY_TYPES:
+            if comment_type not in QODO_STICKY_TYPES:
                 continue
             status = comment.get("status", "pending")
             if status == "pending":
@@ -665,19 +659,17 @@ def run(json_path: str) -> None:
             # have no GitHub thread to post to or resolve.
             # They are tracked via the review database only.
             comment_type = thread_data.get("type")
-            if comment_type in (
-                "outside_diff_comment",
-                "major_comment",
-                "minor_comment",
-                "nitpick_comment",
-                "duplicate_comment",
-                "qodo_bug",
-                "qodo_rule_violation",
-                "qodo_requirement_gap",
-                "qodo_finding",
-                "qodo_ux_issue",
-                "qodo_cross_repo",
-                "qodo_reply",
+            if (
+                comment_type
+                in (
+                    "outside_diff_comment",
+                    "major_comment",
+                    "minor_comment",
+                    "nitpick_comment",
+                    "duplicate_comment",
+                    "qodo_reply",
+                )
+                or comment_type in QODO_STICKY_TYPES
             ):
                 if status == "pending":
                     pending_count += 1
@@ -844,15 +836,7 @@ def run(json_path: str) -> None:
                 nitpick_count += 1
             elif comment_type == "duplicate_comment":
                 duplicate_count += 1
-            elif comment_type in (
-                "qodo_bug",
-                "qodo_rule_violation",
-                "qodo_requirement_gap",
-                "qodo_finding",
-                "qodo_ux_issue",
-                "qodo_cross_repo",
-                "qodo_reply",
-            ):
+            elif comment_type in QODO_STICKY_TYPES or comment_type == "qodo_reply":
                 qodo_sticky_count += 1
 
         body_comment_failed = total_body - len(body_updates)

@@ -277,6 +277,7 @@ class ReviewDB:
                   AND (
                       c.status IN ('not_addressed', 'skipped')
                       OR (c.status = 'addressed'
+                          -- Note: these types must match QODO_STICKY_TYPES in reviews/fetch.py
                           AND c.type IN (
                               'outside_diff_comment', 'major_comment',
                               'minor_comment', 'nitpick_comment',

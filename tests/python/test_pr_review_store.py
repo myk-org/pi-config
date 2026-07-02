@@ -598,6 +598,23 @@ def test_cli_get_review_history(db_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert data[1]["skip_reason"] == "dup"
 
 
+def test_store_empty_comments_still_records_metadata(tmp_path: Path) -> None:
+    """Empty comments list should still write pr_reviews metadata row."""
+    db_path = tmp_path / "test.db"
+    store_pr_review("owner", "repo", 1, [], head_sha="abc123", db_path=db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM pr_reviews").fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["owner"] == "owner"
+    assert rows[0]["repo"] == "repo"
+    assert rows[0]["pr_number"] == 1
+    assert rows[0]["head_sha"] == "abc123"
+
+
 def test_run_store_with_author(db_path: Path, tmp_path: Path) -> None:
     """run_store() reads author from metadata and stores it in pr_reviews."""
     json_data = {
