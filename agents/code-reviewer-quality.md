@@ -48,7 +48,8 @@ If reviewing a PR, run:
 myk-pi-tools pr get-review-history <owner> <repo> <pr_number>
 ```
 
-Extract `owner`, `repo`, and `pr_number` from the PR context (task prompt, git remote, or `gh pr view`).
+Get the args from `gh pr view --json owner,repo,number` or parse the git remote URL
+(e.g., `github.com/myorg/myrepo` → owner=`myorg`, repo=`myrepo`).
 If the command returns results, review the output:
 
 - Do NOT re-raise any finding with `resolution_status` of `resolved_accepted`, `resolved_fixed`, or `status` of `skipped`
