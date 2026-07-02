@@ -133,28 +133,35 @@ export function registerPidiff(pi: ExtensionAPI): void {
       try {
         fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
       } catch {
-        // Another session is already spawning — wait for it
-        log("another session is spawning pidiff, waiting...");
-        const ready = await waitForDaemon(port || 19290, 30, log);
-        if (ready) {
+        // Another session is already spawning — wait for lockfile to appear
+        log("another session is spawning pidiff, waiting for lockfile...");
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 1000));
           const lock = readLockfile(lockDir);
-          if (lock) { port = lock.port; activePort = port; }
+          if (lock && await checkHealth(lock.port)) {
+            port = lock.port;
+            activePort = port;
+            break;
+          }
         }
         connecting = false;
-        if (ready && port) setTimeout(() => connect(ctx), 1000);
+        if (port) setTimeout(() => connect(ctx), 1000);
         return;
       }
 
       spawning = true;
-      log("spawning daemon...");
-      port = await findFreePort();
-      log(`allocated free port: ${port}`);
-      doSpawn(port, ctx.cwd);
-      writeLockfile(lockDir, port, null, log);
-      const ready = await waitForDaemon(port, 60, log);
-      spawning = false;
-      try { fs.unlinkSync(spawnLock); } catch {}
-      if (!ready) { connecting = false; return; }
+      try {
+        log("spawning daemon...");
+        port = await findFreePort();
+        log(`allocated free port: ${port}`);
+        doSpawn(port, ctx.cwd);
+        writeLockfile(lockDir, port, null, log);
+        const ready = await waitForDaemon(port, 60, log);
+        if (!ready) { connecting = false; return; }
+      } finally {
+        spawning = false;
+        try { fs.unlinkSync(spawnLock); } catch {}
+      }
     }
 
     activePort = port;

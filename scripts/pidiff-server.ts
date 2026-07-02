@@ -367,23 +367,20 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
     log(`session disconnected: ${piClient.session.sessionId}`);
     broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
     // Start idle shutdown timer when last pi session disconnects
-    if (piClients.size === 0 && browserClients.size === 0) {
-      log("last session and browser disconnected — shutting down in 5s");
+    if (piClients.size === 0) {
+      const delay = browserClients.size === 0 ? 5000 : 30000;
+      log(`last pi session disconnected — shutting down in ${delay / 1000}s (${browserClients.size} browsers)`);
       const shutdownTimer = setTimeout(() => {
-        if (piClients.size === 0) {
-          log("idle shutdown — no sessions reconnected");
+        if (piClients.size === 0 && browserClients.size === 0) {
+          log("idle shutdown — no sessions or browsers");
           process.exit(0);
-        }
-      }, 5000);
-      if (shutdownTimer.unref) shutdownTimer.unref();
-    } else if (piClients.size === 0) {
-      log("last pi session disconnected — browsers still connected, waiting 30s");
-      const shutdownTimer = setTimeout(() => {
-        if (piClients.size === 0) {
-          log("idle shutdown — no sessions reconnected after 30s");
+        } else if (piClients.size === 0) {
+          log("idle shutdown — no sessions reconnected, closing remaining browsers");
           process.exit(0);
+        } else {
+          log("shutdown cancelled — session reconnected");
         }
-      }, 30000);
+      }, delay);
       if (shutdownTimer.unref) shutdownTimer.unref();
     }
   },
