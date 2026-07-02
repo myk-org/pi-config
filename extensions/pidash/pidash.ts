@@ -693,6 +693,7 @@ export function registerPidash(
     forward("tool_execution_end");
     forward("tool_call");
     forward("tool_result");
+    forward("session_info_changed");
 
     pi.on("model_select", (event: any) => {
       if (ws && connected) {

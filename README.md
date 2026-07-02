@@ -13,7 +13,7 @@ Single extension that provides:
 | Feature | Description |
 |---------|-------------|
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete, deterministic session IDs for provider cache affinity |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
@@ -24,10 +24,10 @@ Single extension that provides:
 | **Git status** | Live git status in status line with colored icons — updates after every tool call. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
-| **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching |
-| **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments |
+| **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display |
+| **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
-| **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules |
+| **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules. Dreaming-safe via *(enforced)* marker |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges ([@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks)) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
@@ -544,6 +544,25 @@ PI_PIDIFF_ENABLE=false pi
 | `cr` | CodeRabbit CLI — local AI code reviews |
 | `curl` | HTTP requests |
 
+#### `myk-pi-tools` subcommands
+
+| Command | Description |
+|---------|-------------|
+| `myk-pi-tools pr diff` | Fetch PR diff and metadata |
+| `myk-pi-tools pr info` | Fetch PR information as structured JSON |
+| `myk-pi-tools pr post-comment` | Post inline comments to a PR |
+| `myk-pi-tools pr store-pr-review` | Store posted PR review comments to `pr-reviews.db` |
+| `myk-pi-tools pr update-resolution` | Update resolution status for a previously posted review comment. Used by Phase 1c of `/pr-review` to persist LLM evaluation verdicts |
+| `myk-pi-tools pr get-review-history` | Return complete review history for a PR as JSON (posted, skipped, resolved findings). Used by reviewers to avoid re-raising dismissed findings |
+| `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR |
+| `myk-pi-tools pr claude-md` | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository |
+| `myk-pi-tools release create` | Create a GitHub release with changelog |
+| `myk-pi-tools db` | Review database query commands |
+| `myk-pi-tools reviews` | Review handling commands |
+| `myk-pi-tools memory` | Project memory commands — persistent per-repo learning |
+| `myk-pi-tools ai-cli` | AI CLI commands (cursor, claude, gemini) |
+| `myk-pi-tools coderabbit` | CodeRabbit commands |
+
 ### What's protected
 
 **Filesystem isolation** — the container cannot access anything outside the mounted volumes:
@@ -662,7 +681,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono)
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.80.3**)
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

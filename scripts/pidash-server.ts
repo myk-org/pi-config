@@ -101,6 +101,14 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   const piClient = getPiClient() as PiClient | null;
 
+  // Forward session name changes to all watching browsers
+  if (parsed.type === "session_info_changed" && piClient) {
+    if (parsed.name !== undefined) piClient.session.name = parsed.name;
+    piClient.session.lastActivity = Date.now();
+    sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
+    return;
+  }
+
   if (parsed.type === "update_info" && piClient) {
     if (parsed.model !== undefined) piClient.session.model = parsed.model;
     if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;

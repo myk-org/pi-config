@@ -457,6 +457,18 @@ export function registerAsyncAgents(
 
     // Build pi args
     const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
+    // Deterministic session ID for provider cache affinity (requires pi >= 0.80.3).
+    // --no-session creates an in-memory session (no disk persistence).
+    // --session-id assigns a stable ID so the provider can reuse cached prompts
+    // across runs with the same agent+task pattern. Both flags are compatible:
+    // pi uses SessionManager.inMemory(cwd, { id: sessionId }) when both are set.
+    const sessionIdSource = agentName + ':' + task.slice(0, 100);
+    let hash = 0;
+    for (let i = 0; i < sessionIdSource.length; i++) {
+      hash = ((hash << 5) - hash + sessionIdSource.charCodeAt(i)) | 0;
+    }
+    const deterministicSessionId = `async-${agentName}-${Math.abs(hash).toString(36)}`;
+    piArgs.push("--session-id", deterministicSessionId);
     const effectiveModel = agent.model || options?.parentModelId;
     if (effectiveModel) piArgs.push("--model", effectiveModel);
     const effectiveProvider = agent.provider || options?.parentProvider;

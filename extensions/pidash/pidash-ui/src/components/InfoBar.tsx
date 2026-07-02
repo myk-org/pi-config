@@ -203,6 +203,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         {" "}
         <span className="inline-block min-w-[3.5em] text-right">↓{fk(output)}</span>
         {cache > 0 && <span className="inline-block min-w-[3.5em] text-right"> 📦{fk(cache)}</span>}
+        {(tokens?.reasoning ?? 0) > 0 && <span className="inline-block min-w-[3.5em] text-right"> 🧠{fk(tokens!.reasoning!)}</span>}
       </span>
 
       <span className="text-border">|</span>

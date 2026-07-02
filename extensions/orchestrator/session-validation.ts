@@ -7,6 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { checkMinPiVersion } from "./utils.js";
 
 /** Check whether a CLI command is available on PATH. */
 function hasCmd(cmd: string): boolean {
@@ -329,6 +330,19 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
+
+    // Check minimum pi version
+    const versionCheck = checkMinPiVersion();
+    if (!versionCheck.ok) {
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `⚠️ pi ${versionCheck.installed || "unknown"} is below minimum required version ${versionCheck.required}. ` +
+          `Some features (--session-id for async agents, session_info_changed events) will not work. ` +
+          `Update pi: npm install -g @earendil-works/pi-coding-agent`,
+          "warning",
+        );
+      }
+    }
 
     await checkSessionTools(ctx);
 

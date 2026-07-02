@@ -33,6 +33,11 @@ All async agent temp files live under `.pi/tmp/`:
     └── system-prompt.md                      # Agent system prompt
 ```
 
+**Deterministic session IDs:** Async agents use `--session-id` (hash of agent name + task prefix) alongside `--no-session`.
+This enables provider-side prompt caching for repeated async agent patterns.
+`--no-session` creates an in-memory session (no disk persistence); `--session-id` assigns a stable ID for cache affinity.
+Both flags are compatible: pi uses `SessionManager.inMemory(cwd, { id: sessionId })` when both are set.
+
 **Zombie cleanup:** On `session_start`, checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` — dead parent = zombie = delete.
 
 **Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — returns `<cwd>/.pi/tmp/`, creates dir if missing.

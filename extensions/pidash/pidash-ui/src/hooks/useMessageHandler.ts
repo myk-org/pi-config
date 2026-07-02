@@ -371,6 +371,12 @@ export function useMessageHandler(
           }
           break;
 
+        case "session_info_changed":
+          if ((ev as any).name !== undefined) {
+            setSession((prev) => prev ? { ...prev, name: (ev as any).name } : prev);
+          }
+          break;
+
         case "commands-list":
           if ((ev as any).commands) setAvailableCommands((ev as any).commands);
           break;

@@ -255,6 +255,30 @@ For the `human` list, categorize each thread:
     - Valid response (by design, wrong assumption, clarification) → mark as "✅ Resolved — response accepted"
     - Invalid/missing response → include in findings as "❌ Resolved without code change or valid response"
 
+**Store resolution verdicts to DB (MANDATORY):**
+
+After evaluating each resolved thread, persist YOUR verdict to the PR review database.
+For each resolved thread that was previously posted by us (matched in the `--user` fetch),
+call:
+
+To store the verdict, write the author's response to a temp file first (to avoid shell quoting issues),
+then run the CLI:
+
+1. Write `{author_response}` text to `${PROJECT_TMP_DIR}/resolution-response.txt` using the `write` tool
+2. Run: `myk-pi-tools pr update-resolution {owner} {repo} {pr_number} --path {path} --line {line} --status {resolution_status} --response-file ${PROJECT_TMP_DIR}/resolution-response.txt`
+
+Where:
+
+- `{resolution_status}` is one of:
+  - `resolved_fixed` (code changed, fix verified)
+  - `resolved_accepted` (response accepted, no code change needed)
+  - `resolved_bad_fix` (code changed but fix is incorrect)
+  - `resolved_no_fix` (resolved without code change or valid response)
+- `{author_response}` is the PR author's reply text (why they resolved/dismissed)
+
+This persists resolution decisions to the DB so future review cycles can query them.
+Resolution decisions are OURS (from this LLM evaluation), not the PR author's click.
+
 **All past comment statuses are included in the combined findings in Phase 4 —
 not presented as a separate summary.**
 
@@ -315,9 +339,9 @@ Then include `EXISTING_COMMENTS`, `PR_DESCRIPTION_VERIFICATION`, and `CODE_SUGGE
 
 ```text
 subagent(tasks=[
-  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
-  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
-  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
+  {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
+  {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
 ])
 ```
 

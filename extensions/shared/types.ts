@@ -16,4 +16,5 @@ export interface SessionInfo {
   thinkingLevel?: string;
   diffPort?: number | null;
   working?: boolean;
+  name?: string;
 }

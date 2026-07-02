@@ -93,11 +93,14 @@ export function registerDreaming(
       `   - Remove stale/useless entries\n` +
       `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
       `   - NEVER remove or modify entries marked with *(pinned)*\n` +
+      `   - NEVER remove or modify entries marked with *(enforced)* — these have code-enforced triggers/actions that are keyed by text hash. ANY text change destroys the enforcement binding.\n` +
       `6. Write each updated topic file with this format:\n` +
       `   # TopicName\n` +
       `   \n` +
-      `   - [category] summary *(pinned)*    (if pinned)\n` +
-      `   - [category] summary               (if not pinned)\n` +
+      `   - [category] summary *(pinned)*              (if pinned)\n` +
+      `   - [category] summary *(enforced)*            (if enforced)\n` +
+      `   - [category] summary *(pinned)* *(enforced)* (if both)\n` +
+      `   - [category] summary                         (if neither)\n` +
       `7. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
       `   create a skill file at .pi/skills/<name>/SKILL.md (project-level, NOT global ~/.agents/).\n` +
       `   The SKILL.md MUST start with YAML frontmatter:\n` +
