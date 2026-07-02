@@ -25,18 +25,29 @@ function log(msg: string) {
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 3000, stdio: ["ignore", "pipe", "ignore"] as const, maxBuffer: 10 * 1024 * 1024 };
 
-// Resolve git binary — prefer PI_GIT_BIN env var (set by the spawning extension which has the correct PATH)
-let GIT_BIN = process.env.PI_GIT_BIN || "git";
+// Resolve git binary — try multiple locations to work across container and native environments
+let GIT_BIN = "git";
 let gitBinResolved = false;
 
+const GIT_SEARCH_PATHS = [
+  "git",                                    // PATH lookup
+  "/usr/bin/git",                            // standard Linux/container
+  "/usr/local/bin/git",                      // macOS / manual install
+  "/home/linuxbrew/.linuxbrew/bin/git",      // Homebrew on Linux
+  "/opt/homebrew/bin/git",                   // Homebrew on macOS ARM
+];
+
 function resolveGitBin(): string {
-  // 1. PI_GIT_BIN from env (set by extension with correct PATH)
-  if (process.env.PI_GIT_BIN) {
-    try { execFileSync(process.env.PI_GIT_BIN, ["--version"], { stdio: "ignore" }); GIT_BIN = process.env.PI_GIT_BIN; gitBinResolved = true; return GIT_BIN; } catch {}
+  for (const candidate of GIT_SEARCH_PATHS) {
+    try {
+      execFileSync(candidate, ["--version"], { stdio: "ignore", timeout: 3000 });
+      GIT_BIN = candidate;
+      gitBinResolved = true;
+      if (candidate !== "git") log(`resolved git binary: ${candidate}`);
+      return GIT_BIN;
+    } catch {}
   }
-  // 2. Try "git" on PATH
-  try { execFileSync("git", ["--version"], { stdio: "ignore" }); GIT_BIN = "git"; gitBinResolved = true; return GIT_BIN; } catch {}
-  log("WARNING: git binary not found — set PI_GIT_BIN or ensure git is in PATH");
+  log("WARNING: git binary not found in any known location");
   gitBinResolved = false;
   return GIT_BIN;
 }
