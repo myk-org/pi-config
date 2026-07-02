@@ -322,6 +322,14 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
       piClients.set(sessionId, piClient);
       log(`session registered: ${sessionId} (${session.repo})`);
       broadcastToBrowsers({ type: "session_added", session });
+      // Re-resolve git binary when a new session registers (session may have correct PATH)
+      if (!gitBinResolved) {
+        resolveGitBin();
+        if (gitBinResolved) {
+          log(`git binary found after session register: ${GIT_BIN}`);
+          broadcastToBrowsers({ type: "git_resolved" });
+        }
+      }
       for (const wt of session.worktrees) startWatching(sessionId, wt.path);
       if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
       return;
@@ -348,6 +356,9 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
   },
 
   onBrowserWatch: (ws, watchId, client) => {
+    if (!gitBinResolved) {
+      try { ws.send(JSON.stringify({ type: "git_error", message: "Git binary not found. Pidiff requires git to show diffs. Searched: " + GIT_SEARCH_PATHS.join(", ") })); } catch {}
+    }
     if (client) {
       const payload = buildDiffPayload(client.session.cwd, "branch");
       try { ws.send(JSON.stringify(payload)); } catch {}
@@ -359,6 +370,10 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
 
   onBrowserConnect: (ws) => {
     browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
+    // Notify browser if git is unavailable
+    if (!gitBinResolved) {
+      try { ws.send(JSON.stringify({ type: "git_error", message: "Git binary not found. Pidiff requires git to show diffs. Searched: " + GIT_SEARCH_PATHS.join(", ") })); } catch {}
+    }
     const sessions = Array.from(piClients.values()).map((c: any) => c.session);
     try { ws.send(JSON.stringify({ type: "sessions-list", sessions })); } catch {}
   },

@@ -84,6 +84,7 @@ export function App() {
   const [fontSize, setFontSize] = useState(13);
   const [theme, setTheme] = useState<string>("pierre-dark");
   const [stale, setStale] = useState(false);
+  const [gitError, setGitError] = useState<string | null>(null);
   const [staleWorktrees, setStaleWorktrees] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
@@ -136,6 +137,12 @@ export function App() {
       }
       if (ev.type === "commits-list" && ev.commits) {
         setCommits(ev.commits);
+      }
+      if (ev.type === "git_error") {
+        setGitError(ev.message || "Git binary not found");
+      }
+      if (ev.type === "git_resolved") {
+        setGitError(null);
       }
       if (ev.type === "status_changed") {
         if (ev.changedWorktrees && Array.isArray(ev.changedWorktrees)) {
@@ -591,6 +598,13 @@ export function App() {
           );
         })()}
       </header>
+
+      {/* Git error banner */}
+      {gitError && (
+        <div className="flex items-center justify-between px-4 py-3 bg-red-500/15 border-b border-red-500/30">
+          <span className="text-sm text-red-400 font-medium">⚠️ {gitError}</span>
+        </div>
+      )}
 
       {/* Stale banner */}
       {stale && (
