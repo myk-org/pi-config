@@ -61,7 +61,7 @@ Do NOT raise findings that contradict these guidelines.
 
 ## Review History (MANDATORY — check before reviewing)
 
-If reviewing a PR, check if `.pi/data/pr-reviews.db` exists. If it does, run:
+If reviewing a PR, run:
 
 ```bash
 myk-pi-tools pr get-review-history <owner> <repo> <pr_number>
