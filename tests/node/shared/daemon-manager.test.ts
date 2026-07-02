@@ -7,10 +7,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, removeLockfile, findFreePort } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, removeLockfile, findFreePort, killDaemonByPid } from "../../../extensions/shared/daemon-manager.js";
 
-describe("writeLockfile + readLockfile", () => {
-  it("writes and reads port + pid", () => {
+describe("lockfile operations", () => {
+  it("stores port and pid via writeLockfile, retrieves via readLockfile", () => {
     const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
     try {
       const log = () => {};
@@ -22,7 +22,7 @@ describe("writeLockfile + readLockfile", () => {
     } finally { rmSync(dir, { recursive: true }); }
   });
 
-  it("reads port without pid", () => {
+  it("handles null pid in lockfile", () => {
     const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
     try {
       const log = () => {};
@@ -41,7 +41,7 @@ describe("writeLockfile + readLockfile", () => {
 });
 
 describe("removeLockfile", () => {
-  it("removes port and pid files", () => {
+  it("cleans up both lockfile entries", () => {
     const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
     try {
       const log = () => {};
@@ -60,6 +60,38 @@ describe("removeLockfile", () => {
       const log = () => {};
       removeLockfile(dir, log); // should not throw
     } finally { rmSync(dir, { recursive: true }); }
+  });
+});
+
+describe("killDaemonByPid", () => {
+  it("returns false for non-existent pid file", () => {
+    const log = () => {};
+    const result = killDaemonByPid("/tmp/nonexistent-pid-" + Date.now(), log);
+    assert.strictEqual(result, false);
+  });
+
+  it("returns false for invalid pid in file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const pidFile = join(dir, "test.pid");
+    try {
+      writeFileSync(pidFile, "not-a-number");
+      const log = () => {};
+      const result = killDaemonByPid(pidFile, log);
+      assert.strictEqual(result, false);
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+
+  it("returns false for dead pid and cleans up file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const pidFile = join(dir, "test.pid");
+    try {
+      // Use a PID that's almost certainly not running
+      writeFileSync(pidFile, "999999999");
+      const log = () => {};
+      const result = killDaemonByPid(pidFile, log);
+      assert.strictEqual(result, false);
+      assert.ok(!existsSync(pidFile));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
