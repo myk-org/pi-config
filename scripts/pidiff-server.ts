@@ -17,6 +17,11 @@ import { createDaemonServer } from "./daemon-shared.ts";
 const DEFAULT_PORT = 19290;
 const port = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
 
+const PROJECT_CWD = process.env.PI_PIDIFF_CWD || "";
+if (!PROJECT_CWD) {
+  console.log(`${new Date().toISOString()} [pidiff] WARNING: PI_PIDIFF_CWD not set — server will only work when sessions register`);
+}
+
 function log(msg: string) {
   console.log(`${new Date().toISOString()} [pidiff] ${msg}`);
 }
@@ -311,6 +316,17 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
       piClients.set(sessionId, piClient);
       log(`session registered: ${sessionId} (${session.repo})`);
       broadcastToBrowsers({ type: "session_added", session });
+      // Auto-watch for browsers without a session (per-project mode)
+      for (const browser of browserClients) {
+        const watchInfo = browserWatchMap.get(browser);
+        if (!watchInfo?.sessionId) {
+          browserWatchMap.set(browser, { sessionId, worktreePath: null });
+          const payload = buildDiffPayload(cwd, "branch");
+          try { browser.send(JSON.stringify(payload)); } catch {}
+          const commits = getLog(cwd, 30);
+          try { browser.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+        }
+      }
       for (const wt of session.worktrees) startWatching(sessionId, wt.path);
       if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
       return;
@@ -350,6 +366,15 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
     browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
     const sessions = Array.from(piClients.values()).map((c: any) => c.session);
     try { ws.send(JSON.stringify({ type: "sessions-list", sessions })); } catch {}
+    // In per-project mode, auto-watch the first registered session
+    if (PROJECT_CWD && sessions.length > 0) {
+      const firstSession = sessions[0];
+      browserWatchMap.set(ws, { sessionId: firstSession.sessionId, worktreePath: null });
+      const payload = buildDiffPayload(firstSession.cwd, "branch");
+      try { ws.send(JSON.stringify(payload)); } catch {}
+      const commits = getLog(firstSession.cwd, 30);
+      try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+    }
   },
 
   onBrowserMessage: (ws, parsed) => {
@@ -608,3 +633,13 @@ if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
 // ── Start ───────────────────────────────────────────────────────────
 
 start();
+
+// Write PID file for lockfile-based management
+if (PROJECT_CWD) {
+  const pidDir = path.join(PROJECT_CWD, ".pi", "tmp");
+  try {
+    if (!fs.existsSync(pidDir)) fs.mkdirSync(pidDir, { recursive: true });
+    fs.writeFileSync(path.join(pidDir, "pidiff.pid"), String(process.pid), { mode: 0o600 });
+    log(`PID file written: ${pidDir}/pidiff.pid (PID ${process.pid})`);
+  } catch (e: any) { log(`PID file write error: ${e.message}`); }
+}

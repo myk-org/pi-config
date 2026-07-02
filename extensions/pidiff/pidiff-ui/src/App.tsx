@@ -401,22 +401,12 @@ export function App() {
       <header className="flex-shrink-0 border-b border-border">
         <div className="flex items-center justify-between px-4 h-11 bg-card">
           <div className="flex items-center gap-3 h-full">
-            {/* Session selector — always show dropdown */}
-            <select
-              value={activeSession?.sessionId || ""}
-              onChange={e => {
-                const s = sessions.find(s => s.sessionId === e.target.value);
-                if (s) switchSession(s);
-              }}
-              className="bg-card border border-border rounded-md px-2 py-1 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring max-w-[220px]"
-            >
-              {sessions.length === 0 && <option value="">No sessions</option>}
-              {sessions.map(s => (
-                <option key={s.sessionId} value={s.sessionId}>
-                  {s.repo}
-                </option>
-              ))}
-            </select>
+            {activeSession && (
+              <span className="text-xs font-medium text-foreground">{activeSession.repo}</span>
+            )}
+            {!activeSession && (
+              <span className="text-xs text-muted-foreground">Waiting for session...</span>
+            )}
             {activeSession && (
               <div className="flex items-center gap-1.5">
                 <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />

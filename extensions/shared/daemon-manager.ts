@@ -140,6 +140,83 @@ export function killDaemon(pattern: string, log: (msg: string) => void): void {
   } catch {}
 }
 
+// ── Kill daemon by PID ──────────────────────────────────────────────
+
+/** Kill a daemon by its stored PID. Returns true if killed. */
+export function killDaemonByPid(pidFile: string, log: (msg: string) => void): boolean {
+  try {
+    if (!fs.existsSync(pidFile)) return false;
+    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+    if (isNaN(pid)) { log(`invalid PID in ${pidFile}`); return false; }
+    try { process.kill(pid, 0); } catch { log(`PID ${pid} not running`); fs.unlinkSync(pidFile); return false; }
+    process.kill(pid, "SIGTERM");
+    log(`killed daemon PID ${pid}`);
+    // Wait briefly for process to exit
+    for (let i = 0; i < 10; i++) {
+      try { process.kill(pid, 0); } catch { break; }
+      execSync("sleep 0.1", { stdio: "ignore" });
+    }
+    // Force kill if still alive
+    try { process.kill(pid, "SIGKILL"); } catch {}
+    try { fs.unlinkSync(pidFile); } catch {}
+    return true;
+  } catch (e: any) { log(`killDaemonByPid error: ${e.message}`); return false; }
+}
+
+// ── Find free port ──────────────────────────────────────────────────
+
+/** Find a free TCP port by binding to port 0. */
+export function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = require("node:net").createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
+
+// ── Lockfile management ─────────────────────────────────────────────
+
+/** Write a lockfile with port and PID. */
+export function writeLockfile(lockDir: string, port: number, pid: number | null, log: (msg: string) => void): void {
+  try {
+    if (!fs.existsSync(lockDir)) fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, "pidiff.port"), String(port), { mode: 0o600 });
+    if (pid !== null) fs.writeFileSync(path.join(lockDir, "pidiff.pid"), String(pid), { mode: 0o600 });
+    log(`lockfile written: port=${port} pid=${pid}`);
+  } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
+}
+
+/** Read port from lockfile. Returns port number or null. */
+export function readLockfile(lockDir: string): { port: number; pid: number | null } | null {
+  try {
+    const portFile = path.join(lockDir, "pidiff.port");
+    if (!fs.existsSync(portFile)) return null;
+    const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
+    if (isNaN(port)) return null;
+    let pid: number | null = null;
+    const pidFile = path.join(lockDir, "pidiff.pid");
+    if (fs.existsSync(pidFile)) {
+      pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+      if (isNaN(pid)) pid = null;
+    }
+    return { port, pid };
+  } catch { return null; }
+}
+
+/** Clean up lockfiles. */
+export function removeLockfile(lockDir: string, log: (msg: string) => void): void {
+  try {
+    const portFile = path.join(lockDir, "pidiff.port");
+    const pidFile = path.join(lockDir, "pidiff.pid");
+    if (fs.existsSync(portFile)) fs.unlinkSync(portFile);
+    if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+    log("lockfiles removed");
+  } catch (e: any) { log(`removeLockfile error: ${e.message}`); }
+}
+
 // ── Wait for daemon ─────────────────────────────────────────────────
 
 export async function waitForDaemon(
