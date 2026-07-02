@@ -423,6 +423,8 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
     if (client && client.session.gitBin) {
       try {
         execFileSync(client.session.gitBin, ["--version"], { stdio: "ignore", timeout: 3000 });
+        // Git works for this session — clear any previous error
+        try { ws.send(JSON.stringify({ type: "git_resolved" })); } catch {}
       } catch {
         try { ws.send(JSON.stringify({ type: "git_error", message: `Git binary not found for ${client.session.repo}. Session git: ${client.session.gitBin}` })); } catch {}
       }

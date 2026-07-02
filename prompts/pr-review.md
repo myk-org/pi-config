@@ -246,7 +246,8 @@ For the `human` list, categorize each thread:
     - Fix looks correct → resolve the thread on GitHub by setting its status to `addressed`
       with reply "Verified fix in code — resolving." in the JSON, then mark as
       "✅ Fixed but not resolved by author — resolved by us". Store verdict to DB as `resolved_fixed`.
-    - Fix looks wrong/incomplete → include in findings as "❌ Code changed but fix is incorrect"
+    - Fix looks wrong/incomplete → include in findings as "❌ Code changed but fix is incorrect".
+      Store verdict to DB as `resolved_bad_fix`.
   - **Code NOT changed:** The finding is genuinely unaddressed.
     - Include in the findings presented to the user in Phase 4.
     - Mark as "⚠️ UNRESOLVED from previous review"
