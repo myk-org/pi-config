@@ -76,10 +76,10 @@ pi-config/
 │   │       └── dist/               # Built output (generated, gitignored)
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
-│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to pidiff daemon)
+│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/tmp/ lockfiles)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── shared/                      # Shared extension utilities
-│   │   ├── daemon-manager.ts        # Daemon infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
+│   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
@@ -132,7 +132,7 @@ pi-config/
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
-│   ├── pidiff-server.ts             # Pidiff daemon (multi-session diff hub with review comments)
+│   ├── pidiff-server.ts             # Pidiff per-project server (diff hub with review comments, one per project cwd)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)

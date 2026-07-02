@@ -17,6 +17,11 @@ import { createDaemonServer } from "./daemon-shared.ts";
 const DEFAULT_PORT = 19290;
 const port = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
 
+const PROJECT_CWD = process.env.PI_PIDIFF_CWD || "";
+if (!PROJECT_CWD) {
+  console.log(`${new Date().toISOString()} [pidiff] WARNING: PI_PIDIFF_CWD not set — server will only work when sessions register`);
+}
+
 function log(msg: string) {
   console.log(`${new Date().toISOString()} [pidiff] ${msg}`);
 }
@@ -25,18 +30,29 @@ function log(msg: string) {
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 3000, stdio: ["ignore", "pipe", "ignore"] as const, maxBuffer: 10 * 1024 * 1024 };
 
-// Resolve git binary — prefer PI_GIT_BIN env var (set by the spawning extension which has the correct PATH)
-let GIT_BIN = process.env.PI_GIT_BIN || "git";
+// Resolve git binary — search common paths, no PI_GIT_BIN dependency
+let GIT_BIN = "git";
 let gitBinResolved = false;
 
+const GIT_SEARCH_PATHS = [
+  "git",                                    // PATH lookup
+  "/usr/bin/git",                            // standard Linux/container
+  "/usr/local/bin/git",                      // macOS / manual install
+  "/home/linuxbrew/.linuxbrew/bin/git",      // Homebrew on Linux
+  "/opt/homebrew/bin/git",                   // Homebrew on macOS ARM
+];
+
 function resolveGitBin(): string {
-  // 1. PI_GIT_BIN from env (set by extension with correct PATH)
-  if (process.env.PI_GIT_BIN) {
-    try { execFileSync(process.env.PI_GIT_BIN, ["--version"], { stdio: "ignore" }); GIT_BIN = process.env.PI_GIT_BIN; gitBinResolved = true; return GIT_BIN; } catch {}
+  for (const candidate of GIT_SEARCH_PATHS) {
+    try {
+      execFileSync(candidate, ["--version"], { stdio: "ignore", timeout: 3000 });
+      GIT_BIN = candidate;
+      gitBinResolved = true;
+      if (candidate !== "git") log(`resolved git binary: ${candidate}`);
+      return GIT_BIN;
+    } catch {}
   }
-  // 2. Try "git" on PATH
-  try { execFileSync("git", ["--version"], { stdio: "ignore" }); GIT_BIN = "git"; gitBinResolved = true; return GIT_BIN; } catch {}
-  log("WARNING: git binary not found — set PI_GIT_BIN or ensure git is in PATH");
+  log("WARNING: git binary not found in any known location");
   gitBinResolved = false;
   return GIT_BIN;
 }
@@ -304,6 +320,11 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
       const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
       const cwd = parsed.cwd || "";
       if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }
+      // In per-project mode, validate that the registering session's cwd matches
+      if (PROJECT_CWD && cwd !== PROJECT_CWD) {
+        log(`register rejected: cwd ${cwd} does not match PROJECT_CWD ${PROJECT_CWD}`);
+        return;
+      }
       const worktrees = getWorktrees(cwd);
       const session: SessionInfo = { sessionId, cwd, branch: parsed.branch || "", repo: cwd.split("/").pop() || "", worktrees };
       const piClient = { ws, session };
@@ -311,6 +332,17 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
       piClients.set(sessionId, piClient);
       log(`session registered: ${sessionId} (${session.repo})`);
       broadcastToBrowsers({ type: "session_added", session });
+      // Auto-watch for browsers without a session (per-project mode)
+      for (const browser of browserClients) {
+        const watchInfo = browserWatchMap.get(browser);
+        if (!watchInfo?.sessionId) {
+          browserWatchMap.set(browser, { sessionId, worktreePath: null });
+          const payload = buildDiffPayload(cwd, "branch");
+          try { browser.send(JSON.stringify(payload)); } catch {}
+          const commits = getLog(cwd, 30);
+          try { browser.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+        }
+      }
       for (const wt of session.worktrees) startWatching(sessionId, wt.path);
       if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
       return;
@@ -334,6 +366,11 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
     piClients.delete(piClient.session.sessionId);
     log(`session disconnected: ${piClient.session.sessionId}`);
     broadcastToBrowsers({ type: "session_removed", sessionId: piClient.session.sessionId });
+    // Last session gone — server exits
+    if (piClients.size === 0) {
+      log("last session disconnected — shutting down");
+      process.exit(0);
+    }
   },
 
   onBrowserWatch: (ws, watchId, client) => {
@@ -350,6 +387,15 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
     browserWatchMap.set(ws, { sessionId: null, worktreePath: null });
     const sessions = Array.from(piClients.values()).map((c: any) => c.session);
     try { ws.send(JSON.stringify({ type: "sessions-list", sessions })); } catch {}
+    // In per-project mode, auto-watch the first registered session
+    if (PROJECT_CWD && sessions.length > 0) {
+      const firstSession = sessions[0];
+      browserWatchMap.set(ws, { sessionId: firstSession.sessionId, worktreePath: null });
+      const payload = buildDiffPayload(firstSession.cwd, "branch");
+      try { ws.send(JSON.stringify(payload)); } catch {}
+      const commits = getLog(firstSession.cwd, 30);
+      try { ws.send(JSON.stringify({ type: "commits-list", commits })); } catch {}
+    }
   },
 
   onBrowserMessage: (ws, parsed) => {
@@ -606,5 +652,22 @@ const worktreeRefreshInterval = setInterval(() => {
 if (worktreeRefreshInterval.unref) worktreeRefreshInterval.unref();
 
 // ── Start ───────────────────────────────────────────────────────────
+
+// Write PID file for lockfile-based management (before start so /pidiff stop works during startup)
+if (PROJECT_CWD) {
+  const pidDir = path.join(PROJECT_CWD, ".pi", "tmp");
+  try {
+    if (!fs.existsSync(pidDir)) fs.mkdirSync(pidDir, { recursive: true });
+    fs.writeFileSync(path.join(pidDir, "pidiff.pid"), String(process.pid), { mode: 0o600 });
+    log(`PID file written: ${pidDir}/pidiff.pid (PID ${process.pid})`);
+  } catch (e: any) { log(`PID file write error: ${e.message}`); }
+}
+
+// Clean PID file on exit to prevent stale PID issues
+process.on("exit", () => {
+  if (PROJECT_CWD) {
+    try { fs.unlinkSync(path.join(PROJECT_CWD, ".pi", "tmp", "pidiff.pid")); } catch {}
+  }
+});
 
 start();

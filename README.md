@@ -25,7 +25,7 @@ Single extension that provides:
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display |
-| **Pidiff viewer** | Standalone diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
+| **Pidiff viewer** | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
 | **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules. Dreaming-safe via *(enforced)* marker |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
@@ -72,7 +72,7 @@ Single extension that provides:
 | `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
-| `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer daemon |
+| `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
 | `/coms start\|stop\|status` | P2P local agent communication (Unix socket) |
 | `/coms-net start\|connect\|disconnect\|stop\|status` | Networked agent communication (HTTP/SSE hub) |
 
@@ -422,7 +422,7 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Model and thinking level switching from browser
 - Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
 - Info bar: model, tokens, context %, git status, diff viewer toggle
-- Standalone diff viewer (pidiff) — opens in browser via link in info bar, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
+- Per-project diff viewer (pidiff) — opens in browser via link in info bar, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - Mobile responsive
@@ -466,14 +466,16 @@ npm install && npm run build
 
 > **Note:** Session switching (`/resume`) and new sessions (`/new`) from the browser are not yet supported due to a pi API limitation. Use the TUI for these operations.
 
-### Pidiff — standalone diff viewer
+### Pidiff — per-project diff viewer
 
-Pidiff is a standalone diff viewer that opens in your browser, providing rich branch diffs with inline review comments.
+Pidiff is a per-project diff viewer that opens in your browser, providing rich branch diffs with inline review comments.
 
 **How it works:**
 
-- A daemon (`pidiff-server.ts`) runs on port `19290` and aggregates diff sessions from all pi instances
-- Each pi session's extension (`pidiff.ts`) connects to the daemon and registers its repo
+- Each pi session spawns its own server (`pidiff-server.ts`) on a random free port
+- Container and native sessions get separate servers automatically
+- Lockfiles in `.pi/tmp/` track port and PID for each server
+- The extension (`pidiff.ts`) connects to its session's server and registers its repo
 - The React UI uses `@pierre/diffs` and `@pierre/trees` for a full-featured diff experience
 
 **Features:**
@@ -482,17 +484,14 @@ Pidiff is a standalone diff viewer that opens in your browser, providing rich br
 - File tree with search and filtering
 - Inline review comments on specific lines
 - Publish review comments back to the pi session
-- Multi-session support — each repo gets its own diff view
+- Per-project isolation — no port conflicts between sessions
 - Accessible via link in pidash info bar
 
 **Access:**
 
 ```bash
-# Open in browser:
-http://localhost:19290
-
-# Custom port:
-PI_PIDIFF_PORT=9999 pi
+# Open in browser (port shown in pidash info bar):
+http://localhost:<port>
 
 # Disable pidiff entirely:
 PI_PIDIFF_ENABLE=false pi
@@ -502,9 +501,9 @@ PI_PIDIFF_ENABLE=false pi
 
 ```bash
 /pidiff status    # Check server status
-/pidiff stop      # Stop the daemon
-/pidiff start     # Start the daemon
-/pidiff restart   # Restart the daemon
+/pidiff stop      # Stop the server
+/pidiff start     # Start the server
+/pidiff restart   # Restart the server
 ```
 
 ### Optional mounts
