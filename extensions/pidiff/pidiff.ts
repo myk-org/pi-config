@@ -90,20 +90,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
     if (activePort) pi.events?.emit("diff-viewer:port", activePort);
   }
 
-  function findGitBin(): string {
-    try {
-      return execFileSync("which", ["git"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "git";
-    } catch { return "git"; }
-  }
-
   function doSpawn(port: number, cwd: string): void {
     ensureUiBuilt(import.meta.url, "pidiff-ui", log);
-    const gitBin = findGitBin();
-    log(`resolved git for daemon: ${gitBin}`);
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
-      env: { PI_PIDIFF_PORT: String(port), PI_PIDIFF_CWD: cwd, PI_GIT_BIN: gitBin },
+      env: { PI_PIDIFF_PORT: String(port), PI_PIDIFF_CWD: cwd },
       log,
     });
   }
@@ -135,6 +127,24 @@ export function registerPidiff(pi: ExtensionAPI): void {
         connecting = false;
         return;
       }
+
+      // Atomic spawn guard — prevent two sessions from racing to spawn
+      const spawnLock = path.join(lockDir, "pidiff.spawning");
+      try {
+        fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
+      } catch {
+        // Another session is already spawning — wait for it
+        log("another session is spawning pidiff, waiting...");
+        const ready = await waitForDaemon(port || 19290, 30, log);
+        if (ready) {
+          const lock = readLockfile(lockDir);
+          if (lock) { port = lock.port; activePort = port; }
+        }
+        connecting = false;
+        if (ready && port) setTimeout(() => connect(ctx), 1000);
+        return;
+      }
+
       spawning = true;
       log("spawning daemon...");
       port = await findFreePort();
@@ -143,6 +153,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
       writeLockfile(lockDir, port, null, log);
       const ready = await waitForDaemon(port, 60, log);
       spawning = false;
+      try { fs.unlinkSync(spawnLock); } catch {}
       if (!ready) { connecting = false; return; }
     }
 
