@@ -313,7 +313,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       // Canonical line (no markers) — used for hashing/scoring
       const canonicalLine = `- [${category}] ${text}`;
       // File line — includes markers for display
-      const isEnforced = !!(params.trigger || params.action || params.verifier);
+      const isEnforced = !!((params.trigger && params.action) || params.verifier);
       let entryLine = canonicalLine;
       if (isPinned && isEnforced) entryLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
       else if (isPinned) entryLine = `- [${category}] ${text} *(pinned)*`;
