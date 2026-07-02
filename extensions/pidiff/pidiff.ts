@@ -131,12 +131,18 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
           // Register this session
           const branch = getBranch(ctx.cwd);
+          // Find git binary for this session's environment
+          let gitBin = "git";
+          try {
+            gitBin = execFileSync("which", ["git"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "git";
+          } catch {}
           wsClient.send(JSON.stringify({
             type: "register",
             pid: process.pid,
             sessionId: `${process.pid}:${ctx.cwd}`,
             cwd: ctx.cwd,
             branch,
+            gitBin,
           }));
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect

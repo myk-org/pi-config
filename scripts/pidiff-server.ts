@@ -56,11 +56,13 @@ function resolveGitBin(): string {
 resolveGitBin();
 
 function gitExec(args: string[], cwd: string): string {
+  const bin = getGitBinForCwd(cwd);
   try {
-    return execFileSync(GIT_BIN, args, { ...GIT_OPTS, cwd }).trim();
+    return execFileSync(bin, args, { ...GIT_OPTS, cwd }).trim();
   } catch (e: any) {
     if (e.code === "ENOENT") {
-      log(`gitExec ENOENT: binary=${GIT_BIN} args=${args.join(" ")} cwd=${cwd} — re-resolving git binary`);
+      log(`gitExec ENOENT: binary=${bin} args=${args.join(" ")} cwd=${cwd}`);
+      // Try global resolution as fallback
       resolveGitBin();
       if (gitBinResolved) {
         return execFileSync(GIT_BIN, args, { ...GIT_OPTS, cwd }).trim();
@@ -68,6 +70,24 @@ function gitExec(args: string[], cwd: string): string {
     }
     throw e;
   }
+}
+
+/** Execute git with a specific binary (per-session). */
+function gitExecWith(gitBin: string, args: string[], cwd: string): string {
+  return execFileSync(gitBin, args, { ...GIT_OPTS, cwd }).trim();
+}
+
+/** Find the git binary for a given cwd by checking which session owns it. */
+function getGitBinForCwd(cwd: string): string {
+  // Check if any session owns this cwd directly
+  for (const client of piClients.values()) {
+    if (client.session.cwd === cwd) return client.session.gitBin;
+    // Check worktrees
+    for (const wt of client.session.worktrees) {
+      if (wt.path === cwd) return client.session.gitBin;
+    }
+  }
+  return GIT_BIN; // fallback to global
 }
 
 function getDefaultRemoteBranch(cwd: string): string {
@@ -98,7 +118,8 @@ interface WorktreeInfo {
 
 function getWorktrees(cwd: string): WorktreeInfo[] {
   try {
-    const raw = execFileSync(GIT_BIN, ["worktree", "list", "--porcelain"], {
+    const bin = getGitBinForCwd(cwd);
+    const raw = execFileSync(bin, ["worktree", "list", "--porcelain"], {
       cwd, encoding: "utf-8", timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024 * 1024,
     });
@@ -133,6 +154,44 @@ function getWorktrees(cwd: string): WorktreeInfo[] {
     pushIfValid();
     return worktrees;
   } catch (e: any) { log(`getWorktrees error: ${e.message}`); return []; }
+}
+
+function getWorktreesWithGit(cwd: string, gitBin: string): WorktreeInfo[] {
+  try {
+    const raw = execFileSync(gitBin, ["worktree", "list", "--porcelain"], {
+      cwd, encoding: "utf-8", timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024 * 1024,
+    });
+    const worktrees: WorktreeInfo[] = [];
+    let current: Partial<WorktreeInfo> = {};
+    const pushIfValid = () => {
+      if (current.path) {
+        worktrees.push({
+          path: current.path,
+          branch: current.branch || "(unknown)",
+          head: current.head || "",
+          isMain: current.isMain || false,
+        });
+      }
+    };
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        pushIfValid();
+        current = { path: line.slice(9), isMain: worktrees.length === 0 };
+      } else if (line.startsWith("HEAD ")) {
+        current.head = line.slice(5);
+      } else if (line.startsWith("branch ")) {
+        current.branch = line.slice(7).replace("refs/heads/", "");
+      } else if (line === "detached") {
+        current.branch = `(detached)`;
+      } else if (line === "") {
+        pushIfValid();
+        current = {};
+      }
+    }
+    pushIfValid();
+    return worktrees;
+  } catch (e: any) { log(`getWorktreesWithGit error: ${e.message}`); return []; }
 }
 
 function getStatus(cwd: string): { dirty: boolean; changes: number } {
@@ -208,9 +267,10 @@ function getChangedFiles(cwd: string, baseRef: string, headRef: string = "HEAD")
     const raw = gitExec(["diff", "--name-status", baseRef, headRef], cwd);
     if (!raw) return [];
     const opts = gitShowOpts(cwd);
+    const bin = getGitBinForCwd(cwd);
     return parseDiffLines(raw,
-      (oldName) => execFileSync(GIT_BIN, ["show", `${baseRef}:${oldName}`], opts),
-      (fileName) => execFileSync(GIT_BIN, ["show", `${headRef}:${fileName}`], opts),
+      (oldName) => execFileSync(bin, ["show", `${baseRef}:${oldName}`], opts),
+      (fileName) => execFileSync(bin, ["show", `${headRef}:${fileName}`], opts),
     );
   } catch (e: any) { log(`getChangedFiles error (base=${baseRef} head=${headRef}): ${e.message}`); return []; }
 }
@@ -221,9 +281,10 @@ function getStagedFiles(cwd: string): FileContentsData[] {
   try {
     const stagedRaw = gitExec(["diff", "--name-status", "--staged"], cwd);
     if (stagedRaw) {
+      const bin = getGitBinForCwd(cwd);
       staged.push(...parseDiffLines(stagedRaw,
-        (oldName) => execFileSync(GIT_BIN, ["show", `HEAD:${oldName}`], opts),
-        (fileName) => execFileSync(GIT_BIN, ["show", `:${fileName}`], opts),
+        (oldName) => execFileSync(bin, ["show", `HEAD:${oldName}`], opts),
+        (fileName) => execFileSync(bin, ["show", `:${fileName}`], opts),
       ));
     }
   } catch (e: any) { log(`getWorkingTreeFiles staged error: ${e.message}`); }
@@ -236,8 +297,9 @@ function getUnstagedFiles(cwd: string): FileContentsData[] {
   try {
     const unstagedRaw = gitExec(["diff", "--name-status"], cwd);
     if (unstagedRaw) {
+      const bin = getGitBinForCwd(cwd);
       unstaged.push(...parseDiffLines(unstagedRaw,
-        (oldName) => execFileSync(GIT_BIN, ["show", `:${oldName}`], opts),
+        (oldName) => execFileSync(bin, ["show", `:${oldName}`], opts),
         (fileName) => fs.readFileSync(path.join(cwd, fileName), "utf-8"),
       ));
     }
@@ -296,6 +358,7 @@ interface SessionInfo {
   branch: string;
   repo: string; // basename of cwd
   worktrees: WorktreeInfo[];
+  gitBin: string; // per-session git binary path
 }
 
 interface PiClient {
@@ -315,8 +378,9 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
       const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
       const cwd = parsed.cwd || "";
       if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }
-      const worktrees = getWorktrees(cwd);
-      const session: SessionInfo = { sessionId, cwd, branch: parsed.branch || "", repo: cwd.split("/").pop() || "", worktrees };
+      const sessionGitBin = parsed.gitBin || GIT_BIN;
+      const worktrees = getWorktreesWithGit(cwd, sessionGitBin);
+      const session: SessionInfo = { sessionId, cwd, branch: parsed.branch || "", repo: cwd.split("/").pop() || "", worktrees, gitBin: sessionGitBin };
       const piClient = { ws, session };
       setPiClient(piClient);
       piClients.set(sessionId, piClient);
@@ -356,7 +420,13 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
   },
 
   onBrowserWatch: (ws, watchId, client) => {
-    if (!gitBinResolved) {
+    if (client && client.session.gitBin) {
+      try {
+        execFileSync(client.session.gitBin, ["--version"], { stdio: "ignore", timeout: 3000 });
+      } catch {
+        try { ws.send(JSON.stringify({ type: "git_error", message: `Git binary not found for ${client.session.repo}. Session git: ${client.session.gitBin}` })); } catch {}
+      }
+    } else if (!gitBinResolved) {
       try { ws.send(JSON.stringify({ type: "git_error", message: "Git binary not found. Pidiff requires git to show diffs. Searched: " + GIT_SEARCH_PATHS.join(", ") })); } catch {}
     }
     if (client) {
@@ -475,7 +545,8 @@ const MAX_CHOKIDAR_RETRIES = 10;
 function getGitIgnoredDirs(worktreePath: string): Set<string> {
   const dirs = new Set<string>();
   try {
-    const raw = execFileSync(GIT_BIN, ["ls-files", "-oi", "--directory", "--exclude-standard"], {
+    const bin = getGitBinForCwd(worktreePath);
+    const raw = execFileSync(bin, ["ls-files", "-oi", "--directory", "--exclude-standard"], {
       cwd: worktreePath, encoding: "utf-8", timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024,
     }).trim();
@@ -495,7 +566,7 @@ function getGitIgnoredDirs(worktreePath: string): Set<string> {
 /** Get the global gitignore file path. */
 function getGlobalGitignore(): string | null {
   try {
-    const result = execFileSync(GIT_BIN, ["config", "--global", "core.excludesfile"], {
+    const result = execFileSync(getGitBinForCwd("."), ["config", "--global", "core.excludesfile"], {
       encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (result) {
@@ -610,7 +681,7 @@ function stopAllWatchers(sessionId: string) {
 const worktreeRefreshInterval = setInterval(() => {
   for (const [sessionId, client] of piClients) {
     try {
-      const freshWorktrees = getWorktrees(client.session.cwd);
+      const freshWorktrees = getWorktreesWithGit(client.session.cwd, client.session.gitBin);
       const oldFingerprint = client.session.worktrees.map(w => `${w.path}:${w.branch}`).sort().join("|");
       const newFingerprint = freshWorktrees.map(w => `${w.path}:${w.branch}`).sort().join("|");
       if (oldFingerprint !== newFingerprint) {
