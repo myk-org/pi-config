@@ -47,7 +47,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from myk_pi_tools.reviews.fetch import QODO_STICKY_TYPES
+from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
 
 # Lazy reply patterns that indicate the AI didn't write a real response
 _LAZY_REPLY_PATTERNS = [

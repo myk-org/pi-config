@@ -33,8 +33,8 @@ from myk_pi_tools.coderabbit.rate_limit import (
 )
 from myk_pi_tools.coderabbit.utils import find_summary_comment
 from myk_pi_tools.reviews.ask_qodo import post_and_wait_for_qodo_reply
+from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
 from myk_pi_tools.reviews.fetch import (
-    QODO_STICKY_TYPES,
     get_pr_info,
     is_qodo_approved,
     print_approval_summary,

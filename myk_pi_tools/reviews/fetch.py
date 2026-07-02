@@ -39,15 +39,8 @@ _QODO_TYPE_MAP = {
 # Known AI reviewer usernames
 QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
 
-# Qodo sticky finding types (NOT qodo_reply which is informational)
-QODO_STICKY_TYPES = {
-    "qodo_bug",
-    "qodo_rule_violation",
-    "qodo_requirement_gap",
-    "qodo_finding",
-    "qodo_ux_issue",
-    "qodo_cross_repo",
-}
+from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES  # noqa: E402 — re-export for backwards compat
+
 CODERABBIT_USERS = ["coderabbitai", "coderabbitai[bot]"]
 
 # Priority classification keywords
