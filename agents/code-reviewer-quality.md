@@ -40,6 +40,23 @@ If it does, read it — these are learned review preferences for this project
 (patterns the reviewer has previously evaluated and dismissed).
 Do NOT raise findings that contradict these guidelines.
 
+## Review History (MANDATORY — check before reviewing)
+
+If reviewing a PR, run:
+
+```bash
+myk-pi-tools pr get-review-history <owner> <repo> <pr_number>
+```
+
+Get owner/repo: `gh repo view --json owner,name --jq '.owner.login + " " + .name'`
+Get PR number: `gh pr view --json number --jq .number`
+If the command returns results, review the output:
+
+- Do NOT re-raise any finding with `resolution_status` of `resolved_accepted`, `resolved_fixed`, or `status` of `skipped`
+- These have been evaluated and decided in prior review cycles
+- Only flag a previously resolved finding if the code at that location has materially changed since the resolution
+- Findings with `resolution_status: null` and `status: posted` are prior findings without a verdict — check if the code was changed before re-raising
+
 ## Review Focus
 
 - Code readability and clarity

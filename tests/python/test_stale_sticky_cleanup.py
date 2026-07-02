@@ -37,10 +37,10 @@ def _write_reviews_json(output_dir: Path, findings: list[dict[str, object]]) -> 
 
 
 def _stale_findings() -> list[dict[str, object]]:
-    """Findings that are auto-skipped AND already replied → stale sticky."""
+    """Sticky findings that are already replied → stale (need ask-qodo cleanup)."""
     return [
-        {"id": "1", "is_auto_skipped": True, "already_replied": True, "body": "old finding"},
-        {"id": "2", "is_auto_skipped": True, "already_replied": True, "body": "another old finding"},
+        {"id": "1", "already_replied": True, "body": "old finding", "type": "qodo_bug"},
+        {"id": "2", "already_replied": True, "body": "another old finding", "type": "qodo_finding"},
     ]
 
 

@@ -129,6 +129,7 @@ def store_pr_review(
     comments: list[dict[str, Any]],
     head_sha: str | None = None,
     author: str | None = None,
+    db_path: Path | None = None,
 ) -> None:
     """Store PR review comments to the database.
 
@@ -145,8 +146,10 @@ def store_pr_review(
         head_sha: Git commit SHA for the reviewed code. Auto-detected
                   from local git HEAD if not provided.
         author: PR author login (e.g., 'username').
+        db_path: Override database path (default: auto-detected from git root).
     """
-    db_path = _get_db_path()
+    if db_path is None:
+        db_path = _get_db_path()
     # Ensure directory exists
     db_dir = db_path.parent
     if not db_dir.exists():
@@ -437,9 +440,6 @@ def run_store(json_path: str) -> int:
         return 1
 
     comments = data.get("comments", [])
-    if not comments:
-        log("No comments to store")
-        return 0
 
     if not isinstance(comments, list):
         log(f"Error: 'comments' must be a list, got {type(comments).__name__}")

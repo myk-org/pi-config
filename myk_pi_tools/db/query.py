@@ -277,6 +277,8 @@ class ReviewDB:
                   AND (
                       c.status IN ('not_addressed', 'skipped')
                       OR (c.status = 'addressed'
+                          -- Body comment types (no GitHub thread) + Qodo sticky types
+                          -- Qodo types must stay in sync with QODO_STICKY_TYPES in reviews/constants.py
                           AND c.type IN (
                               'outside_diff_comment', 'major_comment',
                               'minor_comment', 'nitpick_comment',

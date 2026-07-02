@@ -33,7 +33,14 @@ from myk_pi_tools.coderabbit.rate_limit import (
 )
 from myk_pi_tools.coderabbit.utils import find_summary_comment
 from myk_pi_tools.reviews.ask_qodo import post_and_wait_for_qodo_reply
-from myk_pi_tools.reviews.fetch import get_pr_info, is_qodo_approved, print_approval_summary, print_stderr, run_gh_api
+from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
+from myk_pi_tools.reviews.fetch import (
+    get_pr_info,
+    is_qodo_approved,
+    print_approval_summary,
+    print_stderr,
+    run_gh_api,
+)
 from myk_pi_tools.reviews.fetch import run as fetch_run
 
 _RATE_LIMIT_BUFFER_SECONDS = 30
@@ -326,7 +333,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                         try:
                             _review_data = json.loads(_review_path.read_text())
                             _has_stale = any(
-                                f.get("is_auto_skipped") and f.get("already_replied")
+                                f.get("already_replied")
+                                and not f.get("thread_id")
+                                and f.get("type") in QODO_STICKY_TYPES
                                 for f in _review_data.get("qodo", [])
                             )
                             if _has_stale:

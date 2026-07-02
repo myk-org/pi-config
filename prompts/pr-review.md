@@ -240,9 +240,17 @@ For the `human` list, categorize each thread:
 
 **Unresolved threads:**
 
-- These are still open — the PR author hasn't addressed them yet.
-- Include them in the findings presented to the user in Phase 4.
-- Mark as "⚠️ UNRESOLVED from previous review"
+- These are still open on GitHub — but the PR author may have fixed the code without resolving the thread.
+- Check the diff from Phase 1a — did the code at `path:line` change?
+  - **Code changed:** Review the changed code to verify the fix is correct.
+    - Fix looks correct → resolve the thread on GitHub by setting its status to `addressed`
+      with reply "Verified fix in code — resolving." in the JSON, then mark as
+      "✅ Fixed but not resolved by author — resolved by us". Store verdict to DB as `resolved_fixed`.
+    - Fix looks wrong/incomplete → include in findings as "❌ Code changed but fix is incorrect".
+      Store verdict to DB as `resolved_bad_fix`.
+  - **Code NOT changed:** The finding is genuinely unaddressed.
+    - Include in the findings presented to the user in Phase 4.
+    - Mark as "⚠️ UNRESOLVED from previous review"
 
 **Resolved threads:**
 
@@ -438,17 +446,28 @@ If there are ZERO `[NEW]` findings, skip user selection entirely — auto-post t
 previous findings and proceed directly to Phase 5 (the auto-post path still generates
 the comments JSON and posts them — see Phase 5).
 
-**Skip reason collection (MANDATORY when findings are skipped):**
+🚨 **Skip reason collection (MANDATORY — NEVER SKIP THIS STEP):**
 
-After the user selects which findings to post, derive the skipped set (total findings
-minus posted findings). If the skipped set is non-empty:
+**HARD RULE: If the user skipped ANY finding (said 'no', selected specific numbers
+that exclude some findings, or said 'none'), you MUST ask for skip reasons
+BEFORE proceeding to Phase 5. Do NOT continue the workflow without collecting
+skip reasons. Skipping this step is a HARD VIOLATION.**
 
-1. Ask the user for skip reasons via `ask_user`:
+After the user selects which findings to post, compute the skipped set (total `[NEW]`
+findings minus user-selected findings). If the skipped set is non-empty:
+
+1. Ask the user for skip reasons as a **normal chat message** (do NOT use `ask_user` — skip
+   reasons are often multiline and `ask_user` only supports single-line input).
+   Print this prompt as regular text:
 
    ```text
    You skipped findings 2, 4, 5. Why?
    Give one reason for all, or per-finding (e.g., "2: not relevant, 4 and 5: style only")
    ```
+
+   **STOP your turn after printing this prompt.** Do NOT continue the workflow.
+   The user will respond with their skip reasons in their next message.
+   Resume the workflow (step 2 below) only after receiving the user's response.
 
 2. AI refines each reason — make it concise, technical, and useful for future reference:
    - User: "don't care" → "Style-only finding — no functional impact"
