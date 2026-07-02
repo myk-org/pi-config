@@ -85,12 +85,20 @@ export function registerPidiff(pi: ExtensionAPI): void {
     pi.events?.emit("diff-viewer:port", PIDIFF_PORT);
   }
 
+  function findGitBin(): string {
+    try {
+      return execFileSync("which", ["git"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "git";
+    } catch { return "git"; }
+  }
+
   function doSpawn(): void {
     ensureUiBuilt(import.meta.url, "pidiff-ui", log);
+    const gitBin = findGitBin();
+    log(`resolved git for daemon: ${gitBin}`);
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
-      env: { PI_PIDIFF_PORT: String(PIDIFF_PORT) },
+      env: { PI_PIDIFF_PORT: String(PIDIFF_PORT), PI_GIT_BIN: gitBin },
       log,
     });
   }
@@ -131,18 +139,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
           // Register this session
           const branch = getBranch(ctx.cwd);
-          // Find git binary for this session's environment
-          let gitBin = "git";
-          try {
-            gitBin = execFileSync("which", ["git"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "git";
-          } catch {}
           wsClient.send(JSON.stringify({
             type: "register",
             pid: process.pid,
             sessionId: `${process.pid}:${ctx.cwd}`,
             cwd: ctx.cwd,
             branch,
-            gitBin,
           }));
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect
