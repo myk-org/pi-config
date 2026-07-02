@@ -136,7 +136,7 @@ export function getPiVersion(): string | null {
 }
 
 /** Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b. */
-function compareSemver(a: string, b: string): number {
+export function compareSemver(a: string, b: string): number {
   // Strip prerelease/build metadata (e.g., '0.80.4-beta.1' → '0.80.4')
   const pa = a.split("-")[0].split(".").map(Number);
   const pb = b.split("-")[0].split(".").map(Number);
