@@ -326,7 +326,9 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                         try:
                             _review_data = json.loads(_review_path.read_text())
                             _has_stale = any(
-                                f.get("is_auto_skipped") and f.get("already_replied")
+                                f.get("already_replied")
+                                and not f.get("thread_id")
+                                and (f.get("type") or "").startswith("qodo_")
                                 for f in _review_data.get("qodo", [])
                             )
                             if _has_stale:

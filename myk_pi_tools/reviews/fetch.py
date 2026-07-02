@@ -903,8 +903,12 @@ def auto_skip_replied_findings(findings: list[dict[str, Any]]) -> int:
     """
     count = 0
     for finding in findings:
+        # Never auto-skip sticky findings (no thread_id, type starts with qodo_)
+        # Stickies persist until explicitly dismissed via ask-qodo — auto-skip would cause infinite loops
+        is_sticky = not finding.get("thread_id") and (finding.get("type") or "").startswith("qodo_")
         if (
-            finding.get("already_replied")
+            not is_sticky
+            and finding.get("already_replied")
             and finding.get("_enrichment_checked")
             and not finding.get("qodo_response")
             and not finding.get("is_auto_skipped")
