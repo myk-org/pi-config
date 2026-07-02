@@ -38,6 +38,16 @@ _QODO_TYPE_MAP = {
 
 # Known AI reviewer usernames
 QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
+
+# Qodo sticky finding types (NOT qodo_reply which is informational)
+QODO_STICKY_TYPES = {
+    "qodo_bug",
+    "qodo_rule_violation",
+    "qodo_requirement_gap",
+    "qodo_finding",
+    "qodo_ux_issue",
+    "qodo_cross_repo",
+}
 CODERABBIT_USERS = ["coderabbitai", "coderabbitai[bot]"]
 
 # Priority classification keywords
@@ -888,12 +898,16 @@ def _enrich_findings_with_qodo_replies(findings: list[dict[str, Any]], replies: 
 
 
 def auto_skip_replied_findings(findings: list[dict[str, Any]]) -> int:
-    """Auto-skip already-replied Qodo sticky findings where Qodo didn't push back.
+    """Auto-skip already-replied Qodo thread comments where Qodo didn't push back.
 
-    Prevents re-posting duplicate consolidated comments for findings we already
+    Prevents re-posting duplicate consolidated comments for thread findings we already
     replied to and Qodo silently accepted (no qodo_response). Runs in all modes
     (not just autoqodo) — already-replied findings without pushback should never
     be re-processed regardless of invocation mode.
+
+    Sticky findings (qodo_bug, qodo_finding, etc.) are NEVER auto-skipped — they
+    persist in Qodo's summary comment until explicitly dismissed via ask-qodo.
+    Auto-skipping stickies causes infinite poll loops.
 
     Only skips findings that passed through enrichment (_enrichment_checked=True),
     ensuring the enrichment step had a chance to set qodo_response if a reply existed.
@@ -903,9 +917,8 @@ def auto_skip_replied_findings(findings: list[dict[str, Any]]) -> int:
     """
     count = 0
     for finding in findings:
-        # Never auto-skip sticky findings (no thread_id, type starts with qodo_)
-        # Stickies persist until explicitly dismissed via ask-qodo — auto-skip would cause infinite loops
-        is_sticky = not finding.get("thread_id") and (finding.get("type") or "").startswith("qodo_")
+        # Never auto-skip sticky findings — they persist until dismissed via ask-qodo
+        is_sticky = not finding.get("thread_id") and finding.get("type") in QODO_STICKY_TYPES
         if (
             not is_sticky
             and finding.get("already_replied")
@@ -1141,14 +1154,7 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
     # Line number excluded — shifts after rebases, causing false mismatches
     # Type included — prevents cross-type collisions on same file+title
     qodo_type = thread.get("type")
-    if qodo_type in (
-        "qodo_bug",
-        "qodo_rule_violation",
-        "qodo_requirement_gap",
-        "qodo_finding",
-        "qodo_ux_issue",
-        "qodo_cross_repo",
-    ):
+    if qodo_type in QODO_STICKY_TYPES:
         path = thread.get("path")
         title = _extract_sticky_title(thread.get("body", ""))
         if path and title:
