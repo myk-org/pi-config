@@ -310,12 +310,14 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
         }
       }
 
-      // Canonical line (no pinned marker) — used for hashing/scoring
+      // Canonical line (no markers) — used for hashing/scoring
       const canonicalLine = `- [${category}] ${text}`;
-      // File line — includes pinned marker for display
-      const entryLine = isPinned
-        ? `- [${category}] ${text} *(pinned)*`
-        : canonicalLine;
+      // File line — includes markers for display
+      const isEnforced = !!(params.trigger || params.action || params.verifier);
+      let entryLine = canonicalLine;
+      if (isPinned && isEnforced) entryLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
+      else if (isPinned) entryLine = `- [${category}] ${text} *(pinned)*`;
+      else if (isEnforced) entryLine = `- [${category}] ${text} *(enforced)*`;
 
       // Check for duplicates — vector similarity first, then exact match
       const topicEntries = readAllTopicEntries(cwd);
@@ -530,13 +532,15 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       }
 
       const content = readFileSync(topicPath, "utf-8");
+      const pinnedEnforcedLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
       const pinnedLine = `- [${category}] ${text} *(pinned)*`;
+      const enforcedLine = `- [${category}] ${text} *(enforced)*`;
       const learnedLine = `- [${category}] ${text}`;
 
       // Find which line matches
       const lines = content.split("\n");
       let removedLine: string | null = null;
-      for (const candidate of [pinnedLine, learnedLine]) {
+      for (const candidate of [pinnedEnforcedLine, pinnedLine, enforcedLine, learnedLine]) {
         if (lines.some(l => l.trimEnd() === candidate)) {
           removedLine = candidate;
           break;
@@ -668,15 +672,20 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
 
       const content = readFileSync(topicPath, "utf-8");
       const oldLine = `- [${category}] ${text}`;
+      const oldLinePinnedEnforced = `- [${category}] ${text} *(pinned)* *(enforced)*`;
       const oldLinePinned = `- [${category}] ${text} *(pinned)*`;
+      const oldLineEnforced = `- [${category}] ${text} *(enforced)*`;
 
       // Find the matching line
       const lines = content.split("\n");
       let matchIndex = -1;
       let wasPinned = false;
+      let wasEnforced = false;
       for (let i = 0; i < lines.length; i++) {
         const trimmed = lines[i].trimEnd();
+        if (trimmed === oldLinePinnedEnforced) { matchIndex = i; wasPinned = true; wasEnforced = true; break; }
         if (trimmed === oldLinePinned) { matchIndex = i; wasPinned = true; break; }
+        if (trimmed === oldLineEnforced) { matchIndex = i; wasEnforced = true; break; }
         if (trimmed === oldLine) { matchIndex = i; break; }
       }
 
@@ -694,13 +703,13 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         }
         // Check topic size cap
         const currentContent = readFileSync(topicPath, "utf-8");
-        const newContent = currentContent.replace(lines[matchIndex], `- [${category}] ${newText}${wasPinned ? " *(pinned)*" : ""}`);
+        const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}`;
+        const newContent = currentContent.replace(lines[matchIndex], `- [${category}] ${newText}${markers}`);
         if (newContent.length > MAX_TOPIC_CHARS) {
           return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }] };
         }
         // Replace the line
-        const pin = wasPinned ? " *(pinned)*" : "";
-        lines[matchIndex] = `- [${category}] ${newText}${pin}`;
+        lines[matchIndex] = `- [${category}] ${newText}${markers}`;
         writeFileSync(topicPath, lines.join("\n"), "utf-8");
 
         // Update scores: transfer old entry's score to new entry

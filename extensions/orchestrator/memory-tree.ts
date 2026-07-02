@@ -85,8 +85,8 @@ function readTopicFile(path: string): TopicFile {
     for (const line of content.split("\n")) {
       const match = line.match(/^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+)$/);
       if (match) {
-        // Strip *(pinned)* tags from text (may have duplicates from legacy data)
-        const rawText = match[2]!.replace(/\s*\*\(pinned\)\*/g, "").trim();
+        // Strip *(pinned)* and *(enforced)* tags from text (may have duplicates from legacy data)
+        const rawText = match[2]!.replace(/\s*\*\(pinned\)\*/g, "").replace(/\s*\*\(enforced\)\*/g, "").trim();
         entries.push({
           text: rawText,
           category: match[1] as MemoryCategory,

@@ -4,7 +4,10 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
+
+const require = createRequire(import.meta.url);
 
 /** Whether notify-send is available (false = ENOENT, never retry) */
 let notifyAvailable: boolean | undefined;
@@ -110,4 +113,36 @@ export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; ski
     console.debug("[utils] getSystemPromptOptions failed:", e?.message);
     return null;
   }
+}
+
+/** Minimum pi version required by this pi-config version. */
+export const MIN_PI_VERSION = "0.80.3";
+
+/** Get the installed pi version from its package.json. */
+export function getPiVersion(): string | null {
+  try {
+    const piPkgPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
+    const pkg = JSON.parse(fs.readFileSync(piPkgPath, "utf-8"));
+    return pkg.version || null;
+  } catch { return null; }
+}
+
+/** Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b. */
+function compareSemver(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na < nb) return -1;
+    if (na > nb) return 1;
+  }
+  return 0;
+}
+
+/** Check if installed pi version meets minimum requirement. */
+export function checkMinPiVersion(minVersion: string = MIN_PI_VERSION): { ok: boolean; installed: string | null; required: string } {
+  const installed = getPiVersion();
+  if (!installed) return { ok: false, installed: null, required: minVersion };
+  return { ok: compareSemver(installed, minVersion) >= 0, installed, required: minVersion };
 }
