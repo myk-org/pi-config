@@ -37,7 +37,7 @@ Single extension that provides:
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
 
-### Agents (24)
+### Agents (25)
 
 | Category | Agents |
 |----------|--------|
@@ -45,7 +45,7 @@ Single extension that provides:
 | Infrastructure | docker-expert, kubernetes-expert, jenkins-expert |
 | Dev workflow | git-expert, github-expert, test-runner, test-automator, debugger |
 | Documentation | technical-documentation-writer, api-documenter, docs-fetcher |
-| Code review | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security |
+| Code review | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, code-reviewer-docs |
 | Security | security-auditor |
 | Workflow | scout, planner, worker, reviewer |
 
@@ -55,7 +55,7 @@ Single extension that provides:
 |--------|-------------|
 | `/implement <task>` | scout → planner → worker |
 | `/scout-and-plan <task>` | scout → planner |
-| `/implement-and-review <task>` | worker → 3 reviewers → worker |
+| `/implement-and-review <task>` | worker → 4 reviewers → worker |
 | `/pr-review [number\|url]` | Fetch PR diff, check past review comments, review with guidelines, post and track comments |
 | `/release [flags]` | Create GitHub release with changelog and version bumping |
 | `/review-local [branch]` | Review local uncommitted or branch changes |
@@ -206,11 +206,12 @@ Run scout and planner in a chain to analyze the auth module
 
 ## Code Review Loop
 
-After any code change, the orchestrator runs 3 review agents **in parallel**:
+After any code change, the orchestrator runs 4 review agents **in parallel**:
 
 1. **code-reviewer-quality** — Code quality & maintainability
 2. **code-reviewer-guidelines** — Project guidelines adherence  
 3. **code-reviewer-security** — Bugs, logic errors, security
+4. **code-reviewer-docs** — Documentation quality, completeness, accuracy
 
 Loops until all approve, then runs tests.
 

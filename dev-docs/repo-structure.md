@@ -5,6 +5,7 @@ pi-config/
 ├── agents/                          # Specialist agent definitions
 │   ├── api-documenter.md
 │   ├── bash-expert.md
+│   ├── code-reviewer-docs.md
 │   ├── code-reviewer-guidelines.md
 │   ├── code-reviewer-quality.md
 │   ├── code-reviewer-security.md

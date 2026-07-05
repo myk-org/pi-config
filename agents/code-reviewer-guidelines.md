@@ -15,8 +15,6 @@ You are a code review specialist focused on **project guidelines and style adher
 ## Review Focus
 
 - AGENTS.md / CLAUDE.md compliance
-- **Documentation updates (MANDATORY)** — if code was added/changed/removed, check that AGENTS.md and README.md are updated.
-  Flag missing docs as `[CRITICAL]`. See the Documentation Updates table in AGENTS.md.
 - Project-specific coding standards
 - Naming conventions matching existing codebase
 - File/folder structure consistency
@@ -46,9 +44,8 @@ conventions, patterns, or rules as findings.
 
 Additionally:
 3. Review the changed files against those rules
-4. **Check if AGENTS.md or README.md need updating** based on the changes — missing doc updates are `[CRITICAL]`
-5. Check consistency with existing codebase patterns
-6. Report deviations
+4. Check consistency with existing codebase patterns
+5. Report deviations
 
 Do NOT rely on the calling prompt to provide these files — always read them yourself.
 
