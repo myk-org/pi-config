@@ -45,6 +45,13 @@ The orchestrator MUST NEVER fetch external docs directly — always delegate to 
 - Standard library only (no external dependencies)
 - Already fetched docs in current conversation
 
+## Agents Not in Routing Table
+
+Some agents are dispatched internally by rules or prompt templates, not by the routing table:
+
+- `code-reviewer-quality`, `code-reviewer-guidelines`, `code-reviewer-security`, `code-reviewer-docs` — dispatched via `rules/20-code-review-loop.md`
+- `reviewer` — dispatched via prompt templates
+
 ## Fallback
 
 **Fallback:** No specialist? → `worker` agent
