@@ -62,6 +62,7 @@ const ASYNC_ONLY_AGENTS = new Set([
   "code-reviewer-quality",
   "code-reviewer-guidelines",
   "code-reviewer-security",
+  "code-reviewer-docs",
 ]);
 // ── Schemas ──────────────────────────────────────────────────────────────
 

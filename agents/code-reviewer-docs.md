@@ -1,6 +1,6 @@
 ---
 name: code-reviewer-docs
-description: Code review focused on documentation quality, completeness, and accuracy. Reviews for missing docs, stale content, AGENTS.md best practices, and cross-file consistency.
+description: Code review focused on documentation quality, completeness, accuracy, missing docs, stale content, AGENTS.md best practices, and cross-file consistency.
 tools: read, bash
 ---
 
