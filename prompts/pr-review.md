@@ -66,11 +66,12 @@ using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order
 | 5 | Review — Code Quality | 2 |
 | 6 | Review — Guidelines | 2 |
 | 7 | Review — Security | 2 |
-| 8 | Merge & deduplicate findings | 4, 5, 6, 7 |
-| 9 | User selection | 8 |
-| 10 | Post comments | 9 |
-| 11 | Store comments | 10 |
-| 12 | Summary | 11 |
+| 8 | Review — Docs | 2 |
+| 9 | Merge & deduplicate findings | 4, 5, 6, 7, 8 |
+| 10 | User selection | 9 |
+| 11 | Post comments | 10 |
+| 12 | Store comments | 11 |
+| 13 | Summary | 12 |
 
 ### Dependency Graph
 
@@ -81,21 +82,22 @@ Task 1 (PR Detection)
  │    Task 2 unblocks:                │
  │    ├── Task 5 (Review: Quality)    │
  │    ├── Task 6 (Review: Guidelines) │
- │    └── Task 7 (Review: Security)   │
+ │    ├── Task 7 (Review: Security)   │
+ │    └── Task 8 (Review: Docs)       │
  └── Task 4 (Past comments) ──────────┤  (also needs Task 2)
                                        ▼
-                            Task 8 (Merge findings)
+                            Task 9 (Merge findings)
                                        │
-                            Task 9 (User selection)
+                            Task 10 (User selection)
                                        │
-                            Task 10 (Post comments)
+                            Task 11 (Post comments)
                                        │
-                            Task 11 (Store comments)
+                            Task 12 (Store comments)
                                        │
-                            Task 12 (Summary)
+                            Task 13 (Summary)
 ```
 
-Create all 12 tasks using `TaskCreate` NOW, before starting any work.
+Create all 13 tasks using `TaskCreate` NOW, before starting any work.
 Then IMMEDIATELY set dependencies using `TaskUpdate` with `addBlockedBy` for each task per the table above.
 
 `TaskCreate` does NOT accept `addBlockedBy` — dependencies MUST be set via `TaskUpdate` after creation.
@@ -107,7 +109,8 @@ Example two-step flow:
 TaskCreate(subject="PR Detection", ...)          → Task 1
 TaskCreate(subject="Fetch PR diff", ...)          → Task 2
 TaskCreate(subject="Fetch AGENTS.md", ...)        → Task 3
-...all 12 tasks...
+TaskCreate(subject="Review — Docs", ...)         → Task 8
+...all 13 tasks...
 
 # Step 2: Set dependencies
 TaskUpdate(taskId="2", addBlockedBy=["1"])
@@ -116,17 +119,18 @@ TaskUpdate(taskId="4", addBlockedBy=["1", "2"])
 TaskUpdate(taskId="5", addBlockedBy=["2"])
 TaskUpdate(taskId="6", addBlockedBy=["2"])
 TaskUpdate(taskId="7", addBlockedBy=["2"])
-TaskUpdate(taskId="8", addBlockedBy=["4", "5", "6", "7"])
-TaskUpdate(taskId="9", addBlockedBy=["8"])
+TaskUpdate(taskId="8", addBlockedBy=["2"])
+TaskUpdate(taskId="9", addBlockedBy=["4", "5", "6", "7", "8"])
 TaskUpdate(taskId="10", addBlockedBy=["9"])
 TaskUpdate(taskId="11", addBlockedBy=["10"])
 TaskUpdate(taskId="12", addBlockedBy=["11"])
+TaskUpdate(taskId="13", addBlockedBy=["12"])
 ```
 
 > 🚨 **HARD RULE: NEVER start a task while its `blockedBy` tasks are incomplete.**
 > The task system enforces this via `addBlockedBy` — but even if you could bypass it, **DON'T**.
 > Posting comments from partial reviewer results is a **CRITICAL violation**.
-> ALL 3 reviewers (Tasks 5, 6, 7) MUST complete before merging findings (Task 8).
+> ALL 4 reviewers (Tasks 5, 6, 7, 8) MUST complete before merging findings (Task 9).
 
 ## Workflow
 
@@ -292,9 +296,9 @@ not presented as a separate summary.**
 
 Mark Task 4 as `completed`.
 
-### Phase 2: Code Analysis — Tasks 5, 6, 7
+### Phase 2: Code Analysis — Tasks 5, 6, 7, 8
 
-Mark Tasks 5, 6, 7 as `in_progress`, then spawn ALL 3 review agents as async subagents
+Mark Tasks 5, 6, 7, 8 as `in_progress`, then spawn ALL 4 review agents as async subagents
 with `taskId` linking each to its task:
 
 Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
@@ -350,6 +354,7 @@ subagent(tasks=[
   {agent: "code-reviewer-quality", task: "Review this PR for code quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read any files needed for context.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Quality", taskId: "<task 5 ID>"},
   {agent: "code-reviewer-guidelines", task: "Review this PR for guideline adherence. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Read AGENTS.md and check compliance.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Guidelines", taskId: "<task 6 ID>"},
   {agent: "code-reviewer-security", task: "Review this PR for bugs and security. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Trace data flow through changed code.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Security", taskId: "<task 7 ID>"},
+  {agent: "code-reviewer-docs", task: "Review this PR for documentation quality. Run: git diff origin/<BASE_BRANCH>...HEAD to see changes. Check all docs for completeness and accuracy.\n\n<review-history>\nMANDATORY — before reviewing any code, run:\nmyk-pi-tools pr get-review-history {owner} {repo} {pr_number}\nReview the output. Do NOT re-raise any finding marked as resolved_accepted, resolved_fixed, or skipped. These have been evaluated and decided in prior review cycles. Only flag a previously resolved finding if the code at that location has materially changed since the resolution.\n</review-history>\n\n<existing-unresolved-comments>\nThe following unresolved review comments already exist on this PR from other reviewers. Do NOT raise findings that duplicate these — skip them. If you find the same issue but with additional context or a different angle, note that it references the existing comment.\n\n<EXISTING_COMMENTS>\n</existing-unresolved-comments>\n\n<pr-description-verification>\n<PR_DESCRIPTION_VERIFICATION>\n</pr-description-verification>\n\n<code-suggestions>\n<CODE_SUGGESTIONS>\n</code-suggestions>", cwd: "<REVIEW_DIR>", name: "Review Docs", taskId: "<task 8 ID>"},
 ])
 ```
 
@@ -367,19 +372,19 @@ Each reviewer runs in the cloned repo directory (`REVIEW_DIR`) and has full acce
 Each agent should analyze for security, bugs, error handling, and performance issues
 and return their findings as prose.
 
-**After spawning, verify the response confirms all 3 agents were spawned.**
+**After spawning, verify the response confirms all 4 agents were spawned.**
 If any spawn fails, STOP and report the error — do NOT continue waiting.
 
 **After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
 or check status. Results arrive automatically as follow-up messages.
 When each reviewer finishes, its task is auto-completed via `taskId`.
-Task 8 (Merge findings) auto-unblocks when all 3 reviewer tasks complete.
+Task 9 (Merge findings) auto-unblocks when all 4 reviewer tasks complete.
 
-### Phase 3: Merge & Deduplicate Findings — Task 8
+### Phase 3: Merge & Deduplicate Findings — Task 9
 
-Mark Task 8 as `in_progress`.
+Mark Task 9 as `in_progress`.
 
-Merge and deduplicate the findings from all 3 reviewers AND the past review comment analysis from Task 4 into a single combined findings list.
+Merge and deduplicate the findings from all 4 reviewers AND the past review comment analysis from Task 4 into a single combined findings list.
 
 Reviewers were already instructed in Phase 2 to skip findings that duplicate existing
 unresolved PR comments. However, verify that no duplicates slipped through by comparing
@@ -407,11 +412,11 @@ For each `[NEW]` finding, compare against the skipped list using path + body sim
 `"Auto-skipped (previously dismissed): <skip_reason>"`. The user still sees them in the
 Phase 4 table and can override by selecting them explicitly.
 
-Mark Task 8 as `completed`.
+Mark Task 9 as `completed`.
 
-### Phase 4: User Selection — Task 9
+### Phase 4: User Selection — Task 10
 
-Mark Task 9 as `in_progress`.
+Mark Task 10 as `in_progress`.
 
 Present ALL findings to user in one combined list, grouped by severity (CRITICAL, WARNING, SUGGESTION).
 This includes:
@@ -488,14 +493,14 @@ findings minus user-selected findings). If the skipped set is non-empty:
    - Do not flag <finding type> — <refined reason>
    ```
 
-   This file is read by all 3 reviewer agents before reviewing, so the same class of
+   This file is read by all 4 reviewer agents before reviewing, so the same class of
    finding won't be raised again on future PRs in this repo.
 
-Mark Task 9 as `completed`.
+Mark Task 10 as `completed`.
 
-### Phase 5: Post Comments — Task 10
+### Phase 5: Post Comments — Task 11
 
-Mark Task 10 as `in_progress`.
+Mark Task 11 as `in_progress`.
 
 Write JSON to temp file for ALL findings to be posted — this includes both user-selected
 `[NEW]` findings AND auto-posted `[PREV-*]` findings. If only `[PREV-*]` findings exist
@@ -507,11 +512,11 @@ Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a me
 myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
 ```
 
-Mark Task 10 as `completed`.
+Mark Task 11 as `completed`.
 
-### Phase 5b: Store Posted Comments — Task 11
+### Phase 5b: Store Posted Comments — Task 12
 
-Mark Task 11 as `in_progress`.
+Mark Task 12 as `in_progress`.
 
 After posting comments, store ALL findings (posted AND skipped) in the PR review database
 for future cycle tracking and same-PR dedup of skipped findings.
@@ -561,15 +566,15 @@ myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 runs to track which comments were posted, verify they were addressed, and auto-skip
 previously dismissed findings.
 
-Mark Task 11 as `completed`.
+Mark Task 12 as `completed`.
 
-### Phase 6: Summary — Task 12
+### Phase 6: Summary — Task 13
 
-Mark Task 12 as `in_progress`.
+Mark Task 13 as `in_progress`.
 
 Display final summary with counts and links.
 
-Mark Task 12 as `completed`.
+Mark Task 13 as `completed`.
 
 ### Cleanup
 

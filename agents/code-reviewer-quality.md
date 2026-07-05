@@ -66,7 +66,6 @@ If the command returns results, review the output:
 - Naming conventions and consistency
 - Error handling patterns
 - Observability and debugging (see below)
-- Documentation quality
 - Dead code and unused imports
 
 ## Test Coverage (MANDATORY)

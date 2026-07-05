@@ -13,8 +13,9 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 
 - api-documenter
 - bash-expert
-- code-reviewer-quality
+- code-reviewer-docs
 - code-reviewer-guidelines
+- code-reviewer-quality
 - code-reviewer-security
 - debugger
 - docs-fetcher

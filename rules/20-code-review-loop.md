@@ -4,7 +4,7 @@ After ANY code change, follow this loop:
 
 ```text
 1. Specialist writes/fixes code
-2. Send to ALL 3 review agents IN PARALLEL (async)
+2. Send to ALL 4 review agents IN PARALLEL (async)
 3. Merge & deduplicate findings
 4. Has comments? ──YES──→ Fix code → go to 2
                     NO ↓
@@ -17,15 +17,16 @@ After ANY code change, follow this loop:
 
 ## Review Agents
 
-Three agents review code in parallel for comprehensive coverage:
+Four agents review code in parallel for comprehensive coverage:
 
 | Agent | Focus |
 |---|---|
 | `code-reviewer-quality` | General code quality and maintainability |
 | `code-reviewer-guidelines` | Project guidelines and style adherence (AGENTS.md) |
 | `code-reviewer-security` | Bugs, logic errors, and security vulnerabilities |
+| `code-reviewer-docs` | Documentation quality, completeness, and accuracy |
 
-**All 3 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
+**All 4 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
 Do NOT block waiting for reviews — continue working while they run.**
 
 Overlapping scope is intentional for comprehensive coverage; step 3's deduplication handles duplicates.
@@ -82,4 +83,4 @@ For automated review flows (autorabbit, autoqodo), use **two-stage order** inste
    Loop Stage 2 until passed.
 
 Don't polish code that doesn't meet spec — it wastes work.
-Parallel mode (all 3 reviewers at once) remains default for manual reviews.
+Parallel mode (all 4 reviewers at once) remains default for manual reviews.
