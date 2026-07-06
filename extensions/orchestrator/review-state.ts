@@ -119,13 +119,29 @@ function writeState(cwd: string, state: ReviewState): void {
   }
 }
 
-/** Execute a read-modify-write operation on the state file with a lock. */
+const lockDepth = new Map<string, number>();
+
+/** Execute a read-modify-write operation on the state file with a lock.
+ *  Throws if lock cannot be acquired (never proceeds without mutual exclusion). */
 function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
-  const locked = acquireLock(cwd);
+  const key = statePath(cwd);
+  const depth = lockDepth.get(key) || 0;
+  if (depth === 0) {
+    if (!acquireLock(cwd)) {
+      throw new Error("[review-state] failed to acquire lock — aborting to prevent state corruption");
+    }
+  }
+  lockDepth.set(key, depth + 1);
   try {
     return fn(readReviewState(cwd));
   } finally {
-    if (locked) releaseLock(cwd);
+    const newDepth = (lockDepth.get(key) || 1) - 1;
+    if (newDepth <= 0) {
+      lockDepth.delete(key);
+      releaseLock(cwd);
+    } else {
+      lockDepth.set(key, newDepth);
+    }
   }
 }
 

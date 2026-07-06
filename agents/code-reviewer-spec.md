@@ -110,7 +110,7 @@ For every deliverable in the issue's `## Done` section (or equivalent checklist)
 
 For code changes that appear in the diff but are NOT mentioned in either the PR description or the issue:
 
-- Flag `[WARNING]` as potential scope creep
+- Flag `[CRITICAL]` as scope creep — the issue/PR spec MUST be updated to include it
 - Include the file and a brief description of what changed
 - Do NOT flag: test files that test the claimed changes, minor refactoring in touched files, import changes
 
@@ -120,9 +120,9 @@ For code changes that appear in the diff but are NOT mentioned in either the PR 
 |---|---|
 | PR claims file/class/method that doesn't exist in diff | `[CRITICAL]` |
 | Issue deliverable not implemented | `[CRITICAL]` |
-| Code changes not mentioned in PR or issue | `[WARNING]` |
-| PR description is vague/aspirational (no concrete claims) | `[SUGGESTION]` |
-| No issue linked to PR | `[SUGGESTION]` |
+| Code changes not mentioned in PR or issue | `[CRITICAL]` |
+| PR description is vague/aspirational (no concrete claims) | `[CRITICAL]` |
+| No issue linked to PR | `[WARNING]` |
 
 ## Output Format
 

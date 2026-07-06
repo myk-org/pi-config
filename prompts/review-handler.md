@@ -590,7 +590,8 @@ Check the poll JSON output — it always contains an `approved` key:
   - If zero tradeoffs: show `## Tradeoffs (0)` with "All findings fixed with code changes."
 
   **Remaining findings table rules:**
-  - Show EVERY unresolved finding — skipped, not_addressed, or stale sticky
+  - Show findings that are truly unresolved — `not_addressed` or `failed` status only
+  - Do NOT include `skipped` findings here — those are tradeoffs (shown in the table above)
   - **Type** = the finding type (Bug, Requirement gap, Rule violation, etc.)
   - **Finding** = the finding title (bold text from the body)
   - **Why remaining** = the status + reason (from the reply field)
