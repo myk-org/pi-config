@@ -2,7 +2,8 @@
 
 After ANY code change, send to ALL 5 review agents. **Never skip the first review.**
 
-If `review_loop_enforcement` is enabled in project settings (default: disabled):
+If `review_loop_enforcement` is enabled (default: disabled).
+Resolution: project `.pi/pi-config-settings.json` → global `~/.pi/pi-config-settings.json` → `PI_REVIEW_LOOP_ENFORCEMENT` env var → `false`.
 
 - MUST loop until all reviewers return 0 findings
 - Commit will be blocked until clean
