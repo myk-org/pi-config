@@ -5,6 +5,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -671,6 +672,32 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         `Last clean: ${state.last_clean_at || "none"}`,
       ];
       ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  // ── review_status tool — LLM-callable read-only access to review state ──
+  pi.registerTool({
+    name: "review_status",
+    label: "Review Status",
+    description: "Get current review loop enforcement state. Use to check if review is needed, in progress, clean, or has findings before committing.",
+    parameters: Type.Object({}),
+    async execute(_callId, _params, _signal, _onUpdate, ctx) {
+      const state = readReviewState(ctx.cwd);
+      const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
+      const summary = [
+        `enforcement: ${enabled ? "enabled" : "disabled"}`,
+        `status: ${state.status}`,
+        `cycle: ${state.cycle}`,
+        `findings: ${state.findings_count}`,
+        `pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
+        `edited_during_cycle: ${state.edited_during_cycle}`,
+        `last_edit: ${state.last_edit_at || "none"}`,
+        `last_clean: ${state.last_clean_at || "none"}`,
+      ].join("\n");
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        details: { state, enabled },
+      };
     },
   });
 }
