@@ -231,6 +231,7 @@ export type ResponseSubmitRequest = {
 	responder_session: string;
 	response: any;
 	error: string | null;
+	queue_depth?: number;
 };
 
 export type ErrorResponse = { ok: false; error: string; details?: any };
@@ -1176,6 +1177,7 @@ async function handleSubmitResponse(
 		response: msg.response,
 		error: msg.error,
 		status: msg.status,
+		queue_depth: typeof body.queue_depth === "number" ? body.queue_depth : 0,
 	});
 	// Also push a final message_status for completeness.
 	sendToStream(project, msg.sender_session, "message_status", {

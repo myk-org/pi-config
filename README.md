@@ -104,7 +104,7 @@ For LAN/remote access, set `PI_COMS_NET_AUTH_TOKEN` and `PI_COMS_NET_HOST=0.0.0.
 
 | Tool | Description |
 |------|-------------|
-| `*_list` | List peer agents with names, models, context usage |
+| `*_list` | List peer agents with names, models, context usage, queue depth |
 | `*_send` | Send a prompt to a peer agent |
 | `*_get` | Non-blocking poll for a response |
 | `*_await` | Block until response arrives |

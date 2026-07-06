@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -64,6 +64,7 @@ interface ResponseEnvelope extends Envelope {
 	type: "response";
 	response: any;
 	error?: string | null;
+	queue_depth?: number;
 }
 
 interface PingEnvelope extends Envelope {
@@ -589,11 +590,16 @@ export default function (pi: ExtensionAPI) {
 	let currentInbound: InboundContext | null = null;
 	let processingInbound = false;
 
+	function getPendingInboundCount(): number {
+		let count = 0;
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) count++;
+		return count;
+	}
+
 	let lastPoolSnapshot = "";
 	function maybeRefreshWidget(): void {
 		if (!currentCtx?.hasUI) return;
-		let pc = 0;
-		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) pc++;
+		const pc = getPendingInboundCount();
 		const key = `pending=${pc}|` + [...peerCards.entries()].map(([k, v]) => `${k}:${v.staleCount}`).sort().join(",");
 		if (key === lastPoolSnapshot) return;
 		lastPoolSnapshot = key;
@@ -652,7 +658,7 @@ export default function (pi: ExtensionAPI) {
 					msg_id: env.msg_id,
 					sender: env.sender_session,
 					hops: env.hops,
-					queue_depth: inboundQueue.size,
+					queue_depth: getPendingInboundCount(),
 				});
 			} catch { /* best-effort */ }
 			return;
@@ -709,17 +715,13 @@ export default function (pi: ExtensionAPI) {
 			pending.result = { response: env.response, error: env.error ?? null };
 			try {
 				pending.resolve(pending.result);
-			} catch {
-				// ignore
+			} catch (e: any) {
+				try { pi.appendEntry("coms-log", { event: "resolve_failed", msg_id: env.msg_id, reason: e?.message ?? String(e) }); } catch { /* best-effort */ }
 			}
 
 			// Auto-deliver response as followUp so the LLM sees it without polling
 			const targetName = pending.target_name ?? "peer";
-			const responseText = env.error
-				? `[coms response from ${targetName}] Error: ${env.error}`
-				: typeof env.response === "string"
-					? `[coms response from ${targetName}] ${env.response}`
-					: `[coms response from ${targetName}] ${JSON.stringify(env.response, null, 2)}`;
+			const responseText = formatComsResponseText(targetName, env.response, env.error ?? null, typeof env.queue_depth === "number" ? env.queue_depth : 0);
 			try {
 				pi.sendMessage(
 					{
@@ -758,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 			model: ctx?.model?.id ?? ident?.model ?? "unknown",
 			color: ident?.color ?? "#36F9F6",
 			context_used_pct: pct,
-			queue_depth: inboundQueue.size,
+			queue_depth: getPendingInboundCount(),
 			tasks_summary: readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 		};
 	}
@@ -1084,7 +1086,7 @@ export default function (pi: ExtensionAPI) {
 					explicit: identity.explicit,
 					version: 1,
 					context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
-					queue_depth: inboundQueue.size,
+					queue_depth: getPendingInboundCount(),
 					heartbeat_at: nowIso(),
 				};
 				// Unconditional atomic write: handles BOTH the live-status refresh
@@ -1147,6 +1149,7 @@ export default function (pi: ExtensionAPI) {
 			pending: boolean;
 			stale: boolean;
 			tasks?: { total: number; completed: number; in_progress: number } | null;
+			queue_depth: number;
 		}
 		const rows: Row[] = [];
 		const seenSessions = new Set<string>();
@@ -1163,6 +1166,7 @@ export default function (pi: ExtensionAPI) {
 				pending: false,
 				stale: (card.staleCount ?? 0) >= 3,
 				tasks: card.tasks_summary,
+				queue_depth: card.queue_depth ?? 0,
 			});
 		}
 
@@ -1181,6 +1185,7 @@ export default function (pi: ExtensionAPI) {
 				pct: null,
 				pending: true,
 				stale: false,
+				queue_depth: 0,
 			});
 		}
 
@@ -1197,8 +1202,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			const left = theme.fg("dim", "┏━") + theme.fg("border", " coms ");
 			const leftFill = theme.fg("dim", "━");
-			let pendingCount = 0;
-			for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) pendingCount++;
+			const pendingCount = getPendingInboundCount();
 			const pendingSuffix = ` (${pendingCount} pending)`;
 			const nameLen = identity ? identity.name.length + pendingSuffix.length : 0;
 			const rightTagVisLen = identity ? nameLen + 3 : 0;
@@ -1258,7 +1262,8 @@ export default function (pi: ExtensionAPI) {
 			const purposePart = theme.fg("muted", r.purpose || "");
 
 			const tasksPart = renderTasksPart(r.tasks, theme);
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + sep + purposePart;
+			const queuePart = renderQueuePart(r.queue_depth, theme);
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
@@ -1468,6 +1473,7 @@ export default function (pi: ExtensionAPI) {
 					project: c.project,
 					alive: pong != null,
 					context_used_pct: pong ? pong.context_used_pct : null,
+					queue_depth: pong ? pong.queue_depth : 0,
 					color: c.entry.color,
 				};
 			});
@@ -1477,7 +1483,8 @@ export default function (pi: ExtensionAPI) {
 				: agents.map((a) => {
 					const ctxStr = a.context_used_pct != null ? ` ${a.context_used_pct}%` : " ?%";
 					const live = a.alive ? "●" : "✗";
-					return `${live} ${a.name} (${a.model})${ctxStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
+					const queueStr = formatQueueStr(a.queue_depth);
+					return `${live} ${a.name} (${a.model})${ctxStr}${queueStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
 				}).join("\n");
 
 			return {
@@ -1721,6 +1728,10 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// Use inline count instead of getPendingInboundCount() — `inbound` (local param)
+		// differs from `currentInbound` (module-scoped, already null at this point).
+		let remainingQueue = 0;
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) remainingQueue++;
 		const respEnv: ResponseEnvelope = {
 			type: "response",
 			msg_id: inbound.msg_id,
@@ -1730,6 +1741,7 @@ export default function (pi: ExtensionAPI) {
 			timestamp: nowIso(),
 			response: payload,
 			error,
+			queue_depth: remainingQueue,
 		};
 
 		try {
@@ -1778,7 +1790,8 @@ export default function (pi: ExtensionAPI) {
 				// Failed to inject — drain ALL remaining queued messages with error responses
 				try { pi.appendEntry("coms-log", { event: "fifo_drain_failed", msg_id: next.msg_id, reason: err?.message ?? String(err) }); } catch { /* best-effort */ }
 				const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
-				for (const orphan of remaining) {
+				for (let idx = 0; idx < remaining.length; idx++) {
+					const orphan = remaining[idx];
 					try {
 						await sendEnvelope(orphan.sender_endpoint, {
 							type: "response",
@@ -1789,6 +1802,7 @@ export default function (pi: ExtensionAPI) {
 							timestamp: nowIso(),
 							response: null,
 							error: "injection_failed",
+							queue_depth: remaining.length - idx - 1,
 						});
 					} catch { /* best-effort */ }
 					orphan.fulfilled = true;

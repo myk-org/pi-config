@@ -64,7 +64,7 @@ pi-config/
 │   │   ├── index.ts                 # Entry point — registers coms and coms-net
 │   │   ├── coms-wrapper.ts          # P2P agent communication wrapper (on-demand /coms command)
 │   │   ├── coms-net-wrapper.ts      # Networked agent communication wrapper (on-demand /coms-net command, auto-manages hub server)
-│   │   ├── coms-shared.ts           # Shared proxy factory, flag parser, state persistence
+│   │   ├── coms-shared.ts           # Shared utilities: proxy factory, flag parser, state persistence, response formatting, list rendering
 │   │   ├── coms-p2p.ts              # P2P implementation (forked from disler/pi-vs-claude-code)
 │   │   ├── coms-net.ts              # Networked implementation (forked from disler/pi-vs-claude-code)
 │   │   ├── coms-net-server.ts       # Hub server (forked from disler/pi-vs-claude-code)
@@ -144,7 +144,9 @@ pi-config/
 ├── pi-config-settings.example.json    # Example project settings file
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)
-│   │   └── orchestrator/            # Orchestrator extension tests
+│   │   ├── orchestrator/            # Orchestrator extension tests
+│   │   ├── pidiff/                  # Pidiff extension tests
+│   │   └── shared/                  # Shared utility tests (coms-shared, daemon-manager)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

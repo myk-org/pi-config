@@ -476,6 +476,25 @@ export interface TasksSummary {
 	in_progress: number;
 }
 
+/** Format the auto-delivered coms response text, including queue depth note when > 0. */
+export function formatComsResponseText(targetName: string, response: any, error: string | null, queueDepth: number): string {
+	const queueNote = queueDepth > 0 ? ` (${queueDepth} more queued)` : "";
+	if (error) return `[coms response from ${targetName}${queueNote}] Error: ${error}`;
+	return typeof response === "string"
+		? `[coms response from ${targetName}${queueNote}] ${response}`
+		: `[coms response from ${targetName}${queueNote}] ${JSON.stringify(response, null, 2)}`;
+}
+
+/** Return " 📨N" suffix string for queue depth, or "" when zero/absent. */
+export function formatQueueStr(queueDepth: number | undefined | null): string {
+	return typeof queueDepth === "number" && queueDepth > 0 ? ` 📨${queueDepth}` : "";
+}
+
+/** Return theme-colored queue indicator for the coms widget list row. */
+export function renderQueuePart(queueDepth: number, theme: any): string {
+	return queueDepth > 0 ? theme.fg("dim", " ") + theme.fg("warning", `📨${queueDepth}`) : "";
+}
+
 export function renderTasksPart(tasks: TasksSummary | null | undefined, theme: any): string {
 	if (!tasks || tasks.total === 0) return "";
 	// Clamp to prevent negative/misleading values from corrupt data
