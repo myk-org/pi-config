@@ -216,6 +216,8 @@ After any code change, the orchestrator runs 5 review agents **in parallel**:
 
 Loops until all approve, then runs tests.
 
+Use `/review-status` to inspect the current review loop state.
+
 ## Customization
 
 ### Project Settings

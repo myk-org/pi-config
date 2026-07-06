@@ -390,14 +390,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
 
-    // Block bash commands that write to review-state.json
+    // Block ALL bash commands targeting review-state.json — no exceptions.
+    // The review state is managed exclusively by the enforcement system.
+    // If you need to inspect it, do it outside of pi.
     if (getSetting(ctx.cwd, "review_loop_enforcement") && cmdLower.includes("review-state.json")) {
-      if (/(?:>|tee|cp|mv|sed\s+-i|echo\s.*>|rm|truncate|dd\s|write|printf\s.*>)/.test(cmdLower)) {
-        return {
-          block: true,
-          reason: "\u26d4 Bash write to review-state.json blocked. The review state is managed by the enforcement system.",
-        };
-      }
+      return {
+        block: true,
+        reason: "\u26d4 Bash command targeting review-state.json blocked. The review state is managed by the enforcement system.",
+      };
     }
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only
@@ -651,6 +651,26 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     markNeedsReview(ctx.cwd);
+  });
+
+  // ── /review-status command — read-only access to review state ──────
+  pi.registerCommand("review-status", {
+    description: "Show current review loop enforcement state",
+    handler: async (_args, ctx) => {
+      const state = readReviewState(ctx.cwd);
+      const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
+      const lines = [
+        `Review Loop Enforcement: ${enabled ? "enabled" : "disabled"}`,
+        `Status: ${state.status}`,
+        `Cycle: ${state.cycle}`,
+        `Findings: ${state.findings_count}`,
+        `Reviewers pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
+        `Edited during cycle: ${state.edited_during_cycle}`,
+        `Last edit: ${state.last_edit_at || "none"}`,
+        `Last clean: ${state.last_clean_at || "none"}`,
+      ];
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
   });
 }
 
