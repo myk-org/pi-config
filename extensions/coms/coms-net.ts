@@ -129,7 +129,7 @@ interface ResponseSubmitRequest {
 	responder_session: string;
 	response: any;
 	error: string | null;
-	queue_depth?: number;
+	queued_msg_ids?: string[];
 }
 
 interface InboundContext {
@@ -145,10 +145,10 @@ interface InboundContext {
 }
 
 interface PendingReply {
-	resolve: (value: { response?: any; error?: string | null }) => void;
+	resolve: (value: { response?: any; error?: string | null; queued_msg_ids?: string[] }) => void;
 	reject: (err: Error) => void;
-	promise: Promise<{ response?: any; error?: string | null }>;
-	result?: { response?: any; error?: string | null };
+	promise: Promise<{ response?: any; error?: string | null; queued_msg_ids?: string[] }>;
+	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
 	target_name?: string;
 	target_session?: string;
 	created_at: string;
@@ -645,7 +645,8 @@ export default function (pi: ExtensionAPI) {
 		const errVal: string | null = typeof data.error === "string" ? data.error : null;
 		const pending = pendingReplies.get(msg_id);
 		if (pending) {
-			pending.result = { response: responseVal, error: errVal };
+			const queuedMsgIds: string[] = Array.isArray(data.queued_msg_ids) ? data.queued_msg_ids.filter((id: unknown) => typeof id === "string") : [];
+			pending.result = { response: responseVal, error: errVal, queued_msg_ids: queuedMsgIds };
 			try {
 				pending.resolve(pending.result);
 			} catch (e: any) {
@@ -654,7 +655,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Auto-deliver response as followUp so the LLM sees it without polling
 			const targetName = pending.target_name ?? "peer";
-			const responseText = formatComsResponseText(targetName, responseVal, errVal, typeof data.queue_depth === "number" ? data.queue_depth : 0);
+			const responseText = formatComsResponseText(targetName, responseVal, errVal, queuedMsgIds);
 			try {
 				pi.sendMessage(
 					{
@@ -665,6 +666,7 @@ export default function (pi: ExtensionAPI) {
 							msg_id,
 							target_name: targetName,
 							error: errVal,
+							queued_msg_ids: queuedMsgIds,
 						},
 					},
 					{ deliverAs: "followUp", triggerTurn: true },
@@ -1297,7 +1299,7 @@ export default function (pi: ExtensionAPI) {
 					: `coms_net_get: complete\n${typeof r.response === "string" ? r.response : JSON.stringify(r.response, null, 2)}`;
 				return {
 					content: [{ type: "text" as const, text }],
-					details: { status: "complete", response: r.response, error: r.error ?? null },
+					details: { status: "complete", response: r.response, error: r.error ?? null, queued_msg_ids: r.queued_msg_ids ?? [] },
 				};
 			}
 			// Fall back to server.
@@ -1393,14 +1395,14 @@ export default function (pi: ExtensionAPI) {
 
 		// Use inline count instead of getPendingInboundCount() — `inbound` (local param)
 		// differs from `currentInbound` (module-scoped, already null at this point).
-		let remainingQueue = 0;
-		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) remainingQueue++;
+		const queuedIds: string[] = [];
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
 		const req: ResponseSubmitRequest = {
 			project: identity.project,
 			responder_session: identity.session_id,
 			response: payload,
 			error,
-			queue_depth: remainingQueue,
+			queued_msg_ids: queuedIds,
 		};
 
 		try {
@@ -1456,9 +1458,11 @@ export default function (pi: ExtensionAPI) {
 							responder_session: identity!.session_id,
 							response: null,
 							error: "injection_failed",
-							queue_depth: remaining.length - idx - 1,
+							queued_msg_ids: remaining.slice(idx + 1).map(r => r.msg_id),
 						});
-					} catch { /* best-effort */ }
+					} catch (e: any) {
+						audit("orphan_cleanup_failed", { msg_id: orphan.msg_id, reason: e?.message ?? String(e) });
+					}
 					orphan.fulfilled = true;
 					inboundQueue.delete(orphan.msg_id);
 				}

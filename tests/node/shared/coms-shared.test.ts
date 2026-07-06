@@ -8,33 +8,45 @@ import { formatComsResponseText, formatQueueStr, renderQueuePart } from "../../.
 
 describe("formatComsResponseText", () => {
 	it("formats error response without queue", () => {
-		const result = formatComsResponseText("worker", null, "something failed", 0);
+		const result = formatComsResponseText("worker", null, "something failed", []);
 		assert.equal(result, "[coms response from worker] Error: something failed");
 	});
 
-	it("formats error response with queue depth", () => {
-		const result = formatComsResponseText("worker", null, "something failed", 2);
-		assert.equal(result, "[coms response from worker (2 more queued)] Error: something failed");
+	it("formats error response with queued IDs", () => {
+		const result = formatComsResponseText("worker", null, "something failed", ["msg-aaa", "msg-bbb"]);
+		assert.equal(result, "[coms response from worker (2 more queued: msg-aaa, msg-bbb)] Error: something failed");
 	});
 
 	it("formats string response without queue", () => {
-		const result = formatComsResponseText("peer-a", "task done", null, 0);
+		const result = formatComsResponseText("peer-a", "task done", null, []);
 		assert.equal(result, "[coms response from peer-a] task done");
 	});
 
-	it("formats string response with queue depth", () => {
-		const result = formatComsResponseText("peer-a", "task done", null, 3);
-		assert.equal(result, "[coms response from peer-a (3 more queued)] task done");
+	it("formats string response with queued IDs", () => {
+		const result = formatComsResponseText("peer-a", "task done", null, ["id-1", "id-2", "id-3"]);
+		assert.equal(result, "[coms response from peer-a (3 more queued: id-1, id-2, id-3)] task done");
 	});
 
 	it("formats object response as JSON", () => {
-		const result = formatComsResponseText("peer-b", { status: "ok" }, null, 0);
+		const result = formatComsResponseText("peer-b", { status: "ok" }, null, []);
 		assert.equal(result, '[coms response from peer-b] {\n  "status": "ok"\n}');
 	});
 
-	it("formats object response with queue depth", () => {
-		const result = formatComsResponseText("peer-b", { status: "ok" }, null, 1);
-		assert.equal(result, '[coms response from peer-b (1 more queued)] {\n  "status": "ok"\n}');
+	it("formats object response with single queued ID", () => {
+		const result = formatComsResponseText("peer-b", { status: "ok" }, null, ["msg-123"]);
+		assert.equal(result, '[coms response from peer-b (1 more queued: msg-123)] {\n  "status": "ok"\n}');
+	});
+
+	it("truncates IDs when more than 5 are queued", () => {
+		const ids = ["a", "b", "c", "d", "e", "f", "g"];
+		const result = formatComsResponseText("peer-x", "done", null, ids);
+		assert.equal(result, "[coms response from peer-x (7 more queued: a, b, c, d, e and 2 more)] done");
+	});
+
+	it("shows all IDs when exactly 5 are queued", () => {
+		const ids = ["a", "b", "c", "d", "e"];
+		const result = formatComsResponseText("peer-x", "done", null, ids);
+		assert.equal(result, "[coms response from peer-x (5 more queued: a, b, c, d, e)] done");
 	});
 });
 

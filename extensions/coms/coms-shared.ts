@@ -476,9 +476,10 @@ export interface TasksSummary {
 	in_progress: number;
 }
 
-/** Format the auto-delivered coms response text, including queue depth note when > 0. */
-export function formatComsResponseText(targetName: string, response: any, error: string | null, queueDepth: number): string {
-	const queueNote = queueDepth > 0 ? ` (${queueDepth} more queued)` : "";
+/** Format the auto-delivered coms response text, including queued message IDs when > 0. */
+export function formatComsResponseText(targetName: string, response: any, error: string | null, queuedMsgIds: string[]): string {
+	const ids = queuedMsgIds.length <= 5 ? queuedMsgIds.join(", ") : `${queuedMsgIds.slice(0, 5).join(", ")} and ${queuedMsgIds.length - 5} more`;
+	const queueNote = queuedMsgIds.length > 0 ? ` (${queuedMsgIds.length} more queued: ${ids})` : "";
 	if (error) return `[coms response from ${targetName}${queueNote}] Error: ${error}`;
 	return typeof response === "string"
 		? `[coms response from ${targetName}${queueNote}] ${response}`
