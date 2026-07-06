@@ -50,7 +50,7 @@ describe("formatComsResponseText", () => {
 	});
 });
 
-describe("formatQueueStr", () => {
+describe("formatQueueStr (used by coms_list/coms_net_list text output)", () => {
 	it("returns empty string for 0", () => {
 		assert.equal(formatQueueStr(0), "");
 	});
@@ -69,6 +69,27 @@ describe("formatQueueStr", () => {
 
 	it("returns 📨1 for depth 1", () => {
 		assert.equal(formatQueueStr(1), " 📨1");
+	});
+
+	it("produces correct list output line with queue depth", () => {
+		// Simulates the text output format used by coms_list and coms_net_list
+		const name = "peer2";
+		const model = "opus";
+		const ctxStr = " 42%";
+		const queueStr = formatQueueStr(2);
+		const purpose = "worker";
+		const line = `● ${name} (${model})${ctxStr}${queueStr} — ${purpose}`;
+		assert.equal(line, "● peer2 (opus) 42% 📨2 — worker");
+	});
+
+	it("produces correct list output line without queue", () => {
+		const name = "peer2";
+		const model = "opus";
+		const ctxStr = " 42%";
+		const queueStr = formatQueueStr(0);
+		const purpose = "worker";
+		const line = `● ${name} (${model})${ctxStr}${queueStr} — ${purpose}`;
+		assert.equal(line, "● peer2 (opus) 42% — worker");
 	});
 });
 
