@@ -23,7 +23,7 @@ export interface ReviewState {
 
 const STATE_FILE = "review-state.json";
 
-function statePath(cwd: string): string {
+export function statePath(cwd: string): string {
   const dataDir = join(resolveRepoRoot(cwd), DATA_DIR);
   mkdirSync(dataDir, { recursive: true });
   return join(dataDir, STATE_FILE);

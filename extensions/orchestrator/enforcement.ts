@@ -7,7 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir } from "./utils.js";
 import {
@@ -23,7 +23,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isReviewClean, readReviewState } from "./review-state.js";
+import { markNeedsReview, isReviewClean, readReviewState, statePath } from "./review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -374,6 +374,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         }
       }
     } catch { /* enforcement should never break normal flow */ }
+
+    // Block direct manipulation of review state file — prevents LLM from bypassing review loop
+    if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
+      const filePath: string | undefined = (event as any).input?.path;
+      if (filePath && resolve(ctx.cwd, filePath) === statePath(ctx.cwd)) {
+        return {
+          block: true,
+          reason: "\u26d4 Direct modification of review-state.json blocked. The review state is managed by the enforcement system.",
+        };
+      }
+    }
 
     if (!isToolCallEventType("bash", event)) return undefined;
     const command = event.input.command;
