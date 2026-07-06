@@ -42,7 +42,7 @@ Both flags are compatible: pi uses `SessionManager.inMemory(cwd, { id: sessionId
 
 **Persistent sessions (`persistSession: true`):** When enabled (via subagent parameter),
 `--no-session` is omitted so the session persists to disk.
-The session ID is derived from `agentName + cwd` (not task prefix)
+The session ID is derived from `agentName + cwd + parentSessionId` (not task prefix)
 so the same agent in the same project reuses its session across calls.
 
 **Reviewer session reuse:** Code-reviewer agents automatically use persistent sessions
