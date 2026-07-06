@@ -21,6 +21,7 @@ interface ProjectSettings {
   dream_interval_hours?: number;
   dco?: boolean;
   comment_signature?: boolean;
+  review_loop_enforcement?: boolean;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -43,6 +44,7 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     }
     if (typeof raw.dco === "boolean") result.dco = raw.dco;
     if (typeof raw.comment_signature === "boolean") result.comment_signature = raw.comment_signature;
+    if (typeof raw.review_loop_enforcement === "boolean") result.review_loop_enforcement = raw.review_loop_enforcement;
     return result;
   } catch (e: any) {
     console.debug(`[project-settings] failed to parse ${filePath}:`, e?.message?.slice(0, 100));
@@ -129,6 +131,7 @@ export function getSetting(cwd: string, key: "use_worktrees"): boolean;
 export function getSetting(cwd: string, key: "dream_interval_hours"): number;
 export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: "comment_signature"): boolean;
+export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number {
   const settings = getSettings(cwd);
 
@@ -170,6 +173,12 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
     case "comment_signature": {
       if (settings.comment_signature !== undefined) return settings.comment_signature;
       return false; // default: disabled
+    }
+    case "review_loop_enforcement": {
+      if (settings.review_loop_enforcement !== undefined) return settings.review_loop_enforcement;
+      const env = parseBoolEnv("PI_REVIEW_LOOP_ENFORCEMENT");
+      if (env !== undefined) return env;
+      return false; // default: disabled (opt-in)
     }
     default:
       return false;

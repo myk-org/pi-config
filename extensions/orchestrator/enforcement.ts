@@ -5,9 +5,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir } from "./utils.js";
 import {
@@ -22,6 +23,8 @@ import {
   isGitRepo,
   runGit,
 } from "./git-helpers.js";
+import { spawnSync } from "node:child_process";
+import { markNeedsReview, isReviewClean, readReviewState, statePath } from "./review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -373,9 +376,30 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     } catch { /* enforcement should never break normal flow */ }
 
+    // Block direct manipulation of review state file — prevents LLM from bypassing review loop
+    if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
+      const filePath: string | undefined = (event as any).input?.path;
+      if (filePath && resolve(ctx.cwd, filePath) === statePath(ctx.cwd)) {
+        return {
+          block: true,
+          reason: "\u26d4 Direct modification of review-state.json blocked. The review state is managed by the enforcement system.",
+        };
+      }
+    }
+
     if (!isToolCallEventType("bash", event)) return undefined;
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
+
+    // Block ALL bash commands targeting review-state.json — no exceptions.
+    // The review state is managed exclusively by the enforcement system.
+    // If you need to inspect it, do it outside of pi.
+    if (getSetting(ctx.cwd, "review_loop_enforcement") && cmdLower.includes("review-state.json")) {
+      return {
+        block: true,
+        reason: "\u26d4 Bash command targeting review-state.json blocked. The review state is managed by the enforcement system.",
+      };
+    }
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only
     if (process.env.PI_SUBAGENT_CHILD !== "1") {
@@ -449,6 +473,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         return {
           block: true,
           reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
+        };
+      }
+    }
+
+    // Enforce review loop — block commit unless review state is clean
+    if (process.env.PI_AGENT_NAME === "git-expert" && hasGitSub(command, "commit")) {
+      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(ctx.cwd)) {
+        const state = readReviewState(ctx.cwd);
+        return {
+          block: true,
+          reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending). Fix findings and re-run all reviewers until 0 comments.`,
         };
       }
     }
@@ -586,6 +621,93 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         content: [...currentContent, ...appendMessages],
       };
     }
+  });
+
+  // ── Review state tracking (edit/write detection) ────────────────────
+  // Runs in ALL processes (orchestrator + subagents) to catch edits from any specialist.
+  pi.on("tool_result", async (event, ctx) => {
+    if (!getSetting(ctx.cwd, "review_loop_enforcement")) return;
+
+    const toolName = (event as any).toolName as string;
+    if (toolName !== "edit" && toolName !== "write") return;
+
+    const input = (event as any).input || {};
+    const filePath: string | undefined = input.path;
+    if (!filePath) return;
+
+    // Skip failed edits — only successful changes need review
+    const isError = (event as any).isError === true;
+    if (isError) return;
+
+    // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)
+    try {
+      const result = spawnSync("git", ["check-ignore", "-q", filePath], {
+        cwd: ctx.cwd,
+        timeout: 3000,
+        stdio: "ignore",
+      });
+      if (result.status === 0) return; // gitignored — skip
+    } catch {
+      // git not available or error — proceed with marking (safe default)
+    }
+
+    // Retry markNeedsReview on lock failure — missing this would leave state
+    // as 'clean' and allow commits to slip through enforcement.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { markNeedsReview(ctx.cwd); break; } catch {
+        if (attempt === 2) {
+          // Last resort: log but don't crash the extension
+          console.error("[enforcement] markNeedsReview failed after 3 attempts — review state may be stale");
+        }
+      }
+    }
+  });
+
+  // ── /review-status command — read-only access to review state ──────
+  pi.registerCommand("review-status", {
+    description: "Show current review loop enforcement state",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
+      const state = readReviewState(ctx.cwd);
+      const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
+      const lines = [
+        `Review Loop Enforcement: ${enabled ? "enabled" : "disabled"}`,
+        `Status: ${state.status}`,
+        `Cycle: ${state.cycle}`,
+        `Findings: ${state.findings_count}`,
+        `Reviewers pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
+        `Edited during cycle: ${state.edited_during_cycle}`,
+        `Last edit: ${state.last_edit_at || "none"}`,
+        `Last clean: ${state.last_clean_at || "none"}`,
+      ];
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  // ── review_status tool — LLM-callable read-only access to review state ──
+  pi.registerTool({
+    name: "review_status",
+    label: "Review Status",
+    description: "Get current review loop enforcement state. Use to check if review is needed, in progress, clean, or has findings before committing.",
+    parameters: Type.Object({}),
+    async execute(_callId, _params, _signal, _onUpdate, ctx) {
+      const state = readReviewState(ctx.cwd);
+      const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
+      const summary = [
+        `enforcement: ${enabled ? "enabled" : "disabled"}`,
+        `status: ${state.status}`,
+        `cycle: ${state.cycle}`,
+        `findings: ${state.findings_count}`,
+        `pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
+        `edited_during_cycle: ${state.edited_during_cycle}`,
+        `last_edit: ${state.last_edit_at || "none"}`,
+        `last_clean: ${state.last_clean_at || "none"}`,
+      ].join("\n");
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        details: { state, enabled },
+      };
+    },
   });
 }
 

@@ -11,6 +11,8 @@ waiting for long-running agents.
 - `code-reviewer-quality`
 - `code-reviewer-guidelines`
 - `code-reviewer-security`
+- `code-reviewer-docs`
+- `code-reviewer-spec`
 
 **To add/remove agents from the async-only list:**
 
@@ -33,10 +35,26 @@ All async agent temp files live under `.pi/tmp/`:
     └── system-prompt.md                      # Agent system prompt
 ```
 
-**Deterministic session IDs:** Async agents use `--session-id` (hash of agent name + task prefix) alongside `--no-session`.
+**Deterministic session IDs:** Async agents use `--session-id` (hash of agent name + task prefix) alongside `--no-session` by default.
 This enables provider-side prompt caching for repeated async agent patterns.
 `--no-session` creates an in-memory session (no disk persistence); `--session-id` assigns a stable ID for cache affinity.
 Both flags are compatible: pi uses `SessionManager.inMemory(cwd, { id: sessionId })` when both are set.
+
+**Persistent sessions (`persistSession: true`):** When enabled (via subagent parameter),
+`--no-session` is omitted so the session persists to disk.
+The session ID is derived from `agentName + cwd + parentSessionId` (not task prefix)
+so the same agent in the same project reuses its session across calls.
+
+**Reviewer session reuse:** Code-reviewer agents automatically use persistent sessions
+during the review loop (cycle 2+). On the first cycle (`needs_review`/`none`), they get
+a fresh session. On subsequent cycles (`has_findings`/`in_progress`), they reuse their
+session from the previous cycle — keeping codebase context and previous findings.
+When the loop finishes clean and a new edit triggers `markNeedsReview`, sessions
+start fresh again.
+
+**Session auto-clearing:** When a reviewer's context usage exceeds 80% of the model's
+context window, its persisted session file is deleted to force a fresh session on the
+next cycle, preventing context overflow.
 
 **Zombie cleanup:** On `session_start`, checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` — dead parent = zombie = delete.
 

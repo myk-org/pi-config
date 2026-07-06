@@ -155,3 +155,12 @@ export function checkMinPiVersion(minVersion: string = MIN_PI_VERSION): { ok: bo
   if (!installed) return { ok: false, installed: null, required: minVersion };
   return { ok: compareSemver(installed, minVersion) >= 0, installed, required: minVersion };
 }
+
+/** DJB2 hash — deterministic string → number hash for session IDs. */
+export function djb2Hash(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}

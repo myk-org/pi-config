@@ -10,6 +10,7 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `dream_interval_hours` | number | 3 | `PI_DREAM_INTERVAL_HOURS` | Dream frequency |
 | `dco` | boolean | disabled | `PI_DCO` | Add --signoff to all commits (DCO) |
 | `comment_signature` | boolean | disabled | — | Append AI signature to all PR comments |
+| `review_loop_enforcement` | boolean | disabled | `PI_REVIEW_LOOP_ENFORCEMENT` | Block git commit until all 5 reviewers approve (review loop enforcement) |
 
 Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 

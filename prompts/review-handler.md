@@ -557,10 +557,23 @@ Check the poll JSON output — it always contains an `approved` key:
   The approval JSON includes the reviews data directly — use it for the summary.
   The `metadata.json_path` field contains the path to the saved JSON file.
 
-  Display remaining findings in a table:
+  Display TWO tables:
+
+  **Table 1: Tradeoffs** — every finding that was replied WITHOUT a code fix (skipped, by design,
+  false positive, deferred, acknowledged). The user must see what compromises were made.
+
+  **Table 2: Remaining** — any truly unresolved findings (should be 0 on approval).
 
   ```text
   🎉 {source} approved PR #{pr_number}. Auto loop complete.
+
+  ## Tradeoffs ({count})
+
+  | # | Type | File | Finding | Resolution |
+  |---|------|------|---------|------------|
+  | 1 | Bug | enforcement.ts:604 | Commit bypass via untracked edits | By design — only tracks edit/write tools |
+  | 2 | Rule violation | implement-and-review.md:6 | Missing policy blockquote | False positive — blockquote exists |
+  | 3 | Bug | review-state.ts:66 | Update race risk | Acknowledged — deferred, narrow window |
 
   ## Remaining Findings ({count})
 
@@ -569,11 +582,21 @@ Check the poll JSON output — it always contains an `approved` key:
   | 1 | Bug | path/to/file.py:17 | Finding title | Skipped — reason from the reply |
   ```
 
-  - Show EVERY unresolved finding — skipped, not_addressed, or stale sticky
+  **Tradeoffs table rules:**
+  - Include EVERY finding across ALL cycles that was replied without a code change
+  - Read the review database (`myk-pi-tools reviews store` data) or the accumulated
+    replies from the session to build this list
+  - **Resolution** = the reply text (summarized to one line)
+  - If zero tradeoffs: show `## Tradeoffs (0)` with "All findings fixed with code changes."
+
+  **Remaining findings table rules:**
+  - Show findings that are truly unresolved — `not_addressed` or `failed` status only
+  - Do NOT include `skipped` findings here — those are tradeoffs (shown in the table above)
   - **Type** = the finding type (Bug, Requirement gap, Rule violation, etc.)
   - **Finding** = the finding title (bold text from the body)
   - **Why remaining** = the status + reason (from the reply field)
   - If zero remaining findings: show `## Remaining Findings (0)` with "All findings resolved."
+
   - This is the ONLY user-facing output on exit — no per-cycle summaries, no fix history
 
 - If `"approved": false`: **Process ALL actionable items in the JSON.**

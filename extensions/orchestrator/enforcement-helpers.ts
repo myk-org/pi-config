@@ -47,7 +47,7 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   return sessionCwd;
 }
 
-/** Block direct python/pip and pre-commit commands */
+/** Block direct python/pip commands */
 export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
   if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
     // Split on statement separators to get individual commands,
@@ -68,11 +68,6 @@ export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
       }
     }
   }
-  if (cmdLower.startsWith("pre-commit "))
-    return {
-      block: true,
-      reason: "Direct pre-commit forbidden. Use: prek run --all-files",
-    };
   return undefined;
 }
 

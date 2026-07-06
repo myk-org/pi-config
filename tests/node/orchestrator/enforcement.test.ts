@@ -455,9 +455,7 @@ describe("checkPythonPipBlock", () => {
   it("allows uvx", () => {
     assert.equal(checkPythonPipBlock("uvx ruff check ."), undefined);
   });
-  it("blocks pre-commit", () => {
-    assert.ok(checkPythonPipBlock("pre-commit run --all-files"));
-  });
+
   it("allows non-python commands", () => {
     assert.equal(checkPythonPipBlock("ls -la"), undefined);
   });

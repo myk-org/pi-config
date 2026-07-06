@@ -32,7 +32,8 @@ const taskStoreReady: Promise<void> = (async () => {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
-import { getPiInvocation, getProjectTmpDir, parseProcStartTime } from "./utils.js";
+import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState } from "./review-state.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -62,6 +63,11 @@ export interface AsyncJob {
   cwd?: string;
   projectCwd?: string;
   sessionId?: string;
+}
+
+/** Get the effective working directory for a job. */
+function jobCwd(job: { cwd?: string; projectCwd?: string }): string {
+  return job.cwd || job.projectCwd || process.cwd();
 }
 
 interface AsyncState {
@@ -129,7 +135,7 @@ export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -208,6 +214,10 @@ export function registerAsyncAgents(
             try { process.kill(status.pid, 0); } catch {
               job.status = "failed";
               job.updatedAt = Date.now();
+              // Record killed reviewer as having 0 findings — prevents permanent commit block
+              if (job.agent.startsWith("code-reviewer-")) {
+                try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+              }
               // Check if this completes a group — deliver remaining siblings' results
               if (job.groupId) {
                 const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
@@ -252,6 +262,7 @@ export function registerAsyncAgents(
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
     // before processResultFile() has read all group members' outputs
+    const lateIngestedIds = new Set<string>();
     for (const j of groupJobs) {
       if (j.output !== undefined) continue; // Already ingested
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
@@ -261,8 +272,19 @@ export function registerAsyncAgents(
         j.exitCode = data.exitCode;
         j.durationMs = data.durationMs;
         if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
+        lateIngestedIds.add(j.id);
         asyncLog(`deliverGroupResults: late-ingested result for ${j.id}`);
       } catch (e: any) { asyncLog(`deliverGroupResults: late-ingest failed for ${j.id}: ${e?.message}`); }
+    }
+
+    // Track reviewer completions for late-ingested code-reviewer jobs only
+    // (jobs already processed by processResultFile were tracked there)
+    for (const j of groupJobs) {
+      if (!j.agent.startsWith("code-reviewer-") || !lateIngestedIds.has(j.id)) continue;
+      try {
+        const output = typeof j.output === "string" ? j.output : "";
+        recordReviewerResult(jobCwd(j), j.agent, countFindings(output));
+      } catch { /* best-effort */ }
     }
 
     // Skip delivery if ALL jobs in group are fire-and-forget
@@ -340,6 +362,39 @@ export function registerAsyncAgents(
       // Notify terminal per-agent (lightweight, non-conversational)
       const displayName = job.name || data.agent;
       terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
+
+      // Track reviewer completion for review loop enforcement
+      if (job.agent.startsWith("code-reviewer-")) {
+        try {
+          const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
+          recordReviewerResult(jobCwd(job), job.agent, countFindings(output));
+        } catch { /* best-effort */ }
+        // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
+        // Use model context window from the agent's effective model.
+        // If agent uses a custom model, we pass its context window via the config.
+        // Fall back to orchestrator's model context window.
+        const contextWindow = data.contextWindow || asyncState.lastCtx?.model?.contextWindow || 0;
+        if (data.lastUsage?.totalTokens && data.lastUsage.totalTokens > 0 && contextWindow > 0) {
+          const pct = (data.lastUsage.totalTokens / contextWindow) * 100;
+          if (pct > 80) {
+            const sessId = `async-${job.agent}-${djb2Hash(job.agent + ':' + (jobCwd(job)) + ':' + (asyncState.lastCtx?.sessionManager?.getSessionId?.() || '')).toString(36)}`;
+            try {
+              // Find and delete the session file to force fresh on next cycle
+              const sessDir = path.join(os.homedir(), '.pi', 'agent', 'sessions');
+              const cwdKey = (jobCwd(job)).replace(/\//g, '-').replace(/^-/, '--') + '--';
+              const sessPath = path.join(sessDir, cwdKey);
+              const files = fs.existsSync(sessPath) ? fs.readdirSync(sessPath) : [];
+              for (const f of files) {
+                if (f.includes(sessId)) {
+                  fs.unlinkSync(path.join(sessPath, f));
+                  asyncLog(`Cleared session for ${job.agent} (context ${Math.round(pct)}%)`);
+                  break;
+                }
+              }
+            } catch { /* best-effort */ }
+          }
+        }
+      }
 
       // Clean up result file — for grouped jobs, defer to deliverGroupResults
       if (!job.groupId) {
@@ -421,7 +476,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -455,19 +510,30 @@ export function registerAsyncAgents(
       sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
 
-    // Build pi args
-    const piArgs: string[] = ["--mode", "json", "-p", "--no-session", "-nc"];
-    // Deterministic session ID for provider cache affinity (requires pi >= 0.80.3).
-    // --no-session creates an in-memory session (no disk persistence).
-    // --session-id assigns a stable ID so the provider can reuse cached prompts
-    // across runs with the same agent+task pattern. Both flags are compatible:
-    // pi uses SessionManager.inMemory(cwd, { id: sessionId }) when both are set.
-    const sessionIdSource = agentName + ':' + task.slice(0, 100);
-    let hash = 0;
-    for (let i = 0; i < sessionIdSource.length; i++) {
-      hash = ((hash << 5) - hash + sessionIdSource.charCodeAt(i)) | 0;
+    // Track reviewer spawn BEFORE building args — addReviewerPending sets status to
+    // in_progress, so all reviewers in the same batch see consistent state.
+    if (agentName.startsWith("code-reviewer-")) {
+      try { addReviewerPending(cwd, agentName); } catch { /* best-effort */ }
     }
-    const deterministicSessionId = `async-${agentName}-${Math.abs(hash).toString(36)}`;
+
+    // Build pi args
+    // Reviewers persist sessions during the review loop (cycle 2+) for cross-cycle context.
+    // Fresh session on first cycle (needs_review/none), reuse on subsequent cycles (has_findings).
+    let persistSession = options?.persistSession === true;
+    if (!persistSession && agentName.startsWith("code-reviewer-")) {
+      const reviewState = readReviewState(cwd);
+      persistSession = reviewState.status === "has_findings" || reviewState.status === "in_progress";
+    }
+    const piArgs: string[] = ["--mode", "json", "-p", "-nc"];
+    if (!persistSession) piArgs.push("--no-session");
+    // Deterministic session ID for provider cache affinity + optional session reuse.
+    // When persistSession is true, omits --no-session so the session persists to disk.
+    // Same agent + cwd gets the same session ID across calls.
+    const parentSessionId = asyncState.lastCtx?.sessionManager?.getSessionId?.() || '';
+    const sessionIdSource = persistSession
+      ? agentName + ':' + cwd + ':' + parentSessionId
+      : agentName + ':' + task.slice(0, 100);
+    const deterministicSessionId = `async-${agentName}-${djb2Hash(sessionIdSource).toString(36)}`;
     piArgs.push("--session-id", deterministicSessionId);
     const effectiveModel = agent.model || options?.parentModelId;
     if (effectiveModel) piArgs.push("--model", effectiveModel);
@@ -493,6 +559,7 @@ export function registerAsyncAgents(
       task,
       cwd,
       model: effectiveModel,
+      contextWindow: asyncState.lastCtx?.model?.contextWindow || 0,
       resultPath,
       workerDir,
       sessionId: `${process.pid}:${process.cwd()}`,
@@ -559,6 +626,9 @@ export function registerAsyncAgents(
       sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.(),
     };
     asyncState.jobs.set(id, job);
+
+    // addReviewerPending already called above (before piArgs construction)
+
     updateAsyncWidget();
     ensureAsyncPoller();
     startResultWatcher();
@@ -942,6 +1012,10 @@ export function registerAsyncAgents(
       killed.push(label);
       job.status = "failed";
       job.updatedAt = Date.now();
+      // Record killed reviewer as having 0 findings — prevents permanent commit block
+      if (job.agent.startsWith("code-reviewer-")) {
+        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+      }
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);

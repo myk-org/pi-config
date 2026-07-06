@@ -21,7 +21,7 @@ pi -ne -e ~/git/pi-config/extensions/orchestrator/index.ts
 
 ```bash
 # Linting / pre-commit checks
-pre-commit run --all-files
+prek run --all-files
 
 # Python tests
 uv run pytest

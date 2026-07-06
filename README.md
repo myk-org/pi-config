@@ -37,7 +37,7 @@ Single extension that provides:
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
 
-### Agents (25)
+### Agents (26)
 
 | Category | Agents |
 |----------|--------|
@@ -45,7 +45,7 @@ Single extension that provides:
 | Infrastructure | docker-expert, kubernetes-expert, jenkins-expert |
 | Dev workflow | git-expert, github-expert, test-runner, test-automator, debugger |
 | Documentation | technical-documentation-writer, api-documenter, docs-fetcher |
-| Code review | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, code-reviewer-docs |
+| Code review | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, code-reviewer-docs, code-reviewer-spec |
 | Security | security-auditor |
 | Workflow | scout, planner, worker, reviewer |
 
@@ -55,7 +55,7 @@ Single extension that provides:
 |--------|-------------|
 | `/implement <task>` | scout → planner → worker |
 | `/scout-and-plan <task>` | scout → planner |
-| `/implement-and-review <task>` | worker → 4 reviewers → worker |
+| `/implement-and-review <task>` | worker → 5 reviewers → worker |
 | `/pr-review [number\|url]` | Fetch PR diff, check past review comments, review with guidelines, post and track comments |
 | `/release [flags]` | Create GitHub release with changelog and version bumping |
 | `/review-local [branch]` | Review local uncommitted or branch changes |
@@ -206,14 +206,17 @@ Run scout and planner in a chain to analyze the auth module
 
 ## Code Review Loop
 
-After any code change, the orchestrator runs 4 review agents **in parallel**:
+After any code change, the orchestrator runs 5 review agents **in parallel**:
 
 1. **code-reviewer-quality** — Code quality & maintainability
 2. **code-reviewer-guidelines** — Project guidelines adherence  
 3. **code-reviewer-security** — Bugs, logic errors, security
 4. **code-reviewer-docs** — Documentation quality, completeness, accuracy
+5. **code-reviewer-spec** — Code/PR/issue spec alignment
 
 Loops until all approve, then runs tests.
+
+Use `/review-status` to inspect the current review loop state.
 
 ## Customization
 
@@ -226,13 +229,14 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "commit_trailer": "Assisted-by",
   "allow_push_to_protected_branches": false,
   "use_worktrees": true,
-  "dream_interval_hours": 6
+  "dream_interval_hours": 6,
+  "review_loop_enforcement": false
 }
 ```
 
 Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
-Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`
+Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`, `PI_REVIEW_LOOP_ENFORCEMENT`
 
 ### Override agents
 

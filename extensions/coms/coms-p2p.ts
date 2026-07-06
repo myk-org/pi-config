@@ -1869,6 +1869,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (currentCtx?.hasUI) {
 			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
+			try { currentCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
 		}
 	}
 
