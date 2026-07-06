@@ -657,6 +657,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   pi.registerCommand("review-status", {
     description: "Show current review loop enforcement state",
     handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
       const state = readReviewState(ctx.cwd);
       const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
       const lines = [
