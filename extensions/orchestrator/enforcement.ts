@@ -651,7 +651,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // git not available or error — proceed with marking (safe default)
     }
 
-    markNeedsReview(ctx.cwd);
+    try { markNeedsReview(ctx.cwd); } catch { /* lock contention — best-effort, skip */ }
   });
 
   // ── /review-status command — read-only access to review state ──────
