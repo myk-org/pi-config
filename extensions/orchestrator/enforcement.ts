@@ -390,6 +390,16 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
 
+    // Block bash commands that write to review-state.json
+    if (getSetting(ctx.cwd, "review_loop_enforcement") && cmdLower.includes("review-state.json")) {
+      if (/(?:>|tee|cp|mv|sed\s+-i|echo\s.*>|rm|truncate|dd\s|write|printf\s.*>)/.test(cmdLower)) {
+        return {
+          block: true,
+          reason: "\u26d4 Bash write to review-state.json blocked. The review state is managed by the enforcement system.",
+        };
+      }
+    }
+
     // Block repeated identical commands (polling-by-spam) — orchestrator only
     if (process.env.PI_SUBAGENT_CHILD !== "1") {
       ensureRepeatFile(ctx.cwd);

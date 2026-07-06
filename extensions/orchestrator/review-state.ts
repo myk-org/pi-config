@@ -24,9 +24,11 @@ export interface ReviewState {
 const STATE_FILE = "review-state.json";
 
 export function statePath(cwd: string): string {
-  const dataDir = join(resolveRepoRoot(cwd), DATA_DIR);
-  mkdirSync(dataDir, { recursive: true });
-  return join(dataDir, STATE_FILE);
+  return join(resolveRepoRoot(cwd), DATA_DIR, STATE_FILE);
+}
+
+function ensureDataDir(cwd: string): void {
+  mkdirSync(join(resolveRepoRoot(cwd), DATA_DIR), { recursive: true });
 }
 
 function defaultState(): ReviewState {
@@ -66,7 +68,7 @@ export function readReviewState(cwd: string): ReviewState {
 function writeState(cwd: string, state: ReviewState): void {
   const p = statePath(cwd);
   try {
-    mkdirSync(dirname(p), { recursive: true });
+    ensureDataDir(cwd);
     writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
   } catch (e: any) {
     console.debug("[review-state] write failed:", e?.message);
