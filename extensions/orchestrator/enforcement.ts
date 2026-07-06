@@ -651,7 +651,16 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // git not available or error — proceed with marking (safe default)
     }
 
-    try { markNeedsReview(ctx.cwd); } catch { /* lock contention — best-effort, skip */ }
+    // Retry markNeedsReview on lock failure — missing this would leave state
+    // as 'clean' and allow commits to slip through enforcement.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { markNeedsReview(ctx.cwd); break; } catch {
+        if (attempt === 2) {
+          // Last resort: log but don't crash the extension
+          console.error("[enforcement] markNeedsReview failed after 3 attempts — review state may be stale");
+        }
+      }
+    }
   });
 
   // ── /review-status command — read-only access to review state ──────
