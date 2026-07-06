@@ -1,12 +1,24 @@
 # Code Review Loop (MANDATORY)
 
-After ANY code change, follow this loop:
+After ANY code change, send to ALL 5 review agents. **Never skip the first review.**
+
+If `review_loop_enforcement` is enabled in project settings (default: enabled):
+
+- MUST loop until all reviewers return 0 findings
+- Commit will be blocked until clean
+
+If disabled:
+
+- Single review pass is sufficient
+- No commit blocking
+
+**In both cases, all 5 reviewers are always called. The setting only controls whether the loop repeats.**
 
 ```text
 1. Specialist writes/fixes code
-2. Send to ALL 4 review agents IN PARALLEL (async)
+2. Send to ALL 5 review agents IN PARALLEL (async)
 3. Merge & deduplicate findings
-4. Has comments? ──YES──→ Fix code → go to 2
+4. Has comments? ──YES──→ Fix code → go to 2 (if review_loop_enforcement enabled)
                     NO ↓
 5. Run test-automator
 6. Tests pass? ──NO──→ Minor fix? re-run tests (go to 5)
@@ -17,7 +29,7 @@ After ANY code change, follow this loop:
 
 ## Review Agents
 
-Four agents review code in parallel for comprehensive coverage:
+Five agents review code in parallel for comprehensive coverage:
 
 | Agent | Focus |
 |---|---|
@@ -25,8 +37,9 @@ Four agents review code in parallel for comprehensive coverage:
 | `code-reviewer-guidelines` | Project guidelines and style adherence (AGENTS.md) |
 | `code-reviewer-security` | Bugs, logic errors, and security vulnerabilities |
 | `code-reviewer-docs` | Documentation quality, completeness, and accuracy |
+| `code-reviewer-spec` | Code/PR/issue spec alignment and compliance |
 
-**All 4 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
+**All 5 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
 Do NOT block waiting for reviews — continue working while they run.**
 
 Overlapping scope is intentional for comprehensive coverage; step 3's deduplication handles duplicates.
@@ -83,4 +96,4 @@ For automated review flows (autorabbit, autoqodo), use **two-stage order** inste
    Loop Stage 2 until passed.
 
 Don't polish code that doesn't meet spec — it wastes work.
-Parallel mode (all 4 reviewers at once) remains default for manual reviews.
+Parallel mode (all 5 reviewers at once) remains default for manual reviews.

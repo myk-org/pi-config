@@ -9,6 +9,7 @@ pi-config/
 │   ├── code-reviewer-guidelines.md
 │   ├── code-reviewer-quality.md
 │   ├── code-reviewer-security.md
+│   ├── code-reviewer-spec.md
 │   ├── debugger.md
 │   ├── docker-expert.md
 │   ├── docs-fetcher.md
@@ -45,6 +46,7 @@ pi-config/
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
+│   │   ├── review-state.ts          # Review state machine (review loop enforcement)
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification

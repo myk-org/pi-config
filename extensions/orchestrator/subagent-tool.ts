@@ -43,7 +43,7 @@ let TaskStoreClass: any = null;
     throw new Error("[subagent] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
   }
 })();
-import { clockHHMM, getPiInvocation, getProjectTmpDir } from "./utils.js";
+import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -63,6 +63,7 @@ const ASYNC_ONLY_AGENTS = new Set([
   "code-reviewer-guidelines",
   "code-reviewer-security",
   "code-reviewer-docs",
+  "code-reviewer-spec",
 ]);
 // ── Schemas ──────────────────────────────────────────────────────────────
 
@@ -128,6 +129,9 @@ const SubagentParams = Type.Object({
   ),
   asyncKill: Type.Optional(
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
+  ),
+  persistSession: Type.Optional(
+    Type.Boolean({ description: "Persist agent session to disk for reuse across calls. Default: false (ephemeral). When true, the same agent in the same project reuses its session — keeps context, saves tokens." }),
   ),
 });
 
@@ -357,6 +361,7 @@ export async function runSingleAgent(
   makeDetails: (r: SingleResult[]) => SubagentDetails,
   parentModelId?: string,
   parentProvider?: string,
+  persistSession?: boolean,
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
@@ -381,7 +386,13 @@ export async function runSingleAgent(
     };
   }
 
-  const args: string[] = ["--mode", "json", "-p", "--no-session"];
+  const args: string[] = ["--mode", "json", "-p"];
+  if (!persistSession) {
+    args.push("--no-session");
+  } else {
+    // Deterministic session ID based on agent + cwd for session reuse
+    args.push("--session-id", `sync-${agentName}-${djb2Hash(agentName + ':' + cwd).toString(36)}`);
+  }
   const effectiveModel = agent.model || parentModelId;
   if (effectiveModel) args.push("--model", effectiveModel);
   const effectiveProvider = agent.provider || parentProvider;
@@ -653,6 +664,7 @@ export function registerSubagentTool(
           parentProvider,
           groupId,
           taskId: (t as any).taskId,
+          persistSession: params.persistSession,
         });
         if (r.error) {
           errors.push(`${t.agent}: ${r.error}`);
@@ -723,7 +735,7 @@ export function registerSubagentTool(
         };
       }
     }
-    const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId });
+    const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId, persistSession: params.persistSession });
     if (result.error) {
       return {
         content: [{ type: "text" as const, text: result.error }],
@@ -821,6 +833,7 @@ export function registerSubagentTool(
         mkd("chain"),
         parentModelId,
         parentProvider,
+        params.persistSession,
       );
       activeAgents.delete(s.agent);
       updateWorking();
@@ -973,6 +986,7 @@ export function registerSubagentTool(
           mkd("parallel"),
           parentModelId,
           parentProvider,
+          params.persistSession,
         );
         all[i] = r;
         activeAgents.delete(t.name || t.agent);
@@ -1056,6 +1070,7 @@ export function registerSubagentTool(
       mkd("single"),
       parentModelId,
       parentProvider,
+      params.persistSession,
     );
     activeAgents.delete(label);
     updateWorking();

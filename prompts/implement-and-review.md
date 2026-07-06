@@ -1,5 +1,5 @@
 ---
-description: "Implement → 4 parallel reviewers → fix — /implement-and-review <task>"
+description: "Implement → 5 parallel reviewers → fix — /implement-and-review <task>"
 argument-hint: "<task>"
 ---
 
@@ -14,11 +14,12 @@ Use the subagent tool with a chain of agents:
 1. **worker** — Implement the task from the raw arguments above.
    Make all necessary code changes following project conventions.
 
-2. Run 4 review subagents **in parallel**:
+2. Run 5 review subagents **in parallel**:
    - **code-reviewer-quality** — Review {previous} for code quality
    - **code-reviewer-guidelines** — Review {previous} for guideline adherence
    - **code-reviewer-security** — Review {previous} for bugs and security
    - **code-reviewer-docs** — Review {previous} for documentation quality
+   - **code-reviewer-spec** — Review {previous} for spec compliance
 
 3. **worker** — Based on the review feedback from {previous}, fix all issues found.
    Then report what was fixed.

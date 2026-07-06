@@ -15,6 +15,7 @@ interface RunConfig {
   task: string;
   cwd: string;
   model?: string;
+  contextWindow?: number;
   tools?: string[];
   systemPrompt?: string;
   resultPath: string;
@@ -68,6 +69,7 @@ async function run(config: RunConfig): Promise<void> {
     outputLines: 0,
   };
   writeJson(statusPath, status);
+  let lastUsage: any = null;
 
   const outputStream = fs.createWriteStream(outputPath, { flags: "w" });
 
@@ -142,11 +144,12 @@ async function run(config: RunConfig): Promise<void> {
         try {
           const ev = JSON.parse(trimmed);
 
-          // Extract final output from message_end events inline
+          // Extract final output and usage from message_end events inline
           if (ev.type === "message_end" && ev.message?.role === "assistant") {
             for (const p of ev.message.content || []) {
               if (p.type === "text") finalOutput = p.text;
             }
+            if (ev.message.usage) lastUsage = ev.message.usage;
           }
 
           // Forward events to pidash
@@ -222,6 +225,8 @@ async function run(config: RunConfig): Promise<void> {
     cwd: config.cwd,
     sessionId: config.sessionId,
     workerDir: config.workerDir,
+    lastUsage: lastUsage || null,
+    contextWindow: config.contextWindow || 0,
   });
 }
 

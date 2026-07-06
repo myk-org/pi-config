@@ -22,6 +22,8 @@ import {
   isGitRepo,
   runGit,
 } from "./git-helpers.js";
+import { spawnSync } from "node:child_process";
+import { markNeedsReview, isReviewClean, readReviewState } from "./review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -453,6 +455,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
+    // Enforce review loop — block commit unless review state is clean
+    if (process.env.PI_AGENT_NAME === "git-expert" && hasGitSub(command, "commit")) {
+      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(ctx.cwd)) {
+        const state = readReviewState(ctx.cwd);
+        return {
+          block: true,
+          reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending). Fix findings and re-run all reviewers until 0 comments.`,
+        };
+      }
+    }
+
     // Git protection
     const gitCwd = resolveEffectiveCwd(command, ctx.cwd);
     const gitCheck = await checkGitProtection(command, event, ctx, gitCwd);
@@ -586,6 +599,37 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         content: [...currentContent, ...appendMessages],
       };
     }
+  });
+
+  // ── Review state tracking (edit/write detection) ────────────────────
+  // Runs in ALL processes (orchestrator + subagents) to catch edits from any specialist.
+  pi.on("tool_result", async (event, ctx) => {
+    if (!getSetting(ctx.cwd, "review_loop_enforcement")) return;
+
+    const toolName = (event as any).toolName as string;
+    if (toolName !== "edit" && toolName !== "write") return;
+
+    const input = (event as any).input || {};
+    const filePath: string | undefined = input.path;
+    if (!filePath) return;
+
+    // Skip failed edits — only successful changes need review
+    const isError = (event as any).isError === true;
+    if (isError) return;
+
+    // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)
+    try {
+      const result = spawnSync("git", ["check-ignore", "-q", filePath], {
+        cwd: ctx.cwd,
+        timeout: 3000,
+        stdio: "ignore",
+      });
+      if (result.status === 0) return; // gitignored — skip
+    } catch {
+      // git not available or error — proceed with marking (safe default)
+    }
+
+    markNeedsReview(ctx.cwd);
   });
 }
 

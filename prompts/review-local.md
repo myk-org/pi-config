@@ -39,8 +39,9 @@ using `TaskUpdate` with `addBlockedBy`. The task system enforces execution order
 | 3 | Review — Guidelines | 1 |
 | 4 | Review — Security | 1 |
 | 5 | Review — Docs | 1 |
-| 6 | Merge & deduplicate findings | 2, 3, 4, 5 |
-| 7 | Present review | 6 |
+| 6 | Review — Spec | 1 |
+| 7 | Merge & deduplicate findings | 2, 3, 4, 5, 6 |
+| 8 | Present review | 7 |
 
 ### Dependency Graph
 
@@ -49,14 +50,15 @@ Task 1 (Get diff)
  ├── Task 2 (Review: Code Quality)  ──┐
  ├── Task 3 (Review: Guidelines)    ──┤
  ├── Task 4 (Review: Security)      ──┤
- └── Task 5 (Review: Docs)          ──┤
+ ├── Task 5 (Review: Docs)          ──┤
+ └── Task 6 (Review: Spec)          ──┤
                                        ▼
-                            Task 6 (Merge findings)
+                            Task 7 (Merge findings)
                                        │
-                            Task 7 (Present review)
+                            Task 8 (Present review)
 ```
 
-Create all 7 tasks using `TaskCreate` NOW, before starting any work.
+Create all 8 tasks using `TaskCreate` NOW, before starting any work.
 Then IMMEDIATELY set dependencies using `TaskUpdate` with `addBlockedBy` for each task per the table above.
 
 `TaskCreate` does NOT accept `addBlockedBy` — dependencies MUST be set via `TaskUpdate` after creation.
@@ -70,22 +72,24 @@ TaskCreate(subject="Review — Code Quality", ...)       → Task 2
 TaskCreate(subject="Review — Guidelines", ...)         → Task 3
 TaskCreate(subject="Review — Security", ...)           → Task 4
 TaskCreate(subject="Review — Docs", ...)               → Task 5
-TaskCreate(subject="Merge & deduplicate findings", ...)→ Task 6
-TaskCreate(subject="Present review", ...)              → Task 7
+TaskCreate(subject="Review — Spec", ...)               → Task 6
+TaskCreate(subject="Merge & deduplicate findings", ...)→ Task 7
+TaskCreate(subject="Present review", ...)              → Task 8
 
 # Step 2: Set dependencies
 TaskUpdate(taskId="2", addBlockedBy=["1"])
 TaskUpdate(taskId="3", addBlockedBy=["1"])
 TaskUpdate(taskId="4", addBlockedBy=["1"])
 TaskUpdate(taskId="5", addBlockedBy=["1"])
-TaskUpdate(taskId="6", addBlockedBy=["2", "3", "4", "5"])
-TaskUpdate(taskId="7", addBlockedBy=["6"])
+TaskUpdate(taskId="6", addBlockedBy=["1"])
+TaskUpdate(taskId="7", addBlockedBy=["2", "3", "4", "5", "6"])
+TaskUpdate(taskId="8", addBlockedBy=["7"])
 ```
 
 > 🚨 **HARD RULE: NEVER start a task while its `blockedBy` tasks are incomplete.**
 > The task system enforces this via `addBlockedBy` — but even if you could bypass it, **DON'T**.
 > Merging findings from partial reviewer results is a **CRITICAL violation**.
-> ALL 4 reviewers (Tasks 2, 3, 4, 5) MUST complete before merging findings (Task 6).
+> ALL 5 reviewers (Tasks 2, 3, 4, 5, 6) MUST complete before merging findings (Task 7).
 
 ## Workflow
 
@@ -111,9 +115,9 @@ git diff HEAD
 
 Mark Task 1 as `completed`.
 
-### Phase 2: Code Analysis — Tasks 2, 3, 4, 5
+### Phase 2: Code Analysis — Tasks 2, 3, 4, 5, 6
 
-Mark Tasks 2, 3, 4, 5 as `in_progress`, then spawn ALL 4 review agents as async subagents
+Mark Tasks 2, 3, 4, 5, 6 as `in_progress`, then spawn ALL 5 review agents as async subagents
 with `taskId` linking each to its task.
 Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
 
@@ -123,6 +127,7 @@ subagent(tasks=[
   {agent: "code-reviewer-guidelines", task: "Review diff for guidelines...", cwd: "...", name: "Review Guidelines", taskId: "<actual task 3 ID>"},
   {agent: "code-reviewer-security", task: "Review diff for security...", cwd: "...", name: "Review Security", taskId: "<actual task 4 ID>"},
   {agent: "code-reviewer-docs", task: "Review diff for documentation quality...", cwd: "...", name: "Review Docs", taskId: "<actual task 5 ID>"},
+  {agent: "code-reviewer-spec", task: "Review diff for spec compliance...", cwd: "...", name: "Review Spec", taskId: "<actual task 6 ID>"},
 ])
 ```
 
@@ -137,25 +142,25 @@ Provide each agent with the diff content from Phase 1 and ask them to analyze fo
 7. Code duplication
 8. Suggestions for improvement
 
-**After spawning, verify the response confirms all 4 agents were spawned.**
+**After spawning, verify the response confirms all 5 agents were spawned.**
 If any spawn fails, STOP and report the error — do NOT continue waiting.
 
 **After spawning, your turn is DONE.** Do NOT poll, sleep, call TaskOutput,
 or check status. Results arrive automatically as follow-up messages.
 When each reviewer finishes, its task is auto-completed via `taskId`.
-Task 6 (Merge findings) auto-unblocks when all 4 reviewer tasks complete.
+Task 7 (Merge findings) auto-unblocks when all 5 reviewer tasks complete.
 
-### Phase 3: Merge & Deduplicate Findings — Task 6
-
-Mark Task 6 as `in_progress`.
-
-Merge and deduplicate the findings from all 4 reviewers into a single combined findings list.
-
-Mark Task 6 as `completed`.
-
-### Phase 4: Present Review — Task 7
+### Phase 3: Merge & Deduplicate Findings — Task 7
 
 Mark Task 7 as `in_progress`.
+
+Merge and deduplicate the findings from all 5 reviewers into a single combined findings list.
+
+Mark Task 7 as `completed`.
+
+### Phase 4: Present Review — Task 8
+
+Mark Task 8 as `in_progress`.
 
 Display findings grouped by severity:
 
@@ -163,4 +168,4 @@ Display findings grouped by severity:
 - **Warnings** (should fix)
 - **Suggestions** (nice to have)
 
-Mark Task 7 as `completed`.
+Mark Task 8 as `completed`.
