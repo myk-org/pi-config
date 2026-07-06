@@ -2,7 +2,7 @@
 
 After ANY code change, send to ALL 5 review agents. **Never skip the first review.**
 
-If `review_loop_enforcement` is enabled in project settings (default: enabled):
+If `review_loop_enforcement` is enabled in project settings (default: disabled):
 
 - MUST loop until all reviewers return 0 findings
 - Commit will be blocked until clean

@@ -5,5 +5,5 @@
   "dream_interval_hours": 3,
   "dco": false,
   "comment_signature": false,
-  "review_loop_enforcement": true
+  "review_loop_enforcement": false
 }

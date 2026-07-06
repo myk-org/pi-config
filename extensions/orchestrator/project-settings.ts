@@ -178,7 +178,7 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       if (settings.review_loop_enforcement !== undefined) return settings.review_loop_enforcement;
       const env = parseBoolEnv("PI_REVIEW_LOOP_ENFORCEMENT");
       if (env !== undefined) return env;
-      return true; // default: enabled
+      return false; // default: disabled (opt-in)
     }
     default:
       return false;

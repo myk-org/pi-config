@@ -230,7 +230,7 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "allow_push_to_protected_branches": false,
   "use_worktrees": true,
   "dream_interval_hours": 6,
-  "review_loop_enforcement": true
+  "review_loop_enforcement": false
 }
 ```
 
