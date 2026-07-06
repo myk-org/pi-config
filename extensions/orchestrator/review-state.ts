@@ -4,7 +4,7 @@
  * Used by enforcement to block git commit until all reviewers approve.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { resolveRepoRoot } from "./utils.js";
 
@@ -65,13 +65,67 @@ export function readReviewState(cwd: string): ReviewState {
   }
 }
 
+function lockPath(cwd: string): string {
+  return statePath(cwd) + ".lock";
+}
+
+function acquireLock(cwd: string): boolean {
+  const lock = lockPath(cwd);
+  const maxRetries = 100;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      ensureDataDir(cwd);
+      writeFileSync(lock, String(process.pid), { flag: "wx" });
+      return true;
+    } catch {
+      // Lock exists — check if holder is alive
+      try {
+        const pid = parseInt(readFileSync(lock, "utf-8").trim(), 10);
+        // Reentrant: safe because Node.js is single-threaded — nested
+        // withStateLock calls within the same process can't interleave.
+        if (pid === process.pid) return true;
+        if (pid) {
+          try { process.kill(pid, 0); } catch {
+            // Holder is dead — steal lock
+            try { unlinkSync(lock); } catch { /* race */ }
+            continue;
+          }
+        }
+      } catch {
+        // Corrupt lock — remove and retry
+        try { unlinkSync(lock); } catch { /* race */ }
+        continue;
+      }
+      // Holder is alive — bounded tight spin (100 iterations ≈ instant, sub-ms)
+    }
+  }
+  return false;
+}
+
+function releaseLock(cwd: string): void {
+  try { unlinkSync(lockPath(cwd)); } catch { /* ignore */ }
+}
+
 function writeState(cwd: string, state: ReviewState): void {
   const p = statePath(cwd);
   try {
     ensureDataDir(cwd);
-    writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+    // Atomic write: temp file + rename
+    const tmp = `${p}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n");
+    renameSync(tmp, p);
   } catch (e: any) {
     console.debug("[review-state] write failed:", e?.message);
+  }
+}
+
+/** Execute a read-modify-write operation on the state file with a lock. */
+function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
+  const locked = acquireLock(cwd);
+  try {
+    return fn(readReviewState(cwd));
+  } finally {
+    if (locked) releaseLock(cwd);
   }
 }
 
@@ -79,67 +133,63 @@ function writeState(cwd: string, state: ReviewState): void {
  *  Does NOT reset during an active review cycle (in_progress) — edits during review
  *  are tracked via last_edit_at but don't wipe the pending reviewer list. */
 export function markNeedsReview(cwd: string): void {
-  const state = readReviewState(cwd);
-  if (state.status === "in_progress") {
-    // Edits during an active review cycle — mark dirty so the cycle
-    // won't be considered clean even if all reviewers return 0 findings.
-    state.last_edit_at = new Date().toISOString();
-    state.edited_during_cycle = true;
+  withStateLock(cwd, (state) => {
+    if (state.status === "in_progress") {
+      state.last_edit_at = new Date().toISOString();
+      state.edited_during_cycle = true;
+    } else {
+      state.status = "needs_review";
+      state.last_edit_at = new Date().toISOString();
+      state.cycle = 0;
+      state.findings_count = 0;
+      state.reviewers_pending = [];
+      state.reviewers_total = 0;
+      state.edited_during_cycle = false;
+    }
     writeState(cwd, state);
-    return;
-  }
-  state.status = "needs_review";
-  state.last_edit_at = new Date().toISOString();
-  state.cycle = 0;
-  state.findings_count = 0;
-  state.reviewers_pending = [];
-  state.reviewers_total = 0;
-  state.edited_during_cycle = false;
-  writeState(cwd, state);
+  });
 }
 
 /** Add a single reviewer to the pending list. Sets status to in_progress if not already. */
 export function addReviewerPending(cwd: string, reviewerName: string): void {
-  const state = readReviewState(cwd);
-  if (!state.reviewers_pending.includes(reviewerName)) {
-    state.reviewers_pending.push(reviewerName);
-    state.reviewers_total = Math.max(state.reviewers_total, state.reviewers_pending.length);
-  }
-  if (state.status !== "in_progress") {
-    state.status = "in_progress";
-    state.cycle++;
-    state.findings_count = 0;
-    state.edited_during_cycle = false;
-  }
-  writeState(cwd, state);
+  withStateLock(cwd, (state) => {
+    if (!state.reviewers_pending.includes(reviewerName)) {
+      state.reviewers_pending.push(reviewerName);
+      state.reviewers_total = Math.max(state.reviewers_total, state.reviewers_pending.length);
+    }
+    if (state.status !== "in_progress") {
+      state.status = "in_progress";
+      state.cycle++;
+      state.findings_count = 0;
+      state.edited_during_cycle = false;
+    }
+    writeState(cwd, state);
+  });
 }
 
 /** Record a reviewer's result. Idempotent — skips if reviewer already reported. Returns true if all reviewers have reported. */
 export function recordReviewerResult(cwd: string, reviewerName: string, findingsCount: number): boolean {
-  const state = readReviewState(cwd);
-  if (!state.reviewers_pending.includes(reviewerName)) {
-    // Already reported (zombie race, duplicate delivery) — skip to avoid double-counting
-    return state.reviewers_pending.length === 0;
-  }
-  state.reviewers_pending = state.reviewers_pending.filter(n => n !== reviewerName);
-  state.findings_count += findingsCount;
-  if (state.reviewers_pending.length === 0) {
-    // All reviewers reported — only transition to clean if status is still in_progress
-    // (an edit during the cycle would have set last_edit_at but kept status as in_progress)
-    if (state.status === "in_progress") {
-      if (state.edited_during_cycle) {
-        // Edits happened during this cycle — reviewers didn't see them
-        state.status = "needs_review";
-      } else {
-        state.status = state.findings_count > 0 ? "has_findings" : "clean";
-        if (state.status === "clean") {
-          state.last_clean_at = new Date().toISOString();
+  return withStateLock(cwd, (state) => {
+    if (!state.reviewers_pending.includes(reviewerName)) {
+      return state.reviewers_pending.length === 0;
+    }
+    state.reviewers_pending = state.reviewers_pending.filter(n => n !== reviewerName);
+    state.findings_count += findingsCount;
+    if (state.reviewers_pending.length === 0) {
+      if (state.status === "in_progress") {
+        if (state.edited_during_cycle) {
+          state.status = "needs_review";
+        } else {
+          state.status = state.findings_count > 0 ? "has_findings" : "clean";
+          if (state.status === "clean") {
+            state.last_clean_at = new Date().toISOString();
+          }
         }
       }
     }
-  }
-  writeState(cwd, state);
-  return state.reviewers_pending.length === 0;
+    writeState(cwd, state);
+    return state.reviewers_pending.length === 0;
+  });
 }
 
 /** Check if the review state is clean (all reviewers approved, no edits since). */
@@ -160,5 +210,7 @@ export function countFindings(output: string): number {
 
 /** Reset review state — for testing or manual override. */
 export function resetReviewState(cwd: string): void {
-  writeState(cwd, defaultState());
+  withStateLock(cwd, () => {
+    writeState(cwd, defaultState());
+  });
 }

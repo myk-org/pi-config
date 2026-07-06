@@ -4,7 +4,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -21,6 +21,7 @@ let cwd: string;
 
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "review-state-test-"));
+  mkdirSync(join(cwd, ".git")); // fake git repo so resolveRepoRoot doesn't shell out
 });
 
 afterEach(() => {
