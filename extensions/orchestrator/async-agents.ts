@@ -537,7 +537,7 @@ export function registerAsyncAgents(
       cwd,
       stdio: "ignore",
       windowsHide: true,
-      env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
+      env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName },
     });
 
     // Track the job

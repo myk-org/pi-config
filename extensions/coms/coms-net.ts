@@ -33,7 +33,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -129,6 +129,7 @@ interface ResponseSubmitRequest {
 	responder_session: string;
 	response: any;
 	error: string | null;
+	queued_msg_ids?: string[];
 }
 
 interface InboundContext {
@@ -144,10 +145,10 @@ interface InboundContext {
 }
 
 interface PendingReply {
-	resolve: (value: { response?: any; error?: string | null }) => void;
+	resolve: (value: { response?: any; error?: string | null; queued_msg_ids?: string[] }) => void;
 	reject: (err: Error) => void;
-	promise: Promise<{ response?: any; error?: string | null }>;
-	result?: { response?: any; error?: string | null };
+	promise: Promise<{ response?: any; error?: string | null; queued_msg_ids?: string[] }>;
+	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
 	target_name?: string;
 	target_session?: string;
 	created_at: string;
@@ -591,7 +592,7 @@ export default function (pi: ExtensionAPI) {
 					msg_id,
 					sender: senderSession,
 					hops,
-					queue_depth: inboundQueue.size,
+					queue_depth: getPendingInboundCount(),
 				});
 			} catch { /* best-effort */ }
 			return;
@@ -644,16 +645,17 @@ export default function (pi: ExtensionAPI) {
 		const errVal: string | null = typeof data.error === "string" ? data.error : null;
 		const pending = pendingReplies.get(msg_id);
 		if (pending) {
-			pending.result = { response: responseVal, error: errVal };
-			try { pending.resolve(pending.result); } catch { /* ignore */ }
+			const queuedMsgIds: string[] = Array.isArray(data.queued_msg_ids) ? data.queued_msg_ids.filter((id: unknown) => typeof id === "string") : [];
+			pending.result = { response: responseVal, error: errVal, queued_msg_ids: queuedMsgIds };
+			try {
+				pending.resolve(pending.result);
+			} catch (e: any) {
+				audit("resolve_failed", { msg_id, reason: e?.message ?? String(e) });
+			}
 
 			// Auto-deliver response as followUp so the LLM sees it without polling
 			const targetName = pending.target_name ?? "peer";
-			const responseText = errVal
-				? `[coms response from ${targetName}] Error: ${errVal}`
-				: typeof responseVal === "string"
-					? `[coms response from ${targetName}] ${responseVal}`
-					: `[coms response from ${targetName}] ${JSON.stringify(responseVal, null, 2)}`;
+			const responseText = formatComsResponseText(targetName, responseVal, errVal, queuedMsgIds);
 			try {
 				pi.sendMessage(
 					{
@@ -664,6 +666,7 @@ export default function (pi: ExtensionAPI) {
 							msg_id,
 							target_name: targetName,
 							error: errVal,
+							queued_msg_ids: queuedMsgIds,
 						},
 					},
 					{ deliverAs: "followUp", triggerTurn: true },
@@ -944,7 +947,7 @@ export default function (pi: ExtensionAPI) {
 			const hbReq: HeartbeatRequest = {
 				project: identity.project,
 				context_used_pct: pct,
-				queue_depth: inboundQueue.size,
+				queue_depth: getPendingInboundCount(),
 				tasks_summary: readTaskSummary(identity?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 				model: ctxNow?.model?.id ?? identity.model,
 				status: "online",
@@ -969,6 +972,7 @@ export default function (pi: ExtensionAPI) {
 			pending: boolean;
 			stale: boolean;
 			tasks?: { total: number; completed: number; in_progress: number } | null;
+			queue_depth: number;
 		}
 
 		const rows: Row[] = [];
@@ -984,6 +988,7 @@ export default function (pi: ExtensionAPI) {
 				pending: card.status === "stale",
 				stale: card.status === "offline",
 				tasks: card.tasks_summary,
+				queue_depth: card.queue_depth ?? 0,
 			});
 		}
 
@@ -1057,7 +1062,8 @@ export default function (pi: ExtensionAPI) {
 			const purposePart = theme.fg("muted", r.purpose || "");
 
 			const tasksPart = renderTasksPart(r.tasks, theme);
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + sep + purposePart;
+			const queuePart = renderQueuePart(r.queue_depth, theme);
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
@@ -1107,7 +1113,8 @@ export default function (pi: ExtensionAPI) {
 				: peers.map((a) => {
 					const live = a.status === "online" ? "●" : a.status === "stale" ? "~" : "✗";
 					const ctxStr = typeof a.context_used_pct === "number" ? ` ${a.context_used_pct}%` : " ?%";
-					return `${live} ${a.name} (${abbreviateModel(a.model)})${ctxStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
+					const queueStr = formatQueueStr(a.queue_depth);
+					return `${live} ${a.name} (${abbreviateModel(a.model)})${ctxStr}${queueStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
 				}).join("\n");
 
 			return {
@@ -1292,7 +1299,7 @@ export default function (pi: ExtensionAPI) {
 					: `coms_net_get: complete\n${typeof r.response === "string" ? r.response : JSON.stringify(r.response, null, 2)}`;
 				return {
 					content: [{ type: "text" as const, text }],
-					details: { status: "complete", response: r.response, error: r.error ?? null },
+					details: { status: "complete", response: r.response, error: r.error ?? null, queued_msg_ids: r.queued_msg_ids ?? [] },
 				};
 			}
 			// Fall back to server.
@@ -1386,11 +1393,16 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// Use inline count instead of getPendingInboundCount() — `inbound` (local param)
+		// differs from `currentInbound` (module-scoped, already null at this point).
+		const queuedIds: string[] = [];
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
 		const req: ResponseSubmitRequest = {
 			project: identity.project,
 			responder_session: identity.session_id,
 			response: payload,
 			error,
+			queued_msg_ids: queuedIds,
 		};
 
 		try {
@@ -1438,15 +1450,19 @@ export default function (pi: ExtensionAPI) {
 				// Failed to inject — drain ALL remaining queued messages with error responses
 				audit("fifo_drain_failed", { msg_id: next.msg_id, reason: safeError(err) });
 				const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
-				for (const orphan of remaining) {
+				for (let idx = 0; idx < remaining.length; idx++) {
+					const orphan = remaining[idx];
 					try {
 						await httpFetch("POST", `/v1/messages/${encodeURIComponent(orphan.msg_id)}/response`, {
 							project: identity!.project,
 							responder_session: identity!.session_id,
 							response: null,
 							error: "injection_failed",
+							queued_msg_ids: remaining.slice(idx + 1).map(r => r.msg_id),
 						});
-					} catch { /* best-effort */ }
+					} catch (e: any) {
+						audit("orphan_cleanup_failed", { msg_id: orphan.msg_id, reason: e?.message ?? String(e) });
+					}
 					orphan.fulfilled = true;
 					inboundQueue.delete(orphan.msg_id);
 				}

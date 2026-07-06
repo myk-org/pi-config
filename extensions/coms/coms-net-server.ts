@@ -231,6 +231,7 @@ export type ResponseSubmitRequest = {
 	responder_session: string;
 	response: any;
 	error: string | null;
+	queued_msg_ids?: string[];
 };
 
 export type ErrorResponse = { ok: false; error: string; details?: any };
@@ -1176,6 +1177,7 @@ async function handleSubmitResponse(
 		response: msg.response,
 		error: msg.error,
 		status: msg.status,
+		queued_msg_ids: Array.isArray(body.queued_msg_ids) ? body.queued_msg_ids.filter((id: unknown) => typeof id === "string") : [],
 	});
 	// Also push a final message_status for completeness.
 	sendToStream(project, msg.sender_session, "message_status", {
