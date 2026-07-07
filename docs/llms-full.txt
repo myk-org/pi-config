@@ -8,11 +8,25 @@ Source: quickstart.md
 
 
 
+## Related Pages
+
+- [Your First Coding Workflow](first-workflow.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Running Pi in a Docker Container](docker-deployment.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
+
 ---
 
 Source: first-workflow.md
 
 
+
+## Related Pages
+
+- [Installing and Starting Your First Session](quickstart.html)
+- [Running the Automated Code Review Loop](code-review-loop.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Common Workflow Recipes](workflow-recipes.html)
 
 ---
 
@@ -20,11 +34,25 @@ Source: agent-routing.md
 
 
 
+## Related Pages
+
+- [Specialist Agents Reference](agents-reference.html)
+- [Orchestrator Rules Reference](rules-reference.html)
+- [Communicating Between Pi Sessions](inter-agent-communication.html)
+- [Command Safety Guards and Enforcement](command-enforcement.html)
+
 ---
 
 Source: code-review-loop.md
 
 
+
+## Related Pages
+
+- [Your First Coding Workflow](first-workflow.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
 
 ---
 
@@ -32,11 +60,25 @@ Source: slash-commands.md
 
 
 
+## Related Pages
+
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Customization and Extension Recipes](customization-recipes.html)
+- [Your First Coding Workflow](first-workflow.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+
 ---
 
 Source: memory-system.md
 
 
+
+## Related Pages
+
+- [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Customization and Extension Recipes](customization-recipes.html)
+- [Orchestrator Rules Reference](rules-reference.html)
 
 ---
 
@@ -44,11 +86,25 @@ Source: async-agents-and-cron.md
 
 
 
+## Related Pages
+
+- [Communicating Between Pi Sessions](inter-agent-communication.html)
+- [Understanding Agent Routing and Delegation](agent-routing.html)
+- [Specialist Agents Reference](agents-reference.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+
 ---
 
 Source: inter-agent-communication.md
 
 
+
+## Related Pages
+
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Understanding Agent Routing and Delegation](agent-routing.html)
+- [Specialist Agents Reference](agents-reference.html)
+- [Controlling Pi Sessions from Discord](discord-bot.html)
 
 ---
 
@@ -56,11 +112,25 @@ Source: external-ai-agents.md
 
 
 
+## Related Pages
+
+- [Using ACPX Provider for External Agent Models](acpx-provider.html)
+- [Specialist Agents Reference](agents-reference.html)
+- [Understanding Agent Routing and Delegation](agent-routing.html)
+- [Communicating Between Pi Sessions](inter-agent-communication.html)
+
 ---
 
 Source: docker-deployment.md
 
 
+
+## Related Pages
+
+- [Installing and Starting Your First Session](quickstart.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [myk-pi-tools CLI Reference](cli-reference.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
 
 ---
 
@@ -68,11 +138,25 @@ Source: dashboards-and-diffs.md
 
 
 
+## Related Pages
+
+- [Running the Automated Code Review Loop](code-review-loop.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+
 ---
 
 Source: workflow-recipes.md
 
 
+
+## Related Pages
+
+- [Your First Coding Workflow](first-workflow.html)
+- [Running the Automated Code Review Loop](code-review-loop.html)
+- [Customization and Extension Recipes](customization-recipes.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
 
 ---
 
@@ -80,11 +164,26 @@ Source: customization-recipes.md
 
 
 
+## Related Pages
+
+- [Common Workflow Recipes](workflow-recipes.html)
+- [Orchestrator Rules Reference](rules-reference.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
+
 ---
 
 Source: agents-reference.md
 
 
+
+## Related Pages
+
+- [Understanding Agent Routing and Delegation](agent-routing.html)
+- [Communicating Between Pi Sessions](inter-agent-communication.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
 
 ---
 
@@ -92,11 +191,25 @@ Source: commands-reference.md
 
 
 
+## Related Pages
+
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [myk-pi-tools CLI Reference](cli-reference.html)
+- [Command Safety Guards and Enforcement](command-enforcement.html)
+- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+
 ---
 
 Source: cli-reference.md
 
 
+
+## Related Pages
+
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Running Pi in a Docker Container](docker-deployment.html)
+- [Installing and Starting Your First Session](quickstart.html)
 
 ---
 
@@ -104,11 +217,25 @@ Source: configuration-reference.md
 
 
 
+## Related Pages
+
+- [Orchestrator Rules Reference](rules-reference.html)
+- [Customization and Extension Recipes](customization-recipes.html)
+- [myk-pi-tools CLI Reference](cli-reference.html)
+- [Running Pi in a Docker Container](docker-deployment.html)
+
 ---
 
 Source: rules-reference.md
 
 
+
+## Related Pages
+
+- [Understanding Agent Routing and Delegation](agent-routing.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Command Safety Guards and Enforcement](command-enforcement.html)
+- [Customization and Extension Recipes](customization-recipes.html)
 
 ---
 
@@ -116,11 +243,25 @@ Source: extension-architecture.md
 
 
 
+## Related Pages
+
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Customization and Extension Recipes](customization-recipes.html)
+- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
+- [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
+
 ---
 
 Source: memory-internals.md
 
 
+
+## Related Pages
+
+- [Working with Project Memory](memory-system.html)
+- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Specialist Agents Reference](agents-reference.html)
 
 ---
 
@@ -128,11 +269,25 @@ Source: acpx-provider.md
 
 
 
+## Related Pages
+
+- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Specialist Agents Reference](agents-reference.html)
+- [Running Pi in a Docker Container](docker-deployment.html)
+
 ---
 
 Source: discord-bot.md
 
 
+
+## Related Pages
+
+- [Communicating Between Pi Sessions](inter-agent-communication.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
 
 ---
 
@@ -140,16 +295,37 @@ Source: neovim-integration.md
 
 
 
+## Related Pages
+
+- [Installing and Starting Your First Session](quickstart.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+
 ---
 
 Source: image-generation.md
 
 
 
+## Related Pages
+
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Specialist Agents Reference](agents-reference.html)
+- [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Common Workflow Recipes](workflow-recipes.html)
+
 ---
 
 Source: command-enforcement.md
 
 
+
+## Related Pages
+
+- [Orchestrator Rules Reference](rules-reference.html)
+- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Understanding Agent Routing and Delegation](agent-routing.html)
+- [Configuration and Environment Variables Reference](configuration-reference.html)
 
 ---
