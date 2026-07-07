@@ -389,8 +389,12 @@ describe("worktree state isolation", () => {
     execFileSync("git", ["init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
 
-    worktreeA = join(mainRepo, ".worktrees", "wt-a");
-    worktreeB = join(mainRepo, ".worktrees", "wt-b");
+    // Worktrees in separate tmpdir paths — proves isolation works for worktrees ANYWHERE,
+    // not just under .worktrees/ in the repo.
+    worktreeA = join(tmpdir(), `wt-a-${Date.now()}`);
+    worktreeB = join(tmpdir(), `wt-b-${Date.now()}`);
+    rmSync(worktreeA, { recursive: true, force: true });
+    rmSync(worktreeB, { recursive: true, force: true });
     execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
     execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
   });
