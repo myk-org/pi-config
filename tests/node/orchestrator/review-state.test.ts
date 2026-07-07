@@ -15,13 +15,14 @@ import {
   isReviewClean,
   resetReviewState,
   countFindings,
+  statePath,
 } from "../../../extensions/orchestrator/review-state.js";
 
 let cwd: string;
 
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "review-state-test-"));
-  mkdirSync(join(cwd, ".git")); // fake git repo so resolveRepoRoot doesn't shell out
+  mkdirSync(join(cwd, ".git")); // .git dir needed so resolveWorktreeRoot treats this as a git root
 });
 
 afterEach(() => {
@@ -360,5 +361,86 @@ describe("recordReviewerResult idempotent", () => {
     const s = readReviewState(cwd);
     assert.equal(s.findings_count, 3); // not 6
     assert.deepEqual(s.reviewers_pending, ["test"]);
+  });
+});
+
+// ── Worktree state isolation ──
+
+import { execFileSync } from "node:child_process";
+
+// Git identity env vars for hermetic tests (CI may not have global git config)
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "test",
+  GIT_AUTHOR_EMAIL: "test@test.local",
+  GIT_COMMITTER_NAME: "test",
+  GIT_COMMITTER_EMAIL: "test@test.local",
+};
+
+describe("worktree state isolation", () => {
+  let mainRepo: string;
+  let worktreeA: string;
+  let worktreeB: string;
+
+  beforeEach(() => {
+    // Create a real git repo with two worktrees to exercise the actual
+    // git rev-parse --show-toplevel / --git-common-dir code paths.
+    mainRepo = mkdtempSync(join(tmpdir(), "wt-main-"));
+    execFileSync("git", ["init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+
+    // Worktrees in separate tmpdir paths — proves isolation works for worktrees ANYWHERE,
+    // not just under .worktrees/ in the repo. Use randomUUID for collision-safe paths.
+    worktreeA = join(tmpdir(), `wt-a-${crypto.randomUUID()}`);
+    worktreeB = join(tmpdir(), `wt-b-${crypto.randomUUID()}`);
+    execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+    execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+  });
+
+  afterEach(() => {
+    // Remove worktrees before deleting the repo — --force needed because
+    // tests create .pi/data/ files inside worktrees (untracked content).
+    try { execFileSync("git", ["worktree", "remove", worktreeA, "--force"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV }); } catch {}
+    try { execFileSync("git", ["worktree", "remove", worktreeB, "--force"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV }); } catch {}
+    rmSync(mainRepo, { recursive: true, force: true });
+  });
+
+  it("statePath returns different paths for different worktrees sharing same repo", () => {
+    const pathMain = statePath(mainRepo);
+    const pathA = statePath(worktreeA);
+    const pathB = statePath(worktreeB);
+    // All three must be different
+    assert.notEqual(pathMain, pathA);
+    assert.notEqual(pathMain, pathB);
+    assert.notEqual(pathA, pathB);
+    // Each path is under its own worktree root
+    assert.ok(pathMain.startsWith(mainRepo));
+    assert.ok(pathA.startsWith(worktreeA));
+    assert.ok(pathB.startsWith(worktreeB));
+  });
+
+  it("markNeedsReview in worktree A does not affect worktree B or main", () => {
+    markNeedsReview(worktreeA);
+    assert.equal(readReviewState(worktreeA).status, "needs_review");
+    assert.equal(readReviewState(worktreeB).status, "none");
+    assert.equal(readReviewState(mainRepo).status, "none");
+  });
+
+  it("clean state in worktree A does not leak to worktree B", () => {
+    // Make A clean
+    markNeedsReview(worktreeA);
+    addReviewerPending(worktreeA, "lint");
+    recordReviewerResult(worktreeA, "lint", 0);
+    assert.equal(isReviewClean(worktreeA), true);
+
+    // Mark B needs review
+    markNeedsReview(worktreeB);
+    assert.equal(isReviewClean(worktreeB), false);
+
+    // A's clean state should NOT affect B
+    assert.equal(isReviewClean(worktreeA), true);
+    assert.equal(isReviewClean(worktreeB), false);
+    // Main repo unaffected
+    assert.equal(readReviewState(mainRepo).status, "none");
   });
 });

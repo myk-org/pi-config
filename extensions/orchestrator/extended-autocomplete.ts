@@ -14,6 +14,7 @@
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
  *   /review-handler <Tab>        → --autorabbit, --autoqodo
+ *   /review-status <Tab>         → active worktree paths
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
@@ -23,6 +24,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import * as path from "node:path";
 import { getCronFilePath } from "./cron.js";
 
 // ── Cache infrastructure ────────────────────────────────────────────
@@ -224,6 +227,35 @@ function registerCompletions(
       ];
       const available = all.filter(item => !selected.has(item.value));
       return filter(available, lastPart);
+    },
+
+    "review-status": (prefix: string) => {
+      // List active worktrees (excluding main repo) as completion options
+      try {
+        // Use --git-common-dir to find the shared repo root (not worktree root).
+        // This ensures we correctly identify the main repo even if ctx.lastCwd
+        // happens to be inside a worktree.
+        const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+          cwd: ctx.lastCwd, encoding: "utf-8", timeout: 3000,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        const mainRoot = path.dirname(path.resolve(ctx.lastCwd, gitCommonDir));
+        const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
+          cwd: ctx.lastCwd, encoding: "utf-8", timeout: 3000,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        const worktrees: AutocompleteItem[] = [];
+        for (const line of porcelain.split("\n")) {
+          if (!line.startsWith("worktree ")) continue;
+          const wtPath = line.slice("worktree ".length).trim();
+          if (wtPath === mainRoot) continue; // skip main repo
+          const relative = path.relative(ctx.lastCwd, wtPath);
+          worktrees.push({ value: relative, label: relative, description: `Worktree: ${wtPath}` });
+        }
+        return filter(worktrees, prefix);
+      } catch {
+        return null;
+      }
     },
 
     "dream-auto": (prefix: string) => {

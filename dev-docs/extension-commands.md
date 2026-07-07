@@ -12,7 +12,7 @@ the extension source files under `extensions/`. Each command uses
 | `/pidash` | `pidash/pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
 | `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff per-project server (start/stop/restart/status) |
 | `/status` | `status.ts` | Unified session status snapshot |
-| `/review-status` | `enforcement.ts` | Show current review loop enforcement state |
+| `/review-status [worktree-path]` | `enforcement.ts` | Show review loop state. Pass a worktree path to check a specific worktree |
 | `/async-status` | `async-agents.ts` | Background agent status |
 | `/dream` | `dreaming.ts` | Memory consolidation |
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |

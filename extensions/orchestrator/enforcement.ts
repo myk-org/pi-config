@@ -1,6 +1,8 @@
 /**
  * Enforcement handler — blocks forbidden commands (python/pip, git protection,
  * remote script execution, memory writes, dangerous) + memory-based enforcement rules.
+ * Worktree-aware: resolves file edits to the correct worktree root for per-worktree
+ * review state tracking and gitignore checks.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -8,9 +10,9 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import path, { join, resolve, dirname } from "node:path";
 import { getSetting } from "./project-settings.js";
-import { getProjectTmpDir } from "./utils.js";
+import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   DANGEROUS,
   getCurrentBranch,
@@ -478,9 +480,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Enforce review loop — block commit unless review state is clean
+    // Use resolveEffectiveCwd to detect the worktree from cd commands (e.g., cd .worktrees/issue-622 && git commit)
     if (process.env.PI_AGENT_NAME === "git-expert" && hasGitSub(command, "commit")) {
-      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(ctx.cwd)) {
-        const state = readReviewState(ctx.cwd);
+      const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
+      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(commitCwd)) {
+        const state = readReviewState(commitCwd);
         return {
           block: true,
           reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending). Fix findings and re-run all reviewers until 0 comments.`,
@@ -639,10 +643,25 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const isError = (event as any).isError === true;
     if (isError) return;
 
-    // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)
+    // Resolve the worktree root from the file's location.
+    // This handles files in any worktree (not just .worktrees/) by asking git
+    // which worktree the file belongs to via --show-toplevel.
+    const absPath = resolve(ctx.cwd, filePath);
+    const fileDir = dirname(absPath);
+    let effectiveCwd: string;
     try {
-      const result = spawnSync("git", ["check-ignore", "-q", filePath], {
-        cwd: ctx.cwd,
+      effectiveCwd = resolveWorktreeRoot(fileDir);
+    } catch {
+      effectiveCwd = ctx.cwd; // fallback to session cwd
+    }
+    const relativePath = path.relative(effectiveCwd, absPath);
+
+    // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)
+    // Run from the worktree root so files in worktrees are checked correctly
+    // (from the main repo, .worktrees/ itself is gitignored — false positive).
+    try {
+      const result = spawnSync("git", ["check-ignore", "-q", relativePath], {
+        cwd: effectiveCwd,
         timeout: 3000,
         stdio: "ignore",
       });
@@ -653,8 +672,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Retry markNeedsReview on lock failure — missing this would leave state
     // as 'clean' and allow commits to slip through enforcement.
+    // Uses effectiveCwd so each worktree gets its own review-state.json.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { markNeedsReview(ctx.cwd); break; } catch {
+      try { markNeedsReview(effectiveCwd); break; } catch {
         if (attempt === 2) {
           // Last resort: log but don't crash the extension
           console.error("[enforcement] markNeedsReview failed after 3 attempts — review state may be stale");
@@ -664,14 +684,21 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   });
 
   // ── /review-status command — read-only access to review state ──────
+  // Usage: /review-status [worktree-path]
+  // Without args: shows main repo state. With path: shows that worktree's state.
+  // Autocomplete for /review-status is provided by extended-autocomplete.ts
+  // via the registerCommand wrapper (lists active worktrees).
   pi.registerCommand("review-status", {
-    description: "Show current review loop enforcement state",
-    handler: async (_args, ctx) => {
+    description: "Show current review loop enforcement state. Pass a worktree path to check its state.",
+    handler: async (args, ctx) => {
       if (!ctx.hasUI) return;
-      const state = readReviewState(ctx.cwd);
+      const worktreePath = args?.trim() || "";
+      const targetCwd = worktreePath ? resolve(ctx.cwd, worktreePath) : ctx.cwd;
+      const state = readReviewState(targetCwd);
       const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
+      const worktreeLabel = worktreePath ? ` (worktree: ${worktreePath})` : "";
       const lines = [
-        `Review Loop Enforcement: ${enabled ? "enabled" : "disabled"}`,
+        `Review Loop Enforcement: ${enabled ? "enabled" : "disabled"}${worktreeLabel}`,
         `Status: ${state.status}`,
         `Cycle: ${state.cycle}`,
         `Findings: ${state.findings_count}`,
@@ -688,13 +715,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   pi.registerTool({
     name: "review_status",
     label: "Review Status",
-    description: "Get current review loop enforcement state. Use to check if review is needed, in progress, clean, or has findings before committing.",
-    parameters: Type.Object({}),
-    async execute(_callId, _params, _signal, _onUpdate, ctx) {
-      const state = readReviewState(ctx.cwd);
+    description: "Get current review loop enforcement state. Use to check if review is needed, in progress, clean, or has findings before committing. Pass worktree_path to check a specific worktree's state.",
+    parameters: Type.Object({
+      worktree_path: Type.Optional(Type.String({ description: "Path to a worktree directory to check its review state instead of the main repo" })),
+    }),
+    async execute(_callId, params, _signal, _onUpdate, ctx) {
+      const targetCwd = params.worktree_path ? resolve(ctx.cwd, params.worktree_path) : ctx.cwd;
+      const state = readReviewState(targetCwd);
       const enabled = getSetting(ctx.cwd, "review_loop_enforcement");
+      const prefix = params.worktree_path ? `worktree: ${params.worktree_path}\n` : "";
       const summary = [
-        `enforcement: ${enabled ? "enabled" : "disabled"}`,
+        `${prefix}enforcement: ${enabled ? "enabled" : "disabled"}`,
         `status: ${state.status}`,
         `cycle: ${state.cycle}`,
         `findings: ${state.findings_count}`,
@@ -705,7 +736,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       ].join("\n");
       return {
         content: [{ type: "text" as const, text: summary }],
-        details: { state, enabled },
+        details: { state, enabled, worktree_path: params.worktree_path || null },
       };
     },
   });
