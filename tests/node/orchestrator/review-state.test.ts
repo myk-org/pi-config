@@ -390,11 +390,10 @@ describe("worktree state isolation", () => {
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
 
     // Worktrees in separate tmpdir paths — proves isolation works for worktrees ANYWHERE,
-    // not just under .worktrees/ in the repo.
-    worktreeA = join(tmpdir(), `wt-a-${Date.now()}`);
-    worktreeB = join(tmpdir(), `wt-b-${Date.now()}`);
-    rmSync(worktreeA, { recursive: true, force: true });
-    rmSync(worktreeB, { recursive: true, force: true });
+    // not just under .worktrees/ in the repo. Use randomUUID for collision-safe paths.
+    const { randomUUID } = require("node:crypto");
+    worktreeA = join(tmpdir(), `wt-a-${randomUUID()}`);
+    worktreeB = join(tmpdir(), `wt-b-${randomUUID()}`);
     execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
     execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
   });
