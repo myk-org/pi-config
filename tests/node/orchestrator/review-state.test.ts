@@ -391,14 +391,15 @@ describe("worktree state isolation", () => {
 
     worktreeA = join(mainRepo, ".worktrees", "wt-a");
     worktreeB = join(mainRepo, ".worktrees", "wt-b");
-    execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore" });
-    execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore" });
+    execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+    execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
   });
 
   afterEach(() => {
-    // Remove worktrees before deleting the repo
-    try { execFileSync("git", ["worktree", "remove", worktreeA, "--force"], { cwd: mainRepo, stdio: "ignore" }); } catch {}
-    try { execFileSync("git", ["worktree", "remove", worktreeB, "--force"], { cwd: mainRepo, stdio: "ignore" }); } catch {}
+    // Remove worktrees before deleting the repo — --force needed because
+    // tests create .pi/data/ files inside worktrees (untracked content).
+    try { execFileSync("git", ["worktree", "remove", worktreeA, "--force"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV }); } catch {}
+    try { execFileSync("git", ["worktree", "remove", worktreeB, "--force"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV }); } catch {}
     rmSync(mainRepo, { recursive: true, force: true });
   });
 
