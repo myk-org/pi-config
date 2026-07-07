@@ -232,10 +232,14 @@ function registerCompletions(
     "review-status": (prefix: string) => {
       // List active worktrees (excluding main repo) as completion options
       try {
-        const mainRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        // Use --git-common-dir to find the shared repo root (not worktree root).
+        // This ensures we correctly identify the main repo even if ctx.lastCwd
+        // happens to be inside a worktree.
+        const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
           cwd: ctx.lastCwd, encoding: "utf-8", timeout: 3000,
           stdio: ["ignore", "pipe", "ignore"],
         }).trim();
+        const mainRoot = path.dirname(path.resolve(ctx.lastCwd, gitCommonDir));
         const porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
           cwd: ctx.lastCwd, encoding: "utf-8", timeout: 3000,
           stdio: ["ignore", "pipe", "ignore"],

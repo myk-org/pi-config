@@ -366,36 +366,52 @@ describe("recordReviewerResult idempotent", () => {
 
 // ── Worktree state isolation ──
 
+import { execSync } from "node:child_process";
+
 describe("worktree state isolation", () => {
+  let mainRepo: string;
   let worktreeA: string;
   let worktreeB: string;
 
   beforeEach(() => {
-    worktreeA = mkdtempSync(join(tmpdir(), "wt-a-"));
-    worktreeB = mkdtempSync(join(tmpdir(), "wt-b-"));
-    mkdirSync(join(worktreeA, ".git")); // .git dir needed so resolveWorktreeRoot treats these as git roots
-    mkdirSync(join(worktreeB, ".git"));
+    // Create a real git repo with two worktrees to exercise the actual
+    // git rev-parse --show-toplevel / --git-common-dir code paths.
+    mainRepo = mkdtempSync(join(tmpdir(), "wt-main-"));
+    execSync("git init", { cwd: mainRepo, stdio: "ignore" });
+    execSync("git commit --allow-empty -m init", { cwd: mainRepo, stdio: "ignore" });
+
+    worktreeA = join(mainRepo, ".worktrees", "wt-a");
+    worktreeB = join(mainRepo, ".worktrees", "wt-b");
+    execSync(`git worktree add ${worktreeA} -b branch-a`, { cwd: mainRepo, stdio: "ignore" });
+    execSync(`git worktree add ${worktreeB} -b branch-b`, { cwd: mainRepo, stdio: "ignore" });
   });
 
   afterEach(() => {
-    rmSync(worktreeA, { recursive: true, force: true });
-    rmSync(worktreeB, { recursive: true, force: true });
+    // Remove worktrees before deleting the repo
+    try { execSync(`git worktree remove ${worktreeA} --force`, { cwd: mainRepo, stdio: "ignore" }); } catch {}
+    try { execSync(`git worktree remove ${worktreeB} --force`, { cwd: mainRepo, stdio: "ignore" }); } catch {}
+    rmSync(mainRepo, { recursive: true, force: true });
   });
 
-  it("statePath returns different paths for different directories", () => {
+  it("statePath returns different paths for different worktrees sharing same repo", () => {
+    const pathMain = statePath(mainRepo);
     const pathA = statePath(worktreeA);
     const pathB = statePath(worktreeB);
+    // All three must be different
+    assert.notEqual(pathMain, pathA);
+    assert.notEqual(pathMain, pathB);
     assert.notEqual(pathA, pathB);
+    // Each path is under its own worktree root
+    assert.ok(pathMain.startsWith(mainRepo));
     assert.ok(pathA.startsWith(worktreeA));
     assert.ok(pathB.startsWith(worktreeB));
   });
 
-  it("markNeedsReview in worktree A does not affect worktree B", () => {
+  it("markNeedsReview in worktree A does not affect worktree B or main", () => {
     markNeedsReview(worktreeA);
-    const stateA = readReviewState(worktreeA);
-    const stateB = readReviewState(worktreeB);
-    assert.equal(stateA.status, "needs_review");
-    assert.equal(stateB.status, "none");
+    assert.equal(readReviewState(worktreeA).status, "needs_review");
+    assert.equal(readReviewState(worktreeB).status, "none");
+    assert.equal(readReviewState(mainRepo).status, "none");
   });
 
   it("clean state in worktree A does not leak to worktree B", () => {
@@ -412,5 +428,7 @@ describe("worktree state isolation", () => {
     // A's clean state should NOT affect B
     assert.equal(isReviewClean(worktreeA), true);
     assert.equal(isReviewClean(worktreeB), false);
+    // Main repo unaffected
+    assert.equal(readReviewState(mainRepo).status, "none");
   });
 });
