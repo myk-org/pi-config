@@ -12,6 +12,12 @@ import {
   EMBEDDING_POOLING,
 } from "../../../extensions/orchestrator/memory-embeddings.js";
 
+// Hardcoded to match NEAR_DUPLICATE_THRESHOLD in memory-tools.ts (0.90).
+// Can't import directly because memory-tools.ts pulls in typebox/pi-agent deps.
+// Hardcoding is intentional for regression tests — the test should fail if the
+// threshold is lowered, alerting to a potential regression.
+const DEDUP_THRESHOLD = 0.90;
+
 // ── cosineSimilarity ──
 
 describe("cosineSimilarity", () => {
@@ -127,5 +133,52 @@ describe("embeddings cache invalidation", () => {
     assert.equal(updatedStore.pooling, "mean");
     // Existing entry should still be there
     assert.ok(updatedStore.entries["abc123"], "Existing mean entry should be preserved");
+  });
+});
+
+// ── Regression test: release entries must NOT match as duplicates ──
+
+describe("release entry regression (requires ONNX model)", () => {
+  let regressionCwd: string;
+
+  beforeEach(() => {
+    regressionCwd = mkdtempSync(join(tmpdir(), "regression-"));
+    mkdirSync(join(regressionCwd, ".pi", "memory"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(regressionCwd, { recursive: true, force: true });
+  });
+
+  it("different release entries score below threshold with mean pooling", async () => {
+    const { isVectorSearchAvailable, vectorSearch, embedEntry, embedMissing } = await import(
+      "../../../extensions/orchestrator/memory-embeddings.js"
+    );
+
+    const available = await isVectorSearchAvailable();
+    if (!available) {
+      // Skip gracefully when ONNX model is not available (CI without model download)
+      console.log("  ℹ Skipping: ONNX model not available");
+      return;
+    }
+
+    const entries = [
+      { text: "v3.12.4 released — 4th docs reviewer, PR review improvements", category: "done", pinned: false },
+      { text: "v3.12.0 released — memory enforcement, review guidelines, suggestion blocks", category: "done", pinned: false },
+    ];
+
+    await embedMissing(regressionCwd, entries);
+
+    const query = "v3.13.1 released — per-worktree review state, author question detection, two-way review process";
+    await embedEntry(regressionCwd, query, "done");
+    const results = await vectorSearch(regressionCwd, query, entries, 5);
+
+    // All results should be BELOW the dedup threshold — different releases are NOT duplicates
+    for (const r of results) {
+      assert.ok(
+        r.similarity < DEDUP_THRESHOLD,
+        `False positive: "${query.substring(0, 30)}..." vs "${r.text.substring(0, 30)}..." scored ${r.similarity.toFixed(4)} (should be < ${DEDUP_THRESHOLD})`,
+      );
+    }
   });
 });
