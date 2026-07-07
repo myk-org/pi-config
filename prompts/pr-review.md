@@ -242,7 +242,9 @@ reviewers in Phase 2 so they can avoid raising duplicate findings.
 
 Parse the JSON output from the `--user` fetch (`${PROJECT_TMP_DIR}`). This file is used
 for resolved/unresolved categorization below. The all-unresolved fetch (`${PROJECT_TMP_DIR}/all-unresolved`)
-is used separately in Phase 2 for dedup context — do NOT use it here.
+is used separately in Phase 2 for dedup context — do NOT use it for the resolved/unresolved
+categorization above. However, it IS used later in this same phase for `[AUTHOR-QUESTION]`
+detection (see "Detect questions directed at us" section below).
 
 For the `human` list, categorize each thread:
 
@@ -335,7 +337,9 @@ For each comment:
 - Skip comments authored by us
 - Skip bot comments (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
 - Check if the comment **explicitly @mentions** the current user (`@{current_github_user}`)
-- Check we haven't responded (no subsequent comment from us after this one)
+- Check we haven't responded to **this specific question** — no comment from us with a
+  later timestamp that quotes or references this comment. A later comment from us on the
+  PR about a different topic does NOT count as a response to this question.
 
 If matched, include it as an `[AUTHOR-QUESTION]` finding.
 
@@ -709,9 +713,12 @@ EOF
 Include `[AUTHOR-QUESTION]` findings with `status: "posted"` (approved/edited and posted)
 or `status: "skipped"` (user chose to skip). Use `"posted"` (not `"answered"`) because
 the `myk-pi-tools pr store-pr-review` CLI only accepts `posted` or `skipped` as valid
-statuses. Set `source: "author-question"` to distinguish them from review findings.
-This ensures future review cycles can detect already-answered questions and avoid
-re-surfacing them.
+statuses.
+
+**Note on `source` field:** The `source: "author-question"` field in the JSON example is
+for LLM context only — the CLI's DB schema does not have a `source` column and will
+ignore it. Future review cycles detect already-answered questions by matching
+`path`/`line`/`body` similarity against stored comments, same as other finding types.
 
 Use `{author}` from Phase 0 (`myk-pi-tools pr info` returns `author` field).
 
