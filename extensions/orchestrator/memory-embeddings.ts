@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 const EMBEDDING_DIM = 384;
+const EMBEDDING_POOLING = "mean";
 
 // Lazy-loaded pipeline — initialized once per process
 let pipelineInstance: any = null;
@@ -26,6 +27,7 @@ const queryCache = new Map<string, number[]>();
 interface EmbeddingStore {
   model: string;
   dim: number;
+  pooling?: string;
   entries: Record<string, number[]>; // text hash → vector
 }
 
@@ -37,12 +39,21 @@ function loadStore(cwd: string): EmbeddingStore {
   const storePath = getStorePath(cwd);
   if (existsSync(storePath)) {
     try {
-      return JSON.parse(readFileSync(storePath, "utf-8")) as EmbeddingStore;
+      const store = JSON.parse(readFileSync(storePath, "utf-8")) as EmbeddingStore;
+      // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
+      if (store.pooling !== EMBEDDING_POOLING) {
+        console.debug(`[memory-embeddings] pooling changed (${store.pooling ?? "cls"} → ${EMBEDDING_POOLING}), clearing ${Object.keys(store.entries).length} cached embeddings`);
+        store.entries = {};
+        store.pooling = EMBEDDING_POOLING;
+        queryCache.clear();
+        saveStore(cwd, store);
+      }
+      return store;
     } catch {
       // Corrupted file — start fresh
     }
   }
-  return { model: "Xenova/bge-small-en-v1.5", dim: EMBEDDING_DIM, entries: {} };
+  return { model: "Xenova/bge-small-en-v1.5", dim: EMBEDDING_DIM, pooling: EMBEDDING_POOLING, entries: {} };
 }
 
 function saveStore(cwd: string, store: EmbeddingStore): void {
@@ -104,7 +115,9 @@ async function embed(texts: string[]): Promise<number[][] | null> {
   if (!extractor) return null;
 
   try {
-    const result = await extractor(texts, { pooling: "cls", normalize: true });
+    // Mean pooling produces more discriminative embeddings for sentence-to-sentence
+    // similarity (dedup) vs CLS which over-weights structural patterns.
+    const result = await extractor(texts, { pooling: EMBEDDING_POOLING, normalize: true });
     const vectors: number[][] = [];
     for (let i = 0; i < texts.length; i++) {
       vectors.push(Array.from(result[i].data as Float32Array));
