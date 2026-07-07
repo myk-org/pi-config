@@ -28,7 +28,7 @@ import {
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 
-const NEAR_DUPLICATE_THRESHOLD = 0.85;
+const NEAR_DUPLICATE_THRESHOLD = 0.90;
 
 // ── memory_search ────────────────────────────────────────────────────
 

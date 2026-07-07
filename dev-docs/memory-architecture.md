@@ -36,7 +36,7 @@ cold topics auto-archived after 2× half-life without reinforcement.
 
 `memory-embeddings.ts`: Model `Xenova/bge-small-en-v1.5` (384 dims, local ONNX).
 Storage: `.pi/memory/embeddings.json`. Embeds on write with dedup
-(≥0.85 similarity → reinforce instead of add), hybrid keyword+vector search, keyword-only fallback. No API keys.
+(≥0.90 similarity → reinforce instead of add), hybrid keyword+vector search, keyword-only fallback. No API keys.
 
 ## Memory Tools
 
