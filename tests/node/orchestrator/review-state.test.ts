@@ -391,9 +391,8 @@ describe("worktree state isolation", () => {
 
     // Worktrees in separate tmpdir paths — proves isolation works for worktrees ANYWHERE,
     // not just under .worktrees/ in the repo. Use randomUUID for collision-safe paths.
-    const { randomUUID } = require("node:crypto");
-    worktreeA = join(tmpdir(), `wt-a-${randomUUID()}`);
-    worktreeB = join(tmpdir(), `wt-b-${randomUUID()}`);
+    worktreeA = join(tmpdir(), `wt-a-${crypto.randomUUID()}`);
+    worktreeB = join(tmpdir(), `wt-b-${crypto.randomUUID()}`);
     execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
     execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
   });
