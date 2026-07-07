@@ -338,10 +338,9 @@ For each comment:
 - Skip bot comments (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
 - Check if the comment **explicitly @mentions** the current user (`@{current_github_user}`)
 - Check we haven't responded — no comment from us with a `created_at` later than
-  the @mention comment's effective timestamp. Use `max(created_at, updated_at)` as the
-  effective timestamp for the @mention comment, since mentions can be added via edits
-  (where `created_at` is old but `updated_at` reflects when the @mention appeared).
-  Any comment from us posted after this effective timestamp counts as a response.
+  the @mention comment's `created_at`. Use `created_at` only (not `updated_at`) —
+  edits for typos/formatting shift `updated_at` forward and would cause false positives
+  by making our earlier response appear to predate the mention.
 
 If matched, include it as an `[AUTHOR-QUESTION]` finding.
 
