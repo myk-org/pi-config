@@ -311,11 +311,15 @@ Scan the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`. For each
 - Skip threads from bots (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
 - Check if ANY comment in the thread **explicitly @mentions** the current user (`@{current_github_user}`)
 
-If matched and we have NOT replied in the thread (no comment from `{current_github_user}`
-in the replies), include it as an `[AUTHOR-QUESTION]` finding.
+For each matching @mention comment, include it as an `[AUTHOR-QUESTION]` finding **only if**
+there is no subsequent comment authored by `{current_github_user}` after that mention
+(by `createdAt` timestamp / array order). This is comment-order aware — if we replied
+after the mention, the question is already answered.
 
-**Do NOT use loose heuristics** (e.g., "thread is on a file we changed"). Only explicit
-@mentions qualify — this prevents false positives from unrelated reviewer conversations.
+**Do NOT use loose heuristics** (e.g., "thread is on a file we changed") or thread-level
+"no reply anywhere" checks. Only explicit @mentions with no subsequent reply from us qualify —
+this prevents false positives from unrelated reviewer conversations and correctly handles
+late @mentions in threads where we participated earlier.
 
 **Source 2 — General PR issue comments:**
 
@@ -613,22 +617,28 @@ by someone else — `"addressed"` would auto-resolve their thread, which is inap
 Write the reply body to a temp file to avoid shell injection, then post via the GitHub API
 with a quoted reference to the original question:
 
-```bash
-# Build reply with quoted context:
-# > @{commenter} [asked]({comment_url}):
-# > {original_question_first_line}
-#
-# {approved_answer}
+Write the raw markdown reply to a plain text file first, then use `jq` to safely
+encode it as valid JSON (handles quotes, backslashes, newlines):
 
-cat > ${PROJECT_TMP_DIR}/author-reply-body.json << 'REPLY_EOF'
-{"body": "> @{commenter} [asked]({comment_url}):\n> {original_question_first_line}\n\n{approved_answer}"}
+```bash
+# 1. Build the reply body as raw markdown (not JSON)
+cat > ${PROJECT_TMP_DIR}/author-reply-body.md << 'REPLY_EOF'
+> @{commenter} [asked]({comment_url}):
+> {original_question_first_line}
+
+{approved_answer}
 REPLY_EOF
 
+# 2. Encode as valid JSON using jq (handles all special characters safely)
+jq -Rs '{body: .}' < ${PROJECT_TMP_DIR}/author-reply-body.md > ${PROJECT_TMP_DIR}/author-reply-body.json
+
+# 3. Post via gh api
 gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --input ${PROJECT_TMP_DIR}/author-reply-body.json
 ```
 
-NEVER interpolate the answer text directly into a shell command — always use `--input`
-with a temp file to prevent shell injection from user-edited or AI-generated content.
+NEVER build JSON by string interpolation — always write the reply body as raw text
+and use `jq -Rs '{body: .}'` to produce valid JSON. This prevents both shell injection
+and JSON encoding errors from quotes, backslashes, or newlines in the answer.
 
 Mark Task 12 as `completed`.
 
@@ -675,7 +685,7 @@ cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
       "body": "Author question: should this use sleep=0?",
       "severity": "QUESTION",
       "posted_at": "<ISO timestamp>",
-      "status": "answered",
+      "status": "posted",
       "source": "author-question"
     },
     {
@@ -695,10 +705,12 @@ cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
 EOF
 ```
 
-Include `[AUTHOR-QUESTION]` findings with `status: "answered"` (approved/edited and posted)
-or `status: "skipped"` (user chose to skip). Set `source: "author-question"` to distinguish
-them from review findings. This ensures future review cycles can detect already-answered
-questions and avoid re-surfacing them.
+Include `[AUTHOR-QUESTION]` findings with `status: "posted"` (approved/edited and posted)
+or `status: "skipped"` (user chose to skip). Use `"posted"` (not `"answered"`) because
+the `myk-pi-tools pr store-pr-review` CLI only accepts `posted` or `skipped` as valid
+statuses. Set `source: "author-question"` to distinguish them from review findings.
+This ensures future review cycles can detect already-answered questions and avoid
+re-surfacing them.
 
 Use `{author}` from Phase 0 (`myk-pi-tools pr info` returns `author` field).
 
