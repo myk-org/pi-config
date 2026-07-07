@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 const EMBEDDING_DIM = 384;
-const EMBEDDING_POOLING = "mean";
+export const EMBEDDING_POOLING = "mean";
 
 // Lazy-loaded pipeline — initialized once per process
 let pipelineInstance: any = null;
@@ -149,7 +149,7 @@ async function embedQuery(query: string): Promise<number[] | null> {
   return vectors[0];
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
   if (len === 0) return 0;
   let dot = 0, normA = 0, normB = 0;
