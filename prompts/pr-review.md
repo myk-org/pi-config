@@ -242,7 +242,9 @@ reviewers in Phase 2 so they can avoid raising duplicate findings.
 
 Parse the JSON output from the `--user` fetch (`${PROJECT_TMP_DIR}`). This file is used
 for resolved/unresolved categorization below. The all-unresolved fetch (`${PROJECT_TMP_DIR}/all-unresolved`)
-is used separately in Phase 2 for dedup context — do NOT use it here.
+is used separately in Phase 2 for dedup context — do NOT use it for the resolved/unresolved
+categorization above. However, it IS used later in this same phase for `[AUTHOR-QUESTION]`
+detection (see "Detect questions directed at us" section below).
 
 For the `human` list, categorize each thread:
 
@@ -297,6 +299,68 @@ Resolution decisions are OURS (from this LLM evaluation), not the PR author's cl
 
 **All past comment statuses are included in the combined findings in Phase 4 —
 not presented as a separate summary.**
+
+**Detect questions directed at us (MANDATORY):**
+
+After processing our own threads above, scan for questions/comments from others that need
+our attention. This covers two sources:
+
+**Source 1 — Review thread questions:**
+
+Scan the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`. For each thread:
+
+- Skip threads authored by us (already handled above)
+- Skip threads from bots (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
+- Check if ANY comment in the thread **explicitly @mentions** the current user (`@{current_github_user}`)
+
+For each matching @mention comment, include it as an `[AUTHOR-QUESTION]` finding **only if**
+there is no subsequent comment authored by `{current_github_user}` after that mention.
+Compare using the `created_at` field on reply objects (ISO timestamp) — a reply from us
+with a `created_at` later than the @mention comment's `created_at` means we already
+responded. Do NOT rely on array position alone — always compare `created_at` timestamps.
+
+**Do NOT use loose heuristics** (e.g., "thread is on a file we changed") or thread-level
+"no reply anywhere" checks. Only explicit @mentions with no subsequent reply from us qualify —
+this prevents false positives from unrelated reviewer conversations and correctly handles
+late @mentions in threads where we participated earlier.
+
+**Source 2 — General PR issue comments:**
+
+Fetch PR issue comments (standalone PR comments, not tied to code lines):
+
+```bash
+gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --paginate
+```
+
+For each comment:
+
+- Skip comments authored by us
+- Skip bot comments (Qodo, CodeRabbit, GitHub Actions, dependabot, etc.)
+- Check if the comment **explicitly @mentions** the current user (`@{current_github_user}`)
+- Check we haven't responded — no comment from us with a `created_at` later than
+  the @mention comment's `created_at`. Use `created_at` only (not `updated_at`) —
+  edits for typos/formatting shift `updated_at` forward and would cause false positives
+  by making our earlier response appear to predate the mention.
+
+If matched, include it as an `[AUTHOR-QUESTION]` finding.
+
+**Only explicit @mentions qualify.** Do NOT match comments just because they contain a
+question mark — this would produce false positives from conversations between other
+collaborators. Store the original `comment_id` and `comment_url` (from the API's
+`html_url` field) for use in Phase 5 reply formatting.
+
+**For each `[AUTHOR-QUESTION]`, generate a suggested answer:**
+
+Read the relevant code, diff, and surrounding context referenced by the question. Analyze
+what the commenter is asking and draft a concise, technically accurate suggested answer.
+Store the suggested answer alongside the finding for presentation in Phase 4.
+
+The suggested answer should:
+
+- Reference specific code/lines when applicable
+- Be ready to post as-is (the user can approve it directly)
+- Be concise — answer the question, don't lecture
+- If the answer requires a code change, note that explicitly
 
 Mark Task 4 as `completed`.
 
@@ -414,6 +478,7 @@ Each finding shows its source:
 - `[PREV-UNRESOLVED]` — unresolved from previous review cycle
 - `[PREV-BAD-FIX]` — resolved but fix is incorrect
 - `[PREV-NO-FIX]` — resolved without code change or valid response
+- `[AUTHOR-QUESTION]` — question/comment from someone on the PR directed at us
 - `[NEW]` — new finding from current code analysis
 
 **Auto-post previous findings:** `[PREV-UNRESOLVED]`, `[PREV-BAD-FIX]`, and `[PREV-NO-FIX]`
@@ -421,10 +486,31 @@ findings are **automatically included** in the post list — they are the user's
 comments that remain unaddressed and MUST be re-raised. Do NOT ask the user to select these.
 Show them in the list marked as "(auto-post)" so the user knows they'll be re-raised.
 
-**Numbering:** Display two separate numbered sections. First, previous findings with their
-own numbering (P1, P2, ...) marked "(auto-post)". Second, new findings with their own
-numbering (1, 2, ...) for user selection. This avoids ambiguity — user selections always
-refer to the `[NEW]` numbering.
+**Author questions require user approval:** `[AUTHOR-QUESTION]` findings are NOT auto-posted.
+They require user review because the AI-generated answer may need editing or the user may
+choose not to respond. Author questions are presented with approve/edit/skip options (see below).
+
+**Author question presentation:**
+
+For each `[AUTHOR-QUESTION]` finding, display:
+
+1. The original question/comment (who asked, where, full text)
+2. The AI-generated **suggested answer** from Phase 1c
+3. An action prompt for the user:
+   - **approve** — post the suggested answer as-is
+   - **edit** — user provides a revised answer (print prompt as regular text, NOT `ask_user`)
+   - **skip** — don't reply to this question
+
+Collect user decisions for all author questions before proceeding. Approved/edited answers
+are included in the Phase 5 post step. Skipped questions are excluded from posting.
+
+**Numbering:** Display three separate numbered sections:
+
+1. Previous findings (P1, P2, ...) marked "(auto-post)"
+2. Author questions (Q1, Q2, ...) with suggested answers and action prompts
+3. New findings (1, 2, ...) for user selection
+
+This avoids ambiguity — user selections for new findings always refer to the `[NEW]` numbering.
 
 **User selects from `[NEW]` findings only:**
 
@@ -432,9 +518,13 @@ refer to the `[NEW]` numbering.
 - 'none' = Skip posting new findings (previous findings are still auto-posted)
 - Specific numbers = Post only those new findings (numbers refer to the `[NEW]` list)
 
-If there are ZERO `[NEW]` findings, skip user selection entirely — auto-post the
-previous findings and proceed directly to Phase 5 (the auto-post path still generates
-the comments JSON and posts them — see Phase 5).
+If there are ZERO `[NEW]` findings AND zero `[AUTHOR-QUESTION]` findings, skip user
+selection entirely — auto-post the previous findings and proceed directly to Phase 5
+(the auto-post path still generates the comments JSON and posts them — see Phase 5).
+
+If there are ZERO `[NEW]` findings but `[AUTHOR-QUESTION]` findings exist, skip new
+finding selection but still present author questions with suggested answers for
+user approval/edit/skip.
 
 🚨 **Skip reason collection (MANDATORY — NEVER SKIP THIS STEP):**
 
@@ -487,15 +577,74 @@ Mark Task 11 as `completed`.
 
 Mark Task 12 as `in_progress`.
 
-Write JSON to temp file for ALL findings to be posted — this includes both user-selected
-`[NEW]` findings AND auto-posted `[PREV-*]` findings. If only `[PREV-*]` findings exist
-(zero `[NEW]` findings, selection was skipped), still generate the JSON for the auto-posted items:
+**Step 1: Post `[NEW]` and `[PREV-*]` findings as new review comments:**
+
+Write JSON to temp file for all `[NEW]` (user-selected) and `[PREV-*]` (auto-posted)
+findings. If only `[PREV-*]` findings exist (zero `[NEW]` findings, selection was skipped),
+still generate the JSON for the auto-posted items:
 
 Use the `owner`, `repo`, `pr_number`, and `head_sha` from Phase 0 or Phase 1a metadata:
 
 ```bash
 myk-pi-tools pr post-comment {owner}/{repo} {pr_number} {head_sha} ${PROJECT_TMP_DIR}/pr-review-comments.json
 ```
+
+**Step 2: Reply to `[AUTHOR-QUESTION]` findings (approved/edited only):**
+
+For each approved or edited author question, reply using the appropriate method based on
+the question's source:
+
+**Review thread questions** (have a `thread_id`):
+
+Write a JSON file with the reply and use `reviews post` which correctly replies in the
+existing thread via GraphQL `addPullRequestReviewThreadReply`:
+
+```bash
+myk-pi-tools reviews post ${PROJECT_TMP_DIR}/author-question-replies.json
+```
+
+The JSON file MUST use the `reviews post` format with the `"human"` category key:
+
+```json
+{
+  "metadata": {"owner": "{owner}", "repo": "{repo}", "pr_number": "{pr_number}"},
+  "human": [
+    {"thread_id": "{thread_id}", "status": "not_addressed", "reply": "{approved_answer}"}
+  ]
+}
+```
+
+**IMPORTANT:** Use `status: "not_addressed"` (NOT `"addressed"`). These are threads owned
+by someone else — `"addressed"` would auto-resolve their thread, which is inappropriate.
+`"not_addressed"` posts the reply but leaves the thread open for the original author to resolve.
+
+**General PR issue comments** (no `thread_id`, have `comment_id`):
+
+Write the reply body to a temp file to avoid shell injection, then post via the GitHub API
+with a quoted reference to the original question:
+
+Write the raw markdown reply to a plain text file first, then use `jq` to safely
+encode it as valid JSON (handles quotes, backslashes, newlines):
+
+```bash
+# 1. Build the reply body as raw markdown (not JSON)
+cat > ${PROJECT_TMP_DIR}/author-reply-body.md << 'REPLY_EOF'
+> @{commenter} [asked]({comment_url}):
+> {original_question_first_line}
+
+{approved_answer}
+REPLY_EOF
+
+# 2. Encode as valid JSON using jq (handles all special characters safely)
+jq -Rs '{body: .}' < ${PROJECT_TMP_DIR}/author-reply-body.md > ${PROJECT_TMP_DIR}/author-reply-body.json
+
+# 3. Post via gh api
+gh api /repos/{owner}/{repo}/issues/{pr_number}/comments --input ${PROJECT_TMP_DIR}/author-reply-body.json
+```
+
+NEVER build JSON by string interpolation — always write the reply body as raw text
+and use `jq -Rs '{body: .}'` to produce valid JSON. This prevents both shell injection
+and JSON encoding errors from quotes, backslashes, or newlines in the answer.
 
 Mark Task 12 as `completed`.
 
@@ -533,11 +682,44 @@ cat > ${PROJECT_TMP_DIR}/pr-review-store.json << 'EOF'
       "posted_at": null,
       "status": "skipped",
       "skip_reason": "Refined skip reason from Phase 4"
+    },
+    {
+      "thread_id": "thread_abc123",
+      "comment_id": 456,
+      "path": "utils.py",
+      "line": 10,
+      "body": "Author question: should this use sleep=0?",
+      "severity": "QUESTION",
+      "posted_at": "<ISO timestamp>",
+      "status": "posted",
+      "source": "author-question"
+    },
+    {
+      "thread_id": null,
+      "comment_id": 789,
+      "path": null,
+      "line": null,
+      "body": "General PR question that was skipped",
+      "severity": "QUESTION",
+      "posted_at": null,
+      "status": "skipped",
+      "skip_reason": "User chose not to respond",
+      "source": "author-question"
     }
   ]
 }
 EOF
 ```
+
+Include `[AUTHOR-QUESTION]` findings with `status: "posted"` (approved/edited and posted)
+or `status: "skipped"` (user chose to skip). Use `"posted"` (not `"answered"`) because
+the `myk-pi-tools pr store-pr-review` CLI only accepts `posted` or `skipped` as valid
+statuses.
+
+**Note on `source` field:** The `source: "author-question"` field in the JSON example is
+for LLM context only — the CLI's DB schema does not have a `source` column and will
+ignore it. Future review cycles detect already-answered questions by matching
+`path`/`line`/`body` similarity against stored comments, same as other finding types.
 
 Use `{author}` from Phase 0 (`myk-pi-tools pr info` returns `author` field).
 
@@ -557,7 +739,13 @@ Mark Task 13 as `completed`.
 
 Mark Task 14 as `in_progress`.
 
-Display final summary with counts and links.
+Display final summary with counts and links. Include:
+
+- New findings posted / skipped counts
+- Previous findings re-raised count
+- Author questions answered / skipped counts
+- Total comments posted
+- PR link
 
 Mark Task 14 as `completed`.
 
