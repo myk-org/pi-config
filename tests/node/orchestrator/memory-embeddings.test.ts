@@ -173,6 +173,9 @@ describe("release entry regression (requires ONNX model)", () => {
     await embedEntry(regressionCwd, query, "done");
     const results = await vectorSearch(regressionCwd, query, entries, 5);
 
+    // Must have results — empty array would make the loop a vacuous pass
+    assert.ok(results.length > 0, `vectorSearch returned no results — embeddings may have failed`);
+
     // All results should be BELOW the dedup threshold — different releases are NOT duplicates
     for (const r of results) {
       assert.ok(
