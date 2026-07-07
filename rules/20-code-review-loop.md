@@ -90,8 +90,10 @@ is sufficient — fix what you agree with, skip what you don't. No need to expla
 
 ## Key Rules
 
-Never skip code review — loop until all reviewers approve AND tests pass.
-If there are comments, respond to each (fix or explain) and re-review from step 2; once approved, run tests.
+Never skip code review — all 5 reviewers always run.
+When `review_loop_enforcement` is enabled: loop until all reviewers return 0 findings AND tests pass.
+Respond to each finding (fix or explain) and re-review from step 2; once approved, run tests.
+When disabled: single review pass is sufficient; no mandatory re-review loop or explanations.
 Minor test/config-only fixes skip re-review (go to step 5); substantive code changes require full re-review.
 
 ## Baseline Test Comparison (Step 5)
