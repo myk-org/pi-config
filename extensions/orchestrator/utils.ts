@@ -68,7 +68,9 @@ export function getPiInvocation(args: string[]): { command: string; args: string
   return { command: "pi", args };
 }
 
-/** Resolve to the main git repo root when cwd is a worktree. */
+/** Resolve to the main git repo root when cwd is a worktree.
+ *  Uses --git-common-dir → always returns the SHARED repo root.
+ *  Use for shared resources: project settings, reviews.db. */
 const repoRootCache = new Map<string, string>();
 
 export function resolveRepoRoot(cwd: string): string {
@@ -84,6 +86,32 @@ export function resolveRepoRoot(cwd: string): string {
     }
   } catch {}
   repoRootCache.set(key, cwd);
+  return cwd;
+}
+
+/** Resolve to the current worktree root (or repo root if not in a worktree).
+ *  Uses --show-toplevel → returns THIS worktree's root, not the shared repo root.
+ *  Use for per-worktree resources: review-state.json.
+ *  For non-worktree repos, returns the same as resolveRepoRoot.
+ *  @param cwd — Directory to resolve from (any path inside the worktree)
+ *  @returns The worktree's top-level directory, or `cwd` as fallback */
+const worktreeRootCache = new Map<string, string>();
+
+export function resolveWorktreeRoot(cwd: string): string {
+  const key = path.resolve(cwd);
+  const cached = worktreeRootCache.get(key);
+  if (cached !== undefined) return cached;
+  try {
+    const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (toplevel && !toplevel.startsWith("fatal")) {
+      const root = path.resolve(toplevel);
+      worktreeRootCache.set(key, root);
+      return root;
+    }
+  } catch (e: any) {
+    console.debug("[utils] resolveWorktreeRoot failed:", e?.message);
+  }
+  worktreeRootCache.set(key, cwd);
   return cwd;
 }
 

@@ -1,12 +1,13 @@
 /**
  * Review state machine — tracks code review loop status.
- * State stored in .pi/data/review-state.json.
+ * State stored in <worktree-root>/.pi/data/review-state.json (per-worktree, not shared).
+ * Each worktree gets its own state file via resolveWorktreeRoot (--show-toplevel).
  * Used by enforcement to block git commit until all reviewers approve.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { resolveRepoRoot } from "./utils.js";
+import { resolveWorktreeRoot } from "./utils.js";
 
 const DATA_DIR = ".pi/data";
 
@@ -24,11 +25,11 @@ export interface ReviewState {
 const STATE_FILE = "review-state.json";
 
 export function statePath(cwd: string): string {
-  return join(resolveRepoRoot(cwd), DATA_DIR, STATE_FILE);
+  return join(resolveWorktreeRoot(cwd), DATA_DIR, STATE_FILE);
 }
 
 function ensureDataDir(cwd: string): void {
-  mkdirSync(join(resolveRepoRoot(cwd), DATA_DIR), { recursive: true });
+  mkdirSync(join(resolveWorktreeRoot(cwd), DATA_DIR), { recursive: true });
 }
 
 function defaultState(): ReviewState {

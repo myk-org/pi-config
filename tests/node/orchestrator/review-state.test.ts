@@ -15,13 +15,14 @@ import {
   isReviewClean,
   resetReviewState,
   countFindings,
+  statePath,
 } from "../../../extensions/orchestrator/review-state.js";
 
 let cwd: string;
 
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "review-state-test-"));
-  mkdirSync(join(cwd, ".git")); // fake git repo so resolveRepoRoot doesn't shell out
+  mkdirSync(join(cwd, ".git")); // .git dir needed so resolveWorktreeRoot treats this as a git root
 });
 
 afterEach(() => {
@@ -360,5 +361,56 @@ describe("recordReviewerResult idempotent", () => {
     const s = readReviewState(cwd);
     assert.equal(s.findings_count, 3); // not 6
     assert.deepEqual(s.reviewers_pending, ["test"]);
+  });
+});
+
+// ── Worktree state isolation ──
+
+describe("worktree state isolation", () => {
+  let worktreeA: string;
+  let worktreeB: string;
+
+  beforeEach(() => {
+    worktreeA = mkdtempSync(join(tmpdir(), "wt-a-"));
+    worktreeB = mkdtempSync(join(tmpdir(), "wt-b-"));
+    mkdirSync(join(worktreeA, ".git")); // .git dir needed so resolveWorktreeRoot treats these as git roots
+    mkdirSync(join(worktreeB, ".git"));
+  });
+
+  afterEach(() => {
+    rmSync(worktreeA, { recursive: true, force: true });
+    rmSync(worktreeB, { recursive: true, force: true });
+  });
+
+  it("statePath returns different paths for different directories", () => {
+    const pathA = statePath(worktreeA);
+    const pathB = statePath(worktreeB);
+    assert.notEqual(pathA, pathB);
+    assert.ok(pathA.startsWith(worktreeA));
+    assert.ok(pathB.startsWith(worktreeB));
+  });
+
+  it("markNeedsReview in worktree A does not affect worktree B", () => {
+    markNeedsReview(worktreeA);
+    const stateA = readReviewState(worktreeA);
+    const stateB = readReviewState(worktreeB);
+    assert.equal(stateA.status, "needs_review");
+    assert.equal(stateB.status, "none");
+  });
+
+  it("clean state in worktree A does not leak to worktree B", () => {
+    // Make A clean
+    markNeedsReview(worktreeA);
+    addReviewerPending(worktreeA, "lint");
+    recordReviewerResult(worktreeA, "lint", 0);
+    assert.equal(isReviewClean(worktreeA), true);
+
+    // Mark B needs review
+    markNeedsReview(worktreeB);
+    assert.equal(isReviewClean(worktreeB), false);
+
+    // A's clean state should NOT affect B
+    assert.equal(isReviewClean(worktreeA), true);
+    assert.equal(isReviewClean(worktreeB), false);
   });
 });
