@@ -312,10 +312,10 @@ Scan the all-unresolved JSON from `${PROJECT_TMP_DIR}/all-unresolved/`. For each
 - Check if ANY comment in the thread **explicitly @mentions** the current user (`@{current_github_user}`)
 
 For each matching @mention comment, include it as an `[AUTHOR-QUESTION]` finding **only if**
-there is no subsequent comment authored by `{current_github_user}` after that mention
-(by array position in the thread's `replies` list — replies are ordered chronologically,
-use `created_at` field on reply objects to confirm if needed). This is comment-order
-aware — if we replied after the mention, the question is already answered.
+there is no subsequent comment authored by `{current_github_user}` after that mention.
+Compare using the `created_at` field on reply objects (ISO timestamp) — a reply from us
+with a `created_at` later than the @mention comment's `created_at` means we already
+responded. Do NOT rely on array position alone — always compare `created_at` timestamps.
 
 **Do NOT use loose heuristics** (e.g., "thread is on a file we changed") or thread-level
 "no reply anywhere" checks. Only explicit @mentions with no subsequent reply from us qualify —
