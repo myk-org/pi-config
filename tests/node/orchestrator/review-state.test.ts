@@ -366,7 +366,16 @@ describe("recordReviewerResult idempotent", () => {
 
 // ── Worktree state isolation ──
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+
+// Git identity env vars for hermetic tests (CI may not have global git config)
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "test",
+  GIT_AUTHOR_EMAIL: "test@test.local",
+  GIT_COMMITTER_NAME: "test",
+  GIT_COMMITTER_EMAIL: "test@test.local",
+};
 
 describe("worktree state isolation", () => {
   let mainRepo: string;
@@ -377,19 +386,19 @@ describe("worktree state isolation", () => {
     // Create a real git repo with two worktrees to exercise the actual
     // git rev-parse --show-toplevel / --git-common-dir code paths.
     mainRepo = mkdtempSync(join(tmpdir(), "wt-main-"));
-    execSync("git init", { cwd: mainRepo, stdio: "ignore" });
-    execSync("git commit --allow-empty -m init", { cwd: mainRepo, stdio: "ignore" });
+    execFileSync("git", ["init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
 
     worktreeA = join(mainRepo, ".worktrees", "wt-a");
     worktreeB = join(mainRepo, ".worktrees", "wt-b");
-    execSync(`git worktree add ${worktreeA} -b branch-a`, { cwd: mainRepo, stdio: "ignore" });
-    execSync(`git worktree add ${worktreeB} -b branch-b`, { cwd: mainRepo, stdio: "ignore" });
+    execFileSync("git", ["worktree", "add", worktreeA, "-b", "branch-a"], { cwd: mainRepo, stdio: "ignore" });
+    execFileSync("git", ["worktree", "add", worktreeB, "-b", "branch-b"], { cwd: mainRepo, stdio: "ignore" });
   });
 
   afterEach(() => {
     // Remove worktrees before deleting the repo
-    try { execSync(`git worktree remove ${worktreeA} --force`, { cwd: mainRepo, stdio: "ignore" }); } catch {}
-    try { execSync(`git worktree remove ${worktreeB} --force`, { cwd: mainRepo, stdio: "ignore" }); } catch {}
+    try { execFileSync("git", ["worktree", "remove", worktreeA, "--force"], { cwd: mainRepo, stdio: "ignore" }); } catch {}
+    try { execFileSync("git", ["worktree", "remove", worktreeB, "--force"], { cwd: mainRepo, stdio: "ignore" }); } catch {}
     rmSync(mainRepo, { recursive: true, force: true });
   });
 
