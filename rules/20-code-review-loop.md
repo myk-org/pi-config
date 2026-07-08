@@ -51,6 +51,11 @@ Overlapping scope is intentional for comprehensive coverage; step 3's deduplicat
 Same file/line + same issue or root cause = duplicate — keep the most actionable version.
 Conflicts follow priority: security > correctness > performance > style; complementary findings on the same code are kept.
 
+**Spec findings are never duplicates.** Findings from `code-reviewer-spec` (missing deliverables,
+scope creep, spec misalignment) are never suppressed by findings from other reviewers, even on
+the same file/line. A quality finding about *how* code is written does not address *whether* the
+code matches the spec. Always keep both.
+
 ## Step 4a: Respond to Findings (when `review_loop_enforcement` is enabled)
 
 For each finding from step 3, do ONE of:
