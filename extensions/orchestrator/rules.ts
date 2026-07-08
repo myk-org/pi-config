@@ -303,8 +303,10 @@ export function registerRules(
           const entry = branch[i];
           // Skip assistant messages (current turn's response)
           if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
-          // custom_message = system-generated (enforcement, async result, coms)
-          if (entry.type === "custom_message") {
+          // custom_message or custom = system-generated (enforcement, async result, coms)
+          // custom_message: sendMessage() with display (in LLM context)
+          // custom: appendEntry() without display (not in LLM context)
+          if (entry.type === "custom_message" || entry.type === "custom") {
             userTriggered = false;
             break;
           }
