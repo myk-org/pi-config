@@ -296,6 +296,7 @@ export function registerRules(
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
       let userTriggered = false;
+      let triggeringMsgId: string | null = null;
       try {
         const branch = ctx.sessionManager.getBranch();
         for (let i = branch.length - 1; i >= 0; i--) {
@@ -311,12 +312,10 @@ export function registerRules(
           if (entry.type === "message" && (entry as any).message?.role === "user") {
             const msgId = (entry as any).id;
             if (msgId && msgId === lastTaskFocusUserMsgId) {
-              // Already fired enforcement for this user message — skip
               userTriggered = false;
             } else {
               userTriggered = true;
-              // Store this message ID so we don't fire again for it
-              lastTaskFocusUserMsgId = msgId ?? null;
+              triggeringMsgId = msgId ?? null;
             }
             break;
           }
@@ -343,6 +342,7 @@ export function registerRules(
                 .slice(0, 3)
                 .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
                 .join(", ");
+              lastTaskFocusUserMsgId = triggeringMsgId;
               pi.sendMessage({
                 customType: "task-focus-enforcement",
                 content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
