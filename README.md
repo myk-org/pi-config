@@ -60,6 +60,7 @@ Single extension that provides:
 | `/release [flags]` | Create GitHub release with changelog and version bumping |
 | `/review-local [branch]` | Review local uncommitted or branch changes |
 | `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
+| `/domain-model [focus area]` | Scan codebase and build/update a CONTEXT.md domain glossary for consistent AI vocabulary |
 | `/refine-review <url>` | Refine and improve existing PR review comments |
 | `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
 | `/create-coms-feature-manager` | Generate a coms feature-manager prompt customized for the current project (source template: `templates/coms-feature-manager-prompt.md`) |

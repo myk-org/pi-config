@@ -50,6 +50,12 @@ and conventions.
 
 Do NOT rely on the calling prompt to provide these files — always read them yourself.
 
+## Domain Vocabulary
+
+Check if `CONTEXT.md` exists at the repository root. If it does, read it — it defines the
+project's domain terms, naming conventions, and `_Avoid_` alternatives. Use these terms in
+your review and flag code that uses avoided terms.
+
 ## Learned Review Preferences
 
 After reading project guidelines, check if `.pi/data/review-guidelines.md` exists.

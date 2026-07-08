@@ -33,6 +33,12 @@ conventions, patterns, or rules as findings.
 
 Do NOT rely on the calling prompt to provide these files — always read them yourself.
 
+## Domain Vocabulary
+
+Check if `CONTEXT.md` exists at the repository root. If it does, read it — it defines the
+project's domain terms, naming conventions, and `_Avoid_` alternatives. Use these terms in
+your review and flag code that uses avoided terms.
+
 ## Learned Review Preferences
 
 After reading project guidelines, check if `.pi/data/review-guidelines.md` exists.
@@ -95,6 +101,28 @@ Always check for these anti-patterns:
   what was being done, which inputs were used, or what state led to the failure.
 - **Opaque async/background code** — background workers, event handlers, SSE handlers,
   async callbacks, and fire-and-forget operations with no logging. Silent failures are undebuggable.
+
+## Code Smells Baseline (Fowler)
+
+Check the diff against these smells. Each is a **judgment call** — flag only when the smell
+materially hurts readability, maintainability, or correctness in the changed code.
+If the repo's AGENTS.md or coding standards endorse a pattern the baseline would flag, suppress it.
+Skip anything linters/formatters already enforce.
+
+| Smell | What to Look For | How to Fix |
+|-------|-------------------|------------|
+| Mysterious Name | Name doesn't reveal purpose | Rename; if no honest name fits, the design is unclear |
+| Duplicated Code | Same logic shape in multiple hunks/files in the diff | Extract shared shape, call from both |
+| Feature Envy | Method reaches into another object's data more than its own | Move method to the envied object |
+| Data Clumps | Same fields/params keep travelling together | Bundle into one type |
+| Primitive Obsession | String/number standing in for a domain concept | Give the concept its own type |
+| Repeated Switches | Same switch/if-cascade on same type in multiple places | Polymorphism or shared map |
+| Shotgun Surgery | One logical change forces scattered edits across many files | Gather what changes together into one module |
+| Divergent Change | One module edited for unrelated reasons | Split so each changes for one reason |
+| Speculative Generality | Abstraction/hooks for needs the spec doesn't have | Delete; inline until a real need shows |
+| Message Chains | Long `a.b().c().d()` navigation | Hide the walk behind one method |
+| Middle Man | Class/function that mostly just delegates | Cut it, call the real target |
+| Refused Bequest | Subclass ignores/overrides most of what it inherits | Drop inheritance, use composition |
 
 ## Output Format
 

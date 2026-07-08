@@ -96,6 +96,7 @@ pi-config/
 │   ├── create-coms-feature-manager.md
 │   ├── external-ai.md
 │   ├── coderabbit-rate-limit.md
+│   ├── domain-model.md
 │   ├── implement-and-review.md
 │   ├── implement.md
 │   ├── pr-review.md
