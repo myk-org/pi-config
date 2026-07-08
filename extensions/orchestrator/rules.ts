@@ -83,6 +83,7 @@ export function registerRules(
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
     rebuildDone = false;
+    lastTaskFocusUserMsgId = null;
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
@@ -303,10 +304,10 @@ export function registerRules(
           const entry = branch[i];
           // Skip assistant messages (current turn's response)
           if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
-          // custom_message or custom = system-generated (enforcement, async result, coms)
-          // custom_message: sendMessage() with display (in LLM context)
-          // custom: appendEntry() without display (not in LLM context)
-          if (entry.type === "custom_message" || entry.type === "custom") {
+          // custom_message = system-generated turn-triggering message (enforcement, async result, coms)
+          // Only check custom_message (from sendMessage), not custom (from appendEntry)
+          // because appendEntry is state storage that other extensions use between turns.
+          if (entry.type === "custom_message") {
             userTriggered = false;
             break;
           }
