@@ -36,8 +36,8 @@ Do NOT rely on the calling prompt to provide these files — always read them yo
 ## Domain Vocabulary
 
 Check if `CONTEXT.md` exists at the repository root. If it does, read it — it defines the
-project's domain terms, naming conventions, and `_Avoid_` alternatives. Use these terms in
-your review and flag code that uses avoided terms.
+project's domain terms and naming conventions. Use these terms in your review for consistent
+vocabulary. Do NOT flag naming/terminology issues — that's the quality and guidelines reviewers' job.
 
 ## Learned Review Preferences
 

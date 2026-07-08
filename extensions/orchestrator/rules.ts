@@ -31,6 +31,10 @@ function isSocialCloser(text: string): boolean {
 /** Track last injected memories for usage detection in turn_end */
 let lastInjectedMemories: { text: string; category: string; similarity: number }[] = [];
 
+// Track the user message ID that last triggered task-focus enforcement.
+// Don't re-fire for the same user message (prevents loops from followUp turns).
+let lastTaskFocusUserMsgId: string | null = null;
+
 /** Log what memories were auto-injected for retrieval telemetry */
 function logMemoryInjection(cwd: string, prompt: string, injected: { text: string; category: string; similarity: number }[]): void {
   try {
@@ -282,31 +286,45 @@ export function registerRules(
 
     // Task-focus enforcement: if this turn had no tool calls but tasks are active,
     // the LLM likely answered a side question and forgot to resume work.
-    // Inject a follow-up to force it back on track.
-    // Only fire after user messages — not after follow-ups (reminders, async
-    // results, coms inbound). This prevents infinite reminder loops naturally:
-    // the reminder triggers a follow-up turn, which is not user-triggered.
+    // Inject a follow-up to remind about active tasks when the LLM responds
+    // without using any tools (likely chatting instead of working).
+    // Only fires after REAL user messages — not after system-generated followUps.
+    // Detection: walk the branch backwards from the assistant response. If the
+    // entry immediately before the assistant is a custom_message (system-generated),
+    // skip. Only fire if it's a real user message (type: "message", role: "user").
     try {
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
-      // Check if this turn was triggered by a user message
       let userTriggered = false;
       try {
         const branch = ctx.sessionManager.getBranch();
         for (let i = branch.length - 1; i >= 0; i--) {
           const entry = branch[i];
-          // Skip non-message entries (tool results, custom entries, memory injections)
-          if (entry.type !== "message") continue;
-          const role = (entry as any).message?.role;
           // Skip assistant messages (current turn's response)
-          if (role === "assistant") continue;
-          // Found a non-assistant message — check if it's from the user
-          if (role === "user") {
-            userTriggered = true;
+          if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
+          // custom_message = system-generated (enforcement, async result, coms)
+          if (entry.type === "custom_message") {
+            userTriggered = false;
+            break;
           }
-          break;
+          // Real user message — but only if we haven't already fired for this exact message
+          if (entry.type === "message" && (entry as any).message?.role === "user") {
+            const msgId = (entry as any).id;
+            if (msgId && msgId === lastTaskFocusUserMsgId) {
+              // Already fired enforcement for this user message — skip
+              userTriggered = false;
+            } else {
+              userTriggered = true;
+              // Store this message ID so we don't fire again for it
+              lastTaskFocusUserMsgId = msgId ?? null;
+            }
+            break;
+          }
+          // Any other entry type — skip and keep looking
+          continue;
         }
       } catch { /* best-effort */ }
+
       if (!hadToolCalls && userTriggered) {
         // Check for active tasks — session-scoped task file only
         const tasksDir = path.join(ctx.cwd, ".pi", "tasks");

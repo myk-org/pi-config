@@ -71,7 +71,7 @@ Writing effective rules:
 ## When Adding a Prompt Template
 
 1. Create `prompts/<name>.md` with YAML frontmatter (`description: "..."`)
-2. Include bug reporting blockquote after `## Raw Arguments`
+2. Include bug reporting blockquote after the `$ARGUMENTS` code block (not between `## Raw Arguments` and the code block)
 3. Add autocomplete in `extensions/orchestrator/extended-autocomplete.ts` (only when the prompt has completable arguments — skip for free-text-only prompts)
 
 ## When Adding a Source Template
