@@ -427,8 +427,11 @@ describe("resolveEffectiveCwd", () => {
   it("resolves cd after ; separator", () => {
     assert.equal(resolveEffectiveCwd("echo ok; cd /other/repo; pytest", "/home"), "/other/repo");
   });
-  it("uses last cd in compound command", () => {
-    assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/home"), "/second");
+  it("uses first cd in compound command", () => {
+    assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/home"), "/first");
+  });
+  it("ignores trailing cd after git command", () => {
+    assert.equal(resolveEffectiveCwd("cd /repo && git commit && cd /tmp", "/home"), "/repo");
   });
 });
 

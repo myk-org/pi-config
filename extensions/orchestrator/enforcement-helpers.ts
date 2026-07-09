@@ -30,16 +30,15 @@ export function escapeForSingleQuote(s: string): string {
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
-  // Match cd anywhere in the command (after &&, ;, ||, or at start)
-  // Use the LAST cd match — that's the effective cwd when the test command runs
-  let lastCdTarget: string | null = null;
-  const cdMatches = command.matchAll(/(?:^|[;&|]\s*)cd\s+([^\s;&|]+)/g);
-  for (const m of cdMatches) {
-    lastCdTarget = m[1].replace(/['"]/g, "");
-  }
-  if (lastCdTarget) {
-    if (lastCdTarget.startsWith("/")) return lastCdTarget;
-    return join(sessionCwd, lastCdTarget);
+  // Match the FIRST cd in the command (at start or after &&, ;, ||)
+  // First cd sets up the working directory before subsequent commands run.
+  // Using LAST cd is unsafe — a trailing cd (e.g., git commit && cd /tmp) would
+  // misattribute the cwd to the wrong directory.
+  const cdMatch = command.match(/(?:^|[;&|]\s*)cd\s+([^\s;&|]+)/);
+  if (cdMatch) {
+    const target = cdMatch[1].replace(/['"]/g, "");
+    if (target.startsWith("/")) return target;
+    return join(sessionCwd, target);
   }
   // Match: git -C /path/to/dir ...
   const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
