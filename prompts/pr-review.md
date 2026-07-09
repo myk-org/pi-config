@@ -147,22 +147,28 @@ Mark Task 1 as `in_progress`.
 
 If the raw arguments are empty:
 
-1. If the raw arguments do NOT contain a PR number or URL, detect from current branch:
+1. Detect from current branch and fetch PR metadata:
 
    ```bash
    myk-pi-tools pr info $(gh pr view --json number --jq '.number')
    ```
 
-2. Fetch PR metadata using the CLI:
-
-   ```bash
-   myk-pi-tools pr info <cleaned_arguments>
-   ```
-
    This returns JSON with all needed fields: `owner`, `repo`, `pr_number`, `author`,
    `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
 
-3. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
+2. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
+
+3. Fetch the latest commit timestamp from `head_sha` (needed by Phase 1c to compare
+   against comment timestamps):
+
+   ```bash
+   gh api /repos/{owner}/{repo}/commits/{head_sha} --jq '.commit.committer.date'
+   ```
+
+   Always use the base repo (`{owner}/{repo}`) — GitHub resolves fork PR commits
+   from the base repo via `refs/pull/*/head`, so this works for both fork and non-fork PRs.
+
+   Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
 
 If the raw arguments contain a PR number or URL:
 
@@ -176,6 +182,18 @@ If the raw arguments contain a PR number or URL:
    `head_sha`, `base_ref`, `title`, `state`, `labels`, `assignees`, `is_fork`, `head_repo`, `body`.
 
 2. Extract and store all fields from the JSON output — these are used by Phase 1c and Phase 5.
+
+3. Fetch the latest commit timestamp from `head_sha` (needed by Phase 1c to compare
+   against comment timestamps):
+
+   ```bash
+   gh api /repos/{owner}/{repo}/commits/{head_sha} --jq '.commit.committer.date'
+   ```
+
+   Always use the base repo (`{owner}/{repo}`) — GitHub resolves fork PR commits
+   from the base repo via `refs/pull/*/head`, so this works for both fork and non-fork PRs.
+
+   Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
 
 Mark Task 1 as `completed`.
 
@@ -258,9 +276,17 @@ For the `human` list, categorize each thread:
       "✅ Fixed but not resolved by author — resolved by us". Store verdict to DB as `resolved_fixed`.
     - Fix looks wrong/incomplete → include in findings as "❌ Code changed but fix is incorrect".
       Store verdict to DB as `resolved_bad_fix`.
-  - **Code NOT changed:** The finding is genuinely unaddressed.
-    - Include in the findings presented to the user in Phase 4.
-    - Mark as "⚠️ UNRESOLVED from previous review"
+  - **Code NOT changed:** The finding may be genuinely unaddressed — but only re-raise
+    if the PR author has pushed new commits since the comment was posted.
+    - Compare the comment's `created_at` timestamp against `LATEST_COMMIT_DATE` from Phase 0.
+    - **New commits exist after comment** (`LATEST_COMMIT_DATE` > comment `created_at`):
+      The author pushed changes but didn't address this finding.
+      Include in the findings presented to the user in Phase 4.
+      Mark as "⚠️ UNRESOLVED from previous review"
+    - **No new commits after comment** (`LATEST_COMMIT_DATE` ≤ comment `created_at`):
+      The comment is already visible on the PR and the author hasn't pushed any changes yet.
+      Silently skip — do NOT include in findings or auto-post.
+      This avoids replying to our own still-visible unresolved thread with no new information.
 
 **Resolved threads:**
 
@@ -485,6 +511,9 @@ Each finding shows its source:
 findings are **automatically included** in the post list — they are the user's own prior
 comments that remain unaddressed and MUST be re-raised. Do NOT ask the user to select these.
 Show them in the list marked as "(auto-post)" so the user knows they'll be re-raised.
+
+> **Note:** `[PREV-UNRESOLVED]` findings where no new commits exist after the comment
+> (silently skipped in Phase 1c) do NOT appear here — they were already filtered out.
 
 **Author questions require user approval:** `[AUTHOR-QUESTION]` findings are NOT auto-posted.
 They require user review because the AI-generated answer may need editing or the user may
