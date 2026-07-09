@@ -630,3 +630,94 @@ describe("stripHeredocBodies", () => {
     assert.ok(stripHeredocBodies(input).includes("rm -rf"));
   });
 });
+
+// ── Test command detection regex ──
+// Tests the regex used by enforcement.ts to detect test runner commands.
+// The regex is duplicated here (not exported) to test the matching logic directly.
+
+describe("test command detection regex", () => {
+  // Mirrors the regex from enforcement.ts test detection hook
+  function isTestCommand(command: string): boolean {
+    return /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
+      || /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?tox(?:\s|$)/.test(command) && !/tox\s+-e\b/.test(command)
+      || /(?:^|[;&|]\s*)go\s+test\b/.test(command)
+      || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
+      || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
+  }
+
+  it("matches bare pytest", () => {
+    assert.equal(isTestCommand("pytest"), true);
+  });
+
+  it("matches uv run pytest", () => {
+    assert.equal(isTestCommand("uv run pytest"), true);
+  });
+
+  it("matches uv run --group tests pytest", () => {
+    assert.equal(isTestCommand("uv run --group tests pytest"), true);
+  });
+
+  it("matches uv run --group tests --no-cache pytest", () => {
+    assert.equal(isTestCommand("uv run --group tests --no-cache pytest"), true);
+  });
+
+  it("matches pytest after && separator", () => {
+    assert.equal(isTestCommand("cd /tmp && pytest"), true);
+  });
+
+  it("matches npm test", () => {
+    assert.equal(isTestCommand("npm test"), true);
+  });
+
+  it("matches npx tsx --test", () => {
+    assert.equal(isTestCommand("npx tsx --test tests/"), true);
+  });
+
+  it("matches bare tox", () => {
+    assert.equal(isTestCommand("tox"), true);
+  });
+
+  it("matches go test", () => {
+    assert.equal(isTestCommand("go test ./..."), true);
+  });
+
+  it("matches vitest", () => {
+    assert.equal(isTestCommand("vitest"), true);
+  });
+
+  it("matches jest", () => {
+    assert.equal(isTestCommand("jest"), true);
+  });
+
+  it("matches mocha", () => {
+    assert.equal(isTestCommand("mocha"), true);
+  });
+
+  it("does not match pip install pytest", () => {
+    assert.equal(isTestCommand("pip install pytest"), false);
+  });
+
+  it("does not match grep pytest", () => {
+    assert.equal(isTestCommand("grep pytest requirements.txt"), false);
+  });
+
+  it("does not match echo pytest", () => {
+    assert.equal(isTestCommand("echo pytest"), false);
+  });
+
+  it("does not match cat tox.ini", () => {
+    assert.equal(isTestCommand("cat tox.ini"), false);
+  });
+
+  it("does not match tox -e lint", () => {
+    assert.equal(isTestCommand("tox -e lint"), false);
+  });
+
+  it("does not match tox -e docs", () => {
+    assert.equal(isTestCommand("tox -e docs"), false);
+  });
+
+  it("does not match npm install jest", () => {
+    assert.equal(isTestCommand("npm install jest"), false);
+  });
+});

@@ -161,10 +161,15 @@ describe("recordReviewerResult with findings", () => {
 // ── 9. isReviewClean ──
 
 describe("isReviewClean", () => {
-  it("returns true when status is clean and tests passed", () => {
+  it("returns false when status is clean but tests not passed", () => {
     addReviewerPending(cwd, "lint");
     recordReviewerResult(cwd, "lint", 0);
-    assert.equal(isReviewClean(cwd), false); // clean but tests not passed yet
+    assert.equal(isReviewClean(cwd), false);
+  });
+
+  it("returns true when status is clean with tests passed", () => {
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 0);
     markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
   });

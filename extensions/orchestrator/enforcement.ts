@@ -693,14 +693,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   // NOTE: Code reviewers are excluded — they may run tests to verify behavior but their
   // test runs should not mark the project's test state. Only intentional test runs count.
   pi.on("tool_result", async (event, ctx) => {
-    if (!getSetting(ctx.cwd, "review_loop_enforcement")) return;
+    const toolName = (event as any).toolName as string;
+    if (toolName !== "bash") return;
 
     // Skip test detection for code reviewers — their test runs are verification, not validation
     const agentName = process.env.PI_AGENT_NAME || "";
     if (agentName.startsWith("code-reviewer-")) return;
-
-    const toolName = (event as any).toolName as string;
-    if (toolName !== "bash") return;
 
     const command: string = (event as any).input?.command || "";
     if (!command) return;
@@ -719,7 +717,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
     if (!isTestCommand) return;
 
+    // Resolve the effective cwd BEFORE checking settings — the command may target
+    // a different repo (cd <dir> or git -C <dir>), so we need that repo's settings.
     const effectiveCwd = resolveEffectiveCwd(command, ctx.cwd);
+    if (!getSetting(effectiveCwd, "review_loop_enforcement")) return;
+
     const isError = (event as any).isError === true;
 
     for (let attempt = 0; attempt < 3; attempt++) {
