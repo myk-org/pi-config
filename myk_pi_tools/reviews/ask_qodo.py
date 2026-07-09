@@ -1,6 +1,6 @@
 """Ask Qodo a question and wait for reply.
 
-Posts a comment mentioning @qodo-code-review with the question,
+Posts a comment using /qodo command with the question,
 then waits up to 10 minutes for Qodo's reply.
 
 Usage:
@@ -30,13 +30,13 @@ def post_and_wait_for_qodo_reply(
     poll_interval: int = 30,
     label: str = "ask-qodo",
 ) -> str:
-    """Post a comment mentioning @qodo-code-review and wait for reply.
+    """Post a comment using /qodo command and wait for reply.
 
     Args:
         owner: Repository owner.
         repo: Repository name.
         pr_number: PR number.
-        message: Full message body to post (should include @qodo-code-review).
+        message: Full message body to post (should start with /qodo).
         match_lines: Lines to match in Qodo's reply (it quotes our message).
         timeout: Max wait time in seconds (default 600 = 10 min).
         poll_interval: Seconds between checks (default 30).
@@ -63,7 +63,7 @@ def post_and_wait_for_qodo_reply(
             check=True,
             timeout=30,
         )
-        print_stderr(f"[{label}] Posted comment to @qodo-code-review.")
+        print_stderr(f"[{label}] Posted /qodo comment.")
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else ""
         print_stderr(f"[{label}] Failed to post comment (rc={e.returncode}): {stderr}")
@@ -109,7 +109,7 @@ def post_and_wait_for_qodo_reply(
 
 def ask_qodo(owner: str, repo: str, pr_number: str, question: str) -> str:
     """Post a question to Qodo and wait for reply."""
-    message = f"@qodo-code-review\n\n{question}"
+    message = f"/qodo {question}"
     match_lines = [line.strip() for line in question.strip().splitlines() if line.strip()]
     return post_and_wait_for_qodo_reply(
         owner,

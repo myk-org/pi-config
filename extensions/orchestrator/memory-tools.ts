@@ -331,9 +331,9 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
           return true;
         });
         await embedMissing(cwd, sameCategoryEntries);
-        // Embed the new entry now so vectorSearch can use the cached embedding
-        // and embedEntry() later is a no-op (already in store)
-        await embedEntry(cwd, text, category);
+        // Do NOT embed the new entry before searching — if the entry already exists
+        // in sameCategoryEntries, it would match itself with similarity 1.000.
+        // embedEntry() is called later after confirming no duplicate.
         const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
         for (const vm of vectorMatches) {
           if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
@@ -364,8 +364,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
                   merged = true;
                 }
               }
-              // Remove the just-embedded entry since we're reinforcing instead of adding
-              await removeEmbedding(cwd, text, category);
+              // No removeEmbedding needed — new entry was not embedded before searching
               const enforcementNote = merged ? " (enforcement fields merged)" : "";
               return {
                 content: [{
@@ -485,7 +484,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       scores.entries[hash] = entry;
       saveScores(cwd, scores);
 
-      // Embed the new entry (no-op if already embedded during dedup check above)
+      // Embed the new entry for future similarity searches
       await embedEntry(cwd, text, category);
 
       const pin = isPinned ? " (pinned)" : "";

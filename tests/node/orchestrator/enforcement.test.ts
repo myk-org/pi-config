@@ -22,6 +22,7 @@ import {
   checkTempFileEnforcement,
   hasGitAddBulk,
   stripHeredocBodies,
+  isTestRunnerCommand,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 // ── extractSubshells ──
@@ -420,6 +421,18 @@ describe("resolveEffectiveCwd", () => {
   it("strips quotes from cd path", () => {
     assert.equal(resolveEffectiveCwd("cd '/foo/bar' && ls", "/home"), "/foo/bar");
   });
+  it("resolves cd after && separator", () => {
+    assert.equal(resolveEffectiveCwd("echo ok && cd /other/repo && pytest", "/home"), "/other/repo");
+  });
+  it("resolves cd after ; separator", () => {
+    assert.equal(resolveEffectiveCwd("echo ok; cd /other/repo; pytest", "/home"), "/other/repo");
+  });
+  it("uses first cd in compound command", () => {
+    assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/home"), "/first");
+  });
+  it("ignores trailing cd after git command", () => {
+    assert.equal(resolveEffectiveCwd("cd /repo && git commit && cd /tmp", "/home"), "/repo");
+  });
 });
 
 // ── checkPythonPipBlock ──
@@ -628,5 +641,119 @@ describe("stripHeredocBodies", () => {
   it("does not strip if delimiter not found (malformed — conservative)", () => {
     const input = "cat <<EOF\nrm -rf /\nNOTEOF";
     assert.ok(stripHeredocBodies(input).includes("rm -rf"));
+  });
+});
+
+// ── Test command detection (isTestRunnerCommand) ──
+// Tests the exported isTestRunnerCommand from enforcement-helpers.ts.
+
+describe("isTestRunnerCommand", () => {
+
+  it("matches bare pytest", () => {
+    assert.equal(isTestRunnerCommand("pytest"), true);
+  });
+
+  it("matches uv run pytest", () => {
+    assert.equal(isTestRunnerCommand("uv run pytest"), true);
+  });
+
+  it("matches uv run --group tests pytest", () => {
+    assert.equal(isTestRunnerCommand("uv run --group tests pytest"), true);
+  });
+
+  it("matches uv run --group tests --no-cache pytest", () => {
+    assert.equal(isTestRunnerCommand("uv run --group tests --no-cache pytest"), true);
+  });
+
+  it("matches pytest after && separator", () => {
+    assert.equal(isTestRunnerCommand("cd /tmp && pytest"), true);
+  });
+
+  it("matches npm test", () => {
+    assert.equal(isTestRunnerCommand("npm test"), true);
+  });
+
+  it("matches npx tsx --test", () => {
+    assert.equal(isTestRunnerCommand("npx tsx --test tests/"), true);
+  });
+
+  it("matches bare tox", () => {
+    assert.equal(isTestRunnerCommand("tox"), true);
+  });
+
+  it("matches go test", () => {
+    assert.equal(isTestRunnerCommand("go test ./..."), true);
+  });
+
+  it("matches vitest", () => {
+    assert.equal(isTestRunnerCommand("vitest"), true);
+  });
+
+  it("matches jest", () => {
+    assert.equal(isTestRunnerCommand("jest"), true);
+  });
+
+  it("matches mocha", () => {
+    assert.equal(isTestRunnerCommand("mocha"), true);
+  });
+
+  it("does not match pip install pytest", () => {
+    assert.equal(isTestRunnerCommand("pip install pytest"), false);
+  });
+
+  it("does not match grep pytest", () => {
+    assert.equal(isTestRunnerCommand("grep pytest requirements.txt"), false);
+  });
+
+  it("does not match echo pytest", () => {
+    assert.equal(isTestRunnerCommand("echo pytest"), false);
+  });
+
+  it("does not match cat tox.ini", () => {
+    assert.equal(isTestRunnerCommand("cat tox.ini"), false);
+  });
+
+  it("does not match tox -e lint", () => {
+    assert.equal(isTestRunnerCommand("tox -e lint"), false);
+  });
+
+  it("does not match tox -e docs", () => {
+    assert.equal(isTestRunnerCommand("tox -e docs"), false);
+  });
+
+  it("does not match tox -elint (combined flag)", () => {
+    assert.equal(isTestRunnerCommand("tox -elint"), false);
+  });
+
+  it("does not match tox --help", () => {
+    assert.equal(isTestRunnerCommand("tox --help"), false);
+  });
+
+  it("does not match tox --version", () => {
+    assert.equal(isTestRunnerCommand("tox --version"), false);
+  });
+
+  it("does not match tox --list", () => {
+    assert.equal(isTestRunnerCommand("tox --list"), false);
+  });
+
+  it("matches tox after tox -e lint in compound command", () => {
+    assert.equal(isTestRunnerCommand("tox -e lint && tox"), true);
+  });
+
+  it("matches tox followed by && without space", () => {
+    assert.equal(isTestRunnerCommand("tox&& echo ok"), true);
+  });
+
+  it("matches tox with output redirection", () => {
+    assert.equal(isTestRunnerCommand("tox>out.txt"), true);
+  });
+
+  it("matches tox followed by semicolon without space", () => {
+    assert.equal(isTestRunnerCommand("tox;echo ok"), true);
+  });
+
+  it("does not match npm install jest", () => {
+    assert.equal(isTestRunnerCommand("npm install jest"), false);
   });
 });

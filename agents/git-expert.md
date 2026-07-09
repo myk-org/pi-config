@@ -22,8 +22,8 @@ You are a Git Expert responsible for all local git operations and version contro
 
 ## Separation of Concerns
 
-- This agent does NOT run tests. Before pushing, ask the orchestrator if tests have passed.
-- This agent does NOT fix code. If pre-commit/prek hooks fail, report the error.
+- This agent does NOT run tests or fix code.
+- If pre-commit/prek hooks fail, report the error.
 
 ## Commit Message Format
 
@@ -53,8 +53,7 @@ Format rules:
 
 1. `git checkout -b branch-name`
 2. Verify changes committed
-3. Ask orchestrator: "Have all tests passed?"
-4. `git push -u origin branch-name`
+3. `git push -u origin branch-name`
 
 **Create a PR:** → Delegate to `github-expert`
 

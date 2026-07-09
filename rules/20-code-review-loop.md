@@ -1,6 +1,6 @@
 # Code Review Loop (MANDATORY)
 
-After ANY code change, send to ALL 5 review agents. **Never skip the first review.**
+After ANY code change, send to ALL 6 agents (5 reviewers + test-automator) IN PARALLEL. **Never skip the first review.**
 
 If `review_loop_enforcement` is enabled (default: disabled).
 Resolution: project `.pi/pi-config-settings.json` → global `~/.pi/pi-config-settings.json` → `PI_REVIEW_LOOP_ENFORCEMENT` env var → `false`.
@@ -13,25 +13,25 @@ If disabled:
 - Single review pass is sufficient
 - No commit blocking
 
-**In both cases, all 5 reviewers are always called. The setting only controls whether the loop repeats.**
+**In both cases, all 6 agents are always called. The setting only controls whether the loop repeats.**
 
 ```text
 1. Specialist writes/fixes code
-2. Send to ALL 5 review agents IN PARALLEL (async)
-3. Merge & deduplicate findings
-4. Has comments? ──YES──→ For EACH finding: fix code OR explain why not (step 4a)
-                    │     → go to 2 with prior findings + responses (if review_loop_enforcement enabled)
-                    NO ↓
-5. Run test-automator
-6. Tests pass? ──NO──→ Minor fix? re-run tests (go to 5)
-                        Substantive change? full re-review (go to 2)
-               YES ↓
-✅ DONE
+2. Send ALL 6 agents IN PARALLEL (async): 5 reviewers + test-automator
+3. Wait for all 6 to complete
+4. Merge & deduplicate review findings
+5. Has findings OR tests failed?
+   ── Findings? → For EACH finding: fix code OR explain why not (step 5a)
+   ── Tests failed? → Fix code
+   ── Either? → go to 2 (re-run all 6 with prior findings + responses)
+   ── Neither? ↓
+   status: clean, tests_passed: true
+✅ DONE — commit/push allowed (enforcement checks status: clean AND tests_passed: true)
 ```
 
 ## Review Agents
 
-Five agents review code in parallel for comprehensive coverage:
+Six agents run in parallel for comprehensive coverage:
 
 | Agent | Focus |
 |---|---|
@@ -40,9 +40,16 @@ Five agents review code in parallel for comprehensive coverage:
 | `code-reviewer-security` | Bugs, logic errors, and security vulnerabilities |
 | `code-reviewer-docs` | Documentation quality, completeness, and accuracy |
 | `code-reviewer-spec` | Code/PR/issue spec alignment and compliance |
+| `test-automator` | Run project tests (pytest, node tests, pre-commit) |
 
-**All 5 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
-Do NOT block waiting for reviews — continue working while they run.**
+**All 6 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
+Do NOT block waiting for results — continue working while they run.**
+
+Send reviewers "Review the code changes" — never mention `git diff HEAD` in the task prompt.
+Reviewers get `$PI_REVIEW_BASE_BRANCH` env var and use `git diff origin/$PI_REVIEW_BASE_BRANCH...HEAD` themselves.
+
+Reviewers return structured JSON: `{"findings": [{"severity": "...", "file": "...", "line": N, "description": "...", "suggestion": "..."}]}`.
+The async runner validates the output is valid JSON and retries if not (up to 3 times).
 
 Overlapping scope is intentional for comprehensive coverage; step 3's deduplication handles duplicates.
 
@@ -96,11 +103,27 @@ is sufficient — fix what you agree with, skip what you don't. No need to expla
 
 ## Key Rules
 
-Never skip code review — all 5 reviewers always run.
-When `review_loop_enforcement` is enabled: loop until all reviewers return 0 findings AND tests pass.
-Respond to each finding (fix or explain) and re-review from step 2; once approved, run tests.
-When disabled: single review pass is sufficient; no mandatory re-review loop or explanations.
+Never skip code review — all 6 agents always run (5 reviewers + test-automator).
+When `review_loop_enforcement` is enabled: loop until all reviewers return 0 findings AND `tests_passed: true` in review-state.json.
+Respond to each finding (fix or explain) and re-run all 6 from step 2.
+When disabled: single pass is sufficient; no mandatory re-loop or explanations.
 Minor test/config-only fixes skip re-review (go to step 5); substantive code changes require full re-review.
+
+## Test Tracking
+
+Test results are tracked in `review-state.json` via the `tests_passed` field.
+This is **code-enforced** — commit/push is blocked unless `tests_passed: true` (when `review_loop_enforcement` is enabled).
+
+**How `tests_passed` gets set:**
+
+- **Bash hook detection:** When any agent runs a test command (`pytest`, `npm test`, `npx tsx --test`, `tox`, `go test`, `vitest`, `jest`, `mocha`),
+  the enforcement hook detects it and auto-marks `tests_passed` based on exit code.
+- **Agent completion:** When `test-automator` or `test-runner` agents complete, their result auto-marks `tests_passed`.
+- **Reset on edit:** Any file edit triggers `markNeedsReview()`, which resets `tests_passed: false` —
+  preventing stale results.
+
+**Duplicate test run avoidance:** If a specialist already ran tests before the review loop, `tests_passed` may already be `true`.
+Any file edit resets it, so test-automator in the parallel batch always validates the latest code.
 
 ## Baseline Test Comparison (Step 5)
 
@@ -143,4 +166,4 @@ For automated review flows (autorabbit, autoqodo), use **two-stage order** inste
    Loop Stage 2 until passed.
 
 Don't polish code that doesn't meet spec — it wastes work.
-Parallel mode (all 5 reviewers at once) remains default for manual reviews.
+Parallel mode (all 6 agents at once) remains default for manual reviews.

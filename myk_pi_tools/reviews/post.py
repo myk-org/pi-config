@@ -427,7 +427,7 @@ def _post_chunk(
         )
         if result.returncode == 0:
             chunk_count = len(chunk)
-            eprint(f"Posted consolidated reply for {chunk_count} body comment(s) mentioning @{reviewer}")
+            eprint(f"Posted consolidated reply for {chunk_count} body comment(s) mentioning {reviewer}")
             ts = get_utc_timestamp()
             for _, entry in chunk:
                 posted_updates.append({
@@ -437,10 +437,10 @@ def _post_chunk(
                     "ts": ts,
                 })
             return True, posted_updates
-        eprint(f"Error posting consolidated reply for @{reviewer}: {result.stderr}")
+        eprint(f"Error posting consolidated reply for {reviewer}: {result.stderr}")
         return False, []
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        eprint(f"Error posting consolidated reply for @{reviewer}: {e}")
+        eprint(f"Error posting consolidated reply for {reviewer}: {e}")
         return False, []
 
 
@@ -468,6 +468,7 @@ def post_body_comment_replies(
     """
     max_len = 55000  # Leave margin below GitHub's ~65KB limit
     header_template = "@{reviewer}\n\nThe following review comments were reviewed and a decision was made:\n\n"
+    _QODO_AUTHORS = {"qodo-code-review[bot]", "qodo-code-review"}
     posted = 0
     posted_updates: list[dict[str, Any]] = []
 
@@ -475,7 +476,11 @@ def post_body_comment_replies(
         if not entries:
             continue
 
-        header = header_template.format(reviewer=reviewer)
+        # Qodo v2 responds to /qodo, not @qodo-code-review[bot]
+        if reviewer in _QODO_AUTHORS:
+            header = "/qodo\n\nThe following review comments were reviewed and a decision was made:\n\n"
+        else:
+            header = header_template.format(reviewer=reviewer)
         part_prefix_budget = 32  # "(Part N/M)\n\n" safety margin
         max_section_len = max_len - len(header) - part_prefix_budget
 

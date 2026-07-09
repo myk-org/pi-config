@@ -207,15 +207,17 @@ Run scout and planner in a chain to analyze the auth module
 
 ## Code Review Loop
 
-After any code change, the orchestrator runs 5 review agents **in parallel**:
+After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewers + test-automator):
 
 1. **code-reviewer-quality** — Code quality & maintainability
-2. **code-reviewer-guidelines** — Project guidelines adherence  
+2. **code-reviewer-guidelines** — Project guidelines adherence
 3. **code-reviewer-security** — Bugs, logic errors, security
 4. **code-reviewer-docs** — Documentation quality, completeness, accuracy
 5. **code-reviewer-spec** — Code/PR/issue spec alignment
+6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
 
-Loops until all approve, then runs tests.
+Loops until all reviewers approve AND tests pass (`tests_passed: true` in `review-state.json`).
+Commit is code-enforced — blocked unless both `status: clean` and `tests_passed: true`.
 
 Use `/review-status` to inspect the current review loop state. Pass a worktree path to check a specific worktree (e.g., `/review-status .worktrees/issue-42`).
 

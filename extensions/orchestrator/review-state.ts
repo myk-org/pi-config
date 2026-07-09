@@ -20,6 +20,7 @@ export interface ReviewState {
   last_edit_at: string | null;
   last_clean_at: string | null;
   edited_during_cycle: boolean;
+  tests_passed: boolean;
 }
 
 const STATE_FILE = "review-state.json";
@@ -42,6 +43,7 @@ function defaultState(): ReviewState {
     last_edit_at: null,
     last_clean_at: null,
     edited_during_cycle: false,
+    tests_passed: false,
   };
 }
 
@@ -59,6 +61,7 @@ export function readReviewState(cwd: string): ReviewState {
       last_edit_at: typeof raw.last_edit_at === "string" ? raw.last_edit_at : null,
       last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
       edited_during_cycle: raw.edited_during_cycle === true,
+      tests_passed: raw.tests_passed === true,
     };
   } catch (e: any) {
     console.debug("[review-state] failed to parse state:", e?.message);
@@ -154,6 +157,7 @@ export function markNeedsReview(cwd: string): void {
     if (state.status === "in_progress") {
       state.last_edit_at = new Date().toISOString();
       state.edited_during_cycle = true;
+      state.tests_passed = false;
     } else {
       state.status = "needs_review";
       state.last_edit_at = new Date().toISOString();
@@ -162,6 +166,7 @@ export function markNeedsReview(cwd: string): void {
       state.reviewers_pending = [];
       state.reviewers_total = 0;
       state.edited_during_cycle = false;
+      state.tests_passed = false;
     }
     writeState(cwd, state);
   });
@@ -214,15 +219,46 @@ export function isReviewClean(cwd: string): boolean {
   const state = readReviewState(cwd);
   if (state.status === "none") return true; // No tracking active — nothing to enforce
   if (state.status !== "clean") return false;
+  if (!state.tests_passed) return false;
   return true;
 }
 
-/** Count findings in reviewer output by matching severity markers at line start. */
+/** Mark that tests have passed. Only meaningful when review status is being tracked. */
+export function markTestsPassed(cwd: string): void {
+  withStateLock(cwd, (state) => {
+    if (state.status === "none") return; // No tracking active
+    state.tests_passed = true;
+    writeState(cwd, state);
+  });
+}
+
+/** Mark that tests have failed. No-op when review status is not being tracked.
+ *  Called when a detected test command exits non-zero, or test-automator/test-runner agent fails.
+ *  Resets to false on any file edit via markNeedsReview(). */
+export function markTestsFailed(cwd: string): void {
+  withStateLock(cwd, (state) => {
+    if (state.status === "none") return; // No tracking active
+    state.tests_passed = false;
+    writeState(cwd, state);
+  });
+}
+
+/** Count findings in reviewer output by parsing JSON.
+ *  Returns the number of findings, or -1 if the output is not valid JSON with a findings array. */
 export function countFindings(output: string): number {
-  const criticals = (output.match(/^\[CRITICAL\]/gm) || []).length;
-  const warnings = (output.match(/^\[WARNING\]/gm) || []).length;
-  const suggestions = (output.match(/^\[SUGGESTION\]/gm) || []).length;
-  return criticals + warnings + suggestions;
+  // Try JSON parse — reviewers return {"findings": [...]}
+  try {
+    // Strip markdown code fences if present
+    let cleaned = output.trim();
+    if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+    }
+    const parsed = JSON.parse(cleaned);
+    if (parsed && Array.isArray(parsed.findings)) {
+      return parsed.findings.length;
+    }
+  } catch { /* not valid JSON — return -1 */ }
+  return -1;
 }
 
 /** Reset review state — for testing or manual override. */

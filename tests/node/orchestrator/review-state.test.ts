@@ -16,6 +16,8 @@ import {
   resetReviewState,
   countFindings,
   statePath,
+  markTestsPassed,
+  markTestsFailed,
 } from "../../../extensions/orchestrator/review-state.js";
 
 let cwd: string;
@@ -159,9 +161,16 @@ describe("recordReviewerResult with findings", () => {
 // ── 9. isReviewClean ──
 
 describe("isReviewClean", () => {
-  it("returns true when status is clean", () => {
+  it("returns false when status is clean but tests not passed", () => {
     addReviewerPending(cwd, "lint");
     recordReviewerResult(cwd, "lint", 0);
+    assert.equal(isReviewClean(cwd), false);
+  });
+
+  it("returns true when status is clean with tests passed", () => {
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 0);
+    markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
   });
 
@@ -180,6 +189,7 @@ describe("isReviewClean after edit", () => {
   it("returns false when edit happened after clean", () => {
     addReviewerPending(cwd, "lint");
     recordReviewerResult(cwd, "lint", 0);
+    markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
 
     // Simulate an edit after clean by writing state with last_edit_at > last_clean_at
@@ -237,6 +247,8 @@ describe("Full cycle — all reviewers clean", () => {
     done = recordReviewerResult(cwd, "security", 0);
     assert.equal(done, true);
 
+    assert.equal(isReviewClean(cwd), false); // clean but tests not passed yet
+    markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
     const s = readReviewState(cwd);
     assert.equal(s.status, "clean");
@@ -269,36 +281,39 @@ describe("Full cycle — one reviewer has findings", () => {
 });
 
 describe("countFindings", () => {
-  it("returns 0 for empty string", () => {
-    assert.equal(countFindings(""), 0);
+  it("returns -1 for empty string", () => {
+    assert.equal(countFindings(""), -1);
   });
 
-  it("returns 0 for approved output", () => {
-    assert.equal(countFindings("No quality issues found. Code approved."), 0);
+  it("returns -1 for non-JSON text", () => {
+    assert.equal(countFindings("No quality issues found. Code approved."), -1);
   });
 
-  it("counts single CRITICAL", () => {
-    assert.equal(countFindings("[CRITICAL] file.ts:10 — Missing null check"), 1);
+  it("returns 0 for empty findings array", () => {
+    assert.equal(countFindings('{"findings": []}'), 0);
   });
 
-  it("counts mixed severities", () => {
-    const output = `[CRITICAL] a.ts:1 — Bug\n[WARNING] b.ts:2 — Style\n[SUGGESTION] c.ts:3 — Improvement`;
+  it("counts single finding", () => {
+    const output = '{"findings": [{"severity": "CRITICAL", "file": "a.ts", "line": 10, "description": "bug"}]}';
+    assert.equal(countFindings(output), 1);
+  });
+
+  it("counts multiple findings", () => {
+    const output = '{"findings": [{"severity": "CRITICAL", "file": "a.ts", "line": 1, "description": "bug"}, {"severity": "WARNING", "file": "b.ts", "line": 2, "description": "style"}, {"severity": "SUGGESTION", "file": "c.ts", "line": 3, "description": "improve"}]}';
     assert.equal(countFindings(output), 3);
   });
 
-  it("counts multiple of same severity", () => {
-    const output = `[WARNING] a.ts:1\n[WARNING] b.ts:2\n[WARNING] c.ts:3`;
-    assert.equal(countFindings(output), 3);
+  it("strips markdown code fences", () => {
+    const output = '```json\n{"findings": [{"severity": "WARNING", "file": "a.ts", "line": 1, "description": "x"}]}\n```';
+    assert.equal(countFindings(output), 1);
   });
 
-  it("does not count markers in prose (not at line start)", () => {
-    const output = "The reviewer should not raise [CRITICAL] for this pattern.";
-    assert.equal(countFindings(output), 0);
+  it("returns -1 for invalid JSON", () => {
+    assert.equal(countFindings('{"findings": [}'), -1);
   });
 
-  it("counts markers at line start but not mid-line", () => {
-    const output = "[CRITICAL] real finding\nDo not raise [WARNING] here\n[SUGGESTION] another real one";
-    assert.equal(countFindings(output), 2);
+  it("returns -1 for JSON without findings array", () => {
+    assert.equal(countFindings('{"result": "ok"}'), -1);
   });
 });
 
@@ -361,6 +376,70 @@ describe("recordReviewerResult idempotent", () => {
     const s = readReviewState(cwd);
     assert.equal(s.findings_count, 3); // not 6
     assert.deepEqual(s.reviewers_pending, ["test"]);
+  });
+});
+
+// ── tests_passed field ──
+
+describe("tests_passed", () => {
+  it("defaults to false", () => {
+    const s = readReviewState(cwd);
+    assert.equal(s.tests_passed, false);
+  });
+
+  it("markTestsPassed sets tests_passed to true", () => {
+    markNeedsReview(cwd); // activate tracking
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+  });
+
+  it("markTestsFailed sets tests_passed to false", () => {
+    markNeedsReview(cwd);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+    markTestsFailed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false);
+  });
+
+  it("markNeedsReview resets tests_passed to false", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 0);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+
+    // Edit resets everything
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false);
+  });
+
+  it("markNeedsReview during in_progress also resets tests_passed", () => {
+    addReviewerPending(cwd, "lint");
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+
+    // Edit during review resets tests_passed
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false);
+    assert.equal(readReviewState(cwd).status, "in_progress"); // reviewers still pending
+  });
+
+  it("markTestsPassed is no-op when status is none", () => {
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false); // still default
+    assert.equal(readReviewState(cwd).status, "none");
+  });
+
+  it("isReviewClean requires both clean status and tests_passed", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 0);
+    // status is clean but tests haven't passed
+    assert.equal(readReviewState(cwd).status, "clean");
+    assert.equal(isReviewClean(cwd), false);
+
+    markTestsPassed(cwd);
+    assert.equal(isReviewClean(cwd), true);
   });
 });
 
@@ -431,13 +510,14 @@ describe("worktree state isolation", () => {
     markNeedsReview(worktreeA);
     addReviewerPending(worktreeA, "lint");
     recordReviewerResult(worktreeA, "lint", 0);
+    markTestsPassed(worktreeA);
     assert.equal(isReviewClean(worktreeA), true);
 
     // Mark B needs review
     markNeedsReview(worktreeB);
     assert.equal(isReviewClean(worktreeB), false);
 
-    // A's clean state should NOT affect B
+    // A's clean state should NOT affect B (tests_passed is per-worktree too)
     assert.equal(isReviewClean(worktreeA), true);
     assert.equal(isReviewClean(worktreeB), false);
     // Main repo unaffected

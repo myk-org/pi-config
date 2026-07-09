@@ -238,11 +238,14 @@ _CLEANUP_REQUEST_TEXT = (
 
 
 def _request_qodo_sticky_cleanup(owner: str, repo: str, pr_number: str) -> str:
-    """Ask Qodo to re-evaluate sticky findings and wait for reply.
+    """Ask Qodo to re-evaluate sticky findings via /ask command and wait for reply.
+
+    Uses Qodo v2's /ask command instead of @mention — Qodo v2 responds to
+    slash commands, not free-text @mentions.
 
     Returns Qodo's reply body text, or empty string on timeout/failure.
     """
-    message = f"@qodo-code-review\n\n{_CLEANUP_REQUEST_TEXT}"
+    message = f"/qodo {_CLEANUP_REQUEST_TEXT}"
     match_lines = [line.strip() for line in _CLEANUP_REQUEST_TEXT.strip().splitlines() if line.strip()]
     return post_and_wait_for_qodo_reply(
         owner,
@@ -264,7 +267,8 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
     """
     owner_repo = f"{owner}/{repo}"
     _qodo_reviewing_since: float | None = None  # Track when Qodo's transient "reviewing" comment first appeared
-    _cleanup_requested = False  # Track if we already asked Qodo to clean up stickies
+    _cleanup_last_requested_at: float = 0  # Timestamp of last cleanup request (0 = never)
+    _CLEANUP_RETRY_COOLDOWN_SECONDS = 300  # 5 min cooldown between cleanup retries
     _cleanup_response = ""  # Qodo's reply to our cleanup request
     cycle = 0
     _result: dict | None = None
@@ -327,7 +331,11 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
             else:
                 _qodo_reviewing_since = None
                 # Check for stale sticky findings and request cleanup
-                if not _cleanup_requested and not has_actionable:
+                _cleanup_cooldown_elapsed = (
+                    _cleanup_last_requested_at == 0
+                    or time.time() - _cleanup_last_requested_at > _CLEANUP_RETRY_COOLDOWN_SECONDS
+                )
+                if _cleanup_cooldown_elapsed and not has_actionable:
                     _review_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
                     if _review_path.exists():
                         try:
@@ -339,12 +347,15 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                                 for f in _review_data.get("qodo", [])
                             )
                             if _has_stale:
-                                print_stderr("[poll] Stale sticky findings detected — requesting Qodo cleanup.")
+                                _retry_label = "Retrying" if _cleanup_last_requested_at > 0 else "Requesting"
+                                print_stderr(
+                                    f"[poll] Stale sticky findings detected — {_retry_label.lower()} Qodo cleanup."
+                                )
                                 _cleanup_reply = _request_qodo_sticky_cleanup(owner, repo, pr_number)
-                                _cleanup_requested = True
+                                _cleanup_last_requested_at = time.time()
                                 if _cleanup_reply:
                                     _cleanup_response = _cleanup_reply
-                                if _cleanup_response:
+                                if _cleanup_reply:
                                     # Re-fetch to get fresh data
                                     _fresh = fetch_run(review_url, output_dir=output_dir)
                                     if isinstance(_fresh, dict):
@@ -352,6 +363,16 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                                         _fresh["approved"] = False
                                         _result = _fresh
                                         break
+                                else:
+                                    # Cleanup request timed out — Qodo didn't reply.
+                                    # Force a fresh review via /agentic_review so Qodo
+                                    # re-evaluates the PR and resolves stale stickies.
+                                    print_stderr(
+                                        "[poll] Cleanup timed out — triggering /agentic_review"
+                                        " to force fresh Qodo review."
+                                    )
+                                    _retrigger_qodo_review(owner, repo, pr_number)
+
                         except Exception as e:
                             print_stderr(f"[poll] Cleanup check failed: {e}")
 

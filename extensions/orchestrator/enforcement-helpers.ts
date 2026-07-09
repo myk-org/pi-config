@@ -30,8 +30,11 @@ export function escapeForSingleQuote(s: string): string {
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
-  // Match: cd /path/to/dir && ..., cd /path/to/dir; ...
-  const cdMatch = command.match(/^\s*cd\s+([^\s;&|]+)/);
+  // Match the FIRST cd in the command (at start or after &&, ;, ||)
+  // First cd sets up the working directory before subsequent commands run.
+  // Using LAST cd is unsafe — a trailing cd (e.g., git commit && cd /tmp) would
+  // misattribute the cwd to the wrong directory.
+  const cdMatch = command.match(/(?:^|[;&|]\s*)cd\s+([^\s;&|]+)/);
   if (cdMatch) {
     const target = cdMatch[1].replace(/['"]/g, "");
     if (target.startsWith("/")) return target;
@@ -350,4 +353,21 @@ export function stripHeredocBodies(cmd: string): string {
   // Closing delimiter must be on its own line with no trailing content (except newline).
   return cmd.replace(/<<-(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\2\s*(?=\n|$)/gm, "")
     .replace(/<<(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\2\s*(?=\n|$)/gm, "");
+}
+
+/**
+ * Detect common test runner commands — require command-start position
+ * (after &&, |, ;, or line start) to avoid false positives from install/grep/cat commands.
+ * NOTE: For compound commands (e.g., pytest && other_cmd), if the non-test part fails,
+ * isError=true marks tests as failed even though pytest passed. This is the conservative/safe
+ * direction — re-run the test command standalone to mark tests_passed.
+ * NOTE: `tox` without `-e` args matches (runs default envs = tests). `tox -e lint` does NOT
+ * match — we exclude tox with explicit -e to avoid marking lint/docs runs as test passes.
+ */
+export function isTestRunnerCommand(command: string): boolean {
+  return /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
+    || /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?tox\b(?!\s*-e)(?!\s+--(?:help|version|list))/.test(command)
+    || /(?:^|[;&|]\s*)go\s+test\b/.test(command)
+    || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
+    || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
 }

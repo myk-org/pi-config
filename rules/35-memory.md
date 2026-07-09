@@ -95,11 +95,14 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 
 - **One line only** — max ~100 chars, single short sentence
 - **Specific and actionable** — concrete "do X" or "don't do Y", no fluff
+- **Preserve context scope** — if a preference was stated about a specific tool/project/workflow,
+  include that scope in the memory. NEVER generalize a context-specific statement into a universal rule.
 
 | ❌ Bad | ✅ Good |
 |--------|---------|
 | "We had issues with buildah and Docker caching and tried several approaches" | "buildah chown -R breaks cache mounts — use --mount=type=cache with correct uid" |
 | "User prefers a certain approach to handling processes" | "Attach child processes to pi (no detached:true) — kills on exit" |
+| "Never use gemini-2.5-flash model" (said about a specific tool) | "Never use gemini-2.5-flash for X — unreliable for that use case" |
 
 ---
 

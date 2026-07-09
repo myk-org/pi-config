@@ -26,7 +26,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isReviewClean, readReviewState, statePath } from "./review-state.js";
+import { markNeedsReview, isReviewClean, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -39,6 +39,7 @@ import {
   stripHeredocBodies,
   escapeForDoubleQuote,
   escapeForSingleQuote,
+  isTestRunnerCommand,
 } from "./enforcement-helpers.js";
 
 type EnforcementResult = { block: true; reason: string } | undefined;
@@ -485,9 +486,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
       if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(commitCwd)) {
         const state = readReviewState(commitCwd);
+        const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
+        const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
         return {
           block: true,
-          reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending). Fix findings and re-run all reviewers until 0 comments.`,
+          reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending, tests_passed: ${state.tests_passed}).${testInfo}${reviewAdvice}`,
         };
       }
     }
@@ -683,6 +686,50 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
   });
 
+  // ── Test command detection (auto-mark tests_passed in review state) ──
+  // Runs in ALL processes (orchestrator + subagents) to catch test runs from any agent.
+  // When a test command exits successfully, marks tests_passed=true in review-state.json.
+  // When it fails, marks tests_passed=false. Any subsequent file edit resets tests_passed
+  // via markNeedsReview(), so stale results are impossible.
+  // NOTE: Code reviewers are excluded — they may run tests to verify behavior but their
+  // test runs should not mark the project's test state. Only intentional test runs count.
+  pi.on("tool_result", async (event, ctx) => {
+    const toolName = (event as any).toolName as string;
+    if (toolName !== "bash") return;
+
+    // Skip test detection for code reviewers — their test runs are verification, not validation
+    const agentName = process.env.PI_AGENT_NAME || "";
+    if (agentName.startsWith("code-reviewer-")) return;
+
+    const command: string = (event as any).input?.command || "";
+    if (!command) return;
+
+    const isTestCommand = isTestRunnerCommand(command);
+    if (!isTestCommand) return;
+
+    // Resolve the effective cwd BEFORE checking settings — the command may target
+    // a different repo (cd <dir> or git -C <dir>), so we need that repo's settings.
+    const effectiveCwd = resolveEffectiveCwd(command, ctx.cwd);
+    if (!getSetting(effectiveCwd, "review_loop_enforcement")) return;
+
+    const isError = (event as any).isError === true;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (isError) {
+          markTestsFailed(effectiveCwd);
+        } else {
+          markTestsPassed(effectiveCwd);
+        }
+        break;
+      } catch {
+        if (attempt === 2) {
+          console.error("[enforcement] markTests(Passed|Failed) failed after 3 attempts");
+        }
+      }
+    }
+  });
+
   // ── /review-status command — read-only access to review state ──────
   // Usage: /review-status [worktree-path]
   // Without args: shows main repo state. With path: shows that worktree's state.
@@ -704,6 +751,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         `Findings: ${state.findings_count}`,
         `Reviewers pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
         `Edited during cycle: ${state.edited_during_cycle}`,
+        `Tests passed: ${state.tests_passed}`,
         `Last edit: ${state.last_edit_at || "none"}`,
         `Last clean: ${state.last_clean_at || "none"}`,
       ];
@@ -731,6 +779,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         `findings: ${state.findings_count}`,
         `pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
         `edited_during_cycle: ${state.edited_during_cycle}`,
+        `tests_passed: ${state.tests_passed}`,
         `last_edit: ${state.last_edit_at || "none"}`,
         `last_clean: ${state.last_clean_at || "none"}`,
       ].join("\n");
