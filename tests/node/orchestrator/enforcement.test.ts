@@ -713,6 +713,18 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("tox -e lint && tox"), true);
   });
 
+  it("matches tox followed by && without space", () => {
+    assert.equal(isTestRunnerCommand("tox&& echo ok"), true);
+  });
+
+  it("matches tox with output redirection", () => {
+    assert.equal(isTestRunnerCommand("tox>out.txt"), true);
+  });
+
+  it("matches tox followed by semicolon without space", () => {
+    assert.equal(isTestRunnerCommand("tox;echo ok"), true);
+  });
+
   it("does not match npm install jest", () => {
     assert.equal(isTestRunnerCommand("npm install jest"), false);
   });
