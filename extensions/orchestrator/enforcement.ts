@@ -39,6 +39,7 @@ import {
   stripHeredocBodies,
   escapeForDoubleQuote,
   escapeForSingleQuote,
+  isTestRunnerCommand,
 } from "./enforcement-helpers.js";
 
 type EnforcementResult = { block: true; reason: string } | undefined;
@@ -703,18 +704,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const command: string = (event as any).input?.command || "";
     if (!command) return;
 
-    // Detect common test runner commands — require command-start position
-    // (after &&, |, ;, or line start) to avoid false positives from install/grep/cat commands.
-    // NOTE: For compound commands (e.g., pytest && other_cmd), if the non-test part fails,
-    // isError=true marks tests as failed even though pytest passed. This is the conservative/safe
-    // direction — re-run the test command standalone to mark tests_passed.
-    // NOTE: `tox` without `-e` args matches (runs default envs = tests). `tox -e lint` does NOT
-    // match — we exclude tox with explicit -e to avoid marking lint/docs runs as test passes.
-    const isTestCommand = /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
-      || /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?tox(?:\s|$)/.test(command) && !/tox\s+-e\b/.test(command)
-      || /(?:^|[;&|]\s*)go\s+test\b/.test(command)
-      || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
-      || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
+    const isTestCommand = isTestRunnerCommand(command);
     if (!isTestCommand) return;
 
     // Resolve the effective cwd BEFORE checking settings — the command may target

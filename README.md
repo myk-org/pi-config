@@ -217,7 +217,7 @@ After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewe
 6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
 
 Loops until all reviewers approve AND tests pass (`tests_passed: true` in `review-state.json`).
-Commit/push is code-enforced — blocked unless both `status: clean` and `tests_passed: true`.
+Commit is code-enforced — blocked unless both `status: clean` and `tests_passed: true`.
 
 Use `/review-status` to inspect the current review loop state. Pass a worktree path to check a specific worktree (e.g., `/review-status .worktrees/issue-42`).
 
