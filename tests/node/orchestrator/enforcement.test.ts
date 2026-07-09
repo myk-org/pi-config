@@ -421,6 +421,15 @@ describe("resolveEffectiveCwd", () => {
   it("strips quotes from cd path", () => {
     assert.equal(resolveEffectiveCwd("cd '/foo/bar' && ls", "/home"), "/foo/bar");
   });
+  it("resolves cd after && separator", () => {
+    assert.equal(resolveEffectiveCwd("echo ok && cd /other/repo && pytest", "/home"), "/other/repo");
+  });
+  it("resolves cd after ; separator", () => {
+    assert.equal(resolveEffectiveCwd("echo ok; cd /other/repo; pytest", "/home"), "/other/repo");
+  });
+  it("uses last cd in compound command", () => {
+    assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/home"), "/second");
+  });
 });
 
 // ── checkPythonPipBlock ──
