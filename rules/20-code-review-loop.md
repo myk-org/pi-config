@@ -45,6 +45,12 @@ Six agents run in parallel for comprehensive coverage:
 **All 6 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
 Do NOT block waiting for results — continue working while they run.**
 
+Send reviewers "Review the code changes" — never mention `git diff HEAD` in the task prompt.
+Reviewers get `$PI_REVIEW_BASE_BRANCH` env var and use `git diff origin/$PI_REVIEW_BASE_BRANCH...HEAD` themselves.
+
+Reviewers return structured JSON: `{"findings": [{"severity": "...", "file": "...", "line": N, "description": "...", "suggestion": "..."}]}`.
+The async runner validates the output is valid JSON and retries if not (up to 3 times).
+
 Overlapping scope is intentional for comprehensive coverage; step 3's deduplication handles duplicates.
 
 ## Deduplication Criteria
@@ -160,4 +166,4 @@ For automated review flows (autorabbit, autoqodo), use **two-stage order** inste
    Loop Stage 2 until passed.
 
 Don't polish code that doesn't meet spec — it wastes work.
-Parallel mode (all 5 reviewers at once) remains default for manual reviews.
+Parallel mode (all 6 agents at once) remains default for manual reviews.

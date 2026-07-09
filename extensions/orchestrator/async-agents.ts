@@ -2,7 +2,7 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
-import { execFileSync, execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -34,6 +34,7 @@ import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-wo
 import type { AgentConfig } from "./agents.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./review-state.js";
+import { getMainBranch } from "./git-helpers.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -283,7 +284,9 @@ export function registerAsyncAgents(
       if (!j.agent.startsWith("code-reviewer-") || !lateIngestedIds.has(j.id)) continue;
       try {
         const output = typeof j.output === "string" ? j.output : "";
-        recordReviewerResult(jobCwd(j), j.agent, countFindings(output));
+        const findings = countFindings(output);
+        // -1 means invalid JSON output — treat conservatively as having findings
+        recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
       } catch { /* best-effort */ }
     }
 
@@ -367,7 +370,9 @@ export function registerAsyncAgents(
       if (job.agent.startsWith("code-reviewer-")) {
         try {
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
-          recordReviewerResult(jobCwd(job), job.agent, countFindings(output));
+          const findings = countFindings(output);
+          // -1 means invalid JSON output — treat conservatively as having findings
+          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
         } catch { /* best-effort */ }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
@@ -611,11 +616,31 @@ export function registerAsyncAgents(
       ? [jitiCliPath, runnerPath, configPath]
       : [runnerPath, configPath];
 
+    // Resolve base branch for reviewers so they diff against the correct target
+    const spawnEnv: Record<string, string | undefined> = {
+      ...process.env,
+      PI_SUBAGENT_CHILD: "1",
+      PI_AGENT_NAME: agentName,
+    };
+    if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
+      try {
+        const prBase = spawnSync("gh", ["pr", "view", "--json", "baseRefName", "--jq", ".baseRefName"], {
+          cwd, timeout: 5000, encoding: "utf-8",
+        });
+        const base = prBase.status === 0 && prBase.stdout?.trim()
+          ? prBase.stdout.trim()
+          : (getMainBranch(cwd) || "main");
+        spawnEnv.PI_REVIEW_BASE_BRANCH = base;
+      } catch {
+        spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
+      }
+    }
+
     const proc = spawn(process.execPath, spawnArgs, {
       cwd,
       stdio: "ignore",
       windowsHide: true,
-      env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName },
+      env: spawnEnv,
     });
 
     // Track the job

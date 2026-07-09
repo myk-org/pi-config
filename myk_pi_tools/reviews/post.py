@@ -427,7 +427,7 @@ def _post_chunk(
         )
         if result.returncode == 0:
             chunk_count = len(chunk)
-            eprint(f"Posted consolidated reply for {chunk_count} body comment(s) mentioning @{reviewer}")
+            eprint(f"Posted consolidated reply for {chunk_count} body comment(s) mentioning {reviewer}")
             ts = get_utc_timestamp()
             for _, entry in chunk:
                 posted_updates.append({
@@ -437,10 +437,10 @@ def _post_chunk(
                     "ts": ts,
                 })
             return True, posted_updates
-        eprint(f"Error posting consolidated reply for @{reviewer}: {result.stderr}")
+        eprint(f"Error posting consolidated reply for {reviewer}: {result.stderr}")
         return False, []
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        eprint(f"Error posting consolidated reply for @{reviewer}: {e}")
+        eprint(f"Error posting consolidated reply for {reviewer}: {e}")
         return False, []
 
 

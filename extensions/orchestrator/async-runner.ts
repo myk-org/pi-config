@@ -211,6 +211,78 @@ async function run(config: RunConfig): Promise<void> {
     pidashWs.close();
   }
 
+  // For code reviewers: validate output is JSON, retry if not
+  if (config.agent.startsWith("code-reviewer-") && exitCode === 0) {
+    let validJson = false;
+    let retryOutput = finalOutput || stdoutTail.slice(-2000);
+    let jsonRetryCount = 0;
+    while (!validJson) {
+      jsonRetryCount++;
+      try {
+        let cleaned = retryOutput.trim();
+        if (cleaned.startsWith("```")) {
+          cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+        }
+        const parsed = JSON.parse(cleaned);
+        if (parsed && Array.isArray(parsed.findings)) {
+          validJson = true;
+          finalOutput = cleaned; // Use the cleaned JSON as final output
+        }
+      } catch { /* not valid JSON */ }
+
+      if (!validJson) {
+        // After 3 retries, stop and let the user decide
+        if (jsonRetryCount >= 3) {
+          finalOutput = JSON.stringify({
+            findings: [{
+              severity: "CRITICAL",
+              file: "<reviewer-output>",
+              line: 0,
+              description: `Reviewer ${config.agent} failed to return valid JSON after ${jsonRetryCount} attempts. Raw output included in this result. User action required.`,
+              suggestion: "Re-run the reviewer or check the agent prompt.",
+            }],
+            _jsonRetryExhausted: true,
+            _rawOutput: retryOutput.slice(0, 1000),
+          });
+          break;
+        }
+        // Re-run with same session, asking for JSON
+        const retryArgs = config.piArgs.slice(0, -1); // Remove the last arg (the task)
+        retryArgs.push("Your output is not valid JSON. Return ONLY a raw JSON object: {\"findings\": [...]}. No markdown fences, no text before or after.");
+        const retryCode = await new Promise<number | null>((resolve) => {
+          const retryProc = spawn(config.piCommand, retryArgs, {
+            cwd: config.cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          let retryBuf = "";
+          retryProc.stdout.on("data", (chunk: Buffer) => {
+            retryBuf += chunk.toString();
+            outputStream.write(chunk.toString());
+          });
+          retryProc.stderr.on("data", (chunk: Buffer) => {
+            outputStream.write(chunk.toString());
+          });
+          retryProc.on("close", (code) => {
+            // Extract final output from the retry
+            for (const line of retryBuf.split("\n")) {
+              try {
+                const ev = JSON.parse(line.trim());
+                if (ev.type === "message_end" && ev.message?.role === "assistant") {
+                  for (const p of ev.message.content || []) {
+                    if (p.type === "text") retryOutput = p.text;
+                  }
+                }
+              } catch { /* skip */ }
+            }
+            resolve(code);
+          });
+          retryProc.on("error", () => resolve(1));
+        });
+        if (retryCode !== 0) break; // pi itself failed, stop retrying
+      }
+    }
+  }
+
   // Write result for the watcher to pick up
   writeJson(config.resultPath, {
     id: config.id,

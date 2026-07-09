@@ -243,12 +243,22 @@ export function markTestsFailed(cwd: string): void {
   });
 }
 
-/** Count findings in reviewer output by matching severity markers at line start. */
+/** Count findings in reviewer output by parsing JSON.
+ *  Returns the number of findings, or -1 if the output is not valid JSON with a findings array. */
 export function countFindings(output: string): number {
-  const criticals = (output.match(/^\[CRITICAL\]/gm) || []).length;
-  const warnings = (output.match(/^\[WARNING\]/gm) || []).length;
-  const suggestions = (output.match(/^\[SUGGESTION\]/gm) || []).length;
-  return criticals + warnings + suggestions;
+  // Try JSON parse — reviewers return {"findings": [...]}
+  try {
+    // Strip markdown code fences if present
+    let cleaned = output.trim();
+    if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+    }
+    const parsed = JSON.parse(cleaned);
+    if (parsed && Array.isArray(parsed.findings)) {
+      return parsed.findings.length;
+    }
+  } catch { /* not valid JSON — return -1 */ }
+  return -1;
 }
 
 /** Reset review state — for testing or manual override. */

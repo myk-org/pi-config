@@ -281,36 +281,39 @@ describe("Full cycle — one reviewer has findings", () => {
 });
 
 describe("countFindings", () => {
-  it("returns 0 for empty string", () => {
-    assert.equal(countFindings(""), 0);
+  it("returns -1 for empty string", () => {
+    assert.equal(countFindings(""), -1);
   });
 
-  it("returns 0 for approved output", () => {
-    assert.equal(countFindings("No quality issues found. Code approved."), 0);
+  it("returns -1 for non-JSON text", () => {
+    assert.equal(countFindings("No quality issues found. Code approved."), -1);
   });
 
-  it("counts single CRITICAL", () => {
-    assert.equal(countFindings("[CRITICAL] file.ts:10 — Missing null check"), 1);
+  it("returns 0 for empty findings array", () => {
+    assert.equal(countFindings('{"findings": []}'), 0);
   });
 
-  it("counts mixed severities", () => {
-    const output = `[CRITICAL] a.ts:1 — Bug\n[WARNING] b.ts:2 — Style\n[SUGGESTION] c.ts:3 — Improvement`;
+  it("counts single finding", () => {
+    const output = '{"findings": [{"severity": "CRITICAL", "file": "a.ts", "line": 10, "description": "bug"}]}';
+    assert.equal(countFindings(output), 1);
+  });
+
+  it("counts multiple findings", () => {
+    const output = '{"findings": [{"severity": "CRITICAL", "file": "a.ts", "line": 1, "description": "bug"}, {"severity": "WARNING", "file": "b.ts", "line": 2, "description": "style"}, {"severity": "SUGGESTION", "file": "c.ts", "line": 3, "description": "improve"}]}';
     assert.equal(countFindings(output), 3);
   });
 
-  it("counts multiple of same severity", () => {
-    const output = `[WARNING] a.ts:1\n[WARNING] b.ts:2\n[WARNING] c.ts:3`;
-    assert.equal(countFindings(output), 3);
+  it("strips markdown code fences", () => {
+    const output = '```json\n{"findings": [{"severity": "WARNING", "file": "a.ts", "line": 1, "description": "x"}]}\n```';
+    assert.equal(countFindings(output), 1);
   });
 
-  it("does not count markers in prose (not at line start)", () => {
-    const output = "The reviewer should not raise [CRITICAL] for this pattern.";
-    assert.equal(countFindings(output), 0);
+  it("returns -1 for invalid JSON", () => {
+    assert.equal(countFindings('{"findings": [}'), -1);
   });
 
-  it("counts markers at line start but not mid-line", () => {
-    const output = "[CRITICAL] real finding\nDo not raise [WARNING] here\n[SUGGESTION] another real one";
-    assert.equal(countFindings(output), 2);
+  it("returns -1 for JSON without findings array", () => {
+    assert.equal(countFindings('{"result": "ok"}'), -1);
   });
 });
 
