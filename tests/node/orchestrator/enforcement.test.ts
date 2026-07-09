@@ -709,6 +709,10 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("tox -e docs"), false);
   });
 
+  it("does not match tox -elint (combined flag)", () => {
+    assert.equal(isTestRunnerCommand("tox -elint"), false);
+  });
+
   it("matches tox after tox -e lint in compound command", () => {
     assert.equal(isTestRunnerCommand("tox -e lint && tox"), true);
   });

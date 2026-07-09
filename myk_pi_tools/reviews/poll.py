@@ -355,7 +355,7 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
                                 _cleanup_last_requested_at = time.time()
                                 if _cleanup_reply:
                                     _cleanup_response = _cleanup_reply
-                                if _cleanup_response:
+                                if _cleanup_reply:
                                     # Re-fetch to get fresh data
                                     _fresh = fetch_run(review_url, output_dir=output_dir)
                                     if isinstance(_fresh, dict):
