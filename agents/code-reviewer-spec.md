@@ -67,7 +67,7 @@ If the command returns results, review the output:
 
 ### Step 1: Detect PR
 
-Check if a PR exists for the current branch:
+ALWAYS run this command fresh — never use cached results from a previous session:
 
 ```bash
 gh pr view --json number,title,body,url 2>/dev/null
