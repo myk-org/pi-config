@@ -172,12 +172,10 @@ async function run(config: RunConfig): Promise<void> {
     });
 
     proc.on("close", (code) => {
-      outputStream.end();
       resolve(code);
     });
 
     proc.on("error", (err) => {
-      outputStream.end();
       status.error = err.message;
       resolve(1);
     });
@@ -282,6 +280,9 @@ async function run(config: RunConfig): Promise<void> {
       }
     }
   }
+
+  // End the output stream after all retries are done
+  outputStream.end();
 
   // Write result for the watcher to pick up
   writeJson(config.resultPath, {

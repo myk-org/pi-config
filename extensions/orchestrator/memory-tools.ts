@@ -364,8 +364,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
                   merged = true;
                 }
               }
-              // Remove the just-embedded entry since we're reinforcing instead of adding
-              await removeEmbedding(cwd, text, category);
+              // No removeEmbedding needed — new entry was not embedded before searching
               const enforcementNote = merged ? " (enforcement fields merged)" : "";
               return {
                 content: [{
