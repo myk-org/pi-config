@@ -33,7 +33,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
-import { addReviewerPending, recordReviewerResult, countFindings, readReviewState } from "./review-state.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./review-state.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -394,6 +394,17 @@ export function registerAsyncAgents(
             } catch { /* best-effort */ }
           }
         }
+      }
+
+      // Track test agent completion for review state test tracking
+      if (job.agent === "test-automator" || job.agent === "test-runner") {
+        try {
+          if (data.success) {
+            markTestsPassed(jobCwd(job));
+          } else {
+            markTestsFailed(jobCwd(job));
+          }
+        } catch (e: any) { console.debug(`[async-agents] markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
 
       // Clean up result file — for grouped jobs, defer to deliverGroupResults

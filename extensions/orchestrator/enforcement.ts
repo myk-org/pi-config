@@ -26,7 +26,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isReviewClean, readReviewState, statePath } from "./review-state.js";
+import { markNeedsReview, isReviewClean, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -485,9 +485,11 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
       if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(commitCwd)) {
         const state = readReviewState(commitCwd);
+        const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
+        const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
         return {
           block: true,
-          reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending). Fix findings and re-run all reviewers until 0 comments.`,
+          reason: `\u26d4 Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending, tests_passed: ${state.tests_passed}).${testInfo}${reviewAdvice}`,
         };
       }
     }
@@ -683,6 +685,59 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
   });
 
+  // ── Test command detection (auto-mark tests_passed in review state) ──
+  // Runs in ALL processes (orchestrator + subagents) to catch test runs from any agent.
+  // When a test command exits successfully, marks tests_passed=true in review-state.json.
+  // When it fails, marks tests_passed=false. Any subsequent file edit resets tests_passed
+  // via markNeedsReview(), so stale results are impossible.
+  // NOTE: Code reviewers are excluded — they may run tests to verify behavior but their
+  // test runs should not mark the project's test state. Only intentional test runs count.
+  pi.on("tool_result", async (event, ctx) => {
+    if (!getSetting(ctx.cwd, "review_loop_enforcement")) return;
+
+    // Skip test detection for code reviewers — their test runs are verification, not validation
+    const agentName = process.env.PI_AGENT_NAME || "";
+    if (agentName.startsWith("code-reviewer-")) return;
+
+    const toolName = (event as any).toolName as string;
+    if (toolName !== "bash") return;
+
+    const command: string = (event as any).input?.command || "";
+    if (!command) return;
+
+    // Detect common test runner commands — require command-start position
+    // (after &&, |, ;, or line start) to avoid false positives from install/grep/cat commands.
+    // NOTE: For compound commands (e.g., pytest && other_cmd), if the non-test part fails,
+    // isError=true marks tests as failed even though pytest passed. This is the conservative/safe
+    // direction — re-run the test command standalone to mark tests_passed.
+    // NOTE: `tox` without `-e` args matches (runs default envs = tests). `tox -e lint` does NOT
+    // match — we exclude tox with explicit -e to avoid marking lint/docs runs as test passes.
+    const isTestCommand = /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
+      || /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?tox(?:\s|$)/.test(command) && !/tox\s+-e\b/.test(command)
+      || /(?:^|[;&|]\s*)go\s+test\b/.test(command)
+      || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
+      || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
+    if (!isTestCommand) return;
+
+    const effectiveCwd = resolveEffectiveCwd(command, ctx.cwd);
+    const isError = (event as any).isError === true;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (isError) {
+          markTestsFailed(effectiveCwd);
+        } else {
+          markTestsPassed(effectiveCwd);
+        }
+        break;
+      } catch {
+        if (attempt === 2) {
+          console.error("[enforcement] markTests(Passed|Failed) failed after 3 attempts");
+        }
+      }
+    }
+  });
+
   // ── /review-status command — read-only access to review state ──────
   // Usage: /review-status [worktree-path]
   // Without args: shows main repo state. With path: shows that worktree's state.
@@ -704,6 +759,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         `Findings: ${state.findings_count}`,
         `Reviewers pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
         `Edited during cycle: ${state.edited_during_cycle}`,
+        `Tests passed: ${state.tests_passed}`,
         `Last edit: ${state.last_edit_at || "none"}`,
         `Last clean: ${state.last_clean_at || "none"}`,
       ];
@@ -731,6 +787,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         `findings: ${state.findings_count}`,
         `pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,
         `edited_during_cycle: ${state.edited_during_cycle}`,
+        `tests_passed: ${state.tests_passed}`,
         `last_edit: ${state.last_edit_at || "none"}`,
         `last_clean: ${state.last_clean_at || "none"}`,
       ].join("\n");

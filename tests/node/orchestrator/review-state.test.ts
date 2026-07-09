@@ -16,6 +16,8 @@ import {
   resetReviewState,
   countFindings,
   statePath,
+  markTestsPassed,
+  markTestsFailed,
 } from "../../../extensions/orchestrator/review-state.js";
 
 let cwd: string;
@@ -159,9 +161,11 @@ describe("recordReviewerResult with findings", () => {
 // ── 9. isReviewClean ──
 
 describe("isReviewClean", () => {
-  it("returns true when status is clean", () => {
+  it("returns true when status is clean and tests passed", () => {
     addReviewerPending(cwd, "lint");
     recordReviewerResult(cwd, "lint", 0);
+    assert.equal(isReviewClean(cwd), false); // clean but tests not passed yet
+    markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
   });
 
@@ -180,6 +184,7 @@ describe("isReviewClean after edit", () => {
   it("returns false when edit happened after clean", () => {
     addReviewerPending(cwd, "lint");
     recordReviewerResult(cwd, "lint", 0);
+    markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
 
     // Simulate an edit after clean by writing state with last_edit_at > last_clean_at
@@ -237,6 +242,8 @@ describe("Full cycle — all reviewers clean", () => {
     done = recordReviewerResult(cwd, "security", 0);
     assert.equal(done, true);
 
+    assert.equal(isReviewClean(cwd), false); // clean but tests not passed yet
+    markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
     const s = readReviewState(cwd);
     assert.equal(s.status, "clean");
@@ -364,6 +371,70 @@ describe("recordReviewerResult idempotent", () => {
   });
 });
 
+// ── tests_passed field ──
+
+describe("tests_passed", () => {
+  it("defaults to false", () => {
+    const s = readReviewState(cwd);
+    assert.equal(s.tests_passed, false);
+  });
+
+  it("markTestsPassed sets tests_passed to true", () => {
+    markNeedsReview(cwd); // activate tracking
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+  });
+
+  it("markTestsFailed sets tests_passed to false", () => {
+    markNeedsReview(cwd);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+    markTestsFailed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false);
+  });
+
+  it("markNeedsReview resets tests_passed to false", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 0);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+
+    // Edit resets everything
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false);
+  });
+
+  it("markNeedsReview during in_progress also resets tests_passed", () => {
+    addReviewerPending(cwd, "lint");
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, true);
+
+    // Edit during review resets tests_passed
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false);
+    assert.equal(readReviewState(cwd).status, "in_progress"); // reviewers still pending
+  });
+
+  it("markTestsPassed is no-op when status is none", () => {
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).tests_passed, false); // still default
+    assert.equal(readReviewState(cwd).status, "none");
+  });
+
+  it("isReviewClean requires both clean status and tests_passed", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 0);
+    // status is clean but tests haven't passed
+    assert.equal(readReviewState(cwd).status, "clean");
+    assert.equal(isReviewClean(cwd), false);
+
+    markTestsPassed(cwd);
+    assert.equal(isReviewClean(cwd), true);
+  });
+});
+
 // ── Worktree state isolation ──
 
 import { execFileSync } from "node:child_process";
@@ -431,13 +502,14 @@ describe("worktree state isolation", () => {
     markNeedsReview(worktreeA);
     addReviewerPending(worktreeA, "lint");
     recordReviewerResult(worktreeA, "lint", 0);
+    markTestsPassed(worktreeA);
     assert.equal(isReviewClean(worktreeA), true);
 
     // Mark B needs review
     markNeedsReview(worktreeB);
     assert.equal(isReviewClean(worktreeB), false);
 
-    // A's clean state should NOT affect B
+    // A's clean state should NOT affect B (tests_passed is per-worktree too)
     assert.equal(isReviewClean(worktreeA), true);
     assert.equal(isReviewClean(worktreeB), false);
     // Main repo unaffected
