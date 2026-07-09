@@ -709,6 +709,10 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("tox -e docs"), false);
   });
 
+  it("matches tox after tox -e lint in compound command", () => {
+    assert.equal(isTestRunnerCommand("tox -e lint && tox"), true);
+  });
+
   it("does not match npm install jest", () => {
     assert.equal(isTestRunnerCommand("npm install jest"), false);
   });
