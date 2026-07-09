@@ -165,6 +165,9 @@ If the raw arguments are empty:
    gh api /repos/{owner}/{repo}/commits/{head_sha} --jq '.commit.committer.date'
    ```
 
+   Always use the base repo (`{owner}/{repo}`) — GitHub resolves fork PR commits
+   from the base repo via `refs/pull/*/head`, so this works for both fork and non-fork PRs.
+
    Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
 
 If the raw arguments contain a PR number or URL:
@@ -186,6 +189,9 @@ If the raw arguments contain a PR number or URL:
    ```bash
    gh api /repos/{owner}/{repo}/commits/{head_sha} --jq '.commit.committer.date'
    ```
+
+   Always use the base repo (`{owner}/{repo}`) — GitHub resolves fork PR commits
+   from the base repo via `refs/pull/*/head`, so this works for both fork and non-fork PRs.
 
    Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
 
