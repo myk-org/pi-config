@@ -245,7 +245,7 @@ def _request_qodo_sticky_cleanup(owner: str, repo: str, pr_number: str) -> str:
 
     Returns Qodo's reply body text, or empty string on timeout/failure.
     """
-    message = f"qodo {_CLEANUP_REQUEST_TEXT}"
+    message = f"/qodo {_CLEANUP_REQUEST_TEXT}"
     match_lines = [line.strip() for line in _CLEANUP_REQUEST_TEXT.strip().splitlines() if line.strip()]
     return post_and_wait_for_qodo_reply(
         owner,

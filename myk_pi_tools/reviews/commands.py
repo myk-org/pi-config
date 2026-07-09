@@ -137,7 +137,7 @@ def reviews_status(pr: int | None, output_dir: str) -> None:
 def reviews_ask_qodo(args: tuple[str, ...]) -> None:
     """Ask Qodo a question about the current PR and wait for reply.
 
-    Posts @qodo-code-review comment with your question, waits up to 10 min for reply.
+    Posts /qodo comment with your question, waits up to 10 min for reply.
 
     Usage:
         reviews ask-qodo "What specific edge cases are missing for finding 11?"
