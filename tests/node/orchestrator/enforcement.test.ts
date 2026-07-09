@@ -713,6 +713,18 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("tox -elint"), false);
   });
 
+  it("does not match tox --help", () => {
+    assert.equal(isTestRunnerCommand("tox --help"), false);
+  });
+
+  it("does not match tox --version", () => {
+    assert.equal(isTestRunnerCommand("tox --version"), false);
+  });
+
+  it("does not match tox --list", () => {
+    assert.equal(isTestRunnerCommand("tox --list"), false);
+  });
+
   it("matches tox after tox -e lint in compound command", () => {
     assert.equal(isTestRunnerCommand("tox -e lint && tox"), true);
   });
