@@ -146,9 +146,9 @@ export function registerStatusLine(
     clearInterval(timePoller);
   });
 
-  // ── Desktop notifications — notify when user attention is needed ─────
+  // ── Desktop notifications — notify when pi is truly idle ─────────────
 
-  pi.on("agent_end", async () => {
+  pi.on("agent_settled", async () => {
     terminalNotify("pi", "Task completed");
   });
 

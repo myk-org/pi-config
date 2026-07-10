@@ -679,10 +679,11 @@ export function registerPidash(
   function setupEventForwarding(): void {
     forward("agent_start");
     forward("agent_end");
+    forward("agent_settled");
 
     // Track streaming state for prompt-queued feedback
     pi.on("agent_start", () => { isStreaming = true; });
-    pi.on("agent_end", () => { isStreaming = false; });
+    pi.on("agent_settled", () => { isStreaming = false; });
     forward("turn_start");
     forward("turn_end");
     forward("message_start");

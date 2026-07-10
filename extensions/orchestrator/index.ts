@@ -31,6 +31,7 @@ import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerMemoryTools } from "./memory-tools.js";
+import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
@@ -82,6 +83,7 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
   registerEnforcement(pi, IN_CONTAINER);
+  registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);

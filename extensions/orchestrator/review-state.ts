@@ -9,6 +9,22 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, renameS
 import { join, dirname } from "node:path";
 import { resolveWorktreeRoot } from "./utils.js";
 
+type StateTransitionCallback = (state: ReviewState) => void;
+let onTransitionCb: StateTransitionCallback | null = null;
+
+/** Register a callback to be notified on review state transitions.
+ *  Only one callback is supported — subsequent calls replace the previous one. */
+export function onStateTransition(cb: StateTransitionCallback): void {
+  onTransitionCb = cb;
+}
+
+/** Fire-and-forget state transition notification. Never throws. */
+function notifyTransition(state: ReviewState): void {
+  if (!onTransitionCb) return;
+  try { onTransitionCb({ ...state, reviewers_pending: [...state.reviewers_pending] }); }
+  catch (e: any) { console.debug("[review-state] transition callback failed:", e?.message); }
+}
+
 const DATA_DIR = ".pi/data";
 
 export interface ReviewState {
@@ -154,6 +170,8 @@ function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
  *  are tracked via last_edit_at but don't wipe the pending reviewer list. */
 export function markNeedsReview(cwd: string): void {
   withStateLock(cwd, (state) => {
+    const prevStatus = state.status;
+    const prevTestsPassed = state.tests_passed;
     if (state.status === "in_progress") {
       state.last_edit_at = new Date().toISOString();
       state.edited_during_cycle = true;
@@ -169,6 +187,10 @@ export function markNeedsReview(cwd: string): void {
       state.tests_passed = false;
     }
     writeState(cwd, state);
+    // Skip notification if nothing meaningful changed (e.g., repeated edits while already needs_review)
+    if (state.status !== prevStatus || state.tests_passed !== prevTestsPassed) {
+      notifyTransition(state);
+    }
   });
 }
 
@@ -186,6 +208,7 @@ export function addReviewerPending(cwd: string, reviewerName: string): void {
       state.edited_during_cycle = false;
     }
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -210,6 +233,7 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
       }
     }
     writeState(cwd, state);
+    notifyTransition(state);
     return state.reviewers_pending.length === 0;
   });
 }
@@ -229,6 +253,7 @@ export function markTestsPassed(cwd: string): void {
     if (state.status === "none") return; // No tracking active
     state.tests_passed = true;
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -240,6 +265,7 @@ export function markTestsFailed(cwd: string): void {
     if (state.status === "none") return; // No tracking active
     state.tests_passed = false;
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -265,5 +291,6 @@ export function countFindings(output: string): number {
 export function resetReviewState(cwd: string): void {
   withStateLock(cwd, () => {
     writeState(cwd, defaultState());
+    notifyTransition(defaultState());
   });
 }
