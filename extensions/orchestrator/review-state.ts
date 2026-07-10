@@ -170,6 +170,8 @@ function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
  *  are tracked via last_edit_at but don't wipe the pending reviewer list. */
 export function markNeedsReview(cwd: string): void {
   withStateLock(cwd, (state) => {
+    const prevStatus = state.status;
+    const prevTestsPassed = state.tests_passed;
     if (state.status === "in_progress") {
       state.last_edit_at = new Date().toISOString();
       state.edited_during_cycle = true;
@@ -185,7 +187,10 @@ export function markNeedsReview(cwd: string): void {
       state.tests_passed = false;
     }
     writeState(cwd, state);
-    notifyTransition(state);
+    // Skip notification if nothing meaningful changed (e.g., repeated edits while already needs_review)
+    if (state.status !== prevStatus || state.tests_passed !== prevTestsPassed) {
+      notifyTransition(state);
+    }
   });
 }
 

@@ -141,7 +141,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     lastCtx = ctx;
     if (getSetting(ctx.cwd, "review_loop_enforcement")) {
       updateStatusBar(readReviewState(ctx.cwd));
-    } else {
+    } else if (ctx.hasUI) {
       ctx.ui.setStatus("5-review", undefined);
     }
   });
@@ -154,7 +154,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
     try {
       if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) {
-        lastCtx.ui.setStatus("5-review", undefined);
+        if (lastCtx.hasUI) lastCtx.ui.setStatus("5-review", undefined);
         lastBarKey = "";
         return;
       }

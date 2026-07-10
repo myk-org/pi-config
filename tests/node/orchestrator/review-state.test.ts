@@ -542,27 +542,42 @@ describe("onStateTransition", () => {
     assert.equal(states[0].status, "needs_review");
   });
 
-  it("fires callback on addReviewerPending and recordReviewerResult", () => {
+  it("fires callback on addReviewerPending", () => {
     const states: Array<{ status: string; reviewers_pending: string[] }> = [];
     onStateTransition((s) => states.push({ status: s.status, reviewers_pending: [...s.reviewers_pending] }));
     markNeedsReview(cwd);
     addReviewerPending(cwd, "reviewer-a");
-    recordReviewerResult(cwd, "reviewer-a", 0);
-    assert.equal(states.length, 3);
+    assert.equal(states.length, 2);
     assert.equal(states[1].status, "in_progress");
     assert.deepEqual(states[1].reviewers_pending, ["reviewer-a"]);
-    assert.equal(states[2].status, "clean");
   });
 
-  it("fires callback on markTestsPassed and markTestsFailed", () => {
+  it("fires callback on recordReviewerResult", () => {
+    const states: Array<{ status: string }> = [];
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "reviewer-a");
+    onStateTransition((s) => states.push({ status: s.status }));
+    recordReviewerResult(cwd, "reviewer-a", 0);
+    assert.equal(states.length, 1);
+    assert.equal(states[0].status, "clean");
+  });
+
+  it("fires callback on markTestsPassed", () => {
     const states: Array<{ tests_passed: boolean }> = [];
     markNeedsReview(cwd); // activate tracking
     onStateTransition((s) => states.push({ tests_passed: s.tests_passed }));
     markTestsPassed(cwd);
-    markTestsFailed(cwd);
-    assert.equal(states.length, 2);
+    assert.equal(states.length, 1);
     assert.equal(states[0].tests_passed, true);
-    assert.equal(states[1].tests_passed, false);
+  });
+
+  it("fires callback on markTestsFailed", () => {
+    const states: Array<{ tests_passed: boolean }> = [];
+    markNeedsReview(cwd); // activate tracking
+    onStateTransition((s) => states.push({ tests_passed: s.tests_passed }));
+    markTestsFailed(cwd);
+    assert.equal(states.length, 1);
+    assert.equal(states[0].tests_passed, false);
   });
 
   it("fires callback on resetReviewState", () => {
@@ -591,6 +606,15 @@ describe("onStateTransition", () => {
     onStateTransition(() => { throw new Error("boom"); });
     // Should not throw
     assert.doesNotThrow(() => markNeedsReview(cwd));
+  });
+
+  it("does not fire duplicate notifications for repeated edits while needs_review", () => {
+    const states: Array<{ status: string }> = [];
+    onStateTransition((s) => states.push({ status: s.status }));
+    markNeedsReview(cwd);
+    markNeedsReview(cwd); // second edit — already needs_review
+    markNeedsReview(cwd); // third edit
+    assert.equal(states.length, 1); // Only the first transition fires
   });
 
   it("subsequent calls replace the previous callback", () => {
