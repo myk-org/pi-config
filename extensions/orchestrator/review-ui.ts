@@ -143,6 +143,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
       updateStatusBar(readReviewState(ctx.cwd));
     } else if (ctx.hasUI) {
       ctx.ui.setStatus("5-review", undefined);
+      lastBarKey = "";
     }
   });
   pi.on("agent_end", (_event, ctx) => { lastCtx = ctx; });
