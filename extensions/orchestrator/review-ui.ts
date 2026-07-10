@@ -10,6 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui";
 import { onStateTransition, readReviewState, type ReviewState } from "./review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
+import { getSetting } from "./project-settings.js";
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -83,7 +84,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     box.addChild(new Text(theme.fg(color, line), 0, 0));
 
     if (expanded && data.timestamp) {
-      box.addChild(new Text(theme.fg("dim", new Date(data.timestamp).toLocaleString()), 0, 0));
+      box.addChild(new Text(theme.fg("dim", new Date(data.timestamp).toLocaleString()), 0, 1));
     }
 
     return box;
@@ -138,15 +139,44 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   // Capture ctx and show current state on load
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
-    updateStatusBar(readReviewState(ctx.cwd));
+    if (getSetting(ctx.cwd, "review_loop_enforcement")) {
+      updateStatusBar(readReviewState(ctx.cwd));
+    } else {
+      ctx.ui.setStatus("5-review", undefined);
+    }
   });
   pi.on("agent_end", (_event, ctx) => { lastCtx = ctx; });
+
+  // Poll review-state.json for cross-process updates (subagents write state too)
+  const reviewPoller = setInterval(() => {
+    if (!lastCtx) return;
+    // Access a ctx property to detect stale/disposed context (throws if invalidated)
+    try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
+    try {
+      if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) {
+        lastCtx.ui.setStatus("5-review", undefined);
+        lastBarKey = "";
+        return;
+      }
+      updateStatusBar(readReviewState(lastCtx.cwd));
+    } catch (e: any) {
+      console.debug("[review-ui] poller error:", e?.message);
+    }
+  }, 5000);
+  if (reviewPoller.unref) reviewPoller.unref();
+
+  pi.on("session_shutdown", () => {
+    clearInterval(reviewPoller);
+  });
 
   // ── Hook into review state transitions ───────────────────────────────
 
   onStateTransition((state: ReviewState) => {
     // Always update status bar (even for "none" — clears it)
-    updateStatusBar(state);
+    // Only show if enforcement is enabled
+    if (lastCtx && getSetting(lastCtx.cwd, "review_loop_enforcement")) {
+      updateStatusBar(state);
+    }
 
     if (state.status === "none") return;
 

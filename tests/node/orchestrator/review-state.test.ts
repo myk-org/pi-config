@@ -18,6 +18,7 @@ import {
   statePath,
   markTestsPassed,
   markTestsFailed,
+  onStateTransition,
 } from "../../../extensions/orchestrator/review-state.js";
 
 let cwd: string;
@@ -522,5 +523,84 @@ describe("worktree state isolation", () => {
     assert.equal(isReviewClean(worktreeB), false);
     // Main repo unaffected
     assert.equal(readReviewState(mainRepo).status, "none");
+  });
+});
+
+// ── onStateTransition callback ──
+
+describe("onStateTransition", () => {
+  afterEach(() => {
+    // Clear callback to avoid leaking into other tests
+    onStateTransition(() => {});
+  });
+
+  it("fires callback on markNeedsReview", () => {
+    const states: Array<{ status: string }> = [];
+    onStateTransition((s) => states.push({ status: s.status }));
+    markNeedsReview(cwd);
+    assert.equal(states.length, 1);
+    assert.equal(states[0].status, "needs_review");
+  });
+
+  it("fires callback on addReviewerPending and recordReviewerResult", () => {
+    const states: Array<{ status: string; reviewers_pending: string[] }> = [];
+    onStateTransition((s) => states.push({ status: s.status, reviewers_pending: [...s.reviewers_pending] }));
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "reviewer-a");
+    recordReviewerResult(cwd, "reviewer-a", 0);
+    assert.equal(states.length, 3);
+    assert.equal(states[1].status, "in_progress");
+    assert.deepEqual(states[1].reviewers_pending, ["reviewer-a"]);
+    assert.equal(states[2].status, "clean");
+  });
+
+  it("fires callback on markTestsPassed and markTestsFailed", () => {
+    const states: Array<{ tests_passed: boolean }> = [];
+    markNeedsReview(cwd); // activate tracking
+    onStateTransition((s) => states.push({ tests_passed: s.tests_passed }));
+    markTestsPassed(cwd);
+    markTestsFailed(cwd);
+    assert.equal(states.length, 2);
+    assert.equal(states[0].tests_passed, true);
+    assert.equal(states[1].tests_passed, false);
+  });
+
+  it("fires callback on resetReviewState", () => {
+    const states: Array<{ status: string }> = [];
+    markNeedsReview(cwd);
+    onStateTransition((s) => states.push({ status: s.status }));
+    resetReviewState(cwd);
+    assert.equal(states.length, 1);
+    assert.equal(states[0].status, "none");
+  });
+
+  it("deep-copies reviewers_pending (no shared reference)", () => {
+    let captured: string[] = [];
+    onStateTransition((s) => { captured = s.reviewers_pending; });
+    addReviewerPending(cwd, "r1");
+    addReviewerPending(cwd, "r2");
+    // captured should be the snapshot from the last call, not mutated
+    assert.deepEqual(captured, ["r1", "r2"]);
+    // Mutating captured should not affect internal state
+    captured.push("r3");
+    const state = readReviewState(cwd);
+    assert.ok(!state.reviewers_pending.includes("r3"));
+  });
+
+  it("is fire-and-forget — callback errors do not propagate", () => {
+    onStateTransition(() => { throw new Error("boom"); });
+    // Should not throw
+    assert.doesNotThrow(() => markNeedsReview(cwd));
+  });
+
+  it("subsequent calls replace the previous callback", () => {
+    const calls1: string[] = [];
+    const calls2: string[] = [];
+    onStateTransition(() => calls1.push("a"));
+    markNeedsReview(cwd);
+    onStateTransition(() => calls2.push("b"));
+    resetReviewState(cwd);
+    assert.equal(calls1.length, 1); // Only fired before replacement
+    assert.equal(calls2.length, 1); // Fires after replacement
   });
 });
