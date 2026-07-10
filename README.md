@@ -241,6 +241,16 @@ Resolution order: project file → global `~/.pi/pi-config-settings.json` → en
 
 Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`, `PI_REVIEW_LOOP_ENFORCEMENT`
 
+#### Per-Project Resource Management
+
+Use `pi config -l` to manage which resources (reviewers, skills, prompt templates) are enabled per-project:
+
+```bash
+pi config -l          # Open project-local resource config
+```
+
+Press **Tab** to switch between global and project-local views. This lets you disable specific reviewers or skills for a project without editing JSON files.
+
 ### Override agents
 
 Place a `.md` file with the same `name` frontmatter in `~/.pi/agent/agents/` (user) or `.pi/agents/` (project) to override a bundled agent.
@@ -309,6 +319,16 @@ The `generate_image` tool creates images from structured descriptions via Gemini
 **Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
 
 In containers, images are auto-served via HTTP for browser preview.
+
+### Cache Miss Notices
+
+Enable `showCacheMissNotices` in pi settings to see transcript notices on significant prompt-cache misses — useful for investigating unexpected token costs:
+
+```bash
+pi config              # Toggle showCacheMissNotices in settings UI
+```
+
+Defaults to `false`. Enable when debugging cost spikes from cache invalidation.
 
 ## Docker (Sandboxed Execution)
 

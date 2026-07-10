@@ -9,3 +9,9 @@ export const ICON_GIT_CLEAN = "";
 export const ICON_GIT_DIRTY = "";
 export const ICON_DIFF = "";
 export const ICON_DREAM = "󰖔";
+
+// Review loop status
+export const ICON_REVIEW_CLEAN = "✓";
+export const ICON_REVIEW_NEEDED = "";
+export const ICON_REVIEW_PROGRESS = "";
+export const ICON_REVIEW_FINDINGS = "";

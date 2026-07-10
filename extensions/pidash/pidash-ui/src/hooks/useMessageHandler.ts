@@ -85,12 +85,14 @@ export function useMessageHandler(
           setQueuedCount(0);
           break;
         case "agent_end":
-          setStreaming(false);
           setQueuedCount(0);
           setStreamingBehavior(null);
           thinkRef.current = { id: "", text: "", startTs: 0 };
           assistRef.current = { id: "", text: "" };
           lastUserRef.current = "";
+          break;
+        case "agent_settled":
+          setStreaming(false);
           break;
 
         case "message_start": {

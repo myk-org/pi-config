@@ -9,6 +9,22 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, renameS
 import { join, dirname } from "node:path";
 import { resolveWorktreeRoot } from "./utils.js";
 
+type StateTransitionCallback = (state: ReviewState) => void;
+let onTransitionCb: StateTransitionCallback | null = null;
+
+/** Register a callback to be notified on review state transitions.
+ *  Only one callback is supported — subsequent calls replace the previous one. */
+export function onStateTransition(cb: StateTransitionCallback): void {
+  onTransitionCb = cb;
+}
+
+/** Fire-and-forget state transition notification. Never throws. */
+function notifyTransition(state: ReviewState): void {
+  if (!onTransitionCb) return;
+  try { onTransitionCb({ ...state, reviewers_pending: [...state.reviewers_pending] }); }
+  catch (e: any) { console.debug("[review-state] transition callback failed:", e?.message); }
+}
+
 const DATA_DIR = ".pi/data";
 
 export interface ReviewState {
@@ -169,6 +185,7 @@ export function markNeedsReview(cwd: string): void {
       state.tests_passed = false;
     }
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -186,6 +203,7 @@ export function addReviewerPending(cwd: string, reviewerName: string): void {
       state.edited_during_cycle = false;
     }
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -210,6 +228,7 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
       }
     }
     writeState(cwd, state);
+    notifyTransition(state);
     return state.reviewers_pending.length === 0;
   });
 }
@@ -229,6 +248,7 @@ export function markTestsPassed(cwd: string): void {
     if (state.status === "none") return; // No tracking active
     state.tests_passed = true;
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -240,6 +260,7 @@ export function markTestsFailed(cwd: string): void {
     if (state.status === "none") return; // No tracking active
     state.tests_passed = false;
     writeState(cwd, state);
+    notifyTransition(state);
   });
 }
 
@@ -265,5 +286,6 @@ export function countFindings(output: string): number {
 export function resetReviewState(cwd: string): void {
   withStateLock(cwd, () => {
     writeState(cwd, defaultState());
+    notifyTransition(defaultState());
   });
 }
