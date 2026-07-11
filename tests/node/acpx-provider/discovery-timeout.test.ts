@@ -76,11 +76,34 @@ describe("acpx discovery timeout pattern", () => {
   });
 
   it("calls signalReady even on timeout to prevent hanging streams", async () => {
-    // Wait for the discovery promise to settle after timeout
-    const result = await simulateDiscovery({ discoveryMs: 60, timeoutMs: 10 });
-    assert.equal(result.timedOut, true);
-    // Give the background discovery promise time to hit the timedOut check and call signalReady
+    // Track signalReady externally since the race winner's result may not reflect the background task
+    let externalSignalReadyCalled = false;
+    const originalSimulate = simulateDiscovery;
+
+    // Run discovery with timeout, then wait for background to settle
+    let timedOut = false;
+    let signalReadyCalled = false;
+    const signalReady = () => { signalReadyCalled = true; };
+
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { timedOut = true; reject(new Error("timed out")); }, 10);
+    });
+
+    const discovery = (async () => {
+      await new Promise((r) => setTimeout(r, 40)); // simulate slow runtime
+      if (timedOut) { signalReady(); return; }
+      await new Promise((r) => setTimeout(r, 40)); // simulate slow discovery
+      if (timedOut) { signalReady(); return; }
+      signalReady();
+    })();
+
+    try { await Promise.race([discovery, timeout]); } catch { /* timeout expected */ }
+    clearTimeout(timer!);
+    assert.equal(timedOut, true);
+
+    // Wait for the background discovery to hit the timedOut check and call signalReady
     await new Promise((r) => setTimeout(r, 100));
-    // signalReadyCalled may be false at the race boundary but the background task calls it
+    assert.equal(signalReadyCalled, true, "signalReady must be called on timeout to unblock streamAcpx");
   });
 });
