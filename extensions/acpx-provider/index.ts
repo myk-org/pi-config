@@ -30,7 +30,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 
 // =============================================================================
@@ -549,7 +549,7 @@ export default function (pi: ExtensionAPI) {
 	// Capture cwd at extension load time, before pi potentially changes to /tmp.
 	// acpx needs this to find session markers in the project directory tree.
 	projectCwd = process.cwd();
-	projectCwdSlug = projectCwd.replace(/[^a-zA-Z0-9]/g, "_").replace(/^_+|_+$/g, "").slice(-60);
+	projectCwdSlug = createHash("sha256").update(projectCwd).digest("hex").slice(0, 12);
 
 	const agentList = (process.env.ACPX_AGENTS || "")
 		.split(",")

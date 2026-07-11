@@ -632,11 +632,15 @@ export function registerAsyncAgents(
           spawnEnv.PI_HAS_PR = "true";
         } else {
           spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
-          spawnEnv.PI_HAS_PR = "false";
+          // Only set PI_HAS_PR=false if gh confirmed no PR exists.
+          // Other failures (timeout, auth, network) default to true to avoid skipping PR checks.
+          const noPr = prBase.stderr?.includes("no pull requests found") || false;
+          spawnEnv.PI_HAS_PR = noPr ? "false" : "true";
         }
       } catch {
         spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
-        spawnEnv.PI_HAS_PR = "false";
+        // Exception (e.g., gh not found) — default to true to avoid skipping PR checks
+        spawnEnv.PI_HAS_PR = "true";
       }
     }
 
