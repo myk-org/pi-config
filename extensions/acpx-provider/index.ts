@@ -6,7 +6,7 @@
  * Composer 2, GPT-5.4, etc.) as native pi models.
  *
  * How it works:
- * 1. On session_start, creates an AcpxRuntime per agent and discovers models
+ * 1. During extension load, creates an AcpxRuntime per agent and discovers models synchronously
  * 2. On each LLM request, sends only the latest user message via runtime.startTurn()
  *    (the acpx session maintains full conversation history on the agent side)
  * 3. Model is set per-session via ensureSession sessionOptions
@@ -30,7 +30,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 
 // =============================================================================
@@ -73,6 +73,7 @@ const agents = new Map<string, AgentState>();
  * cwd at init and pass it to all runtime instances.
  */
 let projectCwd: string;
+let projectCwdSlug: string;
 
 /** List of registered acpx agent names, used to reject non-acpx models */
 let registeredAgents: string[] = [];
@@ -114,7 +115,7 @@ async function createAgentRuntime(): Promise<AcpxRuntime> {
 		createAgentRegistry,
 	} = await import("acpx/runtime");
 
-	const stateDir = path.join(os.homedir(), ".acpx", `pi-${process.pid}`);
+	const stateDir = path.join(os.homedir(), ".acpx", `pi-${projectCwdSlug}`);
 	const runtime = createAcpRuntime({
 		cwd: projectCwd,
 		sessionStore: createFileSessionStore({ stateDir }),
@@ -127,7 +128,7 @@ async function createAgentRuntime(): Promise<AcpxRuntime> {
 
 function sessionKey(agent: string, modelId?: string): string {
 	const model = modelId && modelId !== "default" ? `-${modelId.replace(/[^a-zA-Z0-9.-]/g, "_")}` : "";
-	return `pi-${agent}${model}-${process.pid}`;
+	return `pi-${agent}${model}-${projectCwdSlug}`;
 }
 
 async function ensureHandle(
@@ -537,7 +538,7 @@ function streamAcpx(
 // Extension Entry Point
 // =============================================================================
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
 	// Subagents don't need acpx providers — they use the parent's model via --model flag.
 	// Without this guard, cursor-agent spawns as a child and prevents the subagent from exiting.
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -548,6 +549,7 @@ export default function (pi: ExtensionAPI) {
 	// Capture cwd at extension load time, before pi potentially changes to /tmp.
 	// acpx needs this to find session markers in the project directory tree.
 	projectCwd = process.cwd();
+	projectCwdSlug = createHash("sha256").update(projectCwd).digest("hex").slice(0, 12);
 
 	const agentList = (process.env.ACPX_AGENTS || "")
 		.split(",")
@@ -556,104 +558,99 @@ export default function (pi: ExtensionAPI) {
 
 	registeredAgents = agentList;
 
-	// Register each agent with a default placeholder model immediately
-	for (const agent of agentList) {
-		pi.registerProvider(`acpx-${agent}`, {
-			baseUrl: "https://localhost",
-			apiKey: "acpx", // pragma: allowlist secret
-			api: "acpx",
-			models: [
-				{
-					id: `${agent}:default`,
-					name: `${agent} (default)`,
-					reasoning: false,
-					input: ["text", "image"],
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: 200000,
-					maxTokens: 32768,
-				},
-			],
-			streamSimple: streamAcpx,
-		});
-	}
+	// Skip sync discovery if no agents configured
+	if (agentList.length === 0) return;
 
-	// Initialize runtimes and discover models on pi session start
-	// Non-blocking: fire-and-forget so pi startup isn't delayed
-	pi.on("session_start", (_event, ctx) => {
-		void (async () => {
-			const results = await Promise.allSettled(
-				agentList.map(async (agent) => {
-					try {
-						const runtime = await createAgentRuntime();
-						let signalReady!: () => void;
-						const ready = new Promise<void>((resolve) => { signalReady = resolve; });
-						const state: AgentState = {
-							agent,
-							runtime,
-							handles: new Map(),
-							pendingHandles: new Map(),
-							systemPromptSent: new Set(),
-							availableModelIds: [],
-							ready,
-							signalReady,
-						};
-						agents.set(agent, state);
+	const DISCOVERY_TIMEOUT_MS = 30_000;
 
-						const modelIds = await discoverModelsInternal(state);
-						signalReady();
-						return { agent, modelIds };
-					} catch (err) {
-						console.debug(`[acpx] runtime init failed for ${agent}:`, err);
-						// Set a resolved ready promise so streamAcpx doesn't hang
-						const state = agents.get(agent);
-						if (state) state.signalReady();
-						return { agent, modelIds: [] as string[] };
-					}
-				}),
-			);
-
-			const safeNotify = (message: string, type: "info" | "warning" | "error") => {
-				try {
-					ctx.ui.notify(message, type);
-				} catch {
-					// ctx is stale after session resume/reload — silently ignore
-				}
-			};
-
-			for (const result of results) {
-				if (result.status === "rejected") continue;
-
-				const { agent, modelIds } = result.value;
-				try {
-					if (modelIds.length > 0) {
-						const models = modelIds.map((modelId) => ({
-							id: `${agent}:${modelId}`,
-							name: `${modelIdToDisplayName(modelId)} (${agent})`,
-							reasoning: false,
-							input: ["text" as const, "image" as const],
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							contextWindow: 200000,
-							maxTokens: 32768,
-						}));
-						pi.registerProvider(`acpx-${agent}`, {
-							baseUrl: "https://localhost",
-							apiKey: "acpx", // pragma: allowlist secret
-							api: "acpx",
-							models,
-							streamSimple: streamAcpx,
-						});
-						safeNotify(`acpx-${agent}: ${modelIds.length} models discovered`, "info");
-					} else {
-						safeNotify(`acpx-${agent}: no models discovered`, "warning");
-					}
-				} catch (err) {
-					safeNotify(`acpx-${agent}: setup failed: ${err}`, "error");
-				}
-			}
-		})().catch((err) => {
-			console.error("[acpx] session_start initialization failed:", err);
-		});
+	const makeModel = (id: string, name: string) => ({
+		id, name, reasoning: false,
+		input: ["text" as const, "image" as const],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200000, maxTokens: 32768,
 	});
+
+	// Discover models synchronously during extension load.
+	// Pi awaits async extension factories, so models are registered before
+	// the model resolver runs — preventing silent fallback to default model.
+	// Timeout ensures a stuck agent doesn't block pi startup indefinitely.
+	const results = await Promise.allSettled(
+		agentList.map(async (agent) => {
+			try {
+				let timer: ReturnType<typeof setTimeout>;
+				let timedOut = false;
+				const timeout = new Promise<never>((_, reject) => {
+					timer = setTimeout(() => { timedOut = true; reject(new Error(`discovery timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`)); }, DISCOVERY_TIMEOUT_MS);
+					if (timer.unref) timer.unref();
+				});
+
+				const discovery = (async () => {
+					const runtime = await createAgentRuntime();
+					// Check timeout after slow runtime creation — don't store state if we already lost the race.
+					// Runtime without handles is lightweight (no connections/processes); safe to discard.
+					if (timedOut) { console.debug(`[acpx] ${agent}: discarding runtime after timeout`); return { agent, modelIds: [] as string[] }; }
+					let signalReady!: () => void;
+					const ready = new Promise<void>((resolve) => { signalReady = resolve; });
+					const state: AgentState = {
+						agent,
+						runtime,
+						handles: new Map(),
+						pendingHandles: new Map(),
+						systemPromptSent: new Set(),
+						availableModelIds: [],
+						ready,
+						signalReady,
+					};
+					agents.set(agent, state);
+
+					const modelIds = await discoverModelsInternal(state);
+					// If timed out during discovery, resolve ready so streamAcpx doesn't hang,
+					// then return empty — the provider gets registered with a default model only.
+					if (timedOut) { signalReady(); return { agent, modelIds: [] as string[] }; }
+					signalReady();
+					return { agent, modelIds };
+				})();
+
+				const result = await Promise.race([discovery, timeout]);
+				clearTimeout(timer!);
+				return result;
+			} catch (err) {
+				console.debug(`[acpx] runtime init failed for ${agent}:`, err);
+				const state = agents.get(agent);
+				if (state) state.signalReady();
+				return { agent, modelIds: [] as string[] };
+			}
+		}),
+	);
+
+	for (const result of results) {
+		if (result.status === "rejected") continue;
+
+		const { agent, modelIds } = result.value;
+		// Skip registration if runtime failed (no AgentState) — prevents
+		// registering a provider whose streamAcpx would always throw.
+		if (!agents.has(agent)) {
+			console.debug(`[acpx] acpx-${agent}: skipped registration (no runtime)`);
+			continue;
+		}
+
+		try {
+			const models = modelIds.length > 0
+				? modelIds.map((m) => makeModel(`${agent}:${m}`, `${modelIdToDisplayName(m)} (${agent})`))
+				: [makeModel(`${agent}:default`, `${agent} (default)`)];
+
+			pi.registerProvider(`acpx-${agent}`, {
+				baseUrl: "https://localhost",
+				apiKey: "acpx", // pragma: allowlist secret
+				api: "acpx",
+				models,
+				streamSimple: streamAcpx,
+			});
+			console.debug(`[acpx] acpx-${agent}: ${models.length} model(s) registered`);
+		} catch (err) {
+			console.debug(`[acpx] acpx-${agent}: setup failed:`, err);
+		}
+	}
 
 	// Clean up acpx sessions on pi shutdown
 	pi.on("session_shutdown", () => {

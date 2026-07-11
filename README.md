@@ -241,6 +241,15 @@ Resolution order: project file → global `~/.pi/pi-config-settings.json` → en
 
 Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`, `PI_REVIEW_LOOP_ENFORCEMENT`
 
+#### Reviewer Environment Variables
+
+These are set automatically by the orchestrator when spawning reviewer agents:
+
+| Variable | Description |
+|----------|-------------|
+| `PI_REVIEW_BASE_BRANCH` | Base branch for diff comparison (auto-detected from PR or falls back to main) |
+| `PI_HAS_PR` | `true` if a PR exists for the current branch, `false` for pre-push reviews. When `false`, reviewers skip Review History and `code-reviewer-spec` runs a reduced flow (issue-only checks) |
+
 #### Per-Project Resource Management
 
 Use `pi config -l` to manage which resources (reviewers, skills, prompt templates) are enabled per-project:
