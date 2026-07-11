@@ -578,13 +578,17 @@ export default async function (pi: ExtensionAPI) {
 		agentList.map(async (agent) => {
 			try {
 				let timer: ReturnType<typeof setTimeout>;
+				let timedOut = false;
 				const timeout = new Promise<never>((_, reject) => {
-					timer = setTimeout(() => reject(new Error(`discovery timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`)), DISCOVERY_TIMEOUT_MS);
+					timer = setTimeout(() => { timedOut = true; reject(new Error(`discovery timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`)); }, DISCOVERY_TIMEOUT_MS);
 					if (timer.unref) timer.unref();
 				});
 
 				const discovery = (async () => {
 					const runtime = await createAgentRuntime();
+					// Check timeout after slow runtime creation — don't store state if we already lost the race.
+					// Runtime without handles is lightweight (no connections/processes); safe to discard.
+					if (timedOut) { console.debug(`[acpx] ${agent}: discarding runtime after timeout`); return { agent, modelIds: [] as string[] }; }
 					let signalReady!: () => void;
 					const ready = new Promise<void>((resolve) => { signalReady = resolve; });
 					const state: AgentState = {
@@ -600,6 +604,8 @@ export default async function (pi: ExtensionAPI) {
 					agents.set(agent, state);
 
 					const modelIds = await discoverModelsInternal(state);
+					// If timed out during discovery, clean up the orphaned state
+					if (timedOut) { agents.delete(agent); return { agent, modelIds: [] as string[] }; }
 					signalReady();
 					return { agent, modelIds };
 				})();
