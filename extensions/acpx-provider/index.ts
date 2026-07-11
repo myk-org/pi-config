@@ -561,30 +561,52 @@ export default async function (pi: ExtensionAPI) {
 	// Skip sync discovery if no agents configured
 	if (agentList.length === 0) return;
 
+	const DISCOVERY_TIMEOUT_MS = 30_000;
+
+	const makeModel = (id: string, name: string) => ({
+		id, name, reasoning: false,
+		input: ["text" as const, "image" as const],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200000, maxTokens: 32768,
+	});
+
 	// Discover models synchronously during extension load.
 	// Pi awaits async extension factories, so models are registered before
 	// the model resolver runs — preventing silent fallback to default model.
+	// Timeout ensures a stuck agent doesn't block pi startup indefinitely.
 	const results = await Promise.allSettled(
 		agentList.map(async (agent) => {
 			try {
-				const runtime = await createAgentRuntime();
-				let signalReady!: () => void;
-				const ready = new Promise<void>((resolve) => { signalReady = resolve; });
-				const state: AgentState = {
-					agent,
-					runtime,
-					handles: new Map(),
-					pendingHandles: new Map(),
-					systemPromptSent: new Set(),
-					availableModelIds: [],
-					ready,
-					signalReady,
-				};
-				agents.set(agent, state);
+				let timer: ReturnType<typeof setTimeout>;
+				const timeout = new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error(`discovery timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`)), DISCOVERY_TIMEOUT_MS);
+					if (timer.unref) timer.unref();
+				});
 
-				const modelIds = await discoverModelsInternal(state);
-				signalReady();
-				return { agent, modelIds };
+				const discovery = (async () => {
+					const runtime = await createAgentRuntime();
+					let signalReady!: () => void;
+					const ready = new Promise<void>((resolve) => { signalReady = resolve; });
+					const state: AgentState = {
+						agent,
+						runtime,
+						handles: new Map(),
+						pendingHandles: new Map(),
+						systemPromptSent: new Set(),
+						availableModelIds: [],
+						ready,
+						signalReady,
+					};
+					agents.set(agent, state);
+
+					const modelIds = await discoverModelsInternal(state);
+					signalReady();
+					return { agent, modelIds };
+				})();
+
+				const result = await Promise.race([discovery, timeout]);
+				clearTimeout(timer!);
+				return result;
 			} catch (err) {
 				console.debug(`[acpx] runtime init failed for ${agent}:`, err);
 				const state = agents.get(agent);
@@ -598,13 +620,14 @@ export default async function (pi: ExtensionAPI) {
 		if (result.status === "rejected") continue;
 
 		const { agent, modelIds } = result.value;
+		// Skip registration if runtime failed (no AgentState) — prevents
+		// registering a provider whose streamAcpx would always throw.
+		if (!agents.has(agent)) {
+			console.debug(`[acpx] acpx-${agent}: skipped registration (no runtime)`);
+			continue;
+		}
+
 		try {
-			const makeModel = (id: string, name: string) => ({
-				id, name, reasoning: false,
-				input: ["text" as const, "image" as const],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 200000, maxTokens: 32768,
-			});
 			const models = modelIds.length > 0
 				? modelIds.map((m) => makeModel(`${agent}:${m}`, `${modelIdToDisplayName(m)} (${agent})`))
 				: [makeModel(`${agent}:default`, `${agent} (default)`)];
@@ -616,7 +639,7 @@ export default async function (pi: ExtensionAPI) {
 				models,
 				streamSimple: streamAcpx,
 			});
-			console.debug(`[acpx] acpx-${agent}: ${modelIds.length} models registered`);
+			console.debug(`[acpx] acpx-${agent}: ${models.length} model(s) registered`);
 		} catch (err) {
 			console.debug(`[acpx] acpx-${agent}: setup failed:`, err);
 		}
