@@ -73,6 +73,7 @@ const agents = new Map<string, AgentState>();
  * cwd at init and pass it to all runtime instances.
  */
 let projectCwd: string;
+let projectCwdSlug: string;
 
 /** List of registered acpx agent names, used to reject non-acpx models */
 let registeredAgents: string[] = [];
@@ -114,7 +115,7 @@ async function createAgentRuntime(): Promise<AcpxRuntime> {
 		createAgentRegistry,
 	} = await import("acpx/runtime");
 
-	const stateDir = path.join(os.homedir(), ".acpx", `pi-${process.pid}`);
+	const stateDir = path.join(os.homedir(), ".acpx", `pi-${projectCwdSlug}`);
 	const runtime = createAcpRuntime({
 		cwd: projectCwd,
 		sessionStore: createFileSessionStore({ stateDir }),
@@ -127,7 +128,7 @@ async function createAgentRuntime(): Promise<AcpxRuntime> {
 
 function sessionKey(agent: string, modelId?: string): string {
 	const model = modelId && modelId !== "default" ? `-${modelId.replace(/[^a-zA-Z0-9.-]/g, "_")}` : "";
-	return `pi-${agent}${model}-${process.pid}`;
+	return `pi-${agent}${model}-${projectCwdSlug}`;
 }
 
 async function ensureHandle(
@@ -548,6 +549,7 @@ export default function (pi: ExtensionAPI) {
 	// Capture cwd at extension load time, before pi potentially changes to /tmp.
 	// acpx needs this to find session markers in the project directory tree.
 	projectCwd = process.cwd();
+	projectCwdSlug = projectCwd.replace(/[^a-zA-Z0-9]/g, "_").replace(/^_+|_+$/g, "").slice(-60);
 
 	const agentList = (process.env.ACPX_AGENTS || "")
 		.split(",")
