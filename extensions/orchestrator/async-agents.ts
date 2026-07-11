@@ -627,12 +627,16 @@ export function registerAsyncAgents(
         const prBase = spawnSync("gh", ["pr", "view", "--json", "baseRefName", "--jq", ".baseRefName"], {
           cwd, timeout: 5000, encoding: "utf-8",
         });
-        const base = prBase.status === 0 && prBase.stdout?.trim()
-          ? prBase.stdout.trim()
-          : (getMainBranch(cwd) || "main");
-        spawnEnv.PI_REVIEW_BASE_BRANCH = base;
+        if (prBase.status === 0 && prBase.stdout?.trim()) {
+          spawnEnv.PI_REVIEW_BASE_BRANCH = prBase.stdout.trim();
+          spawnEnv.PI_HAS_PR = "true";
+        } else {
+          spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
+          spawnEnv.PI_HAS_PR = "false";
+        }
       } catch {
         spawnEnv.PI_REVIEW_BASE_BRANCH = getMainBranch(cwd) || "main";
+        spawnEnv.PI_HAS_PR = "false";
       }
     }
 

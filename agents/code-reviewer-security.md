@@ -66,6 +66,8 @@ Do NOT raise findings that contradict these guidelines.
 
 ## Review History (MANDATORY — check before reviewing)
 
+Skip this section if `$PI_HAS_PR` is `false` — review history requires a PR number.
+
 If reviewing a PR, run:
 
 ```bash
