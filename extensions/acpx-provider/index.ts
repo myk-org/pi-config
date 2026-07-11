@@ -604,8 +604,9 @@ export default async function (pi: ExtensionAPI) {
 					agents.set(agent, state);
 
 					const modelIds = await discoverModelsInternal(state);
-					// If timed out during discovery, clean up the orphaned state
-					if (timedOut) { agents.delete(agent); return { agent, modelIds: [] as string[] }; }
+					// If timed out during discovery, resolve ready so streamAcpx doesn't hang,
+					// then return empty — the provider gets registered with a default model only.
+					if (timedOut) { signalReady(); return { agent, modelIds: [] as string[] }; }
 					signalReady();
 					return { agent, modelIds };
 				})();
