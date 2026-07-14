@@ -50,4 +50,13 @@ describe("waitForResultFiles", () => {
 		assert.equal(found.size, 0);
 		rmSync(tmp, { recursive: true, force: true });
 	});
+
+	it("scans at least once even with deadlineMs=0", async () => {
+		tmp = mkdtempSync(join(tmpdir(), "async-group-wait-"));
+		writeFileSync(join(tmp, "already.json"), "{}");
+		const found = await waitForResultFiles(tmp, ["already"], 0);
+		assert.equal(found.size, 1);
+		assert.ok(found.has("already"));
+		rmSync(tmp, { recursive: true, force: true });
+	});
 });

@@ -16,7 +16,8 @@ export async function waitForResultFiles(
 ): Promise<Set<string>> {
   const found = new Set<string>();
   const deadline = Date.now() + deadlineMs;
-  while (Date.now() < deadline) {
+  // Always scan at least once (handles deadlineMs=0)
+  do {
     let allFound = true;
     for (const id of jobIds) {
       if (found.has(id)) continue;
@@ -27,7 +28,9 @@ export async function waitForResultFiles(
       }
     }
     if (allFound) break;
-    await new Promise(r => setTimeout(r, 250));
-  }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise(r => setTimeout(r, Math.min(250, remaining)));
+  } while (Date.now() < deadline);
   return found;
 }
