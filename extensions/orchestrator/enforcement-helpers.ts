@@ -331,23 +331,27 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   return true;
 }
 
-/** Check if a git add command uses bulk-stage tokens (., -A, --all) before the -- separator */
 /** Detect git add --force / -f (including combined short options like -fn).
- *  Respects -- end-of-options marker — -f after -- is a pathspec, not an option. */
+ *  Respects -- end-of-options marker and shell separators (&&, ;, |, ||). */
 export function hasGitAddForce(command: string): boolean {
   if (!hasGitSub(command, "add")) return false;
-  const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);
-  if (!addMatch) return false;
-  const tokens = addMatch[1].split(/\s+/);
-  for (const token of tokens) {
-    if (token === "--") break; // Everything after -- is a pathspec
-    if (token === "--force") return true;
-    // Short option: -f or combined like -fn, -vf (starts with - but not --)
-    if (token.startsWith("-") && !token.startsWith("--") && token.includes("f")) return true;
+  // Split on shell separators to isolate individual statements
+  const statements = command.split(/\s*(?:&&|\|\||[;|])\s*/);
+  for (const stmt of statements) {
+    const addMatch = stmt.match(/\bgit\b.*\badd\b\s+(.*)/);
+    if (!addMatch) continue;
+    const tokens = addMatch[1].split(/\s+/);
+    for (const token of tokens) {
+      if (token === "--") break; // Everything after -- is a pathspec
+      if (token === "--force") return true;
+      // Short option: -f or combined like -fn, -vf (starts with - but not --)
+      if (token.startsWith("-") && !token.startsWith("--") && token.includes("f")) return true;
+    }
   }
   return false;
 }
 
+/** Check if a git add command uses bulk-stage tokens (., -A, --all) before the -- separator. */
 export function hasGitAddBulk(command: string): boolean {
   if (!hasGitSub(command, "add")) return false;
   const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);

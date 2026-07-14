@@ -631,6 +631,18 @@ describe("hasGitAddForce", () => {
   it("returns false for non-git-add commands", () => {
     assert.ok(!hasGitAddForce("git commit -m 'fix'"));
   });
+  it("does NOT block git add file followed by rm -f in compound command", () => {
+    assert.ok(!hasGitAddForce("git add file.ts && rm -f temp.txt"));
+  });
+  it("blocks git add -f in second statement of compound command", () => {
+    assert.ok(hasGitAddForce("rm -f x && git add -f ignored.txt"));
+  });
+  it("does NOT block git add file; echo -f", () => {
+    assert.ok(!hasGitAddForce("git add file.ts; echo -f"));
+  });
+  it("does NOT block git add file | grep -f pattern", () => {
+    assert.ok(!hasGitAddForce("git add file.ts | grep -f pattern"));
+  });
 });
 
 // ── stripHeredocBodies ──
