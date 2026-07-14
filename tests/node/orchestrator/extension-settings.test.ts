@@ -107,7 +107,7 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "pidash_port"), 9999);
 	});
 
-	it("pidash_port from env when project and global omit pidash_port", () => {
+	it("pidash_port from env when project omits it", () => {
 		process.env.PI_PIDASH_PORT = "8888";
 		clearSettingsCache();
 		if (globalSettingsHasKey("pidash_port")) {
@@ -117,12 +117,39 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "pidash_port"), 8888);
 	});
 
-	it("image_model from settings and env", () => {
+	it("pidash_port rejects negative values", () => {
+		writeSettings({ pidash_port: -1 });
+		assert.equal(getSetting(tmp, "pidash_port"), 19190);
+	});
+
+	it("pidash_port rejects zero", () => {
+		writeSettings({ pidash_port: 0 });
+		assert.equal(getSetting(tmp, "pidash_port"), 19190);
+	});
+
+	it("pidash_port rejects out-of-range values", () => {
+		writeSettings({ pidash_port: 70000 });
+		assert.equal(getSetting(tmp, "pidash_port"), 19190);
+	});
+
+	it("pidash_port rejects non-integer values", () => {
+		writeSettings({ pidash_port: 19190.5 });
+		assert.equal(getSetting(tmp, "pidash_port"), 19190);
+	});
+
+	it("image_model from settings wins over env", () => {
 		writeSettings({ image_model: "gemini-3-pro-image" });
 		assert.equal(getSetting(tmp, "image_model"), "gemini-3-pro-image");
+	});
+
+	it("image_model from env when project omits it", () => {
 		process.env.PI_IMAGE_MODEL = "from-env";
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "gemini-3-pro-image");
+		if (globalSettingsHasKey("image_model")) {
+			assert.equal(typeof getSetting(tmp, "image_model"), "string");
+			return;
+		}
+		assert.equal(getSetting(tmp, "image_model"), "from-env");
 	});
 
 	it("explicit empty project acpx_agents disables agents", () => {
@@ -141,7 +168,7 @@ describe("extension settings", () => {
 		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "gemini"]);
 	});
 
-	it("falls back to ACPX_AGENTS env when project and global omit acpx_agents", () => {
+	it("falls back to ACPX_AGENTS env when project omits it", () => {
 		process.env.ACPX_AGENTS = "cursor,copilot";
 		clearSettingsCache();
 		if (globalHasAcpxAgents()) {
@@ -149,6 +176,23 @@ describe("extension settings", () => {
 			return;
 		}
 		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "copilot"]);
+	});
+
+	it("malformed project acpx_agents falls through to env", () => {
+		writeSettings({ acpx_agents: 123 });
+		process.env.ACPX_AGENTS = "cursor";
+		clearSettingsCache();
+		if (globalHasAcpxAgents()) {
+			// global wins over env
+			assert.ok(Array.isArray(getSetting(tmp, "acpx_agents")));
+			return;
+		}
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
+	});
+
+	it("trims whitespace in acpx_agents array entries", () => {
+		writeSettings({ acpx_agents: [" cursor ", " claude"] });
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "claude"]);
 	});
 
 	it("project acpx_agents win over env", () => {

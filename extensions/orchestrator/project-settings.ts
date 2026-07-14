@@ -53,7 +53,7 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     if (typeof raw.review_loop_enforcement === "boolean") result.review_loop_enforcement = raw.review_loop_enforcement;
     if (typeof raw.pidash_enable === "boolean") result.pidash_enable = raw.pidash_enable;
     if (typeof raw.pidiff_enable === "boolean") result.pidiff_enable = raw.pidiff_enable;
-    if (typeof raw.pidash_port === "number" && Number.isFinite(raw.pidash_port)) {
+    if (typeof raw.pidash_port === "number" && Number.isInteger(raw.pidash_port) && raw.pidash_port > 0 && raw.pidash_port <= 65535) {
       result.pidash_port = raw.pidash_port;
     }
     if (typeof raw.image_model === "string" && raw.image_model.trim()) {
@@ -62,7 +62,10 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     if (typeof raw.acpx_agents === "string") {
       result.acpx_agents = raw.acpx_agents.trim() ? raw.acpx_agents : [];
     } else if (Array.isArray(raw.acpx_agents)) {
-      result.acpx_agents = raw.acpx_agents.filter((a) => typeof a === "string" && a.trim());
+      result.acpx_agents = raw.acpx_agents
+        .filter((a) => typeof a === "string")
+        .map((a: string) => a.trim())
+        .filter((a) => a.length > 0);
     }
     return result;
   } catch (e: any) {
@@ -113,7 +116,7 @@ function parsePortEnv(name: string): number | undefined {
 export function parseAcpxAgentList(value: string | string[] | undefined): string[] {
   if (value === undefined) return [];
   const parts = Array.isArray(value)
-    ? value
+    ? value.map((a) => (typeof a === "string" ? a.trim() : ""))
     : value.split(",").map((a) => a.trim());
   return parts.filter((a) => /^[a-z0-9_-]+$/i.test(a));
 }
@@ -239,7 +242,13 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
     }
     case "acpx_agents": {
       if (projectSettingsFileHasKey(cwd, "acpx_agents")) {
-        return parseAcpxAgentList(loadProjectSettings(cwd).acpx_agents);
+        const projectValue = loadProjectSettings(cwd).acpx_agents;
+        // Only override when the raw value parsed as a valid type (string or array).
+        // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
+        // leaving projectValue undefined — fall through to global/env.
+        if (projectValue !== undefined) {
+          return parseAcpxAgentList(projectValue);
+        }
       }
       const globalAgents = loadGlobalSettings().acpx_agents;
       if (globalAgents !== undefined) {
@@ -264,7 +273,13 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       return true;
     }
     case "pidash_port": {
-      if (settings.pidash_port !== undefined) return settings.pidash_port;
+      if (settings.pidash_port !== undefined) {
+        // Defensive: validate even though parseSettingsFile already checks
+        if (Number.isInteger(settings.pidash_port) && settings.pidash_port > 0 && settings.pidash_port <= 65535) {
+          return settings.pidash_port;
+        }
+        // Invalid value in merged settings — fall through to env/default
+      }
       const envPort = parsePortEnv("PI_PIDASH_PORT");
       if (envPort !== undefined) return envPort;
       return 19190;
