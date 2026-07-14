@@ -35,6 +35,7 @@ import type { AgentConfig } from "./agents.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import { getMainBranch } from "./git-helpers.js";
+import { waitForResultFiles } from "./async-wait.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -265,14 +266,9 @@ export function registerAsyncAgents(
     // before processResultFile() has read all group members' outputs.
     // Wait up to 2s total (not per-job) for all missing result files.
     const lateIngestedIds = new Set<string>();
-    const missingJobs = groupJobs.filter(j => j.output === undefined);
+    const missingJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget);
     if (missingJobs.length > 0) {
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        const stillMissing = missingJobs.filter(j => j.output === undefined && !fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${j.id}.json`)));
-        if (stillMissing.length === 0) break;
-        await new Promise(r => setTimeout(r, 250));
-      }
+      await waitForResultFiles(ASYNC_RESULTS_DIR, missingJobs.map(j => j.id), 2000);
     }
     for (const j of missingJobs) {
       if (j.output !== undefined) continue;
