@@ -91,7 +91,7 @@ export function resolveRepoRoot(cwd: string): string {
 
 /** Resolve to the current worktree root (or repo root if not in a worktree).
  *  Uses --show-toplevel → returns THIS worktree's root, not the shared repo root.
- *  Use for per-worktree resources: review-state.json.
+ *  Use for per-worktree resources: pi-config-review-state.json.
  *  For non-worktree repos, returns the same as resolveRepoRoot.
  *  @param cwd — Directory to resolve from (any path inside the worktree)
  *  @returns The worktree's top-level directory, or `cwd` as fallback */

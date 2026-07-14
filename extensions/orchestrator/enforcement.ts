@@ -26,7 +26,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isReviewClean, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./review-state.js";
+import { markNeedsReview, isReviewClean, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -385,7 +385,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       if (filePath && resolve(ctx.cwd, filePath) === statePath(ctx.cwd)) {
         return {
           block: true,
-          reason: "\u26d4 Direct modification of review-state.json blocked. The review state is managed by the enforcement system.",
+          reason: "\u26d4 Direct modification of pi-config-review-state.json blocked. The review state is managed by the enforcement system.",
         };
       }
     }
@@ -394,13 +394,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
 
-    // Block ALL bash commands targeting review-state.json — no exceptions.
+    // Block ALL bash commands targeting pi-config-review-state — no exceptions.
     // The review state is managed exclusively by the enforcement system.
     // If you need to inspect it, do it outside of pi.
-    if (getSetting(ctx.cwd, "review_loop_enforcement") && cmdLower.includes("review-state.json")) {
+    if (getSetting(ctx.cwd, "review_loop_enforcement") && cmdLower.includes("pi-config-review-state")) {
       return {
         block: true,
-        reason: "\u26d4 Bash command targeting review-state.json blocked. The review state is managed by the enforcement system.",
+        reason: "\u26d4 Bash command targeting pi-config-review-state blocked. The review state is managed by the enforcement system.",
       };
     }
 
@@ -675,7 +675,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Retry markNeedsReview on lock failure — missing this would leave state
     // as 'clean' and allow commits to slip through enforcement.
-    // Uses effectiveCwd so each worktree gets its own review-state.json.
+    // Uses effectiveCwd so each worktree gets its own pi-config-review-state.json.
     for (let attempt = 0; attempt < 3; attempt++) {
       try { markNeedsReview(effectiveCwd); break; } catch {
         if (attempt === 2) {
@@ -688,7 +688,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
   // ── Test command detection (auto-mark tests_passed in review state) ──
   // Runs in ALL processes (orchestrator + subagents) to catch test runs from any agent.
-  // When a test command exits successfully, marks tests_passed=true in review-state.json.
+  // When a test command exits successfully, marks tests_passed=true in pi-config-review-state.json.
   // When it fails, marks tests_passed=false. Any subsequent file edit resets tests_passed
   // via markNeedsReview(), so stale results are impossible.
   // NOTE: Code reviewers are excluded — they may run tests to verify behavior but their

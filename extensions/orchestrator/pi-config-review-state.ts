@@ -1,6 +1,6 @@
 /**
  * Review state machine — tracks code review loop status.
- * State stored in <worktree-root>/.pi/data/review-state.json (per-worktree, not shared).
+ * State stored in <worktree-root>/.pi/data/pi-config-review-state.json (per-worktree, not shared).
  * Each worktree gets its own state file via resolveWorktreeRoot (--show-toplevel).
  * Used by enforcement to block git commit until all reviewers approve.
  */
@@ -22,7 +22,7 @@ export function onStateTransition(cb: StateTransitionCallback): void {
 function notifyTransition(state: ReviewState): void {
   if (!onTransitionCb) return;
   try { onTransitionCb({ ...state, reviewers_pending: [...state.reviewers_pending] }); }
-  catch (e: any) { console.debug("[review-state] transition callback failed:", e?.message); }
+  catch (e: any) { console.debug("[pi-config-review-state] transition callback failed:", e?.message); }
 }
 
 const DATA_DIR = ".pi/data";
@@ -39,7 +39,7 @@ export interface ReviewState {
   tests_passed: boolean;
 }
 
-const STATE_FILE = "review-state.json";
+const STATE_FILE = "pi-config-review-state.json";
 
 export function statePath(cwd: string): string {
   return join(resolveWorktreeRoot(cwd), DATA_DIR, STATE_FILE);
@@ -80,7 +80,7 @@ export function readReviewState(cwd: string): ReviewState {
       tests_passed: raw.tests_passed === true,
     };
   } catch (e: any) {
-    console.debug("[review-state] failed to parse state:", e?.message);
+    console.debug("[pi-config-review-state] failed to parse state:", e?.message);
     return defaultState();
   }
 }
@@ -135,7 +135,7 @@ function writeState(cwd: string, state: ReviewState): void {
     writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n");
     renameSync(tmp, p);
   } catch (e: any) {
-    console.debug("[review-state] write failed:", e?.message);
+    console.debug("[pi-config-review-state] write failed:", e?.message);
   }
 }
 
@@ -148,7 +148,7 @@ function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
   const depth = lockDepth.get(key) || 0;
   if (depth === 0) {
     if (!acquireLock(cwd)) {
-      throw new Error("[review-state] failed to acquire lock — aborting to prevent state corruption");
+      throw new Error("[pi-config-review-state] failed to acquire lock — aborting to prevent state corruption");
     }
   }
   lockDepth.set(key, depth + 1);

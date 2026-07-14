@@ -2,7 +2,21 @@
 
 After ANY code change, send to ALL 6 agents (5 reviewers + test-automator) IN PARALLEL. **Never skip the first review.**
 
-If `review_loop_enforcement` is enabled (default: disabled).
+## Commit enforcement
+
+When `review_loop_enforcement` is enabled, the enforcement rule in `enforcement.ts` blocks `git commit` unless:
+
+- Review status is `clean` (all reviewers returned 0 findings)
+- `tests_passed: true` (test-automator or test command succeeded)
+
+**You MUST run the review loop BEFORE attempting `git commit`.** The enforcement rule will reject the commit otherwise.
+Do NOT try to work around it — run the actual review agents to reach `clean` status.
+
+🚫 **NEVER manipulate review state directly.** Do not import `pi-config-review-state.ts`,
+call `addReviewerPending`/`recordReviewerResult` from bash, write to the JSON file,
+or use any method to fake a clean state. The enforcement system detects and blocks this.
+The ONLY way to reach `clean` status is to run the actual review agents.
+
 Resolution: project `.pi/pi-config-settings.json` → global `~/.pi/pi-config-settings.json` → `PI_REVIEW_LOOP_ENFORCEMENT` env var → `false`.
 
 - MUST loop until all reviewers return 0 findings
@@ -26,8 +40,12 @@ If disabled:
    ── Either? → go to 2 (re-run all 6 with prior findings + responses)
    ── Neither? ↓
    status: clean, tests_passed: true
+6. NOW you can commit — the pre-commit hook will pass
 ✅ DONE — commit/push allowed (enforcement checks status: clean AND tests_passed: true)
 ```
+
+🚨 **Step 6 is NOT optional.** Do NOT attempt `git commit` before reaching `clean` + `tests_passed: true`.
+The enforcement rule blocks commits until this is satisfied — if it blocks you, run the reviewers.
 
 ## Review Agents
 
@@ -104,14 +122,14 @@ is sufficient — fix what you agree with, skip what you don't. No need to expla
 ## Key Rules
 
 Never skip code review — all 6 agents always run (5 reviewers + test-automator).
-When `review_loop_enforcement` is enabled: loop until all reviewers return 0 findings AND `tests_passed: true` in review-state.json.
+When `review_loop_enforcement` is enabled: loop until all reviewers return 0 findings AND `tests_passed: true` in pi-config-review-state.json.
 Respond to each finding (fix or explain) and re-run all 6 from step 2.
 When disabled: single pass is sufficient; no mandatory re-loop or explanations.
 Minor test/config-only fixes skip re-review (go to step 5); substantive code changes require full re-review.
 
 ## Test Tracking
 
-Test results are tracked in `review-state.json` via the `tests_passed` field.
+Test results are tracked in `pi-config-review-state.json` via the `tests_passed` field.
 This is **code-enforced** — commit/push is blocked unless `tests_passed: true` (when `review_loop_enforcement` is enabled).
 
 **How `tests_passed` gets set:**

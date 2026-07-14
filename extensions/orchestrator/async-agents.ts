@@ -33,7 +33,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
-import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./review-state.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import { getMainBranch } from "./git-helpers.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
