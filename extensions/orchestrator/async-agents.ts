@@ -151,9 +151,6 @@ export function registerAsyncAgents(
     try { fs.appendFileSync(DEBUG_LOG_PATH, `${new Date().toISOString()} ${msg}\n`); } catch {}
   }
 
-  /** Track consecutive fast-failure counts per reviewer to prevent stuck pending state */
-  const reviewerFailCounts = new Map<string, number>();
-
   const asyncState: AsyncState = {
     jobs: new Map(),
     poller: null,
@@ -216,26 +213,17 @@ export function registerAsyncAgents(
           // Check if process is actually alive — clean up zombies
           if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
-              // Process exited — check if it wrote a result file before marking as failed.
-              // The process may have completed successfully and the result file is pending
-              // watcher/poller pickup. Don't mark as failed if a result file exists.
-              const resultFilePath = path.join(ASYNC_RESULTS_DIR, `${job.id}.json`);
-              if (fs.existsSync(resultFilePath)) {
-                // Result file exists — let processResultFile handle it normally
-                try { processResultFile(resultFilePath).catch(() => {}); } catch {}
-              } else {
-                job.status = "failed";
-                job.updatedAt = Date.now();
-                // Record killed reviewer as having 0 findings — prevents permanent commit block
-                if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
-                }
-                // Check if this completes a group — deliver remaining siblings' results
-                if (job.groupId) {
-                  const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-                  const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-                  if (pending.length === 0) deliverGroupResults(groupJobs);
-                }
+              job.status = "failed";
+              job.updatedAt = Date.now();
+              // Record killed reviewer as having 0 findings — prevents permanent commit block
+              if (job.agent.startsWith("code-reviewer-")) {
+                try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+              }
+              // Check if this completes a group — deliver remaining siblings' results
+              if (job.groupId) {
+                const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+                const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+                if (pending.length === 0) deliverGroupResults(groupJobs);
               }
             }
           }
@@ -274,11 +262,16 @@ export function registerAsyncAgents(
     if (!asyncState.lastCtx) return;
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
-    // before processResultFile() has read all group members' outputs
+    // before processResultFile() has read all group members' outputs.
+    // Wait up to 2s for missing result files before delivering with empty data.
     const lateIngestedIds = new Set<string>();
     for (const j of groupJobs) {
       if (j.output !== undefined) continue; // Already ingested
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
+      // Wait briefly for the result file if it doesn't exist yet
+      for (let wait = 0; wait < 4 && !fs.existsSync(rp); wait++) {
+        await new Promise(r => setTimeout(r, 500));
+      }
       try {
         const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
         j.output = data.output;
@@ -297,21 +290,8 @@ export function registerAsyncAgents(
       try {
         const output = typeof j.output === "string" ? j.output : "";
         const findings = countFindings(output);
-        if (findings < 0 && (!j.durationMs || j.durationMs < 100)) {
-          const key = `${j.agent}:${jobCwd(j)}`;
-          reviewerFailCounts.set(key, (reviewerFailCounts.get(key) || 0) + 1);
-          const fails = reviewerFailCounts.get(key)!;
-          if (fails >= 3) {
-            asyncLog(`Reviewer ${j.agent} failed ${fails} times consecutively — recording as 1 finding`);
-            recordReviewerResult(jobCwd(j), j.agent, 1);
-            reviewerFailCounts.delete(key);
-          } else {
-            asyncLog(`Reviewer ${j.agent} returned no valid output (${j.durationMs}ms, attempt ${fails}/3)`);
-          }
-        } else {
-          recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
-          reviewerFailCounts.delete(`${j.agent}:${jobCwd(j)}`);
-        }
+        // -1 means invalid JSON output — treat conservatively as having findings
+        recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
       } catch { /* best-effort */ }
     }
 
@@ -396,24 +376,8 @@ export function registerAsyncAgents(
         try {
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
           const findings = countFindings(output);
-          if (findings < 0 && (!data.durationMs || data.durationMs < 100)) {
-            // Reviewer likely never ran (0ms + no valid output). Track consecutive failures.
-            const key = `${job.agent}:${jobCwd(job)}`;
-            reviewerFailCounts.set(key, (reviewerFailCounts.get(key) || 0) + 1);
-            const fails = reviewerFailCounts.get(key)!;
-            if (fails >= 3) {
-              asyncLog(`Reviewer ${job.agent} failed ${fails} times consecutively — recording as 1 finding to unblock review state`);
-              recordReviewerResult(jobCwd(job), job.agent, 1);
-              reviewerFailCounts.delete(key);
-            } else {
-              asyncLog(`Reviewer ${job.agent} returned no valid output (${data.durationMs}ms, attempt ${fails}/3) — skipping recordReviewerResult`);
-            }
-          } else {
-            recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
-            // Reset fail counter on successful run
-            const key = `${job.agent}:${jobCwd(job)}`;
-            reviewerFailCounts.delete(key);
-          }
+          // -1 means invalid JSON output — treat conservatively as having findings
+          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
         } catch { /* best-effort */ }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
