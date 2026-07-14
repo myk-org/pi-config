@@ -295,11 +295,14 @@ export function registerAsyncAgents(
     // before processResultFile() has read all group members' outputs.
     // Wait up to 2s total (not per-job) for all missing result files.
     const lateIngestedIds = new Set<string>();
-    const missingJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget && j.status !== "failed");
-    if (missingJobs.length > 0) {
-      await waitForResultFiles(ASYNC_RESULTS_DIR, missingJobs.map(j => j.id), 2000);
+    // Wait for non-failed, non-fireAndForget jobs that haven't been ingested yet
+    const waitJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget && j.status !== "failed");
+    if (waitJobs.length > 0) {
+      await waitForResultFiles(ASYNC_RESULTS_DIR, waitJobs.map(j => j.id), 2000);
     }
-    for (const j of missingJobs) {
+    // Ingest ALL jobs with missing output (including failed ones that may have a result file)
+    const uningestedJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget);
+    for (const j of uningestedJobs) {
       if (j.output !== undefined) continue;
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try {
