@@ -233,13 +233,18 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "allow_push_to_protected_branches": false,
   "use_worktrees": true,
   "dream_interval_hours": 6,
-  "review_loop_enforcement": false
+  "review_loop_enforcement": false,
+  "pidash_enable": true,
+  "pidiff_enable": true,
+  "pidash_port": 19190,
+  "image_model": "gemini-3-pro-image",
+  "acpx_agents": ["cursor"]
 }
 ```
 
 Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
-Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`, `PI_REVIEW_LOOP_ENFORCEMENT`
+See `dev-docs/project-settings.md` for the full settings table and env vars.
 
 #### Reviewer Environment Variables
 

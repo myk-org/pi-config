@@ -25,6 +25,7 @@ import {
   removeLockfile,
 } from "../shared/daemon-manager.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 const RECONNECT_INTERVAL_MS = 5000;
 const ICON_DIFF = "";
@@ -49,7 +50,8 @@ function getBranch(cwd: string): string {
 export function registerPidiff(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
-  const pidiffDisabled = ["false", "0", "no", "off"].includes(process.env.PI_PIDIFF_ENABLE?.toLowerCase() ?? "");
+  const projectCwd = process.cwd();
+  const pidiffDisabled = !getSetting(projectCwd, "pidiff_enable");
   if (pidiffDisabled) {
     pi.registerCommand("pidiff", {
       description: "Manage pidiff server — /pidiff start|stop|restart|status",
@@ -63,7 +65,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
       },
       handler: async (_args, ctx) => {
-        if (ctx.hasUI) ctx.ui.notify("pidiff is disabled (PI_PIDIFF_ENABLE=false). Set PI_PIDIFF_ENABLE=true or unset it to enable.", "info");
+        if (ctx.hasUI) ctx.ui.notify("pidiff is disabled (pidiff_enable=false in pi-config-settings.json or PI_PIDIFF_ENABLE=false).", "info");
       },
     });
     return;
