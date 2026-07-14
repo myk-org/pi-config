@@ -78,9 +78,10 @@ function loadProjectSettings(cwd: string): ProjectSettings {
 /** Override global settings path for testing. When set, loadGlobalSettings reads from this instead of ~/.pi/. */
 let globalSettingsPathOverride: string | null = null;
 
-/** Set a custom global settings path (for tests). Pass null to restore default. */
+/** Set a custom global settings path (for tests). Pass null to restore default. Clears cache immediately. */
 export function setGlobalSettingsPath(path: string | null): void {
   globalSettingsPathOverride = path;
+  clearSettingsCache();
 }
 
 function loadGlobalSettings(): ProjectSettings {
