@@ -1,12 +1,15 @@
 /**
  * Extension settings in pi-config-settings.json
+ *
+ * Uses setGlobalSettingsPath to isolate tests from the real ~/.pi/ directory,
+ * ensuring deterministic results regardless of developer machine config.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
-import { clearSettingsCache, getSetting, parseAcpxAgentList } from "../../../extensions/orchestrator/project-settings.js";
+import { tmpdir } from "node:os";
+import { clearSettingsCache, getSetting, parseAcpxAgentList, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 
 describe("parseAcpxAgentList", () => {
 	it("parses comma-separated string", () => {
@@ -24,6 +27,7 @@ describe("parseAcpxAgentList", () => {
 
 describe("extension settings", () => {
 	let tmp: string;
+	let globalTmp: string;
 	const prev = {
 		PI_PIDASH_ENABLE: process.env.PI_PIDASH_ENABLE,
 		PI_PIDIFF_ENABLE: process.env.PI_PIDIFF_ENABLE,
@@ -35,6 +39,9 @@ describe("extension settings", () => {
 	beforeEach(() => {
 		clearSettingsCache();
 		tmp = mkdtempSync(join(tmpdir(), "pi-ext-settings-"));
+		globalTmp = mkdtempSync(join(tmpdir(), "pi-ext-global-"));
+		// Isolate from real ~/.pi/pi-config-settings.json
+		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 		delete process.env.PI_PIDASH_ENABLE;
 		delete process.env.PI_PIDIFF_ENABLE;
 		delete process.env.PI_PIDASH_PORT;
@@ -43,8 +50,10 @@ describe("extension settings", () => {
 	});
 
 	afterEach(() => {
+		setGlobalSettingsPath(null);
 		clearSettingsCache();
 		rmSync(tmp, { recursive: true, force: true });
+		rmSync(globalTmp, { recursive: true, force: true });
 		for (const [k, v] of Object.entries(prev)) {
 			if (v === undefined) delete (process.env as Record<string, string | undefined>)[k];
 			else (process.env as Record<string, string>)[k] = v;
@@ -57,19 +66,9 @@ describe("extension settings", () => {
 		clearSettingsCache();
 	}
 
-	function globalSettingsHasKey(key: string): boolean {
-		const p = join(homedir(), ".pi", "pi-config-settings.json");
-		if (!existsSync(p)) return false;
-		try {
-			const raw = JSON.parse(readFileSync(p, "utf-8"));
-			return typeof raw === "object" && raw !== null && !Array.isArray(raw) && key in raw;
-		} catch {
-			return false;
-		}
-	}
-
-	function globalHasAcpxAgents(): boolean {
-		return globalSettingsHasKey("acpx_agents");
+	function writeGlobalSettings(data: Record<string, unknown>): void {
+		writeFileSync(join(globalTmp, "pi-config-settings.json"), JSON.stringify(data));
+		clearSettingsCache();
 	}
 
 	it("pidash_enable defaults true", () => {
@@ -81,14 +80,9 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "pidash_enable"), false);
 	});
 
-	it("pidash_enable from env PI_PIDASH_ENABLE=false", () => {
+	it("pidash_enable from env when no settings file", () => {
 		process.env.PI_PIDASH_ENABLE = "false";
 		clearSettingsCache();
-		if (globalSettingsHasKey("pidash_enable")) {
-			// global ~/.pi settings win over env when project omits key
-			assert.equal(typeof getSetting(tmp, "pidash_enable"), "boolean");
-			return;
-		}
 		assert.equal(getSetting(tmp, "pidash_enable"), false);
 	});
 
@@ -110,10 +104,6 @@ describe("extension settings", () => {
 	it("pidash_port from env when project omits it", () => {
 		process.env.PI_PIDASH_PORT = "8888";
 		clearSettingsCache();
-		if (globalSettingsHasKey("pidash_port")) {
-			assert.equal(typeof getSetting(tmp, "pidash_port"), "number");
-			return;
-		}
 		assert.equal(getSetting(tmp, "pidash_port"), 8888);
 	});
 
@@ -137,18 +127,22 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "pidash_port"), 19190);
 	});
 
+	it("pidash_port global wins over env", () => {
+		writeGlobalSettings({ pidash_port: 7777 });
+		process.env.PI_PIDASH_PORT = "8888";
+		assert.equal(getSetting(tmp, "pidash_port"), 7777);
+	});
+
 	it("image_model from settings wins over env", () => {
 		writeSettings({ image_model: "gemini-3-pro-image" });
+		process.env.PI_IMAGE_MODEL = "from-env";
+		clearSettingsCache();
 		assert.equal(getSetting(tmp, "image_model"), "gemini-3-pro-image");
 	});
 
 	it("image_model from env when project omits it", () => {
 		process.env.PI_IMAGE_MODEL = "from-env";
 		clearSettingsCache();
-		if (globalSettingsHasKey("image_model")) {
-			assert.equal(typeof getSetting(tmp, "image_model"), "string");
-			return;
-		}
 		assert.equal(getSetting(tmp, "image_model"), "from-env");
 	});
 
@@ -171,22 +165,19 @@ describe("extension settings", () => {
 	it("falls back to ACPX_AGENTS env when project omits it", () => {
 		process.env.ACPX_AGENTS = "cursor,copilot";
 		clearSettingsCache();
-		if (globalHasAcpxAgents()) {
-			assert.deepEqual(parseAcpxAgentList(process.env.ACPX_AGENTS), ["cursor", "copilot"]);
-			return;
-		}
 		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor", "copilot"]);
+	});
+
+	it("acpx_agents global wins over env", () => {
+		writeGlobalSettings({ acpx_agents: ["gemini"] });
+		process.env.ACPX_AGENTS = "cursor";
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["gemini"]);
 	});
 
 	it("malformed project acpx_agents falls through to env", () => {
 		writeSettings({ acpx_agents: 123 });
 		process.env.ACPX_AGENTS = "cursor";
 		clearSettingsCache();
-		if (globalHasAcpxAgents()) {
-			// global wins over env
-			assert.ok(Array.isArray(getSetting(tmp, "acpx_agents")));
-			return;
-		}
 		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
 	});
 
@@ -199,5 +190,12 @@ describe("extension settings", () => {
 		process.env.ACPX_AGENTS = "claude";
 		writeSettings({ acpx_agents: "cursor" });
 		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
+	});
+
+	it("project settings win over global settings", () => {
+		writeGlobalSettings({ pidash_port: 7777, image_model: "global-model" });
+		writeSettings({ pidash_port: 5555 });
+		assert.equal(getSetting(tmp, "pidash_port"), 5555);
+		assert.equal(getSetting(tmp, "image_model"), "global-model");
 	});
 });

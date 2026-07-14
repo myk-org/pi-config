@@ -75,8 +75,17 @@ function loadProjectSettings(cwd: string): ProjectSettings {
   return parseSettingsFile(getSettingsPath(cwd));
 }
 
+/** Override global settings path for testing. When set, loadGlobalSettings reads from this instead of ~/.pi/. */
+let globalSettingsPathOverride: string | null = null;
+
+/** Set a custom global settings path (for tests). Pass null to restore default. */
+export function setGlobalSettingsPath(path: string | null): void {
+  globalSettingsPathOverride = path;
+}
+
 function loadGlobalSettings(): ProjectSettings {
-  return parseSettingsFile(join(homedir(), ".pi", SETTINGS_FILENAME));
+  const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
+  return parseSettingsFile(globalPath);
 }
 
 function projectSettingsFileHasKey(cwd: string, key: string): boolean {
@@ -147,7 +156,7 @@ function getSettings(cwd: string): ProjectSettings {
       cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
     try {
-      const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+      const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
       cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
     } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
@@ -157,7 +166,7 @@ function getSettings(cwd: string): ProjectSettings {
   if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
-  const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+  const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
   let mtime = 0;
   let globalMtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}

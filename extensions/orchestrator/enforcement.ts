@@ -189,6 +189,14 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
     };
   }
 
+  // Block git add --force / -f — bypasses .gitignore and allows staging ignored files
+  if (hasGitSub(command, "add") && (/\bgit\b.*\badd\b.*(?:\s-f\b|\s--force\b)/.test(command))) {
+    return {
+      block: true,
+      reason: "⛔ 'git add -f/--force' forbidden. It bypasses .gitignore and stages ignored files.",
+    };
+  }
+
   // Block staging gitignored files
   if (hasGitSub(command, "add") && !hasGitAddBulk(command)) {
     // Extract file paths from git add command

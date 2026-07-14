@@ -21,7 +21,6 @@ const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promi
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, createLogger } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 
-const DEFAULT_PORT = 19190;
 const RECONNECT_INTERVAL_MS = 5000;
 
 const debugLog = createLogger(
