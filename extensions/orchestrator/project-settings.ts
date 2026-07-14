@@ -60,12 +60,9 @@ function parseSettingsFile(filePath: string): ProjectSettings {
       result.image_model = raw.image_model.trim();
     }
     if (typeof raw.acpx_agents === "string") {
-      result.acpx_agents = raw.acpx_agents.trim() ? raw.acpx_agents : [];
+      result.acpx_agents = raw.acpx_agents;
     } else if (Array.isArray(raw.acpx_agents)) {
-      result.acpx_agents = raw.acpx_agents
-        .filter((a) => typeof a === "string")
-        .map((a: string) => a.trim())
-        .filter((a) => a.length > 0);
+      result.acpx_agents = raw.acpx_agents;
     }
     return result;
   } catch (e: any) {
@@ -88,7 +85,8 @@ function projectSettingsFileHasKey(cwd: string, key: string): boolean {
   try {
     const raw = JSON.parse(readFileSync(filePath, "utf-8"));
     return typeof raw === "object" && raw !== null && !Array.isArray(raw) && key in raw;
-  } catch {
+  } catch (e: any) {
+    console.debug(`[project-settings] failed to check key in ${filePath}:`, e?.message?.slice(0, 100));
     return false;
   }
 }

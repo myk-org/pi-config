@@ -84,7 +84,7 @@ export function registerPidash(
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
   const projectCwd = process.cwd();
-  const pidashPort = getSetting(projectCwd, "pidash_port") || DEFAULT_PORT;
+  const pidashPort = getSetting(projectCwd, "pidash_port");
   const pidashDisabled = !getSetting(projectCwd, "pidash_enable");
   if (pidashDisabled) {
     pi.registerCommand("pidash", {

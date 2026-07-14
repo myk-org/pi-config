@@ -46,7 +46,7 @@ pi-config/
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
-│   │   ├── review-state.ts          # Review state machine (review loop enforcement)
+│   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
@@ -90,7 +90,7 @@ pi-config/
 │   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool
-│       └── image-gen.ts            # Gemini API image generation (env: PI_IMAGE_MODEL, GEMINI_API_KEY)
+│       └── image-gen.ts            # Gemini API image generation (settings: image_model; env: GEMINI_API_KEY)
 ├── templates/                       # Immutable prompt templates (source files for /create-* commands)
 │   └── coms-feature-manager-prompt.md  # Coms feature manager template
 ├── prompts/                         # Prompt templates (slash commands)
