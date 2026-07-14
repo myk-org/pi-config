@@ -285,8 +285,12 @@ export function registerAsyncAgents(
       try {
         const output = typeof j.output === "string" ? j.output : "";
         const findings = countFindings(output);
-        // -1 means invalid JSON output — treat conservatively as having findings
-        recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
+        // Skip recording if the reviewer never actually ran (0ms + no valid output).
+        if (findings < 0 && (!j.durationMs || j.durationMs < 100)) {
+          asyncLog(`Reviewer ${j.agent} returned no valid output (${j.durationMs}ms) — skipping recordReviewerResult to keep it pending`);
+        } else {
+          recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
+        }
       } catch { /* best-effort */ }
     }
 
@@ -371,8 +375,13 @@ export function registerAsyncAgents(
         try {
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
           const findings = countFindings(output);
-          // -1 means invalid JSON output — treat conservatively as having findings
-          recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
+          // Skip recording if the reviewer never actually ran (0ms + no valid output).
+          // This leaves the reviewer in pending state so it gets re-spawned.
+          if (findings < 0 && (!data.durationMs || data.durationMs < 100)) {
+            asyncLog(`Reviewer ${job.agent} returned no valid output (${data.durationMs}ms) — skipping recordReviewerResult to keep it pending`);
+          } else {
+            recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
+          }
         } catch { /* best-effort */ }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.

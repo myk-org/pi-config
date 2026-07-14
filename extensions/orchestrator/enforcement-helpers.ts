@@ -332,6 +332,22 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 }
 
 /** Check if a git add command uses bulk-stage tokens (., -A, --all) before the -- separator */
+/** Detect git add --force / -f (including combined short options like -fn).
+ *  Respects -- end-of-options marker — -f after -- is a pathspec, not an option. */
+export function hasGitAddForce(command: string): boolean {
+  if (!hasGitSub(command, "add")) return false;
+  const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);
+  if (!addMatch) return false;
+  const tokens = addMatch[1].split(/\s+/);
+  for (const token of tokens) {
+    if (token === "--") break; // Everything after -- is a pathspec
+    if (token === "--force") return true;
+    // Short option: -f or combined like -fn, -vf (starts with - but not --)
+    if (token.startsWith("-") && !token.startsWith("--") && token.includes("f")) return true;
+  }
+  return false;
+}
+
 export function hasGitAddBulk(command: string): boolean {
   if (!hasGitSub(command, "add")) return false;
   const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);
