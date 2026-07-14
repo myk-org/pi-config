@@ -263,15 +263,20 @@ export function registerAsyncAgents(
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
     // before processResultFile() has read all group members' outputs.
-    // Wait up to 2s for missing result files before delivering with empty data.
+    // Wait up to 2s total (not per-job) for all missing result files.
     const lateIngestedIds = new Set<string>();
-    for (const j of groupJobs) {
-      if (j.output !== undefined) continue; // Already ingested
-      const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-      // Wait briefly for the result file if it doesn't exist yet
-      for (let wait = 0; wait < 4 && !fs.existsSync(rp); wait++) {
-        await new Promise(r => setTimeout(r, 500));
+    const missingJobs = groupJobs.filter(j => j.output === undefined);
+    if (missingJobs.length > 0) {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const stillMissing = missingJobs.filter(j => j.output === undefined && !fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${j.id}.json`)));
+        if (stillMissing.length === 0) break;
+        await new Promise(r => setTimeout(r, 250));
       }
+    }
+    for (const j of missingJobs) {
+      if (j.output !== undefined) continue;
+      const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try {
         const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
         j.output = data.output;
