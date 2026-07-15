@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { onStateTransition, readReviewState, type ReviewState } from "./review-state.js";
+import { onStateTransition, readReviewState, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
 
@@ -148,7 +148,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   });
   pi.on("agent_end", (_event, ctx) => { lastCtx = ctx; });
 
-  // Poll review-state.json for cross-process updates (subagents write state too)
+  // Poll pi-config-review-state.json for cross-process updates (subagents write state too)
   const reviewPoller = setInterval(() => {
     if (!lastCtx) return;
     // Access a ctx property to detect stale/disposed context (throws if invalidated)

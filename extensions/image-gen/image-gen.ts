@@ -2,13 +2,13 @@
  * image-gen.ts — Image generation tool via Gemini API
  *
  * Generates images from structured parameters using Google's Gemini API.
- * Model and API key are configured via environment variables:
- *   - PI_IMAGE_MODEL: Gemini model name (e.g., "gemini-2.0-flash-exp")
- *   - GEMINI_API_KEY or GOOGLE_API_KEY: API key
+ * Model via pi-config-settings.json (`image_model`) or PI_IMAGE_MODEL env.
+ * API key via GEMINI_API_KEY or GOOGLE_API_KEY (env only — secrets stay out of settings).
  */
 
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { getSetting } from "../orchestrator/project-settings.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -49,8 +49,9 @@ function getApiKey(): string | null {
     return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null;
 }
 
-function getModel(): string | null {
-    return process.env.PI_IMAGE_MODEL || null;
+function getModel(cwd: string): string | null {
+    const model = getSetting(cwd, "image_model");
+    return model || null;
 }
 
 function assemblePrompt(params: {
@@ -150,18 +151,18 @@ export function createImageGenTool(): ToolDefinition {
             "Generate an image from a structured description using Gemini.",
             "Provide a subject (required) and optional parameters for action, scene, composition, lighting, style, and text.",
             "Returns the file path of the generated image.",
-            "Requires PI_IMAGE_MODEL and GEMINI_API_KEY/GOOGLE_API_KEY environment variables.",
+            "Requires image_model in pi-config-settings.json (or PI_IMAGE_MODEL) and GEMINI_API_KEY/GOOGLE_API_KEY.",
         ].join("\n"),
         promptSnippet: "generate_image: Generate images from structured descriptions via Gemini API",
         parameters: imageGenSchema,
 
         async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-            const model = getModel();
+            const model = getModel(ctx.cwd);
             if (!model) {
                 return {
                     content: [{
                         type: "text" as const,
-                        text: "Error: PI_IMAGE_MODEL environment variable is not set. Set it to a Gemini image model (e.g., PI_IMAGE_MODEL=gemini-2.0-flash-exp) and restart pi.",
+                        text: "Error: image model is not set. Add image_model to pi-config-settings.json (or PI_IMAGE_MODEL env) and reload pi.",
                     }],
                 };
             }

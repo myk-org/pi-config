@@ -33,8 +33,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "./agents.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
-import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./review-state.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import { getMainBranch } from "./git-helpers.js";
+import { waitForResultFiles } from "./async-wait.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -213,11 +214,40 @@ export function registerAsyncAgents(
           // Check if process is actually alive — clean up zombies
           if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
-              job.status = "failed";
-              job.updatedAt = Date.now();
-              // Record killed reviewer as having 0 findings — prevents permanent commit block
-              if (job.agent.startsWith("code-reviewer-")) {
-                try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+              // Process exited — check if it wrote a result file first
+              const resultFilePath = path.join(ASYNC_RESULTS_DIR, `${job.id}.json`);
+              if (fs.existsSync(resultFilePath)) {
+                // Result file exists — ingest it so output/durationMs are populated
+                try {
+                  const data = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
+                  job.status = data.success ? "complete" : "failed";
+                  job.output = data.output;
+                  job.exitCode = data.exitCode;
+                  job.durationMs = data.durationMs;
+                  job.updatedAt = Date.now();
+                  if (job.agent.startsWith("code-reviewer-")) {
+                    const findings = countFindings(typeof data.output === "string" ? data.output : "");
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch {}
+                  }
+                  try { fs.unlinkSync(resultFilePath); } catch {}
+                } catch {
+                  job.status = "failed";
+                  job.output = "Process exited before result could be read";
+                  job.durationMs = Date.now() - job.startedAt;
+                  job.updatedAt = Date.now();
+                  if (job.agent.startsWith("code-reviewer-")) {
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+                  }
+                }
+              } else {
+                job.status = "failed";
+                job.output = "Process exited without producing results";
+                job.durationMs = Date.now() - job.startedAt;
+                job.updatedAt = Date.now();
+                // Record killed reviewer as having 0 findings — prevents permanent commit block
+                if (job.agent.startsWith("code-reviewer-")) {
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+                }
               }
               // Check if this completes a group — deliver remaining siblings' results
               if (job.groupId) {
@@ -262,10 +292,18 @@ export function registerAsyncAgents(
     if (!asyncState.lastCtx) return;
 
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
-    // before processResultFile() has read all group members' outputs
+    // before processResultFile() has read all group members' outputs.
+    // Wait up to 2s total (not per-job) for all missing result files.
     const lateIngestedIds = new Set<string>();
-    for (const j of groupJobs) {
-      if (j.output !== undefined) continue; // Already ingested
+    // Wait for non-failed, non-fireAndForget jobs that haven't been ingested yet
+    const waitJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget && j.status !== "failed");
+    if (waitJobs.length > 0) {
+      await waitForResultFiles(ASYNC_RESULTS_DIR, waitJobs.map(j => j.id), 2000);
+    }
+    // Ingest ALL jobs with missing output (including failed ones that may have a result file)
+    const uningestedJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget);
+    for (const j of uningestedJobs) {
+      if (j.output !== undefined) continue;
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try {
         const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
@@ -323,7 +361,8 @@ export function registerAsyncAgents(
           asyncLog(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
         }
       }
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(j.durationMs || 0)}\n\n${output}${autoCompleteError}`);
+      const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
       j.delivered = true;
     }
 

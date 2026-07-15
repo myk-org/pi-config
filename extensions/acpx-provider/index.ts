@@ -13,7 +13,7 @@
  * 4. On session_shutdown, closes acpx sessions and runtime
  *
  * Configuration:
- *   ACPX_AGENTS - Comma-separated list of agents to register as providers
+ *   acpx_agents - In pi-config-settings.json or ACPX_AGENTS env (comma-separated)
  *                 e.g., "cursor" or "cursor,claude,gemini,copilot"
  *
  * Loaded from: extensions/acpx-provider/ (pi-config package)
@@ -32,6 +32,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 // =============================================================================
 // Types
@@ -551,10 +552,7 @@ export default async function (pi: ExtensionAPI) {
 	projectCwd = process.cwd();
 	projectCwdSlug = createHash("sha256").update(projectCwd).digest("hex").slice(0, 12);
 
-	const agentList = (process.env.ACPX_AGENTS || "")
-		.split(",")
-		.map((a) => a.trim())
-		.filter((a) => /^[a-z0-9_-]+$/i.test(a));
+	const agentList = getSetting(projectCwd, "acpx_agents");
 
 	registeredAgents = agentList;
 

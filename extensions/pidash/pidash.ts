@@ -19,9 +19,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 // Command handler registry — standalone, populated via pi.events from other extensions
 const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, createLogger } from "../shared/daemon-manager.js";
+import { getSetting } from "../orchestrator/project-settings.js";
 
-const DEFAULT_PORT = 19190;
-const PIDASH_PORT = parseInt(process.env.PI_PIDASH_PORT || "", 10) || DEFAULT_PORT;
 const RECONNECT_INTERVAL_MS = 5000;
 
 const debugLog = createLogger(
@@ -31,16 +30,16 @@ const debugLog = createLogger(
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function isDaemonRunning(): Promise<boolean> {
-  return checkHealth(PIDASH_PORT);
+function isDaemonRunning(port: number): Promise<boolean> {
+  return checkHealth(port);
 }
 
-function spawnDaemon(): void {
+function spawnDaemon(port: number): void {
   ensureUiBuilt(import.meta.url, "pidash-ui", debugLog);
   spawnDaemonGeneric({
     serverScript: "pidash-server.ts",
     logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidash-server.log"),
-    env: { PI_PIDASH_PORT: String(PIDASH_PORT) },
+    env: { PI_PIDASH_PORT: String(port) },
     log: debugLog,
   });
 }
@@ -83,7 +82,9 @@ export function registerPidash(
 ): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
-  const pidashDisabled = ["false", "0", "no", "off"].includes(process.env.PI_PIDASH_ENABLE?.toLowerCase() ?? "");
+  const projectCwd = process.cwd();
+  const pidashPort = getSetting(projectCwd, "pidash_port");
+  const pidashDisabled = !getSetting(projectCwd, "pidash_enable");
   if (pidashDisabled) {
     pi.registerCommand("pidash", {
       description: "Manage pidash server — /pidash start|stop|restart|status",
@@ -97,7 +98,7 @@ export function registerPidash(
         return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
       },
       handler: async (_args, ctx) => {
-        if (ctx.hasUI) ctx.ui.notify("pidash is disabled (PI_PIDASH_ENABLE=false). Set PI_PIDASH_ENABLE=true or unset it to enable.", "info");
+        if (ctx.hasUI) ctx.ui.notify("pidash is disabled (pidash_enable=false in pi-config-settings.json or PI_PIDASH_ENABLE=false).", "info");
       },
     });
     return;
@@ -362,20 +363,20 @@ export function registerPidash(
     }
 
     if (cmd === "start") {
-      if (await isDaemonRunning()) {
-        if (ctx.hasUI) ctx.ui.notify(`pidash already running at http://localhost:${PIDASH_PORT}`, "info");
+      if (await isDaemonRunning(pidashPort)) {
+        if (ctx.hasUI) ctx.ui.notify(`pidash already running at http://localhost:${pidashPort}`, "info");
         if (!connected) connect(ctx);
         return;
       }
-      spawnDaemon();
+      spawnDaemon(pidashPort);
       if (ctx.hasUI) ctx.ui.notify("Starting pidash server...", "info");
       for (let i = 0; i < 60; i++) {
         await new Promise(r => setTimeout(r, 1000));
-        if (await isDaemonRunning()) break;
+        if (await isDaemonRunning(pidashPort)) break;
       }
-      if (await isDaemonRunning()) {
+      if (await isDaemonRunning(pidashPort)) {
         connect(ctx);
-        if (ctx.hasUI) ctx.ui.notify(`pidash server started at http://localhost:${PIDASH_PORT}`, "info");
+        if (ctx.hasUI) ctx.ui.notify(`pidash server started at http://localhost:${pidashPort}`, "info");
       } else {
         if (ctx.hasUI) ctx.ui.notify("pidash server failed to start — check ~/.pi/pidash-server.log", "warning");
       }
@@ -387,15 +388,15 @@ export function registerPidash(
       connected = false;
       killDaemon("pidash-server", debugLog);
       await new Promise(r => setTimeout(r, 1000));
-      spawnDaemon();
+      spawnDaemon(pidashPort);
       if (ctx.hasUI) ctx.ui.notify("Restarting pidash server...", "info");
       for (let i = 0; i < 60; i++) {
         await new Promise(r => setTimeout(r, 1000));
-        if (await isDaemonRunning()) break;
+        if (await isDaemonRunning(pidashPort)) break;
       }
-      if (await isDaemonRunning()) {
+      if (await isDaemonRunning(pidashPort)) {
         connect(ctx);
-        if (ctx.hasUI) ctx.ui.notify(`pidash server restarted at http://localhost:${PIDASH_PORT}`, "info");
+        if (ctx.hasUI) ctx.ui.notify(`pidash server restarted at http://localhost:${pidashPort}`, "info");
       } else {
         if (ctx.hasUI) ctx.ui.notify("pidash server failed to restart — check ~/.pi/pidash-server.log", "warning");
       }
@@ -403,11 +404,11 @@ export function registerPidash(
     }
 
     if (cmd === "status" || cmd === "") {
-      const running = await isDaemonRunning();
+      const running = await isDaemonRunning(pidashPort);
       let msg = `Server: ${running ? "running" : "stopped"}\n`;
-      msg += `Port: ${PIDASH_PORT}\n`;
+      msg += `Port: ${pidashPort}\n`;
       msg += `Extension: ${connected ? "connected" : "disconnected"}\n`;
-      msg += `URL: http://localhost:${PIDASH_PORT}`;
+      msg += `URL: http://localhost:${pidashPort}`;
       if (ctx.hasUI) ctx.ui.notify(msg, "info");
       return;
     }
@@ -423,7 +424,7 @@ export function registerPidash(
     connecting = true;
     lastCtx = ctx;
 
-    const running = await isDaemonRunning();
+    const running = await isDaemonRunning(pidashPort);
     debugLog(`daemon running: ${running}`);
     if (!running) {
       if (spawning) {
@@ -431,17 +432,17 @@ export function registerPidash(
       } else {
         spawning = true;
         debugLog("spawning daemon...");
-        spawnDaemon();
+        spawnDaemon(pidashPort);
       }
       // jiti cold compilation can take 30+ seconds on first run
       for (let i = 0; i < 60; i++) {
         await new Promise(r => setTimeout(r, 1000));
-        if (await isDaemonRunning()) {
+        if (await isDaemonRunning(pidashPort)) {
           debugLog(`daemon ready after ${i + 1}s`);
           break;
         }
       }
-      if (!(await isDaemonRunning())) {
+      if (!(await isDaemonRunning(pidashPort))) {
         debugLog("daemon failed to start after 60s");
         spawning = false;
         connecting = false;
@@ -454,7 +455,7 @@ export function registerPidash(
       const _require = createRequire(import.meta.url);
       const WebSocket = _require("ws");
       debugLog("creating WebSocket client...");
-      const wsClient = new WebSocket(`ws://127.0.0.1:${PIDASH_PORT}/ws/pi`);
+      const wsClient = new WebSocket(`ws://127.0.0.1:${pidashPort}/ws/pi`);
 
       wsClient.on("open", () => {
         debugLog("WebSocket connected!");
@@ -519,7 +520,7 @@ export function registerPidash(
         // Show status
         try {
           if (ctx.hasUI) {
-            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${PIDASH_PORT}`));
+            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${pidashPort}`));
           }
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect

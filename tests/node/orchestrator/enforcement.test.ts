@@ -21,6 +21,7 @@ import {
   checkRemoteExecBlock,
   checkTempFileEnforcement,
   hasGitAddBulk,
+  hasGitAddForce,
   stripHeredocBodies,
   isTestRunnerCommand,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
@@ -600,6 +601,47 @@ describe("hasGitAddBulk", () => {
   });
   it("returns false for git add with no args", () => {
     assert.ok(!hasGitAddBulk("git add"));
+  });
+});
+
+// ── hasGitAddForce ──
+
+describe("hasGitAddForce", () => {
+  it("detects git add -f", () => {
+    assert.ok(hasGitAddForce("git add -f ignored.txt"));
+  });
+  it("detects git add --force", () => {
+    assert.ok(hasGitAddForce("git add --force ignored.txt"));
+  });
+  it("detects combined short options -fn", () => {
+    assert.ok(hasGitAddForce("git add -fn ignored.txt"));
+  });
+  it("detects combined short options -vf", () => {
+    assert.ok(hasGitAddForce("git add -vf ignored.txt"));
+  });
+  it("does NOT block git add -- -f (pathspec after --)", () => {
+    assert.ok(!hasGitAddForce("git add -- -f"));
+  });
+  it("does NOT block git add --pathspec-from-file=paths.txt", () => {
+    assert.ok(!hasGitAddForce("git add --pathspec-from-file=paths.txt"));
+  });
+  it("does NOT block normal git add", () => {
+    assert.ok(!hasGitAddForce("git add file.ts"));
+  });
+  it("returns false for non-git-add commands", () => {
+    assert.ok(!hasGitAddForce("git commit -m 'fix'"));
+  });
+  it("does NOT block git add file followed by rm -f in compound command", () => {
+    assert.ok(!hasGitAddForce("git add file.ts && rm -f temp.txt"));
+  });
+  it("blocks git add -f in second statement of compound command", () => {
+    assert.ok(hasGitAddForce("rm -f x && git add -f ignored.txt"));
+  });
+  it("does NOT block git add file; echo -f", () => {
+    assert.ok(!hasGitAddForce("git add file.ts; echo -f"));
+  });
+  it("does NOT block git add file | grep -f pattern", () => {
+    assert.ok(!hasGitAddForce("git add file.ts | grep -f pattern"));
   });
 });
 

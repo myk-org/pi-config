@@ -11,6 +11,11 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `dco` | boolean | disabled | `PI_DCO` | Add --signoff to all commits (DCO) |
 | `comment_signature` | boolean | disabled | — | Append AI signature to all PR comments |
 | `review_loop_enforcement` | boolean | disabled | `PI_REVIEW_LOOP_ENFORCEMENT` | Block git commit until all 5 reviewers approve (review loop enforcement) |
+| `acpx_agents` | string or string[] | `[]` | `ACPX_AGENTS` | acpx agents to register as pi models (e.g. `"cursor"` or `["cursor","claude"]`) |
+| `pidash_enable` | boolean | `true` | `PI_PIDASH_ENABLE` | Enable pidash web dashboard (`false`/`0`/`no`/`off` disables) |
+| `pidiff_enable` | boolean | `true` | `PI_PIDIFF_ENABLE` | Enable pidiff diff viewer (`false`/`0`/`no`/`off` disables) |
+| `pidash_port` | number | `19190` | `PI_PIDASH_PORT` | pidash HTTP/WebSocket port |
+| `image_model` | string | disabled | `PI_IMAGE_MODEL` | Gemini image model for `generate_image` tool |
 
 Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 

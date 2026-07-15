@@ -4,8 +4,9 @@
  * Resolution order:
  * 1. Project .pi/pi-config-settings.json (wins if set)
  * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
- * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO)
- * 4. Default (only dream_interval_hours has a default of 3)
+ * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
+ *    ACPX_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL)
+ * 4. Default (dream_interval_hours defaults to 3; acpx_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190)
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -22,6 +23,11 @@ interface ProjectSettings {
   dco?: boolean;
   comment_signature?: boolean;
   review_loop_enforcement?: boolean;
+  acpx_agents?: string | string[];
+  pidash_enable?: boolean;
+  pidiff_enable?: boolean;
+  pidash_port?: number;
+  image_model?: string;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -45,6 +51,19 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     if (typeof raw.dco === "boolean") result.dco = raw.dco;
     if (typeof raw.comment_signature === "boolean") result.comment_signature = raw.comment_signature;
     if (typeof raw.review_loop_enforcement === "boolean") result.review_loop_enforcement = raw.review_loop_enforcement;
+    if (typeof raw.pidash_enable === "boolean") result.pidash_enable = raw.pidash_enable;
+    if (typeof raw.pidiff_enable === "boolean") result.pidiff_enable = raw.pidiff_enable;
+    if (typeof raw.pidash_port === "number" && Number.isInteger(raw.pidash_port) && raw.pidash_port > 0 && raw.pidash_port <= 65535) {
+      result.pidash_port = raw.pidash_port;
+    }
+    if (typeof raw.image_model === "string" && raw.image_model.trim()) {
+      result.image_model = raw.image_model.trim();
+    }
+    if (typeof raw.acpx_agents === "string") {
+      result.acpx_agents = raw.acpx_agents;
+    } else if (Array.isArray(raw.acpx_agents)) {
+      result.acpx_agents = raw.acpx_agents;
+    }
     return result;
   } catch (e: any) {
     console.debug(`[project-settings] failed to parse ${filePath}:`, e?.message?.slice(0, 100));
@@ -56,14 +75,58 @@ function loadProjectSettings(cwd: string): ProjectSettings {
   return parseSettingsFile(getSettingsPath(cwd));
 }
 
+/** Override global settings path for testing. When set, loadGlobalSettings reads from this instead of ~/.pi/. */
+let globalSettingsPathOverride: string | null = null;
+
+/** Set a custom global settings path (for tests). Pass null to restore default. Clears cache immediately. */
+export function setGlobalSettingsPath(path: string | null): void {
+  globalSettingsPathOverride = path;
+  clearSettingsCache();
+}
+
 function loadGlobalSettings(): ProjectSettings {
-  return parseSettingsFile(join(homedir(), ".pi", SETTINGS_FILENAME));
+  const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
+  return parseSettingsFile(globalPath);
+}
+
+function projectSettingsFileHasKey(cwd: string, key: string): boolean {
+  const filePath = getSettingsPath(cwd);
+  if (!existsSync(filePath)) return false;
+  try {
+    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    return typeof raw === "object" && raw !== null && !Array.isArray(raw) && key in raw;
+  } catch (e: any) {
+    console.debug(`[project-settings] failed to check key in ${filePath}:`, e?.message?.slice(0, 100));
+    return false;
+  }
+}
+
+function parseDisabledEnv(name: string): boolean | undefined {
+  const val = process.env[name];
+  if (val === undefined || val === "") return undefined;
+  return ["false", "0", "no", "off"].includes(val.toLowerCase());
 }
 
 function parseBoolEnv(name: string): boolean | undefined {
   const val = process.env[name];
   if (val === undefined || val === "") return undefined;
   return ["true", "1", "yes", "on"].includes(val.toLowerCase());
+}
+
+function parsePortEnv(name: string): number | undefined {
+  const val = process.env[name];
+  if (val === undefined || val === "") return undefined;
+  const port = parseInt(val, 10);
+  return Number.isFinite(port) && port > 0 && port <= 65535 ? port : undefined;
+}
+
+/** Parse acpx agent names — comma-separated string or JSON array. */
+export function parseAcpxAgentList(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  const parts = Array.isArray(value)
+    ? value.map((a) => (typeof a === "string" ? a.trim() : ""))
+    : value.split(",").map((a) => a.trim());
+  return parts.filter((a) => /^[a-z0-9_-]+$/i.test(a));
 }
 
 function parseNumEnv(name: string): number | undefined {
@@ -94,7 +157,7 @@ function getSettings(cwd: string): ProjectSettings {
       cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
     try {
-      const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+      const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
       cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
     } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
@@ -104,7 +167,7 @@ function getSettings(cwd: string): ProjectSettings {
   if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
-  const globalPath = join(homedir(), ".pi", SETTINGS_FILENAME);
+  const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
   let mtime = 0;
   let globalMtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
@@ -132,7 +195,12 @@ export function getSetting(cwd: string, key: "dream_interval_hours"): number;
 export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: "comment_signature"): boolean;
 export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
-export function getSetting(cwd: string, key: string): boolean | string | number {
+export function getSetting(cwd: string, key: "acpx_agents"): string[];
+export function getSetting(cwd: string, key: "pidash_enable"): boolean;
+export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
+export function getSetting(cwd: string, key: "pidash_port"): number;
+export function getSetting(cwd: string, key: "image_model"): string;
+export function getSetting(cwd: string, key: string): boolean | string | number | string[] {
   const settings = getSettings(cwd);
 
   switch (key) {
@@ -179,6 +247,55 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       const env = parseBoolEnv("PI_REVIEW_LOOP_ENFORCEMENT");
       if (env !== undefined) return env;
       return false; // default: disabled (opt-in)
+    }
+    case "acpx_agents": {
+      if (projectSettingsFileHasKey(cwd, "acpx_agents")) {
+        const projectValue = loadProjectSettings(cwd).acpx_agents;
+        // Only override when the raw value parsed as a valid type (string or array).
+        // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
+        // leaving projectValue undefined — fall through to global/env.
+        if (projectValue !== undefined) {
+          return parseAcpxAgentList(projectValue);
+        }
+      }
+      const globalAgents = loadGlobalSettings().acpx_agents;
+      if (globalAgents !== undefined) {
+        return parseAcpxAgentList(globalAgents);
+      }
+      const env = process.env.ACPX_AGENTS;
+      if (env !== undefined && env !== "") {
+        return parseAcpxAgentList(env);
+      }
+      return [];
+    }
+    case "pidash_enable": {
+      if (settings.pidash_enable !== undefined) return settings.pidash_enable;
+      const disabled = parseDisabledEnv("PI_PIDASH_ENABLE");
+      if (disabled !== undefined) return !disabled;
+      return true;
+    }
+    case "pidiff_enable": {
+      if (settings.pidiff_enable !== undefined) return settings.pidiff_enable;
+      const disabled = parseDisabledEnv("PI_PIDIFF_ENABLE");
+      if (disabled !== undefined) return !disabled;
+      return true;
+    }
+    case "pidash_port": {
+      if (settings.pidash_port !== undefined) {
+        // Defensive: validate even though parseSettingsFile already checks
+        if (Number.isInteger(settings.pidash_port) && settings.pidash_port > 0 && settings.pidash_port <= 65535) {
+          return settings.pidash_port;
+        }
+        // Invalid value in merged settings — fall through to env/default
+      }
+      const envPort = parsePortEnv("PI_PIDASH_PORT");
+      if (envPort !== undefined) return envPort;
+      return 19190;
+    }
+    case "image_model": {
+      if (settings.image_model !== undefined) return settings.image_model;
+      const env = process.env.PI_IMAGE_MODEL;
+      return env !== undefined && env !== "" ? env : "";
     }
     default:
       return false;

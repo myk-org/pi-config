@@ -573,7 +573,7 @@ Check the poll JSON output — it always contains an `approved` key:
   |---|------|------|---------|------------|
   | 1 | Bug | enforcement.ts:604 | Commit bypass via untracked edits | By design — only tracks edit/write tools |
   | 2 | Rule violation | implement-and-review.md:6 | Missing policy blockquote | False positive — blockquote exists |
-  | 3 | Bug | review-state.ts:66 | Update race risk | Acknowledged — deferred, narrow window |
+  | 3 | Bug | pi-config-review-state.ts:66 | Update race risk | Acknowledged — deferred, narrow window |
 
   ## Remaining Findings ({count})
 

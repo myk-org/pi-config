@@ -1,6 +1,6 @@
 /**
  * Tests for review state machine (review loop enforcement).
- * Run with: npx tsx --test tests/node/orchestrator/review-state.test.ts
+ * Run with: npx tsx --test tests/node/orchestrator/pi-config-review-state.test.ts
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -19,12 +19,12 @@ import {
   markTestsPassed,
   markTestsFailed,
   onStateTransition,
-} from "../../../extensions/orchestrator/review-state.js";
+} from "../../../extensions/orchestrator/pi-config-review-state.js";
 
 let cwd: string;
 
 beforeEach(() => {
-  cwd = mkdtempSync(join(tmpdir(), "review-state-test-"));
+  cwd = mkdtempSync(join(tmpdir(), "pi-config-review-state-test-"));
   mkdirSync(join(cwd, ".git")); // .git dir needed so resolveWorktreeRoot treats this as a git root
 });
 

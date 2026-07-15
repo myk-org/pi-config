@@ -216,7 +216,7 @@ After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewe
 5. **code-reviewer-spec** — Code/PR/issue spec alignment
 6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
 
-Loops until all reviewers approve AND tests pass (`tests_passed: true` in `review-state.json`).
+Loops until all reviewers approve AND tests pass (`tests_passed: true` in `pi-config-review-state.json`).
 Commit is code-enforced — blocked unless both `status: clean` and `tests_passed: true`.
 
 Use `/review-status` to inspect the current review loop state. Pass a worktree path to check a specific worktree (e.g., `/review-status .worktrees/issue-42`).
@@ -233,13 +233,18 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "allow_push_to_protected_branches": false,
   "use_worktrees": true,
   "dream_interval_hours": 6,
-  "review_loop_enforcement": false
+  "review_loop_enforcement": false,
+  "pidash_enable": true,
+  "pidiff_enable": true,
+  "pidash_port": 19190,
+  "image_model": "gemini-3-pro-image",
+  "acpx_agents": ["cursor"]
 }
 ```
 
 Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
-Global env vars: `PI_COMMIT_TRAILER`, `PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES`, `PI_USE_WORKTREES`, `PI_DREAM_INTERVAL_HOURS`, `PI_REVIEW_LOOP_ENFORCEMENT`
+See `dev-docs/project-settings.md` for the full settings table and env vars.
 
 #### Reviewer Environment Variables
 
@@ -318,12 +323,14 @@ Use `agentScope: "both"` in the subagent tool to include project agents.
 
 The `generate_image` tool creates images from structured descriptions via Gemini API.
 
-**Required environment variables:**
+**Configuration:**
 
-| Variable | Description |
+Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
+
+| Setting / Variable | Description |
 |----------|-------------|
-| `PI_IMAGE_MODEL` | Gemini model name (e.g., `gemini-3-pro-image`). No default. |
-| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key |
+| `image_model` / `PI_IMAGE_MODEL` | Gemini model name (e.g., `gemini-3-pro-image`). No default. |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key (env only) |
 
 **Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
 
@@ -478,10 +485,10 @@ http://localhost:19190
 # From other devices on your network:
 http://<your-ip>:19190
 
-# Custom port:
+# Custom port (or set pidash_port in pi-config-settings.json):
 PI_PIDASH_PORT=9999 pi
 
-# Disable pidash entirely:
+# Disable pidash (or set pidash_enable: false in pi-config-settings.json):
 PI_PIDASH_ENABLE=false pi
 ```
 
@@ -530,7 +537,7 @@ Pidiff is a per-project diff viewer that opens in your browser, providing rich b
 # Open in browser (port shown in pidash info bar):
 http://localhost:<port>
 
-# Disable pidiff entirely:
+# Disable pidiff (or set pidiff_enable: false in pi-config-settings.json):
 PI_PIDIFF_ENABLE=false pi
 ```
 

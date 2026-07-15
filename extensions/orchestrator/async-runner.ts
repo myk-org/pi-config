@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
+import { getSetting } from "./project-settings.js";
 
 interface RunConfig {
   id: string;
@@ -74,7 +75,7 @@ async function run(config: RunConfig): Promise<void> {
   const outputStream = fs.createWriteStream(outputPath, { flags: "w" });
 
   // Connect to pidash server to stream events
-  const pidashPort = parseInt(process.env.PI_PIDASH_PORT || "", 10) || 19190;
+  const pidashPort = getSetting(config.cwd, "pidash_port");
   let pidashWs: any = null;
   const pidashLog = path.join(config.workerDir, "pidash-ws.log");
   fs.writeFileSync(pidashLog, `START port=${pidashPort} id=${config.id}\n`);
