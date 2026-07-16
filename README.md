@@ -19,6 +19,7 @@ Single extension that provides:
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
 | **Python/pip enforcement** | Blocks `python`/`pip` — requires `uv`/`uvx` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
+| **Remote script exec block** | Blocks `curl \| bash`, `eval $(curl)`, etc. Allows safe `VAR=$(curl ...)` variable assignments |
 | **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
 | **Rule injection** | Injects orchestrator routing rules into system prompt |
 | **Git status** | Live git status in status line with colored icons — updates after every tool call. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |

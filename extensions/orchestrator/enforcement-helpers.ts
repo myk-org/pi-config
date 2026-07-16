@@ -82,14 +82,70 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  if (/\b(ba|c|da|[akz]|fi|tc)?sh\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+  // Match curl/wget anywhere inside process substitution <(...), not just as first token
+  // Allow quoted strings to handle quoted ) characters inside <(...)
+  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /\bsource\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /(?:^|[\s;&|])\.\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
-    return { block: true, reason: remoteExecReason };
+  // Block when curl/wget is inside a command substitution AND an execution primitive
+  // (eval, bash -c, sh -c, etc.) appears anywhere — order-independent.
+  // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
+  // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
+  // Detect curl/wget anywhere inside a command substitution, not just as first token.
+  // Allow quoted strings inside $() to handle quoted ) characters.
+  // Note: this is intentionally conservative — it matches curl/wget as a word anywhere inside
+  // the substitution, including in strings like $(echo curl). This trades rare false positives
+  // for stronger security against obfuscated curl invocations.
+  const hasCurlSub = /\$\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) || /`[^`]*\b(curl|wget)\b/.test(cmdForExecCheck);
+  // Anchor exec primitives to command position (start-of-string or after statement separator)
+  // to avoid matching inside URLs/arguments (e.g., https://host/eval)
+  if (hasCurlSub) {
+    // Allow assignment prefixes (VAR=val, VAR="a b"), sudo, and env before exec primitives.
+    // Shell allows VAR="a b" bash -c "cmd" — the assignment sets env for the command.
+    const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
+    // Include (, {, $( as command-start boundaries for subshells/grouping/command substitution.
+    // Use quoted-value-capable env prefix to handle env FOO="a b" bash -c ...
+    // Include shell control-flow keywords (then, do, else, elif) as command boundaries
+    const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\(|\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
+    // Allow optional path prefix (/bin/, /usr/bin/, etc.) before shell/interpreter names
+    // Allow leading redirections (>file, 2>/dev/null, etc.), shell wrappers (command, builtin, exec)
+    const redirections = /(?:(?:[0-9]*>[>&]?|<)\s*\S+\s+)*/.source;
+    const pathPrefix = /(?:\/\S+\/)*/.source;
+    const wrappers = /(?:(?:command|builtin|exec)\s+)*/.source;
+    const execPrefix = cmdPos + redirections + wrappers;
+    // Match shells with -c flag, stdin (<<<, <), or process substitution <(...)
+    // Match interpreters with -c/-e flag or process substitution <(...)
+    if (new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
+        new RegExp(execPrefix + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source).test(cmdForExecCheck) ||
+        new RegExp(execPrefix + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)(?:\s+-[ce]\b|\s+<\()/.source).test(cmdForExecCheck)) {
+      return { block: true, reason: remoteExecReason };
+    }
+  }
+  // Block $(curl ...) and `curl ...` UNLESS every occurrence is a safe shell variable assignment.
+  // Safe: VAR=$(curl ...), export VAR=$(curl ...) — only when followed by ; && || or end-of-string
+  // Unsafe: bare $(curl), --flag=$(curl), VAR=$(curl ...) cmd (prefix assignment runs cmd)
+  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+    // Block env VAR=$(curl ...) cmd — env runs a command with the var, so curl output could influence execution
+    // Note: [a-z_] without /i is fine — cmdLower (the parameter) is already lowercased
+    if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+      return { block: true, reason: remoteExecReason };
+    }
+    // Strip safe assignment patterns at statement boundaries only.
+    // Left boundary: start-of-string or after a statement separator (;, &&, ||, |, &, newline).
+    // Right boundary: followed by statement separator, newline, # comment, or end-of-string.
+    // This prevents stripping argument-position assignments like echo x=$(curl ...)
+    // and prefix assignments like VAR=$(curl ...) cmd.
+    // Use negative lookahead to reject nested command substitution (both $( and backticks) inside $() content.
+    // Also reject backticks inside $() to prevent var=$(bash -c "`curl ...`") bypass.
+    // Allow quoted strings ("..." and '...') inside $() to handle quoted ) characters.
+    // Left boundary includes (, { for subshell/brace-group starts. Right boundary includes ), } as terminators.
+    const safeAssignment = /(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n)}]))/gi;
+    const stripped = cmdForExecCheck.replace(safeAssignment, " ");
+    if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
+      return { block: true, reason: remoteExecReason };
+    }
   }
   return undefined;
 }

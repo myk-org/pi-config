@@ -89,6 +89,10 @@ Writing effective rules:
 - Project settings: see `dev-docs/project-settings.md`
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
 - Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries
+- Remote script exec enforcement (`checkRemoteExecBlock` in `enforcement-helpers.ts`):
+  blocks `curl | bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`,
+  prefix assignments (`VAR=$(curl) cmd`), path-prefixed exec (`/bin/bash -c`).
+  Allows safe `VAR=$(curl ...)` variable assignments at statement boundaries.
 
 ## When Modifying Docker
 
