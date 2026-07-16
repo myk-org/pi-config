@@ -82,7 +82,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  if (/\b(ba|c|da|[akz]|fi|tc)?sh\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
       /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
       /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
@@ -113,10 +113,11 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const pathPrefix = /(?:\/\S+\/)*/.source;
     const wrappers = /(?:(?:command|builtin|exec)\s+)*/.source;
     const execPrefix = cmdPos + redirections + wrappers;
-    // Match shells with -c flag, or shells receiving stdin via <<<, pipe, or < redirect
+    // Match shells with -c flag, stdin (<<<, <), or process substitution <(...)
+    // Match interpreters with -c/-e flag or process substitution <(...)
     if (new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
         new RegExp(execPrefix + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source).test(cmdForExecCheck) ||
-        new RegExp(execPrefix + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
+        new RegExp(execPrefix + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)(?:\s+-[ce]\b|\s+<\()/.source).test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
   }
