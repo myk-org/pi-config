@@ -95,7 +95,10 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   // Anchor exec primitives to command position (start-of-string or after statement separator)
   // to avoid matching inside URLs/arguments (e.g., https://host/eval)
   if (hasCurlSub) {
-    const cmdPos = /(?:^|[;&\n]|&&|\|\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*)*/.source;
+    // Allow assignment prefixes (VAR=val, VAR="a b"), sudo, and env before exec primitives.
+    // Shell allows VAR="a b" bash -c "cmd" — the assignment sets env for the command.
+    const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
+    const cmdPos = /(?:^|[;&\n]|&&|\|\|)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*)*/.source;
     if (new RegExp(cmdPos + /eval\b/.source).test(cmdForExecCheck) ||
         new RegExp(cmdPos + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
         new RegExp(cmdPos + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
