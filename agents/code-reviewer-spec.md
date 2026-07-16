@@ -120,7 +120,7 @@ If no issue is linked, note as `[SUGGESTION]` but continue.
 For every concrete claim in the PR description (file names, class names, function names, test names, feature descriptions):
 
 - Verify it exists in the diff
-- Flag `[CRITICAL]` for any claim that is verifiably absent from the diff
+- Flag `[SUGGESTION]` for any claim that is verifiably absent from the diff
 - Do NOT flag vague/aspirational description text — only specific concrete claims
 
 #### B. Issue Deliverables vs Diff
@@ -128,14 +128,14 @@ For every concrete claim in the PR description (file names, class names, functio
 For every deliverable in the issue's `## Done` section (or equivalent checklist):
 
 - Verify it is implemented in the diff
-- Flag `[CRITICAL]` for unimplemented deliverables
+- Flag `[SUGGESTION]` for unimplemented deliverables
 - If a deliverable is ambiguous, check the issue body for clarification
 
 #### C. Scope Creep
 
 For code changes that appear in the diff but are NOT mentioned in either the PR description or the issue:
 
-- Flag `[CRITICAL]` as scope creep — the issue/PR spec MUST be updated to include it
+- Flag `[SUGGESTION]` as scope creep — consider updating the issue/PR spec to include it
 - Include the file and a brief description of what changed
 - Do NOT flag: test files that test the claimed changes, minor refactoring in touched files, import changes
 
@@ -143,22 +143,22 @@ For code changes that appear in the diff but are NOT mentioned in either the PR 
 
 | Finding | Severity |
 |---|---|
-| PR claims file/class/method that doesn't exist in diff | `[CRITICAL]` |
-| Issue deliverable not implemented | `[CRITICAL]` |
-| Code changes not mentioned in PR or issue | `[CRITICAL]` |
-| PR description is vague/aspirational (no concrete claims) | `[CRITICAL]` |
-| No issue linked to PR | `[WARNING]` |
+| PR claims file/class/method that doesn't exist in diff | `[SUGGESTION]` |
+| Issue deliverable not implemented | `[SUGGESTION]` |
+| Code changes not mentioned in PR or issue | `[SUGGESTION]` |
+| PR description is vague/aspirational (no concrete claims) | `[SUGGESTION]` |
+| No issue linked to PR | `[SUGGESTION]` |
 
 ## Output Format
 
 Return ONLY a JSON object. No text before or after. No markdown fences.
 
 ```json
-{"findings": [{"severity": "CRITICAL", "file": "path/to/file.ts", "line": 10, "description": "What is wrong", "expected": "What PR/issue claims", "actual": "What diff shows", "suggestion": "How to fix"}]}
+{"findings": [{"severity": "SUGGESTION", "file": "path/to/file.ts", "line": 10, "description": "What is wrong", "expected": "What PR/issue claims", "actual": "What diff shows", "suggestion": "How to fix"}]}
 ```
 
 If no issues: `{"findings": []}`
 
-Severity values: `CRITICAL`, `WARNING`, `SUGGESTION`
+Severity values: `SUGGESTION`
 
 After writing your response, validate it is parseable JSON.
