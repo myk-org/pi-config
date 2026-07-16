@@ -134,7 +134,8 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Use negative lookahead to reject nested command substitution (both $( and backticks) inside $() content.
     // Also reject backticks inside $() to prevent var=$(bash -c "`curl ...`") bypass.
     // Allow quoted strings ("..." and '...') inside $() to handle quoted ) characters.
-    const safeAssignment = /(?:^|(?<=[;&|\n])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n]))/gi;
+    // Left boundary includes (, { for subshell/brace-group starts. Right boundary includes ), } as terminators.
+    const safeAssignment = /(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n)}]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
       return { block: true, reason: remoteExecReason };
