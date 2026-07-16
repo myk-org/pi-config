@@ -100,11 +100,12 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
     // Include (, {, $( as command-start boundaries for subshells/grouping/command substitution.
     // Use quoted-value-capable env prefix to handle env FOO="a b" bash -c ...
-    const envAssign = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
-    const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\()\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + envAssign;
+    const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\()\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
+    // Allow optional path prefix (/bin/, /usr/bin/, etc.) before shell/interpreter names
+    const pathPrefix = /(?:\/\S+\/)*/.source;
     if (new RegExp(cmdPos + /eval\b/.source).test(cmdForExecCheck) ||
-        new RegExp(cmdPos + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
-        new RegExp(cmdPos + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
+        new RegExp(cmdPos + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
+        new RegExp(cmdPos + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
   }
