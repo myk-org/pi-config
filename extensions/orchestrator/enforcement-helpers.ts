@@ -102,7 +102,8 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
     // Include (, {, $( as command-start boundaries for subshells/grouping/command substitution.
     // Use quoted-value-capable env prefix to handle env FOO="a b" bash -c ...
-    const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\()\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
+    // Include shell control-flow keywords (then, do, else, elif) as command boundaries
+    const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\(|\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
     // Allow optional path prefix (/bin/, /usr/bin/, etc.) before shell/interpreter names
     const pathPrefix = /(?:\/\S+\/)*/.source;
     if (new RegExp(cmdPos + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
@@ -127,7 +128,8 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // and prefix assignments like VAR=$(curl ...) cmd.
     // Use negative lookahead to reject nested command substitution (both $( and backticks) inside $() content.
     // Also reject backticks inside $() to prevent var=$(bash -c "`curl ...`") bypass.
-    const safeAssignment = /(?:^|(?<=[;&|\n])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n]))/gi;
+    // Allow quoted strings ("..." and '...') inside $() to handle quoted ) characters.
+    const safeAssignment = /(?:^|(?<=[;&|\n])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
       return { block: true, reason: remoteExecReason };
