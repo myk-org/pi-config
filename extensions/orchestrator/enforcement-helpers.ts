@@ -108,10 +108,12 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Include shell control-flow keywords (then, do, else, elif) as command boundaries
     const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\(|\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
     // Allow optional path prefix (/bin/, /usr/bin/, etc.) before shell/interpreter names
+    // Allow shell wrappers (command, builtin, exec) before the primitive
     const pathPrefix = /(?:\/\S+\/)*/.source;
-    if (new RegExp(cmdPos + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
-        new RegExp(cmdPos + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
-        new RegExp(cmdPos + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
+    const wrappers = /(?:(?:command|builtin|exec)\s+)*/.source;
+    if (new RegExp(cmdPos + wrappers + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
+        new RegExp(cmdPos + wrappers + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
+        new RegExp(cmdPos + wrappers + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
   }
