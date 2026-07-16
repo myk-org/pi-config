@@ -82,9 +82,10 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\bsource\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+  // Match curl/wget anywhere inside process substitution <(...), not just as first token
+  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /\bsource\s+<\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /(?:^|[\s;&|])\.\s+<\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
   // Block when curl/wget is inside a command substitution AND an execution primitive
