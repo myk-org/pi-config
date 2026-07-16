@@ -92,10 +92,13 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
   // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
   const hasCurlSub = /\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck);
+  // Anchor exec primitives to command position (start-of-string or after statement separator)
+  // to avoid matching inside URLs/arguments (e.g., https://host/eval)
   if (hasCurlSub) {
-    if (/\beval\b/.test(cmdForExecCheck) ||
-        /\b(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.test(cmdForExecCheck) ||
-        /\b(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.test(cmdForExecCheck)) {
+    const cmdPos = /(?:^|[;&\n]|&&|\|\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*)*/.source;
+    if (new RegExp(cmdPos + /eval\b/.source).test(cmdForExecCheck) ||
+        new RegExp(cmdPos + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
+        new RegExp(cmdPos + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
   }

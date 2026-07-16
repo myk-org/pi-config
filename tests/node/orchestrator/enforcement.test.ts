@@ -616,6 +616,12 @@ describe("checkRemoteExecBlock", () => {
   it("allows assignment with trailing comment", () => {
     assert.equal(checkRemoteExecBlock('var=$(curl http://example.com) # save result'), undefined);
   });
+  it("allows curl URL containing eval as path segment", () => {
+    assert.equal(checkRemoteExecBlock('x=$(curl https://example.com/eval)'), undefined);
+  });
+  it("allows curl URL containing sh -c as path segment", () => {
+    assert.equal(checkRemoteExecBlock('x=$(curl https://example.com/sh%20-c)'), undefined);
+  });
 });
 
 // ── checkTempFileEnforcement ──
