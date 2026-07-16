@@ -83,9 +83,10 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     return { block: true, reason: remoteExecReason };
   }
   // Match curl/wget anywhere inside process substitution <(...), not just as first token
-  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /\bsource\s+<\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) ||
-      /(?:^|[\s;&|])\.\s+<\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+  // Allow quoted strings to handle quoted ) characters inside <(...)
+  if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /\bsource\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
+      /(?:^|[\s;&|])\.\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
   // Block when curl/wget is inside a command substitution AND an execution primitive
