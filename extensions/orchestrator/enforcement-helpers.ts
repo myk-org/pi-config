@@ -91,7 +91,9 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   // (eval, bash -c, sh -c, etc.) appears anywhere — order-independent.
   // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
   // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
-  const hasCurlSub = /\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck);
+  // Detect curl/wget anywhere inside a command substitution, not just as first token.
+  // Matches $(... curl ...) and `... curl ...` patterns.
+  const hasCurlSub = /\$\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) || /`[^`]*\b(curl|wget)\b/.test(cmdForExecCheck);
   // Anchor exec primitives to command position (start-of-string or after statement separator)
   // to avoid matching inside URLs/arguments (e.g., https://host/eval)
   if (hasCurlSub) {
@@ -103,7 +105,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const cmdPos = /(?:^|[;&|\n({]|&&|\|\||\$\()\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*/.source + assignPrefix;
     // Allow optional path prefix (/bin/, /usr/bin/, etc.) before shell/interpreter names
     const pathPrefix = /(?:\/\S+\/)*/.source;
-    if (new RegExp(cmdPos + /eval\b/.source).test(cmdForExecCheck) ||
+    if (new RegExp(cmdPos + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
         new RegExp(cmdPos + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
         new RegExp(cmdPos + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
