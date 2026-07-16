@@ -92,11 +92,11 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
   // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
   // Detect curl/wget anywhere inside a command substitution, not just as first token.
-  // Matches $(... curl ...) and `... curl ...` patterns.
+  // Allow quoted strings inside $() to handle quoted ) characters.
   // Note: this is intentionally conservative — it matches curl/wget as a word anywhere inside
   // the substitution, including in strings like $(echo curl). This trades rare false positives
   // for stronger security against obfuscated curl invocations.
-  const hasCurlSub = /\$\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) || /`[^`]*\b(curl|wget)\b/.test(cmdForExecCheck);
+  const hasCurlSub = /\$\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) || /`[^`]*\b(curl|wget)\b/.test(cmdForExecCheck);
   // Anchor exec primitives to command position (start-of-string or after statement separator)
   // to avoid matching inside URLs/arguments (e.g., https://host/eval)
   if (hasCurlSub) {
@@ -113,8 +113,9 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const pathPrefix = /(?:\/\S+\/)*/.source;
     const wrappers = /(?:(?:command|builtin|exec)\s+)*/.source;
     const execPrefix = cmdPos + redirections + wrappers;
+    // Match shells with -c flag, or shells receiving stdin via <<<, pipe, or < redirect
     if (new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
-        new RegExp(execPrefix + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
+        new RegExp(execPrefix + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source).test(cmdForExecCheck) ||
         new RegExp(execPrefix + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
