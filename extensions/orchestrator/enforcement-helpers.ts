@@ -98,7 +98,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Allow assignment prefixes (VAR=val, VAR="a b"), sudo, and env before exec primitives.
     // Shell allows VAR="a b" bash -c "cmd" — the assignment sets env for the command.
     const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
-    const cmdPos = /(?:^|[;&\n]|&&|\|\|)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*)*/.source;
+    const cmdPos = /(?:^|[;&|\n]|&&|\|\|)\s*/.source + assignPrefix + /(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*)*/.source;
     if (new RegExp(cmdPos + /eval\b/.source).test(cmdForExecCheck) ||
         new RegExp(cmdPos + /(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.source).test(cmdForExecCheck) ||
         new RegExp(cmdPos + /(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.source).test(cmdForExecCheck)) {
@@ -119,8 +119,9 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Right boundary: followed by statement separator, newline, # comment, or end-of-string.
     // This prevents stripping argument-position assignments like echo x=$(curl ...)
     // and prefix assignments like VAR=$(curl ...) cmd.
-    // Use negative lookahead (?!\$\() inside $() content to reject nested command substitution.
-    const safeAssignment = /(?:^|(?<=[;&|\n])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n]))/gi;
+    // Use negative lookahead to reject nested command substitution (both $( and backticks) inside $() content.
+    // Also reject backticks inside $() to prevent var=$(bash -c "`curl ...`") bypass.
+    const safeAssignment = /(?:^|(?<=[;&|\n])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
       return { block: true, reason: remoteExecReason };
