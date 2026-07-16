@@ -93,6 +93,9 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
   // Detect curl/wget anywhere inside a command substitution, not just as first token.
   // Matches $(... curl ...) and `... curl ...` patterns.
+  // Note: this is intentionally conservative — it matches curl/wget as a word anywhere inside
+  // the substitution, including in strings like $(echo curl). This trades rare false positives
+  // for stronger security against obfuscated curl invocations.
   const hasCurlSub = /\$\([^)]*\b(curl|wget)\b/.test(cmdForExecCheck) || /`[^`]*\b(curl|wget)\b/.test(cmdForExecCheck);
   // Anchor exec primitives to command position (start-of-string or after statement separator)
   // to avoid matching inside URLs/arguments (e.g., https://host/eval)
