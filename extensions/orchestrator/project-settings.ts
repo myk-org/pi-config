@@ -148,6 +148,16 @@ export function parseAgentNameList(value: string | string[] | undefined): string
   return [...new Set(filtered)];
 }
 
+/**
+ * Coerce a getSetting result to string[].
+ * Mixed/stale ~/.pi installs may pair a new provider with an older project-settings
+ * that returns `false` for unknown keys — never assume .filter/.map is safe.
+ */
+export function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x): x is string => typeof x === "string");
+}
+
 /** @deprecated Use parseAgentNameList — kept for existing imports. */
 export function parseAcpxAgentList(value: string | string[] | undefined): string[] {
   return parseAgentNameList(value);

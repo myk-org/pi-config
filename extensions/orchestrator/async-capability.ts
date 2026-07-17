@@ -11,7 +11,7 @@
  * See: https://github.com/myk-org/pi-config/issues/647
  */
 
-import { getSetting } from "./project-settings.js";
+import { asStringArray, getSetting } from "./project-settings.js";
 
 export interface AsyncLlmSidecar {
   provider: string;
@@ -23,7 +23,10 @@ export interface AsyncLlmSidecar {
  * Source of truth: `acpx_agents` in project/global settings (same list acpx-provider uses).
  */
 export function getRegisteredAcpxProviders(cwd: string): string[] {
-  return getSetting(cwd, "acpx_agents").map((agent) => `acpx-${agent}`);
+  // Defensive: stale getSetting may return non-array (issue #651).
+  return asStringArray(getSetting(cwd, "acpx_agents")).map(
+    (agent) => `acpx-${agent}`,
+  );
 }
 
 /** True when provider is one we registered via acpx-provider for this project. */

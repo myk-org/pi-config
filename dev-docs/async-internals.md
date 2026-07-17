@@ -20,6 +20,10 @@ provider **does not load** in those children (nested `cursor-agent` hangs), so a
 Module: `extensions/orchestrator/async-capability.ts`  
 Settings: `acpx_agents`, `cli_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
 
+**acpx runtime resolution:** `extensions/acpx-provider/load-runtime.ts` prefers a
+global `npm install -g acpx`, then falls back to the package-local `acpx`
+dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime")`).
+
 **Code-enforced (not prompt-only):**
 
 - `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`

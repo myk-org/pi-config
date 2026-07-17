@@ -32,14 +32,14 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { getSetting } from "../orchestrator/project-settings.js";
+import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
 import { loadAcpxRuntime } from "./load-runtime.js";
 
 // =============================================================================
 // Types
 // =============================================================================
 
-// Runtime types come from the globally installed acpx package (see load-runtime.ts).
+// Runtime types from acpx (global install or package dependency — see load-runtime.ts).
 type AcpxRuntimeModule = Awaited<ReturnType<typeof loadAcpxRuntime>>;
 type AcpxRuntime = ReturnType<AcpxRuntimeModule["createAcpRuntime"]>;
 type AcpRuntimeHandle = Awaited<ReturnType<AcpxRuntime["ensureSession"]>>;
@@ -553,7 +553,8 @@ export default async function (pi: ExtensionAPI) {
 	projectCwd = process.cwd();
 	projectCwdSlug = createHash("sha256").update(projectCwd).digest("hex").slice(0, 12);
 
-	const agentList = getSetting(projectCwd, "acpx_agents");
+	// Defensive: stale/mismatched getSetting may return non-array (issue #651).
+	const agentList = asStringArray(getSetting(projectCwd, "acpx_agents"));
 
 	registeredAgents = agentList;
 
