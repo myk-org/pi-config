@@ -3,7 +3,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getCurrentBranch, runGit } from "./git-helpers.js";
+import { hyperlink } from "@earendil-works/pi-tui";
+import {
+  getCurrentBranch,
+  getOpenPr,
+  isGithubRepo,
+  runGit,
+  scheduleOpenPrStatusRefresh,
+} from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { clockHHMM } from "./utils.js";
 
@@ -33,12 +40,17 @@ export function registerStatusLine(
   // ── Git branch status line ─────────────────────────────────────────────
 
   let lastCtx: any = null;
+  let lastBranch: string | null = null;
 
   const updateBranch = (_event: any, ctx: any) => {
     lastCtx = ctx;
     try {
       const b = getCurrentBranch(ctx.cwd);
-      if (!b) return;
+      if (!b) {
+        lastBranch = null;
+        return;
+      }
+      lastBranch = b;
 
       const status = runGit(["status", "--porcelain"], ctx.cwd);
       let modified = 0,
@@ -67,10 +79,34 @@ export function registerStatusLine(
         changes.length > 0
           ? ctx.ui.theme.fg("error", ICON_GIT_DIRTY)
           : ctx.ui.theme.fg("success", ICON_GIT_CLEAN);
-      const gitPart =
+      let gitPart =
         changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
 
+      // Sync cache only — never block the status path on `gh`.
+      // One isGithubRepo check for getOpenPr + refresh schedule.
+      const isGh = isGithubRepo(ctx.cwd);
+      const pr = isGh ? getOpenPr(ctx.cwd, b, { assumeGithub: true }) : null;
+      if (pr) {
+        const prLabel = ctx.ui.theme.fg(
+          "accent",
+          hyperlink(`#${pr.number}`, pr.url),
+        );
+        gitPart = `${gitPart} ${prLabel}`;
+      }
+
       buildStatus(ctx, gitPart);
+
+      // Per-key coalesce lives in refreshOpenPr — no global pending gate.
+      if (isGh) {
+        scheduleOpenPrStatusRefresh({
+          cwd: ctx.cwd,
+          branch: b,
+          shownPr: pr,
+          getState: () => ({ lastCtx, lastBranch }),
+          onRerender: (c) => updateBranch(null, c),
+          assumeGithub: true,
+        });
+      }
     } catch (e: any) { console.debug("[status-line] git status update failed:", e?.message || e); }
   };
 

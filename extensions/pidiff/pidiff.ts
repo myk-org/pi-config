@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { hyperlink } from "@earendil-works/pi-tui";
 import {
   createLogger,
   checkHealth,
@@ -84,7 +85,9 @@ export function registerPidiff(pi: ExtensionAPI): void {
   function setStatus(ctx: any): void {
     try {
       if (ctx?.hasUI && activePort) {
-        ctx.ui.setStatus("8-diff", ctx.ui.theme.fg("accent", `${ICON_DIFF} http://localhost:${activePort}`));
+        const link = hyperlink("pi-diff", `http://localhost:${activePort}`);
+        const label = ICON_DIFF ? `${ICON_DIFF} ${link}` : link;
+        ctx.ui.setStatus("8-diff", ctx.ui.theme.fg("accent", label));
       }
     } catch {
       // ctx may be stale if session was replaced during WebSocket connect

@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { hyperlink } from "@earendil-works/pi-tui";
 // Command handler registry — standalone, populated via pi.events from other extensions
 const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon, createLogger } from "../shared/daemon-manager.js";
@@ -520,7 +521,8 @@ export function registerPidash(
         // Show status
         try {
           if (ctx.hasUI) {
-            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", `🌐 http://localhost:${pidashPort}`));
+            const link = hyperlink("pi-dash", `http://localhost:${pidashPort}`);
+            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", `🌐 ${link}`));
           }
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect
