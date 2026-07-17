@@ -4,36 +4,55 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, it } from "node:test";
 
-const REPO = join(import.meta.dirname, "../../..");
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+/** Strip comments so console.* in docs/strings does not false-fail. */
+function stripTsComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
 
 describe("file-logger", () => {
   const originals = {
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
+    TMPDIR: process.env.TMPDIR,
+    TMP: process.env.TMP,
+    TEMP: process.env.TEMP,
   };
   let tmpHome: string | undefined;
+  let tmpFallbackBase: string | undefined;
 
   afterEach(() => {
     if (originals.HOME === undefined) delete process.env.HOME;
     else process.env.HOME = originals.HOME;
     if (originals.USERPROFILE === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = originals.USERPROFILE;
-    if (tmpHome) {
+    if (originals.TMPDIR === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originals.TMPDIR;
+    if (originals.TMP === undefined) delete process.env.TMP;
+    else process.env.TMP = originals.TMP;
+    if (originals.TEMP === undefined) delete process.env.TEMP;
+    else process.env.TEMP = originals.TEMP;
+    for (const dir of [tmpHome, tmpFallbackBase]) {
+      if (!dir) continue;
       try {
-        rmSync(tmpHome, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
       } catch {
         /* ignore */
       }
-      tmpHome = undefined;
     }
+    tmpHome = undefined;
+    tmpFallbackBase = undefined;
   });
 
   it("writes cli-provider info lines to ~/.pi/logs", async () => {
@@ -96,10 +115,14 @@ describe("file-logger", () => {
     assert.equal(existsSync(join(tmpHome, ".pi", "logs")), false);
   });
 
-  it("falls back to tmpdir when home logs are not writable", async () => {
+  it("falls back to isolated TMPDIR when home logs are not writable", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-ro-"));
+    tmpFallbackBase = mkdtempSync(join(tmpdir(), "pi-file-log-tmp-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
+    process.env.TMPDIR = tmpFallbackBase;
+    process.env.TMP = tmpFallbackBase;
+    process.env.TEMP = tmpFallbackBase;
 
     mkdirSync(join(tmpHome, ".pi"), { recursive: true });
     writeFileSync(join(tmpHome, ".pi", "logs"), "not-a-dir");
@@ -111,11 +134,11 @@ describe("file-logger", () => {
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
 
-    const fallback = join(tmpdir(), "pi-logs", "cli-provider.log");
+    const fallback = join(tmpFallbackBase, "pi-logs", "cli-provider.log");
     assert.match(readFileSync(fallback, "utf-8"), /fallback/);
   });
 
-  it("dreaming and cli-provider sources do not call console.* for ops logs", () => {
+  it("dreaming and cli-provider sources have no executable console.* ops calls", () => {
     const files = [
       join(REPO, "extensions/orchestrator/dreaming.ts"),
       join(REPO, "extensions/cli-provider/session-reaper.ts"),
@@ -127,7 +150,7 @@ describe("file-logger", () => {
     ];
     const consoleRe = /\bconsole\.(debug|log|info|warn|error)\s*\(/;
     for (const file of files) {
-      const src = readFileSync(file, "utf-8");
+      const src = stripTsComments(readFileSync(file, "utf-8"));
       assert.equal(
         consoleRe.test(src),
         false,

@@ -4,6 +4,10 @@
  * NEVER use console.* for operational/debug messages in extensions — pi
  * surfaces them into the chat text box. Write here instead:
  *   ~/.pi/logs/<name>.log
+ *
+ * I/O is intentionally synchronous (mkdirSync/appendFileSync). Call sites are
+ * low-volume ops events (reaper, discovery, dream complete) — not hot loops.
+ * Async would force every caller to await and risk unordered lines.
  */
 
 import * as fs from "node:fs";
@@ -15,6 +19,7 @@ export type FileLogLevel = "debug" | "info" | "warn" | "error";
 /** Last filesystem failure from fileLog (for diagnostics; never console.*). */
 let lastFileLogError: string | null = null;
 let fileLogErrorCount = 0;
+const ensuredDirs = new Set<string>();
 
 export function getLastFileLogError(): string | null {
   return lastFileLogError;
@@ -52,7 +57,11 @@ function recordWriteError(err: unknown): void {
 }
 
 function appendLine(filePath: string, line: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const dir = path.dirname(filePath);
+  if (!ensuredDirs.has(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    ensuredDirs.add(dir);
+  }
   fs.appendFileSync(filePath, line, "utf-8");
 }
 
@@ -72,16 +81,16 @@ export function fileLog(
   const detail =
     err !== undefined ? ` ${formatErr(err)}` : "";
   const line = `${new Date().toISOString()} [${level}] [${prefix}] ${oneLine(message)}${detail}\n`;
-  const primary = getPiLogPath(name);
+  const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
 
   try {
-    appendLine(primary, line);
+    // Path resolve stays inside try so homedir/path failures still hit fallback.
+    appendLine(getPiLogPath(name), line);
     return true;
   } catch (primaryErr) {
     recordWriteError(primaryErr);
     try {
       const fallbackDir = path.join(os.tmpdir(), "pi-logs");
-      const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
       appendLine(path.join(fallbackDir, `${safe}.log`), line);
       return true;
     } catch (fallbackErr) {
