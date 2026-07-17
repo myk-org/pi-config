@@ -61,6 +61,13 @@ Never feed acpx model ids into CLI `--model`, and never register acpx ids under 
 6. Persist / touch session id (`lastSeenAt`) for later turns
 7. If `--resume` fails (dead/invalid session): clear marker, re-seed history, retry once without resume
 
+### Turn timeout (none by default)
+
+`runCliAgent` has **no default `timeoutMs`**. Long turns (autoqodo, large tool
+loops) must not be killed by an arbitrary wall clock. Cancellation is via
+upstream **`AbortSignal`** only. Callers may pass explicit `timeoutMs` when they
+want a bound. See issue #647.
+
 ### Session directory (`~/.pi/cli-sessions/`)
 
 File-backed bindings keyed by cwd + agent + model + `PI_SESSION_ID` (t3-style directory, lighter):
