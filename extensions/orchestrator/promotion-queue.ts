@@ -197,6 +197,17 @@ export function updatePromotionStatuses(
   cwd: string,
   updates: { id: string; status: PromotionStatus }[],
 ): number {
+  return updatePromotionCandidates(
+    cwd,
+    updates.map((u) => ({ id: u.id, patch: { status: u.status } })),
+  );
+}
+
+/** Batch patch promotion candidates — one load/write. Returns how many ids were updated. */
+export function updatePromotionCandidates(
+  cwd: string,
+  updates: { id: string; patch: Partial<PromotionCandidate> }[],
+): number {
   if (updates.length === 0) return 0;
   const existing = loadPromotions(cwd);
   const byId = new Map(existing.map((c) => [c.id, c]));
@@ -204,7 +215,7 @@ export function updatePromotionStatuses(
   for (const u of updates) {
     const entry = byId.get(u.id);
     if (!entry) continue;
-    entry.status = u.status;
+    Object.assign(entry, u.patch);
     n += 1;
   }
   if (n > 0) writePromotions(cwd, [...byId.values()]);

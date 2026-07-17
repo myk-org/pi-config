@@ -165,55 +165,78 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
     }
   });
 
-  it("preserves applied or rejected queue entries across promotion passes", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-merge-"));
+  function seedMergeFixture(cwd: string): { rejectedText: string; lesson: string } {
+    const rejectedText = "Always follow the project release convention";
+    const lesson = "Never use `git add .`";
+    seedMemory(cwd, lesson, "lesson", EVIDENCE_ENFORCEMENT);
+    seedMemory(cwd, rejectedText, "preference", 5);
+
+    appendPromotions(cwd, [
+      {
+        id: promotionId("project_rule", "preference", rejectedText),
+        destination: "project_rule",
+        status: "rejected",
+        category: "preference",
+        text: rejectedText,
+        reason: "user rejected",
+        createdAt: "2026-07-01T00:00:00.000Z",
+      },
+      {
+        id: promotionId("enforcement", "lesson", lesson),
+        destination: "enforcement",
+        status: "applied",
+        category: "lesson",
+        text: lesson,
+        reason: "already applied",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        trigger: "bash_contains git add .",
+        action: "block",
+      },
+    ]);
+
+    const scores = loadScores(cwd);
+    const hash = entryHash(`- [lesson] ${lesson}`);
+    scores.entries[hash]!.trigger = "bash_contains git add ." as any;
+    scores.entries[hash]!.action = "block";
+    saveScores(cwd, scores);
+    return { rejectedText, lesson };
+  }
+
+  it("keeps rejected project_rule status after promotion pass", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-rej-"));
     try {
-      const rejectedText = "Always follow the project release convention";
-      seedMemory(cwd, 'Never use `git add .`', "lesson", EVIDENCE_ENFORCEMENT);
-      seedMemory(cwd, rejectedText, "preference", 5);
-
-      appendPromotions(cwd, [
-        {
-          id: promotionId("project_rule", "preference", rejectedText),
-          destination: "project_rule",
-          status: "rejected",
-          category: "preference",
-          text: rejectedText,
-          reason: "user rejected",
-          createdAt: "2026-07-01T00:00:00.000Z",
-        },
-        {
-          id: promotionId("enforcement", "lesson", 'Never use `git add .`'),
-          destination: "enforcement",
-          status: "applied",
-          category: "lesson",
-          text: 'Never use `git add .`',
-          reason: "already applied",
-          createdAt: "2026-07-01T00:00:00.000Z",
-          trigger: "bash_contains git add .",
-          action: "block",
-        },
-      ]);
-
-      // Pre-seed enforcement on lesson so apply path skips re-applying scores
-      const scores = loadScores(cwd);
-      const hash = entryHash("- [lesson] Never use `git add .`");
-      scores.entries[hash]!.trigger = "bash_contains git add ." as any;
-      scores.entries[hash]!.action = "block";
-      saveScores(cwd, scores);
-
+      const { rejectedText } = seedMergeFixture(cwd);
       applySafePromotions(cwd);
-      const queue = loadPromotions(cwd);
-
-      const rejected = queue.find((c) => c.text === rejectedText && c.destination === "project_rule");
+      const rejected = loadPromotions(cwd).find(
+        (c) => c.text === rejectedText && c.destination === "project_rule",
+      );
       assert.equal(rejected?.status, "rejected");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
-      const applied = queue.find((c) => c.text.includes("git add") && c.destination === "enforcement");
+  it("keeps applied enforcement status after promotion pass", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-app-"));
+    try {
+      seedMergeFixture(cwd);
+      applySafePromotions(cwd);
+      const applied = loadPromotions(cwd).find(
+        (c) => c.text.includes("git add") && c.destination === "enforcement",
+      );
       assert.equal(applied?.status, "applied");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
-      // Must not reopen rejected project_rule as proposed
+  it("does not reopen rejected project_rule as proposed", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-noreopen-"));
+    try {
+      const { rejectedText } = seedMergeFixture(cwd);
+      applySafePromotions(cwd);
       assert.equal(
-        queue.filter(
+        loadPromotions(cwd).filter(
           (c) =>
             c.text === rejectedText &&
             c.destination === "project_rule" &&
@@ -221,6 +244,32 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
         ).length,
         0,
       );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("merges trigger metadata when upgrading proposed to applied", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-meta-"));
+    try {
+      const lesson = "Never use `git add .`";
+      seedMemory(cwd, lesson, "lesson", EVIDENCE_ENFORCEMENT);
+      appendPromotions(cwd, [
+        {
+          id: promotionId("enforcement", "lesson", lesson),
+          destination: "enforcement",
+          status: "proposed",
+          category: "lesson",
+          text: lesson,
+          reason: "needs apply",
+          createdAt: "2026-07-01T00:00:00.000Z",
+        },
+      ]);
+      applySafePromotions(cwd);
+      const entry = loadPromotions(cwd).find((c) => c.text === lesson);
+      assert.equal(entry?.status, "applied");
+      assert.equal(entry?.trigger, "bash_contains git add .");
+      assert.equal(entry?.action, "block");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

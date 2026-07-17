@@ -24,7 +24,7 @@ import {
   formatPromotionsForReport,
   loadPromotions,
   promotionId,
-  updatePromotionStatuses,
+  updatePromotionCandidates,
 } from "./promotion-queue.js";
 
 export const EVIDENCE_ENFORCEMENT = 3;
@@ -354,7 +354,7 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
   const existing = loadPromotions(cwd);
   const byId = new Map(existing.map((x) => [x.id, x]));
   const toAppend: PromotionCandidate[] = [];
-  const statusUpdates: { id: string; status: "applied" }[] = [];
+  const patches: { id: string; patch: Partial<PromotionCandidate> }[] = [];
 
   for (const c of toQueue) {
     const prev = byId.get(c.id);
@@ -366,11 +366,18 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
     // Don't reopen applied/rejected as proposed
     if (prev.status !== "proposed" && c.status === "proposed") continue;
     if (c.status === "applied" && prev.status === "proposed") {
-      statusUpdates.push({ id: c.id, status: "applied" });
-      byId.set(c.id, { ...prev, status: "applied" });
+      // Merge enforcement metadata for auditability; keep human reason if present
+      const merged: PromotionCandidate = {
+        ...prev,
+        ...c,
+        status: "applied",
+        reason: prev.reason || c.reason,
+      };
+      patches.push({ id: c.id, patch: merged });
+      byId.set(c.id, merged);
     }
   }
-  if (statusUpdates.length > 0) updatePromotionStatuses(cwd, statusUpdates);
+  if (patches.length > 0) updatePromotionCandidates(cwd, patches);
   if (toAppend.length > 0) appendPromotions(cwd, toAppend);
 
   const queued = [...byId.values()].filter((c) => c.status === "proposed").length;
