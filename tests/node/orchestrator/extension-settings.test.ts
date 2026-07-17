@@ -33,6 +33,8 @@ describe("extension settings", () => {
 		PI_PIDIFF_ENABLE: process.env.PI_PIDIFF_ENABLE,
 		PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
 		PI_IMAGE_MODEL: process.env.PI_IMAGE_MODEL,
+		PI_ASYNC_LLM_PROVIDER: process.env.PI_ASYNC_LLM_PROVIDER,
+		PI_ASYNC_LLM_MODEL: process.env.PI_ASYNC_LLM_MODEL,
 		ACPX_AGENTS: process.env.ACPX_AGENTS,
 	};
 
@@ -46,6 +48,8 @@ describe("extension settings", () => {
 		delete process.env.PI_PIDIFF_ENABLE;
 		delete process.env.PI_PIDASH_PORT;
 		delete process.env.PI_IMAGE_MODEL;
+		delete process.env.PI_ASYNC_LLM_PROVIDER;
+		delete process.env.PI_ASYNC_LLM_MODEL;
 		delete process.env.ACPX_AGENTS;
 	});
 
@@ -197,5 +201,27 @@ describe("extension settings", () => {
 		writeSettings({ pidash_port: 5555 });
 		assert.equal(getSetting(tmp, "pidash_port"), 5555);
 		assert.equal(getSetting(tmp, "image_model"), "global-model");
+	});
+
+	it("async_llm_provider/model default empty", () => {
+		assert.equal(getSetting(tmp, "async_llm_provider"), "");
+		assert.equal(getSetting(tmp, "async_llm_model"), "");
+	});
+
+	it("async_llm_* from settings file", () => {
+		writeSettings({
+			async_llm_provider: "anthropic",
+			async_llm_model: "claude-sonnet-4-20250514",
+		});
+		assert.equal(getSetting(tmp, "async_llm_provider"), "anthropic");
+		assert.equal(getSetting(tmp, "async_llm_model"), "claude-sonnet-4-20250514");
+	});
+
+	it("async_llm_* from env when unset in file", () => {
+		process.env.PI_ASYNC_LLM_PROVIDER = "openai";
+		process.env.PI_ASYNC_LLM_MODEL = "gpt-5.4";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "async_llm_provider"), "openai");
+		assert.equal(getSetting(tmp, "async_llm_model"), "gpt-5.4");
 	});
 });

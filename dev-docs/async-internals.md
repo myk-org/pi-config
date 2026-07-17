@@ -1,18 +1,40 @@
 # Async & Runtime Internals
 
+## Async LLM capability (`supportsAsyncLlm`)
+
+Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acpx
+provider **does not load** in those children (nested `cursor-agent` hangs), so an
+**acpx parent cannot host async LLM children on the parent model**.
+
+| Parent provider | `supportsAsyncLlm` | Behavior |
+|-----------------|--------------------|----------|
+| Native (anthropic, openai, …) | `true` | Today's force-async system unchanged |
+| `acpx-*` | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
+
+Module: `extensions/orchestrator/async-capability.ts`  
+Settings: `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`)
+
+**Code-enforced (not prompt-only):**
+
+- `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`
+- `enforcement.ts` — does not push “use async” sleep/repeat blocks when capability is false
+- `dreaming.ts` / `cron.ts` — sidecar or skip on acpx
+
 ## Async-Only Agents
 
 Some agents are enforced to only run with `async: true` — sync calls are automatically
 promoted to async by `subagent-tool.ts`. This prevents the LLM from blocking the session
 waiting for long-running agents.
 
-**Currently enforced:**
+**Currently enforced (native / `supportsAsyncLlm` only):**
 
 - `code-reviewer-quality`
 - `code-reviewer-guidelines`
 - `code-reviewer-security`
 - `code-reviewer-docs`
 - `code-reviewer-spec`
+
+On acpx parents these agents run **sync** (coerced) instead of being forced async.
 
 **To add/remove agents from the async-only list:**
 

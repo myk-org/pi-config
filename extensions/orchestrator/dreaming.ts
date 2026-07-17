@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
@@ -33,7 +34,19 @@ const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
 
 export function registerDreaming(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string; onComplete?: () => void }) => { id: string; error?: string },
+  spawnAsyncAgent: (
+    agentName: string,
+    task: string,
+    cwd: string,
+    agents: any[],
+    options?: {
+      fireAndForget?: boolean;
+      name?: string;
+      parentModelId?: string;
+      parentProvider?: string;
+      onComplete?: () => void;
+    },
+  ) => { id: string; error?: string },
 ): void {
   // Only the orchestrator (top-level pi) runs dreaming — skip in subagent children
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -59,6 +72,30 @@ export function registerDreaming(
 
   function runDreamAsync(cwd: string, lastSessionFile?: string) {
     if (dreamInFlight) return; // Prevent concurrent dreams
+
+    const parentProvider = lastCtx?.model?.provider as string | undefined;
+    let dreamModelId: string | undefined;
+    let dreamProvider: string | undefined;
+    const dreamDispatch = decideAsyncLlmDispatch({
+      parentProvider,
+      cwd,
+      mustAsync: true,
+    });
+    if (dreamDispatch.action === "skip") {
+      console.debug(`[dreaming] ${dreamDispatch.note}`);
+      try {
+        lastCtx?.ui?.notify?.(
+          "Dream skipped: set async_llm_provider and async_llm_model for acpx sessions",
+          "warning",
+        );
+      } catch { /* stale UI */ }
+      return;
+    }
+    if (dreamDispatch.action === "sidecar-async") {
+      dreamProvider = dreamDispatch.sidecar.provider;
+      dreamModelId = dreamDispatch.sidecar.model;
+    }
+
     dreamInFlight = true;
     updateDreamStatus();
     currentDreamId = "";  // Reset until we get the ID from spawnAsyncAgent
@@ -137,6 +174,8 @@ export function registerDreaming(
       {
         fireAndForget: true,
         name: "Dream",
+        parentModelId: dreamModelId,
+        parentProvider: dreamProvider,
         onComplete: () => {
           dreamInFlight = false;
           updateDreamStatus();

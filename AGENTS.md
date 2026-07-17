@@ -84,7 +84,7 @@ Writing effective rules:
 - **pidiff** runs as a per-project server (one per cwd, not shared).
   Random free port, tracked via `.pi/tmp/pidiff.port` and `.pi/tmp/pidiff.pid`.
 - Extension commands: see `dev-docs/extension-commands.md`
-- Async agents, async-only list, temp dirs: see `dev-docs/async-internals.md`
+- Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - Memory system: see `dev-docs/memory-architecture.md`
 - Enforcement honesty (code vs injected): see `dev-docs/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`

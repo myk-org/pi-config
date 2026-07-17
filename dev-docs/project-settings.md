@@ -16,6 +16,8 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `pidiff_enable` | boolean | `true` | `PI_PIDIFF_ENABLE` | Enable pidiff diff viewer (`false`/`0`/`no`/`off` disables) |
 | `pidash_port` | number | `19190` | `PI_PIDASH_PORT` | pidash HTTP/WebSocket port |
 | `image_model` | string | disabled | `PI_IMAGE_MODEL` | Gemini image model for `generate_image` tool |
+| `async_llm_provider` | string | unset | `PI_ASYNC_LLM_PROVIDER` | Provider for detached LLM async children when parent is acpx (dream/cron/fireAndForget). Both this and `async_llm_model` required. |
+| `async_llm_model` | string | unset | `PI_ASYNC_LLM_MODEL` | Model id for those children. If unset on acpx, must-async LLM work is skipped. |
 
 Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
