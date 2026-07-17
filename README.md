@@ -172,6 +172,8 @@ uv tool upgrade myk-pi-tools      # CLI tool
 ```
 
 After updating, run `/reload` in pi or restart pi to pick up changes.
+Refresh the global agent package after acpx-provider / cli-provider / settings
+changes so `~/.pi` is not a mixed checkout (see issue #651).
 
 ## Usage
 

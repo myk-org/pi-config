@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { clearSettingsCache, getSetting, parseAcpxAgentList, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { clearSettingsCache, getSetting, parseAcpxAgentList, asStringArray, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 
 describe("parseAcpxAgentList", () => {
 	it("parses comma-separated string", () => {
@@ -22,6 +22,20 @@ describe("parseAcpxAgentList", () => {
 
 	it("filters invalid agent names", () => {
 		assert.deepEqual(parseAcpxAgentList("cursor, bad name!, claude"), ["cursor", "claude"]);
+	});
+});
+
+describe("asStringArray", () => {
+	it("returns empty for non-arrays", () => {
+		assert.deepEqual(asStringArray(false), []);
+		assert.deepEqual(asStringArray(undefined), []);
+		assert.deepEqual(asStringArray(null), []);
+		assert.deepEqual(asStringArray("cursor"), []);
+		assert.deepEqual(asStringArray(1), []);
+	});
+
+	it("keeps only string entries", () => {
+		assert.deepEqual(asStringArray(["cursor", 1, "claude", null]), ["cursor", "claude"]);
 	});
 });
 

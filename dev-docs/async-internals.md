@@ -20,6 +20,15 @@ provider **does not load** in those children (nested `cursor-agent` hangs), so a
 Module: `extensions/orchestrator/async-capability.ts`  
 Settings: `acpx_agents`, `cli_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
 
+**acpx runtime resolution:** `extensions/acpx-provider/load-runtime.ts` prefers a
+global `npm install -g acpx`, then falls back to the package-local `acpx`
+dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime")`).
+Package dep range is `">=0.12.0 <1"` (latest within acpx 0.x; see issue #651).
+Not `^0.8.0` (that stays on 0.8.x under 0.x caret rules).
+
+**Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
+skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
+
 **Code-enforced (not prompt-only):**
 
 - `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`

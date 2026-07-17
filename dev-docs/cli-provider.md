@@ -16,6 +16,9 @@ Registers real CLI tools as pi providers under the `cli-*` namespace, parallel t
 
 Empty / unset → extension registers nothing.
 
+`cli_agents` is coerced with `asStringArray` before `.filter` so a stale/mismatched
+`getSetting` (non-array) cannot crash extension load (issue #651).
+
 ## Load flow (matches acpx-provider)
 
 1. Read `cli_agents` at extension load
@@ -25,6 +28,10 @@ Empty / unset → extension registers nothing.
 5. Skip registration if binary missing (no agent state)
 6. Start session reaper (30m idle / 5m sweep) for `~/.pi/cli-sessions/`
 7. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept for reload resume)
+
+`pi --help` / `pi --version` (and `-h` / `-v`) still load extensions; both
+`cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
+they do not run model discovery for meta invocations.
 
 ## Model discovery (CLI only)
 

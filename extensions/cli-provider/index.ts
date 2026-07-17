@@ -32,7 +32,8 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getSetting } from "../orchestrator/project-settings.js";
+import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
+import { isPiMetaInvocation } from "../orchestrator/utils.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
@@ -508,11 +509,16 @@ function streamCli(
 
 export default async function (pi: ExtensionAPI) {
   // Intentionally does NOT skip PI_SUBAGENT_CHILD — cli-* must work in async children.
+  // pi --help / --version still loads extensions; skip discovery noise/latency.
+  if (isPiMetaInvocation()) return;
 
   // Capture cwd at extension load time, before pi potentially changes directory.
   projectCwd = process.cwd();
 
-  const agentList = getSetting(projectCwd, "cli_agents").filter(isCliAgentName);
+  // Defensive: stale/mismatched getSetting may return non-array (issue #651).
+  const agentList = asStringArray(getSetting(projectCwd, "cli_agents")).filter(
+    isCliAgentName,
+  );
   registeredAgents = agentList;
 
   // Skip sync discovery if no agents configured

@@ -1,6 +1,6 @@
 /**
- * Load acpx/runtime from the global npm install (entrypoint: npm install -g acpx).
- * Package-local node_modules is not the source of truth.
+ * Load acpx/runtime: prefer a global `npm install -g acpx`, then fall back to the
+ * package-local `acpx` dependency (required for plain `pi` / ~/.pi package installs).
  */
 
 import { createRequire } from "node:module";
@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 
-/** Minimal surface used by acpx-provider (avoids depending on package-local acpx). */
+/** Minimal surface used by acpx-provider. */
 export type AcpxRuntimeModule = {
   createAcpRuntime: (...args: any[]) => any;
   createFileSessionStore: (...args: any[]) => any;
@@ -72,12 +72,13 @@ async function resolveAcpxRuntime(): Promise<AcpxRuntimeModule> {
   }
 
   throw new Error(
-    "acpx is not installed globally. Install with: npm install -g acpx",
+    "acpx/runtime not found. Install with: npm install -g acpx " +
+      "(or ensure the pi-config package dependency `acpx` is installed)",
   );
 }
 
 /**
- * Resolve acpx/runtime: global install first, then bare import (dev only).
+ * Resolve acpx/runtime: global install first, then package dependency import.
  * Memoized — concurrent/repeated calls share one resolution. Rejected loads
  * clear the cache so a later install can succeed.
  */
