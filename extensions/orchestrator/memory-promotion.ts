@@ -20,11 +20,13 @@ import {
 import { CATEGORY_TO_TOPIC, readAllTopicEntries } from "./memory-tree.js";
 import {
   type PromotionCandidate,
+  type PromotionCandidatePatch,
   appendPromotions,
   formatPromotionsForReport,
   loadPromotions,
   promotionId,
   updatePromotionCandidates,
+  updatePromotionStatus,
 } from "./promotion-queue.js";
 
 export const EVIDENCE_ENFORCEMENT = 3;
@@ -354,7 +356,7 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
   const existing = loadPromotions(cwd);
   const byId = new Map(existing.map((x) => [x.id, x]));
   const toAppend: PromotionCandidate[] = [];
-  const patches: { id: string; patch: Partial<PromotionCandidate> }[] = [];
+  const patches: { id: string; patch: PromotionCandidatePatch }[] = [];
 
   for (const c of toQueue) {
     const prev = byId.get(c.id);
@@ -366,14 +368,27 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
     // Don't reopen applied/rejected as proposed
     if (prev.status !== "proposed" && c.status === "proposed") continue;
     if (c.status === "applied" && prev.status === "proposed") {
-      // Merge enforcement metadata for auditability; keep human reason if present
+      // Merge enforcement metadata for auditability; keep human reason + createdAt
       const merged: PromotionCandidate = {
         ...prev,
         ...c,
         status: "applied",
         reason: prev.reason || c.reason,
+        createdAt: prev.createdAt,
       };
-      patches.push({ id: c.id, patch: merged });
+      patches.push({
+        id: c.id,
+        patch: {
+          status: "applied",
+          reason: merged.reason,
+          evidenceCount: c.evidenceCount,
+          trigger: c.trigger,
+          action: c.action,
+          verifier: c.verifier,
+          skillName: c.skillName,
+          skillCreated: c.skillCreated,
+        },
+      });
       byId.set(c.id, merged);
     }
   }

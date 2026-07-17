@@ -203,10 +203,23 @@ export function updatePromotionStatuses(
   );
 }
 
+/** Mutable fields only — identity keys cannot be patched. */
+export type PromotionCandidatePatch = Partial<
+  Omit<PromotionCandidate, "id" | "destination" | "text" | "category" | "createdAt">
+>;
+
+const IMMUTABLE_PROMOTION_KEYS = new Set([
+  "id",
+  "destination",
+  "text",
+  "category",
+  "createdAt",
+]);
+
 /** Batch patch promotion candidates — one load/write. Returns how many ids were updated. */
 export function updatePromotionCandidates(
   cwd: string,
-  updates: { id: string; patch: Partial<PromotionCandidate> }[],
+  updates: { id: string; patch: PromotionCandidatePatch }[],
 ): number {
   if (updates.length === 0) return 0;
   const existing = loadPromotions(cwd);
@@ -215,7 +228,13 @@ export function updatePromotionCandidates(
   for (const u of updates) {
     const entry = byId.get(u.id);
     if (!entry) continue;
-    Object.assign(entry, u.patch);
+    const safePatch: PromotionCandidatePatch = {};
+    for (const [key, value] of Object.entries(u.patch)) {
+      if (IMMUTABLE_PROMOTION_KEYS.has(key)) continue;
+      (safePatch as Record<string, unknown>)[key] = value;
+    }
+    Object.assign(entry, safePatch);
+    entry.id = u.id;
     n += 1;
   }
   if (n > 0) writePromotions(cwd, [...byId.values()]);

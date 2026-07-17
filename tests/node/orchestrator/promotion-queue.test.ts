@@ -14,6 +14,7 @@ import {
   loadPromotions,
   parsePromotionsMarkdown,
   promotionId,
+  updatePromotionCandidates,
   updatePromotionStatus,
   type PromotionCandidate,
 } from "../../../extensions/orchestrator/promotion-queue.js";
@@ -97,6 +98,43 @@ describe("appendPromotions with updatePromotionStatus", () => {
       assert.match(report, /Promotion Candidates/);
       assert.match(report, /Always ask_user/);
       assert.doesNotMatch(report, /Never use git add/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("updatePromotionCandidates", () => {
+  it("ignores immutable identity fields in patches", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-patch-"));
+    try {
+      const a = makeCandidate({
+        createdAt: "2026-07-01T00:00:00.000Z",
+        reason: "original",
+      });
+      appendPromotions(cwd, [a]);
+      updatePromotionCandidates(cwd, [
+        {
+          id: a.id,
+          patch: {
+            status: "applied",
+            reason: "updated",
+            // @ts-expect-error identity fields must be ignored at runtime
+            id: "mutated-id",
+            // @ts-expect-error
+            createdAt: "2099-01-01T00:00:00.000Z",
+            // @ts-expect-error
+            destination: "discard",
+          },
+        },
+      ]);
+      const loaded = loadPromotions(cwd);
+      assert.equal(loaded.length, 1);
+      assert.equal(loaded[0]!.id, a.id);
+      assert.equal(loaded[0]!.status, "applied");
+      assert.equal(loaded[0]!.reason, "updated");
+      assert.equal(loaded[0]!.createdAt, "2026-07-01T00:00:00.000Z");
+      assert.equal(loaded[0]!.destination, "enforcement");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
