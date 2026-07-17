@@ -9,19 +9,10 @@ import {
   getOpenPr,
   refreshOpenPr,
   runGit,
+  shouldApplyOpenPrRefresh,
 } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { clockHHMM } from "./utils.js";
-
-/** True when an async open-PR refresh still matches the active cwd/branch. */
-export function shouldApplyOpenPrRefresh(
-  lastCtx: { cwd?: string } | null,
-  lastBranch: string | null,
-  refreshKey: string,
-): boolean {
-  if (!lastCtx || lastBranch == null) return false;
-  return `${lastCtx.cwd || ""}:${lastBranch}` === refreshKey;
-}
 
 export function registerStatusLine(
   pi: ExtensionAPI,

@@ -240,6 +240,16 @@ export function refreshOpenPr(
   return pending;
 }
 
+/** True when an async open-PR refresh still matches the active cwd/branch. */
+export function shouldApplyOpenPrRefresh(
+  lastCtx: { cwd?: string } | null,
+  lastBranch: string | null,
+  refreshKey: string,
+): boolean {
+  if (!lastCtx || lastBranch == null) return false;
+  return `${lastCtx.cwd || ""}:${lastBranch}` === refreshKey;
+}
+
 // Cache protected branches per repo (fetched once per session)
 const protectedBranchesCache = new Map<string, Set<string>>();
 

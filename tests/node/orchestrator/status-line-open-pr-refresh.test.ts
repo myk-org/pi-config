@@ -4,7 +4,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { shouldApplyOpenPrRefresh } from "../../../extensions/orchestrator/status-line.js";
+import { shouldApplyOpenPrRefresh } from "../../../extensions/orchestrator/git-helpers.js";
 
 describe("shouldApplyOpenPrRefresh", () => {
   it("returns false when lastCtx is missing", () => {
