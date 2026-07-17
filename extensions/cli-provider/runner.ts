@@ -1,11 +1,16 @@
 /**
- * Spawn CLI agent processes and capture output.
+ * Spawn CLI agent processes — buffered or live stream-json.
  */
 
 import { spawn } from "node:child_process";
 import type { CliAgentName } from "./providers.js";
 import { buildCliCommand } from "./providers.js";
-import { parseCliOutput, type CliParseResult } from "./parsers.js";
+import {
+  parseCliOutput,
+  StreamJsonAccumulator,
+  type CliParseResult,
+  type CliStreamEvent,
+} from "./parsers.js";
 
 export interface CliRunOptions {
   agent: CliAgentName;
@@ -16,6 +21,8 @@ export interface CliRunOptions {
   continueSession?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** When set, stream NDJSON events as they arrive (stream-json agents). */
+  onEvent?: (event: CliStreamEvent) => void;
 }
 
 export interface CliRunResult extends CliParseResult {
@@ -48,6 +55,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
 
   const argv = promptOnStdin ? args : [...args, opts.prompt];
   const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000;
+  const stream = typeof opts.onEvent === "function";
 
   return new Promise((resolve, reject) => {
     if (opts.signal?.aborted) {
@@ -65,6 +73,8 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const acc = new StreamJsonAccumulator();
+    const lineBuf = { value: "" };
 
     const timer = setTimeout(() => {
       try {
@@ -97,8 +107,14 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
 
     child.stdout?.setEncoding("utf-8");
     child.stderr?.setEncoding("utf-8");
-    child.stdout?.on("data", (d) => {
-      stdout += d;
+    child.stdout?.on("data", (d: string) => {
+      if (stream) {
+        for (const ev of acc.feedChunk(d, lineBuf)) {
+          opts.onEvent!(ev);
+        }
+      } else {
+        stdout += d;
+      }
     });
     child.stderr?.on("data", (d) => {
       stderr += d;
@@ -125,6 +141,29 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
       opts.signal?.removeEventListener("abort", onAbort);
       if (settled) return;
       settled = true;
+
+      if (stream) {
+        for (const ev of acc.flush(lineBuf)) {
+          opts.onEvent!(ev);
+        }
+        if (code !== 0 && !acc.text.trim()) {
+          reject(
+            new Error(
+              `CLI ${binary} exited ${code}: ${stderr.trim().slice(0, 500) || "no output"}`,
+            ),
+          );
+          return;
+        }
+        resolve({
+          text: acc.text,
+          sessionId: acc.sessionId,
+          thinking: acc.thinking || undefined,
+          exitCode: code,
+          stderr,
+        });
+        return;
+      }
+
       if (code !== 0 && !stdout.trim()) {
         reject(
           new Error(

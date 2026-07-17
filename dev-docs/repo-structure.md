@@ -90,6 +90,10 @@ pi-config/
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
 │   ├── cli-provider/               # CLI-backed providers (cli-claude, cli-gemini, cli-cursor)
+│   │   ├── agents/                 # Per-CLI drivers (cursor/claude/gemini) — add new CLI here
+│   │   ├── shared/                 # Shared discovery cache helpers
+│   │   ├── sessions.ts             # Resume directory (lastSeen/status)
+│   │   └── session-reaper.ts       # Idle session marker cleanup
 │   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool

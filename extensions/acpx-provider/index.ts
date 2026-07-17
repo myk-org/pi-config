@@ -33,15 +33,16 @@ import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { loadAcpxRuntime } from "./load-runtime.js";
 
 // =============================================================================
 // Types
 // =============================================================================
 
-// We import acpx types dynamically to handle the case where acpx isn't installed.
-// The runtime module is imported lazily on first use.
-type AcpxRuntime = import("acpx/runtime").AcpxRuntime;
-type AcpRuntimeHandle = import("acpx/runtime").AcpRuntimeHandle;
+// Runtime types come from the globally installed acpx package (see load-runtime.ts).
+type AcpxRuntimeModule = Awaited<ReturnType<typeof loadAcpxRuntime>>;
+type AcpxRuntime = ReturnType<AcpxRuntimeModule["createAcpRuntime"]>;
+type AcpRuntimeHandle = Awaited<ReturnType<AcpxRuntime["ensureSession"]>>;
 
 interface AgentState {
 	agent: string;
@@ -114,7 +115,7 @@ async function createAgentRuntime(): Promise<AcpxRuntime> {
 		createAcpRuntime,
 		createFileSessionStore,
 		createAgentRegistry,
-	} = await import("acpx/runtime");
+	} = await loadAcpxRuntime();
 
 	const stateDir = path.join(os.homedir(), ".acpx", `pi-${projectCwdSlug}`);
 	const runtime = createAcpRuntime({
@@ -208,7 +209,7 @@ export async function discoverAcpxModels(
 		createAcpRuntime,
 		createFileSessionStore,
 		createAgentRegistry,
-	} = await import("acpx/runtime");
+	} = await loadAcpxRuntime();
 
 	const effectiveCwd = cwd || process.cwd();
 	const uid = randomUUID().slice(0, 8);

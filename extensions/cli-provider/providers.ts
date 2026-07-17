@@ -1,81 +1,31 @@
 /**
- * CLI provider definitions — binaries, flags, default models.
+ * CLI provider registry — assembles per-agent drivers (t3-style Drivers/*).
+ * Add a new CLI: create agents/<name>.ts, register here.
  */
 
-export type CliAgentName = "claude" | "gemini" | "cursor";
+import type { CliAgentName, CliProviderDef } from "./types.js";
+import { claudeProvider } from "./agents/claude.js";
+import { cursorProvider } from "./agents/cursor.js";
+import { geminiProvider } from "./agents/gemini.js";
 
-export interface CliProviderDef {
-  /** Settings / registration name (claude, gemini, cursor) */
-  name: CliAgentName;
-  binary: string;
-  /** Build argv before prompt/session flags (excludes resume/continue). */
-  buildBaseArgs: (model: string, cwd: string) => string[];
-  resumeFlag: string;
-  continueFlags: string[];
-  /** Value for --output-format sent to the CLI */
-  outputFormat: string;
-  /** Pass prompt on stdin (true) or as final argv (false) */
-  promptOnStdin: boolean;
-  defaultModels: { id: string; name: string; contextWindow: number; maxTokens: number }[];
-}
-
+/**
+ * Headless flags (cli-* is a backend LLM — no TTY for prompts):
+ *
+ * | Concern | cursor | claude | gemini |
+ * |---------|--------|--------|--------|
+ * | Workspace trust | `--trust` | skipped by `-p` | `--skip-trust` |
+ * | Tool/command approve | `--force` (`--yolo` alias) | `--dangerously-skip-permissions` | `--yolo` |
+ *
+ * Trust alone is NOT enough: without auto-approve, tool calls that need
+ * confirmation hang or fail (no interactive user).
+ */
 export const CLI_PROVIDERS: Record<CliAgentName, CliProviderDef> = {
-  claude: {
-    name: "claude",
-    binary: "claude",
-    buildBaseArgs: (model) => [
-      "--model",
-      model,
-      "-p",
-      "--output-format",
-      "json",
-    ],
-    resumeFlag: "--resume",
-    continueFlags: ["--continue"],
-    outputFormat: "json",
-    promptOnStdin: true,
-    defaultModels: [
-      { id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 200000, maxTokens: 64000 },
-      { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", contextWindow: 200000, maxTokens: 64000 },
-      { id: "claude-haiku-4-20250514", name: "Claude Haiku 4", contextWindow: 200000, maxTokens: 64000 },
-    ],
-  },
-  gemini: {
-    name: "gemini",
-    binary: "gemini",
-    buildBaseArgs: (model) => ["--model", model, "--output-format", "json"],
-    resumeFlag: "--resume",
-    continueFlags: ["--resume"],
-    outputFormat: "json",
-    promptOnStdin: true,
-    defaultModels: [
-      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", contextWindow: 1048576, maxTokens: 65536 },
-      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", contextWindow: 1048576, maxTokens: 65536 },
-    ],
-  },
-  cursor: {
-    name: "cursor",
-    binary: "agent",
-    buildBaseArgs: (model, cwd) => [
-      "--model",
-      model,
-      "--print",
-      "--output-format",
-      "stream-json",
-      "--workspace",
-      cwd,
-    ],
-    resumeFlag: "--resume",
-    continueFlags: ["--continue"],
-    outputFormat: "stream-json",
-    promptOnStdin: true,
-    defaultModels: [
-      { id: "composer-2", name: "Composer 2", contextWindow: 200000, maxTokens: 64000 },
-      { id: "gpt-5.4", name: "GPT-5.4", contextWindow: 200000, maxTokens: 64000 },
-      { id: "claude-opus-4-6", name: "Claude Opus 4.6 (cursor)", contextWindow: 200000, maxTokens: 64000 },
-    ],
-  },
+  claude: claudeProvider,
+  gemini: geminiProvider,
+  cursor: cursorProvider,
 };
+
+export type { CliAgentName, CliProviderDef } from "./types.js";
 
 export const VALID_CLI_AGENTS = new Set<string>(Object.keys(CLI_PROVIDERS));
 

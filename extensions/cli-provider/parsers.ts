@@ -1,5 +1,6 @@
 /**
  * Parse CLI JSON / stream-json stdout into text + session id.
+ * Also supports incremental NDJSON event parsing for live streaming.
  */
 
 export interface CliParseResult {
@@ -7,6 +8,12 @@ export interface CliParseResult {
   sessionId?: string;
   thinking?: string;
 }
+
+export type CliStreamEvent =
+  | { kind: "session"; sessionId: string }
+  | { kind: "thinking_delta"; text: string }
+  | { kind: "text_delta"; text: string }
+  | { kind: "done"; text?: string; sessionId?: string };
 
 /** Parse Claude-style single JSON object. */
 export function parseClaudeJson(stdout: string): CliParseResult {
@@ -47,47 +54,186 @@ export function parseGeminiJson(stdout: string): CliParseResult {
   return { text, sessionId };
 }
 
+function assistantTextFromEvent(ev: any): string {
+  if (ev?.type === "assistant" && Array.isArray(ev.message?.content)) {
+    return ev.message.content
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("");
+  }
+  if (ev?.type === "assistant" && typeof ev.message?.content === "string") {
+    return ev.message.content;
+  }
+  if (ev?.type === "text" && typeof ev.text === "string") return ev.text;
+  if (ev?.type === "content_block_delta" && typeof ev.delta?.text === "string") {
+    return ev.delta.text;
+  }
+  return "";
+}
+
+/**
+ * Incremental parser state for stream-json NDJSON (cursor / claude / gemini).
+ * Handles both pure deltas and cumulative snapshots (cursor emits both).
+ */
+export class StreamJsonAccumulator {
+  text = "";
+  thinking = "";
+  sessionId?: string;
+
+  /** Feed one NDJSON object; returns events to emit to pi. */
+  push(ev: any): CliStreamEvent[] {
+    const out: CliStreamEvent[] = [];
+    if (!ev || typeof ev !== "object") return out;
+
+    if (typeof ev.session_id === "string") {
+      this.sessionId = ev.session_id;
+      out.push({ kind: "session", sessionId: ev.session_id });
+    } else if (typeof ev.sessionId === "string") {
+      this.sessionId = ev.sessionId;
+      out.push({ kind: "session", sessionId: ev.sessionId });
+    }
+
+    if (ev.type === "thinking" && ev.subtype === "delta" && typeof ev.text === "string") {
+      this.thinking += ev.text;
+      out.push({ kind: "thinking_delta", text: ev.text });
+    }
+
+    if (ev.type === "content_block_delta" && typeof ev.delta?.text === "string") {
+      const delta = ev.delta.text;
+      this.text += delta;
+      out.push({ kind: "text_delta", text: delta });
+      return out;
+    }
+
+    // Gemini CLI: {"type":"message","role":"assistant","content":"...","delta":true}
+    if (
+      ev.type === "message" &&
+      ev.role === "assistant" &&
+      typeof ev.content === "string" &&
+      ev.content.length > 0
+    ) {
+      if (ev.delta === true) {
+        this.text += ev.content;
+        out.push({ kind: "text_delta", text: ev.content });
+      } else if (ev.content.startsWith(this.text)) {
+        const delta = ev.content.slice(this.text.length);
+        this.text = ev.content;
+        if (delta) out.push({ kind: "text_delta", text: delta });
+      } else if (!this.text) {
+        this.text = ev.content;
+        out.push({ kind: "text_delta", text: ev.content });
+      }
+      return out;
+    }
+
+    const piece = assistantTextFromEvent(ev);
+    if (piece) {
+      if (piece.startsWith(this.text)) {
+        const delta = piece.slice(this.text.length);
+        this.text = piece;
+        if (delta) out.push({ kind: "text_delta", text: delta });
+      } else if (!this.text.endsWith(piece)) {
+        this.text += piece;
+        out.push({ kind: "text_delta", text: piece });
+      }
+    }
+
+    if (ev.type === "result") {
+      const finalText =
+        typeof ev.result === "string"
+          ? ev.result
+          : typeof ev.text === "string"
+            ? ev.text
+            : undefined;
+      if (finalText !== undefined) {
+        if (finalText.startsWith(this.text)) {
+          const delta = finalText.slice(this.text.length);
+          this.text = finalText;
+          if (delta) out.push({ kind: "text_delta", text: delta });
+        } else if (this.text !== finalText) {
+          // Prefer authoritative result if stream was wrong/empty
+          if (!this.text) {
+            this.text = finalText;
+            out.push({ kind: "text_delta", text: finalText });
+          } else {
+            this.text = finalText;
+          }
+        }
+      }
+      out.push({
+        kind: "done",
+        text: this.text,
+        sessionId: this.sessionId,
+      });
+    }
+
+    return out;
+  }
+
+  /** Feed a chunk of stdout (may contain partial lines). */
+  feedChunk(chunk: string, lineBuffer: { value: string }): CliStreamEvent[] {
+    lineBuffer.value += chunk;
+    const events: CliStreamEvent[] = [];
+    const lines = lineBuffer.value.split("\n");
+    lineBuffer.value = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        events.push(...this.push(JSON.parse(trimmed)));
+      } catch {
+        /* incomplete / non-json line */
+      }
+    }
+    return events;
+  }
+
+  flush(lineBuffer: { value: string }): CliStreamEvent[] {
+    const trimmed = lineBuffer.value.trim();
+    lineBuffer.value = "";
+    if (!trimmed) return [];
+    try {
+      return this.push(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+}
+
 /**
  * Parse Cursor agent stream-json (NDJSON). Accumulate assistant text deltas
  * and last session id.
  */
 export function parseCursorStreamJson(stdout: string): CliParseResult {
-  let text = "";
-  let thinking = "";
-  let sessionId: string | undefined;
+  const acc = new StreamJsonAccumulator();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let ev: any;
     try {
-      ev = JSON.parse(trimmed);
+      acc.push(JSON.parse(trimmed));
     } catch {
-      continue;
-    }
-    if (typeof ev.session_id === "string") sessionId = ev.session_id;
-    if (typeof ev.sessionId === "string") sessionId = ev.sessionId;
-    // Common stream-json shapes
-    if (ev.type === "assistant" && typeof ev.message?.content === "string") {
-      text += ev.message.content;
-    } else if (ev.type === "text" && typeof ev.text === "string") {
-      text += ev.text;
-    } else if (ev.type === "content_block_delta" && typeof ev.delta?.text === "string") {
-      text += ev.delta.text;
-    } else if (typeof ev.text === "string" && ev.type !== "thinking") {
-      text += ev.text;
-    }
-    if (ev.type === "thinking" && typeof ev.text === "string") {
-      thinking += ev.text;
-    }
-    if (ev.type === "result" && typeof ev.result === "string") {
-      text = ev.result || text;
+      /* skip */
     }
   }
-  return { text, sessionId, thinking: thinking || undefined };
+  return {
+    text: acc.text,
+    sessionId: acc.sessionId,
+    thinking: acc.thinking || undefined,
+  };
 }
 
 export function parseCliOutput(agent: string, stdout: string): CliParseResult {
   if (agent === "cursor") return parseCursorStreamJson(stdout);
+  // Prefer stream-json NDJSON when present; fall back to single JSON object
+  if (stdout.includes("\n") && stdout.trim().startsWith("{")) {
+    const first = stdout.trim().split("\n")[0];
+    try {
+      const ev = JSON.parse(first);
+      if (ev?.type) return parseCursorStreamJson(stdout);
+    } catch {
+      /* fall through */
+    }
+  }
   if (agent === "gemini") return parseGeminiJson(stdout);
   return parseClaudeJson(stdout);
 }
