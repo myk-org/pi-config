@@ -4,12 +4,15 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+
+const REPO = join(import.meta.dirname, "../../..");
 
 describe("file-logger", () => {
   const originals = {
@@ -33,38 +36,50 @@ describe("file-logger", () => {
     }
   });
 
-  it("appends leveled one-line records under ~/.pi/logs", async () => {
+  it("writes cli-provider info lines to ~/.pi/logs", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { cliProviderLog, dreamingLog, getPiLogPath, fileLog } = await import(
+    const { cliProviderLog, getPiLogPath } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now()}`
     );
 
     assert.equal(cliProviderLog("info", "reaped session cursor/test"), true);
-    assert.equal(
-      cliProviderLog("error", "session reaper sweep failed", new Error("boom")),
-      true,
+    const body = readFileSync(getPiLogPath("cli-provider"), "utf-8");
+    assert.match(body, /\[info\] \[cli-provider\] reaped session cursor\/test/);
+  });
+
+  it("writes dreaming info lines to ~/.pi/logs", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-dream-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+
+    const { dreamingLog, getPiLogPath } = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 1}`
     );
+
     assert.equal(dreamingLog("info", "merged provenance for 2 entries"), true);
+    const body = readFileSync(getPiLogPath("dreaming"), "utf-8");
+    assert.match(body, /\[info\] \[dreaming\] merged provenance for 2 entries/);
+  });
 
-    const cliPath = getPiLogPath("cli-provider");
-    const dreamPath = getPiLogPath("dreaming");
-    const cliBody = readFileSync(cliPath, "utf-8");
-    const dreamBody = readFileSync(dreamPath, "utf-8");
+  it("collapses message and Error.stack newlines into one physical line", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-nl-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
 
-    assert.match(cliBody, /\[info\] \[cli-provider\] reaped session cursor\/test/);
-    assert.match(cliBody, /\[error\] \[cli-provider\] session reaper sweep failed/);
-    assert.match(cliBody, /Error: boom/);
-    assert.match(dreamBody, /\[info\] \[dreaming\] merged provenance for 2 entries/);
+    const { fileLog, getPiLogPath } = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 2}`
+    );
 
-    const before = cliBody.trimEnd().split("\n").length;
     fileLog("cli-provider", "warn", "cli-provider", "a\nb\rc", new Error("x\ny"));
-    const afterLines = readFileSync(cliPath, "utf-8").trimEnd().split("\n");
-    assert.equal(afterLines.length, before + 1);
-    assert.match(afterLines.at(-1)!, /a\\nb\\nc/);
-    assert.match(afterLines.at(-1)!, /x\\ny/);
+    const lines = readFileSync(getPiLogPath("cli-provider"), "utf-8")
+      .trimEnd()
+      .split("\n");
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /a\\nb\\nc/);
+    assert.match(lines[0]!, /x\\ny/);
   });
 
   it("getPiLogPath is pure (no mkdir)", async () => {
@@ -73,7 +88,7 @@ describe("file-logger", () => {
     process.env.USERPROFILE = tmpHome;
 
     const { getPiLogPath, getPiLogsDir } = await import(
-      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 1}`
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 3}`
     );
 
     const p = getPiLogPath("cli-provider");
@@ -90,14 +105,34 @@ describe("file-logger", () => {
     writeFileSync(join(tmpHome, ".pi", "logs"), "not-a-dir");
 
     const mod = await import(
-      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 2}`
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 4}`
     );
     assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "fallback"), true);
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
 
     const fallback = join(tmpdir(), "pi-logs", "cli-provider.log");
-    const body = readFileSync(fallback, "utf-8");
-    assert.match(body, /fallback/);
+    assert.match(readFileSync(fallback, "utf-8"), /fallback/);
+  });
+
+  it("dreaming and cli-provider sources do not call console.* for ops logs", () => {
+    const files = [
+      join(REPO, "extensions/orchestrator/dreaming.ts"),
+      join(REPO, "extensions/cli-provider/session-reaper.ts"),
+      join(REPO, "extensions/cli-provider/discover.ts"),
+      join(REPO, "extensions/cli-provider/index.ts"),
+      join(REPO, "extensions/cli-provider/agents/cursor.ts"),
+      join(REPO, "extensions/cli-provider/agents/claude.ts"),
+      join(REPO, "extensions/cli-provider/agents/gemini.ts"),
+    ];
+    const consoleRe = /\bconsole\.(debug|log|info|warn|error)\s*\(/;
+    for (const file of files) {
+      const src = readFileSync(file, "utf-8");
+      assert.equal(
+        consoleRe.test(src),
+        false,
+        `${file} still uses console.* (chat leak)`,
+      );
+    }
   });
 });
