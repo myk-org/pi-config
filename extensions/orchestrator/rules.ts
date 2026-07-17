@@ -12,6 +12,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
+import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 
 /** Social closer gate — skip expensive vector search for trivial messages */
 const SOCIAL_CLOSERS = new Set([
@@ -36,7 +37,12 @@ let lastInjectedMemories: { text: string; category: string; similarity: number }
 let lastTaskFocusUserMsgId: string | null = null;
 
 /** Log what memories were auto-injected for retrieval telemetry */
-function logMemoryInjection(cwd: string, prompt: string, injected: { text: string; category: string; similarity: number }[]): void {
+function logMemoryInjection(
+  cwd: string,
+  prompt: string,
+  injected: { text: string; category: string; similarity: number }[],
+  queryClass?: string,
+): void {
   try {
     const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
     const dir = path.dirname(telemetryPath);
@@ -44,6 +50,7 @@ function logMemoryInjection(cwd: string, prompt: string, injected: { text: strin
     const entry = JSON.stringify({
       ts: new Date().toISOString(),
       prompt: prompt.slice(0, 200),
+      queryClass: queryClass ?? "general",
       injected: injected.map(m => ({ text: m.text.slice(0, 100), category: m.category, similarity: m.similarity })),
     });
     fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
@@ -193,7 +200,11 @@ export function registerRules(
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
     // systemPrompt.length is chars; estimateMemoryBudget converts internally
     const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0);
-    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget);
+    const queryClass =
+      !isSubagent && event.prompt && !isSocialCloser(event.prompt)
+        ? classifyQueryClass(event.prompt)
+        : "general";
+    const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, queryClass);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
     const shouldSearch = !isSubagent && !!event.prompt && !isSocialCloser(event.prompt);
@@ -204,7 +215,17 @@ export function registerRules(
         const { readAllTopicEntries } = await import("./memory-tree.js");
         const entries = readAllTopicEntries(ctx.cwd);
         if (entries.length > 0) {
-          const results = await vectorSearch(ctx.cwd, event.prompt, entries, 5);
+          const topK = getQueryClassBias(queryClass).vectorTopK;
+          const boostCats = new Set(getQueryClassBias(queryClass).boostCategories);
+          // Prefer boosted categories when present; fall back to full set
+          const searchPool =
+            boostCats.size > 0 && entries.some((e) => boostCats.has(e.category))
+              ? [
+                  ...entries.filter((e) => boostCats.has(e.category)),
+                  ...entries.filter((e) => !boostCats.has(e.category)),
+                ]
+              : entries;
+          const results = await vectorSearch(ctx.cwd, event.prompt, searchPool, topK);
           const relevant = results.filter(r => r.similarity > 0.65);
           if (relevant.length > 0) {
             contextMemories = "\n# Contextually Relevant Memories\n\n" +
@@ -212,7 +233,7 @@ export function registerRules(
               relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
               "\n\n";
             // Retrieval telemetry — track what was injected
-            logMemoryInjection(ctx.cwd, event.prompt, relevant);
+            logMemoryInjection(ctx.cwd, event.prompt, relevant, queryClass);
             lastInjectedMemories = relevant;
           }
         }
@@ -429,9 +450,14 @@ export function registerRules(
 }
 
 // Loads memories using situation report (scored, token-budgeted) from topic files
-function loadMemoriesWithScoring(cwd: string, isSubagent: boolean, tokenBudget?: number): string {
+function loadMemoriesWithScoring(
+  cwd: string,
+  isSubagent: boolean,
+  tokenBudget?: number,
+  queryClass: import("./memory-query-class.js").QueryClass = "general",
+): string {
   try {
-    const report = buildSituationReport(cwd, tokenBudget);
+    const report = buildSituationReport(cwd, tokenBudget, { queryClass });
     if (report) {
       let result = "\n" + report + "\n";
       if (isSubagent) {

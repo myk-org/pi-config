@@ -19,6 +19,8 @@ import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { rebuildAndOrganize } from "./situation-report.js";
+import { runPromotionPass } from "./memory-promotion.js";
+import { mergeProvenancePending } from "./memory-provenance.js";
 import { getProjectTmpDir } from "./utils.js";
 
 // Default: 3 hours. Override with PI_DREAM_INTERVAL_HOURS env var (0.5–24).
@@ -110,7 +112,26 @@ export function registerDreaming(
       `   ---\n` +
       `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
       `8. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
-      `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.`,
+      `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.\n` +
+      `10. Promotion destinations: append candidates to ${topicsDir}/../promotions.md using this block format:\n` +
+      `   ### <12-char-id>\n` +
+      `   - destination: memory|skill|enforcement|project_rule|discard\n` +
+      `   - status: proposed\n` +
+      `   - category: <category>\n` +
+      `   - text: <exact topic entry text>\n` +
+      `   - reason: <why this should graduate>\n` +
+      `   - created: <ISO timestamp>\n` +
+      `   Optional fields: evidence_count, trigger, action, verifier, skill_name, skill_created.\n` +
+      `   Rules:\n` +
+      `   - skill: create .pi/skills/ when confident; set skill_created: true\n` +
+      `   - enforcement: propose trigger/action when mechanical (never/always + command); do NOT invent run_after\n` +
+      `   - project_rule: propose only — NEVER write rules/ or .pi/rules/\n` +
+      `   - discard: stale or superseded noise\n` +
+      `   - Do not reopen entries already marked applied or rejected in promotions.md\n` +
+      `11. Provenance sidecar (optional): for newly extracted entries, write\n` +
+      `   ${topicsDir}/../provenance-pending.json as JSON:\n` +
+      `   {"entries":[{"category":"lesson","text":"<exact topic text>","sourceSession":"<session basename>","derivedFrom":"<optional>","informs":["optional"]}]}\n` +
+      `   Do NOT edit memory-scores.json yourself — onComplete merges the sidecar.`,
       cwd,
       agents,
       {
@@ -120,6 +141,11 @@ export function registerDreaming(
           dreamInFlight = false;
           updateDreamStatus();
           try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
+          try {
+            const n = mergeProvenancePending(cwd);
+            if (n > 0) console.debug(`[dreaming] merged provenance for ${n} entries`);
+          } catch (e: any) { console.debug("[dreaming] provenance merge failed:", e?.message || e); }
+          try { runPromotionPass(cwd); } catch (e: any) { console.debug("[dreaming] promotion pass failed:", e?.message || e); }
         },
       },
     );

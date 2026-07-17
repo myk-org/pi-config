@@ -53,6 +53,8 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
 
     const scores = loadScores(ctx.cwd);
     let added = 0;
+    const sourceSession =
+      (ctx as any).sessionManager?.getSessionId?.() || undefined;
 
     for (const pref of preferences) {
       const entryLine = `- [preference] ${pref}`;
@@ -68,6 +70,9 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
         if (scores.entries[hash]) {
           scores.entries[hash]!.evidenceCount += 1;
           scores.entries[hash]!.lastReinforced = new Date().toISOString();
+          if (sourceSession && !scores.entries[hash]!.sourceSession) {
+            scores.entries[hash]!.sourceSession = sourceSession;
+          }
         }
         recentExtractions.set(hash, Date.now());
         continue;
@@ -86,6 +91,7 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
         lastReinforced: new Date().toISOString(),
         userState: "auto",
         lifecycle: "active",
+        ...(sourceSession ? { sourceSession } : {}),
       } as ScoredEntry;
 
       recentExtractions.set(hash, Date.now());

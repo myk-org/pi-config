@@ -18,7 +18,13 @@ import {
   entryHash,
   rebuild,
 } from "./memory-scoring.js";
-import { listTopics, readAllTopicEntries, type TopicInfo } from "./memory-tree.js";
+import { listTopics, readAllTopicEntries } from "./memory-tree.js";
+import { formatPromotionsForReport } from "./promotion-queue.js";
+import {
+  type QueryClass,
+  getQueryClassBias,
+  sectionPriorityBoost,
+} from "./memory-query-class.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -110,6 +116,11 @@ export function rebuildAndOrganize(cwd: string): void {
   }
 }
 
+export interface SituationReportOptions {
+  /** Query class for section budget / priority bias */
+  queryClass?: QueryClass;
+}
+
 /**
  * Build a situation report from scored memory entries.
  *
@@ -119,16 +130,20 @@ export function rebuildAndOrganize(cwd: string): void {
 export function buildSituationReport(
   cwd: string,
   tokenBudget: number = DEFAULT_TOKEN_BUDGET,
+  options: SituationReportOptions = {},
 ): string {
   const topicsDir = join(cwd, ".pi", "memory", "topics");
-  if (!existsSync(topicsDir)) return "";
+  const queryClass: QueryClass = options.queryClass ?? "general";
+  const bias = getQueryClassBias(queryClass);
+
+  const hasTopics = existsSync(topicsDir);
 
   // Read scores (rebuilt on session start + dreaming, not every turn)
-  const scores = loadScores(cwd);
+  const scores = hasTopics ? loadScores(cwd) : { entries: {}, lastRebuild: "" };
 
   // Read from topic files (source of truth) with hotness ordering
-  const topics = listTopics(cwd);
-  const topicEntries = readAllTopicEntries(cwd);
+  const topics = hasTopics ? listTopics(cwd) : [];
+  const topicEntries = hasTopics ? readAllTopicEntries(cwd) : [];
 
   // Build topic hotness map for section ordering
   const topicHotness = new Map<string, number>();
@@ -153,11 +168,6 @@ export function buildSituationReport(
     });
   }
 
-  if (entries.length === 0) return "";
-
-  // Sort entries by score descending within each category
-  entries.sort((a, b) => b.scored.score - a.scored.score);
-
   // Build body sections first, then compute actual capacity from emitted content
   let charBudget = tokenBudget * CHARS_PER_TOKEN;
   const bodySections: string[] = [];
@@ -165,6 +175,29 @@ export function buildSituationReport(
   // Reserve budget for header + possible warning + ground truth instruction
   const headerReserve = 330;
   charBudget -= headerReserve;
+
+  // Promotion candidates (low budget) — show even when topics empty
+  const promoSection = formatPromotionsForReport(cwd, 5);
+  if (promoSection) {
+    const promoBudget = Math.min(150 * CHARS_PER_TOKEN, charBudget);
+    const truncated =
+      promoSection.length > promoBudget
+        ? promoSection.slice(0, promoBudget) + "\n"
+        : promoSection;
+    bodySections.push(truncated);
+    charBudget -= truncated.length;
+  }
+
+  if (bias.hint && queryClass !== "general") {
+    const hintLine = `> Query class: \`${queryClass}\` — ${bias.hint}\n`;
+    bodySections.push(hintLine);
+    charBudget -= hintLine.length;
+  }
+
+  if (entries.length === 0 && bodySections.length === 0) return "";
+
+  // Sort entries by score descending within each category
+  entries.sort((a, b) => b.scored.score - a.scored.score);
 
   // Pinned entries always come first (no budget limit)
   const pinned = entries.filter((e) => e.isPinned);
@@ -174,7 +207,7 @@ export function buildSituationReport(
     charBudget -= pinnedSection.length;
   }
 
-  // Build each scored section in priority order, boosted by topic hotness
+  // Build each scored section in priority order, boosted by topic hotness + query class
   const nonPinned = entries.filter((e) => !e.isPinned);
 
   // Sort sections: use base priority but boost sections whose topic is hotter
@@ -188,10 +221,12 @@ export function buildSituationReport(
       "Recent Decisions": "decisions",
       "Recent Completions": "completions",
     };
+    const aPriority = sectionPriorityBoost(a.name, a.priority, queryClass);
+    const bPriority = sectionPriorityBoost(b.name, b.priority, queryClass);
     const aHot = topicHotness.get(topicMap[a.name] || "") || 0;
     const bHot = topicHotness.get(topicMap[b.name] || "") || 0;
     // Primary: priority (lower = higher). Secondary: hotness (higher = first)
-    if (a.priority !== b.priority) return a.priority - b.priority;
+    if (aPriority !== bPriority) return aPriority - bPriority;
     return bHot - aHot;
   });
 
@@ -204,8 +239,23 @@ export function buildSituationReport(
 
     if (sectionEntries.length === 0) continue;
 
+    // Boost token budget for query-class-relevant sections
+    const sectionCatMap: Record<string, MemoryCategory> = {
+      "Active Preferences": "preference",
+      "Active Lessons": "lesson",
+      "Vetoes & Mistakes": "mistake",
+      Patterns: "pattern",
+      "Recent Decisions": "decision",
+      "Recent Completions": "done",
+    };
+    const sectionCat = sectionCatMap[sectionDef.name];
+    const boosted = !!(sectionCat && bias.boostCategories.includes(sectionCat));
+    const sectionTokenBudget = boosted
+      ? Math.floor(sectionDef.tokenBudget * 1.25)
+      : sectionDef.tokenBudget;
+
     const sectionCharBudget = Math.min(
-      sectionDef.tokenBudget * CHARS_PER_TOKEN,
+      sectionTokenBudget * CHARS_PER_TOKEN,
       charBudget,
     );
 

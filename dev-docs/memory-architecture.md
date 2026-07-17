@@ -106,3 +106,34 @@ Research proves tail position gets highest LLM attention (U-shaped attention cur
 ## Preference Auto-Extraction
 
 `preference-extractor.ts`: Detects "I prefer…"/"always use…"/"never…" patterns, auto-adds to memory, reinforces on repetition.
+
+## Layer 6 — Promotion Queue (correction → structure)
+
+`promotion-queue.ts` + `memory-promotion.ts`: High-evidence memories graduate into
+skills, enforcement, or proposed project rules.
+
+- Queue: `.pi/memory/promotions.md` (`proposed` → `applied` | `rejected`)
+- Destinations: `memory` | `skill` | `enforcement` | `project_rule` | `discard`
+- Thresholds: enforcement/skill at evidenceCount ≥ 3; project_rule ≥ 5
+- Safe auto-apply: high-confidence `block`/`warn` enforcement only — never writes `rules/`
+- Hooks: dream `onComplete`, `memory_reinforce` threshold crossings, dream/`memory_consolidate` prompt writers
+- Situation report includes a short `## Promotion Candidates` section
+
+## Provenance
+
+Optional `ScoredEntry` fields: `sourceSession`, `derivedFrom`, `informs`.
+Set via `memory_add` / `memory_edit`, preference extractor (`sourceSession` when
+session id is available), or dream sidecar `.pi/memory/provenance-pending.json`
+merged by `mergeProvenancePending` on dream `onComplete`.
+Preserved across `rebuild()`. Not injected into situation reports; surfaced in
+`memory_search` / `memory_reflect`.
+
+## Query-class injection
+
+`memory-query-class.ts`: heuristic classifier (`pr_review` | `git_release` | `debug` | `general`)
+on `before_agent_start`. Adjusts situation-report section priority/budgets and vector `topK`.
+Logged in `.pi/data/memory-telemetry.jsonl` as `queryClass`.
+
+## Enforcement honesty map
+
+See `dev-docs/enforcement-honesty-map.md` — declares code vs injected vs aspirational enforcement.

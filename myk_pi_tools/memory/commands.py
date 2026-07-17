@@ -1,5 +1,8 @@
 """Memory CLI commands."""
 
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
 import click
@@ -123,3 +126,93 @@ def memory_path(ctx: click.Context) -> None:
     """
     mem = ctx.obj["mem"]
     click.echo(str(mem.file_path))
+
+
+def _count_topic_entries(topics_dir: Path) -> int:
+    """Count markdown bullet entries across topic files."""
+    if not topics_dir.is_dir():
+        return 0
+    total = 0
+    for path in topics_dir.glob("*.md"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("- ["):
+                total += 1
+    return total
+
+
+def _load_scores(topics_dir: Path) -> dict:
+    scores_path = topics_dir.parent / "memory-scores.json"
+    if not scores_path.is_file():
+        return {}
+    try:
+        data = json.loads(scores_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+@memory.command("status")
+@click.pass_context
+def memory_status(ctx: click.Context) -> None:
+    """Show enforcement honesty inventory for project memory.
+
+    Reports code-tier (trigger/action/verifier), injected topic counts,
+    and open promotion candidates. See dev-docs/enforcement-honesty-map.md.
+
+    Examples:
+
+        myk-pi-tools memory status
+    """
+    mem: MemoryFile = ctx.obj["mem"]
+    topics_dir: Path = mem.file_path
+    entries = _load_scores(topics_dir)
+
+    code_tier: list[str] = []
+    for _hash, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        trigger = entry.get("trigger")
+        action = entry.get("action")
+        verifier = entry.get("verifier")
+        if (trigger and action) or verifier:
+            cls = entry.get("class", "?")
+            bits = [f"[{cls}]"]
+            if trigger:
+                bits.append(str(trigger))
+            if action:
+                bits.append(str(action))
+            if verifier:
+                bits.append(f"verifier={verifier}")
+            code_tier.append(" ".join(bits))
+
+    injected = _count_topic_entries(topics_dir)
+    promotions_path = topics_dir.parent / "promotions.md"
+    proposed = 0
+    if promotions_path.is_file():
+        try:
+            promo = promotions_path.read_text(encoding="utf-8")
+            proposed = promo.count("- status: proposed")
+        except OSError:
+            proposed = 0
+
+    click.echo("# Memory status (enforcement honesty)\n")
+    click.echo(f"topics: {topics_dir}")
+    click.echo(f"injected (topic lines): {injected}")
+    click.echo(f"code-tier (enforced scores): {len(code_tier)}")
+    click.echo(f"promotion candidates (proposed): {proposed}")
+    click.echo("")
+    if code_tier:
+        click.echo("## Code-tier entries")
+        for line in code_tier:
+            click.echo(f"- {line}")
+    else:
+        click.echo("## Code-tier entries")
+        click.echo("- (none)")
+    click.echo("")
+    click.echo("Tiers: code = hooked; injected = situation report / rules; ")
+    click.echo("aspirational = docs only. See dev-docs/enforcement-honesty-map.md")
