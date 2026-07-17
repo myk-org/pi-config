@@ -9,6 +9,7 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { cliProviderLog } from "../../shared/file-logger.js";
 import type { CliProviderDef, DiscoveredCliModel } from "../types.js";
 import {
   cacheKeyForFile,
@@ -70,7 +71,7 @@ function discoverGeminiModels(): DiscoveredCliModel[] {
     if (models.length > 0) writeModelCache(key, models);
     return models;
   } catch (err) {
-    console.debug(`[cli-provider] gemini: CLI bundle parse failed:`, err);
+    cliProviderLog("error", "gemini: CLI bundle parse failed", err);
     return [];
   }
 }

@@ -118,6 +118,17 @@ File-backed bindings keyed by cwd + agent + model + `PI_SESSION_ID` (t3-style di
 
 This matches using the CLI as a backend LLM with full tool access (same intent as the system prompt we inject).
 
+## Logging
+
+Operational logs go to **`~/.pi/logs/`** (never `console.*` — that leaks into the chat text box):
+
+| File | Contents |
+|------|----------|
+| `~/.pi/logs/cli-provider.log` | discovery, registration, resume recover, session reaper |
+| `~/.pi/logs/dreaming.log` | dream skip/sidecar notes, provenance merge, promotion/rebuild errors |
+
+Helper: `extensions/shared/file-logger.ts`.
+
 ## Async
 
 Unlike `acpx-provider`, this extension **loads in subagent children** (`PI_SUBAGENT_CHILD`).  
