@@ -59,6 +59,14 @@ export interface ScoredEntry {
   actionCommand?: string;
   /** Semantic verifier — condition to check (e.g., 'tool_called ask_user before gh pr merge') */
   verifier?: string;
+
+  // ── Provenance fields (optional; not injected into situation report) ──
+  /** Session id or path basename this memory came from */
+  sourceSession?: string;
+  /** Short note or prior entry hash this was derived from */
+  derivedFrom?: string;
+  /** Free-text targets this memory informs (e.g. pr-review, git, skill name) */
+  informs?: string[];
 }
 
 export interface ScoresFile {

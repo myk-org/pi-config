@@ -5,7 +5,9 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from myk_pi_tools.memory.commands import memory
 from myk_pi_tools.memory.store import CATEGORY_TO_TOPIC, MemoryFile, _entry_hash, _topic_template
 
 
@@ -271,3 +273,47 @@ class TestMigration:
         # Second call — no DB, returns 0
         count = mem.migrate_from_db()
         assert count == 0
+
+
+class TestMemoryStatus:
+    def test_status_reports_code_tier_counts(self, tmp_path: Path) -> None:
+        topics_dir = tmp_path / "memory" / "topics"
+        topics_dir.mkdir(parents=True)
+        (topics_dir / "lessons.md").write_text(
+            "# Lessons\n\n- [lesson] Never use `git add .`\n",
+            encoding="utf-8",
+        )
+        hash_key = _entry_hash("- [lesson] Never use `git add .`")
+        scores = {
+            "entries": {
+                hash_key: {
+                    "class": "lesson",
+                    "score": 2,
+                    "evidenceCount": 3,
+                    "cue": "explicit",
+                    "firstSeen": "2026-07-17T00:00:00Z",
+                    "lastReinforced": "2026-07-17T00:00:00Z",
+                    "userState": "auto",
+                    "lifecycle": "active",
+                    "trigger": "bash_contains git add .",
+                    "action": "block",
+                }
+            },
+            "lastRebuild": "2026-07-17T00:00:00Z",
+        }
+        (tmp_path / "memory" / "memory-scores.json").write_text(
+            json.dumps(scores),
+            encoding="utf-8",
+        )
+        (tmp_path / "memory" / "promotions.md").write_text(
+            "### abc\n- status: proposed\n",
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(memory, ["--file-path", str(topics_dir), "status"])
+        assert result.exit_code == 0, result.output
+        assert "injected (topic lines): 1" in result.output
+        assert "code-tier (enforced scores): 1" in result.output
+        assert "promotion candidates (proposed): 1" in result.output
+        assert "bash_contains git add ." in result.output

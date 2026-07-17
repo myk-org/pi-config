@@ -27,6 +27,7 @@ import {
 } from "./memory-scoring.js";
 import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
+import { maybePromoteAfterReinforce } from "./memory-promotion.js";
 
 const NEAR_DUPLICATE_THRESHOLD = 0.90;
 
@@ -149,7 +150,13 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
       const lines = results.map((r) => {
         const pin = r.pinned ? " (pinned)" : "";
         const sim = r.similarity !== undefined ? `, similarity: ${r.similarity.toFixed(3)}` : "";
-        return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}${sim}`;
+        const scored = scores.entries[entryHash(`- [${r.category}] ${r.text}`)];
+        const provParts: string[] = [];
+        if (scored?.sourceSession) provParts.push(`session: ${scored.sourceSession}`);
+        if (scored?.derivedFrom) provParts.push(`from: ${scored.derivedFrom}`);
+        if (scored?.informs?.length) provParts.push(`informs: ${scored.informs.join(", ")}`);
+        const prov = provParts.length ? ` [${provParts.join("; ")}]` : "";
+        return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}${sim}${prov}`;
       });
 
       const text = `Found ${results.length} memories matching "${params.query}":\n\n${lines.join("\n")}`;
@@ -184,10 +191,20 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
         const scores = loadScores(ctx.cwd);
         const hash = entryHash(entryLine);
         const entry = scores.entries[hash];
+        let promoNote = "";
+        try {
+          const promo = maybePromoteAfterReinforce(ctx.cwd, entryLine);
+          if (promo && (promo.applied > 0 || promo.queued > 0)) {
+            promoNote = `\nPromotion pass: applied=${promo.applied}, proposed=${promo.queued}` +
+              (promo.details.length ? ` (${promo.details.join("; ")})` : "");
+          }
+        } catch (e: any) {
+          console.debug("[memory] promote-after-reinforce failed:", e?.message || e);
+        }
         return {
           content: [{
             type: "text",
-            text: `Reinforced: [${params.category}] ${params.entryText}\nNew evidence count: ${entry?.evidenceCount ?? "?"}, score: ${entry?.score?.toFixed(2) ?? "?"}`,
+            text: `Reinforced: [${params.category}] ${params.entryText}\nNew evidence count: ${entry?.evidenceCount ?? "?"}, score: ${entry?.score?.toFixed(2) ?? "?"}${promoNote}`,
           }],
         };
       }
@@ -262,6 +279,21 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       verifier: Type.Optional(
         Type.String({
           description: "Semantic verifier condition (e.g., 'tool_called ask_user before gh pr merge'). Checked at turn_end.",
+        }),
+      ),
+      sourceSession: Type.Optional(
+        Type.String({
+          description: "Optional provenance: session id or basename this memory came from",
+        }),
+      ),
+      derivedFrom: Type.Optional(
+        Type.String({
+          description: "Optional provenance: short note or prior entry this was derived from",
+        }),
+      ),
+      informs: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Optional provenance: what this memory informs (e.g. pr-review, git, skill name)",
         }),
       ),
     }),
@@ -480,6 +512,9 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       if (params.verifier) {
         entry.verifier = params.verifier;
       }
+      if (params.sourceSession) entry.sourceSession = params.sourceSession;
+      if (params.derivedFrom) entry.derivedFrom = params.derivedFrom;
+      if (params.informs && params.informs.length > 0) entry.informs = params.informs;
 
       scores.entries[hash] = entry;
       saveScores(cwd, scores);
@@ -617,12 +652,19 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: `No relevant memories found for: "${params.query}"` }] };
       }
 
-      // Format as structured context for the AI to synthesize
+      // Format as structured context for the AI to synthesize (include provenance when present)
+      const scores = loadScores(cwd);
       const memoryContext = relevant
         .slice(0, 15)
         .map(r => {
           const sim = r.similarity !== undefined ? ` (${r.similarity.toFixed(3)})` : "";
-          return `- [${r.category}] ${r.text}${sim}`;
+          const scored = scores.entries[entryHash(`- [${r.category}] ${r.text}`)];
+          const provParts: string[] = [];
+          if (scored?.sourceSession) provParts.push(`session: ${scored.sourceSession}`);
+          if (scored?.derivedFrom) provParts.push(`from: ${scored.derivedFrom}`);
+          if (scored?.informs?.length) provParts.push(`informs: ${scored.informs.join(", ")}`);
+          const prov = provParts.length ? ` [${provParts.join("; ")}]` : "";
+          return `- [${r.category}] ${r.text}${sim}${prov}`;
         })
         .join("\n");
 
@@ -652,6 +694,9 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       category: Type.String({ description: "Category: preference, lesson, pattern, decision, done, mistake" }),
       newText: Type.Optional(Type.String({ description: "New text content (for update)" })),
       supersededBy: Type.Optional(Type.String({ description: "Text of the replacement entry (for invalidate)" })),
+      sourceSession: Type.Optional(Type.String({ description: "Optional provenance: session id" })),
+      derivedFrom: Type.Optional(Type.String({ description: "Optional provenance: derived-from note" })),
+      informs: Type.Optional(Type.Array(Type.String(), { description: "Optional provenance: informs targets" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
@@ -718,8 +763,14 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         if (scores.entries[oldHash]) {
           scores.entries[newHash] = { ...scores.entries[oldHash] };
           delete scores.entries[oldHash];
-          saveScores(cwd, scores);
         }
+        const target = scores.entries[newHash];
+        if (target) {
+          if (params.sourceSession !== undefined) target.sourceSession = params.sourceSession;
+          if (params.derivedFrom !== undefined) target.derivedFrom = params.derivedFrom;
+          if (params.informs !== undefined) target.informs = params.informs;
+        }
+        saveScores(cwd, scores);
 
         // Update embeddings
         removeEmbedding(cwd, text, category);
@@ -798,11 +849,15 @@ function registerMemoryConsolidate(pi: ExtensionAPI): void {
       report += `Review the above memories and take ALL of these actions:\n`;
       report += `1. **Identify contradictions** — if two entries conflict, keep the newer/more specific one. Use memory_edit to invalidate the stale one.\n`;
       report += `2. **Merge duplicates** — if entries say the same thing differently, keep the best version. Use memory_edit to update.\n`;
-      report += `3. **Identify skill candidates** — if you see a multi-step workflow (3+ steps) that recurs across entries,\n`;
-      report += `   report it and suggest using /create-skill <name> to capture it.\n`;
+      report += `3. **Promotion destinations** — append candidates to \`.pi/memory/promotions.md\` with destination:\n`;
+      report += `   \`memory\` | \`skill\` | \`enforcement\` | \`project_rule\` | \`discard\`.\n`;
+      report += `   - skill: suggest /create-skill or note existing .pi/skills/; set skill_created if you write one\n`;
+      report += `   - enforcement: propose trigger/action when mechanical; do not invent run_after\n`;
+      report += `   - project_rule: propose only — NEVER write rules/ or .pi/rules/\n`;
+      report += `   Block format: ### <id> then fields destination, status: proposed, category, text, reason, created\n`;
       report += `4. **Remove stale** — if entries reference things that no longer exist or apply, use memory_remove.\n`;
       report += `5. **NEVER touch pinned entries** — they are user-explicit and permanent.\n\n`;
-      report += `*Take actions using memory_edit and memory_remove. Report skill candidates for user to create.*`;
+      report += `*Take actions using memory_edit and memory_remove. Write promotions.md for graduation candidates.*`;
 
       return { content: [{ type: "text", text: report }] };
     },

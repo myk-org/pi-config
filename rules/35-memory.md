@@ -175,10 +175,12 @@ Only memorize **outcomes** (what happened), not **intentions** (what was discuss
 ## CLI
 
 ```bash
-uv run myk-pi-tools memory <command>   # Commands: add, forget, show, migrate, path
+uv run myk-pi-tools memory <command>   # Commands: add, forget, show, migrate, path, status
 ```
 
 **Categories:** `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`
+
+`memory status` — enforcement honesty inventory (code-tier vs injected topic counts + open promotions).
 
 ---
 
@@ -200,3 +202,39 @@ Memory stores facts; **skills store procedures.**
 When you complete a multi-step workflow (3+ steps, or doing the same multi-step task for the second time,
 trial-and-error, or non-obvious commands), save it as a skill via `/create-skill <name>`.
 Don't create skills for simple one-step tasks or standard workflows already covered by existing skills.
+
+---
+
+## Promotion Destinations (Correction → Structure)
+
+Memories are a staging area. High-evidence or recurring lessons should graduate:
+
+| Destination | When | Auto? |
+|-------------|------|-------|
+| `memory` | Stay as a scored topic line | default |
+| `skill` | Multi-step recurring workflow | dream may write `.pi/skills/` |
+| `enforcement` | Mechanical never/always + command/tool | safe auto-apply (`block`/`warn` + clear trigger) |
+| `project_rule` | Project-wide convention, not mechanical | **propose only** — never auto-write `rules/` or `.pi/rules/` |
+| `discard` | Stale / superseded | mark in queue |
+
+Queue file: `.pi/memory/promotions.md`. Situation report shows open `proposed` items.
+Thresholds (evidenceCount): enforcement/skill ≥ 3; project_rule ≥ 5.
+On reinforce crossing a threshold, a promotion pass runs automatically.
+`memory_consolidate` and dreaming must write promotion candidates to that queue.
+
+---
+
+## Provenance (optional)
+
+`memory_add` / `memory_edit` accept optional `sourceSession`, `derivedFrom`, `informs`.
+Preference extractor sets `sourceSession` when the session id is available.
+Dream may write `.pi/memory/provenance-pending.json`; merge happens on dream complete.
+Stored in `memory-scores.json` only — not injected into the situation report.
+Shown in `memory_search` / `memory_reflect` when present.
+
+---
+
+## Query-class injection (automatic)
+
+Injection biases section budgets from the user prompt (no tool call needed):
+`pr_review`, `git_release`, `debug`, or `general`.
