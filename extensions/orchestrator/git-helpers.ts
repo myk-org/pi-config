@@ -185,10 +185,16 @@ function touchOpenPrCache(key: string, entry: OpenPrCacheEntry): void {
  * Cached open PR only — never calls `gh`.
  * Returns stale entries past TTL (stale-while-revalidate); kick
  * {@link refreshOpenPr} to refresh asynchronously.
+ * Pass `assumeGithub: true` when the caller already verified the remote.
  */
-export function getOpenPr(cwd?: string, branch?: string | null): OpenPr | null {
+export function getOpenPr(
+  cwd?: string,
+  branch?: string | null,
+  opts?: { assumeGithub?: boolean },
+): OpenPr | null {
   const b = branch ?? getCurrentBranch(cwd);
-  if (!b || !isGithubRepo(cwd)) return null;
+  if (!b) return null;
+  if (!opts?.assumeGithub && !isGithubRepo(cwd)) return null;
 
   const key = openPrCacheKey(cwd, b);
   const cached = openPrCache.get(key);
@@ -203,13 +209,16 @@ export function getOpenPr(cwd?: string, branch?: string | null): OpenPr | null {
  * Coalesces in-flight lookups per cwd+branch; caches result for 30s.
  * Status-line callers must use {@link getOpenPr} synchronously and only
  * await this to refresh — never block the update path on `gh`.
+ * Pass `assumeGithub: true` when the caller already verified the remote.
  */
 export function refreshOpenPr(
   cwd?: string,
   branch?: string | null,
+  opts?: { assumeGithub?: boolean },
 ): Promise<OpenPr | null> {
   const b = branch ?? getCurrentBranch(cwd);
-  if (!b || !isGithubRepo(cwd)) return Promise.resolve(null);
+  if (!b) return Promise.resolve(null);
+  if (!opts?.assumeGithub && !isGithubRepo(cwd)) return Promise.resolve(null);
 
   const now = Date.now();
   const key = openPrCacheKey(cwd, b);
@@ -285,6 +294,7 @@ export function scheduleOpenPrStatusRefresh(opts: {
     lastBranch: string | null;
   };
   onRerender: (ctx: { cwd?: string }) => void;
+  assumeGithub?: boolean;
   refresh?: typeof refreshOpenPr;
 }): void {
   const refreshKey = `${opts.cwd || ""}:${opts.branch}`;
@@ -292,7 +302,9 @@ export function scheduleOpenPrStatusRefresh(opts: {
     ? `${opts.shownPr.number}\0${opts.shownPr.url}`
     : "";
   const refresh = opts.refresh ?? refreshOpenPr;
-  void refresh(opts.cwd, opts.branch).then((fresh) => {
+  void refresh(opts.cwd, opts.branch, {
+    assumeGithub: opts.assumeGithub,
+  }).then((fresh) => {
     const { lastCtx, lastBranch } = opts.getState();
     if (
       decideOpenPrRefreshRerender({

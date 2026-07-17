@@ -161,4 +161,36 @@ describe("scheduleOpenPrStatusRefresh", () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(rerenders, 0);
   });
+
+  it("swallows onRerender errors without rejecting", async () => {
+    let sawDebug = false;
+    const orig = console.debug;
+    console.debug = (...args: unknown[]) => {
+      if (String(args[0] || "").includes("open-PR refresh update failed")) {
+        sawDebug = true;
+      }
+    };
+    try {
+      scheduleOpenPrStatusRefresh({
+        cwd: "/repo",
+        branch: "main",
+        shownPr: null,
+        getState: () => ({
+          lastCtx: { cwd: "/repo" },
+          lastBranch: "main",
+        }),
+        onRerender: () => {
+          throw new Error("boom");
+        },
+        refresh: async () => ({
+          number: 5,
+          url: "https://github.com/org/repo/pull/5",
+        }),
+      });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(sawDebug, true);
+    } finally {
+      console.debug = orig;
+    }
+  });
 });

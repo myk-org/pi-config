@@ -7,6 +7,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import {
   getCurrentBranch,
   getOpenPr,
+  isGithubRepo,
   runGit,
   scheduleOpenPrStatusRefresh,
 } from "./git-helpers.js";
@@ -82,7 +83,9 @@ export function registerStatusLine(
         changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
 
       // Sync cache only — never block the status path on `gh`.
-      const pr = getOpenPr(ctx.cwd, b);
+      // One isGithubRepo check for getOpenPr + refresh schedule.
+      const isGh = isGithubRepo(ctx.cwd);
+      const pr = isGh ? getOpenPr(ctx.cwd, b, { assumeGithub: true }) : null;
       if (pr) {
         const prLabel = ctx.ui.theme.fg(
           "accent",
@@ -94,13 +97,16 @@ export function registerStatusLine(
       buildStatus(ctx, gitPart);
 
       // Per-key coalesce lives in refreshOpenPr — no global pending gate.
-      scheduleOpenPrStatusRefresh({
-        cwd: ctx.cwd,
-        branch: b,
-        shownPr: pr,
-        getState: () => ({ lastCtx, lastBranch }),
-        onRerender: (c) => updateBranch(null, c),
-      });
+      if (isGh) {
+        scheduleOpenPrStatusRefresh({
+          cwd: ctx.cwd,
+          branch: b,
+          shownPr: pr,
+          getState: () => ({ lastCtx, lastBranch }),
+          onRerender: (c) => updateBranch(null, c),
+          assumeGithub: true,
+        });
+      }
     } catch (e: any) { console.debug("[status-line] git status update failed:", e?.message || e); }
   };
 
