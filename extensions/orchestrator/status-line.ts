@@ -4,7 +4,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
-import { getCurrentBranch, getOpenPr, runGit } from "./git-helpers.js";
+import {
+  getCurrentBranch,
+  getOpenPr,
+  refreshOpenPr,
+  runGit,
+} from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { clockHHMM } from "./utils.js";
 
@@ -34,6 +39,7 @@ export function registerStatusLine(
   // ── Git branch status line ─────────────────────────────────────────────
 
   let lastCtx: any = null;
+  let openPrRefreshPending = false;
 
   const updateBranch = (_event: any, ctx: any) => {
     lastCtx = ctx;
@@ -71,6 +77,7 @@ export function registerStatusLine(
       let gitPart =
         changes.length > 0 ? `${icon} ${changes.join(" ")}` : icon;
 
+      // Sync cache only — never block the status path on `gh`.
       const pr = getOpenPr(ctx.cwd, b);
       if (pr) {
         const prLabel = ctx.ui.theme.fg(
@@ -81,6 +88,28 @@ export function registerStatusLine(
       }
 
       buildStatus(ctx, gitPart);
+
+      // One shared waiter — avoid N× updateBranch after coalesced gh resolve.
+      if (openPrRefreshPending) return;
+      openPrRefreshPending = true;
+      const shownKey = pr ? `${pr.number}\0${pr.url}` : "";
+      void refreshOpenPr(ctx.cwd, b)
+        .then((fresh) => {
+          const freshKey = fresh ? `${fresh.number}\0${fresh.url}` : "";
+          if (freshKey === shownKey) return;
+          if (!lastCtx) return;
+          try {
+            updateBranch(null, lastCtx);
+          } catch (e: any) {
+            console.debug(
+              "[status-line] open-PR refresh update failed:",
+              e?.message || e,
+            );
+          }
+        })
+        .finally(() => {
+          openPrRefreshPending = false;
+        });
     } catch (e: any) { console.debug("[status-line] git status update failed:", e?.message || e); }
   };
 

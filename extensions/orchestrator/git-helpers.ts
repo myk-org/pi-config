@@ -2,7 +2,7 @@
  * Git utility functions for enforcement and status line.
  */
 
-import { execSync } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 
 export function runGit(
   args: string[],
@@ -98,17 +98,46 @@ export function getPrMergeStatus(
 export type OpenPr = { number: number; url: string };
 
 const OPEN_PR_TTL_MS = 30_000;
-const openPrCache = new Map<string, { at: number; pr: OpenPr | null }>();
+const OPEN_PR_CACHE_MAX = 50;
+const SAFE_PR_URL = /^https:\/\/[^\x00-\x1f]+$/;
 
-/** Parse `gh pr view --json number,url` output. */
+type OpenPrCacheEntry = { at: number; pr: OpenPr | null };
+const openPrCache = new Map<string, OpenPrCacheEntry>();
+const openPrInFlight = new Map<string, Promise<OpenPr | null>>();
+
+type GhPrViewRunner = (cwd?: string) => Promise<string>;
+
+const defaultGhPrView: GhPrViewRunner = (cwd) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      "gh",
+      ["pr", "view", "--json", "number,url,state"],
+      { cwd, timeout: 5000, encoding: "utf-8", maxBuffer: 1024 * 1024 },
+      (err, stdout) => {
+        if (err) reject(err);
+        else resolve(typeof stdout === "string" ? stdout : String(stdout));
+      },
+    );
+  });
+
+let ghPrViewRunner: GhPrViewRunner = defaultGhPrView;
+
+/** Override `gh pr view` runner (tests). Pass null to restore default. */
+export function setGhPrViewRunner(runner: GhPrViewRunner | null): void {
+  ghPrViewRunner = runner ?? defaultGhPrView;
+}
+
+/** Parse `gh pr view --json number,url,state` output (OPEN only). */
 export function parseOpenPrJson(out: string): OpenPr | null {
   try {
     const data = JSON.parse(out);
     if (
       data &&
-      typeof data.number === "number" &&
+      Number.isInteger(data.number) &&
+      data.number > 0 &&
       typeof data.url === "string" &&
-      data.url.length > 0
+      SAFE_PR_URL.test(data.url) &&
+      data.state === "OPEN"
     ) {
       return { number: data.number, url: data.url };
     }
@@ -118,37 +147,97 @@ export function parseOpenPrJson(out: string): OpenPr | null {
   return null;
 }
 
-/** Clear open-PR cache (tests). */
+/** Clear open-PR cache and in-flight lookups (tests). */
 export function clearOpenPrCache(): void {
   openPrCache.clear();
+  openPrInFlight.clear();
+}
+
+/** Seed cache entry (tests) — use past `at` to exercise TTL / SWR. */
+export function seedOpenPrCacheForTests(
+  cwd: string,
+  branch: string,
+  entry: { at: number; pr: OpenPr | null },
+): void {
+  openPrCache.set(openPrCacheKey(cwd, branch), entry);
+}
+
+/** Evict oldest keys when over max size (LRU via touch-on-hit). */
+function enforceOpenPrCacheMax(): void {
+  while (openPrCache.size > OPEN_PR_CACHE_MAX) {
+    const oldest = openPrCache.keys().next().value;
+    if (oldest === undefined) break;
+    openPrCache.delete(oldest);
+  }
+}
+
+function openPrCacheKey(cwd: string | undefined, branch: string): string {
+  return `${cwd || process.cwd()}:${branch}`;
+}
+
+function touchOpenPrCache(key: string, entry: OpenPrCacheEntry): void {
+  openPrCache.delete(key);
+  openPrCache.set(key, entry);
+  enforceOpenPrCacheMax();
 }
 
 /**
- * Open PR for the current (or given) branch via `gh pr view`.
- * Cached per cwd+branch for 30s so the status-line poller does not spam gh.
+ * Cached open PR only — never calls `gh`.
+ * Returns stale entries past TTL (stale-while-revalidate); kick
+ * {@link refreshOpenPr} to refresh asynchronously.
  */
 export function getOpenPr(cwd?: string, branch?: string | null): OpenPr | null {
   const b = branch ?? getCurrentBranch(cwd);
   if (!b || !isGithubRepo(cwd)) return null;
 
-  const key = `${cwd || process.cwd()}:${b}`;
+  const key = openPrCacheKey(cwd, b);
   const cached = openPrCache.get(key);
-  if (cached && Date.now() - cached.at < OPEN_PR_TTL_MS) return cached.pr;
+  if (!cached) return null;
+  // Touch for LRU even on stale hits so hot keys survive eviction.
+  touchOpenPrCache(key, cached);
+  return cached.pr;
+}
 
-  let pr: OpenPr | null = null;
-  try {
-    const out = execSync("gh pr view --json number,url", {
-      cwd,
-      timeout: 5000,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    pr = parseOpenPrJson(out.trim());
-  } catch {
-    pr = null;
+/**
+ * Async `gh pr view` for the current (or given) branch.
+ * Coalesces in-flight lookups per cwd+branch; caches result for 30s.
+ * Status-line callers must use {@link getOpenPr} synchronously and only
+ * await this to refresh — never block the update path on `gh`.
+ */
+export function refreshOpenPr(
+  cwd?: string,
+  branch?: string | null,
+): Promise<OpenPr | null> {
+  const b = branch ?? getCurrentBranch(cwd);
+  if (!b || !isGithubRepo(cwd)) return Promise.resolve(null);
+
+  const now = Date.now();
+  const key = openPrCacheKey(cwd, b);
+  const cached = openPrCache.get(key);
+  if (cached && now - cached.at < OPEN_PR_TTL_MS) {
+    touchOpenPrCache(key, cached);
+    return Promise.resolve(cached.pr);
   }
-  openPrCache.set(key, { at: Date.now(), pr });
-  return pr;
+
+  const inflight = openPrInFlight.get(key);
+  if (inflight) return inflight;
+
+  const pending = (async (): Promise<OpenPr | null> => {
+    let pr: OpenPr | null = null;
+    try {
+      const out = await ghPrViewRunner(cwd);
+      pr = parseOpenPrJson(out.trim());
+    } catch {
+      pr = null;
+    }
+    touchOpenPrCache(key, { at: Date.now(), pr });
+    return pr;
+  })().finally(() => {
+    openPrInFlight.delete(key);
+  });
+
+  openPrInFlight.set(key, pending);
+  return pending;
 }
 
 // Cache protected branches per repo (fetched once per session)

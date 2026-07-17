@@ -466,7 +466,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Send messages from browser to pi
 - Model and thinking level switching from browser
 - Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
-- Info bar: model, tokens, context %, git status (with PR `#N` when present), clickable `pi-diff` / `pi-dash` labels
+- Info bar: model, tokens, context %, git status (with PR `#N` when present)
+- TUI status line: clickable `pi-diff` / `pi-dash` labels and open-PR `#N` hyperlink
 - Per-project diff viewer (pidiff) — opens in browser via clickable `pi-diff` status-line link, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
