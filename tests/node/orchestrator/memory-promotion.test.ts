@@ -20,7 +20,11 @@ import {
   saveScores,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
-import { loadPromotions } from "../../../extensions/orchestrator/promotion-queue.js";
+import {
+  appendPromotions,
+  loadPromotions,
+  promotionId,
+} from "../../../extensions/orchestrator/promotion-queue.js";
 
 function seedMemory(
   cwd: string,
@@ -156,6 +160,67 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
         "utf-8",
       );
       assert.equal((content.match(/\*\(enforced\)\*/g) || []).length, 1);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves applied or rejected queue entries across promotion passes", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-merge-"));
+    try {
+      const rejectedText = "Always follow the project release convention";
+      seedMemory(cwd, 'Never use `git add .`', "lesson", EVIDENCE_ENFORCEMENT);
+      seedMemory(cwd, rejectedText, "preference", 5);
+
+      appendPromotions(cwd, [
+        {
+          id: promotionId("project_rule", "preference", rejectedText),
+          destination: "project_rule",
+          status: "rejected",
+          category: "preference",
+          text: rejectedText,
+          reason: "user rejected",
+          createdAt: "2026-07-01T00:00:00.000Z",
+        },
+        {
+          id: promotionId("enforcement", "lesson", 'Never use `git add .`'),
+          destination: "enforcement",
+          status: "applied",
+          category: "lesson",
+          text: 'Never use `git add .`',
+          reason: "already applied",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          trigger: "bash_contains git add .",
+          action: "block",
+        },
+      ]);
+
+      // Pre-seed enforcement on lesson so apply path skips re-applying scores
+      const scores = loadScores(cwd);
+      const hash = entryHash("- [lesson] Never use `git add .`");
+      scores.entries[hash]!.trigger = "bash_contains git add ." as any;
+      scores.entries[hash]!.action = "block";
+      saveScores(cwd, scores);
+
+      applySafePromotions(cwd);
+      const queue = loadPromotions(cwd);
+
+      const rejected = queue.find((c) => c.text === rejectedText && c.destination === "project_rule");
+      assert.equal(rejected?.status, "rejected");
+
+      const applied = queue.find((c) => c.text.includes("git add") && c.destination === "enforcement");
+      assert.equal(applied?.status, "applied");
+
+      // Must not reopen rejected project_rule as proposed
+      assert.equal(
+        queue.filter(
+          (c) =>
+            c.text === rejectedText &&
+            c.destination === "project_rule" &&
+            c.status === "proposed",
+        ).length,
+        0,
+      );
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

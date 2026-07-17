@@ -24,7 +24,7 @@ import {
   formatPromotionsForReport,
   loadPromotions,
   promotionId,
-  updatePromotionStatus,
+  updatePromotionStatuses,
 } from "./promotion-queue.js";
 
 export const EVIDENCE_ENFORCEMENT = 3;
@@ -350,11 +350,11 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
 
   saveScores(cwd, scores);
 
-  // Append-only / status-update — never full-rewrite promotions.md (lossy parser
-  // would drop human notes and malformed blocks).
+  // Append-only / batched status updates — avoid lossy full rewrite and per-item I/O.
   const existing = loadPromotions(cwd);
   const byId = new Map(existing.map((x) => [x.id, x]));
   const toAppend: PromotionCandidate[] = [];
+  const statusUpdates: { id: string; status: "applied" }[] = [];
 
   for (const c of toQueue) {
     const prev = byId.get(c.id);
@@ -366,10 +366,11 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
     // Don't reopen applied/rejected as proposed
     if (prev.status !== "proposed" && c.status === "proposed") continue;
     if (c.status === "applied" && prev.status === "proposed") {
-      updatePromotionStatus(cwd, c.id, "applied");
+      statusUpdates.push({ id: c.id, status: "applied" });
       byId.set(c.id, { ...prev, status: "applied" });
     }
   }
+  if (statusUpdates.length > 0) updatePromotionStatuses(cwd, statusUpdates);
   if (toAppend.length > 0) appendPromotions(cwd, toAppend);
 
   const queued = [...byId.values()].filter((c) => c.status === "proposed").length;

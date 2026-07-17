@@ -189,12 +189,26 @@ export function updatePromotionStatus(
   id: string,
   status: PromotionStatus,
 ): boolean {
+  return updatePromotionStatuses(cwd, [{ id, status }]) === 1;
+}
+
+/** Batch status updates — one load/write cycle. Returns how many ids were updated. */
+export function updatePromotionStatuses(
+  cwd: string,
+  updates: { id: string; status: PromotionStatus }[],
+): number {
+  if (updates.length === 0) return 0;
   const existing = loadPromotions(cwd);
-  const idx = existing.findIndex((c) => c.id === id);
-  if (idx < 0) return false;
-  existing[idx]!.status = status;
-  writePromotions(cwd, existing);
-  return true;
+  const byId = new Map(existing.map((c) => [c.id, c]));
+  let n = 0;
+  for (const u of updates) {
+    const entry = byId.get(u.id);
+    if (!entry) continue;
+    entry.status = u.status;
+    n += 1;
+  }
+  if (n > 0) writePromotions(cwd, [...byId.values()]);
+  return n;
 }
 
 export function listProposedPromotions(cwd: string): PromotionCandidate[] {
