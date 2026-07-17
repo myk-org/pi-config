@@ -104,6 +104,8 @@ const SAFE_PR_URL = /^https:\/\/[^\x00-\x1f]+$/;
 type OpenPrCacheEntry = { at: number; pr: OpenPr | null };
 const openPrCache = new Map<string, OpenPrCacheEntry>();
 const openPrInFlight = new Map<string, Promise<OpenPr | null>>();
+/** Keys with an active scheduleOpenPrStatusRefresh .then subscription. */
+const openPrSchedulePending = new Set<string>();
 
 type GhPrViewRunner = (cwd?: string) => Promise<string>;
 
@@ -151,6 +153,7 @@ export function parseOpenPrJson(out: string): OpenPr | null {
 export function clearOpenPrCache(): void {
   openPrCache.clear();
   openPrInFlight.clear();
+  openPrSchedulePending.clear();
 }
 
 /** Seed cache entry (tests) — use past `at` to exercise TTL / SWR. */
@@ -298,35 +301,44 @@ export function scheduleOpenPrStatusRefresh(opts: {
   refresh?: typeof refreshOpenPr;
 }): void {
   const refreshKey = `${opts.cwd || ""}:${opts.branch}`;
+  // One .then per in-flight key — refreshOpenPr coalesces Promises but
+  // repeated schedule calls would otherwise all fire onRerender.
+  if (openPrSchedulePending.has(refreshKey)) return;
+  openPrSchedulePending.add(refreshKey);
+
   const shownKey = opts.shownPr
     ? `${opts.shownPr.number}\0${opts.shownPr.url}`
     : "";
   const refresh = opts.refresh ?? refreshOpenPr;
   void refresh(opts.cwd, opts.branch, {
     assumeGithub: opts.assumeGithub,
-  }).then((fresh) => {
-    const { lastCtx, lastBranch } = opts.getState();
-    if (
-      decideOpenPrRefreshRerender({
-        lastCtx,
-        lastBranch,
-        refreshKey,
-        shownKey,
-        fresh,
-      }) !== "rerender"
-    ) {
-      return;
-    }
-    if (!lastCtx) return;
-    try {
-      opts.onRerender(lastCtx);
-    } catch (e: any) {
-      console.debug(
-        "[status-line] open-PR refresh update failed:",
-        e?.message || e,
-      );
-    }
-  });
+  })
+    .then((fresh) => {
+      const { lastCtx, lastBranch } = opts.getState();
+      if (
+        decideOpenPrRefreshRerender({
+          lastCtx,
+          lastBranch,
+          refreshKey,
+          shownKey,
+          fresh,
+        }) !== "rerender"
+      ) {
+        return;
+      }
+      if (!lastCtx) return;
+      try {
+        opts.onRerender(lastCtx);
+      } catch (e: any) {
+        console.debug(
+          "[status-line] open-PR refresh update failed:",
+          e?.message || e,
+        );
+      }
+    })
+    .finally(() => {
+      openPrSchedulePending.delete(refreshKey);
+    });
 }
 
 // Cache protected branches per repo (fetched once per session)

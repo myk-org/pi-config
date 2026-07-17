@@ -2,9 +2,10 @@
  * Tests for status-line open-PR refresh callback wiring.
  * Run with: npx tsx --test tests/node/orchestrator/status-line-open-pr-refresh.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+  clearOpenPrCache,
   decideOpenPrRefreshRerender,
   scheduleOpenPrStatusRefresh,
   shouldApplyOpenPrRefresh,
@@ -93,6 +94,10 @@ describe("decideOpenPrRefreshRerender", () => {
 });
 
 describe("scheduleOpenPrStatusRefresh", () => {
+  beforeEach(() => {
+    clearOpenPrCache();
+  });
+
   it("rerenders when refresh returns a new PR on same branch", async () => {
     let rerenders = 0;
     const ctx = { cwd: "/repo" };
@@ -192,5 +197,30 @@ describe("scheduleOpenPrStatusRefresh", () => {
     } finally {
       console.debug = orig;
     }
+  });
+
+  it("registers one callback while refresh in flight", async () => {
+    let resolve!: (v: OpenPr | null) => void;
+    const pending = new Promise<OpenPr | null>((r) => {
+      resolve = r;
+    });
+    let rerenders = 0;
+    const ctx = { cwd: "/repo" };
+    const opts = {
+      cwd: "/repo",
+      branch: "main",
+      shownPr: null as OpenPr | null,
+      getState: () => ({ lastCtx: ctx, lastBranch: "main" as string | null }),
+      onRerender: () => {
+        rerenders++;
+      },
+      refresh: async () => pending,
+    };
+    scheduleOpenPrStatusRefresh(opts);
+    scheduleOpenPrStatusRefresh(opts);
+    scheduleOpenPrStatusRefresh(opts);
+    resolve({ number: 8, url: "https://github.com/org/repo/pull/8" });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(rerenders, 1);
   });
 });
