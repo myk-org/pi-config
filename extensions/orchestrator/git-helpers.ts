@@ -340,7 +340,12 @@ export function scheduleOpenPrStatusRefresh(opts: {
       .finally(() => {
         openPrSchedulePending.delete(refreshKey);
       })
-      .catch(() => {});
+      .catch((e: any) => {
+        console.debug(
+          "[status-line] open-PR refresh failed:",
+          e?.message || e,
+        );
+      });
   } catch {
     openPrSchedulePending.delete(refreshKey);
   }

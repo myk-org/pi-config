@@ -253,35 +253,47 @@ describe("scheduleOpenPrStatusRefresh", () => {
 
   it("clears pending gate when refresh rejects", async () => {
     let calls = 0;
-    scheduleOpenPrStatusRefresh({
-      cwd: "/repo",
-      branch: "bug",
-      shownPr: null,
-      getState: () => ({
-        lastCtx: { cwd: "/repo" },
-        lastBranch: "bug",
-      }),
-      onRerender: () => {},
-      refresh: async () => {
-        throw new Error("async boom");
-      },
-    });
-    await new Promise((r) => setImmediate(r));
-    scheduleOpenPrStatusRefresh({
-      cwd: "/repo",
-      branch: "bug",
-      shownPr: null,
-      getState: () => ({
-        lastCtx: { cwd: "/repo" },
-        lastBranch: "bug",
-      }),
-      onRerender: () => {},
-      refresh: async () => {
-        calls++;
-        return null;
-      },
-    });
-    await new Promise((r) => setImmediate(r));
-    assert.equal(calls, 1);
+    let sawDebug = false;
+    const orig = console.debug;
+    console.debug = (...args: unknown[]) => {
+      if (String(args[0]).includes("open-PR refresh failed")) {
+        sawDebug = true;
+      }
+    };
+    try {
+      scheduleOpenPrStatusRefresh({
+        cwd: "/repo",
+        branch: "bug",
+        shownPr: null,
+        getState: () => ({
+          lastCtx: { cwd: "/repo" },
+          lastBranch: "bug",
+        }),
+        onRerender: () => {},
+        refresh: async () => {
+          throw new Error("async boom");
+        },
+      });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(sawDebug, true);
+      scheduleOpenPrStatusRefresh({
+        cwd: "/repo",
+        branch: "bug",
+        shownPr: null,
+        getState: () => ({
+          lastCtx: { cwd: "/repo" },
+          lastBranch: "bug",
+        }),
+        onRerender: () => {},
+        refresh: async () => {
+          calls++;
+          return null;
+        },
+      });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(calls, 1);
+    } finally {
+      console.debug = orig;
+    }
   });
 });
