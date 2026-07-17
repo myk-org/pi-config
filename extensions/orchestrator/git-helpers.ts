@@ -95,6 +95,62 @@ export function getPrMergeStatus(
   }
 }
 
+export type OpenPr = { number: number; url: string };
+
+const OPEN_PR_TTL_MS = 30_000;
+const openPrCache = new Map<string, { at: number; pr: OpenPr | null }>();
+
+/** Parse `gh pr view --json number,url` output. */
+export function parseOpenPrJson(out: string): OpenPr | null {
+  try {
+    const data = JSON.parse(out);
+    if (
+      data &&
+      typeof data.number === "number" &&
+      typeof data.url === "string" &&
+      data.url.length > 0
+    ) {
+      return { number: data.number, url: data.url };
+    }
+  } catch {
+    // invalid JSON
+  }
+  return null;
+}
+
+/** Clear open-PR cache (tests). */
+export function clearOpenPrCache(): void {
+  openPrCache.clear();
+}
+
+/**
+ * Open PR for the current (or given) branch via `gh pr view`.
+ * Cached per cwd+branch for 30s so the status-line poller does not spam gh.
+ */
+export function getOpenPr(cwd?: string, branch?: string | null): OpenPr | null {
+  const b = branch ?? getCurrentBranch(cwd);
+  if (!b || !isGithubRepo(cwd)) return null;
+
+  const key = `${cwd || process.cwd()}:${b}`;
+  const cached = openPrCache.get(key);
+  if (cached && Date.now() - cached.at < OPEN_PR_TTL_MS) return cached.pr;
+
+  let pr: OpenPr | null = null;
+  try {
+    const out = execSync("gh pr view --json number,url", {
+      cwd,
+      timeout: 5000,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    pr = parseOpenPrJson(out.trim());
+  } catch {
+    pr = null;
+  }
+  openPrCache.set(key, { at: Date.now(), pr });
+  return pr;
+}
+
 // Cache protected branches per repo (fetched once per session)
 const protectedBranchesCache = new Map<string, Set<string>>();
 

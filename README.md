@@ -22,7 +22,7 @@ Single extension that provides:
 | **Remote script exec block** | Blocks `curl \| bash`, `eval $(curl)`, etc. Allows safe `VAR=$(curl ...)` variable assignments |
 | **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
 | **Rule injection** | Injects orchestrator routing rules into system prompt |
-| **Git status** | Live git status in status line with colored icons — updates after every tool call. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
+| **Git status** | Live git status in status line with colored icons — updates after every tool call. Shows clickable `#N` when the branch has an open PR. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
 | **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display |
@@ -466,8 +466,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Send messages from browser to pi
 - Model and thinking level switching from browser
 - Extension commands (`/release`, `/dream`, `/remember`, etc.) work from browser
-- Info bar: model, tokens, context %, git status, diff viewer toggle
-- Per-project diff viewer (pidiff) — opens in browser via link in info bar, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
+- Info bar: model, tokens, context %, git status (with PR `#N` when present), clickable `pi-diff` / `pi-dash` labels
+- Per-project diff viewer (pidiff) — opens in browser via clickable `pi-diff` status-line link, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - Mobile responsive
@@ -530,12 +530,12 @@ Pidiff is a per-project diff viewer that opens in your browser, providing rich b
 - Inline review comments on specific lines
 - Publish review comments back to the pi session
 - Per-project isolation — no port conflicts between sessions
-- Accessible via link in pidash info bar
+- Accessible via clickable `pi-diff` label in the status line (and from pidash)
 
 **Access:**
 
 ```bash
-# Open in browser (port shown in pidash info bar):
+# Open in browser (click `pi-diff` in the status line, or use the port):
 http://localhost:<port>
 
 # Disable pidiff (or set pidiff_enable: false in pi-config-settings.json):
