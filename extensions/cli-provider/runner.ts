@@ -31,6 +31,19 @@ export interface CliRunResult extends CliParseResult {
   stderr: string;
 }
 
+/**
+ * Resolve turn timeout for CLI agents.
+ *
+ * Intentional product policy (issue #647): **no default wall-clock timeout**.
+ * Long turns (e.g. autoqodo) must not be SIGKILL'd after N minutes.
+ * Cancellation: pass `AbortSignal`, or an explicit positive `timeoutMs`.
+ */
+export function resolveCliTimeoutMs(
+  timeoutMs: number | undefined,
+): number | undefined {
+  return typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : undefined;
+}
+
 /** Env keys that cause nested-session / ACP re-entry in some CLIs. */
 const STRIP_ENV = [
   "CLAUDECODE",
@@ -55,11 +68,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
   });
 
   const argv = promptOnStdin ? args : [...args, opts.prompt];
-  // No default turn timeout — only honor an explicit timeoutMs from the caller.
-  const timeoutMs =
-    typeof opts.timeoutMs === "number" && opts.timeoutMs > 0
-      ? opts.timeoutMs
-      : undefined;
+  const timeoutMs = resolveCliTimeoutMs(opts.timeoutMs);
   const stream = typeof opts.onEvent === "function";
 
   return new Promise((resolve, reject) => {

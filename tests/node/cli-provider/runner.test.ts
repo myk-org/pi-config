@@ -7,6 +7,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCliAgent } from "../../../extensions/cli-provider/runner.js";
+import { resolveCliTimeoutMs } from "../../../extensions/cli-provider/runner.js";
 
 function withFakeBinary(
   name: string,
@@ -30,6 +31,18 @@ function withFakeBinary(
     throw e;
   }
 }
+
+describe("resolveCliTimeoutMs", () => {
+  it("returns undefined when omitted so turns have no default kill", () => {
+    assert.equal(resolveCliTimeoutMs(undefined), undefined);
+    assert.equal(resolveCliTimeoutMs(0), undefined);
+    assert.equal(resolveCliTimeoutMs(-1), undefined);
+  });
+
+  it("keeps explicit positive timeoutMs", () => {
+    assert.equal(resolveCliTimeoutMs(5_000), 5_000);
+  });
+});
 
 describe("runCliAgent", () => {
   it("resolves text on success with stream-json stdout", async () => {
