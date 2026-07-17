@@ -132,7 +132,7 @@ Helper: `extensions/shared/file-logger.ts`
 - `getPiLogPath` is pure; mkdir only on write
 - Newlines collapsed to `\n`
 - Falls back to `$TMPDIR/pi-logs/` if `~/.pi/logs` unwritable
-- Sync I/O by design for low-volume ops events
+- Sync I/O by design for low-volume ops events (mkdir every write; no dir cache)
 
 ## Async
 

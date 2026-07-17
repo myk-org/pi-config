@@ -138,6 +138,23 @@ describe("file-logger", () => {
     assert.match(readFileSync(fallback, "utf-8"), /fallback/);
   });
 
+  it("recreates log dir after external delete (no stale mkdir cache)", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-recreate-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+
+    const { fileLog, getPiLogPath } = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 5}`
+    );
+
+    assert.equal(fileLog("cli-provider", "info", "cli-provider", "first"), true);
+    const logPath = getPiLogPath("cli-provider");
+    rmSync(join(tmpHome, ".pi", "logs"), { recursive: true, force: true });
+    assert.equal(fileLog("cli-provider", "info", "cli-provider", "second"), true);
+    const body = readFileSync(logPath, "utf-8");
+    assert.match(body, /second/);
+  });
+
   it("dreaming and cli-provider sources have no executable console.* ops calls", () => {
     const files = [
       join(REPO, "extensions/orchestrator/dreaming.ts"),

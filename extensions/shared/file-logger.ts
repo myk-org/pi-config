@@ -19,7 +19,6 @@ export type FileLogLevel = "debug" | "info" | "warn" | "error";
 /** Last filesystem failure from fileLog (for diagnostics; never console.*). */
 let lastFileLogError: string | null = null;
 let fileLogErrorCount = 0;
-const ensuredDirs = new Set<string>();
 
 export function getLastFileLogError(): string | null {
   return lastFileLogError;
@@ -57,11 +56,9 @@ function recordWriteError(err: unknown): void {
 }
 
 function appendLine(filePath: string, line: string): void {
-  const dir = path.dirname(filePath);
-  if (!ensuredDirs.has(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    ensuredDirs.add(dir);
-  }
+  // Always mkdirSync(recursive) — no dir cache. Cached "ensured" dirs go stale
+  // if ~/.pi/logs is deleted mid-process and then skip mkdir → lost logs.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.appendFileSync(filePath, line, "utf-8");
 }
 
