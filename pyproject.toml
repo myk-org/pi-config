@@ -1,6 +1,6 @@
 [project]
 name = "myk-pi-tools"
-version = "3.14.1"
+version = "3.14.2"
 description = "CLI utilities for pi orchestrator plugins"
 readme = "README.md"
 license = "MIT"
