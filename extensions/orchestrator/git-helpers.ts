@@ -343,6 +343,7 @@ export function scheduleOpenPrStatusRefresh(opts: {
       .catch((e: any) => {
         console.debug(
           "[status-line] open-PR refresh failed:",
+          refreshKey,
           e?.message || e,
         );
       });
