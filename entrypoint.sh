@@ -3,8 +3,9 @@
 # HOME is set to /home/$PI_HOST_USER if configured, otherwise /home/node.
 set -e
 
-# Always install/update pi to get the latest version on every container start
+# Always install/update pi and acpx to latest on every container start
 npm install -g @earendil-works/pi-coding-agent
+npm install -g acpx
 
 # Install or update packages
 PI_PKG_DIR="$HOME/.pi/agent/git/github.com"

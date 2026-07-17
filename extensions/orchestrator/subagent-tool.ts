@@ -43,6 +43,10 @@ let TaskStoreClass: any = null;
     throw new Error("[subagent] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
   }
 })();
+import {
+  decideAsyncLlmDispatch,
+  supportsAsyncLlm,
+} from "./async-capability.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -761,6 +765,7 @@ export function registerSubagentTool(
     updateWorking: () => void,
     parentModelId: string | undefined,
     parentProvider: string | undefined,
+    asyncOk: boolean,
   ) {
     const results: SingleResult[] = [];
     let prev = "";
@@ -798,7 +803,7 @@ export function registerSubagentTool(
     }
     // chain runs sequentially — sum all steps
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
-    if (totalChainSeconds >= MAX_SYNC_SECONDS) {
+    if (totalChainSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
         details: mkd("chain")([]),
@@ -879,6 +884,7 @@ export function registerSubagentTool(
     updateWorking: () => void,
     parentModelId: string | undefined,
     parentProvider: string | undefined,
+    asyncOk: boolean,
   ) {
     if (params.tasks.length > MAX_PARALLEL_TASKS)
       return {
@@ -910,7 +916,7 @@ export function registerSubagentTool(
     }
     // parallel runs concurrently — use longest task
     const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
-    if (maxParallelSeconds >= MAX_SYNC_SECONDS) {
+    if (maxParallelSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
         details: mkd("parallel")([]),
@@ -1022,6 +1028,7 @@ export function registerSubagentTool(
     updateWorking: () => void,
     parentModelId: string | undefined,
     parentProvider: string | undefined,
+    asyncOk: boolean,
   ) {
     if (!params.cwd) {
       return {
@@ -1049,7 +1056,7 @@ export function registerSubagentTool(
         isError: true,
       };
     }
-    if (params.estimatedSeconds >= MAX_SYNC_SECONDS) {
+    if (params.estimatedSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
         details: mkd("single")([]),
@@ -1400,8 +1407,10 @@ export function registerSubagentTool(
       const discovery = discoverAgents(ctx.cwd, scope);
       const agents = discovery.agents;
       const confirm = params.confirmProjectAgents ?? true;
-      const parentModelId = ctx.model?.id;
-      const parentProvider = ctx.model?.provider;
+      let parentModelId = ctx.model?.id as string | undefined;
+      let parentProvider = ctx.model?.provider as string | undefined;
+      const asyncOk = supportsAsyncLlm(parentProvider, ctx.cwd);
+      let capabilityNote = "";
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -1422,7 +1431,7 @@ export function registerSubagentTool(
         return executeAsyncKill(params as { asyncKill: string }, mkd);
       }
 
-      // Enforce async-only agents — reject sync/chain calls for reviewers etc.
+      // Enforce async-only agents — force async on native; on acpx leave sync (coerce path).
       {
         const requested: string[] = [];
         if (params.agent) requested.push(params.agent);
@@ -1438,7 +1447,7 @@ export function registerSubagentTool(
               isError: true,
             };
           }
-          if (params.async !== true) {
+          if (asyncOk && params.async !== true) {
             params.async = true;
             // Set default name(s) for async display — async path requires names
             if (params.agent && !params.name) {
@@ -1496,24 +1505,73 @@ export function registerSubagentTool(
         }
       }
 
+      // acpx parent: coerce LLM async → sync, or use sidecar for fireAndForget must-async.
+      // Capability uses parent session cwd (asyncOk); settingsCwd is only for sidecar lookup.
+      if (params.async === true && !asyncOk) {
+        const settingsCwd =
+          params.cwd ||
+          params.tasks?.[0]?.cwd ||
+          ctx.cwd;
+        const decision = decideAsyncLlmDispatch({
+          parentProvider,
+          cwd: settingsCwd,
+          mustAsync: params.fireAndForget === true,
+          parentSupportsAsyncLlm: asyncOk,
+        });
+        if (decision.action === "skip") {
+          return {
+            content: [{ type: "text", text: decision.note }],
+            details: mkd(hasTasks ? "parallel" : "single")([]),
+          };
+        }
+        if (decision.action === "sidecar-async") {
+          parentProvider = decision.sidecar.provider;
+          parentModelId = decision.sidecar.model;
+          capabilityNote = decision.note;
+        } else if (decision.action === "coerce-sync") {
+          params.async = false;
+          capabilityNote = decision.note;
+          console.debug(`[subagent] ${capabilityNote}`);
+        }
+      }
+
       // Async mode — spawn in background and return immediately
       if (params.async === true) {
-        return executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx);
+        const result = executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx);
+        if (capabilityNote && result.content?.[0]?.type === "text") {
+          result.content[0].text = `${capabilityNote}\n\n${result.content[0].text}`;
+        }
+        return result;
       }
+
+      const withCapabilityNote = <T extends { content?: Array<{ type: string; text?: string }> }>(
+        result: T,
+      ): T => {
+        if (capabilityNote && result.content?.[0]?.type === "text" && result.content[0].text) {
+          result.content[0].text = `${capabilityNote}\n\n${result.content[0].text}`;
+        }
+        return result;
+      };
 
       // Chain mode
       if (params.chain && params.chain.length > 0) {
-        return executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider);
+        return withCapabilityNote(
+          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
+        );
       }
 
       // Parallel mode
       if (params.tasks && params.tasks.length > 0) {
-        return executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider);
+        return withCapabilityNote(
+          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
+        );
       }
 
       // Single mode
       if (params.agent && params.task) {
-        return executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider);
+        return withCapabilityNote(
+          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
+        );
       }
 
       return {

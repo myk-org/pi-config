@@ -1,18 +1,46 @@
 # Async & Runtime Internals
 
+## Async LLM capability (`supportsAsyncLlm`)
+
+Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acpx
+provider **does not load** in those children (nested `cursor-agent` hangs), so an
+**acpx parent cannot host async LLM children on the parent model**.
+
+**Detection:**
+
+- Registration list: `acpx_agents` → `getRegisteredAcpxProviders` / `isAcpxProvider` (which agents we register)
+- Capability gate: **any** provider id starting with `acpx-` → `supportsAsyncLlm` false (`isAcpxProviderId`), even if not in settings — children never load acpx
+
+| Parent provider | `supportsAsyncLlm` | Behavior |
+|-----------------|--------------------|----------|
+| Native (anthropic, openai, …) | `true` | Today's force-async system unchanged |
+| Any `acpx-*` provider id | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
+| `cli-${agent}` from `cli_agents` | `true` | CLI providers load in subagent children — async works; no coerce |
+
+Module: `extensions/orchestrator/async-capability.ts`  
+Settings: `acpx_agents`, `cli_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
+
+**Code-enforced (not prompt-only):**
+
+- `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`
+- `enforcement.ts` — does not push “use async” sleep/repeat blocks when capability is false
+- `dreaming.ts` / `cron.ts` — sidecar or skip on acpx
+
 ## Async-Only Agents
 
 Some agents are enforced to only run with `async: true` — sync calls are automatically
 promoted to async by `subagent-tool.ts`. This prevents the LLM from blocking the session
 waiting for long-running agents.
 
-**Currently enforced:**
+**Currently enforced (native / `supportsAsyncLlm` only):**
 
 - `code-reviewer-quality`
 - `code-reviewer-guidelines`
 - `code-reviewer-security`
 - `code-reviewer-docs`
 - `code-reviewer-spec`
+
+On acpx parents these agents run **sync** (coerced) instead of being forced async.
 
 **To add/remove agents from the async-only list:**
 

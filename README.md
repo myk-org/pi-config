@@ -13,7 +13,8 @@ Single extension that provides:
 | Feature | Description |
 |---------|-------------|
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete, deterministic session IDs for provider cache affinity |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. On **acpx** parents, optional async is coerced to sync; dream/cron need `async_llm_provider` + `async_llm_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
+| **CLI providers** | Optional `cli_agents` setting registers `cli-claude` / `cli-gemini` / `cli-cursor` via real CLIs (parallel to `acpx_*`) |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
@@ -239,7 +240,10 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "pidiff_enable": true,
   "pidash_port": 19190,
   "image_model": "gemini-3-pro-image",
-  "acpx_agents": ["cursor"]
+  "acpx_agents": ["cursor"],
+  "cli_agents": ["claude", "cursor"],
+  "async_llm_provider": "anthropic",
+  "async_llm_model": "claude-sonnet-4-20250514"
 }
 ```
 
@@ -357,6 +361,12 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 - **Filesystem isolation** — pi can only read/write the mounted project directory
 - **Consistent tooling** — All required tools pre-installed in a single image
 - **Disposable** — Container is destroyed after each session (`--rm`)
+
+**CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
+`cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and
+`agent` (Cursor Agent CLI). Enable with `cli_agents` in settings (e.g.
+`["claude","cursor","gemini"]`). Without those binaries on PATH, `cli-*` models will
+not register or will fail at turn time. See `dev-docs/cli-provider.md`.
 
 ### Pre-built image
 

@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { discoverAgents } from "./agents.js";
 import { getProjectTmpDir, parseProcStartTime } from "./utils.js";
 
@@ -401,7 +402,18 @@ function registerCronCommand(pi: ExtensionAPI, state: CronInternals): void {
 
 export function registerCron(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: any[], options?: { fireAndForget?: boolean; name?: string }) => { id: string; error?: string },
+  spawnAsyncAgent: (
+    agentName: string,
+    task: string,
+    cwd: string,
+    agents: any[],
+    options?: {
+      fireAndForget?: boolean;
+      name?: string;
+      parentModelId?: string;
+      parentProvider?: string;
+    },
+  ) => { id: string; error?: string },
 ): { getCronTasks: () => CronTask[] } {
   if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [] };
 
@@ -452,8 +464,34 @@ export function registerCron(
     } else {
       // Prompt task — run as async agent, result surfaces to AI
       const cwd = state.lastCwd || process.cwd();
+      const parentProvider = state.lastCtx?.model?.provider as string | undefined;
+      const dispatch = decideAsyncLlmDispatch({
+        parentProvider,
+        cwd,
+        mustAsync: true,
+      });
+      if (dispatch.action === "skip") {
+        console.debug(`[cron] ${dispatch.note} (task #${task.id})`);
+        try {
+          state.lastCtx?.ui?.notify?.(
+            `Cron #${task.id} skipped: set async_llm_provider/async_llm_model for acpx`,
+            "warning",
+          );
+        } catch { /* stale UI */ }
+        return;
+      }
       const { agents } = discoverAgents(cwd, "user");
-      spawnAsyncAgent("worker", cmd, cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}` });
+      const sidecarOpts =
+        dispatch.action === "sidecar-async"
+          ? {
+              parentProvider: dispatch.sidecar.provider,
+              parentModelId: dispatch.sidecar.model,
+            }
+          : {};
+      spawnAsyncAgent("worker", cmd, cwd, agents, {
+        name: `Cron: ${task.description.slice(0, 40)}`,
+        ...sidecarOpts,
+      });
     }
   }
 

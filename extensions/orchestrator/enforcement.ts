@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import path, { join, resolve, dirname } from "node:path";
+import { supportsAsyncLlm } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
@@ -413,8 +414,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
-    // Block repeated identical commands (polling-by-spam) — orchestrator only
-    if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    // Block repeated identical commands (polling-by-spam) — orchestrator only.
+    // Skip on acpx: async LLM agents are unavailable; foreground polls are expected.
+    const parentSupportsAsyncLlm = supportsAsyncLlm(
+      (ctx as any).model?.provider,
+      ctx.cwd,
+    );
+    if (parentSupportsAsyncLlm && process.env.PI_SUBAGENT_CHILD !== "1") {
       ensureRepeatFile(ctx.cwd);
       const normalized = normalizeForRepeatCheck(command);
       const rs = readRepeatState();
@@ -458,18 +464,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
-    // Block sleep inside loops — force async subagent for polling
+    // Block sleep inside loops / long sleeps — force async on native providers only.
+    // On acpx, do not push async (unsupported); foreground waits are allowed.
     const hasLoop = /\b(while|for|until)\b/.test(command);
     const sleepMatch = command.match(/\bsleep\s+(\d+)/);
-    if (hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 5) {
+    if (parentSupportsAsyncLlm && hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 5) {
       return {
         block: true,
         reason: `⚠️ Polling loop with sleep ${sleepMatch[1]}s blocked. Use subagent with async: true for polling/monitoring tasks instead of blocking the session.`,
       };
     }
 
-    // Block standalone sleep > 30s — use async subagent instead of blocking
-    if (!hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 30) {
+    if (parentSupportsAsyncLlm && !hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 30) {
       return {
         block: true,
         reason: `⚠️ sleep ${sleepMatch[1]}s blocked — too long. Use subagent with async: true instead of blocking the session.`,

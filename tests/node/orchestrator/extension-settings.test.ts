@@ -33,7 +33,10 @@ describe("extension settings", () => {
 		PI_PIDIFF_ENABLE: process.env.PI_PIDIFF_ENABLE,
 		PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
 		PI_IMAGE_MODEL: process.env.PI_IMAGE_MODEL,
+		PI_ASYNC_LLM_PROVIDER: process.env.PI_ASYNC_LLM_PROVIDER,
+		PI_ASYNC_LLM_MODEL: process.env.PI_ASYNC_LLM_MODEL,
 		ACPX_AGENTS: process.env.ACPX_AGENTS,
+		CLI_AGENTS: process.env.CLI_AGENTS,
 	};
 
 	beforeEach(() => {
@@ -46,7 +49,10 @@ describe("extension settings", () => {
 		delete process.env.PI_PIDIFF_ENABLE;
 		delete process.env.PI_PIDASH_PORT;
 		delete process.env.PI_IMAGE_MODEL;
+		delete process.env.PI_ASYNC_LLM_PROVIDER;
+		delete process.env.PI_ASYNC_LLM_MODEL;
 		delete process.env.ACPX_AGENTS;
+		delete process.env.CLI_AGENTS;
 	});
 
 	afterEach(() => {
@@ -197,5 +203,60 @@ describe("extension settings", () => {
 		writeSettings({ pidash_port: 5555 });
 		assert.equal(getSetting(tmp, "pidash_port"), 5555);
 		assert.equal(getSetting(tmp, "image_model"), "global-model");
+	});
+
+	it("async_llm_provider/model default empty", () => {
+		assert.equal(getSetting(tmp, "async_llm_provider"), "");
+		assert.equal(getSetting(tmp, "async_llm_model"), "");
+	});
+
+	it("async_llm_* from settings file", () => {
+		writeSettings({
+			async_llm_provider: "anthropic",
+			async_llm_model: "claude-sonnet-4-20250514",
+		});
+		assert.equal(getSetting(tmp, "async_llm_provider"), "anthropic");
+		assert.equal(getSetting(tmp, "async_llm_model"), "claude-sonnet-4-20250514");
+	});
+
+	it("async_llm_* from env when unset in file", () => {
+		process.env.PI_ASYNC_LLM_PROVIDER = "openai";
+		process.env.PI_ASYNC_LLM_MODEL = "gpt-5.4";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "async_llm_provider"), "openai");
+		assert.equal(getSetting(tmp, "async_llm_model"), "gpt-5.4");
+	});
+
+	it("cli_agents defaults empty", () => {
+		assert.deepEqual(getSetting(tmp, "cli_agents"), []);
+	});
+
+	it("cli_agents from settings", () => {
+		writeSettings({ cli_agents: ["claude", "cursor"] });
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["claude", "cursor"]);
+	});
+
+	it("cli_agents from env when project omits it", () => {
+		writeSettings({});
+		process.env.CLI_AGENTS = "gemini";
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
+	});
+
+	it("cli_agents normalizes mixed case", () => {
+		process.env.CLI_AGENTS = "Cursor,Gemini";
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor", "gemini"]);
+	});
+
+	it("ACPX_AGENTS normalizes mixed case", () => {
+		process.env.ACPX_AGENTS = "Cursor";
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
+	});
+
+	it("parseAgentNameList dedupes after lowercase", () => {
+		writeSettings({ cli_agents: ["Cursor", "cursor", "CURSOR"] });
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor"]);
 	});
 });

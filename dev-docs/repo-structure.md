@@ -35,6 +35,7 @@ pi-config/
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
 │   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks)
+│   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + async_llm sidecar settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── btw.ts                   # /btw command
@@ -88,6 +89,11 @@ pi-config/
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
+│   ├── cli-provider/               # CLI-backed providers (cli-claude, cli-gemini, cli-cursor)
+│   │   ├── agents/                 # Per-CLI drivers (cursor/claude/gemini) — add new CLI here
+│   │   ├── shared/                 # Shared discovery cache helpers
+│   │   ├── sessions.ts             # Resume directory (lastSeen/status)
+│   │   └── session-reaper.ts       # Idle session marker cleanup
 │   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool
