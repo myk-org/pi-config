@@ -127,7 +127,7 @@ Operational logs go to **`~/.pi/logs/`** (never `console.*` — that leaks into 
 | `~/.pi/logs/cli-provider.log` | discovery, registration, resume recover, session reaper |
 | `~/.pi/logs/dreaming.log` | dream skip/sidecar notes, provenance merge, promotion/rebuild errors |
 
-Helper: `extensions/shared/file-logger.ts`.
+Helper: `extensions/shared/file-logger.ts` (`getPiLogPath` is pure; mkdir only on write; newlines collapsed to `\n`; falls back to `$TMPDIR/pi-logs/` if `~/.pi/logs` unwritable).
 
 ## Async
 
