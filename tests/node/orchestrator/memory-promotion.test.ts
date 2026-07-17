@@ -86,10 +86,24 @@ describe("inferMechanicalEnforcement", () => {
       null,
     );
   });
+
+  it("treats plain file_modified patterns as high confidence", () => {
+    const inf = inferMechanicalEnforcement("warn when modifying Dockerfile");
+    assert.ok(inf);
+    assert.equal(inf!.trigger, "file_modified Dockerfile");
+    assert.equal(inf!.confidence, "high");
+  });
+
+  it("rejects glob file_modified patterns as non-inferable", () => {
+    assert.equal(
+      inferMechanicalEnforcement("warn when modifying src/**/*.py"),
+      null,
+    );
+  });
 });
 
 describe("scanPromotionCandidates + applySafePromotions", () => {
-  it("auto-applies high-confidence enforcement and never writes rules/", () => {
+  it("auto-applies high-confidence enforcement without writing rules/", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-m-"));
     try {
       seedMemory(cwd, 'Never use `git add .`', "lesson", EVIDENCE_ENFORCEMENT);

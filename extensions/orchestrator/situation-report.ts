@@ -132,6 +132,9 @@ export function buildSituationReport(
   tokenBudget: number = DEFAULT_TOKEN_BUDGET,
   options: SituationReportOptions = {},
 ): string {
+  // Exhausted memory budget — do not inject (avoids divide-by-zero / NaN usage %)
+  if (tokenBudget <= 0) return "";
+
   const topicsDir = join(cwd, ".pi", "memory", "topics");
   const queryClass: QueryClass = options.queryClass ?? "general";
   const bias = getQueryClassBias(queryClass);
@@ -169,12 +172,12 @@ export function buildSituationReport(
   }
 
   // Build body sections first, then compute actual capacity from emitted content
-  let charBudget = tokenBudget * CHARS_PER_TOKEN;
+  let charBudget = Math.max(0, tokenBudget * CHARS_PER_TOKEN);
   const bodySections: string[] = [];
 
   // Reserve budget for header + possible warning + ground truth instruction
   const headerReserve = 330;
-  charBudget -= headerReserve;
+  charBudget = Math.max(0, charBudget - headerReserve);
 
   // Promotion candidates (low budget) — show even when topics empty
   const promoSection = formatPromotionsForReport(cwd, 5);

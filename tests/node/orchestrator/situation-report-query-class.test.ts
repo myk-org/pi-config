@@ -61,7 +61,7 @@ function seed(cwd: string): void {
 }
 
 describe("buildSituationReport queryClass", () => {
-  it("includes promotion candidates and query-class hint for git_release", () => {
+  it("includes promotion candidates with query-class hint for git_release", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sitrep-qc-"));
     try {
       seed(cwd);
@@ -107,6 +107,16 @@ describe("buildSituationReport queryClass", () => {
       const report = buildSituationReport(cwd, 1700, { queryClass: "pr_review" });
       assert.match(report, /review-guidelines/);
       assert.match(report, /Query class: `pr_review`/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty string when tokenBudget is zero", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sitrep-zero-"));
+    try {
+      seed(cwd);
+      assert.equal(buildSituationReport(cwd, 0, { queryClass: "git_release" }), "");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

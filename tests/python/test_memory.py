@@ -276,7 +276,7 @@ class TestMigration:
 
 
 class TestMemoryStatus:
-    def test_status_reports_code_tier_and_injected(self, tmp_path: Path) -> None:
+    def test_status_reports_code_tier_counts(self, tmp_path: Path) -> None:
         topics_dir = tmp_path / "memory" / "topics"
         topics_dir.mkdir(parents=True)
         (topics_dir / "lessons.md").write_text(

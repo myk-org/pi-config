@@ -25,7 +25,6 @@ import {
   loadPromotions,
   promotionId,
   updatePromotionStatus,
-  writePromotions,
 } from "./promotion-queue.js";
 
 export const EVIDENCE_ENFORCEMENT = 3;
@@ -99,15 +98,24 @@ export function inferMechanicalEnforcement(text: string): InferredEnforcement | 
   }
 
   // warn when modifying <pattern>
+  // Only high-confidence when the pattern is matchable by enforcement runtime:
+  // `*.ext` suffix or a plain path fragment (no glob metacharacters).
   const warnFile = t.match(
     /\bwarn\s+when\s+modifying\s+([^\s,]+)/i,
   );
   if (warnFile?.[1]) {
-    return {
-      trigger: `file_modified ${warnFile[1].trim()}` as EnforcementTrigger,
-      action: "warn",
-      confidence: "high",
-    };
+    const pattern = warnFile[1].trim();
+    const isExtGlob = /^\*\.[A-Za-z0-9]+$/.test(pattern);
+    const hasGlobMeta = /[*?[\]{}]|\*\*/.test(pattern);
+    if (isExtGlob || !hasGlobMeta) {
+      return {
+        trigger: `file_modified ${pattern}` as EnforcementTrigger,
+        action: "warn",
+        confidence: "high",
+      };
+    }
+    // Glob-like patterns (e.g. src/**/*.py) are not matchable — leave for propose-only
+    return null;
   }
 
   // Soft mechanical cue without extractable trigger
@@ -342,18 +350,27 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
 
   saveScores(cwd, scores);
 
-  // Merge with existing queue: upsert by id (don't reopen applied/rejected)
-  const all = loadPromotions(cwd);
-  const byId = new Map(all.map((x) => [x.id, x]));
+  // Append-only / status-update — never full-rewrite promotions.md (lossy parser
+  // would drop human notes and malformed blocks).
+  const existing = loadPromotions(cwd);
+  const byId = new Map(existing.map((x) => [x.id, x]));
+  const toAppend: PromotionCandidate[] = [];
 
   for (const c of toQueue) {
     const prev = byId.get(c.id);
-    if (prev && prev.status !== "proposed" && c.status === "proposed") {
+    if (!prev) {
+      toAppend.push(c);
+      byId.set(c.id, c);
       continue;
     }
-    byId.set(c.id, c);
+    // Don't reopen applied/rejected as proposed
+    if (prev.status !== "proposed" && c.status === "proposed") continue;
+    if (c.status === "applied" && prev.status === "proposed") {
+      updatePromotionStatus(cwd, c.id, "applied");
+      byId.set(c.id, { ...prev, status: "applied" });
+    }
   }
-  writePromotions(cwd, [...byId.values()]);
+  if (toAppend.length > 0) appendPromotions(cwd, toAppend);
 
   const queued = [...byId.values()].filter((c) => c.status === "proposed").length;
   return { applied, queued, details };

@@ -78,8 +78,8 @@ describe("format/parse round-trip", () => {
   });
 });
 
-describe("appendPromotions / updatePromotionStatus", () => {
-  it("dedups by id and updates status", () => {
+describe("appendPromotions with updatePromotionStatus", () => {
+  it("dedups by id then updates status", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-q-"));
     try {
       const a = makeCandidate();

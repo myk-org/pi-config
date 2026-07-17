@@ -20,7 +20,7 @@ import {
 } from "../../../extensions/orchestrator/memory-scoring.js";
 
 describe("mergeProvenancePending", () => {
-  it("merges sidecar into scores and deletes pending file", () => {
+  it("merges sidecar into scores then deletes pending file", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "prov-merge-"));
     try {
       const topicsDir = path.join(cwd, ".pi", "memory", "topics");

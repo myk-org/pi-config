@@ -456,6 +456,7 @@ function loadMemoriesWithScoring(
   tokenBudget?: number,
   queryClass: import("./memory-query-class.js").QueryClass = "general",
 ): string {
+  if (!tokenBudget || tokenBudget <= 0) return "";
   try {
     const report = buildSituationReport(cwd, tokenBudget, { queryClass });
     if (report) {
