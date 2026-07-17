@@ -765,6 +765,7 @@ export function registerSubagentTool(
     updateWorking: () => void,
     parentModelId: string | undefined,
     parentProvider: string | undefined,
+    asyncOk: boolean,
   ) {
     const results: SingleResult[] = [];
     let prev = "";
@@ -802,7 +803,7 @@ export function registerSubagentTool(
     }
     // chain runs sequentially — sum all steps
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
-    if (totalChainSeconds >= MAX_SYNC_SECONDS && supportsAsyncLlm(parentProvider)) {
+    if (totalChainSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
         details: mkd("chain")([]),
@@ -883,6 +884,7 @@ export function registerSubagentTool(
     updateWorking: () => void,
     parentModelId: string | undefined,
     parentProvider: string | undefined,
+    asyncOk: boolean,
   ) {
     if (params.tasks.length > MAX_PARALLEL_TASKS)
       return {
@@ -914,7 +916,7 @@ export function registerSubagentTool(
     }
     // parallel runs concurrently — use longest task
     const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
-    if (maxParallelSeconds >= MAX_SYNC_SECONDS && supportsAsyncLlm(parentProvider)) {
+    if (maxParallelSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
         details: mkd("parallel")([]),
@@ -1026,6 +1028,7 @@ export function registerSubagentTool(
     updateWorking: () => void,
     parentModelId: string | undefined,
     parentProvider: string | undefined,
+    asyncOk: boolean,
   ) {
     if (!params.cwd) {
       return {
@@ -1053,7 +1056,7 @@ export function registerSubagentTool(
         isError: true,
       };
     }
-    if (params.estimatedSeconds >= MAX_SYNC_SECONDS && supportsAsyncLlm(parentProvider)) {
+    if (params.estimatedSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
         details: mkd("single")([]),
@@ -1406,7 +1409,7 @@ export function registerSubagentTool(
       const confirm = params.confirmProjectAgents ?? true;
       let parentModelId = ctx.model?.id as string | undefined;
       let parentProvider = ctx.model?.provider as string | undefined;
-      const asyncOk = supportsAsyncLlm(parentProvider);
+      const asyncOk = supportsAsyncLlm(parentProvider, ctx.cwd);
       let capabilityNote = "";
 
       const hasChain = (params.chain?.length ?? 0) > 0;
@@ -1551,21 +1554,21 @@ export function registerSubagentTool(
       // Chain mode
       if (params.chain && params.chain.length > 0) {
         return withCapabilityNote(
-          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider),
+          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
         );
       }
 
       // Parallel mode
       if (params.tasks && params.tasks.length > 0) {
         return withCapabilityNote(
-          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider),
+          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
         );
       }
 
       // Single mode
       if (params.agent && params.task) {
         return withCapabilityNote(
-          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider),
+          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
         );
       }
 

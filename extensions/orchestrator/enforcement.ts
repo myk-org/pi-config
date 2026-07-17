@@ -416,7 +416,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Block repeated identical commands (polling-by-spam) — orchestrator only.
     // Skip on acpx: async LLM agents are unavailable; foreground polls are expected.
-    const parentSupportsAsyncLlm = supportsAsyncLlm((ctx as any).model?.provider);
+    const parentSupportsAsyncLlm = supportsAsyncLlm(
+      (ctx as any).model?.provider,
+      ctx.cwd,
+    );
     if (parentSupportsAsyncLlm && process.env.PI_SUBAGENT_CHILD !== "1") {
       ensureRepeatFile(ctx.cwd);
       const normalized = normalizeForRepeatCheck(command);

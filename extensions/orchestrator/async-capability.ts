@@ -1,8 +1,9 @@
 /**
  * Async LLM capability — whether the parent session can host detached LLM async agents.
  *
- * acpx providers are host-side ACP bridges; child pi processes skip acpx registration
- * (PI_SUBAGENT_CHILD=1), so async children cannot use the parent acpx model.
+ * acpx providers are registered by `extensions/acpx-provider` as `acpx-${agent}` for each
+ * entry in `acpx_agents` settings. Child pi processes skip acpx registration
+ * (PI_SUBAGENT_CHILD=1), so async children cannot use those parent models.
  *
  * See: https://github.com/myk-org/pi-config/issues/647
  */
@@ -14,17 +15,32 @@ export interface AsyncLlmSidecar {
   model: string;
 }
 
-/** True when provider is an acpx-* bridge (e.g. acpx-cursor). */
-export function isAcpxProvider(provider?: string | null): boolean {
-  return typeof provider === "string" && provider.startsWith("acpx-");
+/**
+ * Provider ids we register for configured acpx agents (`acpx-cursor`, …).
+ * Source of truth: `acpx_agents` in project/global settings (same list acpx-provider uses).
+ */
+export function getRegisteredAcpxProviders(cwd: string): string[] {
+  return getSetting(cwd, "acpx_agents").map((agent) => `acpx-${agent}`);
+}
+
+/** True when provider is one we registered via acpx-provider for this project. */
+export function isAcpxProvider(
+  provider: string | null | undefined,
+  cwd: string,
+): boolean {
+  if (typeof provider !== "string" || !provider) return false;
+  return getRegisteredAcpxProviders(cwd).includes(provider);
 }
 
 /**
  * Whether detached LLM async agents can inherit the parent model/provider.
- * Native pi providers: true. acpx parents: false.
+ * Native pi providers: true. Registered acpx parents: false.
  */
-export function supportsAsyncLlm(provider?: string | null): boolean {
-  return !isAcpxProvider(provider);
+export function supportsAsyncLlm(
+  provider: string | null | undefined,
+  cwd: string,
+): boolean {
+  return !isAcpxProvider(provider, cwd);
 }
 
 /**
@@ -61,7 +77,7 @@ export function decideAsyncLlmDispatch(opts: {
   /** fireAndForget / dream / cron — must stay detached when possible */
   mustAsync?: boolean;
 }): AsyncDispatchDecision {
-  if (supportsAsyncLlm(opts.parentProvider)) {
+  if (supportsAsyncLlm(opts.parentProvider, opts.cwd)) {
     return { action: "keep-async" };
   }
   const sidecar = getAsyncLlmSidecar(opts.cwd);

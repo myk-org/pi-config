@@ -6,13 +6,19 @@ Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acp
 provider **does not load** in those children (nested `cursor-agent` hangs), so an
 **acpx parent cannot host async LLM children on the parent model**.
 
+**Detection source of truth:** `acpx_agents` in settings (same list `acpx-provider`
+uses to `registerProvider(\`acpx-${agent}\`)`). Helpers:
+
+- `getRegisteredAcpxProviders(cwd)` → `["acpx-cursor", …]`
+- `isAcpxProvider(provider, cwd)` → membership in that list (not a bare `acpx-` prefix)
+
 | Parent provider | `supportsAsyncLlm` | Behavior |
 |-----------------|--------------------|----------|
 | Native (anthropic, openai, …) | `true` | Today's force-async system unchanged |
-| `acpx-*` | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
+| Registered `acpx-${agent}` from `acpx_agents` | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
 
 Module: `extensions/orchestrator/async-capability.ts`  
-Settings: `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`)
+Settings: `acpx_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`)
 
 **Code-enforced (not prompt-only):**
 
