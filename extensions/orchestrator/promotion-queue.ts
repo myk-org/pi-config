@@ -216,6 +216,39 @@ const IMMUTABLE_PROMOTION_KEYS = new Set([
   "createdAt",
 ]);
 
+const STRING_PATCH_KEYS = new Set([
+  "reason",
+  "trigger",
+  "action",
+  "verifier",
+  "skillName",
+]);
+
+/** Normalize one patch entry; returns undefined to leave the stored field unchanged. */
+function normalizePatchValue(
+  key: string,
+  value: unknown,
+): unknown | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (key === "status") {
+    return typeof value === "string" && STATUSES.includes(value as PromotionStatus)
+      ? value
+      : undefined;
+  }
+  if (key === "evidenceCount") {
+    return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : undefined;
+  }
+  if (key === "skillCreated") {
+    return typeof value === "boolean" ? value : undefined;
+  }
+  if (STRING_PATCH_KEYS.has(key)) {
+    return typeof value === "string" ? value : undefined;
+  }
+  return undefined;
+}
+
 /** Batch patch promotion candidates — one load/write. Returns how many ids were updated. */
 export function updatePromotionCandidates(
   cwd: string,
@@ -231,9 +264,11 @@ export function updatePromotionCandidates(
     const safePatch: PromotionCandidatePatch = {};
     for (const [key, value] of Object.entries(u.patch)) {
       if (IMMUTABLE_PROMOTION_KEYS.has(key)) continue;
-      if (value === undefined) continue;
-      (safePatch as Record<string, unknown>)[key] = value;
+      const normalized = normalizePatchValue(key, value);
+      if (normalized === undefined) continue;
+      (safePatch as Record<string, unknown>)[key] = normalized;
     }
+    if (Object.keys(safePatch).length === 0) continue;
     Object.assign(entry, safePatch);
     entry.id = u.id;
     n += 1;

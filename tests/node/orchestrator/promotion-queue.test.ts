@@ -165,4 +165,30 @@ describe("updatePromotionCandidates", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("rejects invalid status so the candidate still reloads", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-invalid-"));
+    try {
+      const a = makeCandidate({ status: "proposed", reason: "keep" });
+      appendPromotions(cwd, [a]);
+      const updated = updatePromotionCandidates(cwd, [
+        {
+          id: a.id,
+          patch: {
+            // @ts-expect-error invalid runtime status must be ignored
+            status: null,
+            reason: "still-valid",
+          },
+        },
+      ]);
+      assert.equal(updated, 1);
+      const loaded = loadPromotions(cwd);
+      assert.equal(loaded.length, 1);
+      assert.equal(loaded[0]!.id, a.id);
+      assert.equal(loaded[0]!.status, "proposed");
+      assert.equal(loaded[0]!.reason, "still-valid");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
