@@ -223,4 +223,65 @@ describe("scheduleOpenPrStatusRefresh", () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(rerenders, 1);
   });
+
+  it("clears pending gate when refresh throws sync", async () => {
+    let calls = 0;
+    const opts = {
+      cwd: "/repo",
+      branch: "feat",
+      shownPr: null as OpenPr | null,
+      getState: () => ({
+        lastCtx: { cwd: "/repo" },
+        lastBranch: "feat" as string | null,
+      }),
+      onRerender: () => {},
+      refresh: (() => {
+        throw new Error("sync boom");
+      }) as any,
+    };
+    scheduleOpenPrStatusRefresh(opts);
+    scheduleOpenPrStatusRefresh({
+      ...opts,
+      refresh: async () => {
+        calls++;
+        return { number: 9, url: "https://github.com/org/repo/pull/9" };
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(calls, 1);
+  });
+
+  it("clears pending gate when refresh rejects", async () => {
+    let calls = 0;
+    scheduleOpenPrStatusRefresh({
+      cwd: "/repo",
+      branch: "bug",
+      shownPr: null,
+      getState: () => ({
+        lastCtx: { cwd: "/repo" },
+        lastBranch: "bug",
+      }),
+      onRerender: () => {},
+      refresh: async () => {
+        throw new Error("async boom");
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    scheduleOpenPrStatusRefresh({
+      cwd: "/repo",
+      branch: "bug",
+      shownPr: null,
+      getState: () => ({
+        lastCtx: { cwd: "/repo" },
+        lastBranch: "bug",
+      }),
+      onRerender: () => {},
+      refresh: async () => {
+        calls++;
+        return null;
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(calls, 1);
+  });
 });
