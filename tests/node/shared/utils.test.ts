@@ -1,10 +1,6 @@
-/**
- * Tests for shared utility functions.
- * Run with: npx tsx --test tests/node/shared/utils.test.ts
- */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { djb2Hash } from "../../../extensions/orchestrator/utils.js";
+import { djb2Hash, isPiMetaInvocation } from "../../../extensions/orchestrator/utils.js";
 
 describe("djb2Hash", () => {
 	it("returns same value for same input (deterministic)", () => {
@@ -29,5 +25,26 @@ describe("djb2Hash", () => {
 
 	it("returns a number", () => {
 		assert.equal(typeof djb2Hash("test"), "number");
+	});
+});
+
+describe("isPiMetaInvocation", () => {
+	it("detects help and version flags", () => {
+		assert.equal(isPiMetaInvocation(["node", "pi", "--help"]), true);
+		assert.equal(isPiMetaInvocation(["node", "pi", "-h"]), true);
+		assert.equal(isPiMetaInvocation(["node", "pi", "--version"]), true);
+		assert.equal(isPiMetaInvocation(["node", "pi", "-v"]), true);
+	});
+
+	it("ignores normal interactive and prompt invocations", () => {
+		assert.equal(isPiMetaInvocation(["node", "pi"]), false);
+		assert.equal(
+			isPiMetaInvocation(["node", "pi", "--mode", "json", "-p", "hi"]),
+			false,
+		);
+	});
+
+	it("stops at -- so later help-like tokens are ignored", () => {
+		assert.equal(isPiMetaInvocation(["node", "pi", "--", "--help"]), false);
 	});
 });

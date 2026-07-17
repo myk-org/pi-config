@@ -33,6 +33,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
+import { isPiMetaInvocation } from "../orchestrator/utils.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
@@ -508,6 +509,8 @@ function streamCli(
 
 export default async function (pi: ExtensionAPI) {
   // Intentionally does NOT skip PI_SUBAGENT_CHILD — cli-* must work in async children.
+  // pi --help / --version still loads extensions; skip discovery noise/latency.
+  if (isPiMetaInvocation()) return;
 
   // Capture cwd at extension load time, before pi potentially changes directory.
   projectCwd = process.cwd();

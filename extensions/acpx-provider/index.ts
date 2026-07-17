@@ -33,6 +33,7 @@ import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
+import { isPiMetaInvocation } from "../orchestrator/utils.js";
 import { loadAcpxRuntime } from "./load-runtime.js";
 
 // =============================================================================
@@ -544,6 +545,8 @@ export default async function (pi: ExtensionAPI) {
 	// Subagents don't need acpx providers — they use the parent's model via --model flag.
 	// Without this guard, cursor-agent spawns as a child and prevents the subagent from exiting.
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
+	// pi --help / --version still loads extensions; skip discovery noise/latency.
+	if (isPiMetaInvocation()) return;
 
 	// Suppress noisy ACP SDK errors for unhandled agent extension methods
 	installConsoleErrorSuppression();

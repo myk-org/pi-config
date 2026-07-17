@@ -192,3 +192,23 @@ export function djb2Hash(input: string): number {
   }
   return Math.abs(hash);
 }
+
+/**
+ * True when this process is a pi --help / --version (or -h / -v) invocation.
+ * Pi still loads extensions before printing meta output, so providers should
+ * skip expensive model discovery and registration in that case.
+ */
+export function isPiMetaInvocation(argv: string[] = process.argv): boolean {
+  for (const arg of argv.slice(2)) {
+    if (arg === "--") break;
+    if (
+      arg === "--help" ||
+      arg === "-h" ||
+      arg === "--version" ||
+      arg === "-v"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}

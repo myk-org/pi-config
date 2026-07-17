@@ -29,6 +29,10 @@ Empty / unset → extension registers nothing.
 6. Start session reaper (30m idle / 5m sweep) for `~/.pi/cli-sessions/`
 7. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept for reload resume)
 
+`pi --help` / `pi --version` (and `-h` / `-v`) still load extensions; both
+`cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
+they do not run model discovery for meta invocations.
+
 ## Model discovery (CLI only)
 
 | Agent | How models are discovered |

@@ -24,6 +24,9 @@ Settings: `acpx_agents`, `cli_agents`, `async_llm_provider` + `async_llm_model` 
 global `npm install -g acpx`, then falls back to the package-local `acpx`
 dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime")`).
 
+**Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
+skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
+
 **Code-enforced (not prompt-only):**
 
 - `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`
