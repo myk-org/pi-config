@@ -29,19 +29,42 @@ describe("djb2Hash", () => {
 });
 
 describe("isPiMetaInvocation", () => {
-	it("detects help and version flags", () => {
+	it("detects --help", () => {
 		assert.equal(isPiMetaInvocation(["node", "pi", "--help"]), true);
+	});
+
+	it("detects -h", () => {
 		assert.equal(isPiMetaInvocation(["node", "pi", "-h"]), true);
+	});
+
+	it("detects --version", () => {
 		assert.equal(isPiMetaInvocation(["node", "pi", "--version"]), true);
+	});
+
+	it("detects -v", () => {
 		assert.equal(isPiMetaInvocation(["node", "pi", "-v"]), true);
 	});
 
-	it("ignores normal interactive and prompt invocations", () => {
+	it("ignores bare pi with no args", () => {
 		assert.equal(isPiMetaInvocation(["node", "pi"]), false);
+	});
+
+	it("ignores json mode prompt invocations", () => {
 		assert.equal(
 			isPiMetaInvocation(["node", "pi", "--mode", "json", "-p", "hi"]),
 			false,
 		);
+	});
+
+	it("ignores -h when used as prompt value", () => {
+		assert.equal(
+			isPiMetaInvocation(["node", "pi", "--mode", "json", "-p", "-h"]),
+			false,
+		);
+	});
+
+	it("ignores --help when used as prompt value", () => {
+		assert.equal(isPiMetaInvocation(["node", "pi", "-p", "--help"]), false);
 	});
 
 	it("stops at -- so later help-like tokens are ignored", () => {
