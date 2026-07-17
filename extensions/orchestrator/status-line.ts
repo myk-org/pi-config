@@ -7,9 +7,8 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import {
   getCurrentBranch,
   getOpenPr,
-  refreshOpenPr,
   runGit,
-  shouldApplyOpenPrRefresh,
+  scheduleOpenPrStatusRefresh,
 } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { clockHHMM } from "./utils.js";
@@ -95,20 +94,12 @@ export function registerStatusLine(
       buildStatus(ctx, gitPart);
 
       // Per-key coalesce lives in refreshOpenPr — no global pending gate.
-      const refreshKey = `${ctx.cwd || ""}:${b}`;
-      const shownKey = pr ? `${pr.number}\0${pr.url}` : "";
-      void refreshOpenPr(ctx.cwd, b).then((fresh) => {
-        if (!shouldApplyOpenPrRefresh(lastCtx, lastBranch, refreshKey)) return;
-        const freshKey = fresh ? `${fresh.number}\0${fresh.url}` : "";
-        if (freshKey === shownKey) return;
-        try {
-          updateBranch(null, lastCtx);
-        } catch (e: any) {
-          console.debug(
-            "[status-line] open-PR refresh update failed:",
-            e?.message || e,
-          );
-        }
+      scheduleOpenPrStatusRefresh({
+        cwd: ctx.cwd,
+        branch: b,
+        shownPr: pr,
+        getState: () => ({ lastCtx, lastBranch }),
+        onRerender: (c) => updateBranch(null, c),
       });
     } catch (e: any) { console.debug("[status-line] git status update failed:", e?.message || e); }
   };

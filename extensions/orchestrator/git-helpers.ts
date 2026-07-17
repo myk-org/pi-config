@@ -250,6 +250,73 @@ export function shouldApplyOpenPrRefresh(
   return `${lastCtx.cwd || ""}:${lastBranch}` === refreshKey;
 }
 
+export type OpenPrRefreshDecision = "skip" | "rerender";
+
+/** Decide whether a finished refresh should re-run the status-line update. */
+export function decideOpenPrRefreshRerender(args: {
+  lastCtx: { cwd?: string } | null;
+  lastBranch: string | null;
+  refreshKey: string;
+  shownKey: string;
+  fresh: OpenPr | null;
+}): OpenPrRefreshDecision {
+  if (
+    !shouldApplyOpenPrRefresh(args.lastCtx, args.lastBranch, args.refreshKey)
+  ) {
+    return "skip";
+  }
+  const freshKey = args.fresh
+    ? `${args.fresh.number}\0${args.fresh.url}`
+    : "";
+  if (freshKey === args.shownKey) return "skip";
+  return "rerender";
+}
+
+/**
+ * Status-line open-PR refresh callback wiring (no TUI deps).
+ * Schedules refreshOpenPr and optionally re-renders when the result applies.
+ */
+export function scheduleOpenPrStatusRefresh(opts: {
+  cwd?: string;
+  branch: string;
+  shownPr: OpenPr | null;
+  getState: () => {
+    lastCtx: { cwd?: string } | null;
+    lastBranch: string | null;
+  };
+  onRerender: (ctx: { cwd?: string }) => void;
+  refresh?: typeof refreshOpenPr;
+}): void {
+  const refreshKey = `${opts.cwd || ""}:${opts.branch}`;
+  const shownKey = opts.shownPr
+    ? `${opts.shownPr.number}\0${opts.shownPr.url}`
+    : "";
+  const refresh = opts.refresh ?? refreshOpenPr;
+  void refresh(opts.cwd, opts.branch).then((fresh) => {
+    const { lastCtx, lastBranch } = opts.getState();
+    if (
+      decideOpenPrRefreshRerender({
+        lastCtx,
+        lastBranch,
+        refreshKey,
+        shownKey,
+        fresh,
+      }) !== "rerender"
+    ) {
+      return;
+    }
+    if (!lastCtx) return;
+    try {
+      opts.onRerender(lastCtx);
+    } catch (e: any) {
+      console.debug(
+        "[status-line] open-PR refresh update failed:",
+        e?.message || e,
+      );
+    }
+  });
+}
+
 // Cache protected branches per repo (fetched once per session)
 const protectedBranchesCache = new Map<string, Set<string>>();
 
