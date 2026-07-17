@@ -35,7 +35,7 @@ describe("cli-provider sessions", () => {
     assert.equal(shouldRetryWithoutResume("CLI agent exited 1: auth failed"), false);
   });
 
-  it("saves loads touches and clears session records", () => {
+  it("saves then loads session id", () => {
     const prevHome = process.env.HOME;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-"));
     process.env.HOME = home;
@@ -50,11 +50,45 @@ describe("cli-provider sessions", () => {
       assert.equal(loadCliSessionId(key), "cli-uuid-1");
       const before = loadCliSessionRecord(key)!;
       assert.equal(before.status, "running");
-      // ensure lastSeen moves
-      const oldSeen = before.lastSeenAt;
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("touchCliSession advances lastSeenAt", () => {
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-touch-"));
+    process.env.HOME = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "composer-2",
+        piSessionId: "sess-a",
+      };
+      saveCliSessionId(key, "cli-uuid-1");
+      const oldSeen = loadCliSessionRecord(key)!.lastSeenAt;
       touchCliSession(key);
-      const after = loadCliSessionRecord(key)!;
-      assert.ok(after.lastSeenAt >= oldSeen);
+      assert.ok(loadCliSessionRecord(key)!.lastSeenAt >= oldSeen);
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("clearCliSessionId removes the marker", () => {
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-clear-"));
+    process.env.HOME = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "composer-2",
+        piSessionId: "sess-a",
+      };
+      saveCliSessionId(key, "cli-uuid-1");
       clearCliSessionId(key);
       assert.equal(loadCliSessionId(key), null);
     } finally {

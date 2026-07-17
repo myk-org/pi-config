@@ -17,7 +17,11 @@ export type AcpxRuntimeModule = {
   createAgentRegistry: (...args: any[]) => any;
 };
 
+let cachedRoots: string[] | null = null;
+let cachedRuntime: Promise<AcpxRuntimeModule> | null = null;
+
 function globalNodeModuleRoots(): string[] {
+  if (cachedRoots) return cachedRoots;
   const roots: string[] = [];
   try {
     const root = execFileSync("npm", ["root", "-g"], {
@@ -34,6 +38,7 @@ function globalNodeModuleRoots(): string[] {
   ]) {
     if (candidate && !roots.includes(candidate)) roots.push(candidate);
   }
+  cachedRoots = roots;
   return roots;
 }
 
@@ -53,10 +58,7 @@ async function importFromPackageRoot(pkgRoot: string): Promise<AcpxRuntimeModule
   }
 }
 
-/**
- * Resolve acpx/runtime: global install first, then bare import (dev only).
- */
-export async function loadAcpxRuntime(): Promise<AcpxRuntimeModule> {
+async function resolveAcpxRuntime(): Promise<AcpxRuntimeModule> {
   for (const root of globalNodeModuleRoots()) {
     const mod = await importFromPackageRoot(join(root, "acpx"));
     if (typeof mod?.createAcpRuntime === "function") return mod;
@@ -72,4 +74,25 @@ export async function loadAcpxRuntime(): Promise<AcpxRuntimeModule> {
   throw new Error(
     "acpx is not installed globally. Install with: npm install -g acpx",
   );
+}
+
+/**
+ * Resolve acpx/runtime: global install first, then bare import (dev only).
+ * Memoized — concurrent/repeated calls share one resolution. Rejected loads
+ * clear the cache so a later install can succeed.
+ */
+export function loadAcpxRuntime(): Promise<AcpxRuntimeModule> {
+  if (!cachedRuntime) {
+    cachedRuntime = resolveAcpxRuntime().catch((err) => {
+      cachedRuntime = null;
+      throw err;
+    });
+  }
+  return cachedRuntime;
+}
+
+/** Test helper — clear memoization between cases. */
+export function clearAcpxRuntimeCache(): void {
+  cachedRoots = null;
+  cachedRuntime = null;
 }

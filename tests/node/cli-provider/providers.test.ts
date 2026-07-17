@@ -35,7 +35,7 @@ describe("cli-provider providers", () => {
     assert.equal(isCliAgentName("opencode"), false);
   });
 
-  it("builds claude command with resume and skip-permissions", () => {
+  it("builds claude command with resume plus skip-permissions", () => {
     const { binary, args } = buildCliCommand({
       agent: "claude",
       model: "claude-sonnet-4-20250514",
@@ -61,7 +61,7 @@ describe("cli-provider providers", () => {
     assert.equal(args.includes("--model"), false);
   });
 
-  it("builds gemini with skip-trust and yolo", () => {
+  it("builds gemini with skip-trust plus yolo", () => {
     const { binary, args } = buildCliCommand({
       agent: "gemini",
       model: "gemini-2.5-pro",
@@ -73,7 +73,7 @@ describe("cli-provider providers", () => {
     assert.ok(args.includes("stream-json"));
   });
 
-  it("builds cursor with trust, force, and stream-partial", () => {
+  it("builds cursor with trust force stream-partial", () => {
     const { binary, args } = buildCliCommand({
       agent: "cursor",
       model: "gpt-5.4",

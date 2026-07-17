@@ -156,6 +156,7 @@ async function runCliTurnWithResumeRecover(opts: {
 /**
  * Ensure a CLI session marker exists for this agent/model.
  * Returns the resume id (if any) and whether system prompt should be sent.
+ * Does NOT mark systemPromptSent — caller must mark only after a successful turn.
  */
 function ensureSession(
   state: AgentState,
@@ -169,10 +170,6 @@ function ensureSession(
   const sessionId = loadCliSessionId(key);
   const needsSystemPrompt =
     !state.systemPromptSent.has(handleKey) && !!systemPrompt;
-
-  if (needsSystemPrompt) {
-    state.systemPromptSent.add(handleKey);
-  }
 
   return { sessionId, needsSystemPrompt, key };
 }
@@ -415,6 +412,11 @@ function streamCli(
         saveCliSessionId(key, result.sessionId);
       } else if (sessionId) {
         touchCliSession(key);
+      }
+
+      // Mark only after a successful turn — failed first turns must retry system prompt.
+      if (needsSystemPrompt) {
+        state.systemPromptSent.add(handleKey);
       }
 
       // Close open blocks if stream ended without deltas (fallback)

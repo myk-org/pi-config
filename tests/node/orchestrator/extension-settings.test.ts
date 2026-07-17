@@ -231,20 +231,25 @@ describe("extension settings", () => {
 		assert.deepEqual(getSetting(tmp, "cli_agents"), []);
 	});
 
-	it("cli_agents from settings and env", () => {
+	it("cli_agents from settings", () => {
 		writeSettings({ cli_agents: ["claude", "cursor"] });
 		assert.deepEqual(getSetting(tmp, "cli_agents"), ["claude", "cursor"]);
+	});
+
+	it("cli_agents from env when project omits it", () => {
 		writeSettings({});
 		process.env.CLI_AGENTS = "gemini";
 		clearSettingsCache();
 		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
 	});
 
-	it("cli_agents and ACPX_AGENTS normalize mixed case", () => {
+	it("cli_agents normalizes mixed case", () => {
 		process.env.CLI_AGENTS = "Cursor,Gemini";
 		clearSettingsCache();
 		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor", "gemini"]);
-		delete process.env.CLI_AGENTS;
+	});
+
+	it("ACPX_AGENTS normalizes mixed case", () => {
 		process.env.ACPX_AGENTS = "Cursor";
 		clearSettingsCache();
 		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
