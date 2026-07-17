@@ -20,6 +20,7 @@ export interface CliRunOptions {
   sessionId?: string | null;
   continueSession?: boolean;
   signal?: AbortSignal;
+  /** Optional only — no default. Omit for unlimited turn duration. */
   timeoutMs?: number;
   /** When set, stream NDJSON events as they arrive (stream-json agents). */
   onEvent?: (event: CliStreamEvent) => void;
@@ -54,7 +55,11 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
   });
 
   const argv = promptOnStdin ? args : [...args, opts.prompt];
-  const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000;
+  // No default turn timeout — only honor an explicit timeoutMs from the caller.
+  const timeoutMs =
+    typeof opts.timeoutMs === "number" && opts.timeoutMs > 0
+      ? opts.timeoutMs
+      : undefined;
   const stream = typeof opts.onEvent === "function";
 
   return new Promise((resolve, reject) => {
@@ -76,26 +81,28 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
     const acc = new StreamJsonAccumulator();
     const lineBuf = { value: "" };
 
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            /* ignore */
-          }
-        }, 2000).unref?.();
-      } catch {
-        /* ignore */
-      }
-      if (!settled) {
-        settled = true;
-        reject(new Error(`CLI ${binary} timed out after ${timeoutMs}ms`));
-      }
-    }, timeoutMs);
-    timer.unref?.();
-
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        try {
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              /* ignore */
+            }
+          }, 2000).unref?.();
+        } catch {
+          /* ignore */
+        }
+        if (!settled) {
+          settled = true;
+          reject(new Error(`CLI ${binary} timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      timer.unref?.();
+    }
     const onAbort = () => {
       try {
         child.kill("SIGTERM");
@@ -141,7 +148,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
     }
 
     child.on("error", (err) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
       if (!settled) {
         settled = true;
@@ -150,7 +157,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
     });
 
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
       if (settled) return;
       settled = true;
