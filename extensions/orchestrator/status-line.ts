@@ -39,12 +39,14 @@ export function registerStatusLine(
   // ── Git branch status line ─────────────────────────────────────────────
 
   let lastCtx: any = null;
+  let lastBranch: string | null = null;
 
   const updateBranch = (_event: any, ctx: any) => {
     lastCtx = ctx;
     try {
       const b = getCurrentBranch(ctx.cwd);
       if (!b) return;
+      lastBranch = b;
 
       const status = runGit(["status", "--porcelain"], ctx.cwd);
       let modified = 0,
@@ -92,9 +94,8 @@ export function registerStatusLine(
       const refreshKey = `${ctx.cwd || ""}:${b}`;
       const shownKey = pr ? `${pr.number}\0${pr.url}` : "";
       void refreshOpenPr(ctx.cwd, b).then((fresh) => {
-        if (!lastCtx) return;
-        const curB = getCurrentBranch(lastCtx.cwd);
-        if (!curB || `${lastCtx.cwd || ""}:${curB}` !== refreshKey) return;
+        if (!lastCtx || lastBranch == null) return;
+        if (`${lastCtx.cwd || ""}:${lastBranch}` !== refreshKey) return;
         const freshKey = fresh ? `${fresh.number}\0${fresh.url}` : "";
         if (freshKey === shownKey) return;
         try {

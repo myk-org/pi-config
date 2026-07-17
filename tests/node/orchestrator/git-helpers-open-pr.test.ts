@@ -146,16 +146,24 @@ describe("getOpenPr / refreshOpenPr", () => {
   });
 
   it("refreshOpenPr caches result for getOpenPr", async () => {
-    let nextNumber = 7;
-    setGhPrViewRunner(async () => openPrJson(nextNumber++));
+    setGhPrViewRunner(async () => openPrJson(7));
     const pr = await refreshOpenPr(repo, "main");
     assert.deepEqual(pr, {
       number: 7,
       url: "https://github.com/org/repo/pull/7",
     });
     assert.deepEqual(getOpenPr(repo, "main"), pr);
-    const again = await refreshOpenPr(repo, "main");
-    assert.equal(again?.number, 7, "TTL hit must reuse cached PR");
+  });
+
+  it("refreshOpenPr reuses cached PR within TTL", async () => {
+    let nextNumber = 7;
+    setGhPrViewRunner(async () => openPrJson(nextNumber++));
+    assert.equal((await refreshOpenPr(repo, "main"))?.number, 7);
+    assert.equal(
+      (await refreshOpenPr(repo, "main"))?.number,
+      7,
+      "TTL hit must reuse cached PR",
+    );
   });
 
   it("coalesces concurrent refreshOpenPr calls", async () => {
