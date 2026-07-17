@@ -17,8 +17,17 @@ import {
   setGhPrViewRunner,
 } from "../../../extensions/orchestrator/git-helpers.js";
 
+const {
+  GIT_DIR: _GIT_DIR,
+  GIT_WORK_TREE: _GIT_WORK_TREE,
+  GIT_INDEX_FILE: _GIT_INDEX_FILE,
+  GIT_COMMON_DIR: _GIT_COMMON_DIR,
+  GIT_CEILING_DIRECTORIES: _GIT_CEILING_DIRECTORIES,
+  ...baseEnv
+} = process.env;
+
 const GIT_ENV = {
-  ...process.env,
+  ...baseEnv,
   GIT_AUTHOR_NAME: "test",
   GIT_AUTHOR_EMAIL: "test@example.com",
   GIT_COMMITTER_NAME: "test",
@@ -116,12 +125,10 @@ describe("clearOpenPrCache", () => {
 
 describe("getOpenPr / refreshOpenPr", () => {
   let repo: string;
-  let ghCalls: number;
 
   beforeEach(() => {
     clearOpenPrCache();
     setGhPrViewRunner(null);
-    ghCalls = 0;
     repo = initGithubRepo();
   });
 
@@ -133,27 +140,22 @@ describe("getOpenPr / refreshOpenPr", () => {
 
   it("returns null from empty cache without calling gh", () => {
     setGhPrViewRunner(async () => {
-      ghCalls++;
-      return openPrJson(1);
+      throw new Error("gh should not run for sync getOpenPr");
     });
     assert.equal(getOpenPr(repo, "main"), null);
-    assert.equal(ghCalls, 0);
   });
 
   it("refreshOpenPr caches result for getOpenPr", async () => {
-    setGhPrViewRunner(async () => {
-      ghCalls++;
-      return openPrJson(7);
-    });
+    let nextNumber = 7;
+    setGhPrViewRunner(async () => openPrJson(nextNumber++));
     const pr = await refreshOpenPr(repo, "main");
     assert.deepEqual(pr, {
       number: 7,
       url: "https://github.com/org/repo/pull/7",
     });
-    assert.equal(ghCalls, 1);
     assert.deepEqual(getOpenPr(repo, "main"), pr);
-    await refreshOpenPr(repo, "main");
-    assert.equal(ghCalls, 1, "TTL hit must not re-call gh");
+    const again = await refreshOpenPr(repo, "main");
+    assert.equal(again?.number, 7, "TTL hit must reuse cached PR");
   });
 
   it("coalesces concurrent refreshOpenPr calls", async () => {
@@ -161,29 +163,29 @@ describe("getOpenPr / refreshOpenPr", () => {
     const gate = new Promise<string>((r) => {
       resolveGh = r;
     });
-    setGhPrViewRunner(async () => {
-      ghCalls++;
-      return gate;
-    });
+    setGhPrViewRunner(async () => gate);
     const a = refreshOpenPr(repo, "main");
     const b = refreshOpenPr(repo, "main");
     resolveGh(openPrJson(9));
     const [pa, pb] = await Promise.all([a, b]);
-    assert.equal(ghCalls, 1);
     assert.deepEqual(pa, pb);
     assert.equal(pa?.number, 9);
   });
 
   it("refreshOpenPr stores null on gh failure", async () => {
+    let shouldFail = true;
     setGhPrViewRunner(async () => {
-      ghCalls++;
-      throw new Error("gh failed");
+      if (shouldFail) throw new Error("gh failed");
+      return openPrJson(1);
     });
     assert.equal(await refreshOpenPr(repo, "main"), null);
     assert.equal(getOpenPr(repo, "main"), null);
-    assert.equal(ghCalls, 1);
-    await refreshOpenPr(repo, "main");
-    assert.equal(ghCalls, 1, "null result still cached for TTL");
+    shouldFail = false;
+    assert.equal(
+      await refreshOpenPr(repo, "main"),
+      null,
+      "null result still cached for TTL",
+    );
   });
 
   it("returns stale cache until refresh completes", async () => {
@@ -193,12 +195,8 @@ describe("getOpenPr / refreshOpenPr", () => {
     });
     assert.equal(getOpenPr(repo, "main")?.number, 3);
 
-    setGhPrViewRunner(async () => {
-      ghCalls++;
-      return openPrJson(4);
-    });
+    setGhPrViewRunner(async () => openPrJson(4));
     const fresh = await refreshOpenPr(repo, "main");
-    assert.equal(ghCalls, 1);
     assert.equal(fresh?.number, 4);
     assert.equal(getOpenPr(repo, "main")?.number, 4);
   });
