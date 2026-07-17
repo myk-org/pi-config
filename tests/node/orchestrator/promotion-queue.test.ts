@@ -139,4 +139,30 @@ describe("updatePromotionCandidates", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("ignores undefined patch values so existing fields stay", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-undef-"));
+    try {
+      const a = makeCandidate({
+        verifier: "keep-me",
+        trigger: "bash_contains git add .",
+      });
+      appendPromotions(cwd, [a]);
+      updatePromotionCandidates(cwd, [
+        {
+          id: a.id,
+          patch: {
+            status: "applied",
+            verifier: undefined,
+          },
+        },
+      ]);
+      const loaded = loadPromotions(cwd).find((x) => x.id === a.id);
+      assert.equal(loaded?.status, "applied");
+      assert.equal(loaded?.verifier, "keep-me");
+      assert.equal(loaded?.trigger, "bash_contains git add .");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

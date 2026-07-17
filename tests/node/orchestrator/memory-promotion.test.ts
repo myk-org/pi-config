@@ -299,4 +299,30 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("keeps existing verifier when upgrade patch omits it", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-verifier-"));
+    try {
+      const lesson = "Never use `git add .`";
+      seedMemory(cwd, lesson, "lesson", EVIDENCE_ENFORCEMENT);
+      appendPromotions(cwd, [
+        {
+          id: promotionId("enforcement", "lesson", lesson),
+          destination: "enforcement",
+          status: "proposed",
+          category: "lesson",
+          text: lesson,
+          reason: "needs apply",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          verifier: "git status --porcelain",
+        },
+      ]);
+      applySafePromotions(cwd);
+      const entry = loadPromotions(cwd).find((c) => c.text === lesson);
+      assert.equal(entry?.status, "applied");
+      assert.equal(entry?.verifier, "git status --porcelain");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

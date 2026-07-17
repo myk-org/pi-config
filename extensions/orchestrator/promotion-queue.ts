@@ -231,6 +231,7 @@ export function updatePromotionCandidates(
     const safePatch: PromotionCandidatePatch = {};
     for (const [key, value] of Object.entries(u.patch)) {
       if (IMMUTABLE_PROMOTION_KEYS.has(key)) continue;
+      if (value === undefined) continue;
       (safePatch as Record<string, unknown>)[key] = value;
     }
     Object.assign(entry, safePatch);

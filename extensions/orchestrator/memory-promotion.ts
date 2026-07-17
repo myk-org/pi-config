@@ -375,18 +375,29 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
         status: "applied",
         reason: prev.reason || c.reason,
         createdAt: prev.createdAt,
+        // Prefer new scan values when present; otherwise keep queued metadata
+        evidenceCount: c.evidenceCount ?? prev.evidenceCount,
+        trigger: c.trigger ?? prev.trigger,
+        action: c.action ?? prev.action,
+        verifier: c.verifier ?? prev.verifier,
+        skillName: c.skillName ?? prev.skillName,
+        skillCreated: c.skillCreated ?? prev.skillCreated,
       };
       patches.push({
         id: c.id,
         patch: {
           status: "applied",
           reason: merged.reason,
-          evidenceCount: c.evidenceCount,
-          trigger: c.trigger,
-          action: c.action,
-          verifier: c.verifier,
-          skillName: c.skillName,
-          skillCreated: c.skillCreated,
+          ...(c.evidenceCount !== undefined
+            ? { evidenceCount: c.evidenceCount }
+            : {}),
+          ...(c.trigger !== undefined ? { trigger: c.trigger } : {}),
+          ...(c.action !== undefined ? { action: c.action } : {}),
+          ...(c.verifier !== undefined ? { verifier: c.verifier } : {}),
+          ...(c.skillName !== undefined ? { skillName: c.skillName } : {}),
+          ...(c.skillCreated !== undefined
+            ? { skillCreated: c.skillCreated }
+            : {}),
         },
       });
       byId.set(c.id, merged);
