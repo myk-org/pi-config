@@ -13,6 +13,16 @@ import {
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
 import { clockHHMM } from "./utils.js";
 
+/** True when an async open-PR refresh still matches the active cwd/branch. */
+export function shouldApplyOpenPrRefresh(
+  lastCtx: { cwd?: string } | null,
+  lastBranch: string | null,
+  refreshKey: string,
+): boolean {
+  if (!lastCtx || lastBranch == null) return false;
+  return `${lastCtx.cwd || ""}:${lastBranch}` === refreshKey;
+}
+
 export function registerStatusLine(
   pi: ExtensionAPI,
   IN_CONTAINER: boolean,
@@ -45,7 +55,10 @@ export function registerStatusLine(
     lastCtx = ctx;
     try {
       const b = getCurrentBranch(ctx.cwd);
-      if (!b) return;
+      if (!b) {
+        lastBranch = null;
+        return;
+      }
       lastBranch = b;
 
       const status = runGit(["status", "--porcelain"], ctx.cwd);
@@ -94,8 +107,7 @@ export function registerStatusLine(
       const refreshKey = `${ctx.cwd || ""}:${b}`;
       const shownKey = pr ? `${pr.number}\0${pr.url}` : "";
       void refreshOpenPr(ctx.cwd, b).then((fresh) => {
-        if (!lastCtx || lastBranch == null) return;
-        if (`${lastCtx.cwd || ""}:${lastBranch}` !== refreshKey) return;
+        if (!shouldApplyOpenPrRefresh(lastCtx, lastBranch, refreshKey)) return;
         const freshKey = fresh ? `${fresh.number}\0${fresh.url}` : "";
         if (freshKey === shownKey) return;
         try {
