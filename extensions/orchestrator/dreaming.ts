@@ -23,6 +23,7 @@ import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
 import { getProjectTmpDir } from "./utils.js";
+import { dreamingLog } from "../shared/file-logger.js";
 
 // Default: 3 hours. Override with PI_DREAM_INTERVAL_HOURS env var (0.5–24).
 const _rawHours = parseFloat(process.env.PI_DREAM_INTERVAL_HOURS || "3");
@@ -82,7 +83,7 @@ export function registerDreaming(
       mustAsync: true,
     });
     if (dreamDispatch.action === "skip") {
-      console.debug(`[dreaming] ${dreamDispatch.note}`);
+      dreamingLog("warn", dreamDispatch.note || "dream skipped (no async LLM path)");
       try {
         lastCtx?.ui?.notify?.(
           "Dream skipped: set async_llm_provider and async_llm_model for acpx sessions",
@@ -179,12 +180,23 @@ export function registerDreaming(
         onComplete: () => {
           dreamInFlight = false;
           updateDreamStatus();
-          try { rebuildAndOrganize(cwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
+          // File log only — console.* leaks into the chat text box.
+          try {
+            rebuildAndOrganize(cwd);
+          } catch (err) {
+            dreamingLog("error", "rebuildAndOrganize failed", err);
+          }
           try {
             const n = mergeProvenancePending(cwd);
-            if (n > 0) console.debug(`[dreaming] merged provenance for ${n} entries`);
-          } catch (e: any) { console.debug("[dreaming] provenance merge failed:", e?.message || e); }
-          try { runPromotionPass(cwd); } catch (e: any) { console.debug("[dreaming] promotion pass failed:", e?.message || e); }
+            if (n > 0) dreamingLog("info", `merged provenance for ${n} entries`);
+          } catch (err) {
+            dreamingLog("error", "provenance merge failed", err);
+          }
+          try {
+            runPromotionPass(cwd);
+          } catch (err) {
+            dreamingLog("error", "promotion pass failed", err);
+          }
         },
       },
     );
@@ -203,7 +215,10 @@ export function registerDreaming(
         if (dreamInFlight && currentDreamId === dreamId) {
           dreamInFlight = false;
           updateDreamStatus();
-          console.debug("[dreaming] fallback: reset dreamInFlight after 30 min (onComplete never fired)");
+          dreamingLog(
+            "warn",
+            "fallback: reset dreamInFlight after 30 min (onComplete never fired)",
+          );
         }
       }, 30 * 60 * 1000);
       if (fallbackTimer.unref) fallbackTimer.unref();
@@ -237,7 +252,11 @@ export function registerDreaming(
     if (!rebuildTimer) {
       rebuildTimer = setInterval(() => {
         if (enabled && lastCwd) {
-          try { rebuildAndOrganize(lastCwd); } catch (e: any) { console.debug("[dreaming] rebuildAndOrganize failed:", e?.message || e); }
+          try {
+            rebuildAndOrganize(lastCwd);
+          } catch (err) {
+            dreamingLog("error", "rebuildAndOrganize failed", err);
+          }
         }
       }, REBUILD_INTERVAL_MS);
       if (rebuildTimer.unref) rebuildTimer.unref();
@@ -328,6 +347,8 @@ export function registerDreaming(
     // (can't use spawnAsyncAgent since the session is ending)
     try {
       runDreamAsync(lastCwd);
-    } catch (e: any) { console.debug("[dreaming] shutdown dream failed:", e?.message || e); }
+    } catch (err) {
+      dreamingLog("error", "shutdown dream failed", err);
+    }
   });
 }

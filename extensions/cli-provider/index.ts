@@ -34,6 +34,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
 import { isPiMetaInvocation } from "../orchestrator/utils.js";
+import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
@@ -140,8 +141,9 @@ async function runCliTurnWithResumeRecover(opts: {
     if (!opts.sessionId || !shouldRetryWithoutResume(message)) {
       throw err;
     }
-    console.debug(
-      `[cli-provider] resume failed for ${opts.agent}; clearing session and retrying: ${message.slice(0, 200)}`,
+    cliProviderLog(
+      "warn",
+      `resume failed for ${opts.agent}; clearing session and retrying: ${message.slice(0, 200)}`,
     );
     clearCliSessionId(opts.key);
     let prompt = opts.rebuildPromptWithoutSession();
@@ -219,7 +221,7 @@ function extractLatestUserMessage(context: Context): string {
       if (text) return text;
     }
   }
-  console.debug("[cli-provider] no user message found in context, using fallback");
+  cliProviderLog("warn", "no user message found in context, using fallback");
   return "hello";
 }
 
@@ -560,8 +562,9 @@ export default async function (pi: ExtensionAPI) {
 
         const discovery = (async () => {
           if (!isCliBinaryAvailable(agent)) {
-            console.debug(
-              `[cli-provider] ${agent}: binary not found, skip registration`,
+            cliProviderLog(
+              "warn",
+              `${agent}: binary not found, skip registration`,
             );
             return { agent, models: [] as DiscoveredCliModel[] };
           }
@@ -594,7 +597,7 @@ export default async function (pi: ExtensionAPI) {
         clearTimeout(timer!);
         return result;
       } catch (err) {
-        console.debug(`[cli-provider] discovery failed for ${agent}:`, err);
+        cliProviderLog("error", `discovery failed for ${agent}`, err);
         const state = agents.get(agent);
         if (state) state.signalReady();
         return { agent, models: [] as DiscoveredCliModel[] };
@@ -609,8 +612,9 @@ export default async function (pi: ExtensionAPI) {
     // Skip registration if probe failed (no AgentState) — prevents
     // registering a provider whose streamCli would always throw.
     if (!agents.has(agent)) {
-      console.debug(
-        `[cli-provider] cli-${agent}: skipped registration (no binary/state)`,
+      cliProviderLog(
+        "warn",
+        `cli-${agent}: skipped registration (no binary/state)`,
       );
       continue;
     }
@@ -630,11 +634,12 @@ export default async function (pi: ExtensionAPI) {
         models,
         streamSimple: streamCli,
       });
-      console.debug(
-        `[cli-provider] cli-${agent}: ${models.length} model(s) registered`,
+      cliProviderLog(
+        "info",
+        `cli-${agent}: ${models.length} model(s) registered`,
       );
     } catch (err) {
-      console.debug(`[cli-provider] cli-${agent}: setup failed:`, err);
+      cliProviderLog("error", `cli-${agent}: setup failed`, err);
     }
   }
 

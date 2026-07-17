@@ -4,6 +4,7 @@
  */
 
 import { unlinkSync } from "node:fs";
+import { cliProviderLog } from "../shared/file-logger.js";
 import { listCliSessions } from "./sessions.js";
 
 export const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
@@ -50,12 +51,17 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
     try {
       unlinkSync(path);
       reaped += 1;
-      console.debug(
-        `[cli-provider] reaped session ${record.agent}/${record.model} ` +
+      cliProviderLog(
+        "info",
+        `reaped session ${record.agent}/${record.model} ` +
           `(status=${record.status}, lastSeen=${record.lastSeenAt})`,
       );
-    } catch {
-      /* ignore */
+    } catch (err) {
+      cliProviderLog(
+        "error",
+        `failed to reap session ${record.agent}/${record.model} at ${path}`,
+        err,
+      );
     }
   }
 
@@ -89,7 +95,7 @@ export function startCliSessionReaper(options?: {
         piSessionId: process.env.PI_SESSION_ID || null,
       });
     } catch (err) {
-      console.debug("[cli-provider] session reaper sweep failed:", err);
+      cliProviderLog("error", "session reaper sweep failed", err);
     }
   }, sweepMs);
   reaperTimer.unref?.();

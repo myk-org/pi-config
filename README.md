@@ -370,6 +370,9 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 `["claude","cursor","gemini"]`). Without those binaries on PATH, `cli-*` models will
 not register or will fail at turn time. See `dev-docs/cli-provider.md`.
 
+**Extension ops logs:** `cli-provider` and dreaming write to `~/.pi/logs/` (not the chat
+UI). Fallback: `$TMPDIR/pi-logs/`. Details in `dev-docs/cli-provider.md` (Logging).
+
 ### Pre-built image
 
 ```bash

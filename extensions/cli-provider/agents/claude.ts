@@ -3,6 +3,7 @@
  */
 
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { cliProviderLog } from "../../shared/file-logger.js";
 import type { CliProviderDef, DiscoveredCliModel } from "../types.js";
 import {
   cacheKeyForFile,
@@ -96,7 +97,7 @@ function discoverClaudeModels(): DiscoveredCliModel[] {
     if (models.length > 0) writeModelCache(key, models);
     return models;
   } catch (err) {
-    console.debug(`[cli-provider] claude: binary catalog failed:`, err);
+    cliProviderLog("error", "claude: binary catalog failed", err);
     return [];
   }
 }

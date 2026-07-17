@@ -86,6 +86,7 @@ Writing effective rules:
 - Extension commands: see `dev-docs/extension-commands.md`
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
+- Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `dev-docs/cli-provider.md` Logging
 - Memory system: see `dev-docs/memory-architecture.md`
 - Enforcement honesty (code vs injected): see `dev-docs/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`
