@@ -12,6 +12,7 @@ import {
   getAsyncLlmSidecar,
   getRegisteredAcpxProviders,
   isAcpxProvider,
+  isAcpxProviderId,
   supportsAsyncLlm,
 } from "../../../extensions/orchestrator/async-capability.js";
 import {
@@ -71,18 +72,26 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
     assert.equal(isAcpxProvider(undefined, tmp), false);
   });
 
-  it("supportsAsyncLlm is false only for registered acpx providers", () => {
+  it("isAcpxProviderId matches any acpx-* string", () => {
+    assert.equal(isAcpxProviderId("acpx-cursor"), true);
+    assert.equal(isAcpxProviderId("acpx-unknown"), true);
+    assert.equal(isAcpxProviderId("cli-cursor"), false);
+    assert.equal(isAcpxProviderId(null), false);
+  });
+
+  it("supportsAsyncLlm is false for any acpx-* provider id", () => {
     writeSettings({ acpx_agents: ["cursor"] });
     assert.equal(supportsAsyncLlm("acpx-cursor", tmp), false);
-    assert.equal(supportsAsyncLlm("acpx-claude", tmp), true);
+    assert.equal(supportsAsyncLlm("acpx-claude", tmp), false);
     assert.equal(supportsAsyncLlm("anthropic", tmp), true);
+    assert.equal(supportsAsyncLlm("cli-cursor", tmp), true);
     assert.equal(supportsAsyncLlm(null, tmp), true);
   });
 
-  it("with empty acpx_agents, acpx-* strings are not treated as acpx", () => {
+  it("with empty acpx_agents, acpx-* still disables async LLM", () => {
     writeSettings({ acpx_agents: [] });
     assert.equal(isAcpxProvider("acpx-cursor", tmp), false);
-    assert.equal(supportsAsyncLlm("acpx-cursor", tmp), true);
+    assert.equal(supportsAsyncLlm("acpx-cursor", tmp), false);
   });
 
   it("returns null sidecar when unset", () => {
@@ -100,6 +109,14 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
     });
   });
 
+  it("rejects acpx-* sidecar providers", () => {
+    writeSettings({
+      async_llm_provider: "acpx-cursor",
+      async_llm_model: "composer-2",
+    });
+    assert.equal(getAsyncLlmSidecar(tmp), null);
+  });
+
   it("requires both provider and model", () => {
     writeSettings({ async_llm_provider: "anthropic" });
     assert.equal(getAsyncLlmSidecar(tmp), null);
@@ -115,7 +132,7 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
     assert.equal(d.action, "keep-async");
   });
 
-  it("registered acpx optional async coerces to sync", () => {
+  it("acpx optional async coerces to sync", () => {
     writeSettings({ acpx_agents: ["cursor"] });
     const d = decideAsyncLlmDispatch({
       parentProvider: "acpx-cursor",
@@ -125,12 +142,35 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
     assert.equal(d.action, "coerce-sync");
   });
 
-  it("unregistered acpx-* string does not coerce", () => {
+  it("unregistered acpx-* string still coerces", () => {
     writeSettings({ acpx_agents: ["cursor"] });
     const d = decideAsyncLlmDispatch({
       parentProvider: "acpx-gemini",
       cwd: tmp,
       mustAsync: false,
+    });
+    assert.equal(d.action, "coerce-sync");
+  });
+
+  it("parentSupportsAsyncLlm false forces coerce even if cwd would differ", () => {
+    writeSettings({ acpx_agents: [] });
+    // Empty acpx_agents + wrong cwd must not reopen keep-async when parent already gated
+    const d = decideAsyncLlmDispatch({
+      parentProvider: "acpx-cursor",
+      cwd: tmp,
+      mustAsync: false,
+      parentSupportsAsyncLlm: false,
+    });
+    assert.equal(d.action, "coerce-sync");
+  });
+
+  it("parentSupportsAsyncLlm true keeps async without re-checking cwd", () => {
+    writeSettings({ acpx_agents: ["cursor"] });
+    const d = decideAsyncLlmDispatch({
+      parentProvider: "acpx-cursor",
+      cwd: tmp,
+      mustAsync: false,
+      parentSupportsAsyncLlm: true,
     });
     assert.equal(d.action, "keep-async");
   });
@@ -141,6 +181,7 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
       parentProvider: "acpx-cursor",
       cwd: tmp,
       mustAsync: true,
+      parentSupportsAsyncLlm: false,
     });
     assert.equal(d.action, "skip");
   });
@@ -155,12 +196,28 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
       parentProvider: "acpx-cursor",
       cwd: tmp,
       mustAsync: true,
+      parentSupportsAsyncLlm: false,
     });
     assert.equal(d.action, "sidecar-async");
     if (d.action === "sidecar-async") {
       assert.equal(d.sidecar.provider, "openai");
       assert.equal(d.sidecar.model, "gpt-5.4");
     }
+  });
+
+  it("must-async skips when sidecar is acpx-*", () => {
+    writeSettings({
+      acpx_agents: ["cursor"],
+      async_llm_provider: "acpx-cursor",
+      async_llm_model: "composer-2",
+    });
+    const d = decideAsyncLlmDispatch({
+      parentProvider: "acpx-cursor",
+      cwd: tmp,
+      mustAsync: true,
+      parentSupportsAsyncLlm: false,
+    });
+    assert.equal(d.action, "skip");
   });
 
   it("reads sidecar from env when file unset", () => {

@@ -362,6 +362,12 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 - **Consistent tooling** — All required tools pre-installed in a single image
 - **Disposable** — Container is destroyed after each session (`--rm`)
 
+**CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
+`cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and
+`agent` (Cursor Agent CLI). Enable with `cli_agents` in settings (e.g.
+`["claude","cursor","gemini"]`). Without those binaries on PATH, `cli-*` models will
+not register or will fail at turn time. See `dev-docs/cli-provider.md`.
+
 ### Pre-built image
 
 ```bash

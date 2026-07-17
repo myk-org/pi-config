@@ -5,6 +5,9 @@
  * entry in `acpx_agents` settings. Child pi processes skip acpx registration
  * (PI_SUBAGENT_CHILD=1), so async children cannot use those parent models.
  *
+ * Capability gate: any provider id starting with `acpx-` → supportsAsyncLlm false.
+ * Registration list (`isAcpxProvider`) still comes from `acpx_agents` settings.
+ *
  * See: https://github.com/myk-org/pi-config/issues/647
  */
 
@@ -32,20 +35,28 @@ export function isAcpxProvider(
   return getRegisteredAcpxProviders(cwd).includes(provider);
 }
 
+/** True when provider id uses the acpx-* namespace (registered or not). */
+export function isAcpxProviderId(
+  provider: string | null | undefined,
+): boolean {
+  return typeof provider === "string" && provider.startsWith("acpx-");
+}
+
 /**
  * Whether detached LLM async agents can inherit the parent model/provider.
- * Native pi providers: true. Registered acpx parents: false.
+ * Native / cli-* : true. Any `acpx-*` provider id: false (children skip acpx load).
+ * `cwd` kept for API stability / settings lookups elsewhere.
  */
 export function supportsAsyncLlm(
   provider: string | null | undefined,
-  cwd: string,
+  _cwd: string,
 ): boolean {
-  return !isAcpxProvider(provider, cwd);
+  return !isAcpxProviderId(provider);
 }
 
 /**
  * Sidecar model for must-async LLM work (dream, fireAndForget) when parent is acpx.
- * Both provider and model must be set. Returns null if incomplete.
+ * Both provider and model must be set. Returns null if incomplete or sidecar is acpx-*.
  */
 export function getAsyncLlmSidecar(cwd: string): AsyncLlmSidecar | null {
   const provider = getSetting(cwd, "async_llm_provider");
@@ -56,7 +67,9 @@ export function getAsyncLlmSidecar(cwd: string): AsyncLlmSidecar | null {
     typeof model === "string" &&
     model.trim()
   ) {
-    return { provider: provider.trim(), model: model.trim() };
+    const p = provider.trim();
+    if (isAcpxProviderId(p)) return null;
+    return { provider: p, model: model.trim() };
   }
   return null;
 }
@@ -70,14 +83,24 @@ export type AsyncDispatchDecision =
 /**
  * Decide how to handle an async LLM request given parent provider + settings.
  * Pure decision helper for subagent/dream/cron (code-enforced paths).
+ *
+ * Pass `parentSupportsAsyncLlm` when the caller already computed capability from the
+ * parent session cwd — do not re-derive it from a different (task) cwd.
+ * `cwd` is used only for sidecar settings lookup.
  */
 export function decideAsyncLlmDispatch(opts: {
   parentProvider?: string | null;
   cwd: string;
   /** fireAndForget / dream / cron — must stay detached when possible */
   mustAsync?: boolean;
+  /** Explicit parent capability; when set, skips supportsAsyncLlm(parent, cwd). */
+  parentSupportsAsyncLlm?: boolean;
 }): AsyncDispatchDecision {
-  if (supportsAsyncLlm(opts.parentProvider, opts.cwd)) {
+  const asyncOk =
+    opts.parentSupportsAsyncLlm !== undefined
+      ? opts.parentSupportsAsyncLlm
+      : supportsAsyncLlm(opts.parentProvider, opts.cwd);
+  if (asyncOk) {
     return { action: "keep-async" };
   }
   const sidecar = getAsyncLlmSidecar(opts.cwd);
@@ -87,7 +110,7 @@ export function decideAsyncLlmDispatch(opts: {
         action: "skip",
         note:
           "Skipped must-async LLM work: parent is acpx and " +
-          "async_llm_provider/async_llm_model are not set.",
+          "async_llm_provider/async_llm_model are not set (or sidecar is acpx-*).",
       };
     }
     return {

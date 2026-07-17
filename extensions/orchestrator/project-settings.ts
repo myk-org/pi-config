@@ -142,9 +142,10 @@ function parsePortEnv(name: string): number | undefined {
 export function parseAgentNameList(value: string | string[] | undefined): string[] {
   if (value === undefined) return [];
   const parts = Array.isArray(value)
-    ? value.map((a) => (typeof a === "string" ? a.trim() : ""))
-    : value.split(",").map((a) => a.trim());
-  return parts.filter((a) => /^[a-z0-9_-]+$/i.test(a));
+    ? value.map((a) => (typeof a === "string" ? a.trim().toLowerCase() : ""))
+    : value.split(",").map((a) => a.trim().toLowerCase());
+  const filtered = parts.filter((a) => /^[a-z0-9_-]+$/.test(a));
+  return [...new Set(filtered)];
 }
 
 /** @deprecated Use parseAgentNameList — kept for existing imports. */

@@ -63,6 +63,31 @@ describe("cli-provider sessions", () => {
     }
   });
 
+  it("loadCliSessionId returns null on malformed JSON", () => {
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-bad-"));
+    process.env.HOME = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "composer-2",
+        piSessionId: "bad",
+      };
+      saveCliSessionId(key, "ok");
+      const rec = loadCliSessionRecord(key)!;
+      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
+      const dir = join(home, ".pi", "cli-sessions");
+      const files = readdirSync(dir);
+      writeFileSync(join(dir, files[0]), "{not-json");
+      assert.equal(loadCliSessionId(key), null);
+      assert.equal(rec.sessionId, "ok");
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("reaps idle session markers", () => {
     const prevHome = process.env.HOME;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-"));

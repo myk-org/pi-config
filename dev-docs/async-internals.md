@@ -6,16 +6,15 @@ Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acp
 provider **does not load** in those children (nested `cursor-agent` hangs), so an
 **acpx parent cannot host async LLM children on the parent model**.
 
-**Detection source of truth:** `acpx_agents` in settings (same list `acpx-provider`
-uses to `registerProvider(\`acpx-${agent}\`)`). Helpers:
+**Detection:**
 
-- `getRegisteredAcpxProviders(cwd)` → `["acpx-cursor", …]`
-- `isAcpxProvider(provider, cwd)` → membership in that list (not a bare `acpx-` prefix)
+- Registration list: `acpx_agents` → `getRegisteredAcpxProviders` / `isAcpxProvider` (which agents we register)
+- Capability gate: **any** provider id starting with `acpx-` → `supportsAsyncLlm` false (`isAcpxProviderId`), even if not in settings — children never load acpx
 
 | Parent provider | `supportsAsyncLlm` | Behavior |
 |-----------------|--------------------|----------|
 | Native (anthropic, openai, …) | `true` | Today's force-async system unchanged |
-| Registered `acpx-${agent}` from `acpx_agents` | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
+| Any `acpx-*` provider id | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
 | `cli-${agent}` from `cli_agents` | `true` | CLI providers load in subagent children — async works; no coerce |
 
 Module: `extensions/orchestrator/async-capability.ts`  

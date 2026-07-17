@@ -239,4 +239,19 @@ describe("extension settings", () => {
 		clearSettingsCache();
 		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
 	});
+
+	it("cli_agents and ACPX_AGENTS normalize mixed case", () => {
+		process.env.CLI_AGENTS = "Cursor,Gemini";
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor", "gemini"]);
+		delete process.env.CLI_AGENTS;
+		process.env.ACPX_AGENTS = "Cursor";
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "acpx_agents"), ["cursor"]);
+	});
+
+	it("parseAgentNameList dedupes after lowercase", () => {
+		writeSettings({ cli_agents: ["Cursor", "cursor", "CURSOR"] });
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor"]);
+	});
 });

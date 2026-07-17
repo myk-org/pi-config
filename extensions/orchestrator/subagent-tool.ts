@@ -1506,6 +1506,7 @@ export function registerSubagentTool(
       }
 
       // acpx parent: coerce LLM async → sync, or use sidecar for fireAndForget must-async.
+      // Capability uses parent session cwd (asyncOk); settingsCwd is only for sidecar lookup.
       if (params.async === true && !asyncOk) {
         const settingsCwd =
           params.cwd ||
@@ -1515,6 +1516,7 @@ export function registerSubagentTool(
           parentProvider,
           cwd: settingsCwd,
           mustAsync: params.fireAndForget === true,
+          parentSupportsAsyncLlm: asyncOk,
         });
         if (decision.action === "skip") {
           return {

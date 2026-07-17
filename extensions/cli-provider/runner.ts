@@ -120,11 +120,24 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
       stderr += d;
     });
 
+    // Attach before any write/end — child may exit immediately (EPIPE).
+    child.stdin?.on("error", () => {
+      /* ignore broken pipe */
+    });
+
     if (promptOnStdin) {
-      child.stdin?.write(opts.prompt);
-      child.stdin?.end();
+      try {
+        child.stdin?.write(opts.prompt);
+        child.stdin?.end();
+      } catch {
+        /* EPIPE if child exits before stdin write */
+      }
     } else {
-      child.stdin?.end();
+      try {
+        child.stdin?.end();
+      } catch {
+        /* ignore */
+      }
     }
 
     child.on("error", (err) => {
