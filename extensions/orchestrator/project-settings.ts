@@ -5,9 +5,9 @@
  * 1. Project .pi/pi-config-settings.json (wins if set)
  * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
- *    ACPX_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
+ *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
  *    PI_ASYNC_LLM_PROVIDER, PI_ASYNC_LLM_MODEL)
- * 4. Default (dream_interval_hours defaults to 3; acpx_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190)
+ * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190)
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -25,6 +25,8 @@ interface ProjectSettings {
   comment_signature?: boolean;
   review_loop_enforcement?: boolean;
   acpx_agents?: string | string[];
+  /** CLI-backed providers to register as cli-${agent} (claude, gemini, cursor). */
+  cli_agents?: string | string[];
   pidash_enable?: boolean;
   pidiff_enable?: boolean;
   pidash_port?: number;
@@ -74,6 +76,11 @@ function parseSettingsFile(filePath: string): ProjectSettings {
       result.acpx_agents = raw.acpx_agents;
     } else if (Array.isArray(raw.acpx_agents)) {
       result.acpx_agents = raw.acpx_agents;
+    }
+    if (typeof raw.cli_agents === "string") {
+      result.cli_agents = raw.cli_agents;
+    } else if (Array.isArray(raw.cli_agents)) {
+      result.cli_agents = raw.cli_agents;
     }
     return result;
   } catch (e: any) {
@@ -131,13 +138,18 @@ function parsePortEnv(name: string): number | undefined {
   return Number.isFinite(port) && port > 0 && port <= 65535 ? port : undefined;
 }
 
-/** Parse acpx agent names — comma-separated string or JSON array. */
-export function parseAcpxAgentList(value: string | string[] | undefined): string[] {
+/** Parse agent name lists (acpx_agents / cli_agents) — comma-separated string or JSON array. */
+export function parseAgentNameList(value: string | string[] | undefined): string[] {
   if (value === undefined) return [];
   const parts = Array.isArray(value)
     ? value.map((a) => (typeof a === "string" ? a.trim() : ""))
     : value.split(",").map((a) => a.trim());
   return parts.filter((a) => /^[a-z0-9_-]+$/i.test(a));
+}
+
+/** @deprecated Use parseAgentNameList — kept for existing imports. */
+export function parseAcpxAgentList(value: string | string[] | undefined): string[] {
+  return parseAgentNameList(value);
 }
 
 function parseNumEnv(name: string): number | undefined {
@@ -207,6 +219,7 @@ export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: "comment_signature"): boolean;
 export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
 export function getSetting(cwd: string, key: "acpx_agents"): string[];
+export function getSetting(cwd: string, key: "cli_agents"): string[];
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
 export function getSetting(cwd: string, key: "pidash_port"): number;
@@ -268,16 +281,33 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
         // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
         // leaving projectValue undefined — fall through to global/env.
         if (projectValue !== undefined) {
-          return parseAcpxAgentList(projectValue);
+          return parseAgentNameList(projectValue);
         }
       }
       const globalAgents = loadGlobalSettings().acpx_agents;
       if (globalAgents !== undefined) {
-        return parseAcpxAgentList(globalAgents);
+        return parseAgentNameList(globalAgents);
       }
       const env = process.env.ACPX_AGENTS;
       if (env !== undefined && env !== "") {
-        return parseAcpxAgentList(env);
+        return parseAgentNameList(env);
+      }
+      return [];
+    }
+    case "cli_agents": {
+      if (projectSettingsFileHasKey(cwd, "cli_agents")) {
+        const projectValue = loadProjectSettings(cwd).cli_agents;
+        if (projectValue !== undefined) {
+          return parseAgentNameList(projectValue);
+        }
+      }
+      const globalAgents = loadGlobalSettings().cli_agents;
+      if (globalAgents !== undefined) {
+        return parseAgentNameList(globalAgents);
+      }
+      const env = process.env.CLI_AGENTS;
+      if (env !== undefined && env !== "") {
+        return parseAgentNameList(env);
       }
       return [];
     }

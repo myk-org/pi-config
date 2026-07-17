@@ -89,6 +89,7 @@ pi-config/
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
+│   ├── cli-provider/               # CLI-backed providers (cli-claude, cli-gemini, cli-cursor)
 │   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool

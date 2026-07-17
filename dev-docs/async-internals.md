@@ -16,9 +16,10 @@ uses to `registerProvider(\`acpx-${agent}\`)`). Helpers:
 |-----------------|--------------------|----------|
 | Native (anthropic, openai, …) | `true` | Today's force-async system unchanged |
 | Registered `acpx-${agent}` from `acpx_agents` | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
+| `cli-${agent}` from `cli_agents` | `true` | CLI providers load in subagent children — async works; no coerce |
 
 Module: `extensions/orchestrator/async-capability.ts`  
-Settings: `acpx_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`)
+Settings: `acpx_agents`, `cli_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
 
 **Code-enforced (not prompt-only):**
 

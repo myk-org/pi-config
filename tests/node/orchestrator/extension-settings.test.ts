@@ -36,6 +36,7 @@ describe("extension settings", () => {
 		PI_ASYNC_LLM_PROVIDER: process.env.PI_ASYNC_LLM_PROVIDER,
 		PI_ASYNC_LLM_MODEL: process.env.PI_ASYNC_LLM_MODEL,
 		ACPX_AGENTS: process.env.ACPX_AGENTS,
+		CLI_AGENTS: process.env.CLI_AGENTS,
 	};
 
 	beforeEach(() => {
@@ -51,6 +52,7 @@ describe("extension settings", () => {
 		delete process.env.PI_ASYNC_LLM_PROVIDER;
 		delete process.env.PI_ASYNC_LLM_MODEL;
 		delete process.env.ACPX_AGENTS;
+		delete process.env.CLI_AGENTS;
 	});
 
 	afterEach(() => {
@@ -223,5 +225,18 @@ describe("extension settings", () => {
 		clearSettingsCache();
 		assert.equal(getSetting(tmp, "async_llm_provider"), "openai");
 		assert.equal(getSetting(tmp, "async_llm_model"), "gpt-5.4");
+	});
+
+	it("cli_agents defaults empty", () => {
+		assert.deepEqual(getSetting(tmp, "cli_agents"), []);
+	});
+
+	it("cli_agents from settings and env", () => {
+		writeSettings({ cli_agents: ["claude", "cursor"] });
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["claude", "cursor"]);
+		writeSettings({});
+		process.env.CLI_AGENTS = "gemini";
+		clearSettingsCache();
+		assert.deepEqual(getSetting(tmp, "cli_agents"), ["gemini"]);
 	});
 });
