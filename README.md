@@ -601,6 +601,7 @@ PI_PIDIFF_ENABLE=false pi
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
 | `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
 | `jq` | JSON processing |
+| `rg` (ripgrep) | Fast recursive search |
 | `cr` | CodeRabbit CLI — local AI code reviews |
 | `curl` | HTTP requests |
 
