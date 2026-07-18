@@ -522,7 +522,7 @@ export function registerPidash(
         try {
           if (ctx.hasUI) {
             const link = hyperlink("pi-dash", `http://localhost:${pidashPort}`);
-            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", `🌐 ${link}`));
+            ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", link));
           }
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect
