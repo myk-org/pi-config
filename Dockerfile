@@ -25,6 +25,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   procps \
   psmisc \
   acl \
+  ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI (signed repo, uses curl+gpg from above)
