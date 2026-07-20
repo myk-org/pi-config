@@ -27,9 +27,10 @@ function isActivePiSessionMarker(
   recordPiSessionId: string,
   activePiSessionId: string | null | undefined,
 ): boolean {
-  // Unknown active id → do not treat markers as protected; idle running may be
-  // reaped so ~/.pi/cli-sessions/ cannot grow without bound.
-  if (!activePiSessionId) return false;
+  // Unknown active id → protect all running markers so the startup window
+  // (before before_agent_start/session_start) cannot wipe /reload continuity.
+  // Once bound, only the active piSessionId is protected.
+  if (!activePiSessionId) return true;
   return recordPiSessionId === activePiSessionId;
 }
 
@@ -111,8 +112,9 @@ export function startCliSessionReaper(options?: {
       activePiSessionId,
     });
   };
-  // Immediate sweep once
-  sweep();
+  // Do not sweep immediately — activePiSessionId is usually still unset at
+  // extension load; waiting for the first interval (or a later sweep after
+  // session bind) avoids deleting /reload resume markers.
   reaperTimer = setInterval(() => {
     try {
       sweep();

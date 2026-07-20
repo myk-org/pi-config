@@ -26,10 +26,12 @@ Empty / unset → extension registers nothing.
 3. **Discover models from the CLI only** (see below) — no API keys, no cloud list APIs
 4. Register `cli-${agent}` with discovered models, or `${agent}:default` if discovery returns empty
 5. Skip registration if binary missing (no agent state)
-6. Start session reaper (5m sweep) for `~/.pi/cli-sessions/` — never deletes
-   `status=running` markers for the **active** pi session id (mid-session idle
-   must not orphan the live CLI chat — issue #661). Idle markers from other
-   `piSessionId`s (or legacy `default`) may be reaped even if still `running`.
+6. Start session reaper (5m sweep; no immediate sweep at load) for
+   `~/.pi/cli-sessions/` — never deletes `status=running` markers for the
+   **active** pi session id (mid-session idle must not orphan the live CLI chat —
+   issue #661). While the active id is unknown, all running markers are kept.
+   Idle markers from other `piSessionId`s (or legacy `default`) may be reaped
+   once the active id is known, even if still `running`.
 7. On `session_start`:
    - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
    - `reason=resume` / `new` (or pi session id change): clear markers for this
@@ -106,10 +108,14 @@ File-backed bindings keyed by cwd + agent + model + **pi session UUID**
 (from `sessionManager.getSessionId()`, falling back to `"default"`):
 
 - Fields: `sessionId`, `status`, `createdAt`, `lastSeenAt`, `resumeFailures`, `piSessionId`
-- **Reaper:** every 5m, drop markers with `status=stopped` idle ≥ 30m — never
-  deletes `status=running` (issue #661)
+- **Reaper:** every 5m, drop idle markers (≥ 30m). Never deletes `status=running`
+  for the **active** `piSessionId`. Idle running markers from other sessions (or
+  legacy `default`) may be reaped once the active id is known. While the active
+  id is still unknown (startup before `session_start`), all running markers are
+  kept so `/reload` continuity is not wiped (issue #661)
 - `/reload` keeps markers so `--resume` can continue
-- `/resume` / `/new` clears cwd markers and forces a history re-seed on the next turn
+- `/resume` / `/new` clears this session’s markers (+ legacy `default`) and forces
+  a history re-seed on the next turn
 
 ## Streaming flags
 

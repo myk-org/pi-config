@@ -182,9 +182,21 @@ describe("cli-provider sessions", () => {
       resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed: true }),
       { useCliSession: false, seedHistory: true },
     );
+  });
+
+  it("resolveCliHistorySeed resumes CLI session when forceHistorySeed is false", async () => {
+    const { resolveCliHistorySeed } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
     assert.deepEqual(
       resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed: false }),
       { useCliSession: true, seedHistory: false },
+    );
+  });
+
+  it("resolveCliHistorySeed seeds history when no CLI session exists", async () => {
+    const { resolveCliHistorySeed } = await import(
+      "../../../extensions/cli-provider/sessions.js"
     );
     assert.deepEqual(
       resolveCliHistorySeed({ hasCliSession: false, forceHistorySeed: false }),

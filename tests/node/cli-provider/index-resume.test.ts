@@ -281,7 +281,7 @@ describe("reaper vs active piSessionId", () => {
     }
   });
 
-  it("reaps idle running markers when active piSessionId is unknown", () => {
+  it("keeps idle running markers when active piSessionId is unknown", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-unknown-"));
@@ -310,8 +310,8 @@ describe("reaper vs active piSessionId", () => {
         inactivityThresholdMs: 1_000,
         activePiSessionId: null,
       });
-      assert.equal(n, 1);
-      assert.equal(loadCliSessionId(key), null);
+      assert.equal(n, 0);
+      assert.equal(loadCliSessionId(key), "orphan-id");
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
