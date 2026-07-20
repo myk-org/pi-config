@@ -13,6 +13,7 @@ import {
   loadCliSessionRecord,
   saveCliSessionId,
   touchCliSession,
+  setCliSessionMarkerMeta,
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
@@ -466,16 +467,9 @@ describe("cli-provider sessions", () => {
         piSessionId: "s1",
       };
       saveCliSessionId(key, "live-id");
-      const rec = loadCliSessionRecord(key)!;
-      const path = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(path);
-      writeFileSync(
-        join(path, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "running",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
+        true,
       );
       const n = reapStaleCliSessions({
         inactivityThresholdMs: 1_000,
@@ -506,17 +500,9 @@ describe("cli-provider sessions", () => {
         piSessionId: "s1",
       };
       saveCliSessionId(key, "old-id");
-      const rec = loadCliSessionRecord(key)!;
-      const path = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(path);
-      assert.equal(files.length, 1);
-      writeFileSync(
-        join(path, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "stopped",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "stopped", idleMs: 60_000 }),
+        true,
       );
       const n = reapStaleCliSessions({ inactivityThresholdMs: 1_000 });
       assert.equal(n, 1);

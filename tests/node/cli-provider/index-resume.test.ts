@@ -5,10 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
-  readFileSync,
-  readdirSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -19,6 +16,7 @@ import {
   loadCliSessionId,
   resolveCliHistorySeed,
   saveCliSessionId,
+  setCliSessionMarkerMeta,
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions, resolveReaperActivePiSessionId, startCliSessionReaper, stopCliSessionReaper } from "../../../extensions/cli-provider/session-reaper.js";
@@ -262,16 +260,9 @@ describe("reaper vs active piSessionId", () => {
         piSessionId: "active-sid",
       };
       saveCliSessionId(key, "live-id");
-      const dir = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(dir);
-      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
-      writeFileSync(
-        join(dir, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "running",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
+        true,
       );
       const n = reapStaleCliSessions({
         inactivityThresholdMs: 1_000,
@@ -302,16 +293,9 @@ describe("reaper vs active piSessionId", () => {
         piSessionId: "old-sid",
       };
       saveCliSessionId(key, "orphan-id");
-      const dir = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(dir);
-      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
-      writeFileSync(
-        join(dir, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "running",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
+        true,
       );
       const n = reapStaleCliSessions({
         inactivityThresholdMs: 1_000,
@@ -342,16 +326,9 @@ describe("reaper vs active piSessionId", () => {
         piSessionId: "orphan",
       };
       saveCliSessionId(key, "orphan-id");
-      const dir = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(dir);
-      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
-      writeFileSync(
-        join(dir, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "running",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
+        true,
       );
       const n = reapStaleCliSessions({
         inactivityThresholdMs: 1_000,
@@ -430,16 +407,9 @@ describe("startCliSessionReaper scheduling", () => {
         piSessionId: "other",
       };
       saveCliSessionId(key, "orphan-id");
-      const dir = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(dir);
-      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
-      writeFileSync(
-        join(dir, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "running",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
+        true,
       );
 
       startCliSessionReaper({
@@ -477,16 +447,9 @@ describe("startCliSessionReaper scheduling", () => {
         piSessionId: "other-sid",
       };
       saveCliSessionId(other, "other-cli");
-      const dir = join(home, ".pi", "cli-sessions");
-      const files = readdirSync(dir);
-      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
-      writeFileSync(
-        join(dir, files[0]),
-        JSON.stringify({
-          ...rec,
-          status: "running",
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(other, { status: "running", idleMs: 60_000 }),
+        true,
       );
 
       startCliSessionReaper({

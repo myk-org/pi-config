@@ -117,6 +117,34 @@ export function touchCliSession(key: CliSessionKey): void {
   });
 }
 
+/**
+ * Update status / lastSeenAt on an existing marker without touching sessionId.
+ * Used by tests (and callers) that need idle/running fixtures without rewriting
+ * marker files by path.
+ */
+export function setCliSessionMarkerMeta(
+  key: CliSessionKey,
+  opts: {
+    status?: "running" | "stopped";
+    /** Absolute ISO timestamp, or milliseconds ago from now when `idleMs` set. */
+    lastSeenAt?: string;
+    idleMs?: number;
+  },
+): boolean {
+  const existing = readRecord(sessionFile(key));
+  if (!existing) return false;
+  let lastSeenAt = opts.lastSeenAt ?? existing.lastSeenAt;
+  if (typeof opts.idleMs === "number") {
+    lastSeenAt = new Date(Date.now() - opts.idleMs).toISOString();
+  }
+  writeRecord(key, {
+    ...existing,
+    status: opts.status ?? existing.status,
+    lastSeenAt,
+  });
+  return true;
+}
+
 export function markCliSessionStopped(key: CliSessionKey): void {
   const existing = readRecord(sessionFile(key));
   if (!existing) return;
