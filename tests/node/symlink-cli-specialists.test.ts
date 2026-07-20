@@ -127,4 +127,21 @@ describe("symlink-cli-specialists.sh", () => {
     assert.match(r.stderr, /skip \.cursor\/agents \(symlinked agents dir\)/);
     assert.ok(!existsSync(join(outside, "github-expert.md")));
   });
+
+  it("continues other CLIs when .cursor is a regular file", () => {
+    const isolated = join(root, "project-cursor-file");
+    seedAgents(agents);
+    mkdirSync(isolated, { recursive: true });
+    writeFileSync(join(isolated, ".cursor"), "not-a-dir\n");
+
+    const r = spawnSync("bash", [script, agents, isolated], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    assert.match(r.stderr, /skip \.cursor\/agents \(\.cursor is not a directory\)/);
+    assert.ok(
+      lstatSync(join(isolated, ".claude/agents", "github-expert.md")).isSymbolicLink(),
+    );
+    assert.ok(
+      lstatSync(join(isolated, ".gemini/agents", "github-expert.md")).isSymbolicLink(),
+    );
+  });
 });

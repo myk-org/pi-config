@@ -37,13 +37,25 @@ for dest_rel in .cursor/agents .claude/agents .gemini/agents; do
     continue
   fi
 
+  if [ -e "$top_path" ] && [ ! -d "$top_path" ]; then
+    echo "symlink-cli-specialists: skip $dest_rel ($top is not a directory)" >&2
+    continue
+  fi
+
   dest_dir="$project_root/$dest_rel"
   if [ -L "$dest_dir" ]; then
     echo "symlink-cli-specialists: skip $dest_rel (symlinked agents dir)" >&2
     continue
   fi
+  if [ -e "$dest_dir" ] && [ ! -d "$dest_dir" ]; then
+    echo "symlink-cli-specialists: skip $dest_rel (agents path is not a directory)" >&2
+    continue
+  fi
 
-  mkdir -p "$dest_dir"
+  if ! mkdir -p "$dest_dir"; then
+    echo "symlink-cli-specialists: skip $dest_rel (mkdir failed)" >&2
+    continue
+  fi
   if [ -L "$dest_dir" ] || [ ! -d "$dest_dir" ]; then
     echo "symlink-cli-specialists: skip $dest_rel (dest not a real directory)" >&2
     continue

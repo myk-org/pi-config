@@ -165,8 +165,6 @@ async function runCliTurnWithResumeRecover(opts: {
 
   try {
     const result = await runOnce(opts.sessionId, opts.prompt);
-    if (result.sessionId) saveCliSessionId(opts.key, result.sessionId);
-    else if (opts.sessionId) touchCliSession(opts.key);
     return { result, resumedFresh: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -183,7 +181,6 @@ async function runCliTurnWithResumeRecover(opts: {
       opts.systemPrompt,
     );
     const result = await runOnce(null, prompt);
-    if (result.sessionId) saveCliSessionId(opts.key, result.sessionId);
     return { result, resumedFresh: true };
   }
 }
