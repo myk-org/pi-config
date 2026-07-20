@@ -345,10 +345,16 @@ describe("startCliSessionReaper scheduling", () => {
       resolveReaperActivePiSessionId(() => "from-getter", "from-env"),
       "from-getter",
     );
+  });
+
+  it("resolveReaperActivePiSessionId falls back to env when getter returns null", () => {
     assert.equal(
       resolveReaperActivePiSessionId(() => null, "from-env"),
       "from-env",
     );
+  });
+
+  it("resolveReaperActivePiSessionId falls back to env when getter returns empty", () => {
     assert.equal(
       resolveReaperActivePiSessionId(() => "", "from-env"),
       "from-env",
