@@ -121,6 +121,53 @@ describe("/resume reseed path (markers + history seed)", () => {
     }
   });
 
+  it("resume from bound sid does not clear concurrent default markers", () => {
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-resume-no-cross-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const cwd = "/proj-concurrent";
+      const mine: CliSessionKey = {
+        cwd,
+        agent: "cursor",
+        model: "composer",
+        piSessionId: "bound-sid",
+      };
+      const concurrentDefault: CliSessionKey = {
+        cwd,
+        agent: "cursor",
+        model: "composer",
+        piSessionId: "default",
+      };
+      saveCliSessionId(mine, "mine-cli");
+      saveCliSessionId(concurrentDefault, "other-process-cli");
+
+      const prevSid = "bound-sid";
+      const includeLegacyDefault =
+        prevSid == null || prevSid === "" || prevSid === "default";
+      assert.equal(includeLegacyDefault, false);
+
+      const cleared = clearCliSessionsForPiSession(cwd, "new-sid", {
+        includeLegacyDefault,
+      });
+      // Also clear previous bound sid (index.ts path when prev !== readSid)
+      const clearedPrev = clearCliSessionsForPiSession(cwd, prevSid, {
+        includeLegacyDefault: false,
+      });
+      assert.equal(cleared + clearedPrev, 1);
+      assert.equal(loadCliSessionId(mine), null);
+      assert.equal(loadCliSessionId(concurrentDefault), "other-process-cli");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("forces history seed after resume decision", () => {
     const decision = decideCliSessionStartReseed({
       reason: "resume",
@@ -447,7 +494,10 @@ describe("startCliSessionReaper scheduling", () => {
         inactivityThresholdMs: 1_000,
         getActivePiSessionId: () => "current-sid",
       });
-      await new Promise((r) => setTimeout(r, 120));
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline && loadCliSessionId(other) !== null) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
       assert.equal(loadCliSessionId(other), null);
     } finally {
       stopCliSessionReaper();

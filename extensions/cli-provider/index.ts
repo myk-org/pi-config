@@ -646,7 +646,10 @@ export default async function (pi: ExtensionAPI) {
     }
 
     let cleared = clearCliSessionsForPiSession(projectCwd, readSid, {
-      includeLegacyDefault: true,
+      // Only wipe shared legacy `default` when *this* process previously used
+      // that bucket — otherwise concurrent sessions still on default survive.
+      includeLegacyDefault:
+        prevSid == null || prevSid === "" || prevSid === "default",
     });
     // If manager returned null, also drop markers for the previous sid so we
     // do not leave a protected running marker under a stale UUID.

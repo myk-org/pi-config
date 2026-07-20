@@ -35,7 +35,7 @@ describe("cli-provider sessions", () => {
     assert.equal(shouldRetryWithoutResume("CLI agent exited 1: auth failed"), false);
   });
 
-  it("does not treat SIGTERM/abort exits as dead resume (issue #661)", async () => {
+  it("does not treat exit 143 as dead resume", async () => {
     const { shouldRetryWithoutResume } = await import(
       "../../../extensions/cli-provider/sessions.js"
     );
@@ -43,13 +43,31 @@ describe("cli-provider sessions", () => {
       shouldRetryWithoutResume("CLI agent exited 143: no output"),
       false,
     );
+  });
+
+  it("does not treat exit 130 as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
     assert.equal(
       shouldRetryWithoutResume("CLI agent exited 130: no output"),
       false,
     );
+  });
+
+  it("does not treat exit 137 as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
     assert.equal(
       shouldRetryWithoutResume("CLI agent exited 137: no output"),
       false,
+    );
+  });
+
+  it("does not treat aborted wording as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
     );
     assert.equal(shouldRetryWithoutResume("CLI call aborted"), false);
   });
@@ -140,6 +158,47 @@ describe("cli-provider sessions", () => {
       }
       assert.equal(loadCliSessionId(real), null);
       assert.equal(loadCliSessionId(legacy), "stale-from-old-process");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("clearCliSessionsForPiSession keeps default when includeLegacyDefault is false", async () => {
+    const { clearCliSessionsForPiSession } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-no-legacy-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const keyMine: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "mine",
+      };
+      const keyLegacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      saveCliSessionId(keyMine, "id-mine");
+      saveCliSessionId(keyLegacy, "id-other-process");
+      assert.equal(
+        clearCliSessionsForPiSession("/proj", "mine", {
+          includeLegacyDefault: false,
+        }),
+        1,
+      );
+      assert.equal(loadCliSessionId(keyMine), null);
+      assert.equal(loadCliSessionId(keyLegacy), "id-other-process");
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
