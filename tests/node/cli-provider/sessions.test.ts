@@ -54,13 +54,50 @@ describe("cli-provider sessions", () => {
     assert.equal(shouldRetryWithoutResume("CLI call aborted"), false);
   });
 
+  it("adoptLegacyCliSessionMarker moves default bucket onto real sid", async () => {
+    const { adoptLegacyCliSessionMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-adopt-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const legacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      const real: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "real-sid",
+      };
+      saveCliSessionId(legacy, "legacy-cli");
+      assert.equal(adoptLegacyCliSessionMarker(real), true);
+      assert.equal(loadCliSessionId(real), "legacy-cli");
+      assert.equal(loadCliSessionId(legacy), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("clearCliSessionsForPiSession removes only matching sid (keeps other sessions)", async () => {
     const { clearCliSessionsForPiSession } = await import(
       "../../../extensions/cli-provider/sessions.js"
     );
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-scoped-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const keyMine: CliSessionKey = {
         cwd: "/proj",
@@ -93,7 +130,10 @@ describe("cli-provider sessions", () => {
       assert.equal(loadCliSessionId(keyLegacy), null);
       assert.equal(loadCliSessionId(keyOther), "id-other");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -103,8 +143,10 @@ describe("cli-provider sessions", () => {
       "../../../extensions/cli-provider/sessions.js"
     );
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-cwd-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const keyA: CliSessionKey = {
         cwd: "/proj-a",
@@ -124,7 +166,10 @@ describe("cli-provider sessions", () => {
       assert.equal(loadCliSessionId(keyA), null);
       assert.equal(loadCliSessionId(keyB), "id-b");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -149,8 +194,10 @@ describe("cli-provider sessions", () => {
 
   it("saves then loads session id", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -163,15 +210,20 @@ describe("cli-provider sessions", () => {
       const before = loadCliSessionRecord(key)!;
       assert.equal(before.status, "running");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("touchCliSession advances lastSeenAt", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-touch-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -184,15 +236,20 @@ describe("cli-provider sessions", () => {
       touchCliSession(key);
       assert.ok(loadCliSessionRecord(key)!.lastSeenAt >= oldSeen);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("clearCliSessionId removes the marker", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-clear-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -204,15 +261,20 @@ describe("cli-provider sessions", () => {
       clearCliSessionId(key);
       assert.equal(loadCliSessionId(key), null);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("loadCliSessionId returns null on malformed JSON", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-bad-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -228,15 +290,20 @@ describe("cli-provider sessions", () => {
       assert.equal(loadCliSessionId(key), null);
       assert.equal(rec.sessionId, "ok");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("does not reap idle running markers for the active pi session (issue #661)", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-running-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -263,15 +330,20 @@ describe("cli-provider sessions", () => {
       assert.equal(n, 0);
       assert.equal(loadCliSessionId(key), "live-id");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("reaps idle stopped session markers", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -296,7 +368,10 @@ describe("cli-provider sessions", () => {
       assert.equal(n, 1);
       assert.equal(loadCliSessionId(key), null);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });

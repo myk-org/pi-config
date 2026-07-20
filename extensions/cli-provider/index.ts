@@ -38,6 +38,7 @@ import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
+  adoptLegacyCliSessionMarker,
   applySystemPromptToCliPrompt,
   clearCliSessionsForPiSession,
   decideCliSessionStartReseed,
@@ -119,6 +120,17 @@ function sessionKeyFor(
   };
 }
 
+/** Bind activePiSessionId from sessionManager when available (before first turn). */
+function bindActivePiSessionId(ctx: {
+  sessionManager?: { getSessionId?: () => string };
+}): void {
+  const sid =
+    typeof ctx.sessionManager?.getSessionId === "function"
+      ? ctx.sessionManager.getSessionId() || null
+      : null;
+  if (sid) activePiSessionId = sid;
+}
+
 /**
  * Run CLI turn with resume recovery: if --resume fails, clear marker,
  * re-seed history, retry once without resume (t3 recover pattern).
@@ -190,10 +202,16 @@ function ensureSession(
   state.sessionKeys.set(handleKey, key);
 
   const sessionId = loadCliSessionId(key);
+  // First turn may have written under legacy `default` before session_start;
+  // adopt that marker once we have a real piSessionId.
+  if (!sessionId && key.piSessionId && key.piSessionId !== "default") {
+    adoptLegacyCliSessionMarker(key);
+  }
+  const resolvedSessionId = loadCliSessionId(key);
   const needsSystemPrompt =
     !state.systemPromptSent.has(handleKey) && !!systemPrompt;
 
-  return { sessionId, needsSystemPrompt, key };
+  return { sessionId: resolvedSessionId, needsSystemPrompt, key };
 }
 
 // =============================================================================
@@ -573,6 +591,12 @@ export default async function (pi: ExtensionAPI) {
     getActivePiSessionId: () => activePiSessionId,
   });
 
+  // session_start may fire after the first prompt path begins — bind early so
+  // markers are not written under the legacy `default` bucket then forked.
+  pi.on("before_agent_start", (_event, ctx) => {
+    bindActivePiSessionId(ctx);
+  });
+
   // Bind CLI markers to the real pi session UUID; invalidate on /resume|/new.
   pi.on("session_start", (event, ctx) => {
     const reason =
@@ -584,7 +608,7 @@ export default async function (pi: ExtensionAPI) {
         ? ctx.sessionManager.getSessionId() || null
         : null;
     const prevSid = activePiSessionId;
-    activePiSessionId = sid;
+    if (sid) activePiSessionId = sid;
 
     const decision = decideCliSessionStartReseed({
       reason,

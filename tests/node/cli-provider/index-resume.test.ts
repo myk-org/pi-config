@@ -78,8 +78,10 @@ describe("decideCliSessionStartReseed (/resume contract)", () => {
 describe("/resume reseed path (markers + history seed)", () => {
   it("clears matching piSession markers on resume", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-resume-clear-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const cwd = "/proj-resume";
       const key: CliSessionKey = {
@@ -111,7 +113,10 @@ describe("/resume reseed path (markers + history seed)", () => {
       assert.equal(loadCliSessionId(key), null);
       assert.equal(loadCliSessionId(other), "other-cli-chat");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -157,8 +162,10 @@ describe("/resume reseed path (markers + history seed)", () => {
 
   it("reload does not clear markers", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reload-keep-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const cwd = "/proj-reload";
       const key: CliSessionKey = {
@@ -184,7 +191,10 @@ describe("/resume reseed path (markers + history seed)", () => {
         { useCliSession: true, seedHistory: false },
       );
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -193,8 +203,10 @@ describe("/resume reseed path (markers + history seed)", () => {
 describe("reaper vs active piSessionId", () => {
   it("does not reap idle running marker for the active pi session", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-active-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -221,15 +233,20 @@ describe("reaper vs active piSessionId", () => {
       assert.equal(n, 0);
       assert.equal(loadCliSessionId(key), "live-id");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("reaps idle running marker from a different piSessionId", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-other-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -256,15 +273,20 @@ describe("reaper vs active piSessionId", () => {
       assert.equal(n, 1);
       assert.equal(loadCliSessionId(key), null);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("reaps idle running markers when active piSessionId is unknown", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-unknown-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -291,7 +313,10 @@ describe("reaper vs active piSessionId", () => {
       assert.equal(n, 1);
       assert.equal(loadCliSessionId(key), null);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });

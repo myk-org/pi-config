@@ -136,6 +136,22 @@ export function clearCliSessionId(key: CliSessionKey): void {
   }
 }
 
+/**
+ * If a real piSessionId key has no marker but the legacy `default` bucket does,
+ * move the CLI resume id onto the real key (avoids mid-session fork when
+ * activePiSessionId becomes available after the first turn).
+ */
+export function adoptLegacyCliSessionMarker(key: CliSessionKey): boolean {
+  if (!key.piSessionId || key.piSessionId === "default") return false;
+  if (loadCliSessionId(key)) return false;
+  const legacy: CliSessionKey = { ...key, piSessionId: "default" };
+  const legacyId = loadCliSessionId(legacy);
+  if (!legacyId) return false;
+  saveCliSessionId(key, legacyId);
+  clearCliSessionId(legacy);
+  return true;
+}
+
 export function incrementResumeFailure(key: CliSessionKey): number {
   const existing = readRecord(sessionFile(key));
   if (!existing) return 1;
