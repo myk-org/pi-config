@@ -35,6 +35,74 @@ describe("cli-provider sessions", () => {
     assert.equal(shouldRetryWithoutResume("CLI agent exited 1: auth failed"), false);
   });
 
+  it("does not treat SIGTERM/abort exits as dead resume (issue #661)", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.equal(
+      shouldRetryWithoutResume("CLI agent exited 143: no output"),
+      false,
+    );
+    assert.equal(
+      shouldRetryWithoutResume("CLI agent exited 130: no output"),
+      false,
+    );
+    assert.equal(
+      shouldRetryWithoutResume("CLI agent exited 137: no output"),
+      false,
+    );
+    assert.equal(shouldRetryWithoutResume("CLI call aborted"), false);
+  });
+
+  it("clearCliSessionsForCwd removes all markers for that cwd", async () => {
+    const { clearCliSessionsForCwd } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-cwd-"));
+    process.env.HOME = home;
+    try {
+      const keyA: CliSessionKey = {
+        cwd: "/proj-a",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "s1",
+      };
+      const keyB: CliSessionKey = {
+        cwd: "/proj-b",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "s1",
+      };
+      saveCliSessionId(keyA, "id-a");
+      saveCliSessionId(keyB, "id-b");
+      assert.equal(clearCliSessionsForCwd("/proj-a"), 1);
+      assert.equal(loadCliSessionId(keyA), null);
+      assert.equal(loadCliSessionId(keyB), "id-b");
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveCliHistorySeed forces seed when forceHistorySeed is set", async () => {
+    const { resolveCliHistorySeed } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed: true }),
+      { useCliSession: false, seedHistory: true },
+    );
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed: false }),
+      { useCliSession: true, seedHistory: false },
+    );
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: false, forceHistorySeed: false }),
+      { useCliSession: false, seedHistory: true },
+    );
+  });
+
   it("saves then loads session id", () => {
     const prevHome = process.env.HOME;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-"));
@@ -122,7 +190,40 @@ describe("cli-provider sessions", () => {
     }
   });
 
-  it("reaps idle session markers", () => {
+  it("does not reap idle running markers (issue #661)", () => {
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-reap-running-"));
+    process.env.HOME = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "gemini",
+        model: "flash",
+        piSessionId: "s1",
+      };
+      saveCliSessionId(key, "live-id");
+      const rec = loadCliSessionRecord(key)!;
+      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
+      const path = join(home, ".pi", "cli-sessions");
+      const files = readdirSync(path);
+      writeFileSync(
+        join(path, files[0]),
+        JSON.stringify({
+          ...rec,
+          status: "running",
+          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+      );
+      const n = reapStaleCliSessions({ inactivityThresholdMs: 1_000 });
+      assert.equal(n, 0);
+      assert.equal(loadCliSessionId(key), "live-id");
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reaps idle stopped session markers", () => {
     const prevHome = process.env.HOME;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-"));
     process.env.HOME = home;
@@ -134,10 +235,8 @@ describe("cli-provider sessions", () => {
         piSessionId: "s1",
       };
       saveCliSessionId(key, "old-id");
-      // Backdate lastSeen by rewriting file via save then monkey with record
       const rec = loadCliSessionRecord(key)!;
       const path = join(home, ".pi", "cli-sessions");
-      // Use reap with tiny threshold after touching file mtime via write of old lastSeen
       const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
       const files = readdirSync(path);
       assert.equal(files.length, 1);
@@ -145,6 +244,7 @@ describe("cli-provider sessions", () => {
         join(path, files[0]),
         JSON.stringify({
           ...rec,
+          status: "stopped",
           lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
         }),
       );

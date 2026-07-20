@@ -182,11 +182,50 @@ export function isCliResumeFailure(message: string): boolean {
   );
 }
 
+/** Exit codes that mean abort/kill — not a dead resume id (issue #661). */
+const ABORT_EXIT_RE = /exited (130|137|143)\b/i;
+
 /**
  * Whether a failed turn that used --resume should clear the marker and retry.
- * Includes explicit resume errors and empty non-zero exits (common for dead ids).
+ * Explicit resume errors and empty non-zero exits (dead ids) retry.
+ * SIGINT(130) / SIGKILL(137) / SIGTERM(143) keep the marker — abort ≠ invalid id.
  */
 export function shouldRetryWithoutResume(message: string): boolean {
   if (isCliResumeFailure(message)) return true;
+  if (ABORT_EXIT_RE.test(message)) return false;
+  if (/\b(aborted|sigterm|sigint|sigkill|cancelled|canceled)\b/i.test(message)) {
+    return false;
+  }
   return /exited [1-9]\d*(?::\s*(?:no output)?\s*)?$/i.test(message.trim());
+}
+
+/**
+ * Decide whether this turn must seed pi history into a fresh CLI session.
+ */
+export function resolveCliHistorySeed(opts: {
+  hasCliSession: boolean;
+  forceHistorySeed: boolean;
+}): { useCliSession: boolean; seedHistory: boolean } {
+  if (opts.forceHistorySeed) {
+    return { useCliSession: false, seedHistory: true };
+  }
+  return {
+    useCliSession: opts.hasCliSession,
+    seedHistory: !opts.hasCliSession,
+  };
+}
+
+/** Unlink all CLI session markers for a project cwd (e.g. after pi /resume). */
+export function clearCliSessionsForCwd(cwd: string): number {
+  let n = 0;
+  for (const { path, record } of listCliSessions()) {
+    if (record.cwd !== cwd) continue;
+    try {
+      unlinkSync(path);
+      n += 1;
+    } catch {
+      /* ignore */
+    }
+  }
+  return n;
 }

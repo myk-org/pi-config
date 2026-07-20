@@ -71,6 +71,19 @@ add_to_gitignore() {
 }
 add_to_gitignore '.pi/'
 add_to_gitignore '.worktrees/'
+# CLI specialist agents materialised under the mounted project (see symlink-cli-specialists.sh)
+add_to_gitignore '.cursor/agents/'
+add_to_gitignore '.claude/agents/'
+add_to_gitignore '.gemini/agents/'
 
+# Symlink package agents into PWD for Cursor/Claude/Gemini discovery (container only).
+# Native users place these manually — see README / cli-provider.md.
+AGENTS_SRC="$PI_PKG_DIR/myk-org/pi-config/agents"
+SYMLINK_SCRIPT="$PI_PKG_DIR/myk-org/pi-config/scripts/symlink-cli-specialists.sh"
+if [ -d "$AGENTS_SRC" ] && [ -x "$SYMLINK_SCRIPT" ]; then
+    "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD" || true
+elif [ -d "$AGENTS_SRC" ] && [ -f "$SYMLINK_SCRIPT" ]; then
+    bash "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD" || true
+fi
 
 exec pi "$@"

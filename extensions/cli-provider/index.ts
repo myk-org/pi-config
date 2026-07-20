@@ -38,7 +38,9 @@ import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
+  clearCliSessionsForCwd,
   loadCliSessionId,
+  resolveCliHistorySeed,
   saveCliSessionId,
   shouldRetryWithoutResume,
   touchCliSession,
@@ -63,6 +65,7 @@ export {
   discoverCliModelIds,
   discoverCliModelsDetailed,
   modelIdToDisplayName,
+  resolveCliHistorySeed,
 };
 
 // =============================================================================
@@ -89,6 +92,14 @@ let projectCwd = "";
 let registeredAgents: string[] = [];
 const agents = new Map<string, AgentState>();
 
+/** Real pi session UUID from sessionManager (not env — harness never sets PI_SESSION_ID). */
+let activePiSessionId: string | null = null;
+/**
+ * After pi /resume or /new, next CLI turn must re-seed from context.messages
+ * instead of trusting a stale --resume marker (issue #661).
+ */
+let forceHistorySeed = false;
+
 // =============================================================================
 // Session ensure (acpx ensureHandle analogue)
 // =============================================================================
@@ -101,7 +112,8 @@ function sessionKeyFor(
     cwd: projectCwd,
     agent,
     model,
-    piSessionId: process.env.PI_SESSION_ID || null,
+    piSessionId:
+      activePiSessionId || process.env.PI_SESSION_ID || null,
   };
 }
 
@@ -318,7 +330,9 @@ function streamCli(
       await state.ready;
 
       const handleKey = cliModelId || "default";
-      const needsSystemPromptFlag = !state.systemPromptSent.has(handleKey);
+      // New CLI session after /resume must get system prompt even if prior flag was set
+      const needsSystemPromptFlag =
+        forceHistorySeed || !state.systemPromptSent.has(handleKey);
       const systemPrompt = needsSystemPromptFlag
         ? buildSystemPrompt(context)
         : undefined;
@@ -329,8 +343,19 @@ function streamCli(
         systemPrompt,
       );
 
-      let prompt = buildPromptWithHistory(context, !!sessionId);
-      if (needsSystemPrompt && systemPrompt) {
+      const seedPlan = resolveCliHistorySeed({
+        hasCliSession: !!sessionId,
+        forceHistorySeed,
+      });
+      // Stale marker after /resume: drop it so we open a fresh CLI chat with seed
+      if (forceHistorySeed && sessionId) {
+        clearCliSessionId(key);
+      }
+      const effectiveSessionId = seedPlan.useCliSession ? sessionId : null;
+
+      let prompt = buildPromptWithHistory(context, !seedPlan.seedHistory);
+      const sendSystem = (needsSystemPrompt || forceHistorySeed) && !!systemPrompt;
+      if (sendSystem && systemPrompt) {
         prompt = `${systemPrompt}\n\n---\n\n${prompt}`;
       }
 
@@ -342,9 +367,9 @@ function streamCli(
         agent,
         model: cliModelId === "default" ? "default" : cliModelId,
         key,
-        sessionId,
+        sessionId: effectiveSessionId,
         prompt,
-        systemPrompt: needsSystemPrompt ? systemPrompt : undefined,
+        systemPrompt: sendSystem ? systemPrompt : undefined,
         signal: options?.signal,
         rebuildPromptWithoutSession: () =>
           buildPromptWithHistory(context, false),
@@ -413,13 +438,21 @@ function streamCli(
 
       if (result.sessionId) {
         saveCliSessionId(key, result.sessionId);
-      } else if (sessionId) {
+      } else if (effectiveSessionId) {
         touchCliSession(key);
       }
 
       // Mark only after a successful turn — failed first turns must retry system prompt.
-      if (needsSystemPrompt) {
+      if (sendSystem) {
         state.systemPromptSent.add(handleKey);
+      }
+      // One-shot: next turns use --resume with the new CLI session
+      if (forceHistorySeed) {
+        forceHistorySeed = false;
+        cliProviderLog(
+          "info",
+          `re-seeded CLI history for ${agent}/${cliModelId} (pi session ${activePiSessionId || "unknown"})`,
+        );
       }
 
       // Close open blocks if stream ended without deltas (fallback)
@@ -527,6 +560,56 @@ export default async function (pi: ExtensionAPI) {
   if (agentList.length === 0) return;
 
   startCliSessionReaper({ cwd: projectCwd });
+
+  // Bind CLI markers to the real pi session UUID; invalidate on /resume|/new.
+  pi.on("session_start", (event, ctx) => {
+    const reason =
+      typeof (event as { reason?: string })?.reason === "string"
+        ? (event as { reason: string }).reason
+        : "";
+    const sid =
+      typeof ctx.sessionManager?.getSessionId === "function"
+        ? ctx.sessionManager.getSessionId() || null
+        : null;
+    const prevSid = activePiSessionId;
+    activePiSessionId = sid;
+
+    // /reload keeps markers so CLI --resume continues (same pi session).
+    if (reason === "reload") {
+      cliProviderLog(
+        "info",
+        `session_start reason=reload; keeping CLI markers (piSessionId=${sid || "default"})`,
+      );
+      return;
+    }
+
+    const mustReseed =
+      reason === "resume" ||
+      reason === "new" ||
+      (Boolean(prevSid) && Boolean(sid) && prevSid !== sid);
+
+    if (!mustReseed) {
+      if (sid) {
+        cliProviderLog(
+          "info",
+          `session_start reason=${reason || "start"}; piSessionId=${sid}`,
+        );
+      }
+      return;
+    }
+
+    const cleared = clearCliSessionsForCwd(projectCwd);
+    forceHistorySeed = true;
+    for (const [, state] of agents) {
+      state.systemPromptSent.clear();
+    }
+    cliProviderLog(
+      "info",
+      `session_start reason=${reason || "session-id-change"}: ` +
+        `cleared ${cleared} CLI marker(s), will re-seed from pi history ` +
+        `(piSessionId=${sid || "default"})`,
+    );
+  });
 
   const DISCOVERY_TIMEOUT_MS = 30_000;
 
@@ -644,8 +727,9 @@ export default async function (pi: ExtensionAPI) {
   }
 
   // Clear in-memory state on shutdown. Keep ~/.pi/cli-sessions/ on disk so
-  // --resume can continue after reload (unlike wiping markers every exit).
-  // Reaper stops; stale files cleaned on next start via inactivity threshold.
+  // --resume can continue after /reload (unlike wiping markers every exit).
+  // /resume and /new clear markers in session_start and force history re-seed.
+  // Reaper only removes status=stopped idle files — never running (issue #661).
   pi.on("session_shutdown", () => {
     stopCliSessionReaper();
     for (const [, state] of agents) {

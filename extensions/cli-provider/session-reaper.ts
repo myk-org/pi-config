@@ -19,7 +19,9 @@ export interface ReapOptions {
 }
 
 /**
- * Remove stale / stopped session files. Returns number reaped.
+ * Remove stopped session files idle longer than threshold.
+ * Never deletes status=running — mid-session think/idle must not orphan the
+ * CLI chat (issue #661). Running markers are cleared on pi /resume|/new.
  */
 export function reapStaleCliSessions(options?: ReapOptions): number {
   const threshold = Math.max(
@@ -41,12 +43,13 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
       continue;
     }
 
+    // Active bindings survive idle reaper sweeps
+    if (record.status !== "stopped") continue;
+
     const lastSeenMs = Date.parse(record.lastSeenAt);
     const idle =
       Number.isNaN(lastSeenMs) || now - lastSeenMs >= threshold;
-    const stopped = record.status === "stopped";
-
-    if (!idle && !stopped) continue;
+    if (!idle) continue;
 
     try {
       unlinkSync(path);
