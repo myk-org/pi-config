@@ -422,6 +422,36 @@ export function decideCliSessionStartReseed(opts: {
 }
 
 /**
+ * Resolve active pi session id on `session_start`.
+ * Unknown (no getter) must not null a previously bound UUID — that would flip
+ * marker keys back to the provisional tmp-* bucket and break `--resume`.
+ * Known empty from the getter still clears the binding (stale UUID avoid).
+ */
+export function resolveActivePiSessionIdOnSessionStart(opts: {
+  prevPiSessionId: string | null;
+  hasSessionIdGetter: boolean;
+  readPiSessionId: string | null;
+}): {
+  nextActivePiSessionId: string | null;
+  /** Sid for reseed decision / migrate / cleanup (prev when unknown). */
+  resolvedReadSid: string | null;
+  sidKnown: boolean;
+} {
+  if (!opts.hasSessionIdGetter) {
+    return {
+      nextActivePiSessionId: opts.prevPiSessionId,
+      resolvedReadSid: opts.prevPiSessionId,
+      sidKnown: false,
+    };
+  }
+  return {
+    nextActivePiSessionId: opts.readPiSessionId,
+    resolvedReadSid: opts.readPiSessionId,
+    sidKnown: true,
+  };
+}
+
+/**
  * Unlink CLI session markers for a cwd scoped to a pi session id.
  * By default also clears legacy `default` markers for that cwd (migration).
  * Does not touch other concurrent pi sessions sharing the same project.

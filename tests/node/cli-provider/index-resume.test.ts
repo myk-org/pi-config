@@ -13,6 +13,7 @@ import {
   applySystemPromptToCliPrompt,
   clearCliSessionsForPiSession,
   decideCliSessionStartReseed,
+  resolveActivePiSessionIdOnSessionStart,
   loadCliSessionId,
   resolveCliHistorySeed,
   saveCliSessionId,
@@ -203,6 +204,39 @@ describe("/resume reseed path (markers + history seed)", () => {
       resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed }),
       { useCliSession: true, seedHistory: false },
     );
+  });
+
+  it("unknown session_start getter keeps previously bound UUID", () => {
+    const r = resolveActivePiSessionIdOnSessionStart({
+      prevPiSessionId: "bound-uuid",
+      hasSessionIdGetter: false,
+      readPiSessionId: null,
+    });
+    assert.equal(r.nextActivePiSessionId, "bound-uuid");
+    assert.equal(r.resolvedReadSid, "bound-uuid");
+    assert.equal(r.sidKnown, false);
+  });
+
+  it("known empty session_start getter clears previously bound UUID", () => {
+    const r = resolveActivePiSessionIdOnSessionStart({
+      prevPiSessionId: "bound-uuid",
+      hasSessionIdGetter: true,
+      readPiSessionId: null,
+    });
+    assert.equal(r.nextActivePiSessionId, null);
+    assert.equal(r.resolvedReadSid, null);
+    assert.equal(r.sidKnown, true);
+  });
+
+  it("known session_start getter binds the returned UUID", () => {
+    const r = resolveActivePiSessionIdOnSessionStart({
+      prevPiSessionId: "old-uuid",
+      hasSessionIdGetter: true,
+      readPiSessionId: "new-uuid",
+    });
+    assert.equal(r.nextActivePiSessionId, "new-uuid");
+    assert.equal(r.resolvedReadSid, "new-uuid");
+    assert.equal(r.sidKnown, true);
   });
 
   it("reload does not clear markers", () => {

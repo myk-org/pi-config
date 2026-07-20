@@ -47,6 +47,7 @@ import {
   shouldAdoptLegacyCliMarker,
   decideCliSessionStartReseed,
   loadCliSessionId,
+  resolveActivePiSessionIdOnSessionStart,
   resolveCliHistorySeed,
   saveCliSessionId,
   shouldRetryWithoutResume,
@@ -639,19 +640,23 @@ export default async function (pi: ExtensionAPI) {
       typeof (event as { reason?: string })?.reason === "string"
         ? (event as { reason: string }).reason
         : "";
-    const readSid =
-      typeof ctx.sessionManager?.getSessionId === "function"
-        ? ctx.sessionManager.getSessionId() || null
-        : null;
+    const getter = ctx.sessionManager?.getSessionId;
+    const hasGetter = typeof getter === "function";
+    const rawSid = hasGetter ? getter() || null : null;
     const prevSid = activePiSessionId;
-    // Always assign (including null) so we never keep a stale UUID while
-    // cleanup/keying diverge.
-    activePiSessionId = readSid;
+    const { nextActivePiSessionId, resolvedReadSid } =
+      resolveActivePiSessionIdOnSessionStart({
+        prevPiSessionId: prevSid,
+        hasSessionIdGetter: hasGetter,
+        readPiSessionId: rawSid,
+      });
+    // Known empty clears binding; unknown keeps a previously bound UUID.
+    activePiSessionId = nextActivePiSessionId;
 
     const decision = decideCliSessionStartReseed({
       reason,
       prevPiSessionId: prevSid,
-      nextPiSessionId: readSid,
+      nextPiSessionId: resolvedReadSid,
     });
     // Every session_start must set this deterministically (reload must clear a
     // pending reseed flag from a prior session_start that never got a turn).
@@ -659,24 +664,24 @@ export default async function (pi: ExtensionAPI) {
 
     // Bind real UUID: move this process's provisional markers onto it so
     // --resume continues (and never shares a default bucket with peers).
-    if (readSid) {
-      migrateMarkersToRealPiSessionId(readSid);
+    if (resolvedReadSid) {
+      migrateMarkersToRealPiSessionId(resolvedReadSid);
     }
 
     // /reload keeps markers so CLI --resume continues (same pi session).
     if (decision.action === "keep") {
       cliProviderLog(
         "info",
-        `session_start reason=reload; keeping CLI markers (piSessionId=${readSid || provisionalPiSessionId})`,
+        `session_start reason=reload; keeping CLI markers (piSessionId=${resolvedReadSid || provisionalPiSessionId})`,
       );
       return;
     }
 
     if (decision.action !== "reseed") {
-      if (readSid) {
+      if (resolvedReadSid) {
         cliProviderLog(
           "info",
-          `session_start reason=${reason || "start"}; piSessionId=${readSid}`,
+          `session_start reason=${reason || "start"}; piSessionId=${resolvedReadSid}`,
         );
       }
       return;
@@ -684,7 +689,7 @@ export default async function (pi: ExtensionAPI) {
 
     let cleared = 0;
     try {
-      cleared = clearCliSessionsForPiSession(projectCwd, readSid, {
+      cleared = clearCliSessionsForPiSession(projectCwd, resolvedReadSid, {
         // Legacy shared "default" only if this process still had unbound/legacy
         // prev — new code uses provisional ids, not shared default.
         includeLegacyDefault:
@@ -695,11 +700,11 @@ export default async function (pi: ExtensionAPI) {
       // Drop markers for the previous sid / this process provisional so we do
       // not leave a protected running marker under a stale bucket.
       const extraIds = new Set<string>();
-      if (prevSid && prevSid !== "default" && prevSid !== readSid) {
+      if (prevSid && prevSid !== "default" && prevSid !== resolvedReadSid) {
         extraIds.add(prevSid);
       }
       if (
-        provisionalPiSessionId !== readSid &&
+        provisionalPiSessionId !== resolvedReadSid &&
         provisionalPiSessionId !== prevSid
       ) {
         extraIds.add(provisionalPiSessionId);
@@ -722,7 +727,7 @@ export default async function (pi: ExtensionAPI) {
       "info",
       `session_start reason=${reason || "session-id-change"}: ` +
         `cleared ${cleared} CLI marker(s), will re-seed from pi history ` +
-        `(piSessionId=${readSid || provisionalPiSessionId})`,
+        `(piSessionId=${resolvedReadSid || provisionalPiSessionId})`,
     );
   });
 
