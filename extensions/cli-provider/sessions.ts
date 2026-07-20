@@ -181,12 +181,18 @@ export interface ListedCliSession {
   record: CliSessionRecord;
 }
 
-/** List all persisted CLI session bindings (directory). */
+/** List all persisted CLI session bindings (directory). Best-effort: FS errors → []. */
 export function listCliSessions(): ListedCliSession[] {
   const dir = sessionsDir();
   if (!existsSync(dir)) return [];
   const out: ListedCliSession[] = [];
-  for (const name of readdirSync(dir)) {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const path = join(dir, name);
     const record = readRecord(path);

@@ -645,22 +645,30 @@ export default async function (pi: ExtensionAPI) {
       return;
     }
 
-    let cleared = clearCliSessionsForPiSession(projectCwd, readSid, {
-      // Only wipe shared legacy `default` when *this* process previously used
-      // that bucket — otherwise concurrent sessions still on default survive.
-      includeLegacyDefault:
-        prevSid == null || prevSid === "" || prevSid === "default",
-    });
-    // If manager returned null, also drop markers for the previous sid so we
-    // do not leave a protected running marker under a stale UUID.
-    if (
-      prevSid &&
-      prevSid !== "default" &&
-      prevSid !== readSid
-    ) {
-      cleared += clearCliSessionsForPiSession(projectCwd, prevSid, {
-        includeLegacyDefault: false,
+    let cleared = 0;
+    try {
+      cleared = clearCliSessionsForPiSession(projectCwd, readSid, {
+        // Only wipe shared legacy `default` when *this* process previously used
+        // that bucket — otherwise concurrent sessions still on default survive.
+        includeLegacyDefault:
+          prevSid == null || prevSid === "" || prevSid === "default",
       });
+      // If manager returned null, also drop markers for the previous sid so we
+      // do not leave a protected running marker under a stale UUID.
+      if (
+        prevSid &&
+        prevSid !== "default" &&
+        prevSid !== readSid
+      ) {
+        cleared += clearCliSessionsForPiSession(projectCwd, prevSid, {
+          includeLegacyDefault: false,
+        });
+      }
+    } catch (err) {
+      cliProviderLog(
+        "warn",
+        `session_start: CLI marker cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     for (const [, state] of agents) {
       state.systemPromptSent.clear();

@@ -18,6 +18,29 @@ import {
 import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
 
 describe("cli-provider sessions", () => {
+  it("listCliSessions returns empty when sessions path is not a directory", async () => {
+    const { listCliSessions } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const { mkdirSync } = await import("node:fs");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-notdir-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      mkdirSync(join(home, ".pi"), { recursive: true });
+      writeFileSync(join(home, ".pi", "cli-sessions"), "not-a-directory");
+      assert.deepEqual(listCliSessions(), []);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("detects resume failure messages", () => {
     assert.equal(isCliResumeFailure("Session not found: abc"), true);
     assert.equal(isCliResumeFailure("cannot resume session"), true);
