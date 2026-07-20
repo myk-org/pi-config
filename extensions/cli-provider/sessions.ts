@@ -180,10 +180,27 @@ export function clearCliSessionId(key: CliSessionKey): void {
 }
 
 /**
+ * Prefer source when dest is missing/invalid or source lastSeenAt is >= dest.
+ * Tie / newer source wins so a pre-bind first-turn provisional is not discarded
+ * in favor of an older real-sid marker.
+ */
+export function preferCliSessionRecord(
+  source: CliSessionRecord,
+  dest: CliSessionRecord | null,
+): "source" | "dest" {
+  if (!dest) return "source";
+  const s = Date.parse(source.lastSeenAt);
+  const d = Date.parse(dest.lastSeenAt);
+  if (Number.isNaN(d)) return "source";
+  if (Number.isNaN(s)) return "dest";
+  return s >= d ? "source" : "dest";
+}
+
+/**
  * Move a CLI resume marker from one piSessionId bucket onto `toKey`.
  * Used when this process binds a real UUID after writing under provisional/tmp
- * (or legacy `default`). Never adopts a foreign process's bucket unless
- * `fromPiSessionId` is explicitly this process's provisional/legacy id.
+ * (or legacy `default`). On conflict, keeps the newer marker by lastSeenAt
+ * (provisional first-turn must not lose to a stale real-sid marker).
  */
 export function migrateCliSessionMarker(
   toKey: CliSessionKey,
@@ -193,18 +210,23 @@ export function migrateCliSessionMarker(
     return false;
   }
   if (toKey.piSessionId === fromPiSessionId) return false;
-  if (loadCliSessionId(toKey)) return false;
   const fromKey: CliSessionKey = { ...toKey, piSessionId: fromPiSessionId };
-  const legacyId = loadCliSessionId(fromKey);
-  if (!legacyId) return false;
-  saveCliSessionId(toKey, legacyId);
+  const fromRec = loadCliSessionRecord(fromKey);
+  if (!fromRec) return false;
+  const toRec = loadCliSessionRecord(toKey);
+  if (preferCliSessionRecord(fromRec, toRec) === "source") {
+    saveCliSessionId(toKey, fromRec.sessionId);
+    clearCliSessionId(fromKey);
+    return true;
+  }
+  // Destination is newer — drop stale provisional/source only.
   clearCliSessionId(fromKey);
-  return true;
+  return false;
 }
 
 /**
  * Migrate every marker for `fromPiSessionId` in `cwd` onto `toPiSessionId`.
- * If the destination key already has a marker, drop the source (no overwrite).
+ * On conflict, prefer the newer lastSeenAt (keeps pre-bind first-turn session).
  */
 export function migrateAllCliSessionMarkers(
   cwd: string,
@@ -228,21 +250,22 @@ export function migrateAllCliSessionMarkers(
       model: record.model,
       piSessionId: toPiSessionId,
     };
-    if (loadCliSessionId(toKey)) {
+    const toRec = loadCliSessionRecord(toKey);
+    if (preferCliSessionRecord(record, toRec) === "source") {
+      saveCliSessionId(toKey, record.sessionId);
       try {
         unlinkSync(path);
       } catch {
         /* ignore */
       }
-      continue;
+      n += 1;
+    } else {
+      try {
+        unlinkSync(path);
+      } catch {
+        /* ignore */
+      }
     }
-    saveCliSessionId(toKey, record.sessionId);
-    try {
-      unlinkSync(path);
-    } catch {
-      /* ignore */
-    }
-    n += 1;
   }
   return n;
 }

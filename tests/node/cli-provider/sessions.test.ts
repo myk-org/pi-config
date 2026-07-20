@@ -316,6 +316,84 @@ describe("cli-provider sessions", () => {
     }
   });
 
+  it("migrateAll prefers newer provisional over stale real-sid marker", async () => {
+    const {
+      migrateAllCliSessionMarkers,
+      createProvisionalPiSessionId,
+      setCliSessionMarkerMeta,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-prefer-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const real: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "real-uuid",
+      };
+      const prov: CliSessionKey = { ...real, piSessionId: provisional };
+      // Stale destination from earlier lifecycle
+      saveCliSessionId(real, "cli-old");
+      assert.equal(
+        setCliSessionMarkerMeta(real, { idleMs: 60_000 }),
+        true,
+      );
+      // Pre-bind first turn wrote the live session under provisional
+      saveCliSessionId(prov, "cli-new");
+      assert.equal(
+        migrateAllCliSessionMarkers("/proj", provisional, "real-uuid"),
+        1,
+      );
+      assert.equal(loadCliSessionId(real), "cli-new");
+      assert.equal(loadCliSessionId(prov), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("migrateCliSessionMarker prefers newer provisional over stale dest", async () => {
+    const {
+      migrateCliSessionMarker,
+      createProvisionalPiSessionId,
+      setCliSessionMarkerMeta,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig1-prefer-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const toKey: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "real-uuid",
+      };
+      const fromKey: CliSessionKey = { ...toKey, piSessionId: provisional };
+      saveCliSessionId(toKey, "cli-old");
+      assert.equal(setCliSessionMarkerMeta(toKey, { idleMs: 60_000 }), true);
+      saveCliSessionId(fromKey, "cli-new");
+      assert.equal(migrateCliSessionMarker(toKey, provisional), true);
+      assert.equal(loadCliSessionId(toKey), "cli-new");
+      assert.equal(loadCliSessionId(fromKey), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("clearCliSessionsForPiSession keeps default when includeLegacyDefault is false", async () => {
     const { clearCliSessionsForPiSession } = await import(
       "../../../extensions/cli-provider/sessions.js"
