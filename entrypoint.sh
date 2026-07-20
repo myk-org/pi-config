@@ -78,12 +78,17 @@ add_to_gitignore '.gemini/agents/'
 
 # Symlink package agents into PWD for Cursor/Claude/Gemini discovery (container only).
 # Native users place these manually — see README / cli-provider.md.
+# Failures are warn-only: container start must not abort if linking fails.
 AGENTS_SRC="$PI_PKG_DIR/myk-org/pi-config/agents"
 SYMLINK_SCRIPT="$PI_PKG_DIR/myk-org/pi-config/scripts/symlink-cli-specialists.sh"
 if [ -d "$AGENTS_SRC" ] && [ -x "$SYMLINK_SCRIPT" ]; then
-    "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD" || true
+    if ! "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
+        echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
+    fi
 elif [ -d "$AGENTS_SRC" ] && [ -f "$SYMLINK_SCRIPT" ]; then
-    bash "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD" || true
+    if ! bash "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
+        echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
+    fi
 fi
 
 exec pi "$@"

@@ -96,7 +96,7 @@ export function startCliSessionReaper(opts?: {
 }): void {
   stopCliSessionReaper();
   const interval = Math.max(
-    1_000,
+    1,
     opts?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
   );
   const sweep = () => {
