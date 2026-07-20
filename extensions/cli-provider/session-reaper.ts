@@ -92,8 +92,13 @@ export function resolveReaperActivePiSessionId(
   getActivePiSessionId?: () => string | null,
   envPiSessionId: string | null | undefined = process.env.PI_SESSION_ID,
 ): string | null {
-  const fromGetter = getActivePiSessionId?.();
-  if (fromGetter != null && fromGetter !== "") return fromGetter;
+  // Getter provided (even if temporarily null) → do not fall back to env.
+  // Startup window before session_start must stay "unknown" so all running
+  // markers stay protected (/reload continuity).
+  if (typeof getActivePiSessionId === "function") {
+    const fromGetter = getActivePiSessionId();
+    return fromGetter != null && fromGetter !== "" ? fromGetter : null;
+  }
   return envPiSessionId || null;
 }
 

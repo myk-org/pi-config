@@ -347,16 +347,23 @@ describe("startCliSessionReaper scheduling", () => {
     );
   });
 
-  it("resolveReaperActivePiSessionId falls back to env when getter returns null", () => {
+  it("resolveReaperActivePiSessionId stays unknown when getter returns null", () => {
     assert.equal(
       resolveReaperActivePiSessionId(() => null, "from-env"),
-      "from-env",
+      null,
     );
   });
 
-  it("resolveReaperActivePiSessionId falls back to env when getter returns empty", () => {
+  it("resolveReaperActivePiSessionId stays unknown when getter returns empty", () => {
     assert.equal(
       resolveReaperActivePiSessionId(() => "", "from-env"),
+      null,
+    );
+  });
+
+  it("resolveReaperActivePiSessionId uses env when no getter provided", () => {
+    assert.equal(
+      resolveReaperActivePiSessionId(undefined, "from-env"),
       "from-env",
     );
   });
