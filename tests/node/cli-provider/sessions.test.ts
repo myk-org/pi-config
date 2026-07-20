@@ -89,6 +89,66 @@ describe("cli-provider sessions", () => {
     }
   });
 
+  it("shouldAdoptLegacyCliMarker requires prior default key in this process", async () => {
+    const { shouldAdoptLegacyCliMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const real: CliSessionKey = {
+      cwd: "/proj",
+      agent: "cursor",
+      model: "m",
+      piSessionId: "real-sid",
+    };
+    const legacy: CliSessionKey = { ...real, piSessionId: "default" };
+    assert.equal(shouldAdoptLegacyCliMarker(null, real), false);
+    assert.equal(shouldAdoptLegacyCliMarker(undefined, real), false);
+    assert.equal(shouldAdoptLegacyCliMarker(legacy, real), true);
+    assert.equal(
+      shouldAdoptLegacyCliMarker({ ...real, piSessionId: "other" }, real),
+      false,
+    );
+  });
+
+  it("stale on-disk default marker is not adopted without prior default key", async () => {
+    const {
+      adoptLegacyCliSessionMarker,
+      shouldAdoptLegacyCliMarker,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-no-adopt-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const legacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      const real: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "new-sid",
+      };
+      saveCliSessionId(legacy, "stale-from-old-process");
+      // Fresh process: no prevKey → must not adopt
+      assert.equal(shouldAdoptLegacyCliMarker(null, real), false);
+      if (shouldAdoptLegacyCliMarker(null, real)) {
+        adoptLegacyCliSessionMarker(real);
+      }
+      assert.equal(loadCliSessionId(real), null);
+      assert.equal(loadCliSessionId(legacy), "stale-from-old-process");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("clearCliSessionsForPiSession removes only matching sid (keeps other sessions)", async () => {
     const { clearCliSessionsForPiSession } = await import(
       "../../../extensions/cli-provider/sessions.js"

@@ -41,6 +41,7 @@ import {
   adoptLegacyCliSessionMarker,
   applySystemPromptToCliPrompt,
   clearCliSessionsForPiSession,
+  shouldAdoptLegacyCliMarker,
   decideCliSessionStartReseed,
   loadCliSessionId,
   resolveCliHistorySeed,
@@ -199,19 +200,23 @@ function ensureSession(
 ): { sessionId: string | null; needsSystemPrompt: boolean; key: CliSessionKey } {
   const handleKey = cliModelId || "default";
   const key = sessionKeyFor(state.agent, handleKey);
+  const prevKey = state.sessionKeys.get(handleKey);
   state.sessionKeys.set(handleKey, key);
 
-  const sessionId = loadCliSessionId(key);
-  // First turn may have written under legacy `default` before session_start;
-  // adopt that marker once we have a real piSessionId.
-  if (!sessionId && key.piSessionId && key.piSessionId !== "default") {
+  let sessionId = loadCliSessionId(key);
+  // Mid-session only: first turn wrote under legacy `default` before sid bound.
+  // Do not adopt stale on-disk default markers from older processes/sessions.
+  if (
+    !sessionId &&
+    shouldAdoptLegacyCliMarker(prevKey, key)
+  ) {
     adoptLegacyCliSessionMarker(key);
+    sessionId = loadCliSessionId(key);
   }
-  const resolvedSessionId = loadCliSessionId(key);
   const needsSystemPrompt =
     !state.systemPromptSent.has(handleKey) && !!systemPrompt;
 
-  return { sessionId: resolvedSessionId, needsSystemPrompt, key };
+  return { sessionId, needsSystemPrompt, key };
 }
 
 // =============================================================================

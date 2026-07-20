@@ -152,6 +152,21 @@ export function adoptLegacyCliSessionMarker(key: CliSessionKey): boolean {
   return true;
 }
 
+/**
+ * Only adopt a legacy `default` marker when *this process* previously keyed the
+ * same handle under default/null (mid-session bind). Never adopt a stale
+ * on-disk default from an older run / other session.
+ */
+export function shouldAdoptLegacyCliMarker(
+  prevKey: CliSessionKey | null | undefined,
+  nextKey: CliSessionKey,
+): boolean {
+  if (!nextKey.piSessionId || nextKey.piSessionId === "default") return false;
+  if (!prevKey) return false;
+  const prev = prevKey.piSessionId || "default";
+  return prev === "default";
+}
+
 export function incrementResumeFailure(key: CliSessionKey): number {
   const existing = readRecord(sessionFile(key));
   if (!existing) return 1;
