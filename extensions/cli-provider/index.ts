@@ -38,9 +38,12 @@ import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
-  adoptLegacyCliSessionMarker,
   applySystemPromptToCliPrompt,
   clearCliSessionsForPiSession,
+  createProvisionalPiSessionId,
+  isProvisionalPiSessionId,
+  migrateAllCliSessionMarkers,
+  migrateCliSessionMarker,
   shouldAdoptLegacyCliMarker,
   decideCliSessionStartReseed,
   loadCliSessionId,
@@ -99,6 +102,12 @@ const agents = new Map<string, AgentState>();
 /** Real pi session UUID from sessionManager (not env — harness never sets PI_SESSION_ID). */
 let activePiSessionId: string | null = null;
 /**
+ * Per-process bucket until the real pi session UUID is known.
+ * Never use shared "default" — concurrent pi in the same cwd must not steal
+ * each other's CLI --resume markers.
+ */
+const provisionalPiSessionId = createProvisionalPiSessionId();
+/**
  * After pi /resume or /new, next CLI turn must re-seed from context.messages
  * instead of trusting a stale --resume marker (issue #661).
  */
@@ -108,6 +117,11 @@ let forceHistorySeed = false;
 // Session ensure (acpx ensureHandle analogue)
 // =============================================================================
 
+/** Real UUID when bound; otherwise this process's unique provisional id. */
+function resolvedPiSessionId(): string {
+  return activePiSessionId || provisionalPiSessionId;
+}
+
 function sessionKeyFor(
   agent: string,
   model: string,
@@ -116,8 +130,7 @@ function sessionKeyFor(
     cwd: projectCwd,
     agent,
     model,
-    piSessionId:
-      activePiSessionId || process.env.PI_SESSION_ID || null,
+    piSessionId: resolvedPiSessionId(),
   };
 }
 
@@ -129,7 +142,31 @@ function bindActivePiSessionId(ctx: {
     typeof ctx.sessionManager?.getSessionId === "function"
       ? ctx.sessionManager.getSessionId() || null
       : null;
-  if (sid) activePiSessionId = sid;
+  if (sid) {
+    activePiSessionId = sid;
+    migrateMarkersToRealPiSessionId(sid);
+  }
+}
+
+/** Move this process's provisional (or in-memory prev) markers onto the real UUID. */
+function migrateMarkersToRealPiSessionId(readSid: string): void {
+  if (!readSid || readSid === provisionalPiSessionId) return;
+  migrateAllCliSessionMarkers(projectCwd, provisionalPiSessionId, readSid);
+  for (const [, state] of agents) {
+    for (const [handleKey, prevKey] of state.sessionKeys) {
+      if (
+        !prevKey.piSessionId ||
+        prevKey.piSessionId === readSid ||
+        (!isProvisionalPiSessionId(prevKey.piSessionId) &&
+          prevKey.piSessionId !== "default")
+      ) {
+        continue;
+      }
+      const nextKey: CliSessionKey = { ...prevKey, piSessionId: readSid };
+      migrateCliSessionMarker(nextKey, prevKey.piSessionId);
+      state.sessionKeys.set(handleKey, nextKey);
+    }
+  }
 }
 
 /**
@@ -201,13 +238,10 @@ function ensureSession(
   state.sessionKeys.set(handleKey, key);
 
   let sessionId = loadCliSessionId(key);
-  // Mid-session only: first turn wrote under legacy `default` before sid bound.
-  // Do not adopt stale on-disk default markers from older processes/sessions.
-  if (
-    !sessionId &&
-    shouldAdoptLegacyCliMarker(prevKey, key)
-  ) {
-    adoptLegacyCliSessionMarker(key);
+  // Mid-session bind: first turn wrote under this process's provisional (tmp-)
+  // or legacy default — migrate onto the real UUID. Never adopt a foreign bucket.
+  if (!sessionId && shouldAdoptLegacyCliMarker(prevKey, key) && prevKey?.piSessionId) {
+    migrateCliSessionMarker(key, prevKey.piSessionId);
     sessionId = loadCliSessionId(key);
   }
   const needsSystemPrompt =
@@ -623,11 +657,17 @@ export default async function (pi: ExtensionAPI) {
     // pending reseed flag from a prior session_start that never got a turn).
     forceHistorySeed = decision.forceHistorySeed;
 
+    // Bind real UUID: move this process's provisional markers onto it so
+    // --resume continues (and never shares a default bucket with peers).
+    if (readSid) {
+      migrateMarkersToRealPiSessionId(readSid);
+    }
+
     // /reload keeps markers so CLI --resume continues (same pi session).
     if (decision.action === "keep") {
       cliProviderLog(
         "info",
-        `session_start reason=reload; keeping CLI markers (piSessionId=${readSid || "default"})`,
+        `session_start reason=reload; keeping CLI markers (piSessionId=${readSid || provisionalPiSessionId})`,
       );
       return;
     }
@@ -645,19 +685,27 @@ export default async function (pi: ExtensionAPI) {
     let cleared = 0;
     try {
       cleared = clearCliSessionsForPiSession(projectCwd, readSid, {
-        // Only wipe shared legacy `default` when *this* process previously used
-        // that bucket — otherwise concurrent sessions still on default survive.
+        // Legacy shared "default" only if this process still had unbound/legacy
+        // prev — new code uses provisional ids, not shared default.
         includeLegacyDefault:
-          prevSid == null || prevSid === "" || prevSid === "default",
+          prevSid == null ||
+          prevSid === "" ||
+          prevSid === "default",
       });
-      // If manager returned null, also drop markers for the previous sid so we
-      // do not leave a protected running marker under a stale UUID.
+      // Drop markers for the previous sid / this process provisional so we do
+      // not leave a protected running marker under a stale bucket.
+      const extraIds = new Set<string>();
+      if (prevSid && prevSid !== "default" && prevSid !== readSid) {
+        extraIds.add(prevSid);
+      }
       if (
-        prevSid &&
-        prevSid !== "default" &&
-        prevSid !== readSid
+        provisionalPiSessionId !== readSid &&
+        provisionalPiSessionId !== prevSid
       ) {
-        cleared += clearCliSessionsForPiSession(projectCwd, prevSid, {
+        extraIds.add(provisionalPiSessionId);
+      }
+      for (const id of extraIds) {
+        cleared += clearCliSessionsForPiSession(projectCwd, id, {
           includeLegacyDefault: false,
         });
       }
@@ -674,7 +722,7 @@ export default async function (pi: ExtensionAPI) {
       "info",
       `session_start reason=${reason || "session-id-change"}: ` +
         `cleared ${cleared} CLI marker(s), will re-seed from pi history ` +
-        `(piSessionId=${readSid || "default"})`,
+        `(piSessionId=${readSid || provisionalPiSessionId})`,
     );
   });
 

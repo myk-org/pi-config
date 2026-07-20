@@ -30,12 +30,15 @@ Empty / unset → extension registers nothing.
    `~/.pi/cli-sessions/` — deletes idle `status=stopped` markers only.
    Never deletes `status=running` (own or other `piSessionId`) so concurrent
    pi sessions in the same cwd keep CLI `--resume` (issue #661).
-7. On `session_start`:
+7. On `session_start` / `before_agent_start`:
    - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
+   - Until bound, each process uses a unique provisional `tmp-<uuid>` bucket
+     (never shared `"default"`) so concurrent sessions cannot steal `--resume`
+   - On bind: migrate this process's provisional markers onto the real UUID
    - `reason=resume` / `new` (or pi session id change): clear markers for this
-     `piSessionId` (+ legacy `default` only when this process used that bucket),
-     force next turn to re-seed from pi `context.messages` (other concurrent
-     pi sessions in the same cwd are kept)
+     `piSessionId` (+ this process provisional; legacy `default` only if still
+     used), force next turn to re-seed from pi `context.messages` (other
+     concurrent pi sessions in the same cwd are kept)
    - `reason=reload`: keep markers so CLI `--resume` continues
 8. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept
    for `/reload` resume)
@@ -104,15 +107,18 @@ want a bound. See issue #647.
 ### Session directory (`~/.pi/cli-sessions/`)
 
 File-backed bindings keyed by cwd + agent + model + **pi session UUID**
-(from `sessionManager.getSessionId()`, falling back to `"default"`):
+(from `sessionManager.getSessionId()`). Before that UUID is known, each process
+uses a unique provisional `tmp-<uuid>` id — never a shared `"default"` bucket —
+so concurrent pi sessions cannot overwrite each other's CLI `--resume` markers.
+On bind, provisional markers migrate onto the real UUID.
 
 - Fields: `sessionId`, `status`, `createdAt`, `lastSeenAt`, `resumeFailures`, `piSessionId`
 - **Reaper:** every 5m, drop idle `status=stopped` markers (≥ 30m). Never deletes
   `status=running` for any `piSessionId` — concurrent pi sessions in the same
   cwd keep CLI `--resume` (issue #661)
 - `/reload` keeps markers so `--resume` can continue
-- `/resume` / `/new` clears this session’s markers (+ legacy `default` when this
-  process used that bucket) and forces a history re-seed on the next turn
+- `/resume` / `/new` clears this session’s markers (+ this process’s provisional;
+  legacy `default` only when still used) and forces a history re-seed on the next turn
 
 ## Streaming flags
 

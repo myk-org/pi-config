@@ -13,11 +13,24 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { CliSessionKey, CliSessionRecord } from "./types.js";
 
 export type { CliSessionKey, CliSessionRecord } from "./types.js";
 
+/** Prefix for per-process ids used before the real pi session UUID is known. */
+export const PROVISIONAL_PI_SESSION_PREFIX = "tmp-";
+
+/** Unique per process/extension load — never shared across concurrent pi sessions. */
+export function createProvisionalPiSessionId(): string {
+  return `${PROVISIONAL_PI_SESSION_PREFIX}${randomUUID()}`;
+}
+
+export function isProvisionalPiSessionId(
+  id: string | null | undefined,
+): boolean {
+  return typeof id === "string" && id.startsWith(PROVISIONAL_PI_SESSION_PREFIX);
+}
 function sessionsDir(): string {
   return join(homedir(), ".pi", "cli-sessions");
 }
@@ -27,6 +40,8 @@ function keyHash(key: CliSessionKey): string {
     key.cwd,
     key.agent,
     key.model,
+    // Never coalesce unbound keys to a shared "default" here — callers must
+    // pass a real UUID or per-process provisional id (tmp-…).
     key.piSessionId || "default",
   ].join("\0");
   return createHash("sha256").update(raw).digest("hex").slice(0, 24);
@@ -165,34 +180,96 @@ export function clearCliSessionId(key: CliSessionKey): void {
 }
 
 /**
- * If a real piSessionId key has no marker but the legacy `default` bucket does,
- * move the CLI resume id onto the real key (avoids mid-session fork when
- * activePiSessionId becomes available after the first turn).
+ * Move a CLI resume marker from one piSessionId bucket onto `toKey`.
+ * Used when this process binds a real UUID after writing under provisional/tmp
+ * (or legacy `default`). Never adopts a foreign process's bucket unless
+ * `fromPiSessionId` is explicitly this process's provisional/legacy id.
  */
-export function adoptLegacyCliSessionMarker(key: CliSessionKey): boolean {
-  if (!key.piSessionId || key.piSessionId === "default") return false;
-  if (loadCliSessionId(key)) return false;
-  const legacy: CliSessionKey = { ...key, piSessionId: "default" };
-  const legacyId = loadCliSessionId(legacy);
+export function migrateCliSessionMarker(
+  toKey: CliSessionKey,
+  fromPiSessionId: string,
+): boolean {
+  if (!toKey.piSessionId || toKey.piSessionId === "" || !fromPiSessionId) {
+    return false;
+  }
+  if (toKey.piSessionId === fromPiSessionId) return false;
+  if (loadCliSessionId(toKey)) return false;
+  const fromKey: CliSessionKey = { ...toKey, piSessionId: fromPiSessionId };
+  const legacyId = loadCliSessionId(fromKey);
   if (!legacyId) return false;
-  saveCliSessionId(key, legacyId);
-  clearCliSessionId(legacy);
+  saveCliSessionId(toKey, legacyId);
+  clearCliSessionId(fromKey);
   return true;
 }
 
 /**
- * Only adopt a legacy `default` marker when *this process* previously keyed the
- * same handle under default/null (mid-session bind). Never adopt a stale
- * on-disk default from an older run / other session.
+ * Migrate every marker for `fromPiSessionId` in `cwd` onto `toPiSessionId`.
+ * If the destination key already has a marker, drop the source (no overwrite).
+ */
+export function migrateAllCliSessionMarkers(
+  cwd: string,
+  fromPiSessionId: string,
+  toPiSessionId: string,
+): number {
+  if (
+    !fromPiSessionId ||
+    !toPiSessionId ||
+    fromPiSessionId === toPiSessionId
+  ) {
+    return 0;
+  }
+  let n = 0;
+  for (const { path, record } of listCliSessions()) {
+    if (record.cwd !== cwd) continue;
+    if (record.piSessionId !== fromPiSessionId) continue;
+    const toKey: CliSessionKey = {
+      cwd: record.cwd,
+      agent: record.agent,
+      model: record.model,
+      piSessionId: toPiSessionId,
+    };
+    if (loadCliSessionId(toKey)) {
+      try {
+        unlinkSync(path);
+      } catch {
+        /* ignore */
+      }
+      continue;
+    }
+    saveCliSessionId(toKey, record.sessionId);
+    try {
+      unlinkSync(path);
+    } catch {
+      /* ignore */
+    }
+    n += 1;
+  }
+  return n;
+}
+
+/**
+ * If a real piSessionId key has no marker but the legacy `default` bucket does,
+ * move the CLI resume id onto the real key (avoids mid-session fork when
+ * activePiSessionId becomes available after the first turn).
+ * @deprecated Prefer migrateCliSessionMarker / migrateAllCliSessionMarkers.
+ */
+export function adoptLegacyCliSessionMarker(key: CliSessionKey): boolean {
+  return migrateCliSessionMarker(key, "default");
+}
+
+/**
+ * Only migrate when *this process* previously keyed under provisional/tmp or
+ * legacy default. Never adopt a stale on-disk default from another session.
  */
 export function shouldAdoptLegacyCliMarker(
   prevKey: CliSessionKey | null | undefined,
   nextKey: CliSessionKey,
 ): boolean {
   if (!nextKey.piSessionId || nextKey.piSessionId === "default") return false;
-  if (!prevKey) return false;
-  const prev = prevKey.piSessionId || "default";
-  return prev === "default";
+  if (isProvisionalPiSessionId(nextKey.piSessionId)) return false;
+  if (!prevKey?.piSessionId) return false;
+  const prev = prevKey.piSessionId;
+  return prev === "default" || isProvisionalPiSessionId(prev);
 }
 
 export function incrementResumeFailure(key: CliSessionKey): number {
