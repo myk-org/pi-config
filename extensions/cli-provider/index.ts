@@ -603,17 +603,19 @@ export default async function (pi: ExtensionAPI) {
       typeof (event as { reason?: string })?.reason === "string"
         ? (event as { reason: string }).reason
         : "";
-    const sid =
+    const readSid =
       typeof ctx.sessionManager?.getSessionId === "function"
         ? ctx.sessionManager.getSessionId() || null
         : null;
     const prevSid = activePiSessionId;
-    if (sid) activePiSessionId = sid;
+    // Always assign (including null) so we never keep a stale UUID while
+    // cleanup/keying diverge.
+    activePiSessionId = readSid;
 
     const decision = decideCliSessionStartReseed({
       reason,
       prevPiSessionId: prevSid,
-      nextPiSessionId: sid,
+      nextPiSessionId: readSid,
     });
     // Every session_start must set this deterministically (reload must clear a
     // pending reseed flag from a prior session_start that never got a turn).
@@ -623,24 +625,35 @@ export default async function (pi: ExtensionAPI) {
     if (decision.action === "keep") {
       cliProviderLog(
         "info",
-        `session_start reason=reload; keeping CLI markers (piSessionId=${sid || "default"})`,
+        `session_start reason=reload; keeping CLI markers (piSessionId=${readSid || "default"})`,
       );
       return;
     }
 
     if (decision.action !== "reseed") {
-      if (sid) {
+      if (readSid) {
         cliProviderLog(
           "info",
-          `session_start reason=${reason || "start"}; piSessionId=${sid}`,
+          `session_start reason=${reason || "start"}; piSessionId=${readSid}`,
         );
       }
       return;
     }
 
-    const cleared = clearCliSessionsForPiSession(projectCwd, sid, {
+    let cleared = clearCliSessionsForPiSession(projectCwd, readSid, {
       includeLegacyDefault: true,
     });
+    // If manager returned null, also drop markers for the previous sid so we
+    // do not leave a protected running marker under a stale UUID.
+    if (
+      prevSid &&
+      prevSid !== "default" &&
+      prevSid !== readSid
+    ) {
+      cleared += clearCliSessionsForPiSession(projectCwd, prevSid, {
+        includeLegacyDefault: false,
+      });
+    }
     for (const [, state] of agents) {
       state.systemPromptSent.clear();
     }
@@ -648,7 +661,7 @@ export default async function (pi: ExtensionAPI) {
       "info",
       `session_start reason=${reason || "session-id-change"}: ` +
         `cleared ${cleared} CLI marker(s), will re-seed from pi history ` +
-        `(piSessionId=${sid || "default"})`,
+        `(piSessionId=${readSid || "default"})`,
     );
   });
 

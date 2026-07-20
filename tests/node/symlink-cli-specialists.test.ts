@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   writeFileSync,
@@ -85,5 +86,16 @@ describe("symlink-cli-specialists.sh", () => {
     assert.ok(
       !lstatSync(join(project, ".cursor/agents", "user-local.md")).isSymbolicLink(),
     );
+  });
+
+  it("skips packaged agent name when destination is a regular file", () => {
+    const isolated = join(root, "project-regular-file");
+    seedAgents(agents);
+    mkdirSync(join(isolated, ".cursor/agents"), { recursive: true });
+    const dest = join(isolated, ".cursor/agents", "github-expert.md");
+    writeFileSync(dest, "user-owned\n");
+    run(agents, isolated);
+    assert.ok(!lstatSync(dest).isSymbolicLink());
+    assert.equal(readFileSync(dest, "utf8"), "user-owned\n");
   });
 });

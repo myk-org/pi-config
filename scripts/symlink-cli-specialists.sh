@@ -3,7 +3,8 @@
 #
 # Usage: symlink-cli-specialists.sh <agents_dir> [project_root]
 #
-# Always uses ln -sfn (safe for concurrent pi-docker on the same folder).
+# Always uses ln -sfn for existing symlinks (safe for concurrent pi-docker).
+# Skips destinations that already exist as a regular file (no silent overwrite).
 # Does not delete unknown files in the destination dirs.
 set -euo pipefail
 
@@ -31,6 +32,15 @@ for dest_rel in .cursor/agents .claude/agents .gemini/agents; do
   mkdir -p "$dest_dir"
   for src in "${agent_files[@]}"; do
     name="$(basename "$src")"
-    ln -sfn "$src" "$dest_dir/$name"
+    dest="$dest_dir/$name"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+      if [ -L "$dest" ]; then
+        ln -sfn "$src" "$dest"
+      else
+        echo "symlink-cli-specialists: skip non-symlink $dest" >&2
+      fi
+    else
+      ln -sfn "$src" "$dest"
+    fi
   done
 done
