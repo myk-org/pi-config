@@ -164,7 +164,13 @@ function migrateMarkersToRealPiSessionId(readSid: string): void {
         continue;
       }
       const nextKey: CliSessionKey = { ...prevKey, piSessionId: readSid };
-      migrateCliSessionMarker(nextKey, prevKey.piSessionId);
+      const migrated = migrateCliSessionMarker(nextKey, prevKey.piSessionId);
+      if (!migrated && loadCliSessionId(prevKey)) {
+        cliProviderLog(
+          "warn",
+          `CLI marker migration failed; keeping source under ${prevKey.piSessionId}`,
+        );
+      }
       state.sessionKeys.set(handleKey, nextKey);
     }
   }

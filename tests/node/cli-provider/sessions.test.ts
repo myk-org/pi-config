@@ -257,6 +257,45 @@ describe("cli-provider sessions", () => {
     }
   });
 
+  it("migrateCliSessionMarker keeps source when dest write fails", async () => {
+    const { migrateCliSessionMarker, createProvisionalPiSessionId } =
+      await import("../../../extensions/cli-provider/sessions.js");
+    const { createHash } = await import("node:crypto");
+    const { mkdirSync } = await import("node:fs");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-keep-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const fromKey: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: provisional,
+      };
+      const toKey: CliSessionKey = { ...fromKey, piSessionId: "real-uuid" };
+      saveCliSessionId(fromKey, "cli-keep");
+      const destHash = createHash("sha256")
+        .update(["/proj", "cursor", "m", "real-uuid"].join("\0"))
+        .digest("hex")
+        .slice(0, 24);
+      mkdirSync(join(home, ".pi", "cli-sessions", `${destHash}.json`), {
+        recursive: true,
+      });
+      assert.equal(migrateCliSessionMarker(toKey, provisional), false);
+      assert.equal(loadCliSessionId(fromKey), "cli-keep");
+      assert.equal(loadCliSessionId(toKey), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("migrateCliSessionMarker moves provisional bucket onto real sid", async () => {
     const { migrateCliSessionMarker, createProvisionalPiSessionId } =
       await import("../../../extensions/cli-provider/sessions.js");

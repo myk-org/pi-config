@@ -221,7 +221,8 @@ export function migrateCliSessionMarker(
   if (!fromRec) return false;
   const toRec = loadCliSessionRecord(toKey);
   if (preferCliSessionRecord(fromRec, toRec) === "source") {
-    saveCliSessionId(toKey, fromRec.sessionId);
+    const ok = saveCliSessionId(toKey, fromRec.sessionId);
+    if (!ok) return false;
     clearCliSessionId(fromKey);
     return true;
   }
@@ -258,7 +259,8 @@ export function migrateAllCliSessionMarkers(
     };
     const toRec = loadCliSessionRecord(toKey);
     if (preferCliSessionRecord(record, toRec) === "source") {
-      saveCliSessionId(toKey, record.sessionId);
+      const ok = saveCliSessionId(toKey, record.sessionId);
+      if (!ok) continue;
       try {
         unlinkSync(path);
       } catch {
