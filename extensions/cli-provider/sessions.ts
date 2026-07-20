@@ -215,6 +215,35 @@ export function resolveCliHistorySeed(opts: {
   };
 }
 
+/**
+ * Decide CLI marker / history-seed action on pi `session_start` (issue #661).
+ * - reload → keep markers (CLI `--resume` continues)
+ * - resume / new / pi session id change → clear cwd markers + force re-seed
+ * - otherwise → bind id only
+ */
+export function decideCliSessionStartReseed(opts: {
+  reason: string;
+  prevPiSessionId: string | null;
+  nextPiSessionId: string | null;
+}): {
+  action: "keep" | "reseed" | "bind-only";
+  forceHistorySeed: boolean;
+} {
+  if (opts.reason === "reload") {
+    return { action: "keep", forceHistorySeed: false };
+  }
+  const mustReseed =
+    opts.reason === "resume" ||
+    opts.reason === "new" ||
+    (Boolean(opts.prevPiSessionId) &&
+      Boolean(opts.nextPiSessionId) &&
+      opts.prevPiSessionId !== opts.nextPiSessionId);
+  if (mustReseed) {
+    return { action: "reseed", forceHistorySeed: true };
+  }
+  return { action: "bind-only", forceHistorySeed: false };
+}
+
 /** Unlink all CLI session markers for a project cwd (e.g. after pi /resume). */
 export function clearCliSessionsForCwd(cwd: string): number {
   let n = 0;

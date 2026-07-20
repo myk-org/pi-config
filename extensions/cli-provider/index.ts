@@ -39,6 +39,7 @@ import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
   clearCliSessionsForCwd,
+  decideCliSessionStartReseed,
   loadCliSessionId,
   resolveCliHistorySeed,
   saveCliSessionId,
@@ -559,7 +560,10 @@ export default async function (pi: ExtensionAPI) {
   // Skip sync discovery if no agents configured
   if (agentList.length === 0) return;
 
-  startCliSessionReaper({ cwd: projectCwd });
+  startCliSessionReaper({
+    cwd: projectCwd,
+    getActivePiSessionId: () => activePiSessionId,
+  });
 
   // Bind CLI markers to the real pi session UUID; invalidate on /resume|/new.
   pi.on("session_start", (event, ctx) => {
@@ -574,8 +578,14 @@ export default async function (pi: ExtensionAPI) {
     const prevSid = activePiSessionId;
     activePiSessionId = sid;
 
+    const decision = decideCliSessionStartReseed({
+      reason,
+      prevPiSessionId: prevSid,
+      nextPiSessionId: sid,
+    });
+
     // /reload keeps markers so CLI --resume continues (same pi session).
-    if (reason === "reload") {
+    if (decision.action === "keep") {
       cliProviderLog(
         "info",
         `session_start reason=reload; keeping CLI markers (piSessionId=${sid || "default"})`,
@@ -583,12 +593,7 @@ export default async function (pi: ExtensionAPI) {
       return;
     }
 
-    const mustReseed =
-      reason === "resume" ||
-      reason === "new" ||
-      (Boolean(prevSid) && Boolean(sid) && prevSid !== sid);
-
-    if (!mustReseed) {
+    if (decision.action !== "reseed") {
       if (sid) {
         cliProviderLog(
           "info",
@@ -599,7 +604,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     const cleared = clearCliSessionsForCwd(projectCwd);
-    forceHistorySeed = true;
+    forceHistorySeed = decision.forceHistorySeed;
     for (const [, state] of agents) {
       state.systemPromptSent.clear();
     }
@@ -729,7 +734,8 @@ export default async function (pi: ExtensionAPI) {
   // Clear in-memory state on shutdown. Keep ~/.pi/cli-sessions/ on disk so
   // --resume can continue after /reload (unlike wiping markers every exit).
   // /resume and /new clear markers in session_start and force history re-seed.
-  // Reaper only removes status=stopped idle files — never running (issue #661).
+  // Reaper never deletes running markers for the active piSessionId; idle
+  // markers from other pi sessions may be reaped (issue #661).
   pi.on("session_shutdown", () => {
     stopCliSessionReaper();
     for (const [, state] of agents) {

@@ -190,7 +190,7 @@ describe("cli-provider sessions", () => {
     }
   });
 
-  it("does not reap idle running markers (issue #661)", () => {
+  it("does not reap idle running markers for the active pi session (issue #661)", () => {
     const prevHome = process.env.HOME;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-running-"));
     process.env.HOME = home;
@@ -214,7 +214,10 @@ describe("cli-provider sessions", () => {
           lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
         }),
       );
-      const n = reapStaleCliSessions({ inactivityThresholdMs: 1_000 });
+      const n = reapStaleCliSessions({
+        inactivityThresholdMs: 1_000,
+        activePiSessionId: "s1",
+      });
       assert.equal(n, 0);
       assert.equal(loadCliSessionId(key), "live-id");
     } finally {

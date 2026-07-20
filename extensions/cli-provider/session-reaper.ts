@@ -14,14 +14,28 @@ export interface ReapOptions {
   inactivityThresholdMs?: number;
   /** Only reap sessions matching this cwd (optional). */
   cwd?: string;
-  /** Only reap sessions matching this pi session id (optional). */
-  piSessionId?: string | null;
+  /**
+   * Current pi session UUID. Running markers for this id are never reaped
+   * (mid-session idle must not orphan the live CLI chat — issue #661).
+   * Idle markers for other piSessionIds (or legacy `default`) may be reaped
+   * even when status=running.
+   */
+  activePiSessionId?: string | null;
+}
+
+function isActivePiSessionMarker(
+  recordPiSessionId: string,
+  activePiSessionId: string | null | undefined,
+): boolean {
+  if (!activePiSessionId) return true; // unknown active → keep all running
+  return recordPiSessionId === activePiSessionId;
 }
 
 /**
- * Remove stopped session files idle longer than threshold.
- * Never deletes status=running — mid-session think/idle must not orphan the
- * CLI chat (issue #661). Running markers are cleared on pi /resume|/new.
+ * Remove idle session files.
+ * Never deletes status=running for the *current* piSessionId.
+ * Idle markers from other pi sessions (including legacy `default`) are reaped
+ * even if still marked running — they cannot be the live chat for this session.
  */
 export function reapStaleCliSessions(options?: ReapOptions): number {
   const threshold = Math.max(
@@ -29,27 +43,23 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
     options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
   );
   const now = Date.now();
+  const activeSid = options?.activePiSessionId ?? null;
   let reaped = 0;
 
   for (const { path, record } of listCliSessions()) {
     if (options?.cwd && record.cwd !== options.cwd) continue;
-    if (
-      options?.piSessionId != null &&
-      options.piSessionId !== "" &&
-      record.piSessionId !== options.piSessionId &&
-      record.piSessionId !== "default"
-    ) {
-      // Keep other pi sessions' markers
-      continue;
-    }
-
-    // Active bindings survive idle reaper sweeps
-    if (record.status !== "stopped") continue;
 
     const lastSeenMs = Date.parse(record.lastSeenAt);
     const idle =
       Number.isNaN(lastSeenMs) || now - lastSeenMs >= threshold;
     if (!idle) continue;
+
+    if (
+      record.status === "running" &&
+      isActivePiSessionMarker(record.piSessionId, activeSid)
+    ) {
+      continue;
+    }
 
     try {
       unlinkSync(path);
@@ -57,7 +67,8 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
       cliProviderLog(
         "info",
         `reaped session ${record.agent}/${record.model} ` +
-          `(status=${record.status}, lastSeen=${record.lastSeenAt})`,
+          `(status=${record.status}, piSessionId=${record.piSessionId}, ` +
+          `lastSeen=${record.lastSeenAt})`,
       );
     } catch (err) {
       cliProviderLog(
@@ -78,25 +89,31 @@ export function startCliSessionReaper(options?: {
   inactivityThresholdMs?: number;
   sweepIntervalMs?: number;
   cwd?: string;
+  /** Live pi session id (prefer over env — harness rarely sets PI_SESSION_ID). */
+  getActivePiSessionId?: () => string | null;
 }): void {
   if (reaperTimer) return;
   const sweepMs = Math.max(
     1,
     options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
   );
+  const sweep = () => {
+    const fromGetter = options?.getActivePiSessionId?.();
+    const activePiSessionId =
+      fromGetter != null && fromGetter !== ""
+        ? fromGetter
+        : process.env.PI_SESSION_ID || null;
+    reapStaleCliSessions({
+      inactivityThresholdMs: options?.inactivityThresholdMs,
+      cwd: options?.cwd,
+      activePiSessionId,
+    });
+  };
   // Immediate sweep once
-  reapStaleCliSessions({
-    inactivityThresholdMs: options?.inactivityThresholdMs,
-    cwd: options?.cwd,
-    piSessionId: process.env.PI_SESSION_ID || null,
-  });
+  sweep();
   reaperTimer = setInterval(() => {
     try {
-      reapStaleCliSessions({
-        inactivityThresholdMs: options?.inactivityThresholdMs,
-        cwd: options?.cwd,
-        piSessionId: process.env.PI_SESSION_ID || null,
-      });
+      sweep();
     } catch (err) {
       cliProviderLog("error", "session reaper sweep failed", err);
     }

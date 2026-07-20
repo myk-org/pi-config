@@ -26,9 +26,10 @@ Empty / unset → extension registers nothing.
 3. **Discover models from the CLI only** (see below) — no API keys, no cloud list APIs
 4. Register `cli-${agent}` with discovered models, or `${agent}:default` if discovery returns empty
 5. Skip registration if binary missing (no agent state)
-6. Start session reaper (5m sweep) for `~/.pi/cli-sessions/` — only reaps
-   `status=stopped` idle markers; never deletes `running` (mid-session idle
-   must not orphan the CLI chat — issue #661)
+6. Start session reaper (5m sweep) for `~/.pi/cli-sessions/` — never deletes
+   `status=running` markers for the **active** pi session id (mid-session idle
+   must not orphan the live CLI chat — issue #661). Idle markers from other
+   `piSessionId`s (or legacy `default`) may be reaped even if still `running`.
 7. On `session_start`:
    - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
    - `reason=resume` / `new` (or pi session id change): clear cwd markers,
