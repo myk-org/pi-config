@@ -3,7 +3,13 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -148,8 +154,6 @@ describe("reaper vs active piSessionId", () => {
     const home = mkdtempSync(join(tmpdir(), "cli-reap-active-"));
     process.env.HOME = home;
     try {
-      const { writeFileSync, readdirSync, readFileSync } =
-        require("node:fs") as typeof import("node:fs");
       const key: CliSessionKey = {
         cwd: "/proj",
         agent: "gemini",
@@ -185,7 +189,6 @@ describe("reaper vs active piSessionId", () => {
     const home = mkdtempSync(join(tmpdir(), "cli-reap-other-"));
     process.env.HOME = home;
     try {
-      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
       const key: CliSessionKey = {
         cwd: "/proj",
         agent: "gemini",
@@ -195,9 +198,7 @@ describe("reaper vs active piSessionId", () => {
       saveCliSessionId(key, "orphan-id");
       const dir = join(home, ".pi", "cli-sessions");
       const files = readdirSync(dir);
-      const rec = JSON.parse(
-        require("node:fs").readFileSync(join(dir, files[0]), "utf-8"),
-      );
+      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
       writeFileSync(
         join(dir, files[0]),
         JSON.stringify({

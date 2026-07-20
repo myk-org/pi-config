@@ -27,18 +27,27 @@ function run(agentsDir: string, projectRoot: string) {
   assert.equal(r.status, 0, r.stderr || r.stdout);
 }
 
+function seedAgents(dir: string, body = "body") {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "github-expert.md"),
+    `---\nname: github-expert\n---\n${body}\n`,
+  );
+  writeFileSync(
+    join(dir, "git-expert.md"),
+    `---\nname: git-expert\n---\n${body}\n`,
+  );
+}
+
 describe("symlink-cli-specialists.sh", () => {
   const root = mkdtempSync(join(tmpdir(), "symlink-cli-spec-"));
   const agents = join(root, "agents");
   const project = join(root, "project");
   after(() => rmSync(root, { recursive: true, force: true }));
 
-  it("creates file symlinks in all three CLI dirs and overwrites with ln -sfn", () => {
-    mkdirSync(agents, { recursive: true });
+  it("creates file symlinks in cursor, claude, gemini agent dirs", () => {
+    seedAgents(agents);
     mkdirSync(project, { recursive: true });
-    writeFileSync(join(agents, "github-expert.md"), "---\nname: github-expert\n---\nbody\n");
-    writeFileSync(join(agents, "git-expert.md"), "---\nname: git-expert\n---\nbody\n");
-
     run(agents, project);
 
     for (const dest of [".cursor/agents", ".claude/agents", ".gemini/agents"]) {
@@ -47,22 +56,34 @@ describe("symlink-cli-specialists.sh", () => {
       assert.ok(lstatSync(link).isSymbolicLink());
       assert.equal(readlinkSync(link), join(agents, "github-expert.md"));
     }
+  });
 
-    // Concurrent / second run: change target file content path by rewriting via new agents dir copy
+  it("overwrites existing agent symlinks with ln -sfn", () => {
+    seedAgents(agents);
+    mkdirSync(project, { recursive: true });
+    run(agents, project);
+
     const agents2 = join(root, "agents2");
-    mkdirSync(agents2, { recursive: true });
-    writeFileSync(join(agents2, "github-expert.md"), "---\nname: github-expert\n---\nv2\n");
-    writeFileSync(join(agents2, "git-expert.md"), "---\nname: git-expert\n---\nv2\n");
+    seedAgents(agents2, "v2");
     run(agents2, project);
 
     assert.equal(
       readlinkSync(join(project, ".cursor/agents", "github-expert.md")),
       join(agents2, "github-expert.md"),
     );
-    // Unknown extra file left alone
+  });
+
+  it("leaves unknown files in agent dirs untouched", () => {
+    seedAgents(agents);
+    mkdirSync(project, { recursive: true });
+    run(agents, project);
+
     writeFileSync(join(project, ".cursor/agents", "user-local.md"), "keep\n");
-    run(agents2, project);
+    run(agents, project);
+
     assert.ok(existsSync(join(project, ".cursor/agents", "user-local.md")));
-    assert.ok(!lstatSync(join(project, ".cursor/agents", "user-local.md")).isSymbolicLink());
+    assert.ok(
+      !lstatSync(join(project, ".cursor/agents", "user-local.md")).isSymbolicLink(),
+    );
   });
 });

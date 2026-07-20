@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -178,7 +178,6 @@ describe("cli-provider sessions", () => {
       };
       saveCliSessionId(key, "ok");
       const rec = loadCliSessionRecord(key)!;
-      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
       const dir = join(home, ".pi", "cli-sessions");
       const files = readdirSync(dir);
       writeFileSync(join(dir, files[0]), "{not-json");
@@ -203,7 +202,6 @@ describe("cli-provider sessions", () => {
       };
       saveCliSessionId(key, "live-id");
       const rec = loadCliSessionRecord(key)!;
-      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
       const path = join(home, ".pi", "cli-sessions");
       const files = readdirSync(path);
       writeFileSync(
@@ -240,7 +238,6 @@ describe("cli-provider sessions", () => {
       saveCliSessionId(key, "old-id");
       const rec = loadCliSessionRecord(key)!;
       const path = join(home, ".pi", "cli-sessions");
-      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
       const files = readdirSync(path);
       assert.equal(files.length, 1);
       writeFileSync(
