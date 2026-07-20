@@ -32,8 +32,9 @@ Empty / unset → extension registers nothing.
    `piSessionId`s (or legacy `default`) may be reaped even if still `running`.
 7. On `session_start`:
    - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
-   - `reason=resume` / `new` (or pi session id change): clear cwd markers,
-     force next turn to re-seed from pi `context.messages`
+   - `reason=resume` / `new` (or pi session id change): clear markers for this
+     `piSessionId` (+ legacy `default`), force next turn to re-seed from pi
+     `context.messages` (other concurrent pi sessions in the same cwd are kept)
    - `reason=reload`: keep markers so CLI `--resume` continues
 8. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept
    for `/reload` resume)

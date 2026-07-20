@@ -54,6 +54,50 @@ describe("cli-provider sessions", () => {
     assert.equal(shouldRetryWithoutResume("CLI call aborted"), false);
   });
 
+  it("clearCliSessionsForPiSession removes only matching sid (keeps other sessions)", async () => {
+    const { clearCliSessionsForPiSession } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-scoped-"));
+    process.env.HOME = home;
+    try {
+      const keyMine: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "mine",
+      };
+      const keyOther: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "other",
+      };
+      const keyLegacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      saveCliSessionId(keyMine, "id-mine");
+      saveCliSessionId(keyOther, "id-other");
+      saveCliSessionId(keyLegacy, "id-legacy");
+      assert.equal(
+        clearCliSessionsForPiSession("/proj", "mine", {
+          includeLegacyDefault: true,
+        }),
+        2,
+      );
+      assert.equal(loadCliSessionId(keyMine), null);
+      assert.equal(loadCliSessionId(keyLegacy), null);
+      assert.equal(loadCliSessionId(keyOther), "id-other");
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("clearCliSessionsForCwd removes all markers for that cwd", async () => {
     const { clearCliSessionsForCwd } = await import(
       "../../../extensions/cli-provider/sessions.js"

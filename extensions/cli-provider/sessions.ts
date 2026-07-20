@@ -218,7 +218,7 @@ export function resolveCliHistorySeed(opts: {
 /**
  * Decide CLI marker / history-seed action on pi `session_start` (issue #661).
  * - reload → keep markers (CLI `--resume` continues)
- * - resume / new / pi session id change → clear cwd markers + force re-seed
+ * - resume / new / pi session id change → clear this session's markers + force re-seed
  * - otherwise → bind id only
  */
 export function decideCliSessionStartReseed(opts: {
@@ -244,7 +244,37 @@ export function decideCliSessionStartReseed(opts: {
   return { action: "bind-only", forceHistorySeed: false };
 }
 
-/** Unlink all CLI session markers for a project cwd (e.g. after pi /resume). */
+/**
+ * Unlink CLI session markers for a cwd scoped to a pi session id.
+ * By default also clears legacy `default` markers for that cwd (migration).
+ * Does not touch other concurrent pi sessions sharing the same project.
+ */
+export function clearCliSessionsForPiSession(
+  cwd: string,
+  piSessionId: string | null,
+  opts?: { includeLegacyDefault?: boolean },
+): number {
+  const includeLegacy = opts?.includeLegacyDefault ?? true;
+  const matchIds = new Set<string>();
+  if (piSessionId && piSessionId !== "") matchIds.add(piSessionId);
+  if (includeLegacy) matchIds.add("default");
+  if (matchIds.size === 0) return 0;
+
+  let n = 0;
+  for (const { path, record } of listCliSessions()) {
+    if (record.cwd !== cwd) continue;
+    if (!matchIds.has(record.piSessionId)) continue;
+    try {
+      unlinkSync(path);
+      n += 1;
+    } catch {
+      /* ignore */
+    }
+  }
+  return n;
+}
+
+/** @deprecated Prefer clearCliSessionsForPiSession — cwd-wide wipe hurts concurrent sessions. */
 export function clearCliSessionsForCwd(cwd: string): number {
   let n = 0;
   for (const { path, record } of listCliSessions()) {

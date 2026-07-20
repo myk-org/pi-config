@@ -13,7 +13,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  clearCliSessionsForCwd,
+  clearCliSessionsForPiSession,
   decideCliSessionStartReseed,
   loadCliSessionId,
   resolveCliHistorySeed,
@@ -75,9 +75,9 @@ describe("decideCliSessionStartReseed (/resume contract)", () => {
 });
 
 describe("/resume reseed path (markers + history seed)", () => {
-  it("clears cwd markers and forces history seed like session_start resume", () => {
+  it("clears matching piSession markers on resume", () => {
     const prevHome = process.env.HOME;
-    const home = mkdtempSync(join(tmpdir(), "cli-resume-e2e-"));
+    const home = mkdtempSync(join(tmpdir(), "cli-resume-clear-"));
     process.env.HOME = home;
     try {
       const cwd = "/proj-resume";
@@ -85,31 +85,73 @@ describe("/resume reseed path (markers + history seed)", () => {
         cwd,
         agent: "cursor",
         model: "composer",
-        piSessionId: "old-sid",
+        piSessionId: "new-sid",
+      };
+      const other: CliSessionKey = {
+        cwd,
+        agent: "cursor",
+        model: "composer",
+        piSessionId: "other-sid",
       };
       saveCliSessionId(key, "stale-cli-chat");
-      assert.equal(loadCliSessionId(key), "stale-cli-chat");
+      saveCliSessionId(other, "other-cli-chat");
 
       const decision = decideCliSessionStartReseed({
         reason: "resume",
-        prevPiSessionId: "old-sid",
+        prevPiSessionId: null,
         nextPiSessionId: "new-sid",
       });
       assert.equal(decision.action, "reseed");
 
-      const cleared = clearCliSessionsForCwd(cwd);
+      const cleared = clearCliSessionsForPiSession(cwd, "new-sid", {
+        includeLegacyDefault: true,
+      });
       assert.equal(cleared, 1);
       assert.equal(loadCliSessionId(key), null);
-
-      const seed = resolveCliHistorySeed({
-        hasCliSession: Boolean(loadCliSessionId({ ...key, piSessionId: "new-sid" })),
-        forceHistorySeed: decision.forceHistorySeed,
-      });
-      assert.deepEqual(seed, { useCliSession: false, seedHistory: true });
+      assert.equal(loadCliSessionId(other), "other-cli-chat");
     } finally {
       process.env.HOME = prevHome;
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it("forces history seed after resume decision", () => {
+    const decision = decideCliSessionStartReseed({
+      reason: "resume",
+      prevPiSessionId: "old-sid",
+      nextPiSessionId: "new-sid",
+    });
+    assert.equal(decision.forceHistorySeed, true);
+    assert.deepEqual(
+      resolveCliHistorySeed({
+        hasCliSession: true,
+        forceHistorySeed: decision.forceHistorySeed,
+      }),
+      { useCliSession: false, seedHistory: true },
+    );
+  });
+
+  it("reload clears a pending forceHistorySeed flag", () => {
+    const reseed = decideCliSessionStartReseed({
+      reason: "resume",
+      prevPiSessionId: null,
+      nextPiSessionId: "sid-a",
+    });
+    assert.equal(reseed.forceHistorySeed, true);
+
+    // Mimic index.ts: every session_start assigns forceHistorySeed = decision.forceHistorySeed
+    let forceHistorySeed = reseed.forceHistorySeed;
+    const reload = decideCliSessionStartReseed({
+      reason: "reload",
+      prevPiSessionId: "sid-a",
+      nextPiSessionId: "sid-a",
+    });
+    forceHistorySeed = reload.forceHistorySeed;
+    assert.equal(forceHistorySeed, false);
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed }),
+      { useCliSession: true, seedHistory: false },
+    );
   });
 
   it("reload does not clear markers", () => {
@@ -132,7 +174,6 @@ describe("/resume reseed path (markers + history seed)", () => {
         nextPiSessionId: "same-sid",
       });
       assert.equal(decision.action, "keep");
-      // Mimic index.ts: keep path returns without clearCliSessionsForCwd
       assert.equal(loadCliSessionId(key), "live-cli-chat");
       assert.deepEqual(
         resolveCliHistorySeed({

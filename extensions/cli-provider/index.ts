@@ -38,7 +38,7 @@ import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
-  clearCliSessionsForCwd,
+  clearCliSessionsForPiSession,
   decideCliSessionStartReseed,
   loadCliSessionId,
   resolveCliHistorySeed,
@@ -583,6 +583,9 @@ export default async function (pi: ExtensionAPI) {
       prevPiSessionId: prevSid,
       nextPiSessionId: sid,
     });
+    // Every session_start must set this deterministically (reload must clear a
+    // pending reseed flag from a prior session_start that never got a turn).
+    forceHistorySeed = decision.forceHistorySeed;
 
     // /reload keeps markers so CLI --resume continues (same pi session).
     if (decision.action === "keep") {
@@ -603,8 +606,9 @@ export default async function (pi: ExtensionAPI) {
       return;
     }
 
-    const cleared = clearCliSessionsForCwd(projectCwd);
-    forceHistorySeed = decision.forceHistorySeed;
+    const cleared = clearCliSessionsForPiSession(projectCwd, sid, {
+      includeLegacyDefault: true,
+    });
     for (const [, state] of agents) {
       state.systemPromptSent.clear();
     }
