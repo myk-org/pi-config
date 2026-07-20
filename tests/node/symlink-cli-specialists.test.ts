@@ -12,6 +12,7 @@ import {
   writeFileSync,
   existsSync,
   lstatSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -97,5 +98,33 @@ describe("symlink-cli-specialists.sh", () => {
     run(agents, isolated);
     assert.ok(!lstatSync(dest).isSymbolicLink());
     assert.equal(readFileSync(dest, "utf8"), "user-owned\n");
+  });
+
+  it("skips when .cursor is a symlink (no write outside project)", () => {
+    const isolated = join(root, "project-cursor-link");
+    const outside = join(root, "outside-cursor");
+    seedAgents(agents);
+    mkdirSync(isolated, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(isolated, ".cursor"));
+
+    const r = spawnSync("bash", [script, agents, isolated], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    assert.match(r.stderr, /skip \.cursor\/agents \(symlinked \.cursor\)/);
+    assert.ok(!existsSync(join(outside, "agents", "github-expert.md")));
+  });
+
+  it("skips when .cursor/agents is a symlink", () => {
+    const isolated = join(root, "project-agents-link");
+    const outside = join(root, "outside-agents");
+    seedAgents(agents);
+    mkdirSync(join(isolated, ".cursor"), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(isolated, ".cursor", "agents"));
+
+    const r = spawnSync("bash", [script, agents, isolated], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    assert.match(r.stderr, /skip \.cursor\/agents \(symlinked agents dir\)/);
+    assert.ok(!existsSync(join(outside, "github-expert.md")));
   });
 });

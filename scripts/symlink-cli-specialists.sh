@@ -6,6 +6,8 @@
 # Always uses ln -sfn for existing symlinks (safe for concurrent pi-docker).
 # Skips destinations that already exist as a regular file (no silent overwrite).
 # Does not delete unknown files in the destination dirs.
+# Refuses to write through symlinked .cursor/.claude/.gemini (or agents/) roots
+# so repo-controlled symlinks cannot redirect writes outside the project.
 set -euo pipefail
 
 agents_dir="${1:-}"
@@ -16,9 +18,9 @@ if [ -z "$agents_dir" ] || [ ! -d "$agents_dir" ]; then
   exit 1
 fi
 
-# Absolute target paths so symlinks stay valid if cwd changes later.
-agents_dir="$(cd "$agents_dir" && pwd)"
-project_root="$(cd "$project_root" && pwd)"
+# Physical absolute paths so symlink components cannot redirect writes.
+agents_dir="$(cd "$agents_dir" && pwd -P)"
+project_root="$(cd "$project_root" && pwd -P)"
 
 shopt -s nullglob
 agent_files=("$agents_dir"/*.md)
@@ -28,8 +30,34 @@ if [ ${#agent_files[@]} -eq 0 ]; then
 fi
 
 for dest_rel in .cursor/agents .claude/agents .gemini/agents; do
+  top="${dest_rel%%/*}"
+  top_path="$project_root/$top"
+  if [ -L "$top_path" ]; then
+    echo "symlink-cli-specialists: skip $dest_rel (symlinked $top)" >&2
+    continue
+  fi
+
   dest_dir="$project_root/$dest_rel"
+  if [ -L "$dest_dir" ]; then
+    echo "symlink-cli-specialists: skip $dest_rel (symlinked agents dir)" >&2
+    continue
+  fi
+
   mkdir -p "$dest_dir"
+  if [ -L "$dest_dir" ] || [ ! -d "$dest_dir" ]; then
+    echo "symlink-cli-specialists: skip $dest_rel (dest not a real directory)" >&2
+    continue
+  fi
+
+  phys_dest="$(cd "$dest_dir" && pwd -P)"
+  case "$phys_dest" in
+    "$project_root"|"$project_root"/*) ;;
+    *)
+      echo "symlink-cli-specialists: skip $dest_rel (escapes project root)" >&2
+      continue
+      ;;
+  esac
+
   for src in "${agent_files[@]}"; do
     name="$(basename "$src")"
     dest="$dest_dir/$name"
