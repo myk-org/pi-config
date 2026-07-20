@@ -796,8 +796,8 @@ export default async function (pi: ExtensionAPI) {
   // Clear in-memory state on shutdown. Keep ~/.pi/cli-sessions/ on disk so
   // --resume can continue after /reload (unlike wiping markers every exit).
   // /resume and /new clear markers in session_start and force history re-seed.
-  // Reaper never deletes running markers for the active piSessionId; idle
-  // markers from other pi sessions may be reaped (issue #661).
+  // Reaper never deletes status=running (any piSessionId) so concurrent sessions
+  // keep CLI --resume; only idle stopped markers are cleaned (issue #661).
   pi.on("session_shutdown", () => {
     stopCliSessionReaper();
     for (const [, state] of agents) {
