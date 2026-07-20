@@ -279,7 +279,7 @@ describe("reaper vs active piSessionId", () => {
     }
   });
 
-  it("reaps idle running marker from a different piSessionId", () => {
+  it("does not reap idle running marker from a different piSessionId", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-other-"));
@@ -290,9 +290,9 @@ describe("reaper vs active piSessionId", () => {
         cwd: "/proj",
         agent: "gemini",
         model: "flash",
-        piSessionId: "old-sid",
+        piSessionId: "other-sid",
       };
-      saveCliSessionId(key, "orphan-id");
+      saveCliSessionId(key, "other-cli");
       assert.equal(
         setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
         true,
@@ -301,8 +301,8 @@ describe("reaper vs active piSessionId", () => {
         inactivityThresholdMs: 1_000,
         activePiSessionId: "current-sid",
       });
-      assert.equal(n, 1);
-      assert.equal(loadCliSessionId(key), null);
+      assert.equal(n, 0);
+      assert.equal(loadCliSessionId(key), "other-cli");
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
@@ -431,7 +431,7 @@ describe("startCliSessionReaper scheduling", () => {
     }
   });
 
-  it("interval sweep uses getActivePiSessionId to protect current session", async () => {
+  it("interval sweep reaps idle stopped but keeps concurrent running markers", async () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reaper-interval-"));
@@ -440,15 +440,29 @@ describe("startCliSessionReaper scheduling", () => {
     process.env.PI_SESSION_ID = "env-sid";
     stopCliSessionReaper();
     try {
-      const other: CliSessionKey = {
+      const otherRunning: CliSessionKey = {
         cwd: "/proj",
         agent: "gemini",
         model: "flash",
         piSessionId: "other-sid",
       };
-      saveCliSessionId(other, "other-cli");
+      const stopped: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "composer",
+        piSessionId: "old-sid",
+      };
+      saveCliSessionId(otherRunning, "other-cli");
+      saveCliSessionId(stopped, "stopped-cli");
       assert.equal(
-        setCliSessionMarkerMeta(other, { status: "running", idleMs: 60_000 }),
+        setCliSessionMarkerMeta(otherRunning, {
+          status: "running",
+          idleMs: 60_000,
+        }),
+        true,
+      );
+      assert.equal(
+        setCliSessionMarkerMeta(stopped, { status: "stopped", idleMs: 60_000 }),
         true,
       );
 
@@ -458,10 +472,11 @@ describe("startCliSessionReaper scheduling", () => {
         getActivePiSessionId: () => "current-sid",
       });
       const deadline = Date.now() + 2_000;
-      while (Date.now() < deadline && loadCliSessionId(other) !== null) {
+      while (Date.now() < deadline && loadCliSessionId(stopped) !== null) {
         await new Promise((r) => setTimeout(r, 50));
       }
-      assert.equal(loadCliSessionId(other), null);
+      assert.equal(loadCliSessionId(stopped), null);
+      assert.equal(loadCliSessionId(otherRunning), "other-cli");
     } finally {
       stopCliSessionReaper();
       delete process.env.PI_SESSION_ID;

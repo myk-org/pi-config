@@ -1,6 +1,7 @@
 /**
  * Reap stale CLI session markers (t3 ProviderSessionReaper pattern).
- * Deletes bindings idle longer than inactivityThresholdMs.
+ * Deletes idle *stopped* bindings only — never status=running, so concurrent
+ * pi sessions in the same cwd keep CLI --resume continuity.
  */
 
 import { unlinkSync } from "node:fs";
@@ -15,30 +16,17 @@ export interface ReapOptions {
   /** Only reap sessions matching this cwd (optional). */
   cwd?: string;
   /**
-   * Current pi session UUID. Running markers for this id are never reaped
-   * (mid-session idle must not orphan the live CLI chat — issue #661).
-   * Idle markers for other piSessionIds (or legacy `default`) may be reaped
-   * even when status=running.
+   * Current pi session UUID (informational / future scoping).
+   * Running markers are never reaped regardless of this value — concurrent
+   * sessions in the same cwd must keep --resume (issue #661).
    */
   activePiSessionId?: string | null;
 }
 
-function isActivePiSessionMarker(
-  recordPiSessionId: string,
-  activePiSessionId: string | null | undefined,
-): boolean {
-  // Unknown active id → protect all running markers so the startup window
-  // (before before_agent_start/session_start) cannot wipe /reload continuity.
-  // Once bound, only the active piSessionId is protected.
-  if (!activePiSessionId) return true;
-  return recordPiSessionId === activePiSessionId;
-}
-
 /**
- * Remove idle session files.
- * Never deletes status=running for the *current* piSessionId.
- * Idle markers from other pi sessions (including legacy `default`) are reaped
- * even if still marked running — they cannot be the live chat for this session.
+ * Remove idle *stopped* session files only.
+ * Never deletes status=running (own or other piSessionId) so two pi processes
+ * on the same project both keep CLI --resume after idle timeouts.
  */
 export function reapStaleCliSessions(options?: ReapOptions): number {
   const threshold = Math.max(
@@ -46,23 +34,19 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
     options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
   );
   const now = Date.now();
-  const activeSid = options?.activePiSessionId ?? null;
   let reaped = 0;
 
   for (const { path, record } of listCliSessions()) {
     if (options?.cwd && record.cwd !== options.cwd) continue;
 
+    // Concurrent pi sessions share ~/.pi/cli-sessions for the same cwd.
+    // Deleting another session's running marker breaks its --resume.
+    if (record.status === "running") continue;
+
     const lastSeenMs = Date.parse(record.lastSeenAt);
     const idle =
       Number.isNaN(lastSeenMs) || now - lastSeenMs >= threshold;
     if (!idle) continue;
-
-    if (
-      record.status === "running" &&
-      isActivePiSessionMarker(record.piSessionId, activeSid)
-    ) {
-      continue;
-    }
 
     try {
       unlinkSync(path);
@@ -99,46 +83,40 @@ export function resolveReaperActivePiSessionId(
     const fromGetter = getActivePiSessionId();
     return fromGetter != null && fromGetter !== "" ? fromGetter : null;
   }
-  return envPiSessionId || null;
+  return envPiSessionId != null && envPiSessionId !== ""
+    ? envPiSessionId
+    : null;
 }
 
-/** Start periodic reaper (no-op if already running). */
-export function startCliSessionReaper(options?: {
-  inactivityThresholdMs?: number;
+export function startCliSessionReaper(opts?: {
   sweepIntervalMs?: number;
+  inactivityThresholdMs?: number;
   cwd?: string;
-  /** Live pi session id (prefer over env — harness rarely sets PI_SESSION_ID). */
   getActivePiSessionId?: () => string | null;
 }): void {
-  if (reaperTimer) return;
-  const sweepMs = Math.max(
-    1,
-    options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
+  stopCliSessionReaper();
+  const interval = Math.max(
+    1_000,
+    opts?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
   );
   const sweep = () => {
     reapStaleCliSessions({
-      inactivityThresholdMs: options?.inactivityThresholdMs,
-      cwd: options?.cwd,
+      inactivityThresholdMs: opts?.inactivityThresholdMs,
+      cwd: opts?.cwd,
       activePiSessionId: resolveReaperActivePiSessionId(
-        options?.getActivePiSessionId,
+        opts?.getActivePiSessionId,
       ),
     });
   };
   // Do not sweep immediately — activePiSessionId is usually still unset at
-  // extension load; waiting for the first interval (or a later sweep after
-  // session bind) avoids deleting /reload resume markers.
-  reaperTimer = setInterval(() => {
-    try {
-      sweep();
-    } catch (err) {
-      cliProviderLog("error", "session reaper sweep failed", err);
-    }
-  }, sweepMs);
-  reaperTimer.unref?.();
+  // extension load; waiting one interval avoids racing session_start.
+  reaperTimer = setInterval(sweep, interval);
+  if (reaperTimer.unref) reaperTimer.unref();
 }
 
 export function stopCliSessionReaper(): void {
-  if (!reaperTimer) return;
-  clearInterval(reaperTimer);
-  reaperTimer = null;
+  if (reaperTimer) {
+    clearInterval(reaperTimer);
+    reaperTimer = null;
+  }
 }

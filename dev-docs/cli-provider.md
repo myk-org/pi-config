@@ -27,16 +27,15 @@ Empty / unset → extension registers nothing.
 4. Register `cli-${agent}` with discovered models, or `${agent}:default` if discovery returns empty
 5. Skip registration if binary missing (no agent state)
 6. Start session reaper (5m sweep; no immediate sweep at load) for
-   `~/.pi/cli-sessions/` — never deletes `status=running` markers for the
-   **active** pi session id (mid-session idle must not orphan the live CLI chat —
-   issue #661). While the active id is unknown, all running markers are kept.
-   Idle markers from other `piSessionId`s (or legacy `default`) may be reaped
-   once the active id is known, even if still `running`.
+   `~/.pi/cli-sessions/` — deletes idle `status=stopped` markers only.
+   Never deletes `status=running` (own or other `piSessionId`) so concurrent
+   pi sessions in the same cwd keep CLI `--resume` (issue #661).
 7. On `session_start`:
    - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
    - `reason=resume` / `new` (or pi session id change): clear markers for this
-     `piSessionId` (+ legacy `default`), force next turn to re-seed from pi
-     `context.messages` (other concurrent pi sessions in the same cwd are kept)
+     `piSessionId` (+ legacy `default` only when this process used that bucket),
+     force next turn to re-seed from pi `context.messages` (other concurrent
+     pi sessions in the same cwd are kept)
    - `reason=reload`: keep markers so CLI `--resume` continues
 8. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept
    for `/reload` resume)
@@ -108,14 +107,12 @@ File-backed bindings keyed by cwd + agent + model + **pi session UUID**
 (from `sessionManager.getSessionId()`, falling back to `"default"`):
 
 - Fields: `sessionId`, `status`, `createdAt`, `lastSeenAt`, `resumeFailures`, `piSessionId`
-- **Reaper:** every 5m, drop idle markers (≥ 30m). Never deletes `status=running`
-  for the **active** `piSessionId`. Idle running markers from other sessions (or
-  legacy `default`) may be reaped once the active id is known. While the active
-  id is still unknown (startup before `session_start`), all running markers are
-  kept so `/reload` continuity is not wiped (issue #661)
+- **Reaper:** every 5m, drop idle `status=stopped` markers (≥ 30m). Never deletes
+  `status=running` for any `piSessionId` — concurrent pi sessions in the same
+  cwd keep CLI `--resume` (issue #661)
 - `/reload` keeps markers so `--resume` can continue
-- `/resume` / `/new` clears this session’s markers (+ legacy `default`) and forces
-  a history re-seed on the next turn
+- `/resume` / `/new` clears this session’s markers (+ legacy `default` when this
+  process used that bucket) and forces a history re-seed on the next turn
 
 ## Streaming flags
 
