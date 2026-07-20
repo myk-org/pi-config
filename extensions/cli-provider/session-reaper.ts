@@ -87,6 +87,16 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
 
 let reaperTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Prefer getter over env when resolving which pi session the reaper protects. */
+export function resolveReaperActivePiSessionId(
+  getActivePiSessionId?: () => string | null,
+  envPiSessionId: string | null | undefined = process.env.PI_SESSION_ID,
+): string | null {
+  const fromGetter = getActivePiSessionId?.();
+  if (fromGetter != null && fromGetter !== "") return fromGetter;
+  return envPiSessionId || null;
+}
+
 /** Start periodic reaper (no-op if already running). */
 export function startCliSessionReaper(options?: {
   inactivityThresholdMs?: number;
@@ -101,15 +111,12 @@ export function startCliSessionReaper(options?: {
     options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
   );
   const sweep = () => {
-    const fromGetter = options?.getActivePiSessionId?.();
-    const activePiSessionId =
-      fromGetter != null && fromGetter !== ""
-        ? fromGetter
-        : process.env.PI_SESSION_ID || null;
     reapStaleCliSessions({
       inactivityThresholdMs: options?.inactivityThresholdMs,
       cwd: options?.cwd,
-      activePiSessionId,
+      activePiSessionId: resolveReaperActivePiSessionId(
+        options?.getActivePiSessionId,
+      ),
     });
   };
   // Do not sweep immediately — activePiSessionId is usually still unset at

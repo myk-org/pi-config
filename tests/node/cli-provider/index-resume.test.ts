@@ -21,7 +21,7 @@ import {
   saveCliSessionId,
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
-import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
+import { reapStaleCliSessions, resolveReaperActivePiSessionId, startCliSessionReaper, stopCliSessionReaper } from "../../../extensions/cli-provider/session-reaper.js";
 
 describe("decideCliSessionStartReseed (/resume contract)", () => {
   it("keeps markers on reload", () => {
@@ -336,5 +336,114 @@ describe("applySystemPromptToCliPrompt (resume-retry contract)", () => {
 
   it("leaves prompt unchanged when system prompt is missing", () => {
     assert.equal(applySystemPromptToCliPrompt("only user", undefined), "only user");
+  });
+});
+
+describe("startCliSessionReaper scheduling", () => {
+  it("resolveReaperActivePiSessionId prefers getter over env", () => {
+    assert.equal(
+      resolveReaperActivePiSessionId(() => "from-getter", "from-env"),
+      "from-getter",
+    );
+    assert.equal(
+      resolveReaperActivePiSessionId(() => null, "from-env"),
+      "from-env",
+    );
+    assert.equal(
+      resolveReaperActivePiSessionId(() => "", "from-env"),
+      "from-env",
+    );
+  });
+
+  it("does not sweep immediately on start", async () => {
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-reaper-start-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    stopCliSessionReaper();
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "gemini",
+        model: "flash",
+        piSessionId: "other",
+      };
+      saveCliSessionId(key, "orphan-id");
+      const dir = join(home, ".pi", "cli-sessions");
+      const files = readdirSync(dir);
+      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
+      writeFileSync(
+        join(dir, files[0]),
+        JSON.stringify({
+          ...rec,
+          status: "running",
+          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+      );
+
+      startCliSessionReaper({
+        sweepIntervalMs: 200,
+        inactivityThresholdMs: 1_000,
+        getActivePiSessionId: () => "current",
+      });
+      // Immediate check — must not have swept yet
+      assert.equal(loadCliSessionId(key), "orphan-id");
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(loadCliSessionId(key), "orphan-id");
+    } finally {
+      stopCliSessionReaper();
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("interval sweep uses getActivePiSessionId to protect current session", async () => {
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-reaper-interval-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.PI_SESSION_ID = "env-sid";
+    stopCliSessionReaper();
+    try {
+      const other: CliSessionKey = {
+        cwd: "/proj",
+        agent: "gemini",
+        model: "flash",
+        piSessionId: "other-sid",
+      };
+      saveCliSessionId(other, "other-cli");
+      const dir = join(home, ".pi", "cli-sessions");
+      const files = readdirSync(dir);
+      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
+      writeFileSync(
+        join(dir, files[0]),
+        JSON.stringify({
+          ...rec,
+          status: "running",
+          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+      );
+
+      startCliSessionReaper({
+        sweepIntervalMs: 40,
+        inactivityThresholdMs: 1_000,
+        getActivePiSessionId: () => "current-sid",
+      });
+      await new Promise((r) => setTimeout(r, 120));
+      assert.equal(loadCliSessionId(other), null);
+    } finally {
+      stopCliSessionReaper();
+      delete process.env.PI_SESSION_ID;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
