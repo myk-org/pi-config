@@ -27,7 +27,9 @@ function isActivePiSessionMarker(
   recordPiSessionId: string,
   activePiSessionId: string | null | undefined,
 ): boolean {
-  if (!activePiSessionId) return true; // unknown active → keep all running
+  // Unknown active id → do not treat markers as protected; idle running may be
+  // reaped so ~/.pi/cli-sessions/ cannot grow without bound.
+  if (!activePiSessionId) return false;
   return recordPiSessionId === activePiSessionId;
 }
 

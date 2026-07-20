@@ -13,6 +13,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  applySystemPromptToCliPrompt,
   clearCliSessionsForPiSession,
   decideCliSessionStartReseed,
   loadCliSessionId,
@@ -258,5 +259,57 @@ describe("reaper vs active piSessionId", () => {
       process.env.HOME = prevHome;
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it("reaps idle running markers when active piSessionId is unknown", () => {
+    const prevHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "cli-reap-unknown-"));
+    process.env.HOME = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "gemini",
+        model: "flash",
+        piSessionId: "orphan",
+      };
+      saveCliSessionId(key, "orphan-id");
+      const dir = join(home, ".pi", "cli-sessions");
+      const files = readdirSync(dir);
+      const rec = JSON.parse(readFileSync(join(dir, files[0]), "utf-8"));
+      writeFileSync(
+        join(dir, files[0]),
+        JSON.stringify({
+          ...rec,
+          status: "running",
+          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+      );
+      const n = reapStaleCliSessions({
+        inactivityThresholdMs: 1_000,
+        activePiSessionId: null,
+      });
+      assert.equal(n, 1);
+      assert.equal(loadCliSessionId(key), null);
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("applySystemPromptToCliPrompt (resume-retry contract)", () => {
+  it("prepends system prompt for a fresh CLI session after failed resume", () => {
+    const rebuilt = "seeded history\n\nuser: try again";
+    const withSys = applySystemPromptToCliPrompt(
+      rebuilt,
+      "You are being used as a backend LLM",
+    );
+    assert.match(withSys, /^You are being used as a backend LLM/);
+    assert.match(withSys, /---/);
+    assert.match(withSys, /seeded history/);
+  });
+
+  it("leaves prompt unchanged when system prompt is missing", () => {
+    assert.equal(applySystemPromptToCliPrompt("only user", undefined), "only user");
   });
 });

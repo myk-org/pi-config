@@ -216,6 +216,18 @@ export function resolveCliHistorySeed(opts: {
 }
 
 /**
+ * Prepend the once-per-CLI-session system prompt when starting a fresh chat
+ * (first turn or retry after failed --resume).
+ */
+export function applySystemPromptToCliPrompt(
+  prompt: string,
+  systemPrompt?: string,
+): string {
+  if (!systemPrompt) return prompt;
+  return `${systemPrompt}\n\n---\n\n${prompt}`;
+}
+
+/**
  * Decide CLI marker / history-seed action on pi `session_start` (issue #661).
  * - reload → keep markers (CLI `--resume` continues)
  * - resume / new / pi session id change → clear this session's markers + force re-seed

@@ -38,6 +38,7 @@ import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
+  applySystemPromptToCliPrompt,
   clearCliSessionsForPiSession,
   decideCliSessionStartReseed,
   loadCliSessionId,
@@ -128,11 +129,16 @@ async function runCliTurnWithResumeRecover(opts: {
   key: CliSessionKey;
   sessionId: string | null;
   prompt: string;
+  /** Always pass when available — used on retry for the new CLI session. */
   systemPrompt?: string;
   signal?: AbortSignal;
   onEvent?: Parameters<typeof runCliAgent>[0]["onEvent"];
   rebuildPromptWithoutSession: () => string;
-}): Promise<Awaited<ReturnType<typeof runCliAgent>>> {
+}): Promise<{
+  result: Awaited<ReturnType<typeof runCliAgent>>;
+  /** True when --resume failed and we started a new CLI session with reseed. */
+  resumedFresh: boolean;
+}> {
   const runOnce = (sessionId: string | null, prompt: string) =>
     runCliAgent({
       agent: opts.agent,
@@ -148,7 +154,7 @@ async function runCliTurnWithResumeRecover(opts: {
     const result = await runOnce(opts.sessionId, opts.prompt);
     if (result.sessionId) saveCliSessionId(opts.key, result.sessionId);
     else if (opts.sessionId) touchCliSession(opts.key);
-    return result;
+    return { result, resumedFresh: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (!opts.sessionId || !shouldRetryWithoutResume(message)) {
@@ -159,13 +165,13 @@ async function runCliTurnWithResumeRecover(opts: {
       `resume failed for ${opts.agent}; clearing session and retrying: ${message.slice(0, 200)}`,
     );
     clearCliSessionId(opts.key);
-    let prompt = opts.rebuildPromptWithoutSession();
-    if (opts.systemPrompt) {
-      prompt = `${opts.systemPrompt}\n\n---\n\n${prompt}`;
-    }
+    const prompt = applySystemPromptToCliPrompt(
+      opts.rebuildPromptWithoutSession(),
+      opts.systemPrompt,
+    );
     const result = await runOnce(null, prompt);
     if (result.sessionId) saveCliSessionId(opts.key, result.sessionId);
-    return result;
+    return { result, resumedFresh: true };
   }
 }
 
@@ -331,17 +337,16 @@ function streamCli(
       await state.ready;
 
       const handleKey = cliModelId || "default";
-      // New CLI session after /resume must get system prompt even if prior flag was set
+      // Always build so resume-failure retry can start a fresh CLI session with
+      // the system prompt; initial prompt still only prepends when needed.
+      const systemPromptText = buildSystemPrompt(context);
       const needsSystemPromptFlag =
         forceHistorySeed || !state.systemPromptSent.has(handleKey);
-      const systemPrompt = needsSystemPromptFlag
-        ? buildSystemPrompt(context)
-        : undefined;
 
       const { sessionId, needsSystemPrompt, key } = ensureSession(
         state,
         cliModelId,
-        systemPrompt,
+        needsSystemPromptFlag ? systemPromptText : undefined,
       );
 
       const seedPlan = resolveCliHistorySeed({
@@ -355,22 +360,24 @@ function streamCli(
       const effectiveSessionId = seedPlan.useCliSession ? sessionId : null;
 
       let prompt = buildPromptWithHistory(context, !seedPlan.seedHistory);
-      const sendSystem = (needsSystemPrompt || forceHistorySeed) && !!systemPrompt;
-      if (sendSystem && systemPrompt) {
-        prompt = `${systemPrompt}\n\n---\n\n${prompt}`;
+      const sendSystem =
+        (needsSystemPrompt || forceHistorySeed) && !!systemPromptText;
+      if (sendSystem && systemPromptText) {
+        prompt = applySystemPromptToCliPrompt(prompt, systemPromptText);
       }
 
       let thinkingIndex = -1;
       let textIndex = -1;
       let thinkingClosed = false;
 
-      const result = await runCliTurnWithResumeRecover({
+      const { result, resumedFresh } = await runCliTurnWithResumeRecover({
         agent,
         model: cliModelId === "default" ? "default" : cliModelId,
         key,
         sessionId: effectiveSessionId,
         prompt,
-        systemPrompt: sendSystem ? systemPrompt : undefined,
+        // Always pass for retry — new CLI session after failed --resume
+        systemPrompt: systemPromptText,
         signal: options?.signal,
         rebuildPromptWithoutSession: () =>
           buildPromptWithHistory(context, false),
@@ -444,7 +451,8 @@ function streamCli(
       }
 
       // Mark only after a successful turn — failed first turns must retry system prompt.
-      if (sendSystem) {
+      // Also mark when resume-failure created a fresh CLI session (system prompt on retry).
+      if ((sendSystem || resumedFresh) && systemPromptText) {
         state.systemPromptSent.add(handleKey);
       }
       // One-shot: next turns use --resume with the new CLI session
