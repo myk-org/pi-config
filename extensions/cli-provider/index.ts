@@ -438,7 +438,12 @@ function streamCli(
           buildPromptWithHistory(context, false),
         onEvent: (ev) => {
           if (ev.kind === "session") {
-            saveCliSessionId(key, ev.sessionId);
+            if (!saveCliSessionId(key, ev.sessionId)) {
+              cliProviderLog(
+                "warn",
+                `failed to persist CLI session marker for ${agent}/${cliModelId}`,
+              );
+            }
             return;
           }
           if (ev.kind === "thinking_delta") {
@@ -500,9 +505,19 @@ function streamCli(
       });
 
       if (result.sessionId) {
-        saveCliSessionId(key, result.sessionId);
+        if (!saveCliSessionId(key, result.sessionId)) {
+          cliProviderLog(
+            "warn",
+            `failed to persist CLI session marker for ${agent}/${cliModelId}`,
+          );
+        }
       } else if (effectiveSessionId) {
-        touchCliSession(key);
+        if (!touchCliSession(key)) {
+          cliProviderLog(
+            "warn",
+            `failed to touch CLI session marker for ${agent}/${cliModelId}`,
+          );
+        }
       }
 
       // Mark only after a successful turn — failed first turns must retry system prompt.

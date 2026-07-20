@@ -42,6 +42,34 @@ describe("cli-provider sessions", () => {
     }
   });
 
+  it("marker writers no-op when sessions path is not a directory", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-write-notdir-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      mkdirSync(join(home, ".pi"), { recursive: true });
+      writeFileSync(join(home, ".pi", "cli-sessions"), "not-a-directory");
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "composer",
+        piSessionId: "sid",
+      };
+      assert.equal(saveCliSessionId(key, "cli-1"), false);
+      assert.equal(touchCliSession(key), false);
+      assert.equal(loadCliSessionId(key), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("detects resume failure messages", () => {
     assert.equal(isCliResumeFailure("Session not found: abc"), true);
     assert.equal(isCliResumeFailure("cannot resume session"), true);

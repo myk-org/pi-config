@@ -84,12 +84,18 @@ function readRecord(path: string): CliSessionRecord | null {
   }
 }
 
-function writeRecord(key: CliSessionKey, record: CliSessionRecord): void {
-  const dir = sessionsDir();
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(sessionFile(key), JSON.stringify(record, null, 0), {
-    mode: 0o600,
-  });
+/** Best-effort marker write. FS errors (e.g. cli-sessions is a file) → false. */
+function writeRecord(key: CliSessionKey, record: CliSessionRecord): boolean {
+  try {
+    const dir = sessionsDir();
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(sessionFile(key), JSON.stringify(record, null, 0), {
+      mode: 0o600,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function loadCliSessionId(key: CliSessionKey): string | null {
@@ -104,11 +110,12 @@ export function loadCliSessionRecord(
   return readRecord(sessionFile(key));
 }
 
-export function saveCliSessionId(key: CliSessionKey, sessionId: string): void {
-  if (!sessionId) return;
+/** Persist a running marker. Best-effort — returns false on FS errors. */
+export function saveCliSessionId(key: CliSessionKey, sessionId: string): boolean {
+  if (!sessionId) return false;
   const existing = readRecord(sessionFile(key));
   const ts = nowIso();
-  writeRecord(key, {
+  return writeRecord(key, {
     sessionId,
     agent: key.agent,
     model: key.model,
@@ -121,11 +128,11 @@ export function saveCliSessionId(key: CliSessionKey, sessionId: string): void {
   });
 }
 
-/** Bump lastSeenAt after a successful turn (t3 lastSeenAt). */
-export function touchCliSession(key: CliSessionKey): void {
+/** Bump lastSeenAt after a successful turn (t3 lastSeenAt). Best-effort. */
+export function touchCliSession(key: CliSessionKey): boolean {
   const existing = readRecord(sessionFile(key));
-  if (!existing) return;
-  writeRecord(key, {
+  if (!existing) return false;
+  return writeRecord(key, {
     ...existing,
     status: "running",
     lastSeenAt: nowIso(),
@@ -152,18 +159,17 @@ export function setCliSessionMarkerMeta(
   if (typeof opts.idleMs === "number") {
     lastSeenAt = new Date(Date.now() - opts.idleMs).toISOString();
   }
-  writeRecord(key, {
+  return writeRecord(key, {
     ...existing,
     status: opts.status ?? existing.status,
     lastSeenAt,
   });
-  return true;
 }
 
-export function markCliSessionStopped(key: CliSessionKey): void {
+export function markCliSessionStopped(key: CliSessionKey): boolean {
   const existing = readRecord(sessionFile(key));
-  if (!existing) return;
-  writeRecord(key, {
+  if (!existing) return false;
+  return writeRecord(key, {
     ...existing,
     status: "stopped",
     lastSeenAt: nowIso(),
