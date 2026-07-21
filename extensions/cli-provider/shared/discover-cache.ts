@@ -25,8 +25,8 @@ export function modelIdToDisplayName(modelId: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Cache keyed by `${binary}\0${PATH}` — invalidated when PATH changes. */
-const resolveBinaryCache = new Map<string, string | null>();
+/** Cache keyed by `${binary}\0${PATH}` — successful resolves only (no negative cache). */
+const resolveBinaryCache = new Map<string, string>();
 
 function winPathSuffixes(): string[] {
   const pathext = process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM";
@@ -70,19 +70,15 @@ export function resolveBinary(binary: string): string | null {
 
   const pathEnv = process.env.PATH ?? "";
   const cacheKey = `${binary}\0${pathEnv}`;
-  if (resolveBinaryCache.has(cacheKey)) {
-    const cached = resolveBinaryCache.get(cacheKey)!;
-    if (cached === null) return null;
+  const cached = resolveBinaryCache.get(cacheKey);
+  if (cached !== undefined) {
     if (isExecutable(cached)) return cached;
     resolveBinaryCache.delete(cacheKey);
   }
 
   // Absolute or explicit relative path — check directly (mirrors `which /path`).
   if (isAbsolute(binary) || binary.includes("/") || binary.includes("\\")) {
-    if (!isExecutable(binary)) {
-      resolveBinaryCache.set(cacheKey, null);
-      return null;
-    }
+    if (!isExecutable(binary)) return null;
     const resolved = finalizeResolved(binary);
     resolveBinaryCache.set(cacheKey, resolved);
     return resolved;
@@ -100,7 +96,7 @@ export function resolveBinary(binary: string): string | null {
     }
   }
 
-  resolveBinaryCache.set(cacheKey, null);
+  // Do not cache misses — mid-session install with same PATH must rediscover.
   return null;
 }
 

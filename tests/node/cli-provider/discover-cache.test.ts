@@ -1,7 +1,10 @@
 /**
  * Tests for in-process PATH resolveBinary (no spawnSync which).
+ *
+ * Mutates process.env.PATH — run serially (concurrency: false) so parallel
+ * cases cannot race the shared env / resolveBinaryCache.
  */
-import { describe, it, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
@@ -16,9 +19,13 @@ import {
   resolveBinary,
 } from "../../../extensions/cli-provider/shared/discover-cache.js";
 
-describe("resolveBinary", () => {
+describe("resolveBinary", { concurrency: false }, () => {
   const prevPath = process.env.PATH;
   let tmpRoot: string | undefined;
+
+  beforeEach(() => {
+    clearResolveBinaryCache();
+  });
 
   afterEach(() => {
     process.env.PATH = prevPath;
@@ -37,7 +44,6 @@ describe("resolveBinary", () => {
   it("returns null when binary missing from PATH", () => {
     const dir = makeBinDir();
     process.env.PATH = dir;
-    clearResolveBinaryCache();
     assert.equal(resolveBinary("no-such-cli-binary-xyz"), null);
   });
 
@@ -46,7 +52,6 @@ describe("resolveBinary", () => {
     const dest = join(dir, "fake-cli");
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     process.env.PATH = dir;
-    clearResolveBinaryCache();
     const resolved = resolveBinary("fake-cli");
     assert.ok(resolved);
     assert.equal(resolved, realpathSync(dest));
@@ -57,7 +62,6 @@ describe("resolveBinary", () => {
     const dest = join(dir, "not-exec");
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
     process.env.PATH = dir;
-    clearResolveBinaryCache();
     assert.equal(resolveBinary("not-exec"), null);
   });
 
@@ -66,26 +70,22 @@ describe("resolveBinary", () => {
     const dest = join(dir, "abs-cli");
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     process.env.PATH = "";
-    clearResolveBinaryCache();
     const resolved = resolveBinary(dest);
     assert.ok(resolved);
     assert.equal(resolved, realpathSync(dest));
   });
 
-  it("caches by binary name + PATH string", () => {
+  it("caches successful resolves; misses are not cached", () => {
     const dir = makeBinDir();
     const dest = join(dir, "cached-cli");
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     process.env.PATH = dir;
-    clearResolveBinaryCache();
     const first = resolveBinary("cached-cli");
     rmSync(dest);
-    // Same PATH → negative re-validate drops stale positive, then miss caches null
+    // Stale positive invalidated when binary disappears
     assert.equal(resolveBinary("cached-cli"), null);
-    // Restore + same PATH still has null cached until PATH changes or clear
+    // Mid-session install with same PATH rediscovers (null was not cached)
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    assert.equal(resolveBinary("cached-cli"), null);
-    process.env.PATH = `${dir}:/usr/bin`;
     assert.equal(resolveBinary("cached-cli"), realpathSync(dest));
     assert.equal(first, realpathSync(dest));
   });
