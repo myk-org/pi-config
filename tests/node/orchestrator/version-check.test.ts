@@ -1,10 +1,6 @@
-/**
- * Tests for pi version check logic.
- * Run with: npx tsx --test tests/node/orchestrator/version-check.test.ts
- */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { compareSemver } from "../../../extensions/orchestrator/utils.js";
+import { compareSemver, MIN_PI_VERSION } from "../../../extensions/orchestrator/utils.js";
 
 describe("compareSemver", () => {
   it("equal versions return 0", () => {
@@ -39,5 +35,11 @@ describe("compareSemver", () => {
 
   it("major version difference", () => {
     assert.strictEqual(compareSemver("2.0.0", "1.99.99"), 1);
+  });
+});
+
+describe("MIN_PI_VERSION", () => {
+  it("requires 0.81.0 for createProvider providers", () => {
+    assert.strictEqual(MIN_PI_VERSION, "0.81.0");
   });
 });

@@ -5,6 +5,9 @@
  * This lets you use models only available through specific agents (e.g., Cursor's
  * Composer 2, GPT-5.4, etc.) as native pi models.
  *
+ * Registers via createProvider() (pi ≥ 0.81): /login, fetchModels, filterModels,
+ * and native ProviderStreams. Shared helper: extensions/shared/create-runtime-provider.ts.
+ *
  * How it works:
  * 1. During extension load, creates an AcpxRuntime per agent and discovers models synchronously
  * 2. On each LLM request, sends only the latest user message via runtime.startTurn()
@@ -25,6 +28,7 @@ import type {
 	Context,
 	Model,
 	SimpleStreamOptions,
+	StreamOptions,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -33,8 +37,25 @@ import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
-import { isPiMetaInvocation } from "../orchestrator/utils.js";
+import {
+	checkMinPiVersion,
+	isPiMetaInvocation,
+} from "../orchestrator/utils.js";
+import {
+	buildAmbientLoginAuth,
+	createRuntimeProvider,
+	filterModelsWhenConfigured,
+} from "../shared/create-runtime-provider.js";
+import { fileLog } from "../shared/file-logger.js";
+import {
+	bindAcpxAgentStates,
+	isAcpxAgentConfigured,
+} from "./configured.js";
 import { loadAcpxRuntime } from "./load-runtime.js";
+import { mapAcpxDiscoveredModels, modelIdToDisplayName } from "./runtime-models.js";
+
+export { mapAcpxDiscoveredModels, modelIdToDisplayName };
+export { isAcpxAgentConfigured } from "./configured.js";
 
 // =============================================================================
 // Types
@@ -68,6 +89,7 @@ interface AgentState {
 
 /** Active agent runtimes keyed by agent name */
 const agents = new Map<string, AgentState>();
+bindAcpxAgentStates(agents);
 
 /**
  * The working directory captured at extension initialization time.
@@ -240,12 +262,12 @@ export async function discoverAcpxModels(
 			provider: `acpx-${agent}`,
 		}));
 	} catch (err) {
-		console.debug(`[acpx] model discovery failed for ${agent}:`, err);
+		fileLog("acpx-provider", "debug", "acpx-provider", `model discovery failed for ${agent}:`, err);
 		return [];
 	} finally {
 		if (handle) {
 			await runtime.close({ handle, reason: "discovery complete" }).catch((err) => {
-				console.debug("[acpx] failed to close discovery session:", err);
+				fileLog("acpx-provider", "debug", "acpx-provider", "failed to close discovery session:", err);
 			});
 		}
 		await rm(stateDir, { recursive: true, force: true }).catch(() => {});
@@ -262,18 +284,9 @@ async function discoverModelsInternal(state: AgentState): Promise<string[]> {
 			return status.models.availableModelIds;
 		}
 	} catch (err) {
-		console.debug(`[acpx] model discovery failed for ${state.agent}:`, err);
+		fileLog("acpx-provider", "debug", "acpx-provider", `model discovery failed for ${state.agent}:`, err);
 	}
 	return [];
-}
-
-function modelIdToDisplayName(modelId: string): string {
-	// Strip bracket suffixes for display: gpt-5.4[context=272k,...] -> Gpt 5.4
-	const bracketIdx = modelId.indexOf("[");
-	const baseName = bracketIdx >= 0 ? modelId.substring(0, bracketIdx) : modelId;
-	return baseName
-		.replace(/-/g, " ")
-		.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // =============================================================================
@@ -319,7 +332,7 @@ function extractLatestUserMessage(context: Context): string {
 			}
 		}
 	}
-	console.debug("[acpx] no user message found in context, using fallback");
+	fileLog("acpx-provider", "debug", "acpx-provider", "no user message found in context, using fallback");
 	return "hello";
 }
 
@@ -330,7 +343,7 @@ function extractLatestUserMessage(context: Context): string {
 function streamAcpx(
 	model: Model<any>,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: SimpleStreamOptions | StreamOptions,
 ): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
@@ -548,6 +561,26 @@ export default async function (pi: ExtensionAPI) {
 	// pi --help / --version still loads extensions; skip discovery noise/latency.
 	if (isPiMetaInvocation()) return;
 
+	const versionCheck = checkMinPiVersion();
+	if (!versionCheck.ok && versionCheck.installed !== null) {
+		fileLog(
+			"acpx-provider",
+			"error",
+			"acpx-provider",
+			`pi ${versionCheck.installed} is below minimum ${versionCheck.required}; ` +
+				`acpx-* providers require createProvider — skipping registration`,
+		);
+		return;
+	}
+	if (versionCheck.installed === null) {
+		fileLog(
+			"acpx-provider",
+			"warn",
+			"acpx-provider",
+			`pi version unknown; attempting createProvider registration (requires >= ${versionCheck.required})`,
+		);
+	}
+
 	// Suppress noisy ACP SDK errors for unhandled agent extension methods
 	installConsoleErrorSuppression();
 
@@ -565,13 +598,6 @@ export default async function (pi: ExtensionAPI) {
 	if (agentList.length === 0) return;
 
 	const DISCOVERY_TIMEOUT_MS = 30_000;
-
-	const makeModel = (id: string, name: string) => ({
-		id, name, reasoning: false,
-		input: ["text" as const, "image" as const],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 200000, maxTokens: 32768,
-	});
 
 	// Discover models synchronously during extension load.
 	// Pi awaits async extension factories, so models are registered before
@@ -591,7 +617,7 @@ export default async function (pi: ExtensionAPI) {
 					const runtime = await createAgentRuntime();
 					// Check timeout after slow runtime creation — don't store state if we already lost the race.
 					// Runtime without handles is lightweight (no connections/processes); safe to discard.
-					if (timedOut) { console.debug(`[acpx] ${agent}: discarding runtime after timeout`); return { agent, modelIds: [] as string[] }; }
+					if (timedOut) { fileLog("acpx-provider", "debug", "acpx-provider", `${agent}: discarding runtime after timeout`); return { agent, modelIds: [] as string[] }; }
 					let signalReady!: () => void;
 					const ready = new Promise<void>((resolve) => { signalReady = resolve; });
 					const state: AgentState = {
@@ -618,7 +644,7 @@ export default async function (pi: ExtensionAPI) {
 				clearTimeout(timer!);
 				return result;
 			} catch (err) {
-				console.debug(`[acpx] runtime init failed for ${agent}:`, err);
+				fileLog("acpx-provider", "debug", "acpx-provider", `runtime init failed for ${agent}:`, err);
 				const state = agents.get(agent);
 				if (state) state.signalReady();
 				return { agent, modelIds: [] as string[] };
@@ -633,25 +659,40 @@ export default async function (pi: ExtensionAPI) {
 		// Skip registration if runtime failed (no AgentState) — prevents
 		// registering a provider whose streamAcpx would always throw.
 		if (!agents.has(agent)) {
-			console.debug(`[acpx] acpx-${agent}: skipped registration (no runtime)`);
+			fileLog("acpx-provider", "debug", "acpx-provider", `acpx-${agent}: skipped registration (no runtime)`);
 			continue;
 		}
 
 		try {
-			const models = modelIds.length > 0
-				? modelIds.map((m) => makeModel(`${agent}:${m}`, `${modelIdToDisplayName(m)} (${agent})`))
-				: [makeModel(`${agent}:default`, `${agent} (default)`)];
-
-			pi.registerProvider(`acpx-${agent}`, {
-				baseUrl: "https://localhost",
-				apiKey: "acpx", // pragma: allowlist secret
-				api: "acpx",
+			const providerId = `acpx-${agent}`;
+			const models = mapAcpxDiscoveredModels(agent, modelIds);
+			const provider = await createRuntimeProvider({
+				id: providerId,
+				name: `ACPX ${agent}`,
+				auth: {
+					apiKey: buildAmbientLoginAuth({
+						displayName: `ACPX ${agent}`,
+						isConfigured: () => isAcpxAgentConfigured(agent),
+						sourceLabel: `${agent} acpx runtime`,
+					}),
+				},
 				models,
-				streamSimple: streamAcpx,
+				fetchModels: async () => {
+					const state = agents.get(agent);
+					if (!state) return [];
+					const nextIds = await discoverModelsInternal(state);
+					return mapAcpxDiscoveredModels(agent, nextIds);
+				},
+				filterModels: (catalog, credential) =>
+					filterModelsWhenConfigured(catalog, credential, () =>
+						isAcpxAgentConfigured(agent),
+					),
+				api: { stream: streamAcpx, streamSimple: streamAcpx },
 			});
-			console.debug(`[acpx] acpx-${agent}: ${models.length} model(s) registered`);
+			pi.registerProvider(provider);
+			fileLog("acpx-provider", "debug", "acpx-provider", `acpx-${agent}: ${models.length} model(s) registered (createProvider)`);
 		} catch (err) {
-			console.debug(`[acpx] acpx-${agent}: setup failed:`, err);
+			fileLog("acpx-provider", "debug", "acpx-provider", `acpx-${agent}: setup failed:`, err);
 		}
 	}
 
@@ -662,7 +703,7 @@ export default async function (pi: ExtensionAPI) {
 			for (const [, handle] of state.handles) {
 				closePromises.push(
 					state.runtime.close({ handle, reason: "pi session shutdown" }).catch((err) => {
-						console.debug(`[acpx] session close failed:`, err);
+						fileLog("acpx-provider", "debug", "acpx-provider", "session close failed:", err);
 					}),
 				);
 			}
