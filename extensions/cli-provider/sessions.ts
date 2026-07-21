@@ -460,6 +460,34 @@ export function resolveActivePiSessionIdOnSessionStart(opts: {
 }
 
 /**
+ * Read pi session id from sessionManager.
+ * MUST call getSessionId on the manager object (not as an unbound method) —
+ * pi's impl reads `this.sessionId` and throws if `this` is lost (#664).
+ * Throws → treat as unknown (hasGetter false) and set readError for logging.
+ */
+export function readPiSessionIdFromManager(sessionManager?: {
+  getSessionId?: () => string;
+}): {
+  hasGetter: boolean;
+  readPiSessionId: string | null;
+  /** True when getSessionId existed but threw — callers should log. */
+  readError: boolean;
+} {
+  if (typeof sessionManager?.getSessionId !== "function") {
+    return { hasGetter: false, readPiSessionId: null, readError: false };
+  }
+  try {
+    return {
+      hasGetter: true,
+      readPiSessionId: sessionManager.getSessionId() || null,
+      readError: false,
+    };
+  } catch {
+    return { hasGetter: false, readPiSessionId: null, readError: true };
+  }
+}
+
+/**
  * Unlink CLI session markers for a cwd scoped to a pi session id.
  * By default also clears legacy `default` markers for that cwd (migration).
  * Does not touch other concurrent pi sessions sharing the same project.

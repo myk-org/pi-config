@@ -47,6 +47,7 @@ import {
   shouldAdoptLegacyCliMarker,
   decideCliSessionStartReseed,
   loadCliSessionId,
+  readPiSessionIdFromManager,
   resolveActivePiSessionIdOnSessionStart,
   resolveCliHistorySeed,
   saveCliSessionId,
@@ -139,10 +140,15 @@ function sessionKeyFor(
 function bindActivePiSessionId(ctx: {
   sessionManager?: { getSessionId?: () => string };
 }): void {
-  const sid =
-    typeof ctx.sessionManager?.getSessionId === "function"
-      ? ctx.sessionManager.getSessionId() || null
-      : null;
+  const { readPiSessionId: sid, readError } = readPiSessionIdFromManager(
+    ctx.sessionManager,
+  );
+  if (readError) {
+    cliProviderLog(
+      "warn",
+      "getSessionId threw during before_agent_start; treating sid as unknown",
+    );
+  }
   if (sid) {
     activePiSessionId = sid;
     migrateMarkersToRealPiSessionId(sid);
@@ -661,9 +667,14 @@ export default async function (pi: ExtensionAPI) {
       typeof (event as { reason?: string })?.reason === "string"
         ? (event as { reason: string }).reason
         : "";
-    const getter = ctx.sessionManager?.getSessionId;
-    const hasGetter = typeof getter === "function";
-    const rawSid = hasGetter ? getter() || null : null;
+    const { hasGetter, readPiSessionId: rawSid, readError } =
+      readPiSessionIdFromManager(ctx.sessionManager);
+    if (readError) {
+      cliProviderLog(
+        "warn",
+        "getSessionId threw during session_start; treating sid as unknown",
+      );
+    }
     const prevSid = activePiSessionId;
     const { nextActivePiSessionId, resolvedReadSid } =
       resolveActivePiSessionIdOnSessionStart({
