@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
 import {
+  bindCliAgentStates,
   bindCliAgentStatesForTests,
   isCliAgentConfigured,
 } from "../../../extensions/cli-provider/configured.js";
@@ -180,5 +181,16 @@ describe("isCliAgentConfigured", () => {
     installFakeBinary("agent");
     bindCliAgentStatesForTests(["not-a-cli-agent"]);
     assert.equal(isCliAgentConfigured("not-a-cli-agent"), false);
+  });
+
+  it("bindCliAgentStates wires a live Map used by isCliAgentConfigured", () => {
+    installFakeBinary("agent");
+    const live = new Map<string, unknown>();
+    bindCliAgentStates(live);
+    assert.equal(isCliAgentConfigured("cursor"), false);
+    live.set("cursor", {});
+    assert.equal(isCliAgentConfigured("cursor"), true);
+    live.delete("cursor");
+    assert.equal(isCliAgentConfigured("cursor"), false);
   });
 });

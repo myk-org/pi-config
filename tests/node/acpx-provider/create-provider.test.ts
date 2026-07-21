@@ -5,6 +5,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import {
+  bindAcpxAgentStates,
   bindAcpxAgentStatesForTests,
   isAcpxAgentConfigured,
 } from "../../../extensions/acpx-provider/configured.js";
@@ -120,5 +121,15 @@ describe("isAcpxAgentConfigured", () => {
     assert.equal(isAcpxAgentConfigured("cursor"), true);
     assert.equal(isAcpxAgentConfigured("claude"), true);
     assert.equal(isAcpxAgentConfigured("gemini"), false);
+  });
+
+  it("bindAcpxAgentStates wires a live Map used by isAcpxAgentConfigured", () => {
+    const live = new Map<string, unknown>();
+    bindAcpxAgentStates(live);
+    assert.equal(isAcpxAgentConfigured("cursor"), false);
+    live.set("cursor", {});
+    assert.equal(isAcpxAgentConfigured("cursor"), true);
+    live.delete("cursor");
+    assert.equal(isAcpxAgentConfigured("cursor"), false);
   });
 });
