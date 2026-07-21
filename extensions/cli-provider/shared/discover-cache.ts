@@ -25,8 +25,13 @@ export function modelIdToDisplayName(modelId: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Cache keyed by `${binary}\0${PATH}` — successful resolves only (no negative cache). */
+/** Cache keyed by `${platform}\0${binary}\0${PATH}\0${PATHEXT}` — successful resolves only. */
 const resolveBinaryCache = new Map<string, string>();
+
+export type ResolveBinaryEnv = {
+  PATH?: string;
+  PATHEXT?: string;
+};
 
 /** Parse PATHEXT into uppercase extensions (e.g. ".EXE"). Exported for tests. */
 export function parsePathext(pathextEnv?: string): string[] {
@@ -69,7 +74,12 @@ export function candidateSuffixesFor(
   return parsePathext(pathextEnv);
 }
 
-function isExecutable(filePath: string): boolean {
+/** Exported for tests — regular file + platform launchability rules. */
+export function isExecutableForPlatform(
+  filePath: string,
+  platform: NodeJS.Platform,
+  pathextEnv?: string,
+): boolean {
   let st;
   try {
     st = statSync(filePath);
@@ -78,7 +88,8 @@ function isExecutable(filePath: string): boolean {
   }
   // Directories are often X_OK (searchable); only regular files are binaries.
   if (!st.isFile()) return false;
-  if (process.platform === "win32") return isLaunchableWin32(filePath);
+  // Win32: never treat any regular file as executable — require PATHEXT.
+  if (platform === "win32") return isLaunchableWin32(filePath, pathextEnv);
   try {
     accessSync(filePath, constants.X_OK);
     return true;
@@ -95,44 +106,81 @@ function finalizeResolved(filePath: string): string {
   }
 }
 
+function cacheKeyFor(
+  binary: string,
+  platform: NodeJS.Platform,
+  pathEnv: string,
+  pathextEnv: string,
+): string {
+  return `${platform}\0${binary}\0${pathEnv}\0${pathextEnv}`;
+}
+
+/**
+ * Resolve a binary for an explicit platform (injectable for win32 tests on Unix).
+ * Absolute paths still require a launchable PATHEXT extension on win32.
+ */
+export function resolveBinaryForPlatform(
+  binary: string,
+  platform: NodeJS.Platform,
+  env: ResolveBinaryEnv = {},
+): string | null {
+  if (!binary) return null;
+
+  const pathEnv = env.PATH ?? process.env.PATH ?? "";
+  const pathextEnv =
+    env.PATHEXT ?? process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM";
+  const cacheKey = cacheKeyFor(binary, platform, pathEnv, pathextEnv);
+  const cached = resolveBinaryCache.get(cacheKey);
+  if (cached !== undefined) {
+    if (isExecutableForPlatform(cached, platform, pathextEnv)) return cached;
+    resolveBinaryCache.delete(cacheKey);
+  }
+
+  const isExec = (p: string) =>
+    isExecutableForPlatform(p, platform, pathextEnv);
+
+  // Absolute or explicit relative path — check directly (mirrors `which /path`).
+  if (isAbsolute(binary) || binary.includes("/") || binary.includes("\\")) {
+    if (!isExec(binary)) return null;
+    const resolved = finalizeResolved(binary);
+    resolveBinaryCache.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  const suffixes = candidateSuffixesFor(binary, platform, pathextEnv);
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    for (const suffix of suffixes) {
+      // PATHEXT is typically uppercase; Windows FS is case-insensitive.
+      // On case-sensitive hosts (win32 simulation in tests), also try lowercase.
+      const variants =
+        platform === "win32" && suffix && suffix !== suffix.toLowerCase()
+          ? [binary + suffix, binary + suffix.toLowerCase()]
+          : [binary + suffix];
+      for (const name of variants) {
+        const candidate = join(dir, name);
+        if (!isExec(candidate)) continue;
+        const resolved = finalizeResolved(candidate);
+        resolveBinaryCache.set(cacheKey, resolved);
+        return resolved;
+      }
+    }
+  }
+
+  // Do not cache misses — mid-session install with same PATH must rediscover.
+  return null;
+}
+
 /**
  * Resolve a binary name (or absolute path) via an in-process PATH scan.
  * Avoids spawnSync("which") on auth/filter hot paths.
  * Returns realpath when possible, null if missing.
  */
 export function resolveBinary(binary: string): string | null {
-  if (!binary) return null;
-
-  const pathEnv = process.env.PATH ?? "";
-  const cacheKey = `${binary}\0${pathEnv}`;
-  const cached = resolveBinaryCache.get(cacheKey);
-  if (cached !== undefined) {
-    if (isExecutable(cached)) return cached;
-    resolveBinaryCache.delete(cacheKey);
-  }
-
-  // Absolute or explicit relative path — check directly (mirrors `which /path`).
-  if (isAbsolute(binary) || binary.includes("/") || binary.includes("\\")) {
-    if (!isExecutable(binary)) return null;
-    const resolved = finalizeResolved(binary);
-    resolveBinaryCache.set(cacheKey, resolved);
-    return resolved;
-  }
-
-  const suffixes = candidateSuffixesFor(binary);
-  for (const dir of pathEnv.split(delimiter)) {
-    if (!dir) continue;
-    for (const suffix of suffixes) {
-      const candidate = join(dir, binary + suffix);
-      if (!isExecutable(candidate)) continue;
-      const resolved = finalizeResolved(candidate);
-      resolveBinaryCache.set(cacheKey, resolved);
-      return resolved;
-    }
-  }
-
-  // Do not cache misses — mid-session install with same PATH must rediscover.
-  return null;
+  return resolveBinaryForPlatform(binary, process.platform, {
+    PATH: process.env.PATH,
+    PATHEXT: process.env.PATHEXT,
+  });
 }
 
 /** Clear PATH resolve cache (tests / PATH mutation). */

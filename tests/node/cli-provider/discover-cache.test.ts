@@ -18,9 +18,11 @@ import { join } from "node:path";
 import {
   candidateSuffixesFor,
   clearResolveBinaryCache,
+  isExecutableForPlatform,
   isLaunchableWin32,
   parsePathext,
   resolveBinary,
+  resolveBinaryForPlatform,
 } from "../../../extensions/cli-provider/shared/discover-cache.js";
 
 describe("resolveBinary", { concurrency: false }, () => {
@@ -152,5 +154,81 @@ describe("win32 launchability helpers", () => {
 
   it("candidateSuffixesFor non-win32 uses empty suffix only", () => {
     assert.deepEqual(candidateSuffixesFor("agent", "linux"), [""]);
+  });
+});
+
+describe("resolveBinaryForPlatform win32", { concurrency: false }, () => {
+  let tmpRoot: string | undefined;
+
+  beforeEach(() => {
+    clearResolveBinaryCache();
+  });
+
+  afterEach(() => {
+    clearResolveBinaryCache();
+    if (tmpRoot) {
+      rmSync(tmpRoot, { recursive: true, force: true });
+      tmpRoot = undefined;
+    }
+  });
+
+  function makeBinDir(): string {
+    tmpRoot = mkdtempSync(join(tmpdir(), "resolve-win-"));
+    return tmpRoot;
+  }
+
+  it("rejects extensionless agent file on win32 PATH", () => {
+    const dir = makeBinDir();
+    const dest = join(dir, "agent");
+    writeFileSync(dest, "fake\n", { mode: 0o755 });
+    assert.equal(
+      resolveBinaryForPlatform("agent", "win32", {
+        PATH: dir,
+        PATHEXT: ".EXE;.CMD;.BAT",
+      }),
+      null,
+    );
+    assert.equal(
+      isExecutableForPlatform(dest, "win32", ".EXE;.CMD;.BAT"),
+      false,
+    );
+  });
+
+  it("rejects extensionless absolute path on win32", () => {
+    const dir = makeBinDir();
+    const dest = join(dir, "agent");
+    writeFileSync(dest, "fake\n", { mode: 0o755 });
+    assert.equal(
+      resolveBinaryForPlatform(dest, "win32", {
+        PATH: "",
+        PATHEXT: ".EXE;.CMD",
+      }),
+      null,
+    );
+  });
+
+  it("resolves agent.exe via PATHEXT suffix on win32", () => {
+    const dir = makeBinDir();
+    const dest = join(dir, "agent.exe");
+    writeFileSync(dest, "fake\n", { mode: 0o644 });
+    const resolved = resolveBinaryForPlatform("agent", "win32", {
+      PATH: dir,
+      PATHEXT: ".EXE;.CMD",
+    });
+    assert.ok(resolved);
+    assert.equal(resolved, realpathSync(dest));
+  });
+
+  it("prefers PATHEXT candidate over extensionless sibling on win32", () => {
+    const dir = makeBinDir();
+    const bare = join(dir, "agent");
+    const withExt = join(dir, "agent.exe");
+    writeFileSync(bare, "bare\n", { mode: 0o755 });
+    writeFileSync(withExt, "exe\n", { mode: 0o644 });
+    const resolved = resolveBinaryForPlatform("agent", "win32", {
+      PATH: dir,
+      PATHEXT: ".EXE;.CMD",
+    });
+    assert.equal(resolved, realpathSync(withExt));
   });
 });
