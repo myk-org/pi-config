@@ -118,6 +118,17 @@ Tip: use --model <id>
     assert.equal(models[2].name, "GPT-5.4 1M");
   });
 
+  it("parses agent --list-models with ANSI color (issue #666)", () => {
+    const colored =
+      "\u001b[36mauto\u001b[0m - \u001b[1mAuto\u001b[0m (default)\n" +
+      "\u001b[32mcomposer-2.5\u001b[0m - Composer 2.5\n";
+    const models = parseAgentListModels(colored);
+    assert.equal(models.length, 2);
+    assert.equal(models[0].id, "auto");
+    assert.equal(models[0].name, "Auto");
+    assert.equal(models[1].id, "composer-2.5");
+  });
+
   it("parses claude binary catalog", () => {
     const models = parseClaudeBinaryCatalog(
       `{id:"claude-opus-4-6",family:"opus",display_name:"Opus 4.6"}` +

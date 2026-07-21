@@ -9,11 +9,19 @@ import { cliProviderLog } from "../../shared/file-logger.js";
 import type { CliProviderDef, DiscoveredCliModel } from "../types.js";
 import { resolveBinary } from "../shared/discover-cache.js";
 
+/** Strip CSI / OSC ANSI sequences so colored CLI output still parses (#666). */
+export function stripAnsi(text: string): string {
+  return text
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b[@-Z\\-_]/g, "");
+}
+
 /** Parse `agent --list-models` text output. */
 export function parseAgentListModels(stdout: string): DiscoveredCliModel[] {
   const models: DiscoveredCliModel[] = [];
   const seen = new Set<string>();
-  for (const line of stdout.split(/\r?\n/)) {
+  for (const line of stripAnsi(stdout).split(/\r?\n/)) {
     const m = line.match(
       /^([a-zA-Z0-9][a-zA-Z0-9._\[\]=,:-]*)\s+-\s+(.+?)\s*$/,
     );
@@ -34,7 +42,8 @@ function discoverCursorModels(): DiscoveredCliModel[] {
   const r = spawnSync(binary, ["--list-models"], {
     encoding: "utf-8",
     timeout: 25_000,
-    env: { ...process.env },
+    // Prefer plain text; still strip ANSI in parser if CLI ignores NO_COLOR.
+    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
   });
   const out = `${r.stdout || ""}\n${r.stderr || ""}`;
   const models = parseAgentListModels(out);
