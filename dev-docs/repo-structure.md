@@ -85,16 +85,21 @@ pi-config/
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/tmp/ lockfiles)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── shared/                      # Shared extension utilities
+│   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
-│   ├── acpx-provider/              # ACPX provider extension (acpx/runtime library API)
-│   ├── cli-provider/               # CLI-backed providers (cli-claude, cli-gemini, cli-cursor)
+│   ├── acpx-provider/              # ACPX provider extension (createProvider + acpx/runtime)
+│   │   ├── index.ts                # Provider registration + streamAcpx + discoverAcpxModels
+│   │   ├── load-runtime.ts         # Resolve acpx/runtime (global npm, then package-local)
+│   │   └── runtime-models.ts       # mapAcpxDiscoveredModels → createProvider Model[]
+│   ├── cli-provider/               # CLI-backed providers (createProvider; cli-claude/gemini/cursor)
 │   │   ├── agents/                 # Per-CLI drivers (cursor/claude/gemini) — add new CLI here
 │   │   ├── shared/                 # Shared discovery cache helpers
 │   │   ├── sessions.ts             # Resume directory (lastSeen/status)
-│   │   └── session-reaper.ts       # Idle session marker cleanup
-│   │   └── index.ts                # Provider + exported discoverAcpxModels() for external consumers
+│   │   ├── session-reaper.ts       # Idle session marker cleanup
+│   │   ├── runtime-models.ts       # mapCliDiscoveredModels → createProvider Model[]
+│   │   └── index.ts                # Provider registration + streamCli + discoverCliModels
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool
 │       └── image-gen.ts            # Gemini API image generation (settings: image_model; env: GEMINI_API_KEY)
@@ -156,9 +161,11 @@ pi-config/
 ├── pi-config-settings.example.json    # Example project settings file
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)
+│   │   ├── acpx-provider/           # ACPX createProvider / runtime-model tests
+│   │   ├── cli-provider/            # CLI createProvider / runtime-model tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
-│   │   └── shared/                  # Shared utility tests (coms-shared, daemon-manager)
+│   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

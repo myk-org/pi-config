@@ -26,6 +26,17 @@ dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime"
 Package dep range is `">=0.12.0 <1"` (latest within acpx 0.x; see issue #651).
 Not `^0.8.0` (that stays on 0.8.x under 0.x caret rules).
 
+**Native createProvider (pi ≥ 0.81):** `acpx-*` registers via
+`extensions/shared/create-runtime-provider.ts` (same helper as `cli-*`):
+ambient `resolve`/`check` succeed when `isAcpxAgentConfigured` (`agents.has`);
+`/login acpx-<agent>` stores an optional `configured` marker (not required for ambient
+auth); `fetchModels` rediscovers via `discoverModelsInternal` (returns `[]` if no
+state; empty discovery with state → `${agent}:default`);
+`filterModels` also gates on `agents.has` — **not** a live health probe;
+`session_shutdown` clears `agents`, so models hide until reload/restart;
+streams use `{ stream, streamSimple }` → `streamAcpx`.
+No legacy `registerProvider(name, { streamSimple })` bag.
+
 **Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
 skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
 

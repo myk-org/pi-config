@@ -4,6 +4,9 @@
  * Routes pi LLM requests through real CLI tools (claude, gemini, cursor/agent)
  * under the `cli-*` namespace — parallel to `acpx-*`, without using ACP.
  *
+ * Registers via createProvider() (pi ≥ 0.81): /login, fetchModels, filterModels,
+ * and native ProviderStreams. See dev-docs/cli-provider.md.
+ *
  * How it works (matches acpx-provider flow):
  * 1. During extension load, discover models from each agent driver (CLI only)
  * 2. On each LLM request, resume CLI session when possible; recover if resume dies
@@ -29,11 +32,17 @@ import type {
   Context,
   Model,
   SimpleStreamOptions,
+  StreamOptions,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
 import { isPiMetaInvocation } from "../orchestrator/utils.js";
+import {
+  buildAmbientLoginAuth,
+  createRuntimeProvider,
+  filterModelsWhenConfigured,
+} from "../shared/create-runtime-provider.js";
 import { cliProviderLog } from "../shared/file-logger.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
@@ -68,6 +77,7 @@ import {
   modelIdToDisplayName,
   type DiscoveredCliModel,
 } from "./discover.js";
+import { mapCliDiscoveredModels } from "./runtime-models.js";
 
 export {
   discoverCliModels,
@@ -75,6 +85,7 @@ export {
   discoverCliModelsDetailed,
   modelIdToDisplayName,
   resolveCliHistorySeed,
+  mapCliDiscoveredModels,
 };
 
 // =============================================================================
@@ -114,6 +125,15 @@ const provisionalPiSessionId = createProvisionalPiSessionId();
  * instead of trusting a stale --resume marker (issue #661).
  */
 let forceHistorySeed = false;
+
+/**
+ * True when the CLI binary is on PATH and this agent still has AgentState
+ * (cleared on session_shutdown). Used by /login resolve/check, filterModels,
+ * and fetchModels — matches ACPX `agents.has` gating so models hide after shutdown.
+ */
+export function isCliAgentConfigured(agent: string): boolean {
+  return isCliBinaryAvailable(agent) && agents.has(agent);
+}
 
 // =============================================================================
 // Session ensure (acpx ensureHandle analogue)
@@ -360,7 +380,7 @@ function buildPromptWithHistory(context: Context, hasCliSession: boolean): strin
 function streamCli(
   model: Model<any>,
   context: Context,
-  options?: SimpleStreamOptions,
+  options?: SimpleStreamOptions | StreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
 
@@ -765,16 +785,6 @@ export default async function (pi: ExtensionAPI) {
 
   const DISCOVERY_TIMEOUT_MS = 30_000;
 
-  const makeModel = (id: string, name: string) => ({
-    id,
-    name,
-    reasoning: false,
-    input: ["text" as const, "image" as const],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200000,
-    maxTokens: 32768,
-  });
-
   // Discover models synchronously during extension load (same pattern as acpx).
   // Pi awaits async extension factories, so models are registered before
   // the model resolver runs — preventing silent fallback to default model.
@@ -855,23 +865,36 @@ export default async function (pi: ExtensionAPI) {
     }
 
     try {
-      const models =
-        discovered.length > 0
-          ? discovered.map((m) =>
-              makeModel(`${agent}:${m.id}`, `${m.name} (${agent})`),
-            )
-          : [makeModel(`${agent}:default`, `${agent} (default)`)];
-
-      pi.registerProvider(`cli-${agent}`, {
-        baseUrl: "https://localhost",
-        apiKey: "cli", // pragma: allowlist secret
-        api: "cli",
+      const providerId = `cli-${agent}`;
+      const models = mapCliDiscoveredModels(agent, discovered);
+      const provider = await createRuntimeProvider({
+        id: providerId,
+        name: `CLI ${agent}`,
+        auth: {
+          apiKey: buildAmbientLoginAuth({
+            displayName: `CLI ${agent}`,
+            isConfigured: () => isCliAgentConfigured(agent),
+            sourceLabel: `${agent} CLI on PATH`,
+          }),
+        },
         models,
-        streamSimple: streamCli,
+        fetchModels: async () => {
+          if (!isCliAgentConfigured(agent)) return [];
+          const next = await discoverCliModelsDetailed(agent);
+          const state = agents.get(agent);
+          if (state) state.availableModelIds = next.map((m) => m.id);
+          return mapCliDiscoveredModels(agent, next);
+        },
+        filterModels: (catalog, credential) =>
+          filterModelsWhenConfigured(catalog, credential, () =>
+            isCliAgentConfigured(agent),
+          ),
+        api: { stream: streamCli, streamSimple: streamCli },
       });
+      pi.registerProvider(provider);
       cliProviderLog(
         "info",
-        `cli-${agent}: ${models.length} model(s) registered`,
+        `cli-${agent}: ${models.length} model(s) registered (createProvider)`,
       );
     } catch (err) {
       cliProviderLog("error", `cli-${agent}: setup failed`, err);

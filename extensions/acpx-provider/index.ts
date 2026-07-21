@@ -5,6 +5,9 @@
  * This lets you use models only available through specific agents (e.g., Cursor's
  * Composer 2, GPT-5.4, etc.) as native pi models.
  *
+ * Registers via createProvider() (pi ≥ 0.81): /login, fetchModels, filterModels,
+ * and native ProviderStreams. Shared helper: extensions/shared/create-runtime-provider.ts.
+ *
  * How it works:
  * 1. During extension load, creates an AcpxRuntime per agent and discovers models synchronously
  * 2. On each LLM request, sends only the latest user message via runtime.startTurn()
@@ -25,6 +28,7 @@ import type {
 	Context,
 	Model,
 	SimpleStreamOptions,
+	StreamOptions,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -34,7 +38,15 @@ import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
 import { isPiMetaInvocation } from "../orchestrator/utils.js";
+import {
+	buildAmbientLoginAuth,
+	createRuntimeProvider,
+	filterModelsWhenConfigured,
+} from "../shared/create-runtime-provider.js";
 import { loadAcpxRuntime } from "./load-runtime.js";
+import { mapAcpxDiscoveredModels, modelIdToDisplayName } from "./runtime-models.js";
+
+export { mapAcpxDiscoveredModels, modelIdToDisplayName };
 
 // =============================================================================
 // Types
@@ -267,13 +279,12 @@ async function discoverModelsInternal(state: AgentState): Promise<string[]> {
 	return [];
 }
 
-function modelIdToDisplayName(modelId: string): string {
-	// Strip bracket suffixes for display: gpt-5.4[context=272k,...] -> Gpt 5.4
-	const bracketIdx = modelId.indexOf("[");
-	const baseName = bracketIdx >= 0 ? modelId.substring(0, bracketIdx) : modelId;
-	return baseName
-		.replace(/-/g, " ")
-		.replace(/\b\w/g, (c) => c.toUpperCase());
+/**
+ * True when this acpx agent has an initialized AgentState/runtime.
+ * Used by /login resolve/check and filterModels.
+ */
+export function isAcpxAgentConfigured(agent: string): boolean {
+	return agents.has(agent);
 }
 
 // =============================================================================
@@ -330,7 +341,7 @@ function extractLatestUserMessage(context: Context): string {
 function streamAcpx(
 	model: Model<any>,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: SimpleStreamOptions | StreamOptions,
 ): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 
@@ -566,13 +577,6 @@ export default async function (pi: ExtensionAPI) {
 
 	const DISCOVERY_TIMEOUT_MS = 30_000;
 
-	const makeModel = (id: string, name: string) => ({
-		id, name, reasoning: false,
-		input: ["text" as const, "image" as const],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 200000, maxTokens: 32768,
-	});
-
 	// Discover models synchronously during extension load.
 	// Pi awaits async extension factories, so models are registered before
 	// the model resolver runs — preventing silent fallback to default model.
@@ -638,18 +642,33 @@ export default async function (pi: ExtensionAPI) {
 		}
 
 		try {
-			const models = modelIds.length > 0
-				? modelIds.map((m) => makeModel(`${agent}:${m}`, `${modelIdToDisplayName(m)} (${agent})`))
-				: [makeModel(`${agent}:default`, `${agent} (default)`)];
-
-			pi.registerProvider(`acpx-${agent}`, {
-				baseUrl: "https://localhost",
-				apiKey: "acpx", // pragma: allowlist secret
-				api: "acpx",
+			const providerId = `acpx-${agent}`;
+			const models = mapAcpxDiscoveredModels(agent, modelIds);
+			const provider = await createRuntimeProvider({
+				id: providerId,
+				name: `ACPX ${agent}`,
+				auth: {
+					apiKey: buildAmbientLoginAuth({
+						displayName: `ACPX ${agent}`,
+						isConfigured: () => isAcpxAgentConfigured(agent),
+						sourceLabel: `${agent} acpx runtime`,
+					}),
+				},
 				models,
-				streamSimple: streamAcpx,
+				fetchModels: async () => {
+					const state = agents.get(agent);
+					if (!state) return [];
+					const nextIds = await discoverModelsInternal(state);
+					return mapAcpxDiscoveredModels(agent, nextIds);
+				},
+				filterModels: (catalog, credential) =>
+					filterModelsWhenConfigured(catalog, credential, () =>
+						isAcpxAgentConfigured(agent),
+					),
+				api: { stream: streamAcpx, streamSimple: streamAcpx },
 			});
-			console.debug(`[acpx] acpx-${agent}: ${models.length} model(s) registered`);
+			pi.registerProvider(provider);
+			console.debug(`[acpx] acpx-${agent}: ${models.length} model(s) registered (createProvider)`);
 		} catch (err) {
 			console.debug(`[acpx] acpx-${agent}: setup failed:`, err);
 		}

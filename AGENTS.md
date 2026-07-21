@@ -102,6 +102,8 @@ Writing effective rules:
   blocks `curl | bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`,
   prefix assignments (`VAR=$(curl) cmd`), path-prefixed exec (`/bin/bash -c`).
   Allows safe `VAR=$(curl ...)` variable assignments at statement boundaries.
+- Native `cli-*` / `acpx-*` providers: use `extensions/shared/create-runtime-provider.ts`
+  (`createProvider` + `/login` + fetch/filter) — never legacy `registerProvider(name, bag)`
 
 ## When Modifying Docker
 

@@ -24,7 +24,9 @@ Empty / unset → extension registers nothing.
 1. Read `cli_agents` at extension load
 2. For each agent: probe binary (30s discovery timeout), create agent state
 3. **Discover models from the CLI only** (see below) — no API keys, no cloud list APIs
-4. Register `cli-${agent}` with discovered models, or `${agent}:default` if discovery returns empty
+4. Register `cli-${agent}` via **`createRuntimeProvider()`** (shared helper wrapping
+   `createProvider`) then `pi.registerProvider(provider)` (pi ≥ 0.81), with discovered
+   models or `${agent}:default` if discovery returns empty
 5. Skip registration if binary missing (no agent state)
 6. Start session reaper (5m sweep; no immediate sweep at load) for
    `~/.pi/cli-sessions/` — deletes idle `status=stopped` markers only.
@@ -46,6 +48,29 @@ Empty / unset → extension registers nothing.
 `pi --help` / `pi --version` (and `-h` / `-v`) still load extensions; both
 `cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
 they do not run model discovery for meta invocations.
+
+## Native createProvider (pi ≥ 0.81)
+
+Shared helper: `extensions/shared/create-runtime-provider.ts`.
+
+| Piece | Behavior |
+|-------|----------|
+| **auth /login** | `/login cli-<agent>` stores marker credential `configured` when `isCliAgentConfigured` (binary on PATH **and** agent state). Ambient `resolve`/`check` succeed when configured. |
+| **fetchModels** | Not configured (`!isCliAgentConfigured`) → `[]`. Configured (PATH + AgentState) + empty discovery → `${agent}:default`. |
+| **filterModels** | Hides models when `isCliAgentConfigured` is false (binary gone or `agents` cleared on shutdown) |
+| **streams** | Native `ProviderStreams`: `{ stream, streamSimple }` both wrap `streamCli` |
+
+Legacy `pi.registerProvider(name, { apiKey, streamSimple })` bags are **not** used.
+
+**Binary missing at load** → provider is not registered; install then `/reload` or
+restart.
+
+**Already registered, PATH cleared (AgentState remains)** → restore PATH; models
+show again via filter/ambient. `/login` only stores the credential; model refresh
+rediscovers.
+
+**After `session_shutdown`** → `agents` cleared; models stay hidden until
+`/reload` or restart recreates AgentState (PATH restore alone is not enough).
 
 ## Model discovery (CLI only)
 

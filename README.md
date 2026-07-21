@@ -14,7 +14,7 @@ Single extension that provides:
 |---------|-------------|
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
 | **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. On **acpx** parents, optional async is coerced to sync; dream/cron need `async_llm_provider` + `async_llm_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
-| **CLI providers** | Optional `cli_agents` setting registers `cli-claude` / `cli-gemini` / `cli-cursor` via real CLIs (parallel to `acpx_*`) |
+| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.81): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
@@ -367,8 +367,10 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 **CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
 `cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and
 `agent` (Cursor Agent CLI). Enable with `cli_agents` in settings (e.g.
-`["claude","cursor","gemini"]`). Without those binaries on PATH, `cli-*` models will
-not register or will fail at turn time. See `dev-docs/cli-provider.md`.
+`["claude","cursor","gemini"]`). Binary missing at load → `cli-*` not registered.
+After register, `filterModels` hides models when unavailable: PATH cleared while
+agent state remains → restore PATH; after `session_shutdown` (AgentState cleared)
+→ `/reload` or restart (PATH alone is not enough). See `dev-docs/cli-provider.md`.
 
 **CLI specialist agents (Cursor / Claude / Gemini):** On container start, `entrypoint.sh`
 symlinks package `agents/*.md` into the mounted project:
@@ -760,7 +762,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.80.3**)
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.81.0**)
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)
