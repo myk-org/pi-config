@@ -239,6 +239,36 @@ describe("/resume reseed path (markers + history seed)", () => {
     assert.equal(r.sidKnown, true);
   });
 
+  it("readPiSessionIdFromManager calls through object (keeps this)", async () => {
+    const { readPiSessionIdFromManager } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const manager = {
+      sessionId: "sid-bound",
+      getSessionId() {
+        return this.sessionId;
+      },
+    };
+    const r = readPiSessionIdFromManager(manager);
+    assert.equal(r.hasGetter, true);
+    assert.equal(r.readPiSessionId, "sid-bound");
+  });
+
+  it("readPiSessionIdFromManager treats throw as unknown (issue #664)", async () => {
+    const { readPiSessionIdFromManager } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    // Mimic extracting unbound method — calling it would throw on this.sessionId
+    const unbound = {
+      getSessionId() {
+        return (undefined as unknown as { sessionId: string }).sessionId;
+      },
+    };
+    const r = readPiSessionIdFromManager(unbound);
+    assert.equal(r.hasGetter, false);
+    assert.equal(r.readPiSessionId, null);
+  });
+
   it("reload does not clear markers", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
