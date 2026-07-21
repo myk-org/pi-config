@@ -267,6 +267,16 @@ describe("/resume reseed path (markers + history seed)", () => {
     const r = readPiSessionIdFromManager(unbound);
     assert.equal(r.hasGetter, false);
     assert.equal(r.readPiSessionId, null);
+    assert.equal(r.readError, true);
+  });
+
+  it("readPiSessionIdFromManager missing getter is not a readError", async () => {
+    const { readPiSessionIdFromManager } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const r = readPiSessionIdFromManager(undefined);
+    assert.equal(r.hasGetter, false);
+    assert.equal(r.readError, false);
   });
 
   it("reload does not clear markers", () => {
