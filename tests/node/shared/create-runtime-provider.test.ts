@@ -14,7 +14,7 @@ import {
 } from "../../../extensions/shared/create-runtime-provider.js";
 
 describe("buildRuntimeModel", () => {
-  it("fills api, provider, baseUrl and defaults", () => {
+  it("fills api, provider, baseUrl with defaults", () => {
     const m = buildRuntimeModel({
       id: "cursor:composer-2.5",
       name: "Composer 2.5 (cursor)",
@@ -92,7 +92,7 @@ describe("buildAmbientLoginAuth", () => {
     );
   });
 
-  it("resolve with credential and isConfigured true → success", async () => {
+  it("resolve succeeds when credential present with isConfigured true", async () => {
     const auth = buildAmbientLoginAuth({
       displayName: "CLI cursor",
       isConfigured: () => true,
@@ -147,7 +147,7 @@ describe("buildAmbientLoginAuth", () => {
     assert.equal(result!.auth.apiKey, AMBIENT_AUTH_KEY);
   });
 
-  it("resolve returns undefined when unconfigured and no credential", async () => {
+  it("resolve returns undefined when unconfigured without credential", async () => {
     const auth = buildAmbientLoginAuth({
       displayName: "CLI cursor",
       isConfigured: () => false,
@@ -232,7 +232,7 @@ describe("filterModelsWhenConfigured", () => {
 });
 
 describe("createRuntimeProvider", () => {
-  it("builds a Provider with id and getModels when pi-ai is resolvable", async (t) => {
+  it("builds a Provider with id plus getModels when pi-ai is resolvable", async (t) => {
     let provider;
     try {
       provider = await createRuntimeProvider({

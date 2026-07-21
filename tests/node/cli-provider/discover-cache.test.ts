@@ -16,7 +16,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  candidateSuffixesFor,
   clearResolveBinaryCache,
+  isLaunchableWin32,
+  parsePathext,
   resolveBinary,
 } from "../../../extensions/cli-provider/shared/discover-cache.js";
 
@@ -85,18 +88,69 @@ describe("resolveBinary", { concurrency: false }, () => {
     assert.equal(resolved, realpathSync(dest));
   });
 
-  it("caches successful resolves; misses are not cached", () => {
+  it("caches successful resolve path", () => {
     const dir = makeBinDir();
     const dest = join(dir, "cached-cli");
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     process.env.PATH = dir;
     const first = resolveBinary("cached-cli");
+    assert.equal(first, realpathSync(dest));
+    assert.equal(resolveBinary("cached-cli"), first);
+  });
+
+  it("invalidates cached resolve when binary is removed", () => {
+    const dir = makeBinDir();
+    const dest = join(dir, "cached-cli");
+    writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.PATH = dir;
+    assert.equal(resolveBinary("cached-cli"), realpathSync(dest));
     rmSync(dest);
-    // Stale positive invalidated when binary disappears
     assert.equal(resolveBinary("cached-cli"), null);
-    // Mid-session install with same PATH rediscovers (null was not cached)
+  });
+
+  it("rediscovers binary after miss when reinstalled on same PATH", () => {
+    const dir = makeBinDir();
+    const dest = join(dir, "cached-cli");
+    process.env.PATH = dir;
+    assert.equal(resolveBinary("cached-cli"), null);
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     assert.equal(resolveBinary("cached-cli"), realpathSync(dest));
-    assert.equal(first, realpathSync(dest));
+  });
+});
+
+describe("win32 launchability helpers", () => {
+  it("parsePathext normalizes extensions to uppercase with dots", () => {
+    assert.deepEqual(parsePathext(".exe;.Cmd;.BAT"), [".EXE", ".CMD", ".BAT"]);
+  });
+
+  it("isLaunchableWin32 rejects extensionless paths", () => {
+    assert.equal(isLaunchableWin32("C:\\tools\\agent", ".EXE;.CMD"), false);
+  });
+
+  it("isLaunchableWin32 accepts PATHEXT extension", () => {
+    assert.equal(isLaunchableWin32("C:\\tools\\agent.exe", ".EXE;.CMD"), true);
+    assert.equal(isLaunchableWin32("C:\\tools\\agent.CMD", ".EXE;.CMD"), true);
+  });
+
+  it("isLaunchableWin32 rejects non-PATHEXT extension", () => {
+    assert.equal(isLaunchableWin32("C:\\tools\\agent.txt", ".EXE;.CMD"), false);
+  });
+
+  it("candidateSuffixesFor win32 uses PATHEXT only for bare names", () => {
+    assert.deepEqual(
+      candidateSuffixesFor("agent", "win32", ".EXE;.CMD"),
+      [".EXE", ".CMD"],
+    );
+  });
+
+  it("candidateSuffixesFor win32 keeps as-is when binary has PATHEXT ext", () => {
+    assert.deepEqual(
+      candidateSuffixesFor("agent.exe", "win32", ".EXE;.CMD"),
+      [""],
+    );
+  });
+
+  it("candidateSuffixesFor non-win32 uses empty suffix only", () => {
+    assert.deepEqual(candidateSuffixesFor("agent", "linux"), [""]);
   });
 });

@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, extname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import type { DiscoveredCliModel } from "../types.js";
@@ -28,13 +28,45 @@ export function modelIdToDisplayName(modelId: string): string {
 /** Cache keyed by `${binary}\0${PATH}` — successful resolves only (no negative cache). */
 const resolveBinaryCache = new Map<string, string>();
 
-function winPathSuffixes(): string[] {
-  const pathext = process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM";
-  return ["", ...pathext.split(";").filter(Boolean)];
+/** Parse PATHEXT into uppercase extensions (e.g. ".EXE"). Exported for tests. */
+export function parsePathext(pathextEnv?: string): string[] {
+  const raw = pathextEnv ?? process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM";
+  return raw
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => (s.startsWith(".") ? s : `.${s}`).toUpperCase());
 }
 
-function candidateSuffixes(): string[] {
-  return process.platform === "win32" ? winPathSuffixes() : [""];
+/**
+ * True when filePath has an extension listed in PATHEXT (case-insensitive).
+ * Extensionless files are not CreateProcess-launchable on Windows.
+ */
+export function isLaunchableWin32(
+  filePath: string,
+  pathextEnv?: string,
+): boolean {
+  const ext = extname(filePath);
+  if (!ext) return false;
+  return parsePathext(pathextEnv).includes(ext.toUpperCase());
+}
+
+/**
+ * Suffixes to try when scanning PATH for `binary`.
+ * On win32: if `binary` already has a PATHEXT extension, try as-is only;
+ * otherwise try each PATHEXT suffix (no bare/empty suffix).
+ */
+export function candidateSuffixesFor(
+  binary: string,
+  platform: NodeJS.Platform = process.platform,
+  pathextEnv?: string,
+): string[] {
+  if (platform !== "win32") return [""];
+  const ext = extname(binary);
+  if (ext && parsePathext(pathextEnv).includes(ext.toUpperCase())) {
+    return [""];
+  }
+  return parsePathext(pathextEnv);
 }
 
 function isExecutable(filePath: string): boolean {
@@ -46,7 +78,7 @@ function isExecutable(filePath: string): boolean {
   }
   // Directories are often X_OK (searchable); only regular files are binaries.
   if (!st.isFile()) return false;
-  if (process.platform === "win32") return true;
+  if (process.platform === "win32") return isLaunchableWin32(filePath);
   try {
     accessSync(filePath, constants.X_OK);
     return true;
@@ -87,7 +119,7 @@ export function resolveBinary(binary: string): string | null {
     return resolved;
   }
 
-  const suffixes = candidateSuffixes();
+  const suffixes = candidateSuffixesFor(binary);
   for (const dir of pathEnv.split(delimiter)) {
     if (!dir) continue;
     for (const suffix of suffixes) {
