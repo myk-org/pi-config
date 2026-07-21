@@ -21,6 +21,7 @@ import {
   isExecutableForPlatform,
   isLaunchableWin32,
   parsePathext,
+  pathDelimiterFor,
   resolveBinary,
   resolveBinaryForPlatform,
 } from "../../../extensions/cli-provider/shared/discover-cache.js";
@@ -155,6 +156,11 @@ describe("win32 launchability helpers", () => {
   it("candidateSuffixesFor non-win32 uses empty suffix only", () => {
     assert.deepEqual(candidateSuffixesFor("agent", "linux"), [""]);
   });
+
+  it("pathDelimiterFor uses platform delimiter not host", () => {
+    assert.equal(pathDelimiterFor("win32"), ";");
+    assert.equal(pathDelimiterFor("linux"), ":");
+  });
 });
 
 describe("resolveBinaryForPlatform win32", { concurrency: false }, () => {
@@ -230,5 +236,20 @@ describe("resolveBinaryForPlatform win32", { concurrency: false }, () => {
       PATHEXT: ".EXE;.CMD",
     });
     assert.equal(resolved, realpathSync(withExt));
+  });
+
+  it("splits win32 PATH on semicolon across two directories", () => {
+    const root = makeBinDir();
+    const dir1 = join(root, "empty");
+    const dir2 = join(root, "bins");
+    mkdirSync(dir1);
+    mkdirSync(dir2);
+    const dest = join(dir2, "agent.exe");
+    writeFileSync(dest, "fake\n", { mode: 0o644 });
+    const resolved = resolveBinaryForPlatform("agent", "win32", {
+      PATH: `${dir1};${dir2}`,
+      PATHEXT: ".EXE",
+    });
+    assert.equal(resolved, realpathSync(dest));
   });
 });

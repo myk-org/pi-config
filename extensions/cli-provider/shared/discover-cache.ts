@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, extname, isAbsolute, join } from "node:path";
+import { extname, isAbsolute, join, posix, win32 } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import type { DiscoveredCliModel } from "../types.js";
@@ -72,6 +72,14 @@ export function candidateSuffixesFor(
     return [""];
   }
   return parsePathext(pathextEnv);
+}
+
+/**
+ * PATH list separator for the *resolved* platform (not the host OS).
+ * Needed so win32 simulation on Unix splits semicolon-separated PATH correctly.
+ */
+export function pathDelimiterFor(platform: NodeJS.Platform): string {
+  return platform === "win32" ? win32.delimiter : posix.delimiter;
 }
 
 /** Exported for tests — regular file + platform launchability rules. */
@@ -148,7 +156,8 @@ export function resolveBinaryForPlatform(
   }
 
   const suffixes = candidateSuffixesFor(binary, platform, pathextEnv);
-  for (const dir of pathEnv.split(delimiter)) {
+  const envDelimiter = pathDelimiterFor(platform);
+  for (const dir of pathEnv.split(envDelimiter)) {
     if (!dir) continue;
     for (const suffix of suffixes) {
       // PATHEXT is typically uppercase; Windows FS is case-insensitive.
