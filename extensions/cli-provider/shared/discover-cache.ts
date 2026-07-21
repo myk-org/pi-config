@@ -38,11 +38,14 @@ function candidateSuffixes(): string[] {
 }
 
 function isExecutable(filePath: string): boolean {
+  let st;
   try {
-    accessSync(filePath, constants.F_OK);
+    st = statSync(filePath);
   } catch {
     return false;
   }
+  // Directories are often X_OK (searchable); only regular files are binaries.
+  if (!st.isFile()) return false;
   if (process.platform === "win32") return true;
   try {
     accessSync(filePath, constants.X_OK);

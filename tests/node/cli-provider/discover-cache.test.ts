@@ -8,6 +8,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  mkdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -63,6 +64,15 @@ describe("resolveBinary", { concurrency: false }, () => {
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
     process.env.PATH = dir;
     assert.equal(resolveBinary("not-exec"), null);
+  });
+
+  it("returns null when PATH candidate is a directory", () => {
+    const dir = makeBinDir();
+    const nested = join(dir, "agent");
+    // Directory named like the binary — searchable (X_OK) but not a file
+    mkdirSync(nested, { mode: 0o755 });
+    process.env.PATH = dir;
+    assert.equal(resolveBinary("agent"), null);
   });
 
   it("resolves absolute path without PATH lookup", () => {
