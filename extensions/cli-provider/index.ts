@@ -659,13 +659,19 @@ export default async function (pi: ExtensionAPI) {
   if (isPiMetaInvocation()) return;
 
   const versionCheck = checkMinPiVersion();
-  if (!versionCheck.ok) {
+  if (!versionCheck.ok && versionCheck.installed !== null) {
     cliProviderLog(
       "error",
-      `pi ${versionCheck.installed || "unknown"} is below minimum ${versionCheck.required}; ` +
+      `pi ${versionCheck.installed} is below minimum ${versionCheck.required}; ` +
         `cli-* providers require createProvider — skipping registration`,
     );
     return;
+  }
+  if (versionCheck.installed === null) {
+    cliProviderLog(
+      "warn",
+      `pi version unknown; attempting createProvider registration (requires >= ${versionCheck.required})`,
+    );
   }
 
   // Capture cwd at extension load time, before pi potentially changes directory.

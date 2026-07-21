@@ -562,15 +562,23 @@ export default async function (pi: ExtensionAPI) {
 	if (isPiMetaInvocation()) return;
 
 	const versionCheck = checkMinPiVersion();
-	if (!versionCheck.ok) {
+	if (!versionCheck.ok && versionCheck.installed !== null) {
 		fileLog(
 			"acpx-provider",
 			"error",
 			"acpx-provider",
-			`pi ${versionCheck.installed || "unknown"} is below minimum ${versionCheck.required}; ` +
+			`pi ${versionCheck.installed} is below minimum ${versionCheck.required}; ` +
 				`acpx-* providers require createProvider — skipping registration`,
 		);
 		return;
+	}
+	if (versionCheck.installed === null) {
+		fileLog(
+			"acpx-provider",
+			"warn",
+			"acpx-provider",
+			`pi version unknown; attempting createProvider registration (requires >= ${versionCheck.required})`,
+		);
 	}
 
 	// Suppress noisy ACP SDK errors for unhandled agent extension methods
