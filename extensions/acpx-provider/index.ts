@@ -262,12 +262,12 @@ export async function discoverAcpxModels(
 			provider: `acpx-${agent}`,
 		}));
 	} catch (err) {
-		console.debug(`[acpx] model discovery failed for ${agent}:`, err);
+		fileLog("acpx-provider", "debug", "acpx-provider", `model discovery failed for ${agent}:`, err);
 		return [];
 	} finally {
 		if (handle) {
 			await runtime.close({ handle, reason: "discovery complete" }).catch((err) => {
-				console.debug("[acpx] failed to close discovery session:", err);
+				fileLog("acpx-provider", "debug", "acpx-provider", "failed to close discovery session:", err);
 			});
 		}
 		await rm(stateDir, { recursive: true, force: true }).catch(() => {});
@@ -284,7 +284,7 @@ async function discoverModelsInternal(state: AgentState): Promise<string[]> {
 			return status.models.availableModelIds;
 		}
 	} catch (err) {
-		console.debug(`[acpx] model discovery failed for ${state.agent}:`, err);
+		fileLog("acpx-provider", "debug", "acpx-provider", `model discovery failed for ${state.agent}:`, err);
 	}
 	return [];
 }
@@ -332,7 +332,7 @@ function extractLatestUserMessage(context: Context): string {
 			}
 		}
 	}
-	console.debug("[acpx] no user message found in context, using fallback");
+	fileLog("acpx-provider", "debug", "acpx-provider", "no user message found in context, using fallback");
 	return "hello";
 }
 
@@ -609,7 +609,7 @@ export default async function (pi: ExtensionAPI) {
 					const runtime = await createAgentRuntime();
 					// Check timeout after slow runtime creation — don't store state if we already lost the race.
 					// Runtime without handles is lightweight (no connections/processes); safe to discard.
-					if (timedOut) { console.debug(`[acpx] ${agent}: discarding runtime after timeout`); return { agent, modelIds: [] as string[] }; }
+					if (timedOut) { fileLog("acpx-provider", "debug", "acpx-provider", `${agent}: discarding runtime after timeout`); return { agent, modelIds: [] as string[] }; }
 					let signalReady!: () => void;
 					const ready = new Promise<void>((resolve) => { signalReady = resolve; });
 					const state: AgentState = {
@@ -636,7 +636,7 @@ export default async function (pi: ExtensionAPI) {
 				clearTimeout(timer!);
 				return result;
 			} catch (err) {
-				console.debug(`[acpx] runtime init failed for ${agent}:`, err);
+				fileLog("acpx-provider", "debug", "acpx-provider", `runtime init failed for ${agent}:`, err);
 				const state = agents.get(agent);
 				if (state) state.signalReady();
 				return { agent, modelIds: [] as string[] };
@@ -651,7 +651,7 @@ export default async function (pi: ExtensionAPI) {
 		// Skip registration if runtime failed (no AgentState) — prevents
 		// registering a provider whose streamAcpx would always throw.
 		if (!agents.has(agent)) {
-			console.debug(`[acpx] acpx-${agent}: skipped registration (no runtime)`);
+			fileLog("acpx-provider", "debug", "acpx-provider", `acpx-${agent}: skipped registration (no runtime)`);
 			continue;
 		}
 
@@ -682,9 +682,9 @@ export default async function (pi: ExtensionAPI) {
 				api: { stream: streamAcpx, streamSimple: streamAcpx },
 			});
 			pi.registerProvider(provider);
-			console.debug(`[acpx] acpx-${agent}: ${models.length} model(s) registered (createProvider)`);
+			fileLog("acpx-provider", "debug", "acpx-provider", `acpx-${agent}: ${models.length} model(s) registered (createProvider)`);
 		} catch (err) {
-			console.debug(`[acpx] acpx-${agent}: setup failed:`, err);
+			fileLog("acpx-provider", "debug", "acpx-provider", `acpx-${agent}: setup failed:`, err);
 		}
 	}
 
@@ -695,7 +695,7 @@ export default async function (pi: ExtensionAPI) {
 			for (const [, handle] of state.handles) {
 				closePromises.push(
 					state.runtime.close({ handle, reason: "pi session shutdown" }).catch((err) => {
-						console.debug(`[acpx] session close failed:`, err);
+						fileLog("acpx-provider", "debug", "acpx-provider", "session close failed:", err);
 					}),
 				);
 			}

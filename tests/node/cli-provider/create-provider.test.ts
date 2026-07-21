@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
 import {
   bindCliAgentStates,
@@ -152,7 +152,7 @@ describe("isCliAgentConfigured", () => {
     binDir = mkdtempSync(join(tmpdir(), "cli-bin-"));
     const dest = join(binDir, name);
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    process.env.PATH = `${binDir}${prevPath ? `:${prevPath}` : ""}`;
+    process.env.PATH = [binDir, prevPath].filter(Boolean).join(delimiter);
     clearResolveBinaryCache();
   }
 
