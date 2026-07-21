@@ -370,6 +370,17 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 `["claude","cursor","gemini"]`). Without those binaries on PATH, `cli-*` models will
 not register or will fail at turn time. See `dev-docs/cli-provider.md`.
 
+**CLI specialist agents (Cursor / Claude / Gemini):** On container start, `entrypoint.sh`
+symlinks package `agents/*.md` into the mounted project:
+
+- `.cursor/agents/`
+- `.claude/agents/`
+- `.gemini/agents/`
+
+Uses `ln -sfn` (safe if multiple `pi-docker` sessions share the same folder). Those three
+directories are added to the container global gitignore. **Native** installs do not auto-
+sync — copy or symlink yourself (see `dev-docs/cli-provider.md`).
+
 **Extension ops logs:** `cli-provider` and dreaming write to `~/.pi/logs/` (not the chat
 UI). Fallback: `$TMPDIR/pi-logs/`. Details in `dev-docs/cli-provider.md` (Logging).
 
@@ -455,12 +466,19 @@ files organized by category (lessons, preferences, patterns, decisions, completi
 - **Pinned** — user-requested memories (via `/remember`), never auto-removed
 - **Learned** — auto-extracted by dreaming, can be reorganized/removed
 
-The `.pi/memory/` directory is auto-added to the global gitignore in the container.
+The `.pi/memory/` directory is auto-added to the global gitignore in the container
+(along with `.pi/`, `.worktrees/`, `.cursor/agents/`, `.claude/agents/`, and
+`.gemini/agents/`).
 
-For **native** (non-container) usage, add it to your global gitignore:
+For **native** (non-container) usage, add memory (and optionally CLI agent dirs) to your
+global gitignore:
 
 ```bash
 echo '.pi/memory/' >> ~/.gitignore-global
+# If you symlink pi agents for cli-cursor / cli-claude / cli-gemini:
+echo '.cursor/agents/' >> ~/.gitignore-global
+echo '.claude/agents/' >> ~/.gitignore-global
+echo '.gemini/agents/' >> ~/.gitignore-global
 git config --global core.excludesFile ~/.gitignore-global
 ```
 

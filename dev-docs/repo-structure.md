@@ -146,10 +146,11 @@ pi-config/
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff per-project server (diff hub with review comments, one per project cwd)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
+│   ├── symlink-cli-specialists.sh   # Symlink package agents into .cursor/.claude/.gemini/agents (container entrypoint)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
-├── entrypoint.sh                    # Container entrypoint
+├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)
 ├── README.md                        # Project README
 ├── AGENTS.md                        # Contributor rules (this repo)
 ├── pi-config-settings.example.json    # Example project settings file

@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -13,11 +13,63 @@ import {
   loadCliSessionRecord,
   saveCliSessionId,
   touchCliSession,
+  setCliSessionMarkerMeta,
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
 
 describe("cli-provider sessions", () => {
+  it("listCliSessions returns empty when sessions path is not a directory", async () => {
+    const { listCliSessions } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const { mkdirSync } = await import("node:fs");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-notdir-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      mkdirSync(join(home, ".pi"), { recursive: true });
+      writeFileSync(join(home, ".pi", "cli-sessions"), "not-a-directory");
+      assert.deepEqual(listCliSessions(), []);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("marker writers no-op when sessions path is not a directory", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-write-notdir-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      mkdirSync(join(home, ".pi"), { recursive: true });
+      writeFileSync(join(home, ".pi", "cli-sessions"), "not-a-directory");
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "composer",
+        piSessionId: "sid",
+      };
+      assert.equal(saveCliSessionId(key, "cli-1"), false);
+      assert.equal(touchCliSession(key), false);
+      assert.equal(loadCliSessionId(key), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("detects resume failure messages", () => {
     assert.equal(isCliResumeFailure("Session not found: abc"), true);
     assert.equal(isCliResumeFailure("cannot resume session"), true);
@@ -35,10 +87,542 @@ describe("cli-provider sessions", () => {
     assert.equal(shouldRetryWithoutResume("CLI agent exited 1: auth failed"), false);
   });
 
+  it("does not treat exit 143 as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.equal(
+      shouldRetryWithoutResume("CLI agent exited 143: no output"),
+      false,
+    );
+  });
+
+  it("does not treat exit 130 as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.equal(
+      shouldRetryWithoutResume("CLI agent exited 130: no output"),
+      false,
+    );
+  });
+
+  it("does not treat exit 137 as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.equal(
+      shouldRetryWithoutResume("CLI agent exited 137: no output"),
+      false,
+    );
+  });
+
+  it("does not treat aborted wording as dead resume", async () => {
+    const { shouldRetryWithoutResume } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.equal(shouldRetryWithoutResume("CLI call aborted"), false);
+  });
+
+  it("adoptLegacyCliSessionMarker moves default bucket onto real sid", async () => {
+    const { adoptLegacyCliSessionMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-adopt-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const legacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      const real: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "real-sid",
+      };
+      saveCliSessionId(legacy, "legacy-cli");
+      assert.equal(adoptLegacyCliSessionMarker(real), true);
+      assert.equal(loadCliSessionId(real), "legacy-cli");
+      assert.equal(loadCliSessionId(legacy), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("shouldAdoptLegacyCliMarker requires prior default or provisional key in this process", async () => {
+    const { shouldAdoptLegacyCliMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const real: CliSessionKey = {
+      cwd: "/proj",
+      agent: "cursor",
+      model: "m",
+      piSessionId: "real-sid",
+    };
+    const legacy: CliSessionKey = { ...real, piSessionId: "default" };
+    const provisional: CliSessionKey = { ...real, piSessionId: "tmp-abc" };
+    assert.equal(shouldAdoptLegacyCliMarker(null, real), false);
+    assert.equal(shouldAdoptLegacyCliMarker(undefined, real), false);
+    assert.equal(shouldAdoptLegacyCliMarker(legacy, real), true);
+    assert.equal(shouldAdoptLegacyCliMarker(provisional, real), true);
+    assert.equal(
+      shouldAdoptLegacyCliMarker({ ...real, piSessionId: "other" }, real),
+      false,
+    );
+  });
+
+  it("stale on-disk default marker is not adopted without prior default key", async () => {
+    const {
+      adoptLegacyCliSessionMarker,
+      shouldAdoptLegacyCliMarker,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-no-adopt-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const legacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      const real: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "new-sid",
+      };
+      saveCliSessionId(legacy, "stale-from-old-process");
+      // Fresh process: no prevKey → must not adopt
+      assert.equal(shouldAdoptLegacyCliMarker(null, real), false);
+      if (shouldAdoptLegacyCliMarker(null, real)) {
+        adoptLegacyCliSessionMarker(real);
+      }
+      assert.equal(loadCliSessionId(real), null);
+      assert.equal(loadCliSessionId(legacy), "stale-from-old-process");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("concurrent provisional ids do not share a marker file", async () => {
+    const {
+      createProvisionalPiSessionId,
+      isProvisionalPiSessionId,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-prov-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const a = createProvisionalPiSessionId();
+      const b = createProvisionalPiSessionId();
+      assert.ok(isProvisionalPiSessionId(a));
+      assert.ok(isProvisionalPiSessionId(b));
+      assert.notEqual(a, b);
+      const keyA: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: a,
+      };
+      const keyB: CliSessionKey = { ...keyA, piSessionId: b };
+      saveCliSessionId(keyA, "cli-a");
+      saveCliSessionId(keyB, "cli-b");
+      assert.equal(loadCliSessionId(keyA), "cli-a");
+      assert.equal(loadCliSessionId(keyB), "cli-b");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("migrateCliSessionMarker keeps source when dest write fails", async () => {
+    const { migrateCliSessionMarker, createProvisionalPiSessionId } =
+      await import("../../../extensions/cli-provider/sessions.js");
+    const { createHash } = await import("node:crypto");
+    const { mkdirSync } = await import("node:fs");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-keep-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const fromKey: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: provisional,
+      };
+      const toKey: CliSessionKey = { ...fromKey, piSessionId: "real-uuid" };
+      saveCliSessionId(fromKey, "cli-keep");
+      const destHash = createHash("sha256")
+        .update(["/proj", "cursor", "m", "real-uuid"].join("\0"))
+        .digest("hex")
+        .slice(0, 24);
+      mkdirSync(join(home, ".pi", "cli-sessions", `${destHash}.json`), {
+        recursive: true,
+      });
+      assert.equal(migrateCliSessionMarker(toKey, provisional), false);
+      assert.equal(loadCliSessionId(fromKey), "cli-keep");
+      assert.equal(loadCliSessionId(toKey), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("migrateCliSessionMarker moves provisional bucket onto real sid", async () => {
+    const { migrateCliSessionMarker, createProvisionalPiSessionId } =
+      await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const fromKey: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: provisional,
+      };
+      const toKey: CliSessionKey = { ...fromKey, piSessionId: "real-uuid" };
+      saveCliSessionId(fromKey, "cli-from-prov");
+      assert.equal(migrateCliSessionMarker(toKey, provisional), true);
+      assert.equal(loadCliSessionId(toKey), "cli-from-prov");
+      assert.equal(loadCliSessionId(fromKey), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("migrateAllCliSessionMarkers moves all handles for a provisional id", async () => {
+    const {
+      migrateAllCliSessionMarkers,
+      createProvisionalPiSessionId,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-migall-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const cursor: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m1",
+        piSessionId: provisional,
+      };
+      const gemini: CliSessionKey = {
+        cwd: "/proj",
+        agent: "gemini",
+        model: "m2",
+        piSessionId: provisional,
+      };
+      const otherProc: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m1",
+        piSessionId: createProvisionalPiSessionId(),
+      };
+      saveCliSessionId(cursor, "cli-cursor");
+      saveCliSessionId(gemini, "cli-gemini");
+      saveCliSessionId(otherProc, "cli-other");
+      assert.equal(
+        migrateAllCliSessionMarkers("/proj", provisional, "real-uuid"),
+        2,
+      );
+      assert.equal(
+        loadCliSessionId({ ...cursor, piSessionId: "real-uuid" }),
+        "cli-cursor",
+      );
+      assert.equal(
+        loadCliSessionId({ ...gemini, piSessionId: "real-uuid" }),
+        "cli-gemini",
+      );
+      assert.equal(loadCliSessionId(cursor), null);
+      assert.equal(loadCliSessionId(gemini), null);
+      assert.equal(loadCliSessionId(otherProc), "cli-other");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("migrateAll prefers newer provisional over stale real-sid marker", async () => {
+    const {
+      migrateAllCliSessionMarkers,
+      createProvisionalPiSessionId,
+      setCliSessionMarkerMeta,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-prefer-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const real: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "real-uuid",
+      };
+      const prov: CliSessionKey = { ...real, piSessionId: provisional };
+      // Stale destination from earlier lifecycle
+      saveCliSessionId(real, "cli-old");
+      assert.equal(
+        setCliSessionMarkerMeta(real, { idleMs: 60_000 }),
+        true,
+      );
+      // Pre-bind first turn wrote the live session under provisional
+      saveCliSessionId(prov, "cli-new");
+      assert.equal(
+        migrateAllCliSessionMarkers("/proj", provisional, "real-uuid"),
+        1,
+      );
+      assert.equal(loadCliSessionId(real), "cli-new");
+      assert.equal(loadCliSessionId(prov), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("migrateCliSessionMarker prefers newer provisional over stale dest", async () => {
+    const {
+      migrateCliSessionMarker,
+      createProvisionalPiSessionId,
+      setCliSessionMarkerMeta,
+    } = await import("../../../extensions/cli-provider/sessions.js");
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig1-prefer-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const provisional = createProvisionalPiSessionId();
+      const toKey: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "real-uuid",
+      };
+      const fromKey: CliSessionKey = { ...toKey, piSessionId: provisional };
+      saveCliSessionId(toKey, "cli-old");
+      assert.equal(setCliSessionMarkerMeta(toKey, { idleMs: 60_000 }), true);
+      saveCliSessionId(fromKey, "cli-new");
+      assert.equal(migrateCliSessionMarker(toKey, provisional), true);
+      assert.equal(loadCliSessionId(toKey), "cli-new");
+      assert.equal(loadCliSessionId(fromKey), null);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("clearCliSessionsForPiSession keeps default when includeLegacyDefault is false", async () => {
+    const { clearCliSessionsForPiSession } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-no-legacy-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const keyMine: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "mine",
+      };
+      const keyLegacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      saveCliSessionId(keyMine, "id-mine");
+      saveCliSessionId(keyLegacy, "id-other-process");
+      assert.equal(
+        clearCliSessionsForPiSession("/proj", "mine", {
+          includeLegacyDefault: false,
+        }),
+        1,
+      );
+      assert.equal(loadCliSessionId(keyMine), null);
+      assert.equal(loadCliSessionId(keyLegacy), "id-other-process");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("clearCliSessionsForPiSession removes only matching sid (keeps other sessions)", async () => {
+    const { clearCliSessionsForPiSession } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-scoped-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const keyMine: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "mine",
+      };
+      const keyOther: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "other",
+      };
+      const keyLegacy: CliSessionKey = {
+        cwd: "/proj",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "default",
+      };
+      saveCliSessionId(keyMine, "id-mine");
+      saveCliSessionId(keyOther, "id-other");
+      saveCliSessionId(keyLegacy, "id-legacy");
+      assert.equal(
+        clearCliSessionsForPiSession("/proj", "mine", {
+          includeLegacyDefault: true,
+        }),
+        2,
+      );
+      assert.equal(loadCliSessionId(keyMine), null);
+      assert.equal(loadCliSessionId(keyLegacy), null);
+      assert.equal(loadCliSessionId(keyOther), "id-other");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("clearCliSessionsForCwd removes all markers for that cwd", async () => {
+    const { clearCliSessionsForCwd } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-sess-cwd-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const keyA: CliSessionKey = {
+        cwd: "/proj-a",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "s1",
+      };
+      const keyB: CliSessionKey = {
+        cwd: "/proj-b",
+        agent: "cursor",
+        model: "m",
+        piSessionId: "s1",
+      };
+      saveCliSessionId(keyA, "id-a");
+      saveCliSessionId(keyB, "id-b");
+      assert.equal(clearCliSessionsForCwd("/proj-a"), 1);
+      assert.equal(loadCliSessionId(keyA), null);
+      assert.equal(loadCliSessionId(keyB), "id-b");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveCliHistorySeed forces seed when forceHistorySeed is set", async () => {
+    const { resolveCliHistorySeed } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed: true }),
+      { useCliSession: false, seedHistory: true },
+    );
+  });
+
+  it("resolveCliHistorySeed resumes CLI session when forceHistorySeed is false", async () => {
+    const { resolveCliHistorySeed } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: true, forceHistorySeed: false }),
+      { useCliSession: true, seedHistory: false },
+    );
+  });
+
+  it("resolveCliHistorySeed seeds history when no CLI session exists", async () => {
+    const { resolveCliHistorySeed } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    assert.deepEqual(
+      resolveCliHistorySeed({ hasCliSession: false, forceHistorySeed: false }),
+      { useCliSession: false, seedHistory: true },
+    );
+  });
+
   it("saves then loads session id", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -51,15 +635,20 @@ describe("cli-provider sessions", () => {
       const before = loadCliSessionRecord(key)!;
       assert.equal(before.status, "running");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("touchCliSession advances lastSeenAt", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-touch-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -72,15 +661,20 @@ describe("cli-provider sessions", () => {
       touchCliSession(key);
       assert.ok(loadCliSessionRecord(key)!.lastSeenAt >= oldSeen);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("clearCliSessionId removes the marker", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-clear-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -92,15 +686,20 @@ describe("cli-provider sessions", () => {
       clearCliSessionId(key);
       assert.equal(loadCliSessionId(key), null);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("loadCliSessionId returns null on malformed JSON", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-sess-bad-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -110,22 +709,59 @@ describe("cli-provider sessions", () => {
       };
       saveCliSessionId(key, "ok");
       const rec = loadCliSessionRecord(key)!;
-      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
       const dir = join(home, ".pi", "cli-sessions");
       const files = readdirSync(dir);
       writeFileSync(join(dir, files[0]), "{not-json");
       assert.equal(loadCliSessionId(key), null);
       assert.equal(rec.sessionId, "ok");
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it("reaps idle session markers", () => {
+  it("does not reap idle running markers for the active pi session (issue #661)", () => {
     const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
+    const home = mkdtempSync(join(tmpdir(), "cli-reap-running-"));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      const key: CliSessionKey = {
+        cwd: "/proj",
+        agent: "gemini",
+        model: "flash",
+        piSessionId: "s1",
+      };
+      saveCliSessionId(key, "live-id");
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "running", idleMs: 60_000 }),
+        true,
+      );
+      const n = reapStaleCliSessions({
+        inactivityThresholdMs: 1_000,
+        activePiSessionId: "s1",
+      });
+      assert.equal(n, 0);
+      assert.equal(loadCliSessionId(key), "live-id");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reaps idle stopped session markers", () => {
+    const prevHome = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     const home = mkdtempSync(join(tmpdir(), "cli-reap-"));
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       const key: CliSessionKey = {
         cwd: "/proj",
@@ -134,25 +770,18 @@ describe("cli-provider sessions", () => {
         piSessionId: "s1",
       };
       saveCliSessionId(key, "old-id");
-      // Backdate lastSeen by rewriting file via save then monkey with record
-      const rec = loadCliSessionRecord(key)!;
-      const path = join(home, ".pi", "cli-sessions");
-      // Use reap with tiny threshold after touching file mtime via write of old lastSeen
-      const { writeFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
-      const files = readdirSync(path);
-      assert.equal(files.length, 1);
-      writeFileSync(
-        join(path, files[0]),
-        JSON.stringify({
-          ...rec,
-          lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
-        }),
+      assert.equal(
+        setCliSessionMarkerMeta(key, { status: "stopped", idleMs: 60_000 }),
+        true,
       );
       const n = reapStaleCliSessions({ inactivityThresholdMs: 1_000 });
       assert.equal(n, 1);
       assert.equal(loadCliSessionId(key), null);
     } finally {
-      process.env.HOME = prevHome;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
       rmSync(home, { recursive: true, force: true });
     }
   });

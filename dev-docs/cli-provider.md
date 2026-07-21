@@ -26,8 +26,22 @@ Empty / unset → extension registers nothing.
 3. **Discover models from the CLI only** (see below) — no API keys, no cloud list APIs
 4. Register `cli-${agent}` with discovered models, or `${agent}:default` if discovery returns empty
 5. Skip registration if binary missing (no agent state)
-6. Start session reaper (30m idle / 5m sweep) for `~/.pi/cli-sessions/`
-7. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept for reload resume)
+6. Start session reaper (5m sweep; no immediate sweep at load) for
+   `~/.pi/cli-sessions/` — deletes idle `status=stopped` markers only.
+   Never deletes `status=running` (own or other `piSessionId`) so concurrent
+   pi sessions in the same cwd keep CLI `--resume` (issue #661).
+7. On `session_start` / `before_agent_start`:
+   - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
+   - Until bound, each process uses a unique provisional `tmp-<uuid>` bucket
+     (never shared `"default"`) so concurrent sessions cannot steal `--resume`
+   - On bind: migrate this process's provisional markers onto the real UUID
+   - `reason=resume` / `new` (or pi session id change): clear markers for this
+     `piSessionId` (+ this process provisional; legacy `default` only if still
+     used), force next turn to re-seed from pi `context.messages` (other
+     concurrent pi sessions in the same cwd are kept)
+   - `reason=reload`: keep markers so CLI `--resume` continues
+8. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept
+   for `/reload` resume)
 
 `pi --help` / `pi --version` (and `-h` / `-v`) still load extensions; both
 `cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
@@ -63,10 +77,25 @@ Never feed acpx model ids into CLI `--model`, and never register acpx ids under 
 3. Apply system prompt **once** per model session (first turn)
 4. Prompt:
    - **Existing CLI session** → latest user message only (CLI keeps its own history)
-   - **New CLI session** (e.g. switched to `cli-*` mid-pi-session) → seed prior pi user/assistant turns + current message (pi history is not deleted)
+   - **New CLI session** (switched to `cli-*` mid-pi-session, or after `/resume` /
+     `/new` forced re-seed) → seed prior pi user/assistant turns + current message
 5. Stream `stream-json` events live into pi (`text_delta` / thinking) — not buffered until the end
 6. Persist / touch session id (`lastSeenAt`) for later turns
-7. If `--resume` fails (dead/invalid session): clear marker, re-seed history, retry once without resume
+7. If `--resume` fails (dead/invalid session): clear marker, re-seed history, retry once without resume.
+   Abort / SIGTERM (exit 143) / SIGINT (130) do **not** clear the marker — that is
+   cancel, not “session not found”.
+
+### `/resume` ↔ CLI session contract (issue #661)
+
+| Pi event | CLI marker | Next turn |
+|----------|------------|-----------|
+| `/reload` | keep | latest only (`--resume`) |
+| `/resume` or `/new` | clear for cwd | re-seed from pi history (fresh CLI chat) |
+| Mid-turn abort / SIGTERM | keep | retry or surface error — do not wipe |
+| True “session not found” | clear | re-seed once |
+
+Pi UI history and the Cursor/Claude/Gemini chat are different stores. After
+`/resume`, only pi JSONL is authoritative until the next seeded CLI turn.
 
 ### Turn timeout (none by default)
 
@@ -77,11 +106,19 @@ want a bound. See issue #647.
 
 ### Session directory (`~/.pi/cli-sessions/`)
 
-File-backed bindings keyed by cwd + agent + model + `PI_SESSION_ID` (t3-style directory, lighter):
+File-backed bindings keyed by cwd + agent + model + **pi session UUID**
+(from `sessionManager.getSessionId()`). Before that UUID is known, each process
+uses a unique provisional `tmp-<uuid>` id — never a shared `"default"` bucket —
+so concurrent pi sessions cannot overwrite each other's CLI `--resume` markers.
+On bind, provisional markers migrate onto the real UUID.
 
-- Fields: `sessionId`, `status`, `createdAt`, `lastSeenAt`, `resumeFailures`
-- **Reaper:** every 5m, drop markers idle ≥ 30m (or `status=stopped`)
-- Reload keeps markers so `--resume` can continue across `/reload`
+- Fields: `sessionId`, `status`, `createdAt`, `lastSeenAt`, `resumeFailures`, `piSessionId`
+- **Reaper:** every 5m, drop idle `status=stopped` markers (≥ 30m). Never deletes
+  `status=running` for any `piSessionId` — concurrent pi sessions in the same
+  cwd keep CLI `--resume` (issue #661)
+- `/reload` keeps markers so `--resume` can continue
+- `/resume` / `/new` clears this session’s markers (+ this process’s provisional;
+  legacy `default` only when still used) and forces a history re-seed on the next turn
 
 ## Streaming flags
 
@@ -144,6 +181,42 @@ Unlike `acpx-provider`, this extension **loads in subagent children** (`PI_SUBAG
 A bug reported against **one** CLI (e.g. cursor) is assumed to apply to **all** `cli-*` agents unless proven agent-specific (unique flag/binary quirk).
 
 When fixing: check and land the same class of fix for `cursor`, `claude`, and `gemini` (trust/approve flags, streaming, history seeding, session resume, parsing, etc.).
+
+## Specialist agents for CLI backends
+
+Pi’s `subagent` tool is **not** in the CLI tool loop. Cursor / Claude / Gemini load
+specialists from their own project dirs. Package source of truth remains `agents/*.md`.
+
+### Container (`pi-docker`)
+
+Automatic on start (`entrypoint.sh` → `scripts/symlink-cli-specialists.sh`):
+
+| Dir | CLI |
+|-----|-----|
+| `.cursor/agents/*.md` | Cursor Agent (`cli-cursor`) |
+| `.claude/agents/*.md` | Claude Code (`cli-claude`) |
+| `.gemini/agents/*.md` | Gemini CLI (`cli-gemini`) |
+
+File symlinks via `ln -sfn` (overwrite OK; concurrent containers on the same mount are fine).
+Dirs are gitignored in the container (see `add_to_gitignore` in `entrypoint.sh`).
+
+### Native (non-container)
+
+No auto-sync. Symlink or copy package agents yourself, for example:
+
+```bash
+PKG="$HOME/.pi/agent/git/github.com/myk-org/pi-config/agents"
+mkdir -p .cursor/agents .claude/agents .gemini/agents
+for f in "$PKG"/*.md; do
+  ln -sfn "$f" ".cursor/agents/$(basename "$f")"
+  ln -sfn "$f" ".claude/agents/$(basename "$f")"
+  ln -sfn "$f" ".gemini/agents/$(basename "$f")"
+done
+```
+
+Cursor CLI Task discovery needs **project** `.cursor/agents/` (user-global
+`~/.cursor/agents` is not enough in headless `-p`). Prefer the same project layout for
+Claude/Gemini so all three match.
 
 ## Module
 

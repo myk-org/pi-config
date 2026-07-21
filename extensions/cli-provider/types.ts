@@ -29,7 +29,7 @@ export interface CliSessionKey {
   cwd: string;
   agent: string;
   model: string;
-  /** Pi session id when available; falls back to "default" */
+  /** Pi session id: real UUID, per-process provisional `tmp-…`, or legacy `"default"`. */
   piSessionId?: string | null;
 }
 
