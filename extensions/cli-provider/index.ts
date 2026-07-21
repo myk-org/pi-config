@@ -37,13 +37,20 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
-import { isPiMetaInvocation } from "../orchestrator/utils.js";
+import {
+  checkMinPiVersion,
+  isPiMetaInvocation,
+} from "../orchestrator/utils.js";
 import {
   buildAmbientLoginAuth,
   createRuntimeProvider,
   filterModelsWhenConfigured,
 } from "../shared/create-runtime-provider.js";
 import { cliProviderLog } from "../shared/file-logger.js";
+import {
+  bindCliAgentStates,
+  isCliAgentConfigured,
+} from "./configured.js";
 import { isCliAgentName, type CliAgentName } from "./providers.js";
 import {
   clearCliSessionId,
@@ -87,6 +94,7 @@ export {
   resolveCliHistorySeed,
   mapCliDiscoveredModels,
 };
+export { isCliAgentConfigured } from "./configured.js";
 
 // =============================================================================
 // Types
@@ -111,6 +119,7 @@ interface AgentState {
 let projectCwd = "";
 let registeredAgents: string[] = [];
 const agents = new Map<string, AgentState>();
+bindCliAgentStates(agents);
 
 /** Real pi session UUID from sessionManager (not env — harness never sets PI_SESSION_ID). */
 let activePiSessionId: string | null = null;
@@ -125,15 +134,6 @@ const provisionalPiSessionId = createProvisionalPiSessionId();
  * instead of trusting a stale --resume marker (issue #661).
  */
 let forceHistorySeed = false;
-
-/**
- * True when the CLI binary is on PATH and this agent still has AgentState
- * (cleared on session_shutdown). Used by /login resolve/check, filterModels,
- * and fetchModels — matches ACPX `agents.has` gating so models hide after shutdown.
- */
-export function isCliAgentConfigured(agent: string): boolean {
-  return isCliBinaryAvailable(agent) && agents.has(agent);
-}
 
 // =============================================================================
 // Session ensure (acpx ensureHandle analogue)
@@ -657,6 +657,16 @@ export default async function (pi: ExtensionAPI) {
   // Intentionally does NOT skip PI_SUBAGENT_CHILD — cli-* must work in async children.
   // pi --help / --version still loads extensions; skip discovery noise/latency.
   if (isPiMetaInvocation()) return;
+
+  const versionCheck = checkMinPiVersion();
+  if (!versionCheck.ok) {
+    cliProviderLog(
+      "error",
+      `pi ${versionCheck.installed || "unknown"} is below minimum ${versionCheck.required}; ` +
+        `cli-* providers require createProvider — skipping registration`,
+    );
+    return;
+  }
 
   // Capture cwd at extension load time, before pi potentially changes directory.
   projectCwd = process.cwd();

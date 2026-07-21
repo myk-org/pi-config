@@ -37,16 +37,25 @@ import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
-import { isPiMetaInvocation } from "../orchestrator/utils.js";
+import {
+	checkMinPiVersion,
+	isPiMetaInvocation,
+} from "../orchestrator/utils.js";
 import {
 	buildAmbientLoginAuth,
 	createRuntimeProvider,
 	filterModelsWhenConfigured,
 } from "../shared/create-runtime-provider.js";
+import { fileLog } from "../shared/file-logger.js";
+import {
+	bindAcpxAgentStates,
+	isAcpxAgentConfigured,
+} from "./configured.js";
 import { loadAcpxRuntime } from "./load-runtime.js";
 import { mapAcpxDiscoveredModels, modelIdToDisplayName } from "./runtime-models.js";
 
 export { mapAcpxDiscoveredModels, modelIdToDisplayName };
+export { isAcpxAgentConfigured } from "./configured.js";
 
 // =============================================================================
 // Types
@@ -80,6 +89,7 @@ interface AgentState {
 
 /** Active agent runtimes keyed by agent name */
 const agents = new Map<string, AgentState>();
+bindAcpxAgentStates(agents);
 
 /**
  * The working directory captured at extension initialization time.
@@ -277,14 +287,6 @@ async function discoverModelsInternal(state: AgentState): Promise<string[]> {
 		console.debug(`[acpx] model discovery failed for ${state.agent}:`, err);
 	}
 	return [];
-}
-
-/**
- * True when this acpx agent has an initialized AgentState/runtime.
- * Used by /login resolve/check and filterModels.
- */
-export function isAcpxAgentConfigured(agent: string): boolean {
-	return agents.has(agent);
 }
 
 // =============================================================================
@@ -558,6 +560,18 @@ export default async function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	// pi --help / --version still loads extensions; skip discovery noise/latency.
 	if (isPiMetaInvocation()) return;
+
+	const versionCheck = checkMinPiVersion();
+	if (!versionCheck.ok) {
+		fileLog(
+			"acpx-provider",
+			"error",
+			"acpx-provider",
+			`pi ${versionCheck.installed || "unknown"} is below minimum ${versionCheck.required}; ` +
+				`acpx-* providers require createProvider — skipping registration`,
+		);
+		return;
+	}
 
 	// Suppress noisy ACP SDK errors for unhandled agent extension methods
 	installConsoleErrorSuppression();

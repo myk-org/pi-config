@@ -2,8 +2,9 @@
  * Shared helpers for CLI model discovery (cache + binary resolve).
  */
 
-import { spawnSync } from "node:child_process";
 import {
+  accessSync,
+  constants,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -11,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import type { DiscoveredCliModel } from "../types.js";
@@ -24,15 +25,88 @@ export function modelIdToDisplayName(modelId: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function resolveBinary(binary: string): string | null {
-  const r = spawnSync("which", [binary], { encoding: "utf-8" });
-  const path = r.stdout?.trim();
-  if (r.status !== 0 || !path) return null;
+/** Cache keyed by `${binary}\0${PATH}` — invalidated when PATH changes. */
+const resolveBinaryCache = new Map<string, string | null>();
+
+function winPathSuffixes(): string[] {
+  const pathext = process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM";
+  return ["", ...pathext.split(";").filter(Boolean)];
+}
+
+function candidateSuffixes(): string[] {
+  return process.platform === "win32" ? winPathSuffixes() : [""];
+}
+
+function isExecutable(filePath: string): boolean {
   try {
-    return realpathSync(path);
+    accessSync(filePath, constants.F_OK);
   } catch {
-    return path;
+    return false;
   }
+  if (process.platform === "win32") return true;
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function finalizeResolved(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    return filePath;
+  }
+}
+
+/**
+ * Resolve a binary name (or absolute path) via an in-process PATH scan.
+ * Avoids spawnSync("which") on auth/filter hot paths.
+ * Returns realpath when possible, null if missing.
+ */
+export function resolveBinary(binary: string): string | null {
+  if (!binary) return null;
+
+  const pathEnv = process.env.PATH ?? "";
+  const cacheKey = `${binary}\0${pathEnv}`;
+  if (resolveBinaryCache.has(cacheKey)) {
+    const cached = resolveBinaryCache.get(cacheKey)!;
+    if (cached === null) return null;
+    if (isExecutable(cached)) return cached;
+    resolveBinaryCache.delete(cacheKey);
+  }
+
+  // Absolute or explicit relative path — check directly (mirrors `which /path`).
+  if (isAbsolute(binary) || binary.includes("/") || binary.includes("\\")) {
+    if (!isExecutable(binary)) {
+      resolveBinaryCache.set(cacheKey, null);
+      return null;
+    }
+    const resolved = finalizeResolved(binary);
+    resolveBinaryCache.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  const suffixes = candidateSuffixes();
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    for (const suffix of suffixes) {
+      const candidate = join(dir, binary + suffix);
+      if (!isExecutable(candidate)) continue;
+      const resolved = finalizeResolved(candidate);
+      resolveBinaryCache.set(cacheKey, resolved);
+      return resolved;
+    }
+  }
+
+  resolveBinaryCache.set(cacheKey, null);
+  return null;
+}
+
+/** Clear PATH resolve cache (tests / PATH mutation). */
+export function clearResolveBinaryCache(): void {
+  resolveBinaryCache.clear();
 }
 
 function cacheDir(): string {

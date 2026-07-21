@@ -1,9 +1,13 @@
 /**
  * Tests for acpx-provider createProvider model mapping / fetchModels shape.
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
+import {
+  bindAcpxAgentStatesForTests,
+  isAcpxAgentConfigured,
+} from "../../../extensions/acpx-provider/configured.js";
 import {
   buildAmbientLoginAuth,
   filterModelsWhenConfigured,
@@ -98,5 +102,23 @@ describe("acpx-provider auth/filter wiring shape", () => {
       filterModelsWhenConfigured(models, undefined, () => configured).length,
       1,
     );
+  });
+});
+
+describe("isAcpxAgentConfigured", () => {
+  afterEach(() => {
+    bindAcpxAgentStatesForTests([]);
+  });
+
+  it("false when agent state missing", () => {
+    bindAcpxAgentStatesForTests([]);
+    assert.equal(isAcpxAgentConfigured("cursor"), false);
+  });
+
+  it("true when agent state present", () => {
+    bindAcpxAgentStatesForTests(["cursor", "claude"]);
+    assert.equal(isAcpxAgentConfigured("cursor"), true);
+    assert.equal(isAcpxAgentConfigured("claude"), true);
+    assert.equal(isAcpxAgentConfigured("gemini"), false);
   });
 });
