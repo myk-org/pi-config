@@ -66,6 +66,14 @@ describe("parseReviewLoopMaxCycles", () => {
 		assert.equal(parseReviewLoopMaxCycles("not-a-number"), undefined);
 	});
 
+	it('rejects non-digit numeric strings ("1e1", "0b1010", "10.0", "01")', () => {
+		assert.equal(parseReviewLoopMaxCycles("1e1"), undefined);
+		assert.equal(parseReviewLoopMaxCycles("0b1010"), undefined);
+		assert.equal(parseReviewLoopMaxCycles("10.0"), undefined);
+		assert.equal(parseReviewLoopMaxCycles("01"), undefined);
+		assert.equal(parseReviewLoopMaxCycles("0xA"), undefined);
+	});
+
 	it("rejects non-string/non-number types", () => {
 		assert.equal(parseReviewLoopMaxCycles(null), undefined);
 		assert.equal(parseReviewLoopMaxCycles(undefined), undefined);

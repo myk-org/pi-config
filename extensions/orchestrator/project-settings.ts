@@ -10,9 +10,10 @@
  * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190;
  *    review_loop_max_cycles to 3)
  *
- * review_loop_max_cycles accepts an integer 1-10 only. Values outside that range (0, negative, >10, NaN,
- * "inf", Infinity) are invalid and fall through to the next resolution layer / default (3). Disable the
- * review loop via review_loop_enforcement: false — not via max_cycles.
+ * review_loop_max_cycles accepts JSON integers 1-10, or digit strings "1"-"10" only (after trim).
+ * Rejects out-of-range values and non-digit forms ("01", "10.0", "1e1", "0b1010", "inf", Infinity, …) —
+ * those fall through to the next resolution layer / default (3). Disable the review loop via
+ * review_loop_enforcement: false — not via max_cycles.
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -183,8 +184,8 @@ function parseNumEnv(name: string): number | undefined {
 
 /**
  * Parse review_loop_max_cycles from a raw settings-file or env value.
- * Accepts an integer 1-10, or a numeric string "1"-"10".
- * Returns undefined for anything else (0, negative, >10, NaN, "inf", Infinity, non-numeric strings) —
+ * Accepts an integer 1-10, or a digit string "1"-"10" only (no exponents/binary/hex/decimals).
+ * Returns undefined for anything else (0, negative, >10, NaN, "inf", Infinity, "1e1", "10.0", …) —
  * callers should fall through to the next resolution layer (global settings → env var → default 3).
  */
 export function parseReviewLoopMaxCycles(raw: unknown): number | undefined {
@@ -193,14 +194,14 @@ export function parseReviewLoopMaxCycles(raw: unknown): number | undefined {
   }
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    if (trimmed === "") return undefined;
-    const n = Number(trimmed);
-    return Number.isInteger(n) && n >= 1 && n <= 10 ? n : undefined;
+    // Strict digit strings only — reject "1e1", "0b1010", "10.0", "01", etc.
+    if (!/^(?:[1-9]|10)$/.test(trimmed)) return undefined;
+    return parseInt(trimmed, 10);
   }
   return undefined;
 }
 
-/** Parse PI_REVIEW_LOOP_MAX_CYCLES env var — integer 1-10 or numeric string only. */
+/** Parse PI_REVIEW_LOOP_MAX_CYCLES env var — digit string "1"-"10" only (same rules as parseReviewLoopMaxCycles). */
 function parseReviewLoopMaxCyclesEnv(name: string): number | undefined {
   const val = process.env[name];
   if (val === undefined || val === "") return undefined;
