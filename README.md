@@ -222,7 +222,7 @@ After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewe
 
 When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
 (`tests_passed: true` in `pi-config-review-state.json`), OR after `review_loop_max_cycles` total cycles (default `3`,
-valid integers `1`-`10`; env: digit string `"1"`-`"10"` only) — whichever comes first. Invalid values (including
+valid integers `1`-`10`; env: digit string `"1"`-`"10"` only (after trim)) — whichever comes first. Invalid values (including
 non-digit forms like `"10.0"` / `"1e1"`) fall through to the next resolution layer / default `3`. Disable the
 review loop via `review_loop_enforcement: false`, not via max_cycles. The max-cycles stop is via injected
 orchestrator rules (LLM compliance only); commit blocking remains code-enforced — blocked unless both
