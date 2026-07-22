@@ -13,6 +13,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
+import { getSetting } from "./project-settings.js";
+import { substituteRulePlaceholders } from "./rule-placeholders.js";
 
 /** Social closer gate — skip expensive vector search for trivial messages */
 const SOCIAL_CLOSERS = new Set([
@@ -171,7 +173,9 @@ export function registerRules(
           }
         }
         if (ruleContents.length > 0) {
-          extra += "\n\n" + ruleContents.join("\n\n");
+          const reviewLoopMaxCycles = getSetting(ctx.cwd, "review_loop_max_cycles");
+          const joined = substituteRulePlaceholders(ruleContents.join("\n\n"), { reviewLoopMaxCycles });
+          extra += "\n\n" + joined;
         } else {
           extra +=
             "\n\n[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.\n";

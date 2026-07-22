@@ -6,6 +6,7 @@
   "dco": false,
   "comment_signature": false,
   "review_loop_enforcement": false,
+  "review_loop_max_cycles": 3,
   "pidash_enable": true,
   "pidiff_enable": true,
   "pidash_port": 19190,

@@ -526,6 +526,61 @@ describe("worktree state isolation", () => {
   });
 });
 
+// ── cycle counter preservation across fix-edit-review loop (max-cycles regression) ──
+
+describe("cycle counter preservation across fix-edit-review loop", () => {
+  it("preserves cycle when continuing from has_findings, only resets on fresh start", () => {
+    // Cycle 1: start review, findings come back
+    addReviewerPending(cwd, "reviewer-a");
+    assert.equal(readReviewState(cwd).cycle, 1);
+
+    recordReviewerResult(cwd, "reviewer-a", 2);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 1);
+
+    // Simulate fix edits in response to findings — must NOT reset cycle
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).status, "needs_review");
+    assert.equal(readReviewState(cwd).cycle, 1);
+
+    // Cycle 2: re-dispatch reviewers
+    addReviewerPending(cwd, "reviewer-a");
+    assert.equal(readReviewState(cwd).cycle, 2);
+
+    recordReviewerResult(cwd, "reviewer-a", 1);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 2);
+
+    markNeedsReview(cwd); // fix edits again
+    assert.equal(readReviewState(cwd).cycle, 2);
+
+    // Cycle 3: re-dispatch reviewers again — reaches the max cap of 3
+    addReviewerPending(cwd, "reviewer-a");
+    assert.equal(readReviewState(cwd).cycle, 3);
+  });
+
+  it("resets cycle to 0 on a fresh start after a clean pass", () => {
+    addReviewerPending(cwd, "reviewer-a");
+    recordReviewerResult(cwd, "reviewer-a", 0);
+    assert.equal(readReviewState(cwd).status, "clean");
+    assert.equal(readReviewState(cwd).cycle, 1);
+
+    // A brand-new edit after clean starts a fresh review — cycle resets
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).status, "needs_review");
+    assert.equal(readReviewState(cwd).cycle, 0);
+
+    addReviewerPending(cwd, "reviewer-a");
+    assert.equal(readReviewState(cwd).cycle, 1);
+  });
+
+  it("resets cycle to 0 on fresh start from none", () => {
+    assert.equal(readReviewState(cwd).status, "none");
+    markNeedsReview(cwd);
+    assert.equal(readReviewState(cwd).cycle, 0);
+  });
+});
+
 // ── onStateTransition callback ──
 
 describe("onStateTransition", () => {

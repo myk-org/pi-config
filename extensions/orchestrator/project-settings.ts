@@ -6,8 +6,14 @@
  * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
  *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
- *    PI_ASYNC_LLM_PROVIDER, PI_ASYNC_LLM_MODEL)
- * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190)
+ *    PI_ASYNC_LLM_PROVIDER, PI_ASYNC_LLM_MODEL, PI_REVIEW_LOOP_MAX_CYCLES)
+ * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190;
+ *    review_loop_max_cycles to 3)
+ *
+ * review_loop_max_cycles accepts JSON integers 1-10, or digit strings "1"-"10" only (after trim).
+ * Rejects out-of-range values and non-digit forms ("01", "10.0", "1e1", "0b1010", "inf", Infinity, …) —
+ * those fall through to the next resolution layer / default (3). Disable the review loop via
+ * review_loop_enforcement: false — not via max_cycles.
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -35,6 +41,8 @@ interface ProjectSettings {
   async_llm_provider?: string;
   /** Model id for detached LLM async children when parent is acpx. */
   async_llm_model?: string;
+  /** Max review-loop cycles injected into the rules prompt. Integer 1-10 only. */
+  review_loop_max_cycles?: number;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -71,6 +79,10 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     }
     if (typeof raw.async_llm_model === "string" && raw.async_llm_model.trim()) {
       result.async_llm_model = raw.async_llm_model.trim();
+    }
+    const parsedMaxCycles = parseReviewLoopMaxCycles(raw.review_loop_max_cycles);
+    if (parsedMaxCycles !== undefined) {
+      result.review_loop_max_cycles = parsedMaxCycles;
     }
     if (typeof raw.acpx_agents === "string") {
       result.acpx_agents = raw.acpx_agents;
@@ -170,6 +182,32 @@ function parseNumEnv(name: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * Parse review_loop_max_cycles from a raw settings-file or env value.
+ * Accepts an integer 1-10, or a digit string "1"-"10" only (no exponents/binary/hex/decimals).
+ * Returns undefined for anything else (0, negative, >10, NaN, "inf", Infinity, "1e1", "10.0", …) —
+ * callers should fall through to the next resolution layer (global settings → env var → default 3).
+ */
+export function parseReviewLoopMaxCycles(raw: unknown): number | undefined {
+  if (typeof raw === "number") {
+    return Number.isInteger(raw) && raw >= 1 && raw <= 10 ? raw : undefined;
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    // Strict digit strings only — reject "1e1", "0b1010", "10.0", "01", etc.
+    if (!/^(?:[1-9]|10)$/.test(trimmed)) return undefined;
+    return parseInt(trimmed, 10);
+  }
+  return undefined;
+}
+
+/** Parse PI_REVIEW_LOOP_MAX_CYCLES env var — digit string "1"-"10" only (same rules as parseReviewLoopMaxCycles). */
+function parseReviewLoopMaxCyclesEnv(name: string): number | undefined {
+  const val = process.env[name];
+  if (val === undefined || val === "") return undefined;
+  return parseReviewLoopMaxCycles(val);
+}
+
 /** Cached settings per cwd */
 let cachedCwd = "";
 let cachedSettings: ProjectSettings = {};
@@ -237,6 +275,7 @@ export function getSetting(cwd: string, key: "pidash_port"): number;
 export function getSetting(cwd: string, key: "image_model"): string;
 export function getSetting(cwd: string, key: "async_llm_provider"): string;
 export function getSetting(cwd: string, key: "async_llm_model"): string;
+export function getSetting(cwd: string, key: "review_loop_max_cycles"): number;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] {
   const settings = getSettings(cwd);
 
@@ -360,6 +399,12 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       if (settings.async_llm_model !== undefined) return settings.async_llm_model;
       const env = process.env.PI_ASYNC_LLM_MODEL;
       return env !== undefined && env !== "" ? env.trim() : "";
+    }
+    case "review_loop_max_cycles": {
+      if (settings.review_loop_max_cycles !== undefined) return settings.review_loop_max_cycles;
+      const env = parseReviewLoopMaxCyclesEnv("PI_REVIEW_LOOP_MAX_CYCLES");
+      if (env !== undefined) return env;
+      return 3; // default: 3 cycles
     }
     default:
       return false;
