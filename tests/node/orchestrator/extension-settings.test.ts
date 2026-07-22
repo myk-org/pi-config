@@ -9,7 +9,70 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { clearSettingsCache, getSetting, parseAcpxAgentList, asStringArray, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import {
+	clearSettingsCache,
+	getSetting,
+	parseAcpxAgentList,
+	parseReviewLoopMaxCycles,
+	asStringArray,
+	setGlobalSettingsPath,
+} from "../../../extensions/orchestrator/project-settings.js";
+
+describe("parseReviewLoopMaxCycles", () => {
+	it("accepts integer boundaries 1 and 10", () => {
+		assert.equal(parseReviewLoopMaxCycles(1), 1);
+		assert.equal(parseReviewLoopMaxCycles(10), 10);
+	});
+
+	it("accepts numeric string boundaries", () => {
+		assert.equal(parseReviewLoopMaxCycles("1"), 1);
+		assert.equal(parseReviewLoopMaxCycles("10"), 10);
+	});
+
+	it("rejects 0", () => {
+		assert.equal(parseReviewLoopMaxCycles(0), undefined);
+	});
+
+	it("rejects 11 (above range)", () => {
+		assert.equal(parseReviewLoopMaxCycles(11), undefined);
+	});
+
+	it("rejects -1 (negative)", () => {
+		assert.equal(parseReviewLoopMaxCycles(-1), undefined);
+	});
+
+	it("rejects 3.5 (non-integer)", () => {
+		assert.equal(parseReviewLoopMaxCycles(3.5), undefined);
+	});
+
+	it("rejects NaN", () => {
+		assert.equal(parseReviewLoopMaxCycles(NaN), undefined);
+	});
+
+	it("rejects Infinity", () => {
+		assert.equal(parseReviewLoopMaxCycles(Number.POSITIVE_INFINITY), undefined);
+		assert.equal(parseReviewLoopMaxCycles(Number.NEGATIVE_INFINITY), undefined);
+	});
+
+	it('rejects "inf" string', () => {
+		assert.equal(parseReviewLoopMaxCycles("inf"), undefined);
+	});
+
+	it("rejects empty string", () => {
+		assert.equal(parseReviewLoopMaxCycles(""), undefined);
+	});
+
+	it("rejects non-numeric strings", () => {
+		assert.equal(parseReviewLoopMaxCycles("not-a-number"), undefined);
+	});
+
+	it("rejects non-string/non-number types", () => {
+		assert.equal(parseReviewLoopMaxCycles(null), undefined);
+		assert.equal(parseReviewLoopMaxCycles(undefined), undefined);
+		assert.equal(parseReviewLoopMaxCycles([]), undefined);
+		assert.equal(parseReviewLoopMaxCycles({}), undefined);
+	});
+});
 
 describe("parseAcpxAgentList", () => {
 	it("parses comma-separated string", () => {
@@ -51,6 +114,7 @@ describe("extension settings", () => {
 		PI_ASYNC_LLM_MODEL: process.env.PI_ASYNC_LLM_MODEL,
 		ACPX_AGENTS: process.env.ACPX_AGENTS,
 		CLI_AGENTS: process.env.CLI_AGENTS,
+		PI_REVIEW_LOOP_MAX_CYCLES: process.env.PI_REVIEW_LOOP_MAX_CYCLES,
 	};
 
 	beforeEach(() => {
@@ -67,6 +131,7 @@ describe("extension settings", () => {
 		delete process.env.PI_ASYNC_LLM_MODEL;
 		delete process.env.ACPX_AGENTS;
 		delete process.env.CLI_AGENTS;
+		delete process.env.PI_REVIEW_LOOP_MAX_CYCLES;
 	});
 
 	afterEach(() => {
@@ -272,5 +337,76 @@ describe("extension settings", () => {
 	it("parseAgentNameList dedupes after lowercase", () => {
 		writeSettings({ cli_agents: ["Cursor", "cursor", "CURSOR"] });
 		assert.deepEqual(getSetting(tmp, "cli_agents"), ["cursor"]);
+	});
+
+	it("review_loop_max_cycles defaults to 3", () => {
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 3);
+	});
+
+	it("review_loop_max_cycles from project settings wins", () => {
+		writeSettings({ review_loop_max_cycles: 5 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 5);
+	});
+
+	it("review_loop_max_cycles from env when unset in file", () => {
+		process.env.PI_REVIEW_LOOP_MAX_CYCLES = "7";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 7);
+	});
+
+	it("review_loop_max_cycles accepts 1 and 10", () => {
+		writeSettings({ review_loop_max_cycles: 1 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 1);
+		writeSettings({ review_loop_max_cycles: 10 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 10);
+	});
+
+	it("review_loop_max_cycles rejects 0 — fallthrough to default 3", () => {
+		writeSettings({ review_loop_max_cycles: 0 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 3);
+	});
+
+	it("review_loop_max_cycles rejects 11 (above range) — fallthrough to default 3", () => {
+		writeSettings({ review_loop_max_cycles: 11 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 3);
+	});
+
+	it("review_loop_max_cycles rejects -1 (negative) — fallthrough to default 3", () => {
+		writeSettings({ review_loop_max_cycles: -1 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 3);
+	});
+
+	it('review_loop_max_cycles rejects "inf" string — fallthrough to default 3', () => {
+		writeSettings({ review_loop_max_cycles: "inf" });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 3);
+	});
+
+	it("review_loop_max_cycles rejects invalid project value — fallthrough to env", () => {
+		// Note: JSON.stringify(Infinity) serializes to null, so Infinity rejection
+		// itself is covered directly by the parseReviewLoopMaxCycles unit tests above;
+		// this exercises the fallthrough path with a non-numeric string instead.
+		process.env.PI_REVIEW_LOOP_MAX_CYCLES = "4";
+		clearSettingsCache();
+		writeSettings({ review_loop_max_cycles: "not-a-number" });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 4);
+	});
+
+	it("review_loop_max_cycles rejects invalid env value — fallthrough to default 3", () => {
+		process.env.PI_REVIEW_LOOP_MAX_CYCLES = "inf";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 3);
+	});
+
+	it("review_loop_max_cycles project wins over global", () => {
+		writeGlobalSettings({ review_loop_max_cycles: 8 });
+		writeSettings({ review_loop_max_cycles: 2 });
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 2);
+	});
+
+	it("review_loop_max_cycles global wins over env", () => {
+		writeGlobalSettings({ review_loop_max_cycles: 6 });
+		process.env.PI_REVIEW_LOOP_MAX_CYCLES = "9";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 6);
 	});
 });

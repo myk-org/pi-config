@@ -220,8 +220,15 @@ After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewe
 5. **code-reviewer-spec** — Code/PR/issue spec alignment
 6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
 
-Loops until all reviewers approve AND tests pass (`tests_passed: true` in `pi-config-review-state.json`).
-Commit is code-enforced — blocked unless both `status: clean` and `tests_passed: true`.
+When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
+(`tests_passed: true` in `pi-config-review-state.json`), OR after `review_loop_max_cycles` total cycles (default `3`,
+valid range `1`-`10` only) — whichever comes first. Invalid values fall through to the next resolution layer /
+default `3`. Disable the review loop via `review_loop_enforcement: false`, not via max_cycles. The max-cycles stop
+is via injected orchestrator rules (LLM compliance only); commit blocking remains code-enforced — blocked unless
+both `status: clean` and `tests_passed: true`. Hitting the cycle cap does NOT bypass commit enforcement.
+
+Staged mode (`--autorabbit`/`--autoqodo` in `/review-handler`) shares one total `review_loop_max_cycles` budget
+across both its Spec Compliance and Code Quality stages — not a separate cap per stage.
 
 Use `/review-status` to inspect the current review loop state. Pass a worktree path to check a specific worktree (e.g., `/review-status .worktrees/issue-42`).
 
@@ -238,6 +245,7 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "use_worktrees": true,
   "dream_interval_hours": 6,
   "review_loop_enforcement": false,
+  "review_loop_max_cycles": 3,
   "pidash_enable": true,
   "pidiff_enable": true,
   "pidash_port": 19190,

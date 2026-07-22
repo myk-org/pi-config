@@ -167,7 +167,10 @@ function withStateLock<T>(cwd: string, fn: (state: ReviewState) => T): T {
 
 /** Mark that files were edited — review is needed. Resets any previous CLEAN state.
  *  Does NOT reset during an active review cycle (in_progress) — edits during review
- *  are tracked via last_edit_at but don't wipe the pending reviewer list. */
+ *  are tracked via last_edit_at but don't wipe the pending reviewer list.
+ *  The `cycle` counter is only reset on a fresh review start (status was "clean"
+ *  or "none") — continuing from "has_findings"/"needs_review" preserves it so the
+ *  max-cycles cap is reachable across fix-edit-review iterations. */
 export function markNeedsReview(cwd: string): void {
   withStateLock(cwd, (state) => {
     const prevStatus = state.status;
@@ -177,9 +180,15 @@ export function markNeedsReview(cwd: string): void {
       state.edited_during_cycle = true;
       state.tests_passed = false;
     } else {
+      // Only a fresh review start (clean or no tracking yet) resets the cycle
+      // counter. Continuing from has_findings/needs_review (fix-edit-review loop)
+      // must preserve cycle so the max-cycles cap can actually be reached.
+      const isFreshStart = state.status === "clean" || state.status === "none";
       state.status = "needs_review";
       state.last_edit_at = new Date().toISOString();
-      state.cycle = 0;
+      if (isFreshStart) {
+        state.cycle = 0;
+      }
       state.findings_count = 0;
       state.reviewers_pending = [];
       state.reviewers_total = 0;
