@@ -48,7 +48,7 @@ Cap check is after 5a; it only blocks `go to 2`, not completing the current cycl
 **After 5a completes on the max cycle, two outcomes — neither unblocks `git commit`**
 (still controlled solely by `review_loop_enforcement`; status must be `clean` + `tests_passed: true`):
 
-- **Not fixed** (explained why not, or no response) → outstanding — report them.
+- **Not fixed** (explained why not) → outstanding — report them.
 - **Fixed** (verification blocked by the cap) → cannot re-dispatch to confirm clean — report that
   verification is blocked by the cap, NOT "leftovers from skipping 5a".
 

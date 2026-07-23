@@ -224,7 +224,7 @@ When `review_loop_enforcement` is enabled, the loop stops once all reviewers app
 (`tests_passed: true` in `pi-config-review-state.json`), OR after `review_loop_max_cycles` total cycles (default `3`,
 valid integers `1`-`10`; env: digit string `"1"`-`"10"` only (after trim)) — whichever comes first. Each cycle
 always completes fix/explain (5a) before the cap check; the cap only blocks re-dispatch, not responding to findings.
-At cap, report **Not fixed** (explained why not, or no response → outstanding) vs **Fixed**
+At cap, report **Not fixed** (explained why not → outstanding) vs **Fixed**
 (verification blocked by the cap — cannot re-dispatch to confirm clean). Invalid values (including non-digit
 forms like `"10.0"` / `"1e1"`) fall through to the next resolution layer / default `3`. Disable the review loop via
 `review_loop_enforcement: false`, not via max_cycles. The max-cycles stop is via injected orchestrator rules
