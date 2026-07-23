@@ -43,9 +43,23 @@ current value: `{{REVIEW_LOOP_MAX_CYCLES}}`), including the first cycle. Invalid
 next resolution layer / default `3` — see `dev-docs/project-settings.md` for the full resolution order.
 Disable the review loop via `review_loop_enforcement: false` — not via max_cycles.
 
-**If findings remain after the max cycle is reached: stop looping, don't bypass commit.** Report the
-outstanding findings to the user instead of continuing to re-run reviewers. This does NOT unblock `git commit`
-— that's controlled solely by `review_loop_enforcement` (status must still be `clean` + `tests_passed: true`).
+Cap check is after 5a; it only blocks `go to 2` (re-dispatch of step 2 / all 6 agents,
+including test-automator), not completing the current cycle's fix/explain.
+
+**After 5a completes on the max cycle, two outcomes — neither unblocks `git commit`**
+(still controlled solely by `review_loop_enforcement`; status must be `clean` + `tests_passed: true`):
+
+- **Not fixed** (explained why not) → outstanding — report them.
+- **Fixed** (verification blocked by the cap) → cannot re-dispatch to confirm clean — report that
+  verification is blocked by the cap, NOT "leftovers from skipping 5a".
+
+**Example (`max_cycles=3`):**
+
+```text
+cycle1: dispatch → findings → 5a (fix|explain) → re-dispatch (cycle < max)
+cycle2: dispatch → findings → 5a (fix|explain) → re-dispatch (cycle < max)
+cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no cycle4)
+```
 
 ```text
 1. Specialist writes/fixes code
@@ -53,18 +67,21 @@ outstanding findings to the user instead of continuing to re-run reviewers. This
 3. Wait for all 6 to complete
 4. Merge & deduplicate review findings
 5. Has findings OR tests failed?
-   ── Findings? → For EACH finding: fix code OR explain why not (step 5a)
-   ── Tests failed? → Fix code
-   ── Either, AND state.cycle (from `pi-config-review-state.json`) < {{REVIEW_LOOP_MAX_CYCLES}}? → go to 2 (re-run all 6 with prior findings + responses)
-   ── Either, AND state.cycle >= {{REVIEW_LOOP_MAX_CYCLES}}? → stop looping, report outstanding findings to user
-   ── Neither? ↓
-   status: clean, tests_passed: true
-6. NOW you can commit — the pre-commit hook will pass
+   ── Neither? ↓ status: clean, tests_passed: true
+   ── Findings and/or tests failed? → ALWAYS run 5a first: fix code OR explain why not, for EACH finding;
+      fix code for failing tests. Then check state.cycle (from `pi-config-review-state.json`):
+        · cycle < {{REVIEW_LOOP_MAX_CYCLES}}? → go to 2 (re-run all 6 with prior findings + responses)
+        · cycle >= {{REVIEW_LOOP_MAX_CYCLES}}? → **STOP** (terminal): report the two-outcome result
+          (see "Cycle Definition & Max Cycles" above). Do NOT proceed to step 6.
+6. NOW you can commit — the pre-commit hook will pass (only when status is `clean` AND `tests_passed: true`)
 ✅ DONE — commit/push allowed (enforcement checks status: clean AND tests_passed: true)
 ```
 
-🚨 **Step 6 is NOT optional.** Do NOT attempt `git commit` before reaching `clean` + `tests_passed: true`.
+🚨 **Step 6 applies only when clean.** Do NOT attempt `git commit` before reaching `clean` + `tests_passed: true`.
 The enforcement rule blocks commits until this is satisfied — if it blocks you, run the reviewers.
+**After a cap stop:** report the two-outcome result (**Not fixed** → outstanding, **Fixed** → verification
+blocked); raise `review_loop_max_cycles` or disable `review_loop_enforcement` if needed — do **not**
+return to step 2 (re-dispatch of all 6 agents, including test-automator).
 
 ## Review Agents
 
@@ -88,7 +105,7 @@ Reviewers get `$PI_REVIEW_BASE_BRANCH` env var and use `git diff origin/$PI_REVI
 Reviewers return structured JSON: `{"findings": [{"severity": "...", "file": "...", "line": N, "description": "...", "suggestion": "..."}]}`.
 The async runner validates the output is valid JSON and retries if not (up to 3 times).
 
-Overlapping scope is intentional for comprehensive coverage; step 3's deduplication handles duplicates.
+Overlapping scope is intentional for comprehensive coverage; step 4's deduplication handles duplicates.
 
 ## Deduplication Criteria
 
@@ -101,9 +118,9 @@ reviewers, even on the same file/line. A quality finding about *how* code is wri
 address *whether* the code matches the spec. Always keep both. Spec findings CAN still be
 deduplicated against other spec findings when they are truly the same issue.
 
-## Step 4a: Respond to Findings (when `review_loop_enforcement` is enabled)
+## Step 5a: Respond to Findings (when `review_loop_enforcement` is enabled)
 
-For each finding from step 3, do ONE of:
+For each finding from step 4, do ONE of:
 
 1. **Fix it** — change the code to address the finding
 2. **Explain why not** — provide a specific technical reason (e.g., "pre-existing pattern,
@@ -135,7 +152,7 @@ Findings that were fixed in code → verify the fix, do not re-raise if correct.
 - If a finding was explained with a valid technical reason → accept it, don't re-raise
 - If the explanation is wrong or the fix is incomplete → re-raise with specific pushback
 
-**When `review_loop_enforcement` is disabled:** Step 4a is optional. Single review pass
+**When `review_loop_enforcement` is disabled:** Step 5a is optional. Single review pass
 is sufficient — fix what you agree with, skip what you don't. No need to explain skips.
 
 ## Key Rules
@@ -207,11 +224,11 @@ For automated review flows (autorabbit, autoqodo), use **two-stage order** inste
 (see "Cycle Definition & Max Cycles" above), scoped to one stage's reviewers instead of all 6.
 
 **The `review_loop_max_cycles` cap is shared across both stages — one total budget, not one per stage.**
-Stage 1 cycles and Stage 2 cycles both draw from and increment the same `cycle` counter in
-`pi-config-review-state.json`; there is no separate allowance per stage. If the shared cap is reached
-while Stage 1 still has findings, stop looping entirely — do not proceed to Stage 2 — and report Stage 1's
-outstanding findings to the user. If the cap is reached during Stage 2, stop looping Stage 2 and report
-its outstanding findings. This does not bypass commit enforcement.
+Stage 1 and Stage 2 both draw from and increment the same `cycle` counter in
+`pi-config-review-state.json`. Cap check, 5a-before-cap, and two-outcome reporting follow
+"Cycle Definition & Max Cycles" above. Stage-specific stops: if Stage 1 is **not clean** when the cap is hit, stop entirely — do not proceed
+to Stage 2 (covers both **Not fixed** and **Fixed** (verification blocked)). If hit during Stage 2,
+stop looping Stage 2.
 
 Don't polish code that doesn't meet spec — it wastes work.
 Parallel mode (all 6 agents at once) remains default for manual reviews.
