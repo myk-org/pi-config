@@ -43,8 +43,8 @@ current value: `{{REVIEW_LOOP_MAX_CYCLES}}`), including the first cycle. Invalid
 next resolution layer / default `3` — see `dev-docs/project-settings.md` for the full resolution order.
 Disable the review loop via `review_loop_enforcement: false` — not via max_cycles.
 
-Cap check is after 5a; it only blocks `go to 2` (re-dispatching the full 6-agent cycle: 5
-reviewers + test-automator), not completing the current cycle's fix/explain.
+Cap check is after 5a; it only blocks `go to 2` (re-dispatch of step 2 / all 6 agents,
+including test-automator), not completing the current cycle's fix/explain.
 
 **After 5a completes on the max cycle, two outcomes — neither unblocks `git commit`**
 (still controlled solely by `review_loop_enforcement`; status must be `clean` + `tests_passed: true`):
@@ -81,7 +81,7 @@ cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no
 The enforcement rule blocks commits until this is satisfied — if it blocks you, run the reviewers.
 **After a cap stop:** report the two-outcome result (**Not fixed** → outstanding, **Fixed** → verification
 blocked); raise `review_loop_max_cycles` or disable `review_loop_enforcement` if needed — do **not**
-return to step 2 (full 6-agent cycle).
+return to step 2 (re-dispatch of all 6 agents, including test-automator).
 
 ## Review Agents
 
