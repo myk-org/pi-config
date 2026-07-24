@@ -13,10 +13,11 @@ Single extension that provides:
 | Feature | Description |
 |---------|-------------|
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. On **acpx** parents, optional async is coerced to sync; dream/cron need `async_llm_provider` + `async_llm_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `async_llm_provider` + `async_llm_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
 | **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.81): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
+| **`/async-kill` command** | Kill async agents (overlay picker or by name/id) |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
 | **Python/pip enforcement** | Blocks `python`/`pip` — requires `uv`/`uvx` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
@@ -34,7 +35,7 @@ Single extension that provides:
 | **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges ([@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks)) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Inter-agent communication** | P2P (`/coms`) and networked (`/coms-net`) agent communication — on-demand activation via slash commands |
-| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net` — with autocomplete argument hints |
+| **Slash commands** | `/pr-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
@@ -72,7 +73,8 @@ Single extension that provides:
 | `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
 | `/remember <what>` | Save a memory for future sessions |
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
-| `/cron add\|list\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). Tasks run while pi is active, survive `/reload`, and stop on exit |
+| `/cron add\|list\|list-all\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). `/cron list` and `/cron list-all` open overlay UI (view / remove; list-all = all sessions). Tasks run while pi is active, survive `/reload`, and stop on exit |
+| `/async-kill [name\|id\|all]` | Kill async agents (overlay picker or by name/id) |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
@@ -258,7 +260,12 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "acpx_agents": ["cursor"],
   "cli_agents": ["claude", "cursor"],
   "async_llm_provider": "anthropic",
-  "async_llm_model": "claude-sonnet-4-20250514"
+  "async_llm_model": "claude-sonnet-4-20250514",
+  "agent_provider": "cli-cursor",
+  "agent_model": "cursor:cursor-grok-4.5-high-fast",
+  "agent_overrides": {
+    "git-expert": { "provider": null, "model": null }
+  }
 }
 ```
 
@@ -337,7 +344,7 @@ tools: read, write, edit, bash
 Agent system prompt here.
 ```
 
-Use `agentScope: "both"` in the subagent tool to include project agents.
+Project agents included by default (`agentScope` defaults to `"both"`).
 
 ### Image Generation
 

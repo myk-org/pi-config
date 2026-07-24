@@ -35,6 +35,12 @@ pi-config/
 │   │   ├── agents.ts                # Agent discovery
 │   │   ├── ask-user.ts              # ask_user tool
 │   │   ├── async-agents.ts          # Async background agent infrastructure (fireAndForget, group-aware delivery, onComplete callbacks)
+│   │   ├── overlay-dashboard.ts     # Shared fullscreen list→detail overlay (async/cron)
+│   │   ├── overlay-dashboard-utils.ts # Pure selection reconcile helpers
+│   │   ├── async-status-ui.ts       # /async-status overlay (uses overlay-dashboard)
+│   │   ├── async-status-parse.ts    # Pure output.log JSONL → display line parser
+│   │   ├── cron-status-ui.ts        # /cron list + list-all overlay (uses overlay-dashboard)
+│   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
 │   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + async_llm sidecar settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files

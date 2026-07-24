@@ -18,6 +18,8 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { discoverAgents } from "./agents.js";
+import { formatCronSchedule, toCronStatusTaskView } from "./cron-status-format.js";
+import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { getProjectTmpDir, parseProcStartTime } from "./utils.js";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -48,6 +50,8 @@ interface CronInternals {
 // ── Persistence ──────────────────────────────────────────────────────
 
 let CRON_FILE = ""; // Set on session_start to project-scoped dir
+/** Ignore fs.watch echoes from our own writes. */
+let CRON_IGNORE_WATCH_UNTIL = 0;
 
 /** Unique session suffix — prevents PID collisions across containers */
 /** Suffix must be unique across containers but stable across reloads (same process).
@@ -77,6 +81,7 @@ export function getCronFilePath(): string { return CRON_FILE; }
 function saveCrons(tasks: CronTask[]): void {
   if (!CRON_FILE) return;
   try {
+    CRON_IGNORE_WATCH_UNTIL = Date.now() + 400;
     fs.writeFileSync(CRON_FILE, JSON.stringify(tasks), { mode: 0o600 });
   } catch (e: any) { console.debug("[cron] save crons failed:", e?.message || e); }
 }
@@ -136,20 +141,8 @@ function cleanupOrphanedCronFiles(): void {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function formatDuration(ms: number): string {
-  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
-  const h = Math.floor(ms / 3600000);
-  const m = Math.round((ms % 3600000) / 60000);
-  return m > 0 ? `${h}h${m}m` : `${h}h`;
-}
-
 function formatSchedule(task: CronTask): string {
-  if (task.intervalMs) return `every ${formatDuration(task.intervalMs)}`;
-  if (task.atHour !== undefined && task.atMinute !== undefined) {
-    return `daily at ${String(task.atHour).padStart(2, "0")}:${String(task.atMinute).padStart(2, "0")}`;
-  }
-  return "unknown";
+  return formatCronSchedule(task);
 }
 
 function msUntilNextTime(hour: number, minute: number): number {
@@ -301,6 +294,99 @@ function registerCronTool(pi: ExtensionAPI, state: CronInternals): void {
   });
 }
 
+function listLocalCronViews(state: CronInternals) {
+  const file = CRON_FILE || "";
+  return [...state.tasks.values()].map((t) =>
+    toCronStatusTaskView(t, {
+      overlayId: String(t.id),
+      isLocal: true,
+      cronFile: file,
+    }),
+  );
+}
+
+function listAllCronViews(state: CronInternals) {
+  const views: ReturnType<typeof toCronStatusTaskView>[] = [];
+  if (!CRON_FILE) return views;
+  try {
+    const dir = path.dirname(CRON_FILE);
+    const myBase = path.basename(CRON_FILE);
+    for (const f of fs.readdirSync(dir)) {
+      const m = f.match(CRON_FILE_RE);
+      if (!m) continue;
+      const pid = +m[1];
+      const isMe = f === myBase;
+      let alive = isMe;
+      if (!isMe) {
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch {
+          /* dead */
+        }
+      }
+      if (!alive) continue;
+      const filePath = path.join(dir, f);
+      const cronTasks: CronTask[] = isMe
+        ? [...state.tasks.values()]
+        : (() => {
+            try {
+              const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+              if (!Array.isArray(parsed)) return [];
+              return parsed;
+            } catch {
+              return [];
+            }
+          })();
+      if (cronTasks.length === 0) continue;
+      const label = isMe ? `PID ${pid} (this session)` : `PID ${pid}`;
+      for (const t of cronTasks) {
+        views.push(
+          toCronStatusTaskView(t, {
+            overlayId: `${f}:${t.id}`,
+            sessionLabel: label,
+            isLocal: isMe,
+            cronFile: filePath,
+          }),
+        );
+      }
+    }
+  } catch (e: any) {
+    console.debug("[cron] list-all scan failed:", e?.message || e);
+  }
+  return views;
+}
+
+function removeCronByOverlayId(state: CronInternals, overlayId: string): boolean {
+  const fromAll = listAllCronViews(state).find((v) => v.id === overlayId);
+  const fromLocal = listLocalCronViews(state).find((v) => v.id === overlayId);
+  const view = fromAll || fromLocal;
+  if (!view) return false;
+
+  if (view.isLocal || (view.cronFile && view.cronFile === CRON_FILE)) {
+    if (!state.tasks.has(view.taskId)) return false;
+    state.stopTask(view.taskId);
+    state.tasks.delete(view.taskId);
+    saveCrons([...state.tasks.values()]);
+    state.updateCronStatus();
+    return true;
+  }
+
+  // Other session — edit their JSON; their watcher (if running new code) resyncs timers.
+  if (!view.cronFile) return false;
+  try {
+    const raw = JSON.parse(fs.readFileSync(view.cronFile, "utf-8"));
+    if (!Array.isArray(raw)) return false;
+    const next = raw.filter((t: CronTask) => t.id !== view.taskId);
+    if (next.length === raw.length) return false;
+    fs.writeFileSync(view.cronFile, JSON.stringify(next), { mode: 0o600 });
+    return true;
+  } catch (e: any) {
+    console.debug("[cron] remote remove failed:", e?.message || e);
+    return false;
+  }
+}
+
 function registerCronCommand(pi: ExtensionAPI, state: CronInternals): void {
   pi.registerCommand("cron", {
     description: "Schedule recurring tasks — /cron list|list-all|remove <id>|<natural language>",
@@ -313,47 +399,28 @@ function registerCronCommand(pi: ExtensionAPI, state: CronInternals): void {
 
       // Direct handlers — no AI needed
       if (sub === "list" && parts.length === 1) {
-        if (state.tasks.size === 0) {
-          if (ctx.hasUI) ctx.ui.notify("No scheduled tasks.", "info");
-          return;
-        }
-        const lines = [...state.tasks.values()].map(t => {
-          const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
-          return `#${t.id} | ${formatSchedule(t)} | ${t.description} | last run: ${last}`;
+        if (!ctx.hasUI) return;
+        await openCronStatusOverlay(ctx, {
+          listTasks: () => listLocalCronViews(state),
+          removeTask: (id) => removeCronByOverlayId(state, id),
         });
-        if (ctx.hasUI) ctx.ui.notify(`Scheduled tasks:\n${lines.join("\n")}`, "info");
         return;
       }
 
       if (sub === "list-all") {
-        const sections: string[] = [];
-        if (!CRON_FILE) {
-          if (ctx.hasUI) ctx.ui.notify("No scheduled tasks in any session.", "info");
-          return;
-        }
-        try {
-          const dir = path.dirname(CRON_FILE);
-          for (const f of fs.readdirSync(dir)) {
-            const m = f.match(CRON_FILE_RE);
-            if (!m) continue;
-            const pid = +m[1];
-            const isMe = f === path.basename(CRON_FILE);
-            let alive = isMe;
-            if (!isMe) { try { process.kill(pid, 0); alive = true; } catch {} }
-            if (!alive) continue;
-            const cronTasks: CronTask[] = isMe
-              ? [...state.tasks.values()]
-              : (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")); } catch { return []; } })();
-            if (cronTasks.length === 0) continue;
-            const label = isMe ? `PID ${pid} (this session)` : `PID ${pid}`;
-            const lines = cronTasks.map(t => {
-              const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
-              return `  #${t.id} | ${formatSchedule(t)} | ${t.description} | last run: ${last}`;
-            });
-            sections.push(`${label}:\n${lines.join("\n")}`);
-          }
-        } catch (e: any) { console.debug("[cron] list-all command scan failed:", e?.message || e); }
-        if (ctx.hasUI) ctx.ui.notify(sections.length > 0 ? sections.join("\n\n") : "No crons in any session.", "info");
+        if (!ctx.hasUI) return;
+        await openCronStatusOverlay(ctx, {
+          title: "Cron tasks (all sessions)",
+          emptyMessage: "No crons in any session.",
+          borderTitle: (tasks) => {
+            const sessions = new Set(
+              tasks.map((t) => t.sessionLabel || "?").filter(Boolean),
+            );
+            return `all sessions · ${tasks.length} tasks · ${sessions.size} session${sessions.size === 1 ? "" : "s"}`;
+          },
+          listTasks: () => listAllCronViews(state),
+          removeTask: (id) => removeCronByOverlayId(state, id),
+        });
         return;
       }
 
@@ -528,6 +595,44 @@ export function registerCron(
     }
   }
 
+  /** Resync in-memory tasks from CRON_FILE (external list-all remove / peer edit). */
+  function syncTasksFromDisk(): void {
+    if (!CRON_FILE) return;
+    const onDisk = loadCrons();
+    const diskIds = new Set(onDisk.map((t) => t.id));
+
+    for (const id of [...tasks.keys()]) {
+      if (!diskIds.has(id)) {
+        stopTask(id);
+        tasks.delete(id);
+      }
+    }
+
+    for (const task of onDisk) {
+      // Validate before starting — same rules as add path
+      if (!task.task || typeof task.task !== "string" || !task.task.trim()) continue;
+      if (task.intervalMs !== undefined && task.intervalMs < 10000) continue;
+
+      const existing = tasks.get(task.id);
+      if (!existing) {
+        if (task.id >= state.nextId) state.nextId = task.id + 1;
+        tasks.set(task.id, task);
+        startTask(task);
+        continue;
+      }
+      // Refresh mutable fields from disk without restarting timer unless schedule changed
+      const scheduleChanged =
+        existing.intervalMs !== task.intervalMs ||
+        existing.atHour !== task.atHour ||
+        existing.atMinute !== task.atMinute;
+      Object.assign(existing, task);
+      if (scheduleChanged) startTask(existing);
+    }
+    updateCronStatus();
+  }
+
+  let cronFileWatcher: fs.FSWatcher | null = null;
+
   // Restore persisted crons on session start
   pi.on("session_start", (_event, ctx) => {
     state.lastCwd = ctx.cwd;
@@ -550,6 +655,33 @@ export function registerCron(
       startTask(task);
     }
     updateCronStatus();
+
+    // Ensure file exists so we can watch peer list-all removes
+    if (!fs.existsSync(CRON_FILE)) saveCrons([...tasks.values()]);
+
+    // Watch own file so /cron list-all remove from another session stops our timers
+    try {
+      cronFileWatcher?.close();
+    } catch { /* ignore */ }
+    cronFileWatcher = null;
+    try {
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      cronFileWatcher = fs.watch(CRON_FILE, () => {
+        if (Date.now() < CRON_IGNORE_WATCH_UNTIL) return;
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          if (Date.now() < CRON_IGNORE_WATCH_UNTIL) return;
+          try {
+            syncTasksFromDisk();
+          } catch (e: any) {
+            console.debug("[cron] sync from disk failed:", e?.message || e);
+          }
+        }, 150);
+      });
+      cronFileWatcher.unref?.();
+    } catch (e: any) {
+      console.debug("[cron] watch setup failed:", e?.message || e);
+    }
   });
 
   // Handle cron kill from pidash browser
@@ -573,6 +705,10 @@ export function registerCron(
 
   // Stop all timers and persist on shutdown
   pi.on("session_shutdown", () => {
+    try {
+      cronFileWatcher?.close();
+    } catch { /* ignore */ }
+    cronFileWatcher = null;
     for (const id of timers.keys()) {
       stopTask(id);
     }

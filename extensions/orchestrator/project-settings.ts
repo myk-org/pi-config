@@ -30,6 +30,8 @@ interface ProjectSettings {
   dco?: boolean;
   comment_signature?: boolean;
   review_loop_enforcement?: boolean;
+  /** Block orchestrator from using edit and write tools directly (must delegate to subagents). Default: false. */
+  orchestrator_edit_write_block?: boolean;
   acpx_agents?: string | string[];
   /** CLI-backed providers to register as cli-${agent} (claude, gemini, cursor). */
   cli_agents?: string | string[];
@@ -43,6 +45,12 @@ interface ProjectSettings {
   async_llm_model?: string;
   /** Max review-loop cycles injected into the rules prompt. Integer 1-10 only. */
   review_loop_max_cycles?: number;
+  /** Default provider for all subagents. */
+  agent_provider?: string;
+  /** Default model for all subagents. */
+  agent_model?: string;
+  /** Per-agent provider/model overrides. null = use parent model (skip global agent_provider/agent_model). */
+  agent_overrides?: Record<string, { provider?: string | null; model?: string | null }>;
 }
 
 const SETTINGS_FILENAME = "pi-config-settings.json";
@@ -66,6 +74,7 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     if (typeof raw.dco === "boolean") result.dco = raw.dco;
     if (typeof raw.comment_signature === "boolean") result.comment_signature = raw.comment_signature;
     if (typeof raw.review_loop_enforcement === "boolean") result.review_loop_enforcement = raw.review_loop_enforcement;
+    if (typeof raw.orchestrator_edit_write_block === "boolean") result.orchestrator_edit_write_block = raw.orchestrator_edit_write_block;
     if (typeof raw.pidash_enable === "boolean") result.pidash_enable = raw.pidash_enable;
     if (typeof raw.pidiff_enable === "boolean") result.pidiff_enable = raw.pidiff_enable;
     if (typeof raw.pidash_port === "number" && Number.isInteger(raw.pidash_port) && raw.pidash_port > 0 && raw.pidash_port <= 65535) {
@@ -93,6 +102,25 @@ function parseSettingsFile(filePath: string): ProjectSettings {
       result.cli_agents = raw.cli_agents;
     } else if (Array.isArray(raw.cli_agents)) {
       result.cli_agents = raw.cli_agents;
+    }
+    if (typeof raw.agent_provider === "string" && raw.agent_provider.trim()) {
+      result.agent_provider = raw.agent_provider.trim();
+    }
+    if (typeof raw.agent_model === "string" && raw.agent_model.trim()) {
+      result.agent_model = raw.agent_model.trim();
+    }
+    if (typeof raw.agent_overrides === "object" && raw.agent_overrides !== null && !Array.isArray(raw.agent_overrides)) {
+      const overrides: Record<string, { provider?: string | null; model?: string | null }> = {};
+      for (const [name, val] of Object.entries(raw.agent_overrides)) {
+        if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+          const v = val as { provider?: unknown; model?: unknown };
+          const entry: { provider?: string | null; model?: string | null } = {};
+          if (v.provider === null || (typeof v.provider === "string")) entry.provider = v.provider === null ? null : v.provider.trim() || undefined;
+          if (v.model === null || (typeof v.model === "string")) entry.model = v.model === null ? null : v.model.trim() || undefined;
+          if (entry.provider !== undefined || entry.model !== undefined) overrides[name] = entry;
+        }
+      }
+      if (Object.keys(overrides).length > 0) result.agent_overrides = overrides;
     }
     return result;
   } catch (e: any) {
@@ -267,6 +295,7 @@ export function getSetting(cwd: string, key: "dream_interval_hours"): number;
 export function getSetting(cwd: string, key: "dco"): boolean;
 export function getSetting(cwd: string, key: "comment_signature"): boolean;
 export function getSetting(cwd: string, key: "review_loop_enforcement"): boolean;
+export function getSetting(cwd: string, key: "orchestrator_edit_write_block"): boolean;
 export function getSetting(cwd: string, key: "acpx_agents"): string[];
 export function getSetting(cwd: string, key: "cli_agents"): string[];
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
@@ -276,7 +305,10 @@ export function getSetting(cwd: string, key: "image_model"): string;
 export function getSetting(cwd: string, key: "async_llm_provider"): string;
 export function getSetting(cwd: string, key: "async_llm_model"): string;
 export function getSetting(cwd: string, key: "review_loop_max_cycles"): number;
-export function getSetting(cwd: string, key: string): boolean | string | number | string[] {
+export function getSetting(cwd: string, key: "agent_provider"): string;
+export function getSetting(cwd: string, key: "agent_model"): string;
+export function getSetting(cwd: string, key: "agent_overrides"): Record<string, { provider?: string | null; model?: string | null }>;
+export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
 
   switch (key) {
@@ -323,6 +355,10 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       const env = parseBoolEnv("PI_REVIEW_LOOP_ENFORCEMENT");
       if (env !== undefined) return env;
       return false; // default: disabled (opt-in)
+    }
+    case "orchestrator_edit_write_block": {
+      if (settings.orchestrator_edit_write_block !== undefined) return settings.orchestrator_edit_write_block;
+      return false; // default: disabled
     }
     case "acpx_agents": {
       if (projectSettingsFileHasKey(cwd, "acpx_agents")) {
@@ -405,6 +441,15 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       const env = parseReviewLoopMaxCyclesEnv("PI_REVIEW_LOOP_MAX_CYCLES");
       if (env !== undefined) return env;
       return 3; // default: 3 cycles
+    }
+    case "agent_provider": {
+      return settings.agent_provider || "";
+    }
+    case "agent_model": {
+      return settings.agent_model || "";
+    }
+    case "agent_overrides": {
+      return settings.agent_overrides || {};
     }
     default:
       return false;
