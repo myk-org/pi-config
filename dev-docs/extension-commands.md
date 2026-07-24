@@ -13,10 +13,11 @@ the extension source files under `extensions/`. Each command uses
 | `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff per-project server (start/stop/restart/status) |
 | `/status` | `status.ts` | Unified session status snapshot |
 | `/review-status [worktree-path]` | `enforcement.ts` | Show review loop state. Pass a worktree path to check a specific worktree |
-| `/async-status` | `async-agents.ts` | Background agent status |
+| `/async-status` | `async-agents.ts` + `async-status-ui.ts` | Fullscreen overlay: list async agents → live output; `x` kills selected |
+| `/async-kill` | `async-agents.ts` + `async-status-ui.ts` | Args kill directly; no args = overlay of running agents (`x` kill) |
 | `/dream` | `dreaming.ts` | Memory consolidation |
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
-| `/cron` | `cron.ts` | Schedule recurring tasks |
+| `/cron` | `cron.ts` + `cron-status-ui.ts` | `/cron list` + `/cron list-all` = overlay (view / `x` remove; list-all = all sessions) |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
 | `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (start/stop/status) |
 | `/coms-net` | `coms/coms-net-wrapper.ts` | Networked agent communication (start/connect/disconnect/stop/status) |

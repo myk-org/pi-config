@@ -47,7 +47,10 @@ import {
   decideAsyncLlmDispatch,
   supportsAsyncLlm,
 } from "./async-capability.js";
+import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
+
+export { resolveAgentModelProvider };
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -88,8 +91,8 @@ const ChainItem = Type.Object({
   estimatedSeconds: Type.Number({ description: "Estimated step duration in seconds" }),
 });
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
-  description: 'Agent directories to use. Default: "user".',
-  default: "user",
+  description: 'Agent directories to use. Default: "both".',
+  default: "both",
 });
 
 const SubagentParams = Type.Object({
@@ -397,9 +400,8 @@ export async function runSingleAgent(
     // Deterministic session ID based on agent + cwd for session reuse
     args.push("--session-id", `sync-${agentName}-${djb2Hash(agentName + ':' + cwd).toString(36)}`);
   }
-  const effectiveModel = agent.model || parentModelId;
+  const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, parentModelId, parentProvider, cwd);
   if (effectiveModel) args.push("--model", effectiveModel);
-  const effectiveProvider = agent.provider || parentProvider;
   if (effectiveProvider) args.push("--provider", effectiveProvider);
   if (agent.tools && agent.tools.length > 0)
     args.push("--tools", agent.tools.join(","));
@@ -1403,7 +1405,7 @@ export function registerSubagentTool(
         }
       };
 
-      const scope: AgentScope = params.agentScope ?? "user";
+      const scope: AgentScope = params.agentScope ?? "both";
       const discovery = discoverAgents(ctx.cwd, scope);
       const agents = discovery.agents;
       const confirm = params.confirmProjectAgents ?? true;
@@ -1588,7 +1590,7 @@ export function registerSubagentTool(
     renderCall(args, theme, context) {
       if (!context.state.startedAt) context.state.startedAt = clockHHMM();
       const ts = theme.fg("dim", `[${context.state.startedAt}] `);
-      const scope: AgentScope = args.agentScope ?? "user";
+      const scope: AgentScope = args.agentScope ?? "both";
       if (args.chain?.length > 0) {
         const chainEst = args.chain.every((s: any) => s.estimatedSeconds != null)
           ? theme.fg("dim", ` ~${args.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0)}s (sum)`)

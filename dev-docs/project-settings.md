@@ -11,6 +11,7 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `dco` | boolean | disabled | `PI_DCO` | Add --signoff to all commits (DCO) |
 | `comment_signature` | boolean | disabled | — | Append AI signature to all PR comments |
 | `review_loop_enforcement` | boolean | disabled | `PI_REVIEW_LOOP_ENFORCEMENT` | Block git commit until all 5 reviewers approve (review loop enforcement) |
+| `orchestrator_edit_write_block` | boolean | `false` | — | Block orchestrator from using edit and write tools directly (must delegate to subagents). |
 | `review_loop_max_cycles` | number | `3` | `PI_REVIEW_LOOP_MAX_CYCLES` | Max review-loop cycles when `review_loop_enforcement` is enabled. Accepts JSON integers `1`-`10`, or digit strings `"1"`-`"10"` only (after trim). Rejects out-of-range values and non-digit forms (`"01"`, `"10.0"`, `"1e1"`, hex/binary, `"inf"`, `Infinity`, …) — those fall through to the next resolution layer / default `3`. Injected into orchestrator rules text via `{{REVIEW_LOOP_MAX_CYCLES}}` (prompt/LLM compliance only; see `rule-placeholders.ts`). Disable the review loop via `review_loop_enforcement: false`, not via max_cycles. Reaching the cap blocks re-dispatch (step 2 / all 6 agents, including test-automator) after 5a — no further verification dispatch unless `review_loop_max_cycles` is raised; report **Not fixed** (explained why not → outstanding) vs **Fixed** (verification blocked by the cap — cannot re-dispatch to confirm clean) — it does NOT bypass `review_loop_enforcement`'s commit blocking. |
 | `acpx_agents` | string or string[] | `[]` | `ACPX_AGENTS` | acpx agents to register as `acpx-*` models via createProvider (pi ≥ 0.81). Ambient auth when configured (`agents.has`); `/login` stores optional marker. See `dev-docs/async-internals.md` |
 | `cli_agents` | string or string[] | `[]` | `CLI_AGENTS` | CLI agents to register as `cli-*` providers via createProvider (pi ≥ 0.81; e.g. `"cursor"` or `["claude","gemini","cursor"]`). Ambient auth when configured (PATH + AgentState); `/login` optional marker. See `dev-docs/cli-provider.md` |
@@ -20,6 +21,9 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `image_model` | string | disabled | `PI_IMAGE_MODEL` | Gemini image model for `generate_image` tool |
 | `async_llm_provider` | string | unset | `PI_ASYNC_LLM_PROVIDER` | Provider for detached LLM async children when parent is acpx (dream/cron/fireAndForget). Both this and `async_llm_model` required. |
 | `async_llm_model` | string | unset | `PI_ASYNC_LLM_MODEL` | Model id for those children. If unset on acpx, must-async LLM work is skipped. |
+| `agent_provider` | string | `""` | — | Default provider for all subagents (e.g. `cli-cursor`). |
+| `agent_model` | string | `""` | — | Default model for all subagents (e.g. `cursor:cursor-grok-4.5-high-fast`). |
+| `agent_overrides` | object | `{}` | — | Per-agent provider/model overrides. `null` values = use parent model (skip global setting). |
 
 Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 

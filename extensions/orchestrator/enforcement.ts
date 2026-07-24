@@ -389,6 +389,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     } catch { /* enforcement should never break normal flow */ }
 
+    // Block orchestrator from using edit/write directly — must delegate to subagents.
+    // Subagents (PI_SUBAGENT_CHILD=1) are allowed.
+    if (process.env.PI_SUBAGENT_CHILD !== "1" && getSetting(ctx.cwd, "orchestrator_edit_write_block")) {
+      if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
+        const toolUsed = isToolCallEventType("edit", event) ? "edit" : "write";
+        return {
+          block: true,
+          reason: `⛔ Orchestrator cannot use ${toolUsed} directly. Delegate to a subagent (e.g. worker, python-expert, ts-expert) via the subagent tool.`,
+        };
+      }
+    }
+
     // Block direct manipulation of review state file — prevents LLM from bypassing review loop
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
       const filePath: string | undefined = (event as any).input?.path;

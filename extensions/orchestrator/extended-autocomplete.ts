@@ -18,6 +18,7 @@
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
+ *   /async-kill <Tab>            → all (or type name / id prefix)
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -262,6 +263,12 @@ function registerCompletions(
       return filter([
         { value: "on", label: "on", description: "Enable auto-dreaming (every 3h + session end)" },
         { value: "off", label: "off", description: "Disable auto-dreaming" },
+      ], prefix);
+    },
+
+    "async-kill": (prefix: string) => {
+      return filter([
+        { value: "all", label: "all", description: "Kill all running/queued async agents" },
       ], prefix);
     },
 

@@ -417,4 +417,60 @@ describe("extension settings", () => {
 		clearSettingsCache();
 		assert.equal(getSetting(tmp, "review_loop_max_cycles"), 6);
 	});
+
+	describe("agent model settings", () => {
+		it("agent_provider and agent_model parse from settings JSON", () => {
+			writeSettings({
+				agent_provider: "cli-cursor",
+				agent_model: "cursor:cursor-grok-4.5-high-fast",
+			});
+			assert.equal(getSetting(tmp, "agent_provider"), "cli-cursor");
+			assert.equal(getSetting(tmp, "agent_model"), "cursor:cursor-grok-4.5-high-fast");
+		});
+
+		it("agent_overrides parses with null values preserved", () => {
+			writeSettings({
+				agent_overrides: {
+					debugger: { provider: null, model: null },
+					reviewer: { provider: "cli-claude", model: "claude-sonnet" },
+				},
+			});
+			assert.deepEqual(getSetting(tmp, "agent_overrides"), {
+				debugger: { provider: null, model: null },
+				reviewer: { provider: "cli-claude", model: "claude-sonnet" },
+			});
+		});
+
+		it("empty/missing agent settings return defaults", () => {
+			assert.equal(getSetting(tmp, "agent_provider"), "");
+			assert.equal(getSetting(tmp, "agent_model"), "");
+			assert.deepEqual(getSetting(tmp, "agent_overrides"), {});
+		});
+
+		it("whitespace-only agent_provider/agent_model return defaults", () => {
+			writeSettings({ agent_provider: "   ", agent_model: "  " });
+			assert.equal(getSetting(tmp, "agent_provider"), "");
+			assert.equal(getSetting(tmp, "agent_model"), "");
+		});
+
+		it("invalid agent_overrides shapes are skipped", () => {
+			writeSettings({
+				agent_overrides: {
+					ok: { provider: "cli-cursor", model: "m1" },
+					badArray: ["not", "an", "object"],
+					badNull: null,
+					badString: "nope",
+					emptyObj: {},
+				},
+			});
+			assert.deepEqual(getSetting(tmp, "agent_overrides"), {
+				ok: { provider: "cli-cursor", model: "m1" },
+			});
+		});
+
+		it("array agent_overrides falls through to default {}", () => {
+			writeSettings({ agent_overrides: ["not", "an", "object"] });
+			assert.deepEqual(getSetting(tmp, "agent_overrides"), {});
+		});
+	});
 });
