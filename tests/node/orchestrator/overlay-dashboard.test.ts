@@ -21,17 +21,25 @@ import {
  * - j/k + arrows move selection; x runs onX when provided
  */
 describe("openListDetailOverlay (manual / integration)", () => {
-  it("documents TUI dependency — no direct unit call", () => {
+  it("OverlaySelection type accepts id constrained by OverlayId", () => {
     // Signature constraint: TItem must have id: TId extends OverlayId
     type Ok = OverlaySelection<"a" | "b">;
     const sel: Ok = { index: 0, id: "a" };
     assert.equal(sel.index, 0);
+    assert.equal(sel.id, "a");
+  });
 
-    // OverlayId accepts string | number only (compile-time contract)
+  it("OverlayId accepts string | number only", () => {
     const stringId: OverlayId = "job-1";
     const numberId: OverlayId = 42;
     assert.equal(typeof stringId, "string");
     assert.equal(typeof numberId, "number");
+  });
+
+  it("documents TUI dependency — no direct unit call", () => {
+    // Overlay loop (openListDetailOverlay) needs ExtensionCommandContext + pi-tui.
+    // Not unit-tested here; see file-level comment for manual coverage.
+    assert.ok(true);
   });
 });
 

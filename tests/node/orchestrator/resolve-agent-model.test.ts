@@ -151,4 +151,18 @@ describe("resolveAgentModelProvider", () => {
 		// model from override; provider falls through override → frontmatter
 		assert.deepEqual(result, { model: "override-model", provider: "fm-provider" });
 	});
+
+	it("resolves model and provider independently from override", () => {
+		// override sets only model — provider falls through normally
+		writeSettings({ agent_overrides: { myagent: { model: "custom-model" } } });
+		const result = resolveAgentModelProvider(
+			"myagent",
+			{ provider: "agent-provider" },
+			"parent-model",
+			"parent-provider",
+			tmp
+		);
+		assert.strictEqual(result.model, "custom-model");
+		assert.strictEqual(result.provider, "agent-provider"); // from frontmatter, not parent
+	});
 });

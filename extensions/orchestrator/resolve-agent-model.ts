@@ -18,6 +18,8 @@ export function resolveAgentModelProvider(
 
   if (override) {
     // null = explicitly use parent (skip agent frontmatter AND global settings)
+    // Model and provider resolve independently on purpose: a partial override
+    // (e.g. only model) still lets provider fall through frontmatter → settings → parent.
     const model = override.model === null ? parentModelId : (override.model || agent.model || getSetting(cwd, "agent_model") || parentModelId);
     const provider = override.provider === null ? parentProvider : (override.provider || agent.provider || getSetting(cwd, "agent_provider") || parentProvider);
     return { model: model || undefined, provider: provider || undefined };
