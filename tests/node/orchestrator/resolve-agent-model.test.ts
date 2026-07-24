@@ -152,7 +152,7 @@ describe("resolveAgentModelProvider", () => {
 		assert.deepEqual(result, { model: "override-model", provider: "fm-provider" });
 	});
 
-	it("resolves model and provider independently from override", () => {
+	it("resolves model independently when override sets only model", () => {
 		// override sets only model — provider falls through normally
 		writeSettings({ agent_overrides: { myagent: { model: "custom-model" } } });
 		const result = resolveAgentModelProvider(
