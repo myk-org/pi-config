@@ -31,7 +31,7 @@ const taskStoreReady: Promise<void> = (async () => {
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
-import { resolveAgentModelProvider } from "./subagent-tool.js";
+import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import { getMainBranch } from "./git-helpers.js";

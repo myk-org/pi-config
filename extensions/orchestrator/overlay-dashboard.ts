@@ -205,7 +205,7 @@ export class OverlayListDashboard<
 
     const rows = this.tui.terminal.rows || 30;
     const bodyHeight = Math.max(6, rows - 5);
-    const innerWidth = width - 2;
+    const innerWidth = Math.max(0, width - 2);
     const lines: string[] = [];
 
     const headerLeft = theme.fg("accent", theme.bold(this.spec.title));

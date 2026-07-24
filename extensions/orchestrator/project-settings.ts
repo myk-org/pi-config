@@ -103,10 +103,10 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     } else if (Array.isArray(raw.cli_agents)) {
       result.cli_agents = raw.cli_agents;
     }
-    if (typeof raw.agent_provider === "string" && raw.agent_provider.trim()) {
+    if (typeof raw.agent_provider === "string") {
       result.agent_provider = raw.agent_provider.trim();
     }
-    if (typeof raw.agent_model === "string" && raw.agent_model.trim()) {
+    if (typeof raw.agent_model === "string") {
       result.agent_model = raw.agent_model.trim();
     }
     if (typeof raw.agent_overrides === "object" && raw.agent_overrides !== null && !Array.isArray(raw.agent_overrides)) {
