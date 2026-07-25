@@ -25,7 +25,8 @@
   "overrides": {
     "undici": ">=6.27.0 <9.0.0",
     "adm-zip": "^0.6.0",
-    "protobufjs": "7.6.5"
+    "protobufjs": "7.6.5",
+    "sharp": "^0.35.3"
   },
   "pi": {
     "extensions": [
