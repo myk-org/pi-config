@@ -8,7 +8,12 @@ import * as path from "node:path";
 import { join } from "node:path";
 import { DANGEROUS, hasGitSub } from "./git-helpers.js";
 
-export type EnforcementResult = { block: true; reason: string } | undefined;
+export type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
+
+/** Whether uv is available on this system (checked at session_start) */
+let uvAvailable = true;
+export function setUvAvailable(val: boolean): void { uvAvailable = val; }
+export function isUvAvailable(): boolean { return uvAvailable; }
 
 /** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
 export function normalizeForRepeatCheck(command: string): string {
@@ -50,25 +55,101 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   return sessionCwd;
 }
 
-/** Block direct python/pip commands */
-export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
+/** Auto-fix direct python commands (prepend uv run), block pip commands */
+export function checkPythonPipBlock(command: string, cmdLower: string): EnforcementResult {
+  // If uv is not available, skip all python/pip enforcement
+  if (!uvAvailable) return undefined;
+
   if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
-    // Split on statement separators to get individual commands,
-    // then check if the base command (first word) is python/pip.
-    // This avoids false positives on python3/pip appearing inside quoted arguments.
-    // Split on statement separators including & (background operator)
-    const statements = cmdLower.split(/\n|;|&&|\|\||\||&/).map(s => s.trim()).filter(Boolean);
-    for (const stmt of statements) {
-      // Strip leading env var assignments: VAR=val, VAR="val", VAR='val'
-      const stripped = stmt.replace(/^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, "");
-      const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
-      if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
+    // Use matchAll to find separator positions, then extract segments with their offsets
+    const separatorRe = /\n|;|&&|\|\||\||&/g;
+    const segments: { start: number; end: number; text: string; textLower: string }[] = [];
+    let lastEnd = 0;
+
+    for (const m of command.matchAll(separatorRe)) {
+      const segText = command.slice(lastEnd, m.index);
+      segments.push({
+        start: lastEnd,
+        end: m.index!,
+        text: segText.trim(),
+        textLower: segText.trim().toLowerCase(),
+      });
+      lastEnd = m.index! + m[0].length;
+    }
+    const lastSegText = command.slice(lastEnd);
+    segments.push({
+      start: lastEnd,
+      end: command.length,
+      text: lastSegText.trim(),
+      textLower: lastSegText.trim().toLowerCase(),
+    });
+
+    const envVarPrefixRe = /^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/;
+
+    // Pass 1: if ANY segment is pip/pip3, block the entire command
+    for (const seg of segments) {
+      if (!seg.textLower) continue;
+      const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
+      // Extract first token — handle quoted paths: "path/to/python3" or 'path/to/python3'
+      const firstTokenMatch = strippedLower.match(/^(["'])(.+?)\1|^(\S+)/);
+      const firstToken = firstTokenMatch?.[2] || firstTokenMatch?.[3] || "";
+      const baseCmd = firstToken.replace(/^.*[\/\\]/, "");
+      if (baseCmd && /^pip3?$/.test(baseCmd)) {
         return {
           block: true,
-          reason:
-            "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg",
+          reason: "Direct pip/pip3 forbidden. Use: uv add <pkg> / uvx <tool> / uv run --with <pkg> script.py",
         };
       }
+    }
+
+    // Pass 2: rewrite ALL python/python3 segments
+    let modifiedCommand = command;
+    let anyRewrite = false;
+    // Process segments in reverse order so offsets remain valid after each splice
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      if (!seg.textLower) continue;
+      const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
+      // Extract first token — handle quoted paths: "path/to/python3" or 'path/to/python3'
+      const firstTokenMatch = strippedLower.match(/^(["'])(.+?)\1|^(\S+)/);
+      const firstToken = firstTokenMatch?.[2] || firstTokenMatch?.[3] || "";
+      const baseCmd = firstToken.replace(/^.*[\/\\]/, "");
+
+      if (baseCmd && /^python3?$/.test(baseCmd)) {
+        const origText = seg.text;
+        const envVarMatch = origText.match(envVarPrefixRe);
+        const envPrefix = envVarMatch?.[0] || "";
+        const afterEnv = origText.slice(envPrefix.length);
+        // Match quoted or unquoted python executable path
+        let origExe: string;
+        let fixedAfterEnv: string;
+        if (afterEnv.match(/^["']/)) {
+          // Quoted path: strip quotes and path, keep original exe name
+          const qm = afterEnv.match(/^(["'])(.*?)(python3?)\1(.*)/i);
+          origExe = qm?.[3] || baseCmd;
+          fixedAfterEnv = `uv run ${origExe}` + (qm?.[4] || "");
+        } else {
+          origExe = afterEnv.match(/^(\S*[\/\\])?(python3?)\b/i)?.[2] || baseCmd;
+          fixedAfterEnv = afterEnv.replace(/^(\S*[\/\\])?python3?\b/i, `uv run ${origExe}`);
+        }
+        const fixedStmt = envPrefix + fixedAfterEnv;
+
+        // Replace by offset
+        const rawSegment = modifiedCommand.slice(seg.start, seg.end);
+        const trimStart = rawSegment.indexOf(seg.text);
+        const absStart = seg.start + (trimStart >= 0 ? trimStart : 0);
+        const absEnd = absStart + seg.text.length;
+        modifiedCommand = modifiedCommand.slice(0, absStart) + fixedStmt + modifiedCommand.slice(absEnd);
+        anyRewrite = true;
+      }
+    }
+
+    if (anyRewrite) {
+      return {
+        autofix: true,
+        modifiedCommand,
+        reason: "Auto-fixed: prepended `uv run` to python command",
+      };
     }
   }
   return undefined;

@@ -18,6 +18,8 @@ import {
   escapeForSingleQuote,
   resolveEffectiveCwd,
   checkPythonPipBlock,
+  setUvAvailable,
+  isUvAvailable,
   checkRemoteExecBlock,
   checkTempFileEnforcement,
   hasGitAddBulk,
@@ -439,66 +441,181 @@ describe("resolveEffectiveCwd", () => {
 // ── checkPythonPipBlock ──
 
 describe("checkPythonPipBlock", () => {
-  it("blocks python3", () => {
-    assert.ok(checkPythonPipBlock("python3 --version"));
+  before(() => setUvAvailable(true));
+  after(() => setUvAvailable(true));
+
+  // ── python/python3: auto-fix (prepend uv run) ──
+  it("auto-fixes python3 --version", () => {
+    const r = checkPythonPipBlock("python3 --version", "python3 --version");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 --version");
   });
-  it("blocks python", () => {
-    assert.ok(checkPythonPipBlock("python script.py"));
+  it("auto-fixes python script.py", () => {
+    const r = checkPythonPipBlock("python script.py", "python script.py");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python script.py");
   });
-  it("blocks pip", () => {
-    assert.ok(checkPythonPipBlock("pip install requests"));
+  it("auto-fixes correct segment with python in earlier quotes", () => {
+    const r = checkPythonPipBlock(
+      'echo "python3 script.py"; python3 script.py',
+      'echo "python3 script.py"; python3 script.py',
+    );
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, 'echo "python3 script.py"; uv run python3 script.py');
   });
-  it("blocks pip3", () => {
-    assert.ok(checkPythonPipBlock("pip3 install requests"));
+  it("auto-fixes python3 -c 'pass'", () => {
+    const r = checkPythonPipBlock("python3 -c 'pass'", "python3 -c 'pass'");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 -c 'pass'");
   });
-  it("blocks python after pipe", () => {
-    assert.ok(checkPythonPipBlock("echo test | python3"));
+  it("auto-fixes /usr/bin/python3 script.py", () => {
+    const r = checkPythonPipBlock("/usr/bin/python3 script.py", "/usr/bin/python3 script.py");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 script.py");
   });
-  it("blocks python after semicolon", () => {
-    assert.ok(checkPythonPipBlock("ls; python3 -c 'pass'"));
+  // ── Windows path support ──
+  it("auto-fixes C:\\\\Python\\\\python3 script.py", () => {
+    const r = checkPythonPipBlock("C:\\\\Python\\\\python3 script.py", "c:\\\\python\\\\python3 script.py");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 script.py");
   });
-  it("blocks python after &&", () => {
-    assert.ok(checkPythonPipBlock("ls && python3 -c 'pass'"));
+  it("blocks C:\\\\Python\\\\Scripts\\\\pip install requests", () => {
+    const r = checkPythonPipBlock("C:\\\\Python\\\\Scripts\\\\pip install requests", "c:\\\\python\\\\scripts\\\\pip install requests");
+    assert.ok(r && "block" in r);
   });
-  it("blocks pip after ||", () => {
-    assert.ok(checkPythonPipBlock("false || pip install requests"));
+  // ── Quoted path support ──
+  it("auto-fixes quoted python path with spaces", () => {
+    const cmd = '"C:\\Program Files\\Python\\python3" script.py';
+    const r = checkPythonPipBlock(cmd, cmd.toLowerCase());
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 script.py");
   });
-  it("allows uv run python3", () => {
-    assert.equal(checkPythonPipBlock("uv run python3 -c 'pass'"), undefined);
+  it("blocks quoted pip path with spaces", () => {
+    const cmd = '"C:\\Program Files\\Python\\Scripts\\pip" install requests';
+    const r = checkPythonPipBlock(cmd, cmd.toLowerCase());
+    assert.ok(r && "block" in r);
   });
-  it("allows uvx", () => {
-    assert.equal(checkPythonPipBlock("uvx ruff check ."), undefined);
+  it("preserves original executable casing in autofix", () => {
+    const r = checkPythonPipBlock("Python3 --version", "python3 --version");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run Python3 --version");
+  });
+  it("auto-fixes python3 with env var prefix", () => {
+    const r = checkPythonPipBlock("LANG=C python3 script.py", "lang=c python3 script.py");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "LANG=C uv run python3 script.py");
+  });
+  it("auto-fixes python3 with quoted env var", () => {
+    const r = checkPythonPipBlock('VAR="a b" python3 script.py', 'var="a b" python3 script.py');
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, 'VAR="a b" uv run python3 script.py');
+  });
+  it("auto-fixes python3 after semicolon", () => {
+    const r = checkPythonPipBlock("ls; python3 -c 'pass'", "ls; python3 -c 'pass'");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "ls; uv run python3 -c 'pass'");
+  });
+  it("auto-fixes python3 after &&", () => {
+    const r = checkPythonPipBlock("ls && python3 -c 'pass'", "ls && python3 -c 'pass'");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "ls && uv run python3 -c 'pass'");
+  });
+  it("auto-fixes python after pipe", () => {
+    const r = checkPythonPipBlock("echo test | python3", "echo test | python3");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "echo test | uv run python3");
+  });
+  it("auto-fixes python3 after background operator &", () => {
+    const r = checkPythonPipBlock("echo ok & python3 script.py", "echo ok & python3 script.py");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "echo ok & uv run python3 script.py");
+  });
+  it("auto-fixes correct segment when python appears in quotes too", () => {
+    const cmd = 'echo "python3 script.py"; python3 script.py';
+    const r = checkPythonPipBlock(cmd, cmd.toLowerCase());
+    assert.ok(r && "autofix" in r);
+    // Should fix the SECOND python3 (the actual command), not the quoted one
+    assert.equal(r.modifiedCommand, 'echo "python3 script.py"; uv run python3 script.py');
   });
 
+  // ── pip/pip3: still blocked ──
+  it("blocks pip", () => {
+    const r = checkPythonPipBlock("pip install requests", "pip install requests");
+    assert.ok(r && "block" in r);
+  });
+  it("blocks pip3", () => {
+    const r = checkPythonPipBlock("pip3 install requests", "pip3 install requests");
+    assert.ok(r && "block" in r);
+  });
+  it("blocks pip after ||", () => {
+    const r = checkPythonPipBlock("false || pip install requests", "false || pip install requests");
+    assert.ok(r && "block" in r);
+  });
+
+  // ── pip block takes precedence in compound commands ──
+  it("blocks when python before pip in compound", () => {
+    const r = checkPythonPipBlock("python3 -c 'pass'; pip install x", "python3 -c 'pass'; pip install x");
+    assert.ok(r && "block" in r);
+  });
+  it("blocks when pip before python in compound", () => {
+    const r = checkPythonPipBlock("pip install x && python3 -c 'pass'", "pip install x && python3 -c 'pass'");
+    assert.ok(r && "block" in r);
+  });
+
+  // ── multi-python rewrite ──
+  it("auto-fixes multiple python segments", () => {
+    const r = checkPythonPipBlock("python3 -c 'a'; python3 -c 'b'", "python3 -c 'a'; python3 -c 'b'");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 -c 'a'; uv run python3 -c 'b'");
+  });
+
+  // ── uv prefixed: allowed ──
+  it("allows uv run python3", () => {
+    assert.equal(checkPythonPipBlock("uv run python3 -c 'pass'", "uv run python3 -c 'pass'"), undefined);
+  });
+  it("allows uvx", () => {
+    assert.equal(checkPythonPipBlock("uvx ruff check .", "uvx ruff check ."), undefined);
+  });
+
+  // ── non-python: allowed ──
   it("allows non-python commands", () => {
-    assert.equal(checkPythonPipBlock("ls -la"), undefined);
+    assert.equal(checkPythonPipBlock("ls -la", "ls -la"), undefined);
   });
   it("allows python3 inside quoted argument", () => {
-    assert.equal(checkPythonPipBlock('myk-pi-tools reviews ask-qodo "fix python3 block"'), undefined);
+    assert.equal(checkPythonPipBlock('myk-pi-tools reviews ask-qodo "fix python3 block"', 'myk-pi-tools reviews ask-qodo "fix python3 block"'), undefined);
   });
   it("allows python3 in git commit message", () => {
-    assert.equal(checkPythonPipBlock('git commit -m "fix python3 issue"'), undefined);
+    assert.equal(checkPythonPipBlock('git commit -m "fix python3 issue"', 'git commit -m "fix python3 issue"'), undefined);
   });
   it("allows grep for python3", () => {
-    assert.equal(checkPythonPipBlock("grep python3 file.txt"), undefined);
+    assert.equal(checkPythonPipBlock("grep python3 file.txt", "grep python3 file.txt"), undefined);
   });
   it("allows echo with python3", () => {
-    assert.equal(checkPythonPipBlock('echo "python3 is blocked"'), undefined);
-  });
-  it("blocks /usr/bin/python3", () => {
-    assert.ok(checkPythonPipBlock("/usr/bin/python3 script.py"));
-  });
-  it("blocks python3 with env var prefix", () => {
-    assert.ok(checkPythonPipBlock("LANG=C python3 script.py"));
-  });
-  it("blocks python3 after background operator &", () => {
-    assert.ok(checkPythonPipBlock("echo ok & python3 script.py"));
-  });
-  it("blocks python3 with quoted env var", () => {
-    assert.ok(checkPythonPipBlock('VAR="a b" python3 script.py'));
+    assert.equal(checkPythonPipBlock('echo "python3 is blocked"', 'echo "python3 is blocked"'), undefined);
   });
   it("allows python3 as argument to other command", () => {
-    assert.equal(checkPythonPipBlock("cat python3.log"), undefined);
+    assert.equal(checkPythonPipBlock("cat python3.log", "cat python3.log"), undefined);
+  });
+
+  // ── uv not available: no enforcement ──
+  it("allows python when uv unavailable", () => {
+    setUvAvailable(false);
+    assert.equal(checkPythonPipBlock("python3 --version", "python3 --version"), undefined);
+    setUvAvailable(true);
+  });
+  it("allows pip when uv unavailable", () => {
+    setUvAvailable(false);
+    assert.equal(checkPythonPipBlock("pip install requests", "pip install requests"), undefined);
+    setUvAvailable(true);
+  });
+
+  // ── isUvAvailable getter ──
+  it("isUvAvailable returns current state", () => {
+    setUvAvailable(true);
+    assert.equal(isUvAvailable(), true);
+    setUvAvailable(false);
+    assert.equal(isUvAvailable(), false);
+    setUvAvailable(true);
   });
 });
 

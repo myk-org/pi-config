@@ -7,6 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { setUvAvailable, isUvAvailable } from "./enforcement-helpers.js";
 import { checkMinPiVersion } from "./utils.js";
 
 /** Check whether a CLI command is available on PATH. */
@@ -191,14 +192,19 @@ function registerRepairCommand(pi: ExtensionAPI): void {
 /** Check for required/optional CLI tools and notify the user. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function checkSessionTools(ctx: any): Promise<void> {
+  // ── uv install suggestion (availability already set in session_start) ──
+  if (!isUvAvailable()) {
+    ctx.ui.notify(
+      "⚡ uv is not installed. Install it for better Python support and auto-fix for python/pip commands:\n" +
+      "  • macOS/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh\n" +
+      "  • Windows: powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"\n" +
+      "  • Docs: https://docs.astral.sh/uv/",
+      "warning",
+    );
+  }
+
   const missing: string[] = [];
   const optional: string[] = [];
-
-  // Critical
-  if (!hasCmd("uv"))
-    missing.push(
-      "uv — Required for Python. Install: https://docs.astral.sh/uv/",
-    );
 
   // Optional
   if (!hasCmd("gh"))
@@ -329,6 +335,15 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
   registerRepairCommand(pi);
 
   pi.on("session_start", async (_event, ctx) => {
+    // Always check uv availability — even in headless mode.
+    // Enforcement depends on this being set correctly.
+    try {
+      const uvInstalled = hasCmd("uv");
+      setUvAvailable(uvInstalled);
+    } catch (e: any) {
+      console.debug("[session-validation] uv check failed:", e?.message || e);
+    }
+
     if (!ctx.hasUI) return;
 
     // Check minimum pi version

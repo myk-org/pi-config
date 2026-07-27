@@ -44,7 +44,7 @@ import {
   isTestRunnerCommand,
 } from "./enforcement-helpers.js";
 
-type EnforcementResult = { block: true; reason: string } | undefined;
+type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 
 // Repeat detection via temp file — immune to module reload / closure issues
 // Repeat detection file — set to project dir on first use
@@ -457,8 +457,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       delete event.input.timeout;
     }
 
-    const pythonCheck = checkPythonPipBlock(cmdLower);
-    if (pythonCheck) return pythonCheck;
+    const pythonCheck = checkPythonPipBlock(command, cmdLower);
+    if (pythonCheck) {
+      if ("autofix" in pythonCheck) {
+        event.input.command = pythonCheck.modifiedCommand;
+        // Don't block — continue with the modified command
+      } else {
+        return pythonCheck;
+      }
+    }
 
     // Block memory writes from specialist agents — only orchestrator can write
     if (process.env.PI_SUBAGENT_CHILD === "1" && /\bmyk-pi-tools\b.*\bmemory\s+(add|delete)\b/.test(command)) {
