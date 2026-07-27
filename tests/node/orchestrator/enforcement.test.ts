@@ -455,7 +455,7 @@ describe("checkPythonPipBlock", () => {
     assert.ok(r && "autofix" in r);
     assert.equal(r.modifiedCommand, "uv run python script.py");
   });
-  it("auto-fixes real python when same text appears earlier in quotes", () => {
+  it("auto-fixes correct segment with python in earlier quotes", () => {
     const r = checkPythonPipBlock(
       'echo "python3 script.py"; python3 script.py',
       'echo "python3 script.py"; python3 script.py',
@@ -523,6 +523,23 @@ describe("checkPythonPipBlock", () => {
   it("blocks pip after ||", () => {
     const r = checkPythonPipBlock("false || pip install requests", "false || pip install requests");
     assert.ok(r && "block" in r);
+  });
+
+  // ── pip block takes precedence in compound commands ──
+  it("blocks when python before pip in compound", () => {
+    const r = checkPythonPipBlock("python3 -c 'pass'; pip install x", "python3 -c 'pass'; pip install x");
+    assert.ok(r && "block" in r);
+  });
+  it("blocks when pip before python in compound", () => {
+    const r = checkPythonPipBlock("pip install x && python3 -c 'pass'", "pip install x && python3 -c 'pass'");
+    assert.ok(r && "block" in r);
+  });
+
+  // ── multi-python rewrite ──
+  it("auto-fixes multiple python segments", () => {
+    const r = checkPythonPipBlock("python3 -c 'a'; python3 -c 'b'", "python3 -c 'a'; python3 -c 'b'");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 -c 'a'; uv run python3 -c 'b'");
   });
 
   // ── uv prefixed: allowed ──

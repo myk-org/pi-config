@@ -76,7 +76,6 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
       });
       lastEnd = m.index! + m[0].length;
     }
-    // Last segment after final separator
     const lastSegText = command.slice(lastEnd);
     segments.push({
       start: lastEnd,
@@ -87,40 +86,54 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
 
     const envVarPrefixRe = /^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/;
 
+    // Pass 1: if ANY segment is pip/pip3, block the entire command
     for (const seg of segments) {
       if (!seg.textLower) continue;
       const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
       const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, "");
+      if (baseCmd && /^pip3?$/.test(baseCmd)) {
+        return {
+          block: true,
+          reason: "Direct pip/pip3 forbidden. Use: uv add <pkg> / uvx <tool> / uv run --with <pkg> script.py",
+        };
+      }
+    }
 
-      if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
-        if (/^pip3?$/.test(baseCmd)) {
-          return {
-            block: true,
-            reason: "Direct pip/pip3 forbidden. Use: uv add <pkg> / uvx <tool> / uv run --with <pkg> script.py",
-          };
-        }
+    // Pass 2: rewrite ALL python/python3 segments
+    let modifiedCommand = command;
+    let anyRewrite = false;
+    // Process segments in reverse order so offsets remain valid after each splice
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      if (!seg.textLower) continue;
+      const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
+      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, "");
 
-        // Auto-fix: use the original segment text (preserving case)
+      if (baseCmd && /^python3?$/.test(baseCmd)) {
         const origText = seg.text;
         const envVarMatch = origText.match(envVarPrefixRe);
         const envPrefix = envVarMatch?.[0] || "";
         const afterEnv = origText.slice(envPrefix.length);
-        const fixedAfterEnv = afterEnv.replace(/^(\S*\/)?python3?\b/, `uv run ${baseCmd}`);
+        // Case-insensitive regex to handle any casing
+        const fixedAfterEnv = afterEnv.replace(/^(\S*\/)?python3?\b/i, `uv run ${baseCmd}`);
         const fixedStmt = envPrefix + fixedAfterEnv;
 
-        // Replace by offset — find the original untrimmed segment in the command
-        const rawSegment = command.slice(seg.start, seg.end);
+        // Replace by offset
+        const rawSegment = modifiedCommand.slice(seg.start, seg.end);
         const trimStart = rawSegment.indexOf(seg.text);
         const absStart = seg.start + (trimStart >= 0 ? trimStart : 0);
         const absEnd = absStart + seg.text.length;
-        const modifiedCommand = command.slice(0, absStart) + fixedStmt + command.slice(absEnd);
-
-        return {
-          autofix: true,
-          modifiedCommand,
-          reason: "Auto-fixed: prepended `uv run` to python command",
-        };
+        modifiedCommand = modifiedCommand.slice(0, absStart) + fixedStmt + modifiedCommand.slice(absEnd);
+        anyRewrite = true;
       }
+    }
+
+    if (anyRewrite) {
+      return {
+        autofix: true,
+        modifiedCommand,
+        reason: "Auto-fixed: prepended `uv run` to python command",
+      };
     }
   }
   return undefined;
