@@ -375,7 +375,7 @@ export function registerRules(
                 customType: "task-focus-enforcement",
                 content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
                 display: true,
-              }, { triggerTurn: true, deliverAs: "followUp" });
+              }, { triggerTurn: false, deliverAs: "nextTurn" });
               break;
             }
           } catch { continue; }
