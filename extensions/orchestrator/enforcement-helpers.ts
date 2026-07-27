@@ -114,8 +114,10 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
         const envVarMatch = origText.match(envVarPrefixRe);
         const envPrefix = envVarMatch?.[0] || "";
         const afterEnv = origText.slice(envPrefix.length);
-        // Case-insensitive regex to handle any casing
-        const fixedAfterEnv = afterEnv.replace(/^(\S*[\/\\])?python3?\b/i, `uv run ${baseCmd}`);
+        // Extract original-cased executable name, then prepend uv run
+        const execMatch = afterEnv.match(/^(\S*[\/\\])?(python3?)\b/i);
+        const origExe = execMatch?.[2] || baseCmd;
+        const fixedAfterEnv = afterEnv.replace(/^(\S*[\/\\])?python3?\b/i, `uv run ${origExe}`);
         const fixedStmt = envPrefix + fixedAfterEnv;
 
         // Replace by offset
