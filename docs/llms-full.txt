@@ -1,331 +1,2193 @@
 # pi-config
 
-> Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows
+> Customize and extend your AI development assistant with custom agents, rules, and memory
 
 ---
 
 Source: quickstart.md
 
+# Installation & Quickstart
 
+Initialize your project configuration, spin up the background daemons, and run your first custom agent workflow to automate your codebase tasks locally. This setup enables your agents to operate seamlessly across different workflows and repositories.
+
+## Prerequisites
+
+- Node.js (>= 22)
+- Git installed and configured
+- `pi` (installed via `@earendil-works/pi-coding-agent`)
+- `uv` (Python package manager)
+
+## Quick Install
+
+To install the orchestrator and all dependencies in a single step, run the interactive installer from the command line:
+
+```bash
+uv run scripts/install.py --all
+```
+
+*This command automatically selects and installs all required dependencies without prompting.*
+
+## Step-by-Step Guide
+
+### 1. Run the Interactive Installer
+
+If you prefer to selectively install tools, run the installation script without the `--all` flag.
+
+```bash
+uv run scripts/install.py
+```
+
+Follow the prompts to choose your required components (such as browser automation, python tools, or specific `pi` packages).
+
+### 2. Initialize Project Settings
+
+Project-level configurations give your agents context about how they should interact with your specific repository.
+
+Create a `.pi/pi-config-settings.json` file in your repository root:
+
+```json
+{
+  "commit_trailer": "Assisted-by",
+  "dco": true,
+  "dream_interval_hours": 3,
+  "pidash_enable": true,
+  "pidiff_enable": true,
+  "cli_agents": ["claude", "cursor"]
+}
+```
+
+> **Note:** These settings override global defaults and apply immediately to the current project.
+
+### 3. Start the Daemons
+
+In your terminal, start a new `pi` session. Once inside the chat environment, initialize the background tasks required for your workflows.
+
+```text
+/pidiff start
+/pidash start
+```
+
+These commands spin up the local diff tracker and dashboard backend respectively.
+
+> **Tip:** You can check the health and state of all running services at any time by running `/status`.
+
+### 4. Run Your First Agent Workflow
+
+With the daemons running and settings configured, instruct the orchestrator to begin a task.
+
+```text
+/scout-and-plan Review the authentication module and propose a migration plan to JWT.
+```
+
+The orchestrator will automatically pick up the request and dispatch the appropriate agents based on your task.
+
+## Advanced Usage
+
+### Ignoring Project Data Files
+
+To prevent the orchestrator's local databases and worktrees from polluting your git history, ensure they are added to your global `.gitignore`.
+
+| Method | Command |
+|--------|---------|
+| **Old Way (Manual File Edit)** | `echo ".pi/" >> ~/.gitignore` |
+| **New Way (Scripted)** | `git config --global core.excludesfile ~/.config/git/ignore && echo ".pi/" >> ~/.config/git/ignore` |
+
+### Environment Variable Fallbacks
+
+If you prefer not to use a `.pi/pi-config-settings.json` file, you can rely on environment variables. Project settings are resolved in the following priority:
+1. Local `.pi/pi-config-settings.json`
+2. Global `~/.pi/pi-config-settings.json`
+3. Environment variables (e.g., `PI_DREAM_INTERVAL_HOURS=3`)
+4. System defaults
+
+For more details on interacting with the system from your terminal, see [myk_pi_tools CLI Reference](cli-reference.html).
+
+## Troubleshooting
+
+- **"Cannot continue without pi" error:** Ensure `@earendil-works/pi-coding-agent` is installed globally via npm before running the python installer.
+- **Daemons failing to start:** Verify that the required ports are available. The `/pidiff` command logs its current port and process ID in `.pi/tmp/pidiff.port`.
+- **Pre-commit hook failures:** If Git hooks complain about formatting, run `prek run --all-files` to automatically apply fixes before committing.
 
 ## Related Pages
 
-- [Your First Coding Workflow](first-workflow.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Running Pi in a Docker Container](docker-deployment.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Configuration & Settings](configuration.html)
+- [myk_pi_tools CLI Reference](cli-reference.html)
 
 ---
 
-Source: first-workflow.md
+Source: automating-code-reviews.md
 
+# Automating Code Reviews
 
+Configure automated pipelines to gather and apply code review feedback from AI agents like Qodo and CodeRabbit. By setting up continuous pull request feedback, you can automatically ingest comments, apply code fixes, and push updates without manual intervention.
+
+## Prerequisites
+
+* A GitHub Pull Request active on your current branch.
+* CodeRabbit and/or Qodo installed as GitHub apps on your repository.
+
+## Quick Example
+
+To automatically poll, fix, and resolve all pending AI code review comments in a continuous loop:
+
+```bash
+/review-handler --autorabbit --autoqodo
+```
+
+## Step-by-Step
+
+Follow these steps to fully automate the review loop for your Pull Requests.
+
+1. **Trigger the review loop**
+   Start the automated review processor on your active branch. This fetches all pending comments, categorizes them by source, and attempts to write the necessary code fixes.
+   ```bash
+   /review-handler --autoqodo
+   ```
+
+2. **Handle AI pushback**
+   If an AI reviewer disagrees with a fix, it generates a "sticky finding" with a pushback response. The automation loop automatically surfaces this new feedback and attempts a different approach on the next iteration.
+
+3. **Resolve threads automatically**
+   Once you push new commits, the handler waits for the AI reviewer to re-evaluate. If the bot confirms the fix, the threads are automatically marked as skipped and will not appear in future iterations.
+
+## Advanced Usage
+
+### Review Loop Cycles and Limits
+
+When using `--autorabbit` or `--autoqodo` in `/review-handler`, the automation loop is subject to the `review_loop_max_cycles` configuration (default: 3).
+
+> **Note:** Staged mode shares one total `review_loop_max_cycles` budget across both its Spec Compliance and Code Quality stages — it is not a separate cap per stage.
+
+Hitting the cycle cap stops re-dispatching reviewers, but any remaining unresolved findings or failing tests will still block commits if `review_loop_enforcement` is enabled. You can adjust this limit (1-10) in your `pi-config-settings.json`.
+
+### Handling CodeRabbit Rate Limits
+
+CodeRabbit rate limits can temporarily pause your automated workflows. You can manually handle rate limits and force a re-trigger on your current branch's PR:
+
+```bash
+/coderabbit-rate-limit
+```
+
+To target a specific pull request number:
+
+```bash
+/coderabbit-rate-limit 123
+```
+
+### Isolating Specific Review Sources
+
+If you prefer to integrate the review loop into custom scripts instead of using the interactive handler, you can poll specific sources using the CLI:
+
+```bash
+myk-pi-tools reviews poll --output-dir /tmp/reviews --source coderabbit
+```
+
+You can set `--source` to `qodo`, `coderabbit`, or `human` to process specific subsets of feedback. See [myk_pi_tools CLI Reference](cli-reference.html) for more details.
+
+### Customizing CodeRabbit Rules
+
+To adjust how assertive CodeRabbit is or to disable automatic review pausing, create or update `.coderabbit.yaml` in your project root:
+
+```yaml
+# .coderabbit.yaml
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+```
+
+## Troubleshooting
+
+* **CodeRabbit pauses reviews:** If CodeRabbit replies with "reviews paused by coderabbit.ai", add `request_changes_workflow: false` to your `.coderabbit.yaml` to prevent it from halting automation.
+* **Stuck Qodo findings:** If Qodo findings appear "stuck" (you pushed a fix but the AI hasn't resolved the thread), the review loop will automatically attempt to post a cleanup request to force re-evaluation.
+
+For additional agent customization and setup, see [Configuration & Settings](configuration.html).
 
 ## Related Pages
 
-- [Installing and Starting Your First Session](quickstart.html)
-- [Running the Automated Code Review Loop](code-review-loop.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
-- [Common Workflow Recipes](workflow-recipes.html)
+- [Managing Custom Agents](managing-custom-agents.html)
+- [External AI Agents & CLI](external-ai-agents.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)
 
 ---
 
-Source: agent-routing.md
+Source: managing-custom-agents.md
 
+# Managing Custom Agents
 
+Create specialized AI agents to handle specific, recurring tasks within your workflow. By defining dedicated agents with distinct instructions, tools, and routing rules, you prevent the primary orchestrator from becoming overloaded and ensure complex tasks follow strict procedures.
+
+## Prerequisites
+
+- A running background daemon. See [Daemon & Websocket Networking](daemon-and-websockets.html).
+
+## Quick Example
+
+To create a new specialist agent, define a Markdown file in the `agents/` directory containing YAML frontmatter and the system instructions.
+
+For example, to create a basic log analyzer, create a file named `agents/log-analyzer.md`:
+
+```markdown
+---
+name: log-analyzer
+description: Parses server logs to identify crash stack traces and performance bottlenecks.
+tools: read, bash
+---
+
+# Log Analyzer
+
+You are an expert at reading unstructured application logs.
+
+## Your Task
+
+1. Read the provided log files using `bash` tools like `grep` and `awk`.
+2. Identify any stack traces or lines containing "ERROR" or "FATAL".
+3. Summarize the frequency of each error type.
+```
+
+## Step-by-Step Guide
+
+### 1. Create the Agent Profile
+
+All custom agents live in the `agents/` directory. Create a new file named `<agent-name>.md`.
+
+The file must begin with a YAML block defining:
+- `name`: The exact string identifier for your agent.
+- `description`: A clear explanation of what the agent does. The orchestrator reads this to decide when to invoke the agent.
+- `tools`: A comma-separated list of capabilities the agent can use.
+
+Everything below the YAML block becomes the agent's system prompt. Use structured markdown headings, clear numbered lists, and specific domain rules.
+
+### 2. Configure Agent Routing
+
+The orchestrator needs to know when to dispatch tasks to your new agent. Open `rules/10-agent-routing.md` and add your agent to the "Routing Table" section.
+
+```markdown
+| Domain/Tool | Agent |
+|---|---|
+| Python (.py) | `python-expert` |
+| Server Logs (.log) | `log-analyzer` |
+```
+
+If your agent handles a broader task intent rather than just a specific file type, add a bullet point to the "Routing by Intent, Not Tool" section in the same file to clarify edge cases.
+
+### 3. Register the Agent for Bug Reporting
+
+To ensure the orchestrator can report bugs if it detects logic flaws in your agent's instructions, add your new agent's name to the alphabetical list in `rules/50-agent-bug-reporting.md`:
+
+```markdown
+- kubernetes-expert
+- log-analyzer
+- planner
+```
+
+### 4. Test Your Agent
+
+Agents and rules are loaded dynamically from the filesystem. Your changes will take effect immediately on your next session.
+
+1. Start a new Pi chat session.
+2. Ask the orchestrator to perform a task matching your new agent's domain (e.g., "Find the cause of the crash in `app.log`").
+3. Verify that the orchestrator routes the task to your `log-analyzer` agent.
+
+## Advanced Usage
+
+### Using External AI Agents
+
+You can route specific domains to external AI providers (like Claude, Gemini, or Cursor) instead of handling them locally. To do this, point the intent to the special `/acpx-prompt` handler in your routing table.
+
+See [External AI Agents & CLI](external-ai-agents.html) for detailed configuration.
+
+### Tool Selection
+
+Only give your agent the tools it actually needs to accomplish its domain tasks. The `tools` list in the YAML frontmatter restricts what the agent is permitted to execute:
+
+- `read`: Allows the agent to read file contents, search patterns, and list directories.
+- `write` / `edit`: Allows the agent to create new files or modify existing source code.
+- `bash`: Allows the agent to execute shell commands.
+
+> **Warning:** Be cautious when granting the `bash` tool to agents that process untrusted external data. For securing bash capabilities, see [Implementing Command Guards](safety-enforcements.html).
+
+### Prompt Templates vs Agents
+
+If you only need the AI to format text, translate a snippet, or perform a quick stateless transformation, do not create a full agent. Use a Prompt Template instead. Specialist agents should be reserved for complex workflows that require multi-step reasoning, tool usage, or iterative loops.
+
+## Troubleshooting
+
+- **Agent isn't selected:** Ensure the agent's file name exactly matches the name you placed in `rules/10-agent-routing.md`. Start a completely new session to ensure the orchestrator has loaded the latest routing table.
+- **Agent forgets instructions:** Keep your Markdown system prompt concise. Use bullet points instead of long paragraphs. If your agent's instructions are too long or contain contradictory steps, the underlying model may ignore them.
 
 ## Related Pages
 
-- [Specialist Agents Reference](agents-reference.html)
-- [Orchestrator Rules Reference](rules-reference.html)
-- [Communicating Between Pi Sessions](inter-agent-communication.html)
-- [Command Safety Guards and Enforcement](command-enforcement.html)
+- [External AI Agents & CLI](external-ai-agents.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)
+- [Automating Code Reviews](automating-code-reviews.html)
 
 ---
 
-Source: code-review-loop.md
+Source: using-the-web-dashboard.md
 
+# Using the Web Dashboard
 
+Monitor multiple active terminal sessions, interact with background tasks, and perform visual code reviews without leaving your workflow. Using the local React UI allows you to manage long-running agents and inspect git diffs across multiple projects from a single browser window.
+
+- **Prerequisites:**
+  - An active Terminal UI (TUI) session (the web features cannot be launched from CLI-only modes).
+  - Port `19190` available on your machine (the default port for the global dashboard).
+
+## Quick Example
+
+Start the global dashboard directly from your active TUI session:
+
+```text
+/pidash start
+```
+
+Once the background server launches, the TUI status line will display a clickable `pi-dash` label and web link (e.g., `🌐 http://localhost:19190`). Click the label or open this URL in your web browser to manage your workspace.
+
+## Step-by-Step Guide
+
+1. **Launch the Dashboard:** Run the `/pidash start` command inside your active session. The background server will initialize and establish a WebSocket connection with your terminal.
+2. **Navigate Sessions:** Open the dashboard URL in your browser. The interface displays a list of all active sessions across your system. Clicking a session name will automatically switch your terminal's context to that project directory.
+3. **Adjust Agent Settings:** Use the dropdowns in the web UI to change the active LLM provider or adjust the thinking level dynamically. Setting changes are immediately reflected in your terminal.
+4. **Monitor Background Tasks:** View the status of asynchronous agents and scheduled cron jobs. If a background task is stuck, you can terminate it directly from the dashboard using the kill controls.
+5. **Send Prompts:** You can type prompts directly into the web UI. The dashboard forwards these commands to your terminal session as follow-up instructions for the agent.
+6. **Stop the Dashboard:** When you are finished, shut down the web server by running `/pidash stop` in your terminal.
+
+## Advanced Usage
+
+### Dashboard vs. Diff Viewer
+
+The project uses two distinct web interfaces depending on what you need to accomplish:
+
+| Feature | `/pidash` (Web Dashboard) | `/pidiff` (Diff Viewer) |
+|---------|---------------------------|-------------------------|
+| **Scope** | Global (sees all active sessions) | Local (tied to the current project) |
+| **Port Mapping** | Fixed (`19190` by default) | Dynamic (allocates a random free port) |
+| **Primary Use** | Session switching, agent config, background task monitoring | Visualizing git diffs, publishing inline code review comments |
+| **Commands** | `/pidash start\|stop\|restart\|status` | `/pidiff start\|stop\|restart\|status` |
+
+### Using the Project Diff Viewer
+
+While the main dashboard monitors your global state, the `pidiff` extension provides a dedicated interface for reviewing code changes within a specific repository. It runs a separate server to isolate project context.
+
+Launch the diff viewer from your project session:
+
+```text
+/pidiff start
+```
+
+1. The TUI status line will display a clickable `pi-diff` label and dynamically allocated port for this specific project's diff viewer.
+2. Click the `pi-diff` label or open the URL to inspect local git diffs side-by-side and annotate specific lines of code.
+3. Once you publish review comments from the web UI, they are automatically injected into your TUI session as formatted instructions. The active agent will read the comments and begin resolving them.
+
+To check the health and port of your active diff server at any time, run:
+
+```text
+/pidiff status
+```
+
+> **Tip:** If you need to forcefully reset the project diff viewer, run `/pidiff restart`. This kills the local server and allocates a new random port.
+
+### Running in Containers
+
+The web dashboard automatically detects if your session is running inside a Docker or Podman container. Ensure you expose the necessary ports when launching your container so your host machine's browser can connect:
+- Map port `19190` for the global dashboard.
+- If using the diff viewer, map a specific port range and ensure your environment is configured to allow dynamic port allocation.
+
+> **Note:** To disable the web dashboard extensions entirely in headless environments or CI pipelines, set `PI_PIDASH_ENABLE=false` and `PI_PIDIFF_ENABLE=false` in your environment variables (or set `pidash_enable: false` and `pidiff_enable: false` in `pi-config-settings.json`).
+
+## Troubleshooting
+
+- **Dashboard fails to start:** Check if another application is using port `19190`. You can change the port by setting the `PI_PIDASH_PORT` environment variable (or `pidash_port` in `pi-config-settings.json`) before starting your session.
+- **Session not showing in UI:** Ensure your terminal is running in TUI mode. The web interface relies on the TUI's event hooks to synchronize state.
+- **Cannot connect to diff viewer:** The `pidiff` server uses local lockfiles in your project's `.pi/tmp/` directory to track active ports. If the server becomes unresponsive or port conflicts occur, run `/pidiff stop` to clear the lockfiles before starting it again.
+
+See [Installation & Quickstart](quickstart.html) to learn more about basic chat commands, or read [Managing Custom Agents](managing-custom-agents.html) to understand how background async tasks operate.
 
 ## Related Pages
 
-- [Your First Coding Workflow](first-workflow.html)
-- [Common Workflow Recipes](workflow-recipes.html)
-- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
+- [Configuration & Settings](configuration.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
 
 ---
 
-Source: slash-commands.md
+Source: curating-project-memory.md
 
+# Curating Project Memory
 
+You want your AI agents to remember your project conventions, architectural decisions, and past mistakes so you don't have to repeat yourself in every session. This guide shows you how to explicitly seed context, audit what the agents have learned, and organize persistent project memory.
+
+## Prerequisites
+
+- A project initialized with Pi configuration.
+- The `myk-pi-tools` CLI installed and available in your environment.
+
+## Quick Example
+
+```bash
+myk-pi-tools memory add --category preference --summary "Always use uv run instead of pip" --pinned
+```
+The fastest way to ensure your agents remember a hard-and-fast rule is to explicitly add a pinned preference via the CLI.
+
+## Step-by-Step
+
+### 1. View Current Memory
+
+```bash
+myk-pi-tools memory show
+```
+Agents automatically store context as they work. This command dumps all active memory entries organized by topic and category (lessons, mistakes, preferences, etc.) so you can check what the system already knows before adding new rules.
+
+### 2. Seed New Context
+
+```bash
+# Record an architectural decision
+myk-pi-tools memory add -c decision -s "We use Redis for all caching instead of Memcached"
+
+# Record a common stumbling block
+myk-pi-tools memory add -c mistake -s "Buildah chown -R silently skips the target dir on this OS"
+```
+Use the `memory add` command to explicitly inject project context. You must select an appropriate category (`lesson`, `decision`, `mistake`, `pattern`, `done`, `preference`) and provide a short summary string.
+
+> **Tip:** Use the `--pinned` flag for critical rules. Pinned memories are protected from the automatic decay and archiving that happens to older, less relevant context over time.
+
+### 3. Clean Up Obsolete Context
+
+```bash
+myk-pi-tools memory forget -c decision -s "We use Redis for all caching instead of Memcached"
+```
+If a project's architecture changes, old memories can confuse the agents. Use the `memory forget` command with the exact category and summary text to permanently remove outdated context.
+
+## Advanced Usage
+
+### Automatic Preference Extraction
+
+You don't always need to use the CLI to curate memory. During a normal chat session, the agent automatically monitors for phrases like "I prefer...", "Always use...", or "Never do X". When detected, the agent quietly extracts these rules into its memory system and reinforces them if they come up again in future sessions.
+
+### Code Review Guidelines
+
+When using the automated code review loop, the system maintains a separate memory track specifically for pull requests. When you skip an agent's code review finding for a generalizable reason (like "this is an intentional project pattern"), the system writes a new guideline.
+
+All code review agents read these learned guidelines before their next pass, automatically suppressing similar findings. See [Automating Code Reviews](automating-code-reviews.html) for details.
+
+### Auditing Enforcement and Promotions
+
+```bash
+myk-pi-tools memory status
+```
+Highly reinforced memories can automatically graduate into code-enforced rules that actively intercept or block destructive commands. This status command outputs an inventory of your "code-tier" (actively hooked) memory entries versus your "injected" (contextual) topics, and lists any pending memory promotions awaiting approval.
+
+## Troubleshooting
+
+- **Agent ignores a memory:** Verify the memory was actually stored using `myk-pi-tools memory show`. If a critical rule keeps getting ignored despite being in memory, try re-adding it with the `--pinned` flag or implementing a hard guard. See [Implementing Command Guards](safety-enforcements.html).
+- **Context limit warnings:** If the agent complains about memory budgets or consolidation during a session, you have too many active memory topics. Manually drop outdated entries with `memory forget`, or simply allow the background daemon to organically decay cold topics over time.
 
 ## Related Pages
 
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
-- [Customization and Extension Recipes](customization-recipes.html)
-- [Your First Coding Workflow](first-workflow.html)
-- [Common Workflow Recipes](workflow-recipes.html)
+- [Memory Architecture](memory-architecture.html)
+- [Background Memory Consolidation (Dreaming)](background-dreaming.html)
 
 ---
 
-Source: memory-system.md
+Source: custom-slash-commands.md
 
+# Creating Slash Commands
 
+## Creating a Prompt-Based Slash Command
+Create a simple chat alias for a frequently used, complex prompt.
+
+```markdown
+---
+description: "Run a quick security audit on the current changes"
+---
+Review the git diff of the current changes and look for security vulnerabilities.
+Check for hardcoded secrets, injection vectors, and broken access control.
+```
+Place this in `prompts/security-audit.md` to automatically register the `/security-audit` command. The markdown filename determines the slash command name, and the description populates the command menu in the UI.
+
+## Passing Arguments to a Prompt Command
+Inject user input from the chat bar directly into your prompt template.
+
+```markdown
+---
+description: "Explain a specific concept or file — /explain <target>"
+argument-hint: "<target>"
+---
+
+## Raw Arguments
+
+```text
+$ARGUMENTS
+```
+
+> **Bug Reporting:** If this command fails, use the `/bug` command to report it.
+
+Explain the target provided in the raw arguments above. Keep the explanation concise and focus on how it fits into the project architecture.
+```
+When a user runs `/explain src/main.ts`, the `$ARGUMENTS` token is replaced with `src/main.ts`. The `argument-hint` frontmatter provides inline help in the command palette.
+> **Note:** The bug reporting blockquote is a project standard and must immediately follow the `$ARGUMENTS` block.
+
+## Creating an Interactive TypeScript Command
+Register a programmable extension command to interact with the workspace, manipulate the UI, or trigger background tasks.
+
+```typescript
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export function registerHelloCommand(pi: ExtensionAPI): void {
+  pi.registerCommand("hello", {
+    description: "Display a custom notification greeting",
+    handler: async (args, ctx) => {
+      const name = args?.trim() || "Developer";
+
+      if (!ctx.hasUI) {
+        return; // Ensure the session supports UI before notifying
+      }
+
+      ctx.ui.notify(`Hello, ${name}! Your workspace is ${ctx.cwd}`, "info");
+    },
+  });
+}
+```
+Place this in a new file within the `extensions/` directory and call it during extension initialization. The handler function receives the raw argument string and a context object containing the session state, UI tools, and workspace details.
+> **Tip:** See [Daemon & Websocket Networking](daemon-and-websockets.html) for details on handling asynchronous background tasks within command handlers.
+
+## Adding Argument Autocomplete to a Command
+Provide interactive tab-completions for your custom slash commands.
+
+```typescript
+// Add to the `completions` record in extensions/orchestrator/extended-autocomplete.ts
+"hello": (prefix: string) => {
+  return filter([
+    { value: "--verbose", label: "--verbose", description: "Show detailed greeting output" },
+    { value: "--quiet", label: "--quiet", description: "Suppress the notification bell" }
+  ], prefix);
+},
+```
+Add your completion logic to `extensions/orchestrator/extended-autocomplete.ts`. The `filter` helper automatically handles fuzzy matching against the user's current typed prefix.
+> **Warning:** If you are adding autocomplete for a prompt template (like the `/explain` example above), you must also add the command name to the `promptTemplateCommands` set located in the same file to intercept the routing.
 
 ## Related Pages
 
-- [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Customization and Extension Recipes](customization-recipes.html)
-- [Orchestrator Rules Reference](rules-reference.html)
+- [Implementing Command Guards](safety-enforcements.html)
+- [myk_pi_tools CLI Reference](cli-reference.html)
 
 ---
 
-Source: async-agents-and-cron.md
+Source: safety-enforcements.md
 
+# Implementing Command Guards
 
+Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.
 
-## Related Pages
+## Block a Destructive Command Pattern
+Stop the agent from executing specific, potentially destructive commands using memory enforcement triggers.
 
-- [Communicating Between Pi Sessions](inter-agent-communication.html)
-- [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Specialist Agents Reference](agents-reference.html)
-- [Common Workflow Recipes](workflow-recipes.html)
+```json
+{
+  "text": "Never prune docker images",
+  "category": "pattern",
+  "trigger": "bash_contains docker system prune",
+  "action": "block"
+}
+```
+Ask the agent to run the `memory_add` tool with these parameters to block commands matching the trigger. The agent evaluates the trigger against `bash` tool invocations and immediately rejects matching requests.
 
----
+> **Tip:** You can also use the `bash_regex` trigger for more complex matches, or `tool_name` to block specific tools entirely.
 
-Source: inter-agent-communication.md
+## Trigger an Automatic Post-Command Script
+Automatically run a deployment or cleanup script immediately after a specific command finishes.
 
+```json
+{
+  "text": "Sync database after schema changes",
+  "category": "pattern",
+  "trigger": "bash_contains prisma db push",
+  "action": "run_after ./scripts/sync-db.sh"
+}
+```
+Ask the agent to run the `memory_add` tool with the `run_after` action. When the trigger matches a bash command, the enforcement engine will automatically execute the trailing script in the background.
 
+## Restrict Allowed Automatic Scripts
+Limit which scripts can be executed automatically by enforcement rules to prevent malicious chaining.
 
-## Related Pages
+```bash
+export PI_ENFORCEMENT_ALLOWED_COMMANDS="./scripts/sync-db.sh:make format:npm run build"
+```
+Set this environment variable in your terminal or container environment. When defined, any `run_after` actions must exactly match an entry in this colon-separated allowlist.
 
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Specialist Agents Reference](agents-reference.html)
-- [Controlling Pi Sessions from Discord](discord-bot.html)
+> **Warning:** Exact matches are required. Prefix matching is disabled to prevent shell chaining bypasses.
 
----
+## Warn the Agent on Sensitive File Modifications
+Inject a contextual warning directly into the agent's context whenever specific files are modified.
 
-Source: external-ai-agents.md
+```json
+{
+  "text": "Ensure CI workflows are tested locally before pushing",
+  "category": "pattern",
+  "trigger": "file_modified .github/workflows/*.yml",
+  "action": "warn"
+}
+```
+Ask the agent to run the `memory_add` tool using a `file_modified` trigger and the `warn` action. When the agent uses file-writing tools (like `write` or `edit`) on matching paths, the memory text is automatically appended as a warning in the tool results.
 
+## Require a Prerequisite Tool Call
+Prevent the execution of a specific command unless another tool was invoked earlier in the same turn.
 
+```json
+{
+  "text": "Always ask user before merging PRs",
+  "category": "pattern",
+  "verifier": "tool_called ask_user before gh pr merge"
+}
+```
+Ask the agent to run the `memory_add` tool with this semantic verifier. The orchestrator checks the active turn's tool history at `turn_end` and logs a violation if the specified command (`gh pr merge`) was executed without the required tool (`ask_user`) preceding it.
 
-## Related Pages
+## Enable the Automated Code Review Loop
+Block agents from committing code until all automated reviewers report zero findings.
 
-- [Using ACPX Provider for External Agent Models](acpx-provider.html)
-- [Specialist Agents Reference](agents-reference.html)
-- [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Communicating Between Pi Sessions](inter-agent-communication.html)
+```json
+{
+  "review_loop_enforcement": true,
+  "review_loop_max_cycles": 3
+}
+```
+Set these values in your project's `.pi/pi-config-settings.json` file. When enabled, the orchestrator intercepts `git commit` commands and checks the review state machine, enforcing that tests pass and subagent reviewers approve. Hitting the cycle cap stops the loop but does NOT bypass the commit block.
 
----
-
-Source: docker-deployment.md
-
-
-
-## Related Pages
-
-- [Installing and Starting Your First Session](quickstart.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [myk-pi-tools CLI Reference](cli-reference.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-
----
-
-Source: dashboards-and-diffs.md
-
-
-
-## Related Pages
-
-- [Running the Automated Code Review Loop](code-review-loop.html)
-- [Common Workflow Recipes](workflow-recipes.html)
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
-
----
-
-Source: workflow-recipes.md
-
-
-
-## Related Pages
-
-- [Your First Coding Workflow](first-workflow.html)
-- [Running the Automated Code Review Loop](code-review-loop.html)
-- [Customization and Extension Recipes](customization-recipes.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
-
----
-
-Source: customization-recipes.md
-
-
-
-## Related Pages
-
-- [Common Workflow Recipes](workflow-recipes.html)
-- [Orchestrator Rules Reference](rules-reference.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
-
----
-
-Source: agents-reference.md
-
-
+See [Automating Code Reviews](automating-code-reviews.html) for details.
 
 ## Related Pages
 
-- [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Communicating Between Pi Sessions](inter-agent-communication.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
-
----
-
-Source: commands-reference.md
-
-
-
-## Related Pages
-
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
-- [myk-pi-tools CLI Reference](cli-reference.html)
-- [Command Safety Guards and Enforcement](command-enforcement.html)
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
+- [Creating Slash Commands](custom-slash-commands.html)
+- [myk_pi_tools CLI Reference](cli-reference.html)
 
 ---
 
 Source: cli-reference.md
 
+# myk_pi_tools CLI Reference
 
+This reference documents the subcommands available through the `myk-pi-tools` command line interface for database queries, code review handling, and managing project memory.
 
-## Related Pages
-
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Running Pi in a Docker Container](docker-deployment.html)
-- [Installing and Starting Your First Session](quickstart.html)
+For information on how the daemon runs behind the scenes, see [Daemon & Websocket Networking](daemon-and-websockets.html). For project-wide environment configurations, see [Configuration & Settings](configuration.html).
 
 ---
 
-Source: configuration-reference.md
+## Database Queries (`myk-pi-tools db`)
 
+The `db` command group provides ad-hoc access to the SQLite reviews database for analytics and auto-skip logic.
 
+### `db stats`
 
-## Related Pages
+Groups and returns review statistics based on source or reviewer.
 
-- [Orchestrator Rules Reference](rules-reference.html)
-- [Customization and Extension Recipes](customization-recipes.html)
-- [myk-pi-tools CLI Reference](cli-reference.html)
-- [Running Pi in a Docker Container](docker-deployment.html)
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--by-source` | Flag | `True` | Group statistics by source (human, qodo, coderabbit) |
+| `--by-reviewer` | Flag | `False` | Group statistics by the reviewer author |
+| `--json` | Flag | `False` | Output results as JSON instead of formatted text table |
+| `--db-path` | String | None | Path to the SQLite database file |
+
+```bash
+# Get stats grouped by source (default)
+myk-pi-tools db stats
+
+# Output reviewer stats as JSON
+myk-pi-tools db stats --by-reviewer --json
+```
+
+### `db patterns`
+
+Identifies comments that appear multiple times with similar content, helping to identify potential auto-skip rules.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--min` | Integer | `2` | Minimum number of occurrences to report |
+| `--json` | Flag | `False` | Output results as JSON |
+| `--db-path` | String | None | Path to the SQLite database file |
+
+```bash
+# Find recurring patterns with at least 3 occurrences
+myk-pi-tools db patterns --min 3
+```
+
+### `db dismissed`
+
+Retrieves all `not_addressed` or `skipped` comments for a repository.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--owner` | String | (Required) | Repository owner (organization or user) |
+| `--repo` | String | (Required) | Repository name |
+| `--json` | Flag | `False` | Output results as JSON |
+| `--db-path` | String | None | Path to the SQLite database file |
+
+```bash
+# View dismissed comments for the pi-config repo
+myk-pi-tools db dismissed --owner myk-org --repo pi-config
+```
+
+### `db query`
+
+Runs a raw SELECT query against the review database.
+
+> **Warning:** Only SELECT statements are permitted for safety reasons.
+
+| Parameter/Option | Type | Default | Description |
+|---|---|---|---|
+| `sql` | String | (Required) | The SQL query to execute |
+| `--json` | Flag | `False` | Output results as JSON |
+| `--db-path` | String | None | Path to the SQLite database file |
+
+```bash
+# Count comments grouped by status
+myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
+```
+
+### `db find-similar`
+
+Accepts JSON via `stdin` (requires `path` and `body` keys) and attempts to find a previously dismissed comment matching the exact file path and body similarity (Jaccard word overlap).
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--owner` | String | (Required) | Repository owner (organization or user) |
+| `--repo` | String | (Required) | Repository name |
+| `--threshold` | Float | `0.6` | Minimum similarity threshold (0.0 to 1.0) |
+| `--json` | Flag | `False` | Output results as JSON |
+| `--db-path` | String | None | Path to the SQLite database file |
+
+```bash
+echo '{"path": "foo.py", "body": "Add error handling..."}' | \
+  myk-pi-tools db find-similar --owner myk-org --repo pi-config --json
+```
 
 ---
 
-Source: rules-reference.md
+## Review Handling (`myk-pi-tools reviews`)
 
+Commands for managing pull request review fetch loops, automated Qodo interactions, and persistence.
 
+### `reviews fetch`
 
-## Related Pages
+Fetches review threads from the current pull request and categorizes them by source (human, qodo, coderabbit). Saves output to `<output-dir>/pr-<number>-reviews.json`.
 
-- [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Command Safety Guards and Enforcement](command-enforcement.html)
-- [Customization and Extension Recipes](customization-recipes.html)
+| Parameter/Option | Type | Default | Description |
+|---|---|---|---|
+| `review_url` | String | `""` | Optional specific review URL for context (e.g., `#discussion_rXXX`) |
+| `--include-resolved` | Flag | `False` | Include resolved threads in the fetch output |
+| `--user` | String | None | Filter threads by author username |
+| `--output-dir` | String | (Required) | Directory to write the output JSON file |
+
+```bash
+myk-pi-tools reviews fetch --output-dir .pi/tmp/
+```
+
+### `reviews poll`
+
+Polls for reviews until new actionable comments appear.
+
+| Parameter/Option | Type | Default | Description |
+|---|---|---|---|
+| `review_url` | String | `""` | Optional specific review URL |
+| `--source` | String | `coderabbit` | Which reviewer to poll for (`coderabbit` or `qodo`) |
+| `--output-dir` | String | (Required) | Directory to write the output JSON file |
+
+```bash
+# Poll for Qodo comments
+myk-pi-tools reviews poll --source qodo --output-dir .pi/tmp/
+```
+
+### `reviews post`
+
+Posts replies and resolves review threads based on status. Reads from a JSON file generated by `reviews fetch` and processed by the AI handler.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `json_path` | String | (Required) | Path to the JSON file containing the review payload |
+
+```bash
+myk-pi-tools reviews post .pi/tmp/pr-42-reviews.json
+```
+
+### `reviews pending-fetch`
+
+Fetches the authenticated user's PENDING review and its comments from a GitHub PR.
+
+| Parameter/Option | Type | Default | Description |
+|---|---|---|---|
+| `pr_url` | String | (Required) | GitHub PR URL |
+| `--output-dir` | String | (Required) | Directory to write the output JSON file |
+
+```bash
+myk-pi-tools reviews pending-fetch "https://github.com/owner/repo/pull/123" --output-dir .pi/tmp/
+```
+
+### `reviews pending-update`
+
+Updates accepted comment bodies in a pending review and optionally submits the review.
+
+| Parameter/Option | Type | Default | Description |
+|---|---|---|---|
+| `json_path` | String | (Required) | Path to the processed pending review JSON |
+| `--submit` | Flag | `False` | Submit the review immediately after updating comments |
+
+```bash
+myk-pi-tools reviews pending-update .pi/tmp/pr-123-pending-review.json --submit
+```
+
+### `reviews status`
+
+Displays the review status for the current PR and generates an HTML report.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--pr` | Integer | None | PR number (defaults to auto-detect from current branch) |
+| `--output-dir` | String | (Required) | Directory for output HTML report |
+
+```bash
+myk-pi-tools reviews status --output-dir .pi/reports/
+```
+
+### `reviews ask-qodo`
+
+Posts a `/qodo` comment to ask a question and waits up to 10 minutes for a reply.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `args` | String | (Required) | The question string, optionally prepended with `--pr owner/repo N` |
+
+```bash
+myk-pi-tools reviews ask-qodo "What edge cases are missing?"
+```
+
+### `reviews store`
+
+Stores completed review to the local SQLite database (`.pi/data/reviews.db`) for analytics, then deletes the JSON file.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `json_path` | String | (Required) | Path to the completed review JSON file |
+
+```bash
+myk-pi-tools reviews store .pi/tmp/pr-42-reviews.json
+```
 
 ---
 
-Source: extension-architecture.md
+## Memory Management (`myk-pi-tools memory`)
 
+Manual maintenance commands for reading, adding, or forgetting learned topics.
 
+### `memory add`
+
+Adds a memory entry to the repository's topics directory.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--category`, `-c` | String | (Required) | One of: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference` |
+| `--summary`, `-s` | String | (Required) | Short one-line description of the memory |
+| `--pinned` | Flag | `False` | Marks entry as user-requested (protected from automated pruning) |
+| `--file-path` | String | None | Global option: specific topics directory path |
+
+```bash
+# Add a persistent user preference
+myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
+```
+
+### `memory show`
+
+Prints all memory entries across all topic markdown files.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--file-path` | String | None | Global option: specific topics directory path |
+
+```bash
+myk-pi-tools memory show
+```
+
+### `memory migrate`
+
+One-time migration script. Moves all entries from the legacy `memories.db` SQLite database to the file-backed topics directory.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--file-path` | String | None | Global option: specific topics directory path |
+
+```bash
+myk-pi-tools memory migrate
+```
+
+### `memory forget`
+
+Removes a specific memory entry if it exists in the active topic files.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--category`, `-c` | String | (Required) | The category the memory belongs to |
+| `--summary`, `-s` | String | (Required) | The exact text of the entry to forget |
+| `--file-path` | String | None | Global option: specific topics directory path |
+
+```bash
+myk-pi-tools memory forget -c mistake -s "Used pip instead of uv run"
+```
+
+### `memory path`
+
+Outputs the absolute directory path where project memory topics are stored.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--file-path` | String | None | Global option: specific topics directory path |
+
+```bash
+myk-pi-tools memory path
+```
+
+### `memory status`
+
+Shows the enforcement honesty inventory for project memory, analyzing code-tier implementations versus injected topic counts.
+
+> **Tip:** Used to ensure the AI's "learned" behaviors actually map cleanly to local hooks and rules.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--file-path` | String | None | Global option: specific topics directory path |
+
+```bash
+myk-pi-tools memory status
+```
 
 ## Related Pages
 
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
-- [Customization and Extension Recipes](customization-recipes.html)
-- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
-- [Memory Scoring, Embeddings, and Situation Reports](memory-internals.html)
+- [Installation & Quickstart](quickstart.html)
+- [Creating Slash Commands](custom-slash-commands.html)
+- [Configuration & Settings](configuration.html)
 
 ---
 
-Source: memory-internals.md
+Source: configuration.md
 
+# Configuration & Settings
 
+This page serves as a comprehensive reference for configuring the Pi environment, overriding defaults, and registering CLI or asynchronous agents.
+
+Configuration values resolve in the following order (highest precedence first):
+1. **Project settings:** `<project-root>/.pi/pi-config-settings.json`
+2. **Global settings:** `~/.pi/pi-config-settings.json`
+3. **Environment variables:** E.g., `PI_COMMIT_TRAILER`
+4. **Default values**
+
+## Core Settings
+
+Settings that modify the orchestrator's behavior, git operations, and default parameters.
+
+### `commit_trailer`
+Appends a custom git commit trailer (e.g., `Assisted-by`) to every commit generated by the agent.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `commit_trailer` | boolean \| string | `false` | `PI_COMMIT_TRAILER` | If a string, adds the trailer `String: PI (<model>)`. If multiple comma-separated names are given, the UI asks the user which one to apply. `false` disables it. |
+
+```json
+{
+  "commit_trailer": "Assisted-by"
+}
+```
+
+### `use_worktrees`
+Forces the agent to use git worktrees rather than switching branches in the main working directory.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `use_worktrees` | boolean | `false` | `PI_USE_WORKTREES` | If enabled, the agent executes tasks in isolated git worktrees. |
+
+```json
+{
+  "use_worktrees": true
+}
+```
+
+### `dco`
+Enforces the Developer Certificate of Origin on all git commits.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `dco` | boolean | `false` | `PI_DCO` | Adds the `--signoff` flag to all commits made by the orchestrator or subagents. |
+
+```json
+{
+  "dco": true
+}
+```
+
+### `comment_signature`
+Appends a small AI signature identifier to PR comments left by the agent.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `comment_signature` | boolean | `false` | None | Whether to add an AI branding signature to PR comments. |
+
+```json
+{
+  "comment_signature": true
+}
+```
+
+### `orchestrator_edit_write_block`
+Restricts the orchestrator agent from directly altering files.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `orchestrator_edit_write_block` | boolean | `false` | None | Blocks the orchestrator from using edit and write tools directly, forcing it to delegate file modification tasks to subagents. |
+
+```json
+{
+  "orchestrator_edit_write_block": true
+}
+```
+
+## Agent Configuration
+
+Configuration determining default models, external agent execution, and specific tool assignments. For creating new agent roles, see [Managing Custom Agents](managing-custom-agents.html).
+
+### `cli_agents`
+Registers specific model providers to run purely via CLI execution environments (such as Cursor, Claude, or Gemini). See [External AI Agents & CLI](external-ai-agents.html) for detailed usage.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `cli_agents` | string \| string[] | `[]` | `CLI_AGENTS` | The list of agents to register as `cli-*` providers. Valid formats include a comma-separated string or an array of strings. |
+
+```json
+{
+  "cli_agents": ["cursor", "claude"]
+}
+```
+
+### `acpx_agents`
+Registers specific models for executing asynchronous subagent routines.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `acpx_agents` | string \| string[] | `[]` | `ACPX_AGENTS` | The list of agents to register as `acpx-*` models. Enables detached, fire-and-forget capabilities. |
+
+```json
+{
+  "acpx_agents": ["cursor"]
+}
+```
+
+### `agent_provider` and `agent_model`
+Sets the fallback default execution provider and model string for spawned subagents.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `agent_provider` | string | `""` | None | Default provider for all subagents (e.g. `cli-cursor`). |
+| `agent_model` | string | `""` | None | Default model ID for all subagents. |
+
+```json
+{
+  "agent_provider": "cli-cursor",
+  "agent_model": "cursor:cursor-grok-4.5-high-fast"
+}
+```
+
+### `agent_overrides`
+Overrides the global fallback provider or model for specifically named subagents.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `agent_overrides` | object | `{}` | None | Per-agent provider/model mapping. Setting a value to `null` forces the subagent to inherit the parent session's model. |
+
+```json
+{
+  "agent_overrides": {
+    "test-automator": {
+      "provider": "cli-claude",
+      "model": "claude-3-5-sonnet"
+    },
+    "reviewer": {
+      "provider": null,
+      "model": null
+    }
+  }
+}
+```
+
+### `image_model`
+Specifies the model to use when generating images from tools. See [Image Generation](image-generation.html) for exact capabilities.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `image_model` | string | `""` | `PI_IMAGE_MODEL` | Set to a valid Gemini image generation model string (e.g. `gemini-3-pro-image`). |
+
+```json
+{
+  "image_model": "gemini-3-pro-image"
+}
+```
+
+## Background Task Configuration
+
+Controls the timing and detached execution configurations for background operations.
+
+### `dream_interval_hours`
+Configures how often the background dream routines execute to index or score session topics.
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `dream_interval_hours` | number | `3` | `PI_DREAM_INTERVAL_HOURS` | Time between automated project dream phases in hours. |
+
+```json
+{
+  "dream_interval_hours": 4
+}
+```
+
+### `async_llm_provider` and `async_llm_model`
+Explicitly defines what provider/model to route LLM queries to when the parent session is operating purely through `acpx` (which lacks native LLM tools itself).
+
+| Parameter | Type | Default | Env Var | Description |
+|-----------|------|---------|---------|-------------|
+| `async_llm_provider` | string | `""` | `PI_ASYNC_LLM_PROVIDER` | Provider for detached LLM async children. Both provider and model must be set. |
+| `async_llm_model` | string | `""` | `PI_ASYNC_LLM_MODEL` | Model ID for detached LLM async children. If unset, the system drops pending must-async LLM operations. |
+
+```json
+{
+  "async_llm_provider": "cli-gemini",
+  "async_llm_model": "gemini-2.5-pro"
+}
+```
+
+## Environment Variables only
+
+These configurations apply globally via shell profiles and cannot be embedded in `pi-config-settings.json`.
+
+> **Note:** The current project settings resolution does support falling back to environment variables for many configurations detailed above. The following variables exist exclusively as environment or process flags.
+
+| Variable | Description |
+|----------|-------------|
+| `PI_SUBAGENT_CHILD` | When set to `"1"`, signals that the current process is a background subagent execution. Bypasses settings cache resets and UI mounts. |
 
 ## Related Pages
 
-- [Working with Project Memory](memory-system.html)
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Specialist Agents Reference](agents-reference.html)
+- [Installation & Quickstart](quickstart.html)
+- [myk_pi_tools CLI Reference](cli-reference.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
 
 ---
 
-Source: acpx-provider.md
+Source: memory-architecture.md
 
+# Memory Architecture
 
+Understanding how Pi stores, scores, and retrieves memory is essential for building agents that improve over time and retain context across sessions. The memory architecture transforms raw interactions into a structured, persistent knowledge base that guides future agent behavior.
+
+By leveraging this architecture, your agents won't just solve immediate problems—they will adapt to project conventions, remember user preferences, and enforce security policies without requiring manual rule updates.
+
+## The Big Picture
+
+The memory system is built as a multi-layered pipeline that prioritizes, retrieves, and injects context based on relevance and history.
+
+1. **Scored Memory (`memory-scores.json`)** — Tracks raw memory entries using a stability formula. Memories have an evidence count and decay over time unless reinforced.
+2. **Topic Tree (`.pi/memory/topics/`)** — Organizes scored entries into structured Markdown topic files (~3000 tokens each). Cold topics are automatically archived.
+3. **Vector Embeddings (`embeddings.json`)** — Generates local semantic embeddings (using `Xenova/bge-small-en-v1.5`) without requiring external API keys. Enables hybrid keyword and vector search.
+4. **Situation Reports** — Dynamically builds a token-budgeted context block from the highest-priority active memories.
+5. **Auto-Injection Pipeline** — Injects the Situation Report at the **tail end** of the system prompt (where LLM attention is statistically highest) just before the agent starts a turn.
+
+## Key Concepts
+
+### Topic Scoring and Decay
+
+Memories aren't static; they live in a dynamic ecosystem governed by a stability formula:
+`cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)`
+
+Each memory falls into a category with a specific half-life:
+- **Preferences:** 90 days
+- **Lessons:** 60 days
+- **Done/Tasks:** 14 days
+
+As a memory ages without being referenced (evidence count stays flat), its stability score drops. If a topic becomes too cold (2× half-life without reinforcement), it is automatically archived.
+
+### Vector Embeddings and Hybrid Search
+
+When an agent needs context, the system doesn't just match keywords. The `memory-embeddings.ts` module runs a local ONNX model to generate 384-dimensional embeddings for every memory on write.
+
+When the agent uses the `memory_search` tool, the system performs a **hybrid search**: combining exact keyword matches with cosine similarity vector matching (threshold ≥0.90 similarity). If a memory being added is extremely similar to an existing one, the system automatically *reinforces* the existing memory (bumping its evidence count) instead of creating a duplicate.
+
+### Situation Reports and Query Classes
+
+The **Situation Report** is the actual text injected into the LLM's system prompt. It organizes memories by priority: preferences → lessons → mistakes → patterns → decisions → completions.
+
+To ensure relevance, a heuristic classifier runs `before_agent_start` to determine the **Query Class** (e.g., `pr_review`, `git_release`, `debug`, `general`). This class dynamically adjusts which sections get priority in the token budget and tweaks the vector `topK` search limits.
+
+> **Tip:** You can monitor memory capacity directly in the UI. The Situation Report header shows usage (e.g., `[72% — 1,224/1,700 tokens]`), and consolidation warnings trigger when exceeding 80%.
+
+### Enforcement Rules
+
+Code-enforced memory entries act as hard constraints that the LLM cannot ignore. When adding a memory, the agent can attach triggers and actions.
+
+*   **Triggers:** What activates the rule (e.g., `bash_contains <str>`, `tool_name <name>`).
+*   **Actions:** How the system responds (`block`, `run_after`, `warn`).
+*   **Verifiers:** Semantic conditions checked at `turn_end` (e.g., ensuring a specific tool was called before a command).
+
+These hooks execute via the `tool_result` and `turn_end` lifecycle events. If a verifier fails, the system automatically forces a retry, keeping the agent honest.
+
+### Promotion Queue
+
+High-evidence memories (e.g., a behavior reinforced 3-5 times) graduate through the **Promotion Queue**. A background process proposes elevating these memories into permanent skills, enforcement rules, or project-wide rules. High-confidence enforcement rules (`block` or `warn`) can be auto-applied safely, ensuring the project becomes more resilient over time.
+
+### PR Review Store
+
+Code review memory is handled specially by an SQLite database (`.pi/data/pr-reviews.db`). It tracks both posted and skipped findings. If a user dismisses a finding for a generalizable reason, the agent appends a guideline to `.pi/data/review-guidelines.md`. This prevents the AI from repeatedly raising the same stylistic complaints in future PRs.
+
+## How it Affects the User
+
+- **Agent Adaptability:** Because of the scoring and decay system, users don't have to manually delete outdated instructions. The agent naturally "forgets" old task contexts while retaining long-term preferences.
+- **Immediate Context:** When users modify specific files, the auto-injection pipeline searches for file-path vector matches and injects file-change memory reminders instantly.
+- **Privacy First:** All vector embeddings and database queries happen entirely locally. No code snippets or memory topics are sent to external embedding APIs.
+- **Automated Guardrails:** Through enforcement rules and the promotion queue, if an agent repeatedly makes a mistake and is corrected, it will naturally evolve a hard boundary (like blocking a destructive bash command) without the user ever writing a line of configuration.
 
 ## Related Pages
 
-- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Specialist Agents Reference](agents-reference.html)
-- [Running Pi in a Docker Container](docker-deployment.html)
+- [Curating Project Memory](curating-project-memory.html) — Learn how to manually seed, score, and organize learned topics.
+- [Implementing Command Guards](safety-enforcements.html) — Understand how to map memory triggers to hard enforcement constraints.
+- [Configuration & Settings](configuration.html) — Look up token budgets, decay rates, and directory settings for the memory module.
+- [myk_pi_tools CLI Reference](cli-reference.html) — Discover the CLI commands for manual database queries and memory migrations.
+
+## Related Pages
+
+- [Curating Project Memory](curating-project-memory.html)
+- [Background Memory Consolidation (Dreaming)](background-dreaming.html)
 
 ---
 
-Source: discord-bot.md
+Source: daemon-and-websockets.md
 
+# Daemon & Websocket Networking
 
+Modern project automations require continuous background work, real-time UI updates, and isolated execution scopes. `pi-config` achieves this through a robust inter-process communication (IPC) architecture built on background daemons, WebSockets, and asynchronous LLM states.
+
+Understanding this networking architecture is crucial if you are troubleshooting port collisions, monitoring background agent execution, or trying to understand how the web dashboard stays perfectly in sync with your terminal session.
+
+## The Big Picture: Architecture & Data Flow
+
+The architecture is divided into three distinct layers that communicate over WebSockets and file-system watchers.
+
+| Layer | Responsibility | State Location |
+|-------|----------------|----------------|
+| **Interactive Client (`pi`)** | Triggers workflows, intercepts terminal events, and routes subagent requests. | In-memory, per-terminal session. |
+| **Daemon Servers** | Centralized hubs (like `pidash-server` and `pidiff-server`) that aggregate data from multiple interactive clients. | Runs in background; tracks state in `.pi/tmp/` lockfiles. |
+| **Web Dashboard** | Subscribes to the daemon via WebSockets to visualize diffs, prompts, and agent activity. | Browser UI. |
+
+**The WebSocket Data Flow:**
+1. You run a command in the `pi` terminal.
+2. The active extension (e.g., `pidash.ts`) checks the lockfile in `.pi/tmp/` to see if a daemon is running.
+3. If no daemon exists, it spawns one dynamically via `daemon-manager.ts` and waits for it to bind to a free port.
+4. The `pi` client connects to the daemon's WebSocket and begins buffering and forwarding terminal events (prompts, git status, agent logs).
+5. The local React dashboard connects to the same daemon, instantly receiving the buffered real-time events.
+
+## Key Concepts
+
+### Daemon Management & Lifecycle
+Daemons in this project are long-lived, per-project background Node servers.
+- **Auto-Spawning:** Tools like the web dashboard will automatically spawn their required daemon (e.g., `pidash-server.ts`) upon initialization.
+- **Lockfiles & Ports:** Daemons track their active Process ID (PID) and port dynamically in `.pi/tmp/` (e.g., `.pi/tmp/pidiff.pid`, `.pi/tmp/pidiff.port`). This prevents port collisions between different projects.
+- **Health Checks:** Interactive clients periodically ping the daemon's HTTP endpoints. If the daemon crashes, the client gracefully buffers outgoing events and attempts a respawn.
+
+### Async Agent States
+When you run complex tasks that take a long time, the orchestrator delegates them to asynchronous "subagent children."
+- **Isolated Execution:** Each async task spins up a detached `pi` child process with a unique `PI_SUBAGENT_CHILD=1` flag.
+- **Zombie Cleanup:** The daemon orchestrator tracks the parent PID and start time. If the parent process crashes or is killed abruptly, the daemon sweeps through and eliminates any lingering "zombie" child processes to free system resources.
+- **Persistent Context:** Async tasks write their ongoing context, system prompts, and completion results into isolated project-scoped folders under `.pi/tmp/worker-<id>/`.
+
+### The WebSocket Bridge
+Because the LLM providers stream their output chunk-by-chunk, `pi-config` relies on WebSockets rather than REST APIs to bridge the gap between the LLM and the UI.
+- All real-time text generations are emitted as local events inside the `pi` core.
+- Extension hooks intercept these events and forward them via WebSocket.
+- The web UI maintains active WebSocket listeners, updating the browser DOM iteratively as each token arrives.
+
+## How it Affects the User
+
+The internal daemon and networking logic drives several distinct behaviors you might notice while working in your project:
+
+- **Instant Reconnections:** If you refresh your web browser or close your laptop and reopen it, the dashboard instantly catches up. This happens because the daemon acts as a central buffer, storing recent events until the UI reconnects.
+- **Cross-Terminal Syncing:** You can run `pi` in multiple terminal panes, and the shared `pidash` daemon will aggregate all of their activity into a single unified web dashboard.
+- **Temporary File Accumulation:** You will occasionally notice `.pi/tmp/` populating with debug logs, worker folders, and JSON state files. The system automatically prunes these over time, but they remain highly useful for investigating failed async agent runs.
+- **Graceful Degradation:** If the daemon fails to spawn (due to strict firewalls or extreme system load), your terminal session will not crash. The interactive UI continues working normally, simply logging that real-time features are currently disconnected.
+
+## Related Pages
+- [Using the Web Dashboard](using-the-web-dashboard.html) — See how to view the real-time WebSocket data in the local React UI.
+- [Configuration & Settings](configuration.html) — Learn how to tweak project settings that interact with daemon behavior.
+- [Memory Architecture](memory-architecture.html) — Understand how the data gathered by background agents is permanently embedded into your project.
 
 ## Related Pages
 
-- [Communicating Between Pi Sessions](inter-agent-communication.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Using the Web Dashboard](using-the-web-dashboard.html)
+- [Neovim Integration](neovim-integration.html)
+- [Discord Bot Notifications](discord-bot.html)
 
 ---
 
 Source: neovim-integration.md
 
+# Neovim Integration
 
+When you run Pi inside a Neovim terminal buffer, it automatically detects the editor environment and enables direct RPC communication. This allows you to quickly load working context into your editor, populate the quickfix list with branch changes, and programmatically execute Neovim Lua commands from your AI session.
+
+## Prerequisites
+
+* Neovim installed and running.
+* Pi started from an embedded Neovim terminal buffer (`:terminal`).
+
+## Quick Example
+
+The simplest way to use the integration is to send your current Git changes directly to the Neovim quickfix window for easy review.
+
+Start Pi inside a Neovim terminal:
+```bash
+:term pi
+```
+
+Inside the Pi chat interface, run the built-in slash command:
+```
+/nvim-changed-files
+```
+Neovim will immediately open the quickfix window containing all modified, added, renamed, or deleted files relative to your default branch.
+
+## Step-by-Step
+
+Reviewing a large pull request or a batch of local changes is much easier when loaded directly into Neovim's quickfix list rather than scrolling through terminal output.
+
+1. **Open a terminal in Neovim:** From normal mode, type `:terminal` or open a split with `:vsplit term://bash`.
+2. **Launch Pi:** Start your session by typing `pi` in the terminal prompt. The integration automatically connects to the parent editor using the `$NVIM` socket variable.
+3. **Trigger the quickfix population:** Type `/nvim-changed-files` in the Pi chat prompt and hit enter.
+4. **Navigate the files:** Pi calculates the Git diff (comparing against `origin/main` or your local `HEAD`), formats the results, and automatically commands Neovim to open the quickfix list (`:copen`). You can now use standard Neovim commands (like `:cnext` and `:cprev`) to jump through your changed files.
+
+> **Tip:** The `/nvim-changed-files` command automatically detects whether you are on the `main` branch or a feature branch, pulling committed changes versus `origin/main` as well as any uncommitted working tree changes.
+
+## Advanced Usage
+
+### Leveraging Remote Lua Execution
+
+Because Pi runs as a child process of Neovim, it inherits the `$NVIM` socket environment variable. You can leverage this directly in your own shell scripts, custom extensions, or AI prompts to send commands back to your Neovim instance.
+
+For example, you can tell the AI to evaluate a Lua command inside your active editor using standard Neovim CLI arguments:
+
+```bash
+nvim --server $NVIM --remote-expr 'luaeval("vim.notify(\"Task complete from Pi!\")")'
+```
+
+If you are running long bash scripts or tests via Pi, you can use this trick to trigger notifications or reload buffers in Neovim when the job finishes.
+
+> **Note:** Neovim integration and remote execution are automatically disabled when Pi spawns background sub-agents (identifiable by the `PI_SUBAGENT_CHILD=1` environment variable). This ensures that background tasks do not unexpectedly change your active editor state or steal focus.
+
+## Troubleshooting
+
+* **Quickfix list does not open:** Ensure you are running Pi *inside* a Neovim terminal. Running Pi in a separate tmux pane or external terminal emulator will not expose the `$NVIM` socket environment variable required for RPC communication.
+* **No files loaded in quickfix:** The `/nvim-changed-files` command relies on standard Git output. Check that your repository has an `origin/main` or `origin/master` branch fetched locally, as it uses this as the base comparison for feature branches.
 
 ## Related Pages
 
-- [Installing and Starting Your First Session](quickstart.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
-- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.html)
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Installation & Quickstart](quickstart.html)
+
+---
+
+Source: discord-bot.md
+
+# Discord Bot Notifications
+
+Setting up the background Discord bot allows you to receive live event broadcasts, respond to agent prompts, and control running background sessions directly from your Discord client.
+
+## Prerequisites
+* Node.js package `discord.js` installed globally.
+* A Discord Developer account with a registered bot application.
+* Your personal Discord User ID.
+
+## Quick Example
+
+Create a `.pi/discord.env` file in your home directory to enable the bot:
+
+```env
+# ~/.pi/discord.env
+DISCORD_BOT_TOKEN=MTE...your.token.here...
+DISCORD_ALLOWED_USERS=123456789012345678
+```
+
+## Step-by-Step Setup
+
+1. **Install the Discord library**
+   The bot requires `discord.js` to run in the background. Install it globally:
+   ```bash
+   npm install -g discord.js
+   ```
+
+2. **Create the Discord App**
+   Go to the Discord Developer Portal, create a new Application, and navigate to the **Bot** tab. Under **Privileged Gateway Intents**, enable the **Message Content Intent**. Generate and copy your bot token.
+
+3. **Get your User ID**
+   In Discord, enable Developer Mode in your Advanced settings. Right-click your profile and select **Copy User ID**.
+
+4. **Configure the environment**
+   Create the environment file at `~/.pi/discord.env` and populate it with your token and user ID (comma-separated for multiple users).
+
+5. **Restart the daemon**
+   Restart your background pi process so it picks up the new credentials. The daemon will automatically log in to Discord on startup.
+
+## Interacting with the Bot
+
+Once connected, you can interact with the bot in any server it is invited to or via Direct Messages.
+
+### Slash Commands
+
+The bot registers guild-scoped slash commands for instant control:
+
+| Command | Description |
+|---|---|
+| `/sessions` | Lists all active background sessions. Click the interactive buttons to connect and start watching a session. |
+| `/status` | Shows the model, branch, and active status of the session you are currently watching. |
+| `/stop` | Sends an abort signal to interrupt the currently running agent. |
+
+### Sending Prompts and Attachments
+
+When you are "watching" a session via `/sessions`, you can interact with the agent directly in your Direct Messages.
+
+* **Text Prompts:** Send a DM to the bot. It forwards your message to the running session as if you typed it in the terminal.
+* **File Attachments:** Upload text files (under 100KB) or images directly in the DM. The bot automatically parses text file contents and encodes images for the agent.
+* **Interactive Dialogs:** When an agent prompts you for a choice (like an ask-user dialog), the bot will DM you the options. Reply with the number or text to continue.
+
+> **Tip:** The bot displays a typing indicator in Discord while the agent is processing a request, so you always know when it is actively working.
+
+## Advanced Usage
+
+### Handling Multiple Authorized Users
+
+You can allow multiple team members to control background sessions by adding their User IDs to `DISCORD_ALLOWED_USERS`:
+
+```env
+# ~/.pi/discord.env
+DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
+```
+
+> **Warning:** Anyone not listed in this variable will receive a "Not authorized" response if they attempt to click buttons or use slash commands. If the variable is entirely omitted, *all* users are accepted (not recommended).
+
+## Troubleshooting
+
+* **Bot fails to start:** Check the background daemon logs. If you see `[discord] discord.js not installed`, verify your global npm install path is accessible to the daemon.
+* **Slash commands not appearing:** Ensure your bot was invited to the server with the `application.commands` scope enabled in your OAuth2 URL generator.
+* **No responses in DM:** Verify you are actively watching a session using `/sessions`. The bot ignores text messages if you are not tethered to an active background job.
+
+For more information on configuring your global paths and environment variables, see [Configuration & Settings](configuration.html).
+
+## Related Pages
+
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Using the Web Dashboard](using-the-web-dashboard.html)
 
 ---
 
 Source: image-generation.md
 
+# Image Generation
 
+Generate custom images directly through your AI agents using Google's Gemini models to quickly create visual assets or concept art for your projects. This allows your agents to handle both code changes and their accompanying visual assets without leaving the development environment.
+
+## Prerequisites
+
+- An active Gemini API key.
+- A supported Gemini image model (e.g., `gemini-2.0-flash-exp`).
+
+## Quick Example
+
+First, configure your API key and model. You can set the model in `pi-config-settings.json` (`"image_model": "gemini-3-pro-image"`) or use environment variables:
+
+```bash
+export GEMINI_API_KEY="your-api-key"
+export PI_IMAGE_MODEL="gemini-3-pro-image"
+```
+
+Next, ask your agent to generate an image during your chat session:
+
+```text
+User: Generate a pixel art image of a cat hacking on a mechanical keyboard.
+```
+
+The agent will return the local file path where the image was saved, and if you are running in a containerised environment, a local preview URL.
+
+## Step-by-step
+
+1. **Configure your environment:** Ensure your API key is exposed to the tool (via `GEMINI_API_KEY` or `GOOGLE_API_KEY` env vars). You must also set the model to use for generation, either via the `image_model` setting in `pi-config-settings.json` or the `PI_IMAGE_MODEL` environment variable.
+
+2. **Prompt your agent:** Simply ask your agent to generate an image. The agent will automatically structure your request and invoke the generation tool. You only need to describe the main subject, but you can be as descriptive as you like.
+
+3. **Access the output:** The generated image will be downloaded and saved to your project's `.pi/tmp/` directory. The agent will respond with the absolute path to the `.jpg`, `.png`, or `.webp` file.
+
+## Advanced Usage
+
+When you need precise control over the output, you can ask your agent to use specific compositional parameters.
+
+### Structured Generation Parameters
+
+The generation tool accepts the following detailed parameters. You can ask your agent to explicitly follow these in your prompt:
+
+*   **Subject:** The main focus of the image (required).
+*   **Action:** What the subject is currently doing.
+*   **Scene:** The location or background environment.
+*   **Composition:** Camera angles, framing, and perspective (e.g., "close up", "wide angle").
+*   **Lighting:** The lighting setup (e.g., "cinematic lighting", "neon glow", "golden hour").
+*   **Style:** The artistic style (e.g., "photorealistic", "watercolor", "pixel art", "cyberpunk").
+*   **Text:** Specific text you want rendered directly inside the image.
+
+**Example structured prompt:**
+```text
+User: Generate an image. Subject: A coffee cup. Action: spilling over. Scene: A busy futuristic desk. Lighting: Neon cyberpunk glow. Style: Photorealistic. Text: "ERROR 404". Aspect ratio: 16:9.
+```
+
+### Supported Aspect Ratios
+
+You can instruct the agent to use a specific aspect ratio. The supported values are:
+*   `1:1` (Square)
+*   `3:4` (Portrait)
+*   `4:3` (Landscape)
+*   `9:16` (Vertical/Mobile)
+*   `16:9` (Widescreen)
+
+### Automatic Preview Server
+
+If you are running the project inside a container (like Docker), the file system is isolated from your host machine. To make viewing images frictionless, the tool automatically detects container environments and spins up a temporary background HTTP server.
+
+When this happens, the agent's response will include both the internal file path and a `http://localhost:<port>/<filename>` preview URL that you can click directly in your terminal or editor to open in your host browser.
+
+## Troubleshooting
+
+*   **"Model not configured":** You must specify the model name before starting your session. Set `image_model` in `pi-config-settings.json` or export `PI_IMAGE_MODEL=gemini-3-pro-image` in your shell.
+*   **"Image generation blocked by safety filter":** Gemini's safety filters have blocked the prompt. You will need to rephrase your request to remove potentially unsafe, violent, or explicit concepts.
+*   **"No API key found":** Make sure you have exported `GEMINI_API_KEY` or `GOOGLE_API_KEY` in the environment where the daemon is running. See [External AI Agents & CLI](external-ai-agents.html) for more about managing external model keys.
 
 ## Related Pages
 
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
-- [Specialist Agents Reference](agents-reference.html)
-- [Using Slash Commands and Prompt Templates](slash-commands.html)
-- [Common Workflow Recipes](workflow-recipes.html)
+- [Installation & Quickstart](quickstart.html)
+- [Configuration & Settings](configuration.html)
 
 ---
 
-Source: command-enforcement.md
+Source: external-ai-agents.md
 
+# External AI Agents & CLI
 
+Trigger prompts across different AI providers directly from your terminal or chat session to leverage provider-specific capabilities like Cursor's fast models or Claude's extended reasoning.
+
+## Prerequisites
+
+- The external AI CLIs (`cursor`, `claude`, or `gemini` binaries from `ai-cli-runner`) must be installed and authenticated on your system.
+- The `myk-pi-tools` CLI must be installed and accessible in your environment.
+
+## Quick Example
+
+List available models for a provider and run a simple prompt:
+
+```bash
+# See what models are available for Claude
+myk-pi-tools ai-cli models claude
+
+# Run a single prompt through Claude
+myk-pi-tools ai-cli run "Summarize the changes in src/main.rs" --provider claude --model claude-3-5-sonnet-20241022
+```
+
+## Step-by-Step Guide
+
+### 1. Using the Chat Command
+
+When working inside Pi, you can use the `/external-ai` slash command to delegate tasks to an external provider without leaving your chat session.
+
+```text
+/external-ai cursor explain the authentication flow
+```
+
+If you don't specify a model, Pi will use the provider's default model (e.g., `composer-2-fast` for Cursor).
+
+### 2. Selecting a Specific Model
+
+To explicitly request a model, append `--model`:
+
+```text
+/external-ai cursor --model gpt-5.4-high review the latest PR
+```
+
+### 3. Granting Write Access
+
+By default, all external AI requests are treated as read-only. Append the `--fix` flag to let the agent modify, create, or delete files directly in your workspace:
+
+```text
+/external-ai claude --fix rewrite the error handling in database.ts
+```
+
+> **Note:** If your git workspace is dirty (uncommitted changes) when running a `--fix` command, Pi will prompt you to create a checkpoint commit before the agent begins making modifications. This ensures you can easily roll back unwanted changes.
+
+### 4. Continuing a Session
+
+If you need to ask follow-up questions or iterate on previous changes, use the `--resume` flag to maintain conversation context with the agent:
+
+```text
+/external-ai cursor --resume add tests for the edge cases too
+```
+
+## Advanced Usage
+
+### Peer Review Mode
+
+You can start an AI-to-AI debate using the `--peer` flag. In this mode, Pi acts as an orchestrator, bouncing feedback back and forth with the external agent until both agree on the code changes.
+
+```text
+/external-ai cursor --model gpt-5.4-xhigh --peer review this pull request
+```
+
+Pi will collect the findings from the peer agent, evaluate them, apply fixes if it agrees, or present a technical counter-argument if it disagrees. The loop continues automatically until all parties reach consensus.
+
+### Multi-Agent Group Debates
+
+You can instruct multiple providers to review the same code simultaneously. Pass a comma-separated list of providers:
+
+```text
+/external-ai cursor,claude --peer review the architecture design
+```
+
+Each agent will review independently, and Pi will synthesize their findings. During the peer loop, each agent receives the full context of what the other agents said, enabling true group consensus.
+
+### Persisting Agent Configurations
+
+Pi remembers your last used provider and model. You can manually save your preferred agent setup so you don't have to specify it every time:
+
+```bash
+# Save default agent configuration for standard requests
+myk-pi-tools ai-cli save-config --agents "cursor --model gpt-5.4-high"
+
+# Save default peers configuration for peer review loops
+myk-pi-tools ai-cli save-config --peers "cursor,claude"
+```
+
+Once saved, you can omit the provider and run prompts implicitly:
+
+```text
+/external-ai write a unit test for this script
+```
+
+## Troubleshooting
+
+- **Command fails with a permission error:** The agent attempted to modify files during a read-only prompt. Retry with the `--fix` flag.
+- **Unknown provider error:** Ensure you are using `cursor`, `claude`, or `gemini`. For other agents, use the ACPX integration instead.
+- **Agent gets stuck or takes too long:** External models can take several minutes to read files and execute multi-step tool calls. Do not cancel the process prematurely; the CLI intentionally does not enforce strict timeouts.
+
+For more details on modifying runtime variables, see [Configuration & Settings](configuration.html). To learn how commands like `/external-ai` are structured under the hood, see [Creating Slash Commands](custom-slash-commands.html).
 
 ## Related Pages
 
-- [Orchestrator Rules Reference](rules-reference.html)
-- [Slash Commands and Extension Commands Reference](commands-reference.html)
-- [Understanding Agent Routing and Delegation](agent-routing.html)
-- [Configuration and Environment Variables Reference](configuration-reference.html)
+- [Managing Custom Agents](managing-custom-agents.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)
+- [ACPX Provider Integration](acpx-provider.html)
+
+---
+
+Source: async-agents-and-cron.md
+
+# Running Background Agents and Scheduled Tasks
+
+This guide explains how to offload long-running tasks to non-blocking background agents and schedule recurring workflows. Using background tasks keeps your main session free for active development while AI handles research, tests, or code reviews concurrently.
+
+## Prerequisites
+
+- A running Pi session in your project repository.
+- Familiarity with the web dashboard (See [Using the Web Dashboard](using-the-web-dashboard.html)).
+
+## Quick Example
+
+To run a task in the background, simply ask Pi to do it asynchronously:
+
+> "Run the `security-auditor` on the `src/` directory in the background. Let me know when it's done."
+
+Pi will spawn the agent asynchronously. Your terminal remains unblocked, and Pi will notify you when the agent finishes.
+
+To schedule a recurring task, use the `/cron` command with natural language:
+
+```bash
+/cron Run the test-automator every 30 minutes
+```
+
+## Spawning and Managing Async Agents
+
+Background agents are managed natively by Pi. They run in a separate process and report their results back to your chat automatically.
+
+### 1. Spawning Agents
+
+You can instruct Pi to run any specialist agent in the background. Certain agents (like code reviewers) are enforced to always run asynchronously to prevent blocking your session.
+
+When you ask Pi to run a background agent, it automatically links the job to a Task ID to track completion.
+
+> **Tip:** You can ask Pi to spawn multiple agents at once: "Run `python-expert` on the backend and `ts-expert` on the frontend in the background."
+
+### 2. Monitoring Background Tasks
+
+To view active background tasks, their elapsed time, and live logs, open the async status dashboard:
+
+```bash
+/async-status
+```
+
+This opens a fullscreen overlay. You can navigate through the queued and running tasks to see what the agents are currently processing.
+
+### 3. Killing Misbehaving Agents
+
+If an agent gets stuck or you no longer need its result, you can terminate it directly from the chat:
+
+```bash
+/async-kill code-reviewer
+```
+
+You can target agents by their exact name, ID prefix, or use `all` to cancel everything:
+
+```bash
+/async-kill all
+```
+
+Alternatively, you can press `x` while highlighting a job inside the `/async-status` overlay.
+
+## Scheduling Recurring Tasks (Cron)
+
+The `/cron` command allows you to define recurring jobs using plain English. Pi interprets your request and sets up the appropriate timers.
+
+### Adding a Scheduled Task
+
+To schedule a new task, pass your requirements directly to the `/cron` command:
+
+```bash
+/cron Every day at 9:00 AM, run the git-expert to generate a daily summary.
+```
+
+Pi will parse the time ("9:00 AM") and the action, start the timer, and confirm the schedule.
+
+> **Note:** Cron tasks are scoped to your active session process. If you exit Pi, the timers stop. They resume automatically when you start a new session in the same project directory.
+
+### Listing and Removing Tasks
+
+To see what tasks are currently scheduled in your local session:
+
+```bash
+/cron list
+```
+
+To see tasks scheduled across all active Pi sessions on your machine:
+
+```bash
+/cron list-all
+```
+
+If you want to stop a recurring task, find its ID from the list command and remove it:
+
+```bash
+/cron remove 1
+```
+
+## Advanced Usage
+
+### Persistent Sessions
+
+Normally, async agents start with a fresh memory state (an ephemeral session). If you want an agent to retain context across multiple background runs, you can ask Pi to enable session persistence:
+
+> "Run the code reviewer in the background and persist its session so it remembers previous feedback."
+
+This is heavily utilized by automated code reviews to maintain context over iterative PR improvements. See [Automating Code Reviews](automating-code-reviews.html) for more details.
+
+### Fire and Forget Mode
+
+For background maintenance tasks (like memory consolidation or cache cleanup), results don't need to clutter your active chat. Ask Pi to run the task in "fire and forget" mode:
+
+> "Run a background memory cleanup task as fire-and-forget."
+
+The task will execute silently. You will only see a lightweight terminal notification when it completes. See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for an example of this pattern.
+
+## Troubleshooting
+
+- **Agent skips execution:** If an async agent immediately fails or skips, ensure your provider supports async LLM invocation. Some ACPX integrations cannot spawn child processes. See [ACPX Provider Integration](acpx-provider.html) for compatibility details.
+- **Missing Task IDs:** If Pi refuses to spawn an agent, complaining about a "missing taskId", ensure your prompt asks Pi to either link the background agent to an existing task list item, or explicitly tell it the task is independent.
+- **Zombie processes:** Pi automatically cleans up orphaned background agents on startup. If you notice high CPU usage after a crash, restart your session to trigger the cleanup sequence.
+
+## Related Pages
+
+- [Background Memory Consolidation (Dreaming)](background-dreaming.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)
+
+---
+
+Source: inter-agent-communication.md
+
+# Inter-Agent Communication Network
+
+The Inter-Agent Communication Network (often referred to as `coms-net`) is the backbone that enables multiple independent agent sessions to discover each other, broadcast state, and securely pass messages. Instead of relying on direct inter-process communication (IPC) or complex shared memory, agents coordinate through a lightweight HTTP/SSE (Server-Sent Events) hub.
+
+By standardizing how agents talk to each other, `coms-net` enables true multi-agent orchestration. Developers can spawn specialist agents (like a planner and a researcher), and those agents can delegate tasks, share context, and aggregate results without blocking the user interface.
+
+---
+
+## The Big Picture: Architecture and Flow
+
+The network operates on a hub-and-spoke model. A single central server acts as the directory and message broker, while individual agents act as clients.
+
+| Component | Responsibility | Underlying Tech |
+| :--- | :--- | :--- |
+| **Coms Hub** | Central message broker and registry server. Manages routing, TTLs, and queue depth. | Bun HTTP server (`coms-net-server.ts`) |
+| **Registry Directory** | Ephemeral storage for hub state, active session JSONs, and authentication secrets. | `~/.pi/coms-net/` |
+| **Agent Client** | Connects to the hub, registers its identity, handles heartbeats, and processes incoming SSE events. | TypeScript Extension (`coms-net.ts`) |
+| **Tool Interface** | Exposes the network to the LLM via `coms_net_send`, `coms_net_get`, and `coms_net_list`. | Standard Agent Tools |
+
+### Message Lifecycle Flow
+
+When Agent A delegates a question to Agent B, the flow works like this:
+
+1. **Initiation:** Agent A calls the `coms_net_send` tool with a target name and prompt.
+2. **Dispatch:** Agent A's extension intercepts the tool call and POSTs the payload to the Coms Hub. The hub generates a `msg_id` and marks it `queued`.
+3. **Delivery:** The Hub pushes the payload down Agent B's open SSE connection. Agent B's extension intercepts the event and injects a hidden message into Agent B's context window.
+4. **Resolution:** Agent B generates a normal conversational response. At the end of the turn, Agent B's extension captures the text and POSTs it back to the Hub as the resolution.
+5. **Callback:** The Hub pushes the response down Agent A's SSE connection. Agent A's extension receives it and injects it as a follow-up message so Agent A knows the task is complete.
+
+---
+
+## Key Concepts
+
+### The Hub and Authentication
+
+The network is secured via a Bearer token generated at startup. The hub binds to a port and writes its connection details to `~/.pi/coms-net/projects/<project>/server.json` and its secure token to `server.secret.json` (chmod `0600`).
+
+When an agent extension starts up, it automatically discovers these files and authenticates.
+
+> **Warning:** You should never commit or log the authentication token. The hub enforces strict token handling and will terminate connections missing valid Bearer headers.
+
+### Agent Registration and Heartbeats
+
+When an agent joins, it registers with a name, model identifier, and color. To ensure the registry remains accurate, agents must send a heartbeat (default every 10 seconds).
+
+The heartbeat contains telemetry:
+- `context_used_pct`: How full the agent's context window is.
+- `queue_depth`: How many pending messages it has.
+- `tasks_summary`: Progress on its current task list (total, completed, in-progress).
+
+If the Hub misses heartbeats, the agent transitions from `online` to `stale`, and eventually to `offline` where it is removed from the registry.
+
+### Message Queues and Hop Limits
+
+To prevent infinite loops of agents talking to each other forever, the network implements **hop limits** (default: 5). Every time an agent forwards a delegated request, the hop count increments. Once the limit is hit, the Hub rejects the send request.
+
+Additionally, to prevent an agent from being overwhelmed, the Hub enforces an **inbox cap** (default: 100 messages).
+
+### Task Delegation
+
+Agents can send more than just raw text strings. The `coms_net_send` payload supports a `tasks` array. When Agent B receives a message containing tasks, its extension renders them as explicit work items, encouraging Agent B to use its `TaskCreate` tools to track the work formally.
+
+---
+
+## How It Affects the User
+
+The technical details of SSE streams and Bearer tokens are completely abstracted away from the end user. Here is how `coms-net` surfaces in the application:
+
+* **The Coms-Net Pool Widget:** At the bottom of the user's terminal, a live dashboard shows all connected agents. It updates in real-time as heartbeats arrive, showing their context window usage (`--%`), model type, and queue depth (`📨1`).
+* **Non-Blocking Execution:** Because messages are resolved via SSE push events rather than blocking HTTP polls, users can continue chatting with Agent A while Agent B works in the background. When Agent B finishes, the result cleanly injects into Agent A's chat history.
+* **Agent Transparency:** The Hub broadcasts state changes to all peers. If Agent A wants to know who is available, it can call `coms_net_list` to see exactly what the user sees in their terminal dashboard.
+
+> **Tip:** If you see an infinite ping-pong loop (where agents keep saying "I am sending this back to you"), it means an agent's prompt instructions are incorrectly telling it to call `coms_net_send` to *reply*. Agents should always reply by simply speaking normally in their context window. The extension automatically extracts the reply.
+
+---
+
+## Extending the Network
+
+If you are writing a custom provider or external daemon, you can interact with the Coms Hub directly via its HTTP API.
+
+* **Registering:** POST `/v1/agents/register` with your `session_id`, `name`, and `project`.
+* **Connecting:** Open an EventSource connection to the `sse_url` returned from the register call.
+* **Sending:** POST `/v1/messages` with `sender_session`, `target`, and `prompt`.
+* **Replying:** Listen for `prompt` events on your SSE stream, process the text, and POST back to `/v1/messages/<msg_id>/response`.
+
+By adhering to this contract, non-Pi systems (like a dedicated python background worker) can masquerade as peer agents on the network.
+
+---
+
+## Related Pages
+
+* See [Managing Custom Agents](managing-custom-agents.html) to learn how to assign specific roles to agents on the network.
+* See [Daemon & Websocket Networking](daemon-and-websockets.html) to understand how the broader application manages async tasks alongside the `coms-net` hub.
+* See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) to learn how to spawn background peers that wait for network messages.
+
+## Related Pages
+
+- [Managing Custom Agents](managing-custom-agents.html)
+- [External AI Agents & CLI](external-ai-agents.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+
+---
+
+Source: background-dreaming.md
+
+# Background Memory Consolidation (Dreaming)
+
+The **Dreaming** system is an automated background worker that periodically consolidates, reorganizes, and extracts long-term memories from your recent AI sessions.
+
+Instead of forcing you to manually tell the AI to "remember this," the dreaming worker quietly reads through your past conversations, identifies durable knowledge (like architectural decisions, repeated mistakes, and user preferences), and writes them into persistent memory files. This ensures your custom agents continuously learn and adapt without cluttering your workflow.
+
+## The Big Picture: Architecture and Data Flow
+
+The dreaming system runs asynchronously as a background agent. It operates entirely decoupled from your active session, communicating its results by directly manipulating the project's memory store.
+
+### Dreaming Lifecycle Flow
+
+1. **Trigger Phase**
+   - **Interval:** The `dreamTimer` triggers every 3 hours by default.
+   - **Shutdown:** A detached dream run automatically executes on `session_shutdown` (when quitting).
+   - **Manual:** User explicitly triggers a run by typing `/dream`.
+2. **Quality Gate**
+   - Assesses recent `.jsonl` session files to verify they contain substantial interactions.
+   - Skips trivial sessions (e.g., `< 3` exchanges, greetings only).
+   - Uses a `.dream-watermark` file to ensure it only processes unread sessions (max 5 per cycle).
+3. **Extraction & Synthesis (LLM Phase)**
+   - Uses an async LLM (resolved via `decideAsyncLlmDispatch`) to process session transcripts.
+   - Extracts categorized memories into dedicated markdown files (lessons, preferences, mistakes, completions, patterns, decisions).
+   - Auto-generates formal `.pi/skills/<name>/SKILL.md` files for multi-step workflows.
+4. **Rebuild & Consolidation (Sync Phase)**
+   - On completion, triggers `rebuildAndOrganize` to deduplicate and rescore topic files.
+   - Triggers `mergeProvenancePending` to link newly discovered memories back to their source sessions.
+   - Triggers `runPromotionPass` to graduate mature memories into hard enforcements or structural rules.
+
+### Process Architecture
+
+| Component | Responsibility | Frequency / Trigger |
+| :--- | :--- | :--- |
+| **Async Agent Runner** | Spawns a non-blocking background LLM task to read transcripts and write to `.pi/memory/topics/`. | Every 3 hours / session end |
+| **Rebuild Worker** | Lightweight, non-LLM worker that sorts, deduplicates, and rescores topic entries. | Every 30 minutes |
+| **Promotion Engine** | Evaluates memories with high evidence scores for conversion into code guards. | Post-dream / threshold cross |
+| **Watermark Tracker** | Prevents re-reading the same chat logs on subsequent cycles. | Updated per dream cycle |
+
+## Key Concepts
+
+### Topic Extraction
+The dreamer categorizes unstructured chat logs into discrete markdown files under `.pi/memory/topics/`:
+*   `lessons.md`: User corrections and workflow adjustments.
+*   `preferences.md`: Stylistic or tool-specific preferences.
+*   `mistakes.md`: Repeated errors and their successful fixes.
+*   `completions.md`: Merged PRs and completed features.
+*   `decisions.md`: Architectural or design choices made during the session.
+
+> **Note:** The dreamer is strictly instructed to never modify entries marked with `*(pinned)*` or `*(enforced)*`. Any textual modification to enforced entries destroys their hash binding, permanently breaking the corresponding enforcement rule.
+
+### Skill Auto-Generation
+If the dreamer notices a recurring multi-step workflow across multiple sessions, it bypasses standard topic memory and directly generates a formal skill file at `.pi/skills/<name>/SKILL.md`. This gives future agents a structured, project-level checklist rather than a vague contextual memory.
+
+### Promotion and Provenance
+When extracting knowledge, the dreamer creates a "provenance sidecar" (`provenance-pending.json`). When the background task successfully completes, this data is merged into the master score registry (`memory-scores.json`), linking the new memory to the exact session file it originated from. Memories with high evidence scores are sent to the promotion queue to potentially become `*(enforced)*` command blocks.
+
+## How it Affects the User
+
+The internal dreaming system surfaces in your daily usage in several ways:
+
+*   **UI Status Indicators:** While a dream is actively running, the terminal overlay or web dashboard displays a highlighted `🌙` (3b-dream) status indicator.
+*   **Zero-Touch Learning:** You will notice agents naturally adopting your conventions in subsequent sessions without you having to explicitly invoke memory commands.
+*   **Notifications:** If dreaming fails to start (e.g., missing async LLM configuration), the system will notify your chat view: `Dream skipped: set async_llm_provider and async_llm_model`.
+
+### Using the Dreaming System
+
+You can control the dreamer directly via chat commands:
+
+*   `/dream-auto on|off`: Toggles the background timer and end-of-session trigger for the current project.
+*   `/dream`: Manually forces a background consolidation pass immediately (non-blocking).
+
+### Configuration Options
+
+You can adjust the dreaming schedule and behavior using environment variables or project settings:
+
+| Setting | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `PI_DREAM_INTERVAL_HOURS` | Environment Var | `3` | Global override for the timer (valid range: 0.5 to 24 hours). |
+| `dream_interval_hours` | Project Setting | `3` | Per-project setting defined in `.pi/settings.json`. |
+
+> **Warning:** Dreaming requires a configured background LLM. If you are using ACPX (external providers), you must define `async_llm_provider` and `async_llm_model` in your configuration, or dreaming will be skipped.
+
+## Extending the Dreaming System
+
+The dreaming worker is built as an orchestrator extension using standard event hooks. If you are building custom plugins or native CLI providers, you can hook into the exact same lifecycle events the dreamer uses:
+
+### Relevant Hooks
+
+*   `pi.on("before_agent_start", (event, ctx) => {...})`: Used by the dreamer to initialize UI status immediately before the first prompt.
+*   `pi.on("session_start", (event, ctx) => {...})`: Fired when a new workspace session begins. Used to track the current `cwd` and restart the dream timer.
+*   `pi.on("session_shutdown", (event) => {...})`: Fired when the agent shuts down. Used to fire-and-forget a final detached dream before the node process fully exits (skips on `/reload` or `/resume`).
+
+### Custom Rebuilds via spawnAsyncAgent
+
+If your extension introduces a new memory format or tracking state, you can safely queue tasks in the `onComplete` callback of an async agent, just as the dreamer triggers `rebuildAndOrganize(cwd)`:
+
+```typescript
+const { id } = spawnAsyncAgent("worker", "Your custom background prompt...", cwd, agents, {
+  fireAndForget: true,
+  name: "CustomDream",
+  onComplete: () => {
+    // Executes synchronously in the main process when the background LLM task finishes
+    runCustomConsolidation(cwd);
+  }
+});
+```
+
+## Related Pages
+
+*   See [Curating Project Memory](curating-project-memory.html) for manual memory management and topic file structures.
+*   See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details on the `spawnAsyncAgent` API and tracking background execution.
+*   See [Memory Architecture](memory-architecture.html) for how scoring, hashing, and provenance sidecars work under the hood.
+*   See [Configuration & Settings](configuration.html) to properly configure your fallback async LLM providers.
+
+## Related Pages
+
+- [Memory Architecture](memory-architecture.html)
+- [Curating Project Memory](curating-project-memory.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+
+---
+
+Source: acpx-provider.md
+
+# ACPX Provider Integration
+
+## ACPX Agent Configuration
+
+Settings that determine which external agents are loaded via the ACPX runtime.
+
+**Configuration Key:** `acpx_agents`
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `acpx_agents` | Array<string> \| string | `[]` | Comma-separated list of agent identifiers (e.g., `cursor`, `claude`) to initialize via the ACPX runtime. |
+
+```json
+{
+  "acpx_agents": ["cursor", "claude"]
+}
+```
+
+## ACPX Runtime Module
+
+The runtime integration requires the `acpx` package to be resolvable on the system.
+
+**Method:** `loadAcpxRuntime()`
+
+| Property | Type | Description |
+| :--- | :--- | :--- |
+| `createAcpRuntime` | Function | Instantiates the core ACP runtime instance. |
+| `createFileSessionStore` | Function | Initializes persistent session storage on the filesystem. |
+| `createAgentRegistry` | Function | Provides the registry of available ACPX agents. |
+
+> **Note:** The module searches for a global `npm install -g acpx` first, followed by local package dependencies.
+
+```typescript
+import { loadAcpxRuntime } from "./load-runtime.js";
+
+const { createAcpRuntime, createFileSessionStore, createAgentRegistry } = await loadAcpxRuntime();
+```
+
+## Model Discovery
+
+Synchronously queries an agent for its available models using a temporary session.
+
+**Method:** `discoverAcpxModels(agent, cwd?)`
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `agent` | string | (required) | The identifier of the agent (e.g., `cursor`). |
+| `cwd` | string | `process.cwd()` | Directory to use as the base for the discovery session context. |
+
+**Returns:** `Array<{ id: string, name: string, provider: string }>`
+
+> **Tip:** Model discovery operations automatically time out after 30 seconds if the external agent fails to respond.
+
+```typescript
+import { discoverAcpxModels } from "pi-orchestrator-config/extensions/acpx-provider";
+
+const models = await discoverAcpxModels("cursor", "/path/to/project");
+// Returns: [{ id: "cursor:gpt-5.4[...]", name: "Gpt 5.4 (cursor)", provider: "acpx-cursor" }]
+```
+
+## Ambient Authentication
+
+Handles the `/login` flow for ACPX agents by validating the ambient runtime presence.
+
+**Method:** `buildAmbientLoginAuth(opts)`
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `displayName` | string | (required) | The UI name for the authentication prompt. |
+| `isConfigured` | Function | (required) | Callback returning boolean if the agent state/runtime is present. |
+| `sourceLabel` | string | (required) | Human-readable string indicating where the auth comes from (e.g., "cursor acpx runtime"). |
+
+**Returns:** A `ProviderAuth["apiKey"]` object compatible with `createProvider()`.
+
+```typescript
+import { buildAmbientLoginAuth } from "../shared/create-runtime-provider.js";
+import { isAcpxAgentConfigured } from "./configured.js";
+
+const auth = buildAmbientLoginAuth({
+  displayName: "ACPX cursor",
+  isConfigured: () => isAcpxAgentConfigured("cursor"),
+  sourceLabel: "cursor acpx runtime",
+});
+```
+
+## Stream Execution
+
+Processes LLM requests through the persistent ACPX agent session via `streamAcpx()`.
+
+**Execution Mechanics:**
+*   **Context:** Maintains conversation history entirely within the remote ACPX agent side.
+*   **Prompting:** Extracts and sends only the latest user message from the incoming context.
+*   **System Prompt:** Injected exactly once per session handle during initialization.
+*   **Tokens:** Maps remote `text_delta` and `thought` streams into native text/thinking content blocks.
+
+> **Warning:** Context arrays with historical messages are not forwarded to the ACPX runtime on subsequent turns.
+
+```typescript
+// Internal ACPX startTurn request mapping
+const turn = state.runtime.startTurn({
+  handle: sessionHandle,
+  text: extractLatestUserMessage(context),
+  mode: "prompt",
+  requestId: `pi-${Date.now()}-${randomId}`,
+  signal: abortController.signal,
+});
+```
+
+## Session Management
+
+Persistent handles map specific working directories and model IDs to long-running ACPX agent sessions.
+
+**Method:** `runtime.ensureSession(options)`
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `sessionKey` | string | (required) | Unique hash of agent, model ID, and cwd identifier. |
+| `agent` | string | (required) | The target agent identifier. |
+| `mode` | string | (required) | `persistent` for standard streams, `oneshot` for model discovery. |
+| `cwd` | string | (required) | Project working directory captured at init time. |
+| `sessionOptions` | Object | `{}` | Key-value options for model selection and system prompt initialization. |
+
+> **Note:** All active ACPX runtime sessions are actively terminated and closed during the primary `session_shutdown` hook.
+
+```typescript
+const handle = await runtime.ensureSession({
+  sessionKey: "pi-cursor-gpt-4-cwdSlug123",
+  agent: "cursor",
+  mode: "persistent",
+  cwd: "/home/user/project",
+  sessionOptions: {
+    model: "cursor:gpt-4",
+    systemPrompt: "You are being used as a backend LLM..."
+  }
+});
+```
+
+## Related Pages
+
+- [External AI Agents & CLI](external-ai-agents.html)
+- [Configuration & Settings](configuration.html)
 
 ---

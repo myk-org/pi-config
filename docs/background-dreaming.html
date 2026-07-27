@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neovim Integration - pi-config</title>
+    <title>Background Memory Consolidation (Dreaming) - pi-config</title>
     <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -142,7 +142,7 @@
 
                     <li>
                         <a href="neovim-integration.html"
-                           class="nav-link active" aria-current="page">
+                           class="nav-link">
                             Neovim Integration
                         </a>
                     </li>
@@ -205,7 +205,7 @@
 
                     <li>
                         <a href="background-dreaming.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
@@ -273,69 +273,179 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="neovim-integration">Neovim Integration</h1>
-<p>When you run Pi inside a Neovim terminal buffer, it automatically detects the editor environment and enables direct RPC communication. This allows you to quickly load working context into your editor, populate the quickfix list with branch changes, and programmatically execute Neovim Lua commands from your AI session.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>Neovim installed and running.</li>
-<li>Pi started from an embedded Neovim terminal buffer (<code>:terminal</code>).</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>The simplest way to use the integration is to send your current Git changes directly to the Neovim quickfix window for easy review.</p>
-<p>Start Pi inside a Neovim terminal:</p>
-<div class="highlight"><pre><span></span><code>:term<span class="w"> </span>pi
-</code></pre></div>
-
-<p>Inside the Pi chat interface, run the built-in slash command:</p>
-<div class="highlight"><pre><span></span><code>/nvim-changed-files
-</code></pre></div>
-
-<p>Neovim will immediately open the quickfix window containing all modified, added, renamed, or deleted files relative to your default branch.</p>
-<h2 id="step-by-step">Step-by-Step</h2>
-<p>Reviewing a large pull request or a batch of local changes is much easier when loaded directly into Neovim's quickfix list rather than scrolling through terminal output.</p>
+                    <h1 id="background-memory-consolidation-dreaming">Background Memory Consolidation (Dreaming)</h1>
+<p>The <strong>Dreaming</strong> system is an automated background worker that periodically consolidates, reorganizes, and extracts long-term memories from your recent AI sessions. </p>
+<p>Instead of forcing you to manually tell the AI to "remember this," the dreaming worker quietly reads through your past conversations, identifies durable knowledge (like architectural decisions, repeated mistakes, and user preferences), and writes them into persistent memory files. This ensures your custom agents continuously learn and adapt without cluttering your workflow.</p>
+<h2 id="the-big-picture-architecture-and-data-flow">The Big Picture: Architecture and Data Flow</h2>
+<p>The dreaming system runs asynchronously as a background agent. It operates entirely decoupled from your active session, communicating its results by directly manipulating the project's memory store.</p>
+<h3 id="dreaming-lifecycle-flow">Dreaming Lifecycle Flow</h3>
 <ol>
-<li><strong>Open a terminal in Neovim:</strong> From normal mode, type <code>:terminal</code> or open a split with <code>:vsplit term://bash</code>.</li>
-<li><strong>Launch Pi:</strong> Start your session by typing <code>pi</code> in the terminal prompt. The integration automatically connects to the parent editor using the <code>$NVIM</code> socket variable.</li>
-<li><strong>Trigger the quickfix population:</strong> Type <code>/nvim-changed-files</code> in the Pi chat prompt and hit enter.</li>
-<li><strong>Navigate the files:</strong> Pi calculates the Git diff (comparing against <code>origin/main</code> or your local <code>HEAD</code>), formats the results, and automatically commands Neovim to open the quickfix list (<code>:copen</code>). You can now use standard Neovim commands (like <code>:cnext</code> and <code>:cprev</code>) to jump through your changed files.</li>
+<li><strong>Trigger Phase</strong></li>
+<li><strong>Interval:</strong> The <code>dreamTimer</code> triggers every 3 hours by default.</li>
+<li><strong>Shutdown:</strong> A detached dream run automatically executes on <code>session_shutdown</code> (when quitting).</li>
+<li>
+<p><strong>Manual:</strong> User explicitly triggers a run by typing <code>/dream</code>.</p>
+</li>
+<li>
+<p><strong>Quality Gate</strong></p>
+</li>
+<li>Assesses recent <code>.jsonl</code> session files to verify they contain substantial interactions.</li>
+<li>Skips trivial sessions (e.g., <code>&lt; 3</code> exchanges, greetings only).</li>
+<li>
+<p>Uses a <code>.dream-watermark</code> file to ensure it only processes unread sessions (max 5 per cycle).</p>
+</li>
+<li>
+<p><strong>Extraction &amp; Synthesis (LLM Phase)</strong></p>
+</li>
+<li>Uses an async LLM (resolved via <code>decideAsyncLlmDispatch</code>) to process session transcripts.</li>
+<li>Extracts categorized memories into dedicated markdown files (lessons, preferences, mistakes, completions, patterns, decisions).</li>
+<li>
+<p>Auto-generates formal <code>.pi/skills/&lt;name&gt;/SKILL.md</code> files for multi-step workflows.</p>
+</li>
+<li>
+<p><strong>Rebuild &amp; Consolidation (Sync Phase)</strong></p>
+</li>
+<li>On completion, triggers <code>rebuildAndOrganize</code> to deduplicate and rescore topic files.</li>
+<li>Triggers <code>mergeProvenancePending</code> to link newly discovered memories back to their source sessions.</li>
+<li>Triggers <code>runPromotionPass</code> to graduate mature memories into hard enforcements or structural rules.</li>
 </ol>
+<h3 id="process-architecture">Process Architecture</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Component</th>
+<th style="text-align: left;">Responsibility</th>
+<th style="text-align: left;">Frequency / Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Async Agent Runner</strong></td>
+<td style="text-align: left;">Spawns a non-blocking background LLM task to read transcripts and write to <code>.pi/memory/topics/</code>.</td>
+<td style="text-align: left;">Every 3 hours / session end</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Rebuild Worker</strong></td>
+<td style="text-align: left;">Lightweight, non-LLM worker that sorts, deduplicates, and rescores topic entries.</td>
+<td style="text-align: left;">Every 30 minutes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Promotion Engine</strong></td>
+<td style="text-align: left;">Evaluates memories with high evidence scores for conversion into code guards.</td>
+<td style="text-align: left;">Post-dream / threshold cross</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Watermark Tracker</strong></td>
+<td style="text-align: left;">Prevents re-reading the same chat logs on subsequent cycles.</td>
+<td style="text-align: left;">Updated per dream cycle</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-concepts">Key Concepts</h2>
+<h3 id="topic-extraction">Topic Extraction</h3>
+<p>The dreamer categorizes unstructured chat logs into discrete markdown files under <code>.pi/memory/topics/</code>:</p>
+<ul>
+<li><code>lessons.md</code>: User corrections and workflow adjustments.</li>
+<li><code>preferences.md</code>: Stylistic or tool-specific preferences.</li>
+<li><code>mistakes.md</code>: Repeated errors and their successful fixes.</li>
+<li><code>completions.md</code>: Merged PRs and completed features.</li>
+<li><code>decisions.md</code>: Architectural or design choices made during the session.</li>
+</ul>
 <blockquote>
-<p><strong>Tip:</strong> The <code>/nvim-changed-files</code> command automatically detects whether you are on the <code>main</code> branch or a feature branch, pulling committed changes versus <code>origin/main</code> as well as any uncommitted working tree changes.</p>
+<p><strong>Note:</strong> The dreamer is strictly instructed to never modify entries marked with <code>*(pinned)*</code> or <code>*(enforced)*</code>. Any textual modification to enforced entries destroys their hash binding, permanently breaking the corresponding enforcement rule.</p>
 </blockquote>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="leveraging-remote-lua-execution">Leveraging Remote Lua Execution</h3>
-<p>Because Pi runs as a child process of Neovim, it inherits the <code>$NVIM</code> socket environment variable. You can leverage this directly in your own shell scripts, custom extensions, or AI prompts to send commands back to your Neovim instance.</p>
-<p>For example, you can tell the AI to evaluate a Lua command inside your active editor using standard Neovim CLI arguments:</p>
-<div class="highlight"><pre><span></span><code>nvim<span class="w"> </span>--server<span class="w"> </span><span class="nv">$NVIM</span><span class="w"> </span>--remote-expr<span class="w"> </span><span class="s1">&#39;luaeval(&quot;vim.notify(\&quot;Task complete from Pi!\&quot;)&quot;)&#39;</span>
+<h3 id="skill-auto-generation">Skill Auto-Generation</h3>
+<p>If the dreamer notices a recurring multi-step workflow across multiple sessions, it bypasses standard topic memory and directly generates a formal skill file at <code>.pi/skills/&lt;name&gt;/SKILL.md</code>. This gives future agents a structured, project-level checklist rather than a vague contextual memory.</p>
+<h3 id="promotion-and-provenance">Promotion and Provenance</h3>
+<p>When extracting knowledge, the dreamer creates a "provenance sidecar" (<code>provenance-pending.json</code>). When the background task successfully completes, this data is merged into the master score registry (<code>memory-scores.json</code>), linking the new memory to the exact session file it originated from. Memories with high evidence scores are sent to the promotion queue to potentially become <code>*(enforced)*</code> command blocks.</p>
+<h2 id="how-it-affects-the-user">How it Affects the User</h2>
+<p>The internal dreaming system surfaces in your daily usage in several ways:</p>
+<ul>
+<li><strong>UI Status Indicators:</strong> While a dream is actively running, the terminal overlay or web dashboard displays a highlighted <code>🌙</code> (3b-dream) status indicator.</li>
+<li><strong>Zero-Touch Learning:</strong> You will notice agents naturally adopting your conventions in subsequent sessions without you having to explicitly invoke memory commands.</li>
+<li><strong>Notifications:</strong> If dreaming fails to start (e.g., missing async LLM configuration), the system will notify your chat view: <code>Dream skipped: set async_llm_provider and async_llm_model</code>.</li>
+</ul>
+<h3 id="using-the-dreaming-system">Using the Dreaming System</h3>
+<p>You can control the dreamer directly via chat commands:</p>
+<ul>
+<li><code>/dream-auto on|off</code>: Toggles the background timer and end-of-session trigger for the current project.</li>
+<li><code>/dream</code>: Manually forces a background consolidation pass immediately (non-blocking).</li>
+</ul>
+<h3 id="configuration-options">Configuration Options</h3>
+<p>You can adjust the dreaming schedule and behavior using environment variables or project settings:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Setting</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>PI_DREAM_INTERVAL_HOURS</code></td>
+<td style="text-align: left;">Environment Var</td>
+<td style="text-align: left;"><code>3</code></td>
+<td style="text-align: left;">Global override for the timer (valid range: 0.5 to 24 hours).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dream_interval_hours</code></td>
+<td style="text-align: left;">Project Setting</td>
+<td style="text-align: left;"><code>3</code></td>
+<td style="text-align: left;">Per-project setting defined in <code>.pi/settings.json</code>.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Dreaming requires a configured background LLM. If you are using ACPX (external providers), you must define <code>async_llm_provider</code> and <code>async_llm_model</code> in your configuration, or dreaming will be skipped.</p>
+</blockquote>
+<h2 id="extending-the-dreaming-system">Extending the Dreaming System</h2>
+<p>The dreaming worker is built as an orchestrator extension using standard event hooks. If you are building custom plugins or native CLI providers, you can hook into the exact same lifecycle events the dreamer uses:</p>
+<h3 id="relevant-hooks">Relevant Hooks</h3>
+<ul>
+<li><code>pi.on("before_agent_start", (event, ctx) =&gt; {...})</code>: Used by the dreamer to initialize UI status immediately before the first prompt.</li>
+<li><code>pi.on("session_start", (event, ctx) =&gt; {...})</code>: Fired when a new workspace session begins. Used to track the current <code>cwd</code> and restart the dream timer.</li>
+<li><code>pi.on("session_shutdown", (event) =&gt; {...})</code>: Fired when the agent shuts down. Used to fire-and-forget a final detached dream before the node process fully exits (skips on <code>/reload</code> or <code>/resume</code>).</li>
+</ul>
+<h3 id="custom-rebuilds-via-spawnasyncagent">Custom Rebuilds via spawnAsyncAgent</h3>
+<p>If your extension introduces a new memory format or tracking state, you can safely queue tasks in the <code>onComplete</code> callback of an async agent, just as the dreamer triggers <code>rebuildAndOrganize(cwd)</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">id</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">spawnAsyncAgent</span><span class="p">(</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;Your custom background prompt...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">cwd</span><span class="p">,</span><span class="w"> </span><span class="nx">agents</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">fireAndForget</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;CustomDream&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">onComplete</span><span class="o">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Executes synchronously in the main process when the background LLM task finishes</span>
+<span class="w">    </span><span class="nx">runCustomConsolidation</span><span class="p">(</span><span class="nx">cwd</span><span class="p">);</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">});</span>
 </code></pre></div>
 
-<p>If you are running long bash scripts or tests via Pi, you can use this trick to trigger notifications or reload buffers in Neovim when the job finishes.</p>
-<blockquote>
-<p><strong>Note:</strong> Neovim integration and remote execution are automatically disabled when Pi spawns background sub-agents (identifiable by the <code>PI_SUBAGENT_CHILD=1</code> environment variable). This ensures that background tasks do not unexpectedly change your active editor state or steal focus.</p>
-</blockquote>
-<h2 id="troubleshooting">Troubleshooting</h2>
-<ul>
-<li><strong>Quickfix list does not open:</strong> Ensure you are running Pi <em>inside</em> a Neovim terminal. Running Pi in a separate tmux pane or external terminal emulator will not expose the <code>$NVIM</code> socket environment variable required for RPC communication.</li>
-<li><strong>No files loaded in quickfix:</strong> The <code>/nvim-changed-files</code> command relies on standard Git output. Check that your repository has an <code>origin/main</code> or <code>origin/master</code> branch fetched locally, as it uses this as the base comparison for feature branches.</li>
-</ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
+<li>See <a href="curating-project-memory.html">Curating Project Memory</a> for manual memory management and topic file structures.</li>
+<li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details on the <code>spawnAsyncAgent</code> API and tracking background execution.</li>
+<li>See <a href="memory-architecture.html">Memory Architecture</a> for how scoring, hashing, and provenance sidecars work under the hood.</li>
+<li>See <a href="configuration.html">Configuration &amp; Settings</a> to properly configure your fallback async LLM providers.</li>
+</ul>
+<h2 id="related-pages_1">Related Pages</h2>
+<ul>
+<li><a href="memory-architecture.html">Memory Architecture</a></li>
+<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-prev">
+                <a href="inter-agent-communication.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
+                    <span class="page-nav-title">Inter-Agent Communication Network</span>
                 </a>
 
 
-                <a href="discord-bot.html" class="page-nav-link page-nav-next">
+                <a href="acpx-provider.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Discord Bot Notifications</span>
+                    <span class="page-nav-title">ACPX Provider Integration</span>
                 </a>
 
             </nav>
@@ -345,15 +455,29 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step">Step-by-Step</a></li>
-<li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#leveraging-remote-lua-execution">Leveraging Remote Lua Execution</a></li>
+<li><a href="#the-big-picture-architecture-and-data-flow">The Big Picture: Architecture and Data Flow</a><ul>
+<li><a href="#dreaming-lifecycle-flow">Dreaming Lifecycle Flow</a></li>
+<li><a href="#process-architecture">Process Architecture</a></li>
 </ul>
 </li>
-<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#key-concepts">Key Concepts</a><ul>
+<li><a href="#topic-extraction">Topic Extraction</a></li>
+<li><a href="#skill-auto-generation">Skill Auto-Generation</a></li>
+<li><a href="#promotion-and-provenance">Promotion and Provenance</a></li>
+</ul>
+</li>
+<li><a href="#how-it-affects-the-user">How it Affects the User</a><ul>
+<li><a href="#using-the-dreaming-system">Using the Dreaming System</a></li>
+<li><a href="#configuration-options">Configuration Options</a></li>
+</ul>
+</li>
+<li><a href="#extending-the-dreaming-system">Extending the Dreaming System</a><ul>
+<li><a href="#relevant-hooks">Relevant Hooks</a></li>
+<li><a href="#custom-rebuilds-via-spawnasyncagent">Custom Rebuilds via spawnAsyncAgent</a></li>
+</ul>
+</li>
 <li><a href="#related-pages">Related Pages</a></li>
+<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 

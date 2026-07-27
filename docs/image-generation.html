@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generating Images with the generate_image Tool - pi-config</title>
-    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <title>Image Generation - pi-config</title>
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,14 +31,7 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Installing and Starting Your First Session
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="first-workflow.html"
-                           class="nav-link">
-                            Your First Coding Workflow
+                            Installation &amp; Quickstart
                         </a>
                     </li>
 
@@ -50,65 +43,30 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agent-routing.html"
+                        <a href="automating-code-reviews.html"
                            class="nav-link">
-                            Understanding Agent Routing and Delegation
+                            Automating Code Reviews
                         </a>
                     </li>
 
                     <li>
-                        <a href="code-review-loop.html"
+                        <a href="managing-custom-agents.html"
                            class="nav-link">
-                            Running the Automated Code Review Loop
+                            Managing Custom Agents
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="using-the-web-dashboard.html"
                            class="nav-link">
-                            Using Slash Commands and Prompt Templates
+                            Using the Web Dashboard
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-system.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Working with Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Communicating Between Pi Sessions
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            Using External AI Agents (Cursor, Claude, Gemini)
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="docker-deployment.html"
-                           class="nav-link">
-                            Running Pi in a Docker Container
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="dashboards-and-diffs.html"
-                           class="nav-link">
-                            Using the Web Dashboard and Diff Viewer
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -120,16 +78,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="workflow-recipes.html"
+                        <a href="custom-slash-commands.html"
                            class="nav-link">
-                            Common Workflow Recipes
+                            Creating Slash Commands
                         </a>
                     </li>
 
                     <li>
-                        <a href="customization-recipes.html"
+                        <a href="safety-enforcements.html"
                            class="nav-link">
-                            Customization and Extension Recipes
+                            Implementing Command Guards
                         </a>
                     </li>
 
@@ -141,37 +99,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agents-reference.html"
-                           class="nav-link">
-                            Specialist Agents Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="commands-reference.html"
-                           class="nav-link">
-                            Slash Commands and Extension Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            myk-pi-tools CLI Reference
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration-reference.html"
+                        <a href="configuration.html"
                            class="nav-link">
-                            Configuration and Environment Variables Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="rules-reference.html"
-                           class="nav-link">
-                            Orchestrator Rules Reference
+                            Configuration &amp; Settings
                         </a>
                     </li>
 
@@ -183,16 +120,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="extension-architecture.html"
+                        <a href="memory-architecture.html"
                            class="nav-link">
-                            Extension Architecture and Lifecycle Hooks
+                            Memory Architecture
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-internals.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            Memory Scoring, Embeddings, and Situation Reports
+                            Daemon &amp; Websocket Networking
                         </a>
                     </li>
 
@@ -200,34 +137,27 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Guides</h3>
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Using ACPX Provider for External Agent Models
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            Controlling Pi Sessions from Discord
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="neovim-integration.html"
-                           class="nav-link">
-                            Neovim Integration and Quickfix Support
+                            Discord Bot Notifications
                         </a>
                     </li>
 
                     <li>
                         <a href="image-generation.html"
                            class="nav-link active" aria-current="page">
-                            Generating Images with the generate_image Tool
+                            Image Generation
                         </a>
                     </li>
 
@@ -235,13 +165,62 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Concepts</h3>
+                <h3 class="nav-group-title">Advanced Usage</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="command-enforcement.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Command Safety Guards and Enforcement
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -294,26 +273,89 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h2 id="related-pages">Related Pages</h2>
+                    <h1 id="image-generation">Image Generation</h1>
+<p>Generate custom images directly through your AI agents using Google's Gemini models to quickly create visual assets or concept art for your projects. This allows your agents to handle both code changes and their accompanying visual assets without leaving the development environment.</p>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
-<li><a href="agents-reference.html">Specialist Agents Reference</a></li>
-<li><a href="slash-commands.html">Using Slash Commands and Prompt Templates</a></li>
-<li><a href="workflow-recipes.html">Common Workflow Recipes</a></li>
+<li>An active Gemini API key.</li>
+<li>A supported Gemini image model (e.g., <code>gemini-2.0-flash-exp</code>).</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>First, configure your API key and model. You can set the model in <code>pi-config-settings.json</code> (<code>"image_model": "gemini-3-pro-image"</code>) or use environment variables:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GEMINI_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_IMAGE_MODEL</span><span class="o">=</span><span class="s2">&quot;gemini-3-pro-image&quot;</span>
+</code></pre></div>
+
+<p>Next, ask your agent to generate an image during your chat session:</p>
+<div class="highlight"><pre><span></span><code>User: Generate a pixel art image of a cat hacking on a mechanical keyboard.
+</code></pre></div>
+
+<p>The agent will return the local file path where the image was saved, and if you are running in a containerised environment, a local preview URL.</p>
+<h2 id="step-by-step">Step-by-step</h2>
+<ol>
+<li>
+<p><strong>Configure your environment:</strong> Ensure your API key is exposed to the tool (via <code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code> env vars). You must also set the model to use for generation, either via the <code>image_model</code> setting in <code>pi-config-settings.json</code> or the <code>PI_IMAGE_MODEL</code> environment variable.</p>
+</li>
+<li>
+<p><strong>Prompt your agent:</strong> Simply ask your agent to generate an image. The agent will automatically structure your request and invoke the generation tool. You only need to describe the main subject, but you can be as descriptive as you like.</p>
+</li>
+<li>
+<p><strong>Access the output:</strong> The generated image will be downloaded and saved to your project's <code>.pi/tmp/</code> directory. The agent will respond with the absolute path to the <code>.jpg</code>, <code>.png</code>, or <code>.webp</code> file. </p>
+</li>
+</ol>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<p>When you need precise control over the output, you can ask your agent to use specific compositional parameters.</p>
+<h3 id="structured-generation-parameters">Structured Generation Parameters</h3>
+<p>The generation tool accepts the following detailed parameters. You can ask your agent to explicitly follow these in your prompt:</p>
+<ul>
+<li><strong>Subject:</strong> The main focus of the image (required).</li>
+<li><strong>Action:</strong> What the subject is currently doing.</li>
+<li><strong>Scene:</strong> The location or background environment.</li>
+<li><strong>Composition:</strong> Camera angles, framing, and perspective (e.g., "close up", "wide angle").</li>
+<li><strong>Lighting:</strong> The lighting setup (e.g., "cinematic lighting", "neon glow", "golden hour").</li>
+<li><strong>Style:</strong> The artistic style (e.g., "photorealistic", "watercolor", "pixel art", "cyberpunk").</li>
+<li><strong>Text:</strong> Specific text you want rendered directly inside the image.</li>
+</ul>
+<p><strong>Example structured prompt:</strong></p>
+<div class="highlight"><pre><span></span><code>User: Generate an image. Subject: A coffee cup. Action: spilling over. Scene: A busy futuristic desk. Lighting: Neon cyberpunk glow. Style: Photorealistic. Text: &quot;ERROR 404&quot;. Aspect ratio: 16:9.
+</code></pre></div>
+
+<h3 id="supported-aspect-ratios">Supported Aspect Ratios</h3>
+<p>You can instruct the agent to use a specific aspect ratio. The supported values are:</p>
+<ul>
+<li><code>1:1</code> (Square)</li>
+<li><code>3:4</code> (Portrait)</li>
+<li><code>4:3</code> (Landscape)</li>
+<li><code>9:16</code> (Vertical/Mobile)</li>
+<li><code>16:9</code> (Widescreen)</li>
+</ul>
+<h3 id="automatic-preview-server">Automatic Preview Server</h3>
+<p>If you are running the project inside a container (like Docker), the file system is isolated from your host machine. To make viewing images frictionless, the tool automatically detects container environments and spins up a temporary background HTTP server.</p>
+<p>When this happens, the agent's response will include both the internal file path and a <code>http://localhost:&lt;port&gt;/&lt;filename&gt;</code> preview URL that you can click directly in your terminal or editor to open in your host browser.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong>"Model not configured":</strong> You must specify the model name before starting your session. Set <code>image_model</code> in <code>pi-config-settings.json</code> or export <code>PI_IMAGE_MODEL=gemini-3-pro-image</code> in your shell.</li>
+<li><strong>"Image generation blocked by safety filter":</strong> Gemini's safety filters have blocked the prompt. You will need to rephrase your request to remove potentially unsafe, violent, or explicit concepts.</li>
+<li><strong>"No API key found":</strong> Make sure you have exported <code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code> in the environment where the daemon is running. See <a href="external-ai-agents.html">External AI Agents &amp; CLI</a> for more about managing external model keys.</li>
+</ul>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="neovim-integration.html" class="page-nav-link page-nav-prev">
+                <a href="discord-bot.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Neovim Integration and Quickfix Support</span>
+                    <span class="page-nav-title">Discord Bot Notifications</span>
                 </a>
 
 
-                <a href="command-enforcement.html" class="page-nav-link page-nav-next">
+                <a href="external-ai-agents.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Command Safety Guards and Enforcement</span>
+                    <span class="page-nav-title">External AI Agents &amp; CLI</span>
                 </a>
 
             </nav>
@@ -323,6 +365,16 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step">Step-by-step</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#structured-generation-parameters">Structured Generation Parameters</a></li>
+<li><a href="#supported-aspect-ratios">Supported Aspect Ratios</a></li>
+<li><a href="#automatic-preview-server">Automatic Preview Server</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -335,7 +387,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.13.0</span>
+            <span class="footer-version">Generated from version 3.16.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Working with Project Memory - pi-config</title>
-    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <title>Using the Web Dashboard - pi-config</title>
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,14 +31,7 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Installing and Starting Your First Session
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="first-workflow.html"
-                           class="nav-link">
-                            Your First Coding Workflow
+                            Installation &amp; Quickstart
                         </a>
                     </li>
 
@@ -50,65 +43,30 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agent-routing.html"
+                        <a href="automating-code-reviews.html"
                            class="nav-link">
-                            Understanding Agent Routing and Delegation
+                            Automating Code Reviews
                         </a>
                     </li>
 
                     <li>
-                        <a href="code-review-loop.html"
+                        <a href="managing-custom-agents.html"
                            class="nav-link">
-                            Running the Automated Code Review Loop
+                            Managing Custom Agents
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
-                           class="nav-link">
-                            Using Slash Commands and Prompt Templates
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="memory-system.html"
+                        <a href="using-the-web-dashboard.html"
                            class="nav-link active" aria-current="page">
-                            Working with Project Memory
+                            Using the Web Dashboard
                         </a>
                     </li>
 
                     <li>
-                        <a href="async-agents-and-cron.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Communicating Between Pi Sessions
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            Using External AI Agents (Cursor, Claude, Gemini)
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="docker-deployment.html"
-                           class="nav-link">
-                            Running Pi in a Docker Container
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="dashboards-and-diffs.html"
-                           class="nav-link">
-                            Using the Web Dashboard and Diff Viewer
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -120,16 +78,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="workflow-recipes.html"
+                        <a href="custom-slash-commands.html"
                            class="nav-link">
-                            Common Workflow Recipes
+                            Creating Slash Commands
                         </a>
                     </li>
 
                     <li>
-                        <a href="customization-recipes.html"
+                        <a href="safety-enforcements.html"
                            class="nav-link">
-                            Customization and Extension Recipes
+                            Implementing Command Guards
                         </a>
                     </li>
 
@@ -141,37 +99,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agents-reference.html"
-                           class="nav-link">
-                            Specialist Agents Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="commands-reference.html"
-                           class="nav-link">
-                            Slash Commands and Extension Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            myk-pi-tools CLI Reference
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration-reference.html"
+                        <a href="configuration.html"
                            class="nav-link">
-                            Configuration and Environment Variables Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="rules-reference.html"
-                           class="nav-link">
-                            Orchestrator Rules Reference
+                            Configuration &amp; Settings
                         </a>
                     </li>
 
@@ -183,16 +120,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="extension-architecture.html"
+                        <a href="memory-architecture.html"
                            class="nav-link">
-                            Extension Architecture and Lifecycle Hooks
+                            Memory Architecture
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-internals.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            Memory Scoring, Embeddings, and Situation Reports
+                            Daemon &amp; Websocket Networking
                         </a>
                     </li>
 
@@ -200,34 +137,27 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Guides</h3>
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Using ACPX Provider for External Agent Models
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            Controlling Pi Sessions from Discord
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="neovim-integration.html"
-                           class="nav-link">
-                            Neovim Integration and Quickfix Support
+                            Discord Bot Notifications
                         </a>
                     </li>
 
                     <li>
                         <a href="image-generation.html"
                            class="nav-link">
-                            Generating Images with the generate_image Tool
+                            Image Generation
                         </a>
                     </li>
 
@@ -235,13 +165,62 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Concepts</h3>
+                <h3 class="nav-group-title">Advanced Usage</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="command-enforcement.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Command Safety Guards and Enforcement
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -294,26 +273,114 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h2 id="related-pages">Related Pages</h2>
+                    <h1 id="using-the-web-dashboard">Using the Web Dashboard</h1>
+<p>Monitor multiple active terminal sessions, interact with background tasks, and perform visual code reviews without leaving your workflow. Using the local React UI allows you to manage long-running agents and inspect git diffs across multiple projects from a single browser window.</p>
 <ul>
-<li><a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a></li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
-<li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
-<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
+<li><strong>Prerequisites:</strong></li>
+<li>An active Terminal UI (TUI) session (the web features cannot be launched from CLI-only modes).</li>
+<li>Port <code>19190</code> available on your machine (the default port for the global dashboard).</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>Start the global dashboard directly from your active TUI session:</p>
+<div class="highlight"><pre><span></span><code>/pidash start
+</code></pre></div>
+
+<p>Once the background server launches, the TUI status line will display a clickable <code>pi-dash</code> label and web link (e.g., <code>🌐 http://localhost:19190</code>). Click the label or open this URL in your web browser to manage your workspace.</p>
+<h2 id="step-by-step-guide">Step-by-Step Guide</h2>
+<ol>
+<li><strong>Launch the Dashboard:</strong> Run the <code>/pidash start</code> command inside your active session. The background server will initialize and establish a WebSocket connection with your terminal.</li>
+<li><strong>Navigate Sessions:</strong> Open the dashboard URL in your browser. The interface displays a list of all active sessions across your system. Clicking a session name will automatically switch your terminal's context to that project directory.</li>
+<li><strong>Adjust Agent Settings:</strong> Use the dropdowns in the web UI to change the active LLM provider or adjust the thinking level dynamically. Setting changes are immediately reflected in your terminal.</li>
+<li><strong>Monitor Background Tasks:</strong> View the status of asynchronous agents and scheduled cron jobs. If a background task is stuck, you can terminate it directly from the dashboard using the kill controls.</li>
+<li><strong>Send Prompts:</strong> You can type prompts directly into the web UI. The dashboard forwards these commands to your terminal session as follow-up instructions for the agent.</li>
+<li><strong>Stop the Dashboard:</strong> When you are finished, shut down the web server by running <code>/pidash stop</code> in your terminal.</li>
+</ol>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="dashboard-vs-diff-viewer">Dashboard vs. Diff Viewer</h3>
+<p>The project uses two distinct web interfaces depending on what you need to accomplish:</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th><code>/pidash</code> (Web Dashboard)</th>
+<th><code>/pidiff</code> (Diff Viewer)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Scope</strong></td>
+<td>Global (sees all active sessions)</td>
+<td>Local (tied to the current project)</td>
+</tr>
+<tr>
+<td><strong>Port Mapping</strong></td>
+<td>Fixed (<code>19190</code> by default)</td>
+<td>Dynamic (allocates a random free port)</td>
+</tr>
+<tr>
+<td><strong>Primary Use</strong></td>
+<td>Session switching, agent config, background task monitoring</td>
+<td>Visualizing git diffs, publishing inline code review comments</td>
+</tr>
+<tr>
+<td><strong>Commands</strong></td>
+<td><code>/pidash start\|stop\|restart\|status</code></td>
+<td><code>/pidiff start\|stop\|restart\|status</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="using-the-project-diff-viewer">Using the Project Diff Viewer</h3>
+<p>While the main dashboard monitors your global state, the <code>pidiff</code> extension provides a dedicated interface for reviewing code changes within a specific repository. It runs a separate server to isolate project context.</p>
+<p>Launch the diff viewer from your project session:</p>
+<div class="highlight"><pre><span></span><code>/pidiff start
+</code></pre></div>
+
+<ol>
+<li>The TUI status line will display a clickable <code>pi-diff</code> label and dynamically allocated port for this specific project's diff viewer.</li>
+<li>Click the <code>pi-diff</code> label or open the URL to inspect local git diffs side-by-side and annotate specific lines of code.</li>
+<li>Once you publish review comments from the web UI, they are automatically injected into your TUI session as formatted instructions. The active agent will read the comments and begin resolving them.</li>
+</ol>
+<p>To check the health and port of your active diff server at any time, run:</p>
+<div class="highlight"><pre><span></span><code>/pidiff status
+</code></pre></div>
+
+<blockquote>
+<p><strong>Tip:</strong> If you need to forcefully reset the project diff viewer, run <code>/pidiff restart</code>. This kills the local server and allocates a new random port.</p>
+</blockquote>
+<h3 id="running-in-containers">Running in Containers</h3>
+<p>The web dashboard automatically detects if your session is running inside a Docker or Podman container. Ensure you expose the necessary ports when launching your container so your host machine's browser can connect:</p>
+<ul>
+<li>Map port <code>19190</code> for the global dashboard.</li>
+<li>If using the diff viewer, map a specific port range and ensure your environment is configured to allow dynamic port allocation.</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> To disable the web dashboard extensions entirely in headless environments or CI pipelines, set <code>PI_PIDASH_ENABLE=false</code> and <code>PI_PIDIFF_ENABLE=false</code> in your environment variables (or set <code>pidash_enable: false</code> and <code>pidiff_enable: false</code> in <code>pi-config-settings.json</code>).</p>
+</blockquote>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong>Dashboard fails to start:</strong> Check if another application is using port <code>19190</code>. You can change the port by setting the <code>PI_PIDASH_PORT</code> environment variable (or <code>pidash_port</code> in <code>pi-config-settings.json</code>) before starting your session.</li>
+<li><strong>Session not showing in UI:</strong> Ensure your terminal is running in TUI mode. The web interface relies on the TUI's event hooks to synchronize state.</li>
+<li><strong>Cannot connect to diff viewer:</strong> The <code>pidiff</code> server uses local lockfiles in your project's <code>.pi/tmp/</code> directory to track active ports. If the server becomes unresponsive or port conflicts occur, run <code>/pidiff stop</code> to clear the lockfiles before starting it again.</li>
+</ul>
+<p>See <a href="quickstart.html">Installation &amp; Quickstart</a> to learn more about basic chat commands, or read <a href="managing-custom-agents.html">Managing Custom Agents</a> to understand how background async tasks operate.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="slash-commands.html" class="page-nav-link page-nav-prev">
+                <a href="managing-custom-agents.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Using Slash Commands and Prompt Templates</span>
+                    <span class="page-nav-title">Managing Custom Agents</span>
                 </a>
 
 
-                <a href="async-agents-and-cron.html" class="page-nav-link page-nav-next">
+                <a href="curating-project-memory.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Running Background Agents and Scheduled Tasks</span>
+                    <span class="page-nav-title">Curating Project Memory</span>
                 </a>
 
             </nav>
@@ -323,6 +390,15 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step-guide">Step-by-Step Guide</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#dashboard-vs-diff-viewer">Dashboard vs. Diff Viewer</a></li>
+<li><a href="#using-the-project-diff-viewer">Using the Project Diff Viewer</a></li>
+<li><a href="#running-in-containers">Running in Containers</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -335,7 +411,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.13.0</span>
+            <span class="footer-version">Generated from version 3.16.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

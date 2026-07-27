@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neovim Integration - pi-config</title>
+    <title>Implementing Command Guards - pi-config</title>
     <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -86,7 +86,7 @@
 
                     <li>
                         <a href="safety-enforcements.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Implementing Command Guards
                         </a>
                     </li>
@@ -142,7 +142,7 @@
 
                     <li>
                         <a href="neovim-integration.html"
-                           class="nav-link active" aria-current="page">
+                           class="nav-link">
                             Neovim Integration
                         </a>
                     </li>
@@ -273,69 +273,91 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="neovim-integration">Neovim Integration</h1>
-<p>When you run Pi inside a Neovim terminal buffer, it automatically detects the editor environment and enables direct RPC communication. This allows you to quickly load working context into your editor, populate the quickfix list with branch changes, and programmatically execute Neovim Lua commands from your AI session.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>Neovim installed and running.</li>
-<li>Pi started from an embedded Neovim terminal buffer (<code>:terminal</code>).</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>The simplest way to use the integration is to send your current Git changes directly to the Neovim quickfix window for easy review.</p>
-<p>Start Pi inside a Neovim terminal:</p>
-<div class="highlight"><pre><span></span><code>:term<span class="w"> </span>pi
+                    <h1 id="implementing-command-guards">Implementing Command Guards</h1>
+<p>Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.</p>
+<h2 id="block-a-destructive-command-pattern">Block a Destructive Command Pattern</h2>
+<p>Stop the agent from executing specific, potentially destructive commands using memory enforcement triggers.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Never prune docker images&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;trigger&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bash_contains docker system prune&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;block&quot;</span>
+<span class="p">}</span>
 </code></pre></div>
 
-<p>Inside the Pi chat interface, run the built-in slash command:</p>
-<div class="highlight"><pre><span></span><code>/nvim-changed-files
-</code></pre></div>
-
-<p>Neovim will immediately open the quickfix window containing all modified, added, renamed, or deleted files relative to your default branch.</p>
-<h2 id="step-by-step">Step-by-Step</h2>
-<p>Reviewing a large pull request or a batch of local changes is much easier when loaded directly into Neovim's quickfix list rather than scrolling through terminal output.</p>
-<ol>
-<li><strong>Open a terminal in Neovim:</strong> From normal mode, type <code>:terminal</code> or open a split with <code>:vsplit term://bash</code>.</li>
-<li><strong>Launch Pi:</strong> Start your session by typing <code>pi</code> in the terminal prompt. The integration automatically connects to the parent editor using the <code>$NVIM</code> socket variable.</li>
-<li><strong>Trigger the quickfix population:</strong> Type <code>/nvim-changed-files</code> in the Pi chat prompt and hit enter.</li>
-<li><strong>Navigate the files:</strong> Pi calculates the Git diff (comparing against <code>origin/main</code> or your local <code>HEAD</code>), formats the results, and automatically commands Neovim to open the quickfix list (<code>:copen</code>). You can now use standard Neovim commands (like <code>:cnext</code> and <code>:cprev</code>) to jump through your changed files.</li>
-</ol>
+<p>Ask the agent to run the <code>memory_add</code> tool with these parameters to block commands matching the trigger. The agent evaluates the trigger against <code>bash</code> tool invocations and immediately rejects matching requests.</p>
 <blockquote>
-<p><strong>Tip:</strong> The <code>/nvim-changed-files</code> command automatically detects whether you are on the <code>main</code> branch or a feature branch, pulling committed changes versus <code>origin/main</code> as well as any uncommitted working tree changes.</p>
+<p><strong>Tip:</strong> You can also use the <code>bash_regex</code> trigger for more complex matches, or <code>tool_name</code> to block specific tools entirely.</p>
 </blockquote>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="leveraging-remote-lua-execution">Leveraging Remote Lua Execution</h3>
-<p>Because Pi runs as a child process of Neovim, it inherits the <code>$NVIM</code> socket environment variable. You can leverage this directly in your own shell scripts, custom extensions, or AI prompts to send commands back to your Neovim instance.</p>
-<p>For example, you can tell the AI to evaluate a Lua command inside your active editor using standard Neovim CLI arguments:</p>
-<div class="highlight"><pre><span></span><code>nvim<span class="w"> </span>--server<span class="w"> </span><span class="nv">$NVIM</span><span class="w"> </span>--remote-expr<span class="w"> </span><span class="s1">&#39;luaeval(&quot;vim.notify(\&quot;Task complete from Pi!\&quot;)&quot;)&#39;</span>
+<h2 id="trigger-an-automatic-post-command-script">Trigger an Automatic Post-Command Script</h2>
+<p>Automatically run a deployment or cleanup script immediately after a specific command finishes.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Sync database after schema changes&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;trigger&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bash_contains prisma db push&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;run_after ./scripts/sync-db.sh&quot;</span>
+<span class="p">}</span>
 </code></pre></div>
 
-<p>If you are running long bash scripts or tests via Pi, you can use this trick to trigger notifications or reload buffers in Neovim when the job finishes.</p>
+<p>Ask the agent to run the <code>memory_add</code> tool with the <code>run_after</code> action. When the trigger matches a bash command, the enforcement engine will automatically execute the trailing script in the background.</p>
+<h2 id="restrict-allowed-automatic-scripts">Restrict Allowed Automatic Scripts</h2>
+<p>Limit which scripts can be executed automatically by enforcement rules to prevent malicious chaining.</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_ALLOWED_COMMANDS</span><span class="o">=</span><span class="s2">&quot;./scripts/sync-db.sh:make format:npm run build&quot;</span>
+</code></pre></div>
+
+<p>Set this environment variable in your terminal or container environment. When defined, any <code>run_after</code> actions must exactly match an entry in this colon-separated allowlist.</p>
 <blockquote>
-<p><strong>Note:</strong> Neovim integration and remote execution are automatically disabled when Pi spawns background sub-agents (identifiable by the <code>PI_SUBAGENT_CHILD=1</code> environment variable). This ensures that background tasks do not unexpectedly change your active editor state or steal focus.</p>
+<p><strong>Warning:</strong> Exact matches are required. Prefix matching is disabled to prevent shell chaining bypasses.</p>
 </blockquote>
-<h2 id="troubleshooting">Troubleshooting</h2>
-<ul>
-<li><strong>Quickfix list does not open:</strong> Ensure you are running Pi <em>inside</em> a Neovim terminal. Running Pi in a separate tmux pane or external terminal emulator will not expose the <code>$NVIM</code> socket environment variable required for RPC communication.</li>
-<li><strong>No files loaded in quickfix:</strong> The <code>/nvim-changed-files</code> command relies on standard Git output. Check that your repository has an <code>origin/main</code> or <code>origin/master</code> branch fetched locally, as it uses this as the base comparison for feature branches.</li>
-</ul>
+<h2 id="warn-the-agent-on-sensitive-file-modifications">Warn the Agent on Sensitive File Modifications</h2>
+<p>Inject a contextual warning directly into the agent's context whenever specific files are modified.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Ensure CI workflows are tested locally before pushing&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;trigger&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;file_modified .github/workflows/*.yml&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;warn&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Ask the agent to run the <code>memory_add</code> tool using a <code>file_modified</code> trigger and the <code>warn</code> action. When the agent uses file-writing tools (like <code>write</code> or <code>edit</code>) on matching paths, the memory text is automatically appended as a warning in the tool results.</p>
+<h2 id="require-a-prerequisite-tool-call">Require a Prerequisite Tool Call</h2>
+<p>Prevent the execution of a specific command unless another tool was invoked earlier in the same turn.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Always ask user before merging PRs&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;verifier&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tool_called ask_user before gh pr merge&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Ask the agent to run the <code>memory_add</code> tool with this semantic verifier. The orchestrator checks the active turn's tool history at <code>turn_end</code> and logs a violation if the specified command (<code>gh pr merge</code>) was executed without the required tool (<code>ask_user</code>) preceding it.</p>
+<h2 id="enable-the-automated-code-review-loop">Enable the Automated Code Review Loop</h2>
+<p>Block agents from committing code until all automated reviewers report zero findings.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;review_loop_enforcement&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;review_loop_max_cycles&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Set these values in your project's <code>.pi/pi-config-settings.json</code> file. When enabled, the orchestrator intercepts <code>git commit</code> commands and checks the review state machine, enforcing that tests pass and subagent reviewers approve. Hitting the cycle cap stops the loop but does NOT bypass the commit block.</p>
+<p>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
+<li><a href="custom-slash-commands.html">Creating Slash Commands</a></li>
+<li><a href="cli-reference.html">myk_pi_tools CLI Reference</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-prev">
+                <a href="custom-slash-commands.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
+                    <span class="page-nav-title">Creating Slash Commands</span>
                 </a>
 
 
-                <a href="discord-bot.html" class="page-nav-link page-nav-next">
+                <a href="cli-reference.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Discord Bot Notifications</span>
+                    <span class="page-nav-title">myk_pi_tools CLI Reference</span>
                 </a>
 
             </nav>
@@ -345,14 +367,12 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step">Step-by-Step</a></li>
-<li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#leveraging-remote-lua-execution">Leveraging Remote Lua Execution</a></li>
-</ul>
-</li>
-<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#block-a-destructive-command-pattern">Block a Destructive Command Pattern</a></li>
+<li><a href="#trigger-an-automatic-post-command-script">Trigger an Automatic Post-Command Script</a></li>
+<li><a href="#restrict-allowed-automatic-scripts">Restrict Allowed Automatic Scripts</a></li>
+<li><a href="#warn-the-agent-on-sensitive-file-modifications">Warn the Agent on Sensitive File Modifications</a></li>
+<li><a href="#require-a-prerequisite-tool-call">Require a Prerequisite Tool Call</a></li>
+<li><a href="#enable-the-automated-code-review-loop">Enable the Automated Code Review Loop</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
