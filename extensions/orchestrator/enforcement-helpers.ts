@@ -90,7 +90,7 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
     for (const seg of segments) {
       if (!seg.textLower) continue;
       const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
-      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, "");
+      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*[\/\\]/, "");
       if (baseCmd && /^pip3?$/.test(baseCmd)) {
         return {
           block: true,
@@ -107,7 +107,7 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
       const seg = segments[i];
       if (!seg.textLower) continue;
       const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
-      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, "");
+      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*[\/\\]/, "");
 
       if (baseCmd && /^python3?$/.test(baseCmd)) {
         const origText = seg.text;
@@ -115,7 +115,7 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
         const envPrefix = envVarMatch?.[0] || "";
         const afterEnv = origText.slice(envPrefix.length);
         // Case-insensitive regex to handle any casing
-        const fixedAfterEnv = afterEnv.replace(/^(\S*\/)?python3?\b/i, `uv run ${baseCmd}`);
+        const fixedAfterEnv = afterEnv.replace(/^(\S*[\/\\])?python3?\b/i, `uv run ${baseCmd}`);
         const fixedStmt = envPrefix + fixedAfterEnv;
 
         // Replace by offset

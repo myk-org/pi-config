@@ -473,6 +473,16 @@ describe("checkPythonPipBlock", () => {
     assert.ok(r && "autofix" in r);
     assert.equal(r.modifiedCommand, "uv run python3 script.py");
   });
+  // ── Windows path support ──
+  it("auto-fixes C:\\\\Python\\\\python3 script.py", () => {
+    const r = checkPythonPipBlock("C:\\\\Python\\\\python3 script.py", "c:\\\\python\\\\python3 script.py");
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 script.py");
+  });
+  it("blocks C:\\\\Python\\\\Scripts\\\\pip install requests", () => {
+    const r = checkPythonPipBlock("C:\\\\Python\\\\Scripts\\\\pip install requests", "c:\\\\python\\\\scripts\\\\pip install requests");
+    assert.ok(r && "block" in r);
+  });
   it("auto-fixes python3 with env var prefix", () => {
     const r = checkPythonPipBlock("LANG=C python3 script.py", "lang=c python3 script.py");
     assert.ok(r && "autofix" in r);
