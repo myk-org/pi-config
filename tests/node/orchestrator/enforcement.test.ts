@@ -19,6 +19,7 @@ import {
   resolveEffectiveCwd,
   checkPythonPipBlock,
   setUvAvailable,
+  isUvAvailable,
   checkRemoteExecBlock,
   checkTempFileEnforcement,
   hasGitAddBulk,
@@ -452,7 +453,15 @@ describe("checkPythonPipBlock", () => {
   it("auto-fixes python script.py", () => {
     const r = checkPythonPipBlock("python script.py", "python script.py");
     assert.ok(r && "autofix" in r);
-    assert.equal(r.modifiedCommand, "uv run python3 script.py");
+    assert.equal(r.modifiedCommand, "uv run python script.py");
+  });
+  it("auto-fixes real python when same text appears earlier in quotes", () => {
+    const r = checkPythonPipBlock(
+      'echo "python3 script.py"; python3 script.py',
+      'echo "python3 script.py"; python3 script.py',
+    );
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, 'echo "python3 script.py"; uv run python3 script.py');
   });
   it("auto-fixes python3 -c 'pass'", () => {
     const r = checkPythonPipBlock("python3 -c 'pass'", "python3 -c 'pass'");
@@ -493,6 +502,13 @@ describe("checkPythonPipBlock", () => {
     const r = checkPythonPipBlock("echo ok & python3 script.py", "echo ok & python3 script.py");
     assert.ok(r && "autofix" in r);
     assert.equal(r.modifiedCommand, "echo ok & uv run python3 script.py");
+  });
+  it("auto-fixes correct segment when python appears in quotes too", () => {
+    const cmd = 'echo "python3 script.py"; python3 script.py';
+    const r = checkPythonPipBlock(cmd, cmd.toLowerCase());
+    assert.ok(r && "autofix" in r);
+    // Should fix the SECOND python3 (the actual command), not the quoted one
+    assert.equal(r.modifiedCommand, 'echo "python3 script.py"; uv run python3 script.py');
   });
 
   // ── pip/pip3: still blocked ──
@@ -546,6 +562,15 @@ describe("checkPythonPipBlock", () => {
   it("allows pip when uv unavailable", () => {
     setUvAvailable(false);
     assert.equal(checkPythonPipBlock("pip install requests", "pip install requests"), undefined);
+    setUvAvailable(true);
+  });
+
+  // ── isUvAvailable getter ──
+  it("isUvAvailable returns current state", () => {
+    setUvAvailable(true);
+    assert.equal(isUvAvailable(), true);
+    setUvAvailable(false);
+    assert.equal(isUvAvailable(), false);
     setUvAvailable(true);
   });
 });

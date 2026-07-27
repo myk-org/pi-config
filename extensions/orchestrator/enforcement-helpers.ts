@@ -61,23 +61,38 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
   if (!uvAvailable) return undefined;
 
   if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
-    // Split on statement separators to get individual commands,
-    // then check if the base command (first word) is python/pip.
-    // This avoids false positives on python3/pip appearing inside quoted arguments.
-    // Split on statement separators including & (background operator)
-    const separatorRe = /\n|;|&&|\|\||\||&/;
-    const statementsLower = cmdLower.split(separatorRe).map(s => s.trim()).filter(Boolean);
-    const statementsOrig = command.split(separatorRe).map(s => s.trim()).filter(Boolean);
+    // Use matchAll to find separator positions, then extract segments with their offsets
+    const separatorRe = /\n|;|&&|\|\||\||&/g;
+    const segments: { start: number; end: number; text: string; textLower: string }[] = [];
+    let lastEnd = 0;
 
-    for (let i = 0; i < statementsLower.length; i++) {
-      const stmtLower = statementsLower[i];
-      // Strip leading env var assignments: VAR=val, VAR="val", VAR='val'
-      const envVarPrefixRe = /^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/;
-      const strippedLower = stmtLower.replace(envVarPrefixRe, "");
-      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
+    for (const m of command.matchAll(separatorRe)) {
+      const segText = command.slice(lastEnd, m.index);
+      segments.push({
+        start: lastEnd,
+        end: m.index!,
+        text: segText.trim(),
+        textLower: segText.trim().toLowerCase(),
+      });
+      lastEnd = m.index! + m[0].length;
+    }
+    // Last segment after final separator
+    const lastSegText = command.slice(lastEnd);
+    segments.push({
+      start: lastEnd,
+      end: command.length,
+      text: lastSegText.trim(),
+      textLower: lastSegText.trim().toLowerCase(),
+    });
+
+    const envVarPrefixRe = /^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/;
+
+    for (const seg of segments) {
+      if (!seg.textLower) continue;
+      const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
+      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, "");
 
       if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
-        // pip/pip3: always block (structural mismatch — needs `uv add`, not `uv run pip`)
         if (/^pip3?$/.test(baseCmd)) {
           return {
             block: true,
@@ -85,19 +100,20 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
           };
         }
 
-        // python/python3: auto-fix by prepending `uv run` to the python call
-        // Find where python appears in the original statement (after env vars, with path)
-        const origStmt = statementsOrig[i] || stmtLower;
-        const envVarMatch = origStmt.match(envVarPrefixRe);
+        // Auto-fix: use the original segment text (preserving case)
+        const origText = seg.text;
+        const envVarMatch = origText.match(envVarPrefixRe);
         const envPrefix = envVarMatch?.[0] || "";
-        const afterEnv = origStmt.slice(envPrefix.length);
-        // Replace the python command (possibly path-prefixed) with `uv run python3`
-        const fixedAfterEnv = afterEnv.replace(/^(\S*\/)?python3?\b/, "uv run python3");
+        const afterEnv = origText.slice(envPrefix.length);
+        const fixedAfterEnv = afterEnv.replace(/^(\S*\/)?python3?\b/, `uv run ${baseCmd}`);
         const fixedStmt = envPrefix + fixedAfterEnv;
 
-        // Reconstruct full command by replacing the original statement
-        // We need to find and replace the exact original statement in the full command
-        const modifiedCommand = command.replace(origStmt, fixedStmt);
+        // Replace by offset — find the original untrimmed segment in the command
+        const rawSegment = command.slice(seg.start, seg.end);
+        const trimStart = rawSegment.indexOf(seg.text);
+        const absStart = seg.start + (trimStart >= 0 ? trimStart : 0);
+        const absEnd = absStart + seg.text.length;
+        const modifiedCommand = command.slice(0, absStart) + fixedStmt + command.slice(absEnd);
 
         return {
           autofix: true,

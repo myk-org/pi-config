@@ -19,7 +19,7 @@ Single extension that provides:
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`/async-kill` command** | Kill async agents (overlay picker or by name/id) |
 | **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
-| **Python/pip enforcement** | Blocks `python`/`pip` — requires `uv`/`uvx` |
+| **Python/pip enforcement** | Auto-fixes `python`/`python3` → `uv run python`; blocks `pip`/`pip3` — requires `uv` |
 | **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
 | **Remote script exec block** | Blocks `curl \| bash`, `eval $(curl)`, etc. Allows safe `VAR=$(curl ...)` variable assignments |
 | **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
