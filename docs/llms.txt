@@ -1,49 +1,52 @@
 # pi-config
 
-> Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows
+> Customize and extend your AI development assistant with custom agents, rules, and memory
 
 ## Getting Started
 
-- [Installing and Starting Your First Session](quickstart.md): Install pi-config via Docker container or the native installer script, configure prerequisites (GitHub CLI, API keys), and run your first pi session with the orchestrator
-- [Your First Coding Workflow](first-workflow.md): Walk through a complete feature implementation: ask pi to make a change, watch the orchestrator delegate to specialist agents, go through the code review loop, and create a PR
+- [Installation & Quickstart](quickstart.md): Initialize your project configuration, spin up the background daemon, and run your first custom agent workflow in 60 seconds.
 
 ## User Guides
 
-- [Understanding Agent Routing and Delegation](agent-routing.md): Learn how the orchestrator automatically routes tasks to the right specialist agent (python-expert, git-expert, github-expert, etc.) and when to override routing
-- [Running the Automated Code Review Loop](code-review-loop.md): Use the 3-reviewer parallel code review system (quality, guidelines, security), handle review findings, and iterate until all reviewers approve
-- [Using Slash Commands and Prompt Templates](slash-commands.md): Master the built-in slash commands (/implement, /pr-review, /review-local, /release, /external-ai, /scout-and-plan, /btw, /status) and understand how prompt templates work
-- [Working with Project Memory](memory-system.md): Use the scored memory system to teach pi your preferences, lessons learned, and project conventions — including memory tools, dreaming consolidation, auto-extraction, and capacity management
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.md): Spawn async agents for long-running tasks, monitor their status with /async-status, set up recurring tasks with /cron, and understand fire-and-forget vs tracked agents
-- [Communicating Between Pi Sessions](inter-agent-communication.md): Set up P2P (/coms) and networked (/coms-net) communication between multiple pi sessions for collaborative multi-agent workflows
-- [Using External AI Agents (Cursor, Claude, Gemini)](external-ai-agents.md): Route prompts to external AI CLIs via /external-ai for peer reviews, code generation, and multi-agent debates using ai-cli-runner
-- [Running Pi in a Docker Container](docker-deployment.md): Deploy pi-config in a sandboxed Docker container with proper volume mounts, environment variables, host user mapping, and Docker socket access
-- [Using the Web Dashboard and Diff Viewer](dashboards-and-diffs.md): Launch the pidash web dashboard to monitor sessions from a browser and use pidiff to view diffs with review comments in a rich UI
+- [Automating Code Reviews](automating-code-reviews.md): Configure the automated code review loop to use Qodo and CodeRabbit for continuous pull request feedback.
+- [Managing Custom Agents](managing-custom-agents.md): Create, route, and test new specialist agents to handle specific tasks like security auditing or test running.
+- [Using the Web Dashboard](using-the-web-dashboard.md): Monitor background tasks, inspect code diffs, and switch between sessions using the local React UI.
+- [Curating Project Memory](curating-project-memory.md): Seed, score, and organize learned topics to give your agents persistent context across sessions.
 
 ## Recipes
 
-- [Common Workflow Recipes](workflow-recipes.md): Copy-paste patterns for PR reviews, GitHub releases, review handling (autorabbit/autoqodo), implementing with review, scouting and planning, querying the review database, and refining pending reviews
-- [Customization and Extension Recipes](customization-recipes.md): Add a new specialist agent, create custom prompt templates, write reusable skills with /create-skill, configure project settings (.pi/pi-config-settings.json), and set up MCP servers via mcpl
+- [Creating Slash Commands](custom-slash-commands.md): Register custom chat commands to quickly trigger specific AI scripts or automations.
+- [Implementing Command Guards](safety-enforcements.md): Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.
 
 ## Reference
 
-- [Specialist Agents Reference](agents-reference.md): Complete list of all 24 specialist agents with their names, descriptions, tools, model overrides, and when each is invoked
-- [Slash Commands and Extension Commands Reference](commands-reference.md): Full reference for all slash commands (/implement, /pr-review, /release, /review-handler, /external-ai, /btw, /status, /cron, /dream, /coms, /pidash, /pidiff, /repair) with arguments and options
-- [myk-pi-tools CLI Reference](cli-reference.md): Complete reference for the myk-pi-tools Python CLI: memory, pr, release, reviews, db, coderabbit, and ai-cli subcommands with all flags and options
-- [Configuration and Environment Variables Reference](configuration-reference.md): All configuration options: pi-config-settings.json fields, environment variables (PI_CO_AUTHOR, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, ACPX_AGENTS, GEMINI_API_KEY), rules loading order, and .coderabbit.yaml setup
-- [Orchestrator Rules Reference](rules-reference.md): Reference for all 13 orchestrator rules (00-60): core behavior, issue-first workflow, agent routing, MCP launchpad, code review loop, documentation updates, prompt templates, memory, critical rules, file preview, bug reporting, coms protocol, and task tracking
+- [myk_pi_tools CLI Reference](cli-reference.md): Complete command index for database queries, review handling, and manual memory management.
+- [Configuration & Settings](configuration.md): Comprehensive lookup for pi project settings, UI configuration, and environment variables.
 
 ## Internals
 
-- [Extension Architecture and Lifecycle Hooks](extension-architecture.md): How the orchestrator extension registers tools, commands, and event hooks (session_start, before_agent_start, turn_end, input) — essential knowledge for writing new extensions or modifying existing ones
-- [Memory Scoring, Embeddings, and Situation Reports](memory-internals.md): Deep dive into the stability-based scoring formula, vector embeddings (bge-small-en-v1.5), topic tree organization, situation report budget allocation, and the auto-injection pipeline
+- [Memory Architecture](memory-architecture.md): Understand the underlying vector embeddings, topic scoring algorithms, and database migrations.
+- [Daemon & Websocket Networking](daemon-and-websockets.md): Deep dive into the background task queues, async agent state handling, and inter-process communication.
 
-## Guides
+## Extensions & Integrations
 
-- [Using ACPX Provider for External Agent Models](acpx-provider.md): How to configure and use the ACPX provider extension to route pi's LLM requests through external agents (Cursor, Claude, Gemini, Copilot). Covers ACPX_AGENTS configuration, model discovery, session management, and how ACPX provider differs from /external-ai. Includes setup prerequisites (acpx runtime), available models per agent, and troubleshooting.
-- [Controlling Pi Sessions from Discord](discord-bot.md): Set up and use the Discord bot built into the pidash server to remotely control pi sessions. Covers DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS configuration, slash commands (/sessions, /status, /prompt, /stop), watching sessions, sending prompts and images via DM, receiving real-time output and ask_user prompts, and security considerations for allowed users.
-- [Neovim Integration and Quickfix Support](neovim-integration.md): Using pi inside Neovim terminal: automatic detection via NVIM environment variable, /nvim-changed-files command to send git changed files to the quickfix list, how pi communicates with the parent Neovim instance via RPC, and quickfix workflow for navigating review findings or changed files.
-- [Generating Images with the generate_image Tool](image-generation.md): How to use pi's generate_image tool powered by the Gemini API. Covers setup (PI_IMAGE_MODEL and GEMINI_API_KEY environment variables), available parameters (subject, action, scene, composition, lighting, style, text, aspect_ratio), supported aspect ratios, automatic HTTP preview server in containers, and example prompts for different image styles.
+- [Neovim Integration](neovim-integration.md): How to use Pi within Neovim, populate the quickfix list with git changed files, and leverage the remote lua execution capabilities.
+- [Discord Bot Notifications](discord-bot.md): Setting up the background Discord bot to broadcast daemon events, review handler updates, and agent status notifications.
+- [Image Generation](image-generation.md): Configuring and using the agent image generation tool with Gemini, including supported aspect ratios and output handling.
 
-## Concepts
+## Advanced Usage
 
-- [Command Safety Guards and Enforcement](command-enforcement.md): How pi's enforcement system protects your environment: blocked commands (direct python/pip, git add ., remote script piping), git branch protection (protected branches, merged branch detection, detached HEAD), dangerous command confirmation prompts, repeat command detection, worktree enforcement, docker-safe wrapper in containers, and memory write restrictions for subagents. What to do when a command is blocked and how to work with the guardrails.
+- [External AI Agents & CLI](external-ai-agents.md): Using the External AI CLI to interact with Cursor, Claude, and Gemini from the terminal, including model configuration and prompting.
+
+## Advanced Features
+
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.md): How to spawn non-blocking async agents, register cron schedules for recurring workflows, and monitor background tasks via the UI.
+- [Inter-Agent Communication Network](inter-agent-communication.md): Explains how multiple agent sessions communicate, broadcast messages, and synchronize directories using the local communications server.
+
+## Memory System
+
+- [Background Memory Consolidation (Dreaming)](background-dreaming.md): Details the automated background worker that runs periodically to extract and consolidate project memories, skills, and enforcements from recent sessions.
+
+## Extensions
+
+- [ACPX Provider Integration](acpx-provider.md): Guide to the ACPX runtime modules, explaining how external agent models are discovered and executed natively.

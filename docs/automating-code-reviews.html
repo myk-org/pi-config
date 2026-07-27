@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuration and Environment Variables Reference - pi-config</title>
-    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <title>Automating Code Reviews - pi-config</title>
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,14 +31,7 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Installing and Starting Your First Session
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="first-workflow.html"
-                           class="nav-link">
-                            Your First Coding Workflow
+                            Installation &amp; Quickstart
                         </a>
                     </li>
 
@@ -50,65 +43,30 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agent-routing.html"
-                           class="nav-link">
-                            Understanding Agent Routing and Delegation
+                        <a href="automating-code-reviews.html"
+                           class="nav-link active" aria-current="page">
+                            Automating Code Reviews
                         </a>
                     </li>
 
                     <li>
-                        <a href="code-review-loop.html"
+                        <a href="managing-custom-agents.html"
                            class="nav-link">
-                            Running the Automated Code Review Loop
+                            Managing Custom Agents
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="using-the-web-dashboard.html"
                            class="nav-link">
-                            Using Slash Commands and Prompt Templates
+                            Using the Web Dashboard
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-system.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Working with Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Communicating Between Pi Sessions
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            Using External AI Agents (Cursor, Claude, Gemini)
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="docker-deployment.html"
-                           class="nav-link">
-                            Running Pi in a Docker Container
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="dashboards-and-diffs.html"
-                           class="nav-link">
-                            Using the Web Dashboard and Diff Viewer
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -120,16 +78,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="workflow-recipes.html"
+                        <a href="custom-slash-commands.html"
                            class="nav-link">
-                            Common Workflow Recipes
+                            Creating Slash Commands
                         </a>
                     </li>
 
                     <li>
-                        <a href="customization-recipes.html"
+                        <a href="safety-enforcements.html"
                            class="nav-link">
-                            Customization and Extension Recipes
+                            Implementing Command Guards
                         </a>
                     </li>
 
@@ -141,37 +99,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agents-reference.html"
-                           class="nav-link">
-                            Specialist Agents Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="commands-reference.html"
-                           class="nav-link">
-                            Slash Commands and Extension Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            myk-pi-tools CLI Reference
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration-reference.html"
-                           class="nav-link active" aria-current="page">
-                            Configuration and Environment Variables Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="rules-reference.html"
+                        <a href="configuration.html"
                            class="nav-link">
-                            Orchestrator Rules Reference
+                            Configuration &amp; Settings
                         </a>
                     </li>
 
@@ -183,16 +120,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="extension-architecture.html"
+                        <a href="memory-architecture.html"
                            class="nav-link">
-                            Extension Architecture and Lifecycle Hooks
+                            Memory Architecture
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-internals.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            Memory Scoring, Embeddings, and Situation Reports
+                            Daemon &amp; Websocket Networking
                         </a>
                     </li>
 
@@ -200,34 +137,27 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Guides</h3>
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Using ACPX Provider for External Agent Models
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            Controlling Pi Sessions from Discord
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="neovim-integration.html"
-                           class="nav-link">
-                            Neovim Integration and Quickfix Support
+                            Discord Bot Notifications
                         </a>
                     </li>
 
                     <li>
                         <a href="image-generation.html"
                            class="nav-link">
-                            Generating Images with the generate_image Tool
+                            Image Generation
                         </a>
                     </li>
 
@@ -235,13 +165,62 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Concepts</h3>
+                <h3 class="nav-group-title">Advanced Usage</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="command-enforcement.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Command Safety Guards and Enforcement
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -294,26 +273,91 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h2 id="related-pages">Related Pages</h2>
+                    <h1 id="automating-code-reviews">Automating Code Reviews</h1>
+<p>Configure automated pipelines to gather and apply code review feedback from AI agents like Qodo and CodeRabbit. By setting up continuous pull request feedback, you can automatically ingest comments, apply code fixes, and push updates without manual intervention.</p>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
-<li><a href="customization-recipes.html">Customization and Extension Recipes</a></li>
-<li><a href="cli-reference.html">myk-pi-tools CLI Reference</a></li>
-<li><a href="docker-deployment.html">Running Pi in a Docker Container</a></li>
+<li>A GitHub Pull Request active on your current branch.</li>
+<li>CodeRabbit and/or Qodo installed as GitHub apps on your repository.</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<p>To automatically poll, fix, and resolve all pending AI code review comments in a continuous loop:</p>
+<div class="highlight"><pre><span></span><code>/review-handler<span class="w"> </span>--autorabbit<span class="w"> </span>--autoqodo
+</code></pre></div>
+
+<h2 id="step-by-step">Step-by-Step</h2>
+<p>Follow these steps to fully automate the review loop for your Pull Requests.</p>
+<ol>
+<li>
+<p><strong>Trigger the review loop</strong>
+   Start the automated review processor on your active branch. This fetches all pending comments, categorizes them by source, and attempts to write the necessary code fixes.
+   <code>bash
+   /review-handler --autoqodo</code></p>
+</li>
+<li>
+<p><strong>Handle AI pushback</strong>
+   If an AI reviewer disagrees with a fix, it generates a "sticky finding" with a pushback response. The automation loop automatically surfaces this new feedback and attempts a different approach on the next iteration.</p>
+</li>
+<li>
+<p><strong>Resolve threads automatically</strong>
+   Once you push new commits, the handler waits for the AI reviewer to re-evaluate. If the bot confirms the fix, the threads are automatically marked as skipped and will not appear in future iterations.</p>
+</li>
+</ol>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="review-loop-cycles-and-limits">Review Loop Cycles and Limits</h3>
+<p>When using <code>--autorabbit</code> or <code>--autoqodo</code> in <code>/review-handler</code>, the automation loop is subject to the <code>review_loop_max_cycles</code> configuration (default: 3).</p>
+<blockquote>
+<p><strong>Note:</strong> Staged mode shares one total <code>review_loop_max_cycles</code> budget across both its Spec Compliance and Code Quality stages — it is not a separate cap per stage.</p>
+</blockquote>
+<p>Hitting the cycle cap stops re-dispatching reviewers, but any remaining unresolved findings or failing tests will still block commits if <code>review_loop_enforcement</code> is enabled. You can adjust this limit (1-10) in your <code>pi-config-settings.json</code>.</p>
+<h3 id="handling-coderabbit-rate-limits">Handling CodeRabbit Rate Limits</h3>
+<p>CodeRabbit rate limits can temporarily pause your automated workflows. You can manually handle rate limits and force a re-trigger on your current branch's PR:</p>
+<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit
+</code></pre></div>
+
+<p>To target a specific pull request number:</p>
+<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit<span class="w"> </span><span class="m">123</span>
+</code></pre></div>
+
+<h3 id="isolating-specific-review-sources">Isolating Specific Review Sources</h3>
+<p>If you prefer to integrate the review loop into custom scripts instead of using the interactive handler, you can poll specific sources using the CLI:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--output-dir<span class="w"> </span>/tmp/reviews<span class="w"> </span>--source<span class="w"> </span>coderabbit
+</code></pre></div>
+
+<p>You can set <code>--source</code> to <code>qodo</code>, <code>coderabbit</code>, or <code>human</code> to process specific subsets of feedback. See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for more details.</p>
+<h3 id="customizing-coderabbit-rules">Customizing CodeRabbit Rules</h3>
+<p>To adjust how assertive CodeRabbit is or to disable automatic review pausing, create or update <code>.coderabbit.yaml</code> in your project root:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># .coderabbit.yaml</span>
+<span class="nt">reviews</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assertive</span>
+<span class="w">  </span><span class="nt">request_changes_workflow</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</code></pre></div>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong>CodeRabbit pauses reviews:</strong> If CodeRabbit replies with "reviews paused by coderabbit.ai", add <code>request_changes_workflow: false</code> to your <code>.coderabbit.yaml</code> to prevent it from halting automation.</li>
+<li><strong>Stuck Qodo findings:</strong> If Qodo findings appear "stuck" (you pushed a fix but the AI hasn't resolved the thread), the review loop will automatically attempt to post a cleanup request to force re-evaluation. </li>
+</ul>
+<p>For additional agent customization and setup, see <a href="configuration.html">Configuration &amp; Settings</a>.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
+<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
+<li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="cli-reference.html" class="page-nav-link page-nav-prev">
+                <a href="quickstart.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">myk-pi-tools CLI Reference</span>
+                    <span class="page-nav-title">Installation &amp; Quickstart</span>
                 </a>
 
 
-                <a href="rules-reference.html" class="page-nav-link page-nav-next">
+                <a href="managing-custom-agents.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Orchestrator Rules Reference</span>
+                    <span class="page-nav-title">Managing Custom Agents</span>
                 </a>
 
             </nav>
@@ -323,6 +367,17 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step">Step-by-Step</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#review-loop-cycles-and-limits">Review Loop Cycles and Limits</a></li>
+<li><a href="#handling-coderabbit-rate-limits">Handling CodeRabbit Rate Limits</a></li>
+<li><a href="#isolating-specific-review-sources">Isolating Specific Review Sources</a></li>
+<li><a href="#customizing-coderabbit-rules">Customizing CodeRabbit Rules</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -335,7 +390,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.13.0</span>
+            <span class="footer-version">Generated from version 3.16.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

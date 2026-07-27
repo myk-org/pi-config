@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neovim Integration - pi-config</title>
+    <title>Memory Architecture - pi-config</title>
     <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -121,7 +121,7 @@
 
                     <li>
                         <a href="memory-architecture.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Memory Architecture
                         </a>
                     </li>
@@ -142,7 +142,7 @@
 
                     <li>
                         <a href="neovim-integration.html"
-                           class="nav-link active" aria-current="page">
+                           class="nav-link">
                             Neovim Integration
                         </a>
                     </li>
@@ -273,69 +273,82 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="neovim-integration">Neovim Integration</h1>
-<p>When you run Pi inside a Neovim terminal buffer, it automatically detects the editor environment and enables direct RPC communication. This allows you to quickly load working context into your editor, populate the quickfix list with branch changes, and programmatically execute Neovim Lua commands from your AI session.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>Neovim installed and running.</li>
-<li>Pi started from an embedded Neovim terminal buffer (<code>:terminal</code>).</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>The simplest way to use the integration is to send your current Git changes directly to the Neovim quickfix window for easy review.</p>
-<p>Start Pi inside a Neovim terminal:</p>
-<div class="highlight"><pre><span></span><code>:term<span class="w"> </span>pi
-</code></pre></div>
-
-<p>Inside the Pi chat interface, run the built-in slash command:</p>
-<div class="highlight"><pre><span></span><code>/nvim-changed-files
-</code></pre></div>
-
-<p>Neovim will immediately open the quickfix window containing all modified, added, renamed, or deleted files relative to your default branch.</p>
-<h2 id="step-by-step">Step-by-Step</h2>
-<p>Reviewing a large pull request or a batch of local changes is much easier when loaded directly into Neovim's quickfix list rather than scrolling through terminal output.</p>
+                    <h1 id="memory-architecture">Memory Architecture</h1>
+<p>Understanding how Pi stores, scores, and retrieves memory is essential for building agents that improve over time and retain context across sessions. The memory architecture transforms raw interactions into a structured, persistent knowledge base that guides future agent behavior.</p>
+<p>By leveraging this architecture, your agents won't just solve immediate problems—they will adapt to project conventions, remember user preferences, and enforce security policies without requiring manual rule updates.</p>
+<h2 id="the-big-picture">The Big Picture</h2>
+<p>The memory system is built as a multi-layered pipeline that prioritizes, retrieves, and injects context based on relevance and history.</p>
 <ol>
-<li><strong>Open a terminal in Neovim:</strong> From normal mode, type <code>:terminal</code> or open a split with <code>:vsplit term://bash</code>.</li>
-<li><strong>Launch Pi:</strong> Start your session by typing <code>pi</code> in the terminal prompt. The integration automatically connects to the parent editor using the <code>$NVIM</code> socket variable.</li>
-<li><strong>Trigger the quickfix population:</strong> Type <code>/nvim-changed-files</code> in the Pi chat prompt and hit enter.</li>
-<li><strong>Navigate the files:</strong> Pi calculates the Git diff (comparing against <code>origin/main</code> or your local <code>HEAD</code>), formats the results, and automatically commands Neovim to open the quickfix list (<code>:copen</code>). You can now use standard Neovim commands (like <code>:cnext</code> and <code>:cprev</code>) to jump through your changed files.</li>
+<li><strong>Scored Memory (<code>memory-scores.json</code>)</strong> — Tracks raw memory entries using a stability formula. Memories have an evidence count and decay over time unless reinforced.</li>
+<li><strong>Topic Tree (<code>.pi/memory/topics/</code>)</strong> — Organizes scored entries into structured Markdown topic files (~3000 tokens each). Cold topics are automatically archived.</li>
+<li><strong>Vector Embeddings (<code>embeddings.json</code>)</strong> — Generates local semantic embeddings (using <code>Xenova/bge-small-en-v1.5</code>) without requiring external API keys. Enables hybrid keyword and vector search.</li>
+<li><strong>Situation Reports</strong> — Dynamically builds a token-budgeted context block from the highest-priority active memories.</li>
+<li><strong>Auto-Injection Pipeline</strong> — Injects the Situation Report at the <strong>tail end</strong> of the system prompt (where LLM attention is statistically highest) just before the agent starts a turn.</li>
 </ol>
-<blockquote>
-<p><strong>Tip:</strong> The <code>/nvim-changed-files</code> command automatically detects whether you are on the <code>main</code> branch or a feature branch, pulling committed changes versus <code>origin/main</code> as well as any uncommitted working tree changes.</p>
-</blockquote>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="leveraging-remote-lua-execution">Leveraging Remote Lua Execution</h3>
-<p>Because Pi runs as a child process of Neovim, it inherits the <code>$NVIM</code> socket environment variable. You can leverage this directly in your own shell scripts, custom extensions, or AI prompts to send commands back to your Neovim instance.</p>
-<p>For example, you can tell the AI to evaluate a Lua command inside your active editor using standard Neovim CLI arguments:</p>
-<div class="highlight"><pre><span></span><code>nvim<span class="w"> </span>--server<span class="w"> </span><span class="nv">$NVIM</span><span class="w"> </span>--remote-expr<span class="w"> </span><span class="s1">&#39;luaeval(&quot;vim.notify(\&quot;Task complete from Pi!\&quot;)&quot;)&#39;</span>
-</code></pre></div>
-
-<p>If you are running long bash scripts or tests via Pi, you can use this trick to trigger notifications or reload buffers in Neovim when the job finishes.</p>
-<blockquote>
-<p><strong>Note:</strong> Neovim integration and remote execution are automatically disabled when Pi spawns background sub-agents (identifiable by the <code>PI_SUBAGENT_CHILD=1</code> environment variable). This ensures that background tasks do not unexpectedly change your active editor state or steal focus.</p>
-</blockquote>
-<h2 id="troubleshooting">Troubleshooting</h2>
+<h2 id="key-concepts">Key Concepts</h2>
+<h3 id="topic-scoring-and-decay">Topic Scoring and Decay</h3>
+<p>Memories aren't static; they live in a dynamic ecosystem governed by a stability formula:
+<code>cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)</code></p>
+<p>Each memory falls into a category with a specific half-life:</p>
 <ul>
-<li><strong>Quickfix list does not open:</strong> Ensure you are running Pi <em>inside</em> a Neovim terminal. Running Pi in a separate tmux pane or external terminal emulator will not expose the <code>$NVIM</code> socket environment variable required for RPC communication.</li>
-<li><strong>No files loaded in quickfix:</strong> The <code>/nvim-changed-files</code> command relies on standard Git output. Check that your repository has an <code>origin/main</code> or <code>origin/master</code> branch fetched locally, as it uses this as the base comparison for feature branches.</li>
+<li><strong>Preferences:</strong> 90 days</li>
+<li><strong>Lessons:</strong> 60 days</li>
+<li><strong>Done/Tasks:</strong> 14 days</li>
+</ul>
+<p>As a memory ages without being referenced (evidence count stays flat), its stability score drops. If a topic becomes too cold (2× half-life without reinforcement), it is automatically archived.</p>
+<h3 id="vector-embeddings-and-hybrid-search">Vector Embeddings and Hybrid Search</h3>
+<p>When an agent needs context, the system doesn't just match keywords. The <code>memory-embeddings.ts</code> module runs a local ONNX model to generate 384-dimensional embeddings for every memory on write.</p>
+<p>When the agent uses the <code>memory_search</code> tool, the system performs a <strong>hybrid search</strong>: combining exact keyword matches with cosine similarity vector matching (threshold ≥0.90 similarity). If a memory being added is extremely similar to an existing one, the system automatically <em>reinforces</em> the existing memory (bumping its evidence count) instead of creating a duplicate.</p>
+<h3 id="situation-reports-and-query-classes">Situation Reports and Query Classes</h3>
+<p>The <strong>Situation Report</strong> is the actual text injected into the LLM's system prompt. It organizes memories by priority: preferences → lessons → mistakes → patterns → decisions → completions.</p>
+<p>To ensure relevance, a heuristic classifier runs <code>before_agent_start</code> to determine the <strong>Query Class</strong> (e.g., <code>pr_review</code>, <code>git_release</code>, <code>debug</code>, <code>general</code>). This class dynamically adjusts which sections get priority in the token budget and tweaks the vector <code>topK</code> search limits. </p>
+<blockquote>
+<p><strong>Tip:</strong> You can monitor memory capacity directly in the UI. The Situation Report header shows usage (e.g., <code>[72% — 1,224/1,700 tokens]</code>), and consolidation warnings trigger when exceeding 80%.</p>
+</blockquote>
+<h3 id="enforcement-rules">Enforcement Rules</h3>
+<p>Code-enforced memory entries act as hard constraints that the LLM cannot ignore. When adding a memory, the agent can attach triggers and actions.</p>
+<ul>
+<li><strong>Triggers:</strong> What activates the rule (e.g., <code>bash_contains &lt;str&gt;</code>, <code>tool_name &lt;name&gt;</code>).</li>
+<li><strong>Actions:</strong> How the system responds (<code>block</code>, <code>run_after</code>, <code>warn</code>).</li>
+<li><strong>Verifiers:</strong> Semantic conditions checked at <code>turn_end</code> (e.g., ensuring a specific tool was called before a command).</li>
+</ul>
+<p>These hooks execute via the <code>tool_result</code> and <code>turn_end</code> lifecycle events. If a verifier fails, the system automatically forces a retry, keeping the agent honest.</p>
+<h3 id="promotion-queue">Promotion Queue</h3>
+<p>High-evidence memories (e.g., a behavior reinforced 3-5 times) graduate through the <strong>Promotion Queue</strong>. A background process proposes elevating these memories into permanent skills, enforcement rules, or project-wide rules. High-confidence enforcement rules (<code>block</code> or <code>warn</code>) can be auto-applied safely, ensuring the project becomes more resilient over time.</p>
+<h3 id="pr-review-store">PR Review Store</h3>
+<p>Code review memory is handled specially by an SQLite database (<code>.pi/data/pr-reviews.db</code>). It tracks both posted and skipped findings. If a user dismisses a finding for a generalizable reason, the agent appends a guideline to <code>.pi/data/review-guidelines.md</code>. This prevents the AI from repeatedly raising the same stylistic complaints in future PRs.</p>
+<h2 id="how-it-affects-the-user">How it Affects the User</h2>
+<ul>
+<li><strong>Agent Adaptability:</strong> Because of the scoring and decay system, users don't have to manually delete outdated instructions. The agent naturally "forgets" old task contexts while retaining long-term preferences.</li>
+<li><strong>Immediate Context:</strong> When users modify specific files, the auto-injection pipeline searches for file-path vector matches and injects file-change memory reminders instantly.</li>
+<li><strong>Privacy First:</strong> All vector embeddings and database queries happen entirely locally. No code snippets or memory topics are sent to external embedding APIs.</li>
+<li><strong>Automated Guardrails:</strong> Through enforcement rules and the promotion queue, if an agent repeatedly makes a mistake and is corrected, it will naturally evolve a hard boundary (like blocking a destructive bash command) without the user ever writing a line of configuration.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
+<li><a href="curating-project-memory.html">Curating Project Memory</a> — Learn how to manually seed, score, and organize learned topics.</li>
+<li><a href="safety-enforcements.html">Implementing Command Guards</a> — Understand how to map memory triggers to hard enforcement constraints.</li>
+<li><a href="configuration.html">Configuration &amp; Settings</a> — Look up token budgets, decay rates, and directory settings for the memory module.</li>
+<li><a href="cli-reference.html">myk_pi_tools CLI Reference</a> — Discover the CLI commands for manual database queries and memory migrations.</li>
+</ul>
+<h2 id="related-pages_1">Related Pages</h2>
+<ul>
+<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
+<li><a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-prev">
+                <a href="configuration.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
+                    <span class="page-nav-title">Configuration &amp; Settings</span>
                 </a>
 
 
-                <a href="discord-bot.html" class="page-nav-link page-nav-next">
+                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Discord Bot Notifications</span>
+                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
                 </a>
 
             </nav>
@@ -345,15 +358,19 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step">Step-by-Step</a></li>
-<li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#leveraging-remote-lua-execution">Leveraging Remote Lua Execution</a></li>
+<li><a href="#the-big-picture">The Big Picture</a></li>
+<li><a href="#key-concepts">Key Concepts</a><ul>
+<li><a href="#topic-scoring-and-decay">Topic Scoring and Decay</a></li>
+<li><a href="#vector-embeddings-and-hybrid-search">Vector Embeddings and Hybrid Search</a></li>
+<li><a href="#situation-reports-and-query-classes">Situation Reports and Query Classes</a></li>
+<li><a href="#enforcement-rules">Enforcement Rules</a></li>
+<li><a href="#promotion-queue">Promotion Queue</a></li>
+<li><a href="#pr-review-store">PR Review Store</a></li>
 </ul>
 </li>
-<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#how-it-affects-the-user">How it Affects the User</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
+<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 

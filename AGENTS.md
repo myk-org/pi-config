@@ -116,3 +116,8 @@ Never assume a tool exists in the container.
 - ✅ Always: use `uv run` for Python, never bare `python`/`pip`
 - ⚠️ Ask first: modifying rules (affects all users), changing enforcement logic
 - 🚫 Never: `git add .`, `--no-verify`, commit to main/protected branches, edit `docs/` manually
+
+## Generated Documentation
+
+The `docs/` directory contains AI-generated documentation from docsfy.
+**NEVER edit these files manually.** To update documentation, regenerate using docsfy.

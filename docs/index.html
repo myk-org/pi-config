@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pi-config</title>
-    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,14 +31,7 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Installing and Starting Your First Session
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="first-workflow.html"
-                           class="nav-link">
-                            Your First Coding Workflow
+                            Installation &amp; Quickstart
                         </a>
                     </li>
 
@@ -50,65 +43,30 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agent-routing.html"
+                        <a href="automating-code-reviews.html"
                            class="nav-link">
-                            Understanding Agent Routing and Delegation
+                            Automating Code Reviews
                         </a>
                     </li>
 
                     <li>
-                        <a href="code-review-loop.html"
+                        <a href="managing-custom-agents.html"
                            class="nav-link">
-                            Running the Automated Code Review Loop
+                            Managing Custom Agents
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="using-the-web-dashboard.html"
                            class="nav-link">
-                            Using Slash Commands and Prompt Templates
+                            Using the Web Dashboard
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-system.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Working with Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Communicating Between Pi Sessions
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            Using External AI Agents (Cursor, Claude, Gemini)
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="docker-deployment.html"
-                           class="nav-link">
-                            Running Pi in a Docker Container
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="dashboards-and-diffs.html"
-                           class="nav-link">
-                            Using the Web Dashboard and Diff Viewer
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -120,16 +78,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="workflow-recipes.html"
+                        <a href="custom-slash-commands.html"
                            class="nav-link">
-                            Common Workflow Recipes
+                            Creating Slash Commands
                         </a>
                     </li>
 
                     <li>
-                        <a href="customization-recipes.html"
+                        <a href="safety-enforcements.html"
                            class="nav-link">
-                            Customization and Extension Recipes
+                            Implementing Command Guards
                         </a>
                     </li>
 
@@ -141,37 +99,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agents-reference.html"
-                           class="nav-link">
-                            Specialist Agents Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="commands-reference.html"
-                           class="nav-link">
-                            Slash Commands and Extension Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            myk-pi-tools CLI Reference
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration-reference.html"
+                        <a href="configuration.html"
                            class="nav-link">
-                            Configuration and Environment Variables Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="rules-reference.html"
-                           class="nav-link">
-                            Orchestrator Rules Reference
+                            Configuration &amp; Settings
                         </a>
                     </li>
 
@@ -183,16 +120,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="extension-architecture.html"
+                        <a href="memory-architecture.html"
                            class="nav-link">
-                            Extension Architecture and Lifecycle Hooks
+                            Memory Architecture
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-internals.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            Memory Scoring, Embeddings, and Situation Reports
+                            Daemon &amp; Websocket Networking
                         </a>
                     </li>
 
@@ -200,34 +137,27 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Guides</h3>
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Using ACPX Provider for External Agent Models
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            Controlling Pi Sessions from Discord
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="neovim-integration.html"
-                           class="nav-link">
-                            Neovim Integration and Quickfix Support
+                            Discord Bot Notifications
                         </a>
                     </li>
 
                     <li>
                         <a href="image-generation.html"
                            class="nav-link">
-                            Generating Images with the generate_image Tool
+                            Image Generation
                         </a>
                     </li>
 
@@ -235,13 +165,62 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Concepts</h3>
+                <h3 class="nav-group-title">Advanced Usage</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="command-enforcement.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Command Safety Guards and Enforcement
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -290,7 +269,13 @@
 
             <section class="index-header">
                 <h1 class="index-title">pi-config</h1>
-                <p class="index-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+                <p class="index-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+
+
+
+
+
+
 
 
 
@@ -321,16 +306,9 @@
                     <ul class="card-pages">
 
                         <li>
-                            <a href="quickstart.html">Installing and Starting Your First Session</a>
+                            <a href="quickstart.html">Installation &amp; Quickstart</a>
 
-                            <p class="card-page-desc">Install pi-config via Docker container or the native installer script, configure prerequisites (GitHub CLI, API keys), and run your first pi session with the orchestrator</p>
-
-                        </li>
-
-                        <li>
-                            <a href="first-workflow.html">Your First Coding Workflow</a>
-
-                            <p class="card-page-desc">Walk through a complete feature implementation: ask pi to make a change, watch the orchestrator delegate to specialist agents, go through the code review loop, and create a PR</p>
+                            <p class="card-page-desc">Initialize your project configuration, spin up the background daemon, and run your first custom agent workflow in 60 seconds.</p>
 
                         </li>
 
@@ -345,71 +323,36 @@
                     <ul class="card-pages">
 
                         <li>
-                            <a href="agent-routing.html">Understanding Agent Routing and Delegation</a>
+                            <a href="automating-code-reviews.html">Automating Code Reviews</a>
 
-                            <p class="card-page-desc">Learn how the orchestrator automatically routes tasks to the right specialist agent (python-expert, git-expert, github-expert, etc.) and when to override routing</p>
-
-                        </li>
-
-                        <li>
-                            <a href="code-review-loop.html">Running the Automated Code Review Loop</a>
-
-                            <p class="card-page-desc">Use the 3-reviewer parallel code review system (quality, guidelines, security), handle review findings, and iterate until all reviewers approve</p>
+                            <p class="card-page-desc">Configure the automated code review loop to use Qodo and CodeRabbit for continuous pull request feedback.</p>
 
                         </li>
 
                         <li>
-                            <a href="slash-commands.html">Using Slash Commands and Prompt Templates</a>
+                            <a href="managing-custom-agents.html">Managing Custom Agents</a>
 
-                            <p class="card-page-desc">Master the built-in slash commands (/implement, /pr-review, /review-local, /release, /external-ai, /scout-and-plan, /btw, /status) and understand how prompt templates work</p>
-
-                        </li>
-
-                        <li>
-                            <a href="memory-system.html">Working with Project Memory</a>
-
-                            <p class="card-page-desc">Use the scored memory system to teach pi your preferences, lessons learned, and project conventions — including memory tools, dreaming consolidation, auto-extraction, and capacity management</p>
+                            <p class="card-page-desc">Create, route, and test new specialist agents to handle specific tasks like security auditing or test running.</p>
 
                         </li>
 
                         <li>
-                            <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>
+                            <a href="using-the-web-dashboard.html">Using the Web Dashboard</a>
 
-                            <p class="card-page-desc">Spawn async agents for long-running tasks, monitor their status with /async-status, set up recurring tasks with /cron, and understand fire-and-forget vs tracked agents</p>
-
-                        </li>
-
-                        <li>
-                            <a href="inter-agent-communication.html">Communicating Between Pi Sessions</a>
-
-                            <p class="card-page-desc">Set up P2P (/coms) and networked (/coms-net) communication between multiple pi sessions for collaborative multi-agent workflows</p>
+                            <p class="card-page-desc">Monitor background tasks, inspect code diffs, and switch between sessions using the local React UI.</p>
 
                         </li>
 
                         <li>
-                            <a href="external-ai-agents.html">Using External AI Agents (Cursor, Claude, Gemini)</a>
+                            <a href="curating-project-memory.html">Curating Project Memory</a>
 
-                            <p class="card-page-desc">Route prompts to external AI CLIs via /external-ai for peer reviews, code generation, and multi-agent debates using ai-cli-runner</p>
-
-                        </li>
-
-                        <li>
-                            <a href="docker-deployment.html">Running Pi in a Docker Container</a>
-
-                            <p class="card-page-desc">Deploy pi-config in a sandboxed Docker container with proper volume mounts, environment variables, host user mapping, and Docker socket access</p>
-
-                        </li>
-
-                        <li>
-                            <a href="dashboards-and-diffs.html">Using the Web Dashboard and Diff Viewer</a>
-
-                            <p class="card-page-desc">Launch the pidash web dashboard to monitor sessions from a browser and use pidiff to view diffs with review comments in a rich UI</p>
+                            <p class="card-page-desc">Seed, score, and organize learned topics to give your agents persistent context across sessions.</p>
 
                         </li>
 
                     </ul>
 
-                    <a href="agent-routing.html" class="card-link">Explore →</a>
+                    <a href="automating-code-reviews.html" class="card-link">Explore →</a>
 
                 </div>
 
@@ -418,22 +361,22 @@
                     <ul class="card-pages">
 
                         <li>
-                            <a href="workflow-recipes.html">Common Workflow Recipes</a>
+                            <a href="custom-slash-commands.html">Creating Slash Commands</a>
 
-                            <p class="card-page-desc">Copy-paste patterns for PR reviews, GitHub releases, review handling (autorabbit/autoqodo), implementing with review, scouting and planning, querying the review database, and refining pending reviews</p>
+                            <p class="card-page-desc">Register custom chat commands to quickly trigger specific AI scripts or automations.</p>
 
                         </li>
 
                         <li>
-                            <a href="customization-recipes.html">Customization and Extension Recipes</a>
+                            <a href="safety-enforcements.html">Implementing Command Guards</a>
 
-                            <p class="card-page-desc">Add a new specialist agent, create custom prompt templates, write reusable skills with /create-skill, configure project settings (.pi/pi-config-settings.json), and set up MCP servers via mcpl</p>
+                            <p class="card-page-desc">Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.</p>
 
                         </li>
 
                     </ul>
 
-                    <a href="workflow-recipes.html" class="card-link">Explore →</a>
+                    <a href="custom-slash-commands.html" class="card-link">Explore →</a>
 
                 </div>
 
@@ -442,43 +385,22 @@
                     <ul class="card-pages">
 
                         <li>
-                            <a href="agents-reference.html">Specialist Agents Reference</a>
+                            <a href="cli-reference.html">myk_pi_tools CLI Reference</a>
 
-                            <p class="card-page-desc">Complete list of all 24 specialist agents with their names, descriptions, tools, model overrides, and when each is invoked</p>
-
-                        </li>
-
-                        <li>
-                            <a href="commands-reference.html">Slash Commands and Extension Commands Reference</a>
-
-                            <p class="card-page-desc">Full reference for all slash commands (/implement, /pr-review, /release, /review-handler, /external-ai, /btw, /status, /cron, /dream, /coms, /pidash, /pidiff, /repair) with arguments and options</p>
+                            <p class="card-page-desc">Complete command index for database queries, review handling, and manual memory management.</p>
 
                         </li>
 
                         <li>
-                            <a href="cli-reference.html">myk-pi-tools CLI Reference</a>
+                            <a href="configuration.html">Configuration &amp; Settings</a>
 
-                            <p class="card-page-desc">Complete reference for the myk-pi-tools Python CLI: memory, pr, release, reviews, db, coderabbit, and ai-cli subcommands with all flags and options</p>
-
-                        </li>
-
-                        <li>
-                            <a href="configuration-reference.html">Configuration and Environment Variables Reference</a>
-
-                            <p class="card-page-desc">All configuration options: pi-config-settings.json fields, environment variables (PI_CO_AUTHOR, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, ACPX_AGENTS, GEMINI_API_KEY), rules loading order, and .coderabbit.yaml setup</p>
-
-                        </li>
-
-                        <li>
-                            <a href="rules-reference.html">Orchestrator Rules Reference</a>
-
-                            <p class="card-page-desc">Reference for all 13 orchestrator rules (00-60): core behavior, issue-first workflow, agent routing, MCP launchpad, code review loop, documentation updates, prompt templates, memory, critical rules, file preview, bug reporting, coms protocol, and task tracking</p>
+                            <p class="card-page-desc">Comprehensive lookup for pi project settings, UI configuration, and environment variables.</p>
 
                         </li>
 
                     </ul>
 
-                    <a href="agents-reference.html" class="card-link">Explore →</a>
+                    <a href="cli-reference.html" class="card-link">Explore →</a>
 
                 </div>
 
@@ -487,77 +409,128 @@
                     <ul class="card-pages">
 
                         <li>
-                            <a href="extension-architecture.html">Extension Architecture and Lifecycle Hooks</a>
+                            <a href="memory-architecture.html">Memory Architecture</a>
 
-                            <p class="card-page-desc">How the orchestrator extension registers tools, commands, and event hooks (session_start, before_agent_start, turn_end, input) — essential knowledge for writing new extensions or modifying existing ones</p>
+                            <p class="card-page-desc">Understand the underlying vector embeddings, topic scoring algorithms, and database migrations.</p>
 
                         </li>
 
                         <li>
-                            <a href="memory-internals.html">Memory Scoring, Embeddings, and Situation Reports</a>
+                            <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a>
 
-                            <p class="card-page-desc">Deep dive into the stability-based scoring formula, vector embeddings (bge-small-en-v1.5), topic tree organization, situation report budget allocation, and the auto-injection pipeline</p>
+                            <p class="card-page-desc">Deep dive into the background task queues, async agent state handling, and inter-process communication.</p>
 
                         </li>
 
                     </ul>
 
-                    <a href="extension-architecture.html" class="card-link">Explore →</a>
+                    <a href="memory-architecture.html" class="card-link">Explore →</a>
 
                 </div>
 
                 <div class="card">
-                    <h3 class="card-title">Guides</h3>
+                    <h3 class="card-title">Extensions &amp; Integrations</h3>
                     <ul class="card-pages">
 
                         <li>
-                            <a href="acpx-provider.html">Using ACPX Provider for External Agent Models</a>
+                            <a href="neovim-integration.html">Neovim Integration</a>
 
-                            <p class="card-page-desc">How to configure and use the ACPX provider extension to route pi&#39;s LLM requests through external agents (Cursor, Claude, Gemini, Copilot). Covers ACPX_AGENTS configuration, model discovery, session management, and how ACPX provider differs from /external-ai. Includes setup prerequisites (acpx runtime), available models per agent, and troubleshooting.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="discord-bot.html">Controlling Pi Sessions from Discord</a>
-
-                            <p class="card-page-desc">Set up and use the Discord bot built into the pidash server to remotely control pi sessions. Covers DISCORD_BOT_TOKEN and DISCORD_ALLOWED_USERS configuration, slash commands (/sessions, /status, /prompt, /stop), watching sessions, sending prompts and images via DM, receiving real-time output and ask_user prompts, and security considerations for allowed users.</p>
+                            <p class="card-page-desc">How to use Pi within Neovim, populate the quickfix list with git changed files, and leverage the remote lua execution capabilities.</p>
 
                         </li>
 
                         <li>
-                            <a href="neovim-integration.html">Neovim Integration and Quickfix Support</a>
+                            <a href="discord-bot.html">Discord Bot Notifications</a>
 
-                            <p class="card-page-desc">Using pi inside Neovim terminal: automatic detection via NVIM environment variable, /nvim-changed-files command to send git changed files to the quickfix list, how pi communicates with the parent Neovim instance via RPC, and quickfix workflow for navigating review findings or changed files.</p>
+                            <p class="card-page-desc">Setting up the background Discord bot to broadcast daemon events, review handler updates, and agent status notifications.</p>
 
                         </li>
 
                         <li>
-                            <a href="image-generation.html">Generating Images with the generate_image Tool</a>
+                            <a href="image-generation.html">Image Generation</a>
 
-                            <p class="card-page-desc">How to use pi&#39;s generate_image tool powered by the Gemini API. Covers setup (PI_IMAGE_MODEL and GEMINI_API_KEY environment variables), available parameters (subject, action, scene, composition, lighting, style, text, aspect_ratio), supported aspect ratios, automatic HTTP preview server in containers, and example prompts for different image styles.</p>
+                            <p class="card-page-desc">Configuring and using the agent image generation tool with Gemini, including supported aspect ratios and output handling.</p>
+
+                        </li>
+
+                    </ul>
+
+                    <a href="neovim-integration.html" class="card-link">Explore →</a>
+
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Advanced Usage</h3>
+                    <ul class="card-pages">
+
+                        <li>
+                            <a href="external-ai-agents.html">External AI Agents &amp; CLI</a>
+
+                            <p class="card-page-desc">Using the External AI CLI to interact with Cursor, Claude, and Gemini from the terminal, including model configuration and prompting.</p>
+
+                        </li>
+
+                    </ul>
+
+                    <a href="external-ai-agents.html" class="card-link">Explore →</a>
+
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Advanced Features</h3>
+                    <ul class="card-pages">
+
+                        <li>
+                            <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>
+
+                            <p class="card-page-desc">How to spawn non-blocking async agents, register cron schedules for recurring workflows, and monitor background tasks via the UI.</p>
+
+                        </li>
+
+                        <li>
+                            <a href="inter-agent-communication.html">Inter-Agent Communication Network</a>
+
+                            <p class="card-page-desc">Explains how multiple agent sessions communicate, broadcast messages, and synchronize directories using the local communications server.</p>
+
+                        </li>
+
+                    </ul>
+
+                    <a href="async-agents-and-cron.html" class="card-link">Explore →</a>
+
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Memory System</h3>
+                    <ul class="card-pages">
+
+                        <li>
+                            <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a>
+
+                            <p class="card-page-desc">Details the automated background worker that runs periodically to extract and consolidate project memories, skills, and enforcements from recent sessions.</p>
+
+                        </li>
+
+                    </ul>
+
+                    <a href="background-dreaming.html" class="card-link">Explore →</a>
+
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Extensions</h3>
+                    <ul class="card-pages">
+
+                        <li>
+                            <a href="acpx-provider.html">ACPX Provider Integration</a>
+
+                            <p class="card-page-desc">Guide to the ACPX runtime modules, explaining how external agent models are discovered and executed natively.</p>
 
                         </li>
 
                     </ul>
 
                     <a href="acpx-provider.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Concepts</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="command-enforcement.html">Command Safety Guards and Enforcement</a>
-
-                            <p class="card-page-desc">How pi&#39;s enforcement system protects your environment: blocked commands (direct python/pip, git add ., remote script piping), git branch protection (protected branches, merged branch detection, detached HEAD), dangerous command confirmation prompts, repeat command detection, worktree enforcement, docker-safe wrapper in containers, and memory write restrictions for subagents. What to do when a command is blocked and how to work with the guardrails.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="command-enforcement.html" class="card-link">Explore →</a>
 
                 </div>
 
@@ -580,7 +553,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.13.0</span>
+            <span class="footer-version">Generated from version 3.16.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

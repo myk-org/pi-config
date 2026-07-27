@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Communicating Between Pi Sessions - pi-config</title>
-    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <title>Inter-Agent Communication Network - pi-config</title>
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,14 +31,7 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Installing and Starting Your First Session
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="first-workflow.html"
-                           class="nav-link">
-                            Your First Coding Workflow
+                            Installation &amp; Quickstart
                         </a>
                     </li>
 
@@ -50,65 +43,30 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agent-routing.html"
+                        <a href="automating-code-reviews.html"
                            class="nav-link">
-                            Understanding Agent Routing and Delegation
+                            Automating Code Reviews
                         </a>
                     </li>
 
                     <li>
-                        <a href="code-review-loop.html"
+                        <a href="managing-custom-agents.html"
                            class="nav-link">
-                            Running the Automated Code Review Loop
+                            Managing Custom Agents
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="using-the-web-dashboard.html"
                            class="nav-link">
-                            Using Slash Commands and Prompt Templates
+                            Using the Web Dashboard
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-system.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Working with Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link active" aria-current="page">
-                            Communicating Between Pi Sessions
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            Using External AI Agents (Cursor, Claude, Gemini)
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="docker-deployment.html"
-                           class="nav-link">
-                            Running Pi in a Docker Container
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="dashboards-and-diffs.html"
-                           class="nav-link">
-                            Using the Web Dashboard and Diff Viewer
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -120,16 +78,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="workflow-recipes.html"
+                        <a href="custom-slash-commands.html"
                            class="nav-link">
-                            Common Workflow Recipes
+                            Creating Slash Commands
                         </a>
                     </li>
 
                     <li>
-                        <a href="customization-recipes.html"
+                        <a href="safety-enforcements.html"
                            class="nav-link">
-                            Customization and Extension Recipes
+                            Implementing Command Guards
                         </a>
                     </li>
 
@@ -141,37 +99,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agents-reference.html"
-                           class="nav-link">
-                            Specialist Agents Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="commands-reference.html"
-                           class="nav-link">
-                            Slash Commands and Extension Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            myk-pi-tools CLI Reference
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration-reference.html"
+                        <a href="configuration.html"
                            class="nav-link">
-                            Configuration and Environment Variables Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="rules-reference.html"
-                           class="nav-link">
-                            Orchestrator Rules Reference
+                            Configuration &amp; Settings
                         </a>
                     </li>
 
@@ -183,16 +120,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="extension-architecture.html"
+                        <a href="memory-architecture.html"
                            class="nav-link">
-                            Extension Architecture and Lifecycle Hooks
+                            Memory Architecture
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-internals.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            Memory Scoring, Embeddings, and Situation Reports
+                            Daemon &amp; Websocket Networking
                         </a>
                     </li>
 
@@ -200,34 +137,27 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Guides</h3>
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Using ACPX Provider for External Agent Models
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            Controlling Pi Sessions from Discord
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="neovim-integration.html"
-                           class="nav-link">
-                            Neovim Integration and Quickfix Support
+                            Discord Bot Notifications
                         </a>
                     </li>
 
                     <li>
                         <a href="image-generation.html"
                            class="nav-link">
-                            Generating Images with the generate_image Tool
+                            Image Generation
                         </a>
                     </li>
 
@@ -235,13 +165,62 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Concepts</h3>
+                <h3 class="nav-group-title">Advanced Usage</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="command-enforcement.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Command Safety Guards and Enforcement
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link active" aria-current="page">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -294,12 +273,107 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h2 id="related-pages">Related Pages</h2>
+                    <h1 id="inter-agent-communication-network">Inter-Agent Communication Network</h1>
+<p>The Inter-Agent Communication Network (often referred to as <code>coms-net</code>) is the backbone that enables multiple independent agent sessions to discover each other, broadcast state, and securely pass messages. Instead of relying on direct inter-process communication (IPC) or complex shared memory, agents coordinate through a lightweight HTTP/SSE (Server-Sent Events) hub.</p>
+<p>By standardizing how agents talk to each other, <code>coms-net</code> enables true multi-agent orchestration. Developers can spawn specialist agents (like a planner and a researcher), and those agents can delegate tasks, share context, and aggregate results without blocking the user interface.</p>
+<hr />
+<h2 id="the-big-picture-architecture-and-flow">The Big Picture: Architecture and Flow</h2>
+<p>The network operates on a hub-and-spoke model. A single central server acts as the directory and message broker, while individual agents act as clients.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Component</th>
+<th style="text-align: left;">Responsibility</th>
+<th style="text-align: left;">Underlying Tech</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Coms Hub</strong></td>
+<td style="text-align: left;">Central message broker and registry server. Manages routing, TTLs, and queue depth.</td>
+<td style="text-align: left;">Bun HTTP server (<code>coms-net-server.ts</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Registry Directory</strong></td>
+<td style="text-align: left;">Ephemeral storage for hub state, active session JSONs, and authentication secrets.</td>
+<td style="text-align: left;"><code>~/.pi/coms-net/</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Agent Client</strong></td>
+<td style="text-align: left;">Connects to the hub, registers its identity, handles heartbeats, and processes incoming SSE events.</td>
+<td style="text-align: left;">TypeScript Extension (<code>coms-net.ts</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tool Interface</strong></td>
+<td style="text-align: left;">Exposes the network to the LLM via <code>coms_net_send</code>, <code>coms_net_get</code>, and <code>coms_net_list</code>.</td>
+<td style="text-align: left;">Standard Agent Tools</td>
+</tr>
+</tbody>
+</table>
+<h3 id="message-lifecycle-flow">Message Lifecycle Flow</h3>
+<p>When Agent A delegates a question to Agent B, the flow works like this:</p>
+<ol>
+<li><strong>Initiation:</strong> Agent A calls the <code>coms_net_send</code> tool with a target name and prompt.</li>
+<li><strong>Dispatch:</strong> Agent A's extension intercepts the tool call and POSTs the payload to the Coms Hub. The hub generates a <code>msg_id</code> and marks it <code>queued</code>.</li>
+<li><strong>Delivery:</strong> The Hub pushes the payload down Agent B's open SSE connection. Agent B's extension intercepts the event and injects a hidden message into Agent B's context window.</li>
+<li><strong>Resolution:</strong> Agent B generates a normal conversational response. At the end of the turn, Agent B's extension captures the text and POSTs it back to the Hub as the resolution.</li>
+<li><strong>Callback:</strong> The Hub pushes the response down Agent A's SSE connection. Agent A's extension receives it and injects it as a follow-up message so Agent A knows the task is complete.</li>
+</ol>
+<hr />
+<h2 id="key-concepts">Key Concepts</h2>
+<h3 id="the-hub-and-authentication">The Hub and Authentication</h3>
+<p>The network is secured via a Bearer token generated at startup. The hub binds to a port and writes its connection details to <code>~/.pi/coms-net/projects/&lt;project&gt;/server.json</code> and its secure token to <code>server.secret.json</code> (chmod <code>0600</code>). </p>
+<p>When an agent extension starts up, it automatically discovers these files and authenticates.</p>
+<blockquote>
+<p><strong>Warning:</strong> You should never commit or log the authentication token. The hub enforces strict token handling and will terminate connections missing valid Bearer headers.</p>
+</blockquote>
+<h3 id="agent-registration-and-heartbeats">Agent Registration and Heartbeats</h3>
+<p>When an agent joins, it registers with a name, model identifier, and color. To ensure the registry remains accurate, agents must send a heartbeat (default every 10 seconds).</p>
+<p>The heartbeat contains telemetry:</p>
 <ul>
+<li><code>context_used_pct</code>: How full the agent's context window is.</li>
+<li><code>queue_depth</code>: How many pending messages it has.</li>
+<li><code>tasks_summary</code>: Progress on its current task list (total, completed, in-progress).</li>
+</ul>
+<p>If the Hub misses heartbeats, the agent transitions from <code>online</code> to <code>stale</code>, and eventually to <code>offline</code> where it is removed from the registry.</p>
+<h3 id="message-queues-and-hop-limits">Message Queues and Hop Limits</h3>
+<p>To prevent infinite loops of agents talking to each other forever, the network implements <strong>hop limits</strong> (default: 5). Every time an agent forwards a delegated request, the hop count increments. Once the limit is hit, the Hub rejects the send request.</p>
+<p>Additionally, to prevent an agent from being overwhelmed, the Hub enforces an <strong>inbox cap</strong> (default: 100 messages).</p>
+<h3 id="task-delegation">Task Delegation</h3>
+<p>Agents can send more than just raw text strings. The <code>coms_net_send</code> payload supports a <code>tasks</code> array. When Agent B receives a message containing tasks, its extension renders them as explicit work items, encouraging Agent B to use its <code>TaskCreate</code> tools to track the work formally.</p>
+<hr />
+<h2 id="how-it-affects-the-user">How It Affects the User</h2>
+<p>The technical details of SSE streams and Bearer tokens are completely abstracted away from the end user. Here is how <code>coms-net</code> surfaces in the application:</p>
+<ul>
+<li><strong>The Coms-Net Pool Widget:</strong> At the bottom of the user's terminal, a live dashboard shows all connected agents. It updates in real-time as heartbeats arrive, showing their context window usage (<code>--%</code>), model type, and queue depth (<code>📨1</code>).</li>
+<li><strong>Non-Blocking Execution:</strong> Because messages are resolved via SSE push events rather than blocking HTTP polls, users can continue chatting with Agent A while Agent B works in the background. When Agent B finishes, the result cleanly injects into Agent A's chat history.</li>
+<li><strong>Agent Transparency:</strong> The Hub broadcasts state changes to all peers. If Agent A wants to know who is available, it can call <code>coms_net_list</code> to see exactly what the user sees in their terminal dashboard.</li>
+</ul>
+<blockquote>
+<p><strong>Tip:</strong> If you see an infinite ping-pong loop (where agents keep saying "I am sending this back to you"), it means an agent's prompt instructions are incorrectly telling it to call <code>coms_net_send</code> to <em>reply</em>. Agents should always reply by simply speaking normally in their context window. The extension automatically extracts the reply.</p>
+</blockquote>
+<hr />
+<h2 id="extending-the-network">Extending the Network</h2>
+<p>If you are writing a custom provider or external daemon, you can interact with the Coms Hub directly via its HTTP API.</p>
+<ul>
+<li><strong>Registering:</strong> POST <code>/v1/agents/register</code> with your <code>session_id</code>, <code>name</code>, and <code>project</code>.</li>
+<li><strong>Connecting:</strong> Open an EventSource connection to the <code>sse_url</code> returned from the register call.</li>
+<li><strong>Sending:</strong> POST <code>/v1/messages</code> with <code>sender_session</code>, <code>target</code>, and <code>prompt</code>.</li>
+<li><strong>Replying:</strong> Listen for <code>prompt</code> events on your SSE stream, process the text, and POST back to <code>/v1/messages/&lt;msg_id&gt;/response</code>.</li>
+</ul>
+<p>By adhering to this contract, non-Pi systems (like a dedicated python background worker) can masquerade as peer agents on the network.</p>
+<hr />
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li>See <a href="managing-custom-agents.html">Managing Custom Agents</a> to learn how to assign specific roles to agents on the network.</li>
+<li>See <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a> to understand how the broader application manages async tasks alongside the <code>coms-net</code> hub.</li>
+<li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> to learn how to spawn background peers that wait for network messages.</li>
+</ul>
+<h2 id="related-pages_1">Related Pages</h2>
+<ul>
+<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
+<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
 <li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-<li><a href="agent-routing.html">Understanding Agent Routing and Delegation</a></li>
-<li><a href="agents-reference.html">Specialist Agents Reference</a></li>
-<li><a href="discord-bot.html">Controlling Pi Sessions from Discord</a></li>
 </ul>
                 </div>
             </article>
@@ -311,9 +385,9 @@
                 </a>
 
 
-                <a href="external-ai-agents.html" class="page-nav-link page-nav-next">
+                <a href="background-dreaming.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Using External AI Agents (Cursor, Claude, Gemini)</span>
+                    <span class="page-nav-title">Background Memory Consolidation (Dreaming)</span>
                 </a>
 
             </nav>
@@ -323,7 +397,21 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#the-big-picture-architecture-and-flow">The Big Picture: Architecture and Flow</a><ul>
+<li><a href="#message-lifecycle-flow">Message Lifecycle Flow</a></li>
+</ul>
+</li>
+<li><a href="#key-concepts">Key Concepts</a><ul>
+<li><a href="#the-hub-and-authentication">The Hub and Authentication</a></li>
+<li><a href="#agent-registration-and-heartbeats">Agent Registration and Heartbeats</a></li>
+<li><a href="#message-queues-and-hop-limits">Message Queues and Hop Limits</a></li>
+<li><a href="#task-delegation">Task Delegation</a></li>
+</ul>
+</li>
+<li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
+<li><a href="#extending-the-network">Extending the Network</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
+<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 
@@ -335,7 +423,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.13.0</span>
+            <span class="footer-version">Generated from version 3.16.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

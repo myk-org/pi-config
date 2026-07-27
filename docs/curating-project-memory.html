@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Command Safety Guards and Enforcement - pi-config</title>
-    <meta name="description" content="Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows">
+    <title>Curating Project Memory - pi-config</title>
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Supercharge your pi coding agent with specialist agents, automated code review, persistent memory, and multi-agent workflows</p>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
         </div>
 
         <div class="sidebar-search">
@@ -31,14 +31,7 @@
                     <li>
                         <a href="quickstart.html"
                            class="nav-link">
-                            Installing and Starting Your First Session
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="first-workflow.html"
-                           class="nav-link">
-                            Your First Coding Workflow
+                            Installation &amp; Quickstart
                         </a>
                     </li>
 
@@ -50,65 +43,30 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agent-routing.html"
+                        <a href="automating-code-reviews.html"
                            class="nav-link">
-                            Understanding Agent Routing and Delegation
+                            Automating Code Reviews
                         </a>
                     </li>
 
                     <li>
-                        <a href="code-review-loop.html"
+                        <a href="managing-custom-agents.html"
                            class="nav-link">
-                            Running the Automated Code Review Loop
+                            Managing Custom Agents
                         </a>
                     </li>
 
                     <li>
-                        <a href="slash-commands.html"
+                        <a href="using-the-web-dashboard.html"
                            class="nav-link">
-                            Using Slash Commands and Prompt Templates
+                            Using the Web Dashboard
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-system.html"
-                           class="nav-link">
-                            Working with Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Communicating Between Pi Sessions
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            Using External AI Agents (Cursor, Claude, Gemini)
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="docker-deployment.html"
-                           class="nav-link">
-                            Running Pi in a Docker Container
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="dashboards-and-diffs.html"
-                           class="nav-link">
-                            Using the Web Dashboard and Diff Viewer
+                        <a href="curating-project-memory.html"
+                           class="nav-link active" aria-current="page">
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -120,16 +78,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="workflow-recipes.html"
+                        <a href="custom-slash-commands.html"
                            class="nav-link">
-                            Common Workflow Recipes
+                            Creating Slash Commands
                         </a>
                     </li>
 
                     <li>
-                        <a href="customization-recipes.html"
+                        <a href="safety-enforcements.html"
                            class="nav-link">
-                            Customization and Extension Recipes
+                            Implementing Command Guards
                         </a>
                     </li>
 
@@ -141,37 +99,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="agents-reference.html"
-                           class="nav-link">
-                            Specialist Agents Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="commands-reference.html"
-                           class="nav-link">
-                            Slash Commands and Extension Commands Reference
-                        </a>
-                    </li>
-
-                    <li>
                         <a href="cli-reference.html"
                            class="nav-link">
-                            myk-pi-tools CLI Reference
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration-reference.html"
+                        <a href="configuration.html"
                            class="nav-link">
-                            Configuration and Environment Variables Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="rules-reference.html"
-                           class="nav-link">
-                            Orchestrator Rules Reference
+                            Configuration &amp; Settings
                         </a>
                     </li>
 
@@ -183,16 +120,16 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="extension-architecture.html"
+                        <a href="memory-architecture.html"
                            class="nav-link">
-                            Extension Architecture and Lifecycle Hooks
+                            Memory Architecture
                         </a>
                     </li>
 
                     <li>
-                        <a href="memory-internals.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            Memory Scoring, Embeddings, and Situation Reports
+                            Daemon &amp; Websocket Networking
                         </a>
                     </li>
 
@@ -200,34 +137,27 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Guides</h3>
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Using ACPX Provider for External Agent Models
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            Controlling Pi Sessions from Discord
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="neovim-integration.html"
-                           class="nav-link">
-                            Neovim Integration and Quickfix Support
+                            Discord Bot Notifications
                         </a>
                     </li>
 
                     <li>
                         <a href="image-generation.html"
                            class="nav-link">
-                            Generating Images with the generate_image Tool
+                            Image Generation
                         </a>
                     </li>
 
@@ -235,13 +165,62 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Concepts</h3>
+                <h3 class="nav-group-title">Advanced Usage</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="command-enforcement.html"
-                           class="nav-link active" aria-current="page">
-                            Command Safety Guards and Enforcement
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -294,24 +273,76 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h2 id="related-pages">Related Pages</h2>
+                    <h1 id="curating-project-memory">Curating Project Memory</h1>
+<p>You want your AI agents to remember your project conventions, architectural decisions, and past mistakes so you don't have to repeat yourself in every session. This guide shows you how to explicitly seed context, audit what the agents have learned, and organize persistent project memory.</p>
+<h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li><a href="rules-reference.html">Orchestrator Rules Reference</a></li>
-<li><a href="commands-reference.html">Slash Commands and Extension Commands Reference</a></li>
-<li><a href="agent-routing.html">Understanding Agent Routing and Delegation</a></li>
-<li><a href="configuration-reference.html">Configuration and Environment Variables Reference</a></li>
+<li>A project initialized with Pi configuration.</li>
+<li>The <code>myk-pi-tools</code> CLI installed and available in your environment.</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>--category<span class="w"> </span>preference<span class="w"> </span>--summary<span class="w"> </span><span class="s2">&quot;Always use uv run instead of pip&quot;</span><span class="w"> </span>--pinned
+</code></pre></div>
+
+<p>The fastest way to ensure your agents remember a hard-and-fast rule is to explicitly add a pinned preference via the CLI.</p>
+<h2 id="step-by-step">Step-by-Step</h2>
+<h3 id="1-view-current-memory">1. View Current Memory</h3>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
+</code></pre></div>
+
+<p>Agents automatically store context as they work. This command dumps all active memory entries organized by topic and category (lessons, mistakes, preferences, etc.) so you can check what the system already knows before adding new rules.</p>
+<h3 id="2-seed-new-context">2. Seed New Context</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Record an architectural decision</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>decision<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;We use Redis for all caching instead of Memcached&quot;</span>
+
+<span class="c1"># Record a common stumbling block</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Buildah chown -R silently skips the target dir on this OS&quot;</span>
+</code></pre></div>
+
+<p>Use the <code>memory add</code> command to explicitly inject project context. You must select an appropriate category (<code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, <code>preference</code>) and provide a short summary string.</p>
+<blockquote>
+<p><strong>Tip:</strong> Use the <code>--pinned</code> flag for critical rules. Pinned memories are protected from the automatic decay and archiving that happens to older, less relevant context over time.</p>
+</blockquote>
+<h3 id="3-clean-up-obsolete-context">3. Clean Up Obsolete Context</h3>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>decision<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;We use Redis for all caching instead of Memcached&quot;</span>
+</code></pre></div>
+
+<p>If a project's architecture changes, old memories can confuse the agents. Use the <code>memory forget</code> command with the exact category and summary text to permanently remove outdated context.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="automatic-preference-extraction">Automatic Preference Extraction</h3>
+<p>You don't always need to use the CLI to curate memory. During a normal chat session, the agent automatically monitors for phrases like "I prefer...", "Always use...", or "Never do X". When detected, the agent quietly extracts these rules into its memory system and reinforces them if they come up again in future sessions.</p>
+<h3 id="code-review-guidelines">Code Review Guidelines</h3>
+<p>When using the automated code review loop, the system maintains a separate memory track specifically for pull requests. When you skip an agent's code review finding for a generalizable reason (like "this is an intentional project pattern"), the system writes a new guideline. </p>
+<p>All code review agents read these learned guidelines before their next pass, automatically suppressing similar findings. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
+<h3 id="auditing-enforcement-and-promotions">Auditing Enforcement and Promotions</h3>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>status
+</code></pre></div>
+
+<p>Highly reinforced memories can automatically graduate into code-enforced rules that actively intercept or block destructive commands. This status command outputs an inventory of your "code-tier" (actively hooked) memory entries versus your "injected" (contextual) topics, and lists any pending memory promotions awaiting approval.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong>Agent ignores a memory:</strong> Verify the memory was actually stored using <code>myk-pi-tools memory show</code>. If a critical rule keeps getting ignored despite being in memory, try re-adding it with the <code>--pinned</code> flag or implementing a hard guard. See <a href="safety-enforcements.html">Implementing Command Guards</a>.</li>
+<li><strong>Context limit warnings:</strong> If the agent complains about memory budgets or consolidation during a session, you have too many active memory topics. Manually drop outdated entries with <code>memory forget</code>, or simply allow the background daemon to organically decay cold topics over time.</li>
+</ul>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="memory-architecture.html">Memory Architecture</a></li>
+<li><a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="image-generation.html" class="page-nav-link page-nav-prev">
+                <a href="using-the-web-dashboard.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Generating Images with the generate_image Tool</span>
+                    <span class="page-nav-title">Using the Web Dashboard</span>
                 </a>
 
 
-                <div></div>
+                <a href="custom-slash-commands.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Creating Slash Commands</span>
+                </a>
 
             </nav>
 
@@ -320,6 +351,21 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step">Step-by-Step</a><ul>
+<li><a href="#1-view-current-memory">1. View Current Memory</a></li>
+<li><a href="#2-seed-new-context">2. Seed New Context</a></li>
+<li><a href="#3-clean-up-obsolete-context">3. Clean Up Obsolete Context</a></li>
+</ul>
+</li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#automatic-preference-extraction">Automatic Preference Extraction</a></li>
+<li><a href="#code-review-guidelines">Code Review Guidelines</a></li>
+<li><a href="#auditing-enforcement-and-promotions">Auditing Enforcement and Promotions</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -332,7 +378,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.13.0</span>
+            <span class="footer-version">Generated from version 3.16.2</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
