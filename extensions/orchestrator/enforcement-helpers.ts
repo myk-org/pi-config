@@ -90,7 +90,10 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
     for (const seg of segments) {
       if (!seg.textLower) continue;
       const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
-      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*[\/\\]/, "");
+      // Extract first token — handle quoted paths: "path/to/python3" or 'path/to/python3'
+      const firstTokenMatch = strippedLower.match(/^(["'])(.+?)\1|^(\S+)/);
+      const firstToken = firstTokenMatch?.[2] || firstTokenMatch?.[3] || "";
+      const baseCmd = firstToken.replace(/^.*[\/\\]/, "");
       if (baseCmd && /^pip3?$/.test(baseCmd)) {
         return {
           block: true,
@@ -107,17 +110,28 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
       const seg = segments[i];
       if (!seg.textLower) continue;
       const strippedLower = seg.textLower.replace(envVarPrefixRe, "");
-      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*[\/\\]/, "");
+      // Extract first token — handle quoted paths: "path/to/python3" or 'path/to/python3'
+      const firstTokenMatch = strippedLower.match(/^(["'])(.+?)\1|^(\S+)/);
+      const firstToken = firstTokenMatch?.[2] || firstTokenMatch?.[3] || "";
+      const baseCmd = firstToken.replace(/^.*[\/\\]/, "");
 
       if (baseCmd && /^python3?$/.test(baseCmd)) {
         const origText = seg.text;
         const envVarMatch = origText.match(envVarPrefixRe);
         const envPrefix = envVarMatch?.[0] || "";
         const afterEnv = origText.slice(envPrefix.length);
-        // Extract original-cased executable name, then prepend uv run
-        const execMatch = afterEnv.match(/^(\S*[\/\\])?(python3?)\b/i);
-        const origExe = execMatch?.[2] || baseCmd;
-        const fixedAfterEnv = afterEnv.replace(/^(\S*[\/\\])?python3?\b/i, `uv run ${origExe}`);
+        // Match quoted or unquoted python executable path
+        let origExe: string;
+        let fixedAfterEnv: string;
+        if (afterEnv.match(/^["']/)) {
+          // Quoted path: strip quotes and path, keep original exe name
+          const qm = afterEnv.match(/^(["'])(.*?)(python3?)\1(.*)/i);
+          origExe = qm?.[3] || baseCmd;
+          fixedAfterEnv = `uv run ${origExe}` + (qm?.[4] || "");
+        } else {
+          origExe = afterEnv.match(/^(\S*[\/\\])?(python3?)\b/i)?.[2] || baseCmd;
+          fixedAfterEnv = afterEnv.replace(/^(\S*[\/\\])?python3?\b/i, `uv run ${origExe}`);
+        }
         const fixedStmt = envPrefix + fixedAfterEnv;
 
         // Replace by offset

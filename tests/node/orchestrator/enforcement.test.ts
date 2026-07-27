@@ -483,6 +483,18 @@ describe("checkPythonPipBlock", () => {
     const r = checkPythonPipBlock("C:\\\\Python\\\\Scripts\\\\pip install requests", "c:\\\\python\\\\scripts\\\\pip install requests");
     assert.ok(r && "block" in r);
   });
+  // ── Quoted path support ──
+  it("auto-fixes quoted python path with spaces", () => {
+    const cmd = '"C:\\Program Files\\Python\\python3" script.py';
+    const r = checkPythonPipBlock(cmd, cmd.toLowerCase());
+    assert.ok(r && "autofix" in r);
+    assert.equal(r.modifiedCommand, "uv run python3 script.py");
+  });
+  it("blocks quoted pip path with spaces", () => {
+    const cmd = '"C:\\Program Files\\Python\\Scripts\\pip" install requests';
+    const r = checkPythonPipBlock(cmd, cmd.toLowerCase());
+    assert.ok(r && "block" in r);
+  });
   it("preserves original executable casing in autofix", () => {
     const r = checkPythonPipBlock("Python3 --version", "python3 --version");
     assert.ok(r && "autofix" in r);
