@@ -8,7 +8,12 @@ import * as path from "node:path";
 import { join } from "node:path";
 import { DANGEROUS, hasGitSub } from "./git-helpers.js";
 
-export type EnforcementResult = { block: true; reason: string } | undefined;
+export type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
+
+/** Whether uv is available on this system (checked at session_start) */
+let uvAvailable = true;
+export function setUvAvailable(val: boolean): void { uvAvailable = val; }
+export function isUvAvailable(): boolean { return uvAvailable; }
 
 /** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
 export function normalizeForRepeatCheck(command: string): string {
@@ -50,23 +55,54 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   return sessionCwd;
 }
 
-/** Block direct python/pip commands */
-export function checkPythonPipBlock(cmdLower: string): EnforcementResult {
+/** Auto-fix direct python commands (prepend uv run), block pip commands */
+export function checkPythonPipBlock(command: string, cmdLower: string): EnforcementResult {
+  // If uv is not available, skip all python/pip enforcement
+  if (!uvAvailable) return undefined;
+
   if (!cmdLower.startsWith("uv ") && !cmdLower.startsWith("uvx ")) {
     // Split on statement separators to get individual commands,
     // then check if the base command (first word) is python/pip.
     // This avoids false positives on python3/pip appearing inside quoted arguments.
     // Split on statement separators including & (background operator)
-    const statements = cmdLower.split(/\n|;|&&|\|\||\||&/).map(s => s.trim()).filter(Boolean);
-    for (const stmt of statements) {
+    const separatorRe = /\n|;|&&|\|\||\||&/;
+    const statementsLower = cmdLower.split(separatorRe).map(s => s.trim()).filter(Boolean);
+    const statementsOrig = command.split(separatorRe).map(s => s.trim()).filter(Boolean);
+
+    for (let i = 0; i < statementsLower.length; i++) {
+      const stmtLower = statementsLower[i];
       // Strip leading env var assignments: VAR=val, VAR="val", VAR='val'
-      const stripped = stmt.replace(/^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, "");
-      const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
+      const envVarPrefixRe = /^\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/;
+      const strippedLower = stmtLower.replace(envVarPrefixRe, "");
+      const baseCmd = strippedLower.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
+
       if (baseCmd && /^(?:python3?|pip3?)$/.test(baseCmd)) {
+        // pip/pip3: always block (structural mismatch — needs `uv add`, not `uv run pip`)
+        if (/^pip3?$/.test(baseCmd)) {
+          return {
+            block: true,
+            reason: "Direct pip/pip3 forbidden. Use: uv add <pkg> / uvx <tool> / uv run --with <pkg> script.py",
+          };
+        }
+
+        // python/python3: auto-fix by prepending `uv run` to the python call
+        // Find where python appears in the original statement (after env vars, with path)
+        const origStmt = statementsOrig[i] || stmtLower;
+        const envVarMatch = origStmt.match(envVarPrefixRe);
+        const envPrefix = envVarMatch?.[0] || "";
+        const afterEnv = origStmt.slice(envPrefix.length);
+        // Replace the python command (possibly path-prefixed) with `uv run python3`
+        const fixedAfterEnv = afterEnv.replace(/^(\S*\/)?python3?\b/, "uv run python3");
+        const fixedStmt = envPrefix + fixedAfterEnv;
+
+        // Reconstruct full command by replacing the original statement
+        // We need to find and replace the exact original statement in the full command
+        const modifiedCommand = command.replace(origStmt, fixedStmt);
+
         return {
-          block: true,
-          reason:
-            "Direct python/pip forbidden. Use: uv run python3 / uv run script.py / uvx tool / uv add pkg",
+          autofix: true,
+          modifiedCommand,
+          reason: "Auto-fixed: prepended `uv run` to python command",
         };
       }
     }

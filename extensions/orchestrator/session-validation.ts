@@ -2,11 +2,12 @@
  * Session start validation — checks for required/optional CLI tools.
  */
 
-import { execSync, execFileSync } from "node:child_process";
+import { execSync, execFileSync, spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { setUvAvailable } from "./enforcement-helpers.js";
 import { checkMinPiVersion } from "./utils.js";
 
 /** Check whether a CLI command is available on PATH. */
@@ -191,14 +192,34 @@ function registerRepairCommand(pi: ExtensionAPI): void {
 /** Check for required/optional CLI tools and notify the user. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function checkSessionTools(ctx: any): Promise<void> {
+  // ── uv availability check ────────────────────────────────────────
+  const uvInstalled = hasCmd("uv");
+  setUvAvailable(uvInstalled);
+  if (!uvInstalled && ctx.hasUI) {
+    try {
+      const wantInstall = await ctx.ui.confirm(
+        "⚡ uv is not installed",
+        "uv enables faster Python package management and auto-fix for python/pip commands.\nInstall it now? (curl -LsSf https://astral.sh/uv/install.sh | sh)",
+      );
+      if (wantInstall) {
+        const result = spawnSync("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], {
+          timeout: 60_000,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (result.status === 0 && hasCmd("uv")) {
+          setUvAvailable(true);
+          ctx.ui.notify("✅ uv installed successfully", "info");
+        } else {
+          ctx.ui.notify("❌ uv installation failed. Install manually: https://docs.astral.sh/uv/", "warning");
+        }
+      }
+    } catch (e: any) {
+      console.debug("[session-validation] uv install prompt failed:", e?.message || e);
+    }
+  }
+
   const missing: string[] = [];
   const optional: string[] = [];
-
-  // Critical
-  if (!hasCmd("uv"))
-    missing.push(
-      "uv — Required for Python. Install: https://docs.astral.sh/uv/",
-    );
 
   // Optional
   if (!hasCmd("gh"))
