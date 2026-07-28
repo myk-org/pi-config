@@ -63,13 +63,21 @@ If the raw arguments are empty:
 
 If the raw arguments contain an issue number or URL:
 
-1. Parse the number (e.g., `42`) or extract from URL (e.g., `https://github.com/owner/repo/issues/42`)
+1. Parse the number (e.g., `42`) or extract from URL (e.g., `https://github.com/owner/repo/issues/42`). For URLs, also extract `OWNER_REPO` as `owner/repo`.
+
+Resolve `OWNER_REPO`:
+
+- URL argument → extract from the URL (`owner/repo`)
+- Auto-detected / bare number → `gh repo view --json owner,name --jq '.owner.login + "/" + .name'`
 
 Fetch issue metadata:
 
 ```bash
-gh issue view <number> --json number,title,body,labels,assignees,state,comments,milestone,author --jq '.'
+gh issue view <number> --repo <OWNER_REPO> --json number,title,body,labels,assignees,state,comments,milestone,author --jq '.'
 ```
+
+Where `<OWNER_REPO>` is from `gh repo view --json owner,name` for auto-detected issues,
+or extracted from the URL for URL-based arguments.
 
 Store:
 
@@ -80,14 +88,7 @@ Store:
 - `ISSUE_ASSIGNEES` — assignees array
 - `ISSUE_COMMENTS` — comments array
 - `ISSUE_AUTHOR` — issue author login
-
-Also get repo info:
-
-```bash
-gh repo view --json owner,name --jq '.owner.login + "/" + .name'
-```
-
-Store as `OWNER_REPO`.
+- `OWNER_REPO` — `owner/repo` for all subsequent `gh issue` commands
 
 Mark Task 1 as `completed`.
 
@@ -133,7 +134,7 @@ Mark Task 3 as `in_progress`.
 Search for potential duplicate or overlapping issues:
 
 ```bash
-gh issue list --state open --limit 50 --json number,title,body,labels
+gh issue list --repo <OWNER_REPO> --state open --limit 50 --json number,title,body,labels
 ```
 
 Compare the current issue against all open issues:
@@ -223,20 +224,20 @@ For each approved fix:
 4. If confirmed, update the issue:
 
 ```bash
-gh issue edit <ISSUE_NUMBER> --body-file <temp_file_with_new_body>
+gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --body-file <temp_file_with_new_body>
 ```
 
 Write the new body to a temp file first to handle special characters:
 
 ```bash
 write ${PROJECT_TMP_DIR}/updated-issue-body.md with the new body content
-gh issue edit <ISSUE_NUMBER> --body-file ${PROJECT_TMP_DIR}/updated-issue-body.md
+gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --body-file ${PROJECT_TMP_DIR}/updated-issue-body.md
 ```
 
 If the user also approved label/assignee changes, apply those:
 
 ```bash
-gh issue edit <ISSUE_NUMBER> --add-label "bug" --add-assignee "@me"
+gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --add-label "bug" --add-assignee "@me"
 ```
 
 Mark Task 9 as `completed`.
