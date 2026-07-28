@@ -52,8 +52,6 @@ Create all 10 tasks, then set dependencies via `TaskUpdate` with `addBlockedBy`.
 
 ### Phase 0: Issue Detection — Task 1
 
-Mark Task 1 as `in_progress`.
-
 If the raw arguments are empty:
 
 1. Detect issue from current branch name (extract issue number from branch like `feat/issue-42-...`
@@ -90,11 +88,7 @@ Store:
 - `ISSUE_AUTHOR` — issue author login
 - `OWNER_REPO` — `owner/repo` for all subsequent `gh issue` commands
 
-Mark Task 1 as `completed`.
-
 ### Phase 1: Context Gathering — Task 2
-
-Mark Task 2 as `in_progress`.
 
 Extract all file/function/class references from the issue body and comments:
 
@@ -123,13 +117,9 @@ Write the issue body to a temp file for reviewer access using the `write` tool:
 Use the write tool to create ${PROJECT_TMP_DIR}/issue-body.md with the ISSUE_BODY content
 ```
 
-Mark Task 2 as `completed`.
-
 ### Phase 2: Duplicate Scan — Task 3
 
 Task 3 can run in parallel with Task 2.
-
-Mark Task 3 as `in_progress`.
 
 Search for potential duplicate or overlapping issues:
 
@@ -145,8 +135,6 @@ Compare the current issue against all open issues:
 
 Store results as `DUPLICATES` — a list of `{number, title, similarity_reason}`.
 Only include issues with meaningful overlap, not just shared labels.
-
-Mark Task 3 as `completed`.
 
 ### Phase 3: Review — Tasks 4, 5, 6
 
@@ -167,8 +155,6 @@ After spawning, end your turn. Results arrive automatically.
 
 ### Phase 4: Merge Findings — Task 7
 
-Mark Task 7 as `in_progress`.
-
 Merge and deduplicate findings from all 3 reviewers:
 
 1. Parse JSON findings from each reviewer
@@ -180,11 +166,7 @@ Merge and deduplicate findings from all 3 reviewers:
    - **Add metadata** — missing labels, assignee
    - **Flag only** — scope concerns, duplicates (can't be auto-fixed in body)
 
-Mark Task 7 as `completed`.
-
 ### Phase 5: User Selection — Task 8
-
-Mark Task 8 as `in_progress`.
 
 Present ALL findings to the user in a table:
 
@@ -210,11 +192,7 @@ Which fixes to apply? (e.g., 'all', 'none', '1,2,4', or specific numbers)
 
 Use `ask_user` for the selection.
 
-Mark Task 8 as `completed`.
-
 ### Phase 6: Apply Fixes — Task 9
-
-Mark Task 9 as `in_progress`.
 
 For each approved fix:
 
@@ -244,11 +222,7 @@ gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> [--add-label "<label>" ...] [--
 Build the flags from the user's approved findings — only add labels/assignees that were
 explicitly selected. Do not hardcode any specific labels or assignees.
 
-Mark Task 9 as `completed`.
-
 ### Phase 7: Summary — Task 10
-
-Mark Task 10 as `in_progress`.
 
 Display:
 
@@ -267,8 +241,6 @@ Changes:
 - ✅ Corrected file reference (src/auth.py → src/auth/validate.ts)
 - ⚠️ Flagged: overlaps with #38 — consider linking
 ```
-
-Mark Task 10 as `completed`.
 
 ### Cleanup
 

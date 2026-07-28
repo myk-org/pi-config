@@ -95,8 +95,6 @@ TaskUpdate(taskId="8", addBlockedBy=["7"])
 
 ### Phase 1: Get Diff — Task 1
 
-Mark Task 1 as `in_progress`.
-
 **If the raw arguments are not empty:**
 
 Compare current branch against the specified branch:
@@ -113,11 +111,9 @@ Get all uncommitted changes (staged + unstaged):
 git diff HEAD
 ```
 
-Mark Task 1 as `completed`.
-
 ### Phase 2: Code Analysis — Tasks 2, 3, 4, 5, 6
 
-Mark Tasks 2, 3, 4, 5, 6 as `in_progress`, then spawn ALL 5 review agents as async subagents
+Spawn ALL 5 review agents as async subagents
 with `taskId` linking each to its task.
 Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
 
@@ -152,20 +148,12 @@ Task 7 (Merge findings) auto-unblocks when all 5 reviewer tasks complete.
 
 ### Phase 3: Merge & Deduplicate Findings — Task 7
 
-Mark Task 7 as `in_progress`.
-
 Merge and deduplicate the findings from all 5 reviewers into a single combined findings list.
 
-Mark Task 7 as `completed`.
-
 ### Phase 4: Present Review — Task 8
-
-Mark Task 8 as `in_progress`.
 
 Display findings grouped by severity:
 
 - **Critical issues** (must fix)
 - **Warnings** (should fix)
 - **Suggestions** (nice to have)
-
-Mark Task 8 as `completed`.

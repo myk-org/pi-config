@@ -143,8 +143,6 @@ All temp files for this workflow go there —
 
 ### Phase 0: PR Detection — Task 1
 
-Mark Task 1 as `in_progress`.
-
 If the raw arguments are empty:
 
 1. Detect from current branch and fetch PR metadata:
@@ -195,14 +193,10 @@ If the raw arguments contain a PR number or URL:
 
    Store this as `LATEST_COMMIT_DATE` (ISO 8601 timestamp).
 
-Mark Task 1 as `completed`.
-
 Tasks 2 and 3 are independent — execute them in parallel.
 Task 4 depends on Task 2 (needs the diff data) and will start after Task 2 completes.
 
 ### Phase 1a: Clone & Checkout PR — Task 2
-
-Mark Task 2 as `in_progress`.
 
 Clone the target repo and checkout the PR branch. This gives reviewers full repo access
 instead of passing a truncated diff in the prompt.
@@ -222,17 +216,12 @@ Store:
 
 If cloning or checkout fails, fall back to `myk-pi-tools pr diff` (original behavior).
 
-Mark Task 2 as `completed`.
-
 ### Phase 1b: (Removed — reviewers read AGENTS.md from clone)
 
 Task 3 is no longer needed — reviewers have full repo access via the clone
 and read AGENTS.md independently per their agent instructions.
-Mark Task 3 as `completed` immediately.
 
 ### Phase 1c: Check Past Review Comments — Task 4
-
-Mark Task 4 as `in_progress`.
 
 Fetch ALL human review threads (resolved + unresolved) from the PR:
 
@@ -388,11 +377,9 @@ The suggested answer should:
 - Be concise — answer the question, don't lecture
 - If the answer requires a code change, note that explicitly
 
-Mark Task 4 as `completed`.
-
 ### Phase 2: Code Analysis — Tasks 5, 6, 7, 8, 9
 
-Mark Tasks 5, 6, 7, 8, 9 as `in_progress`, then spawn ALL 5 review agents as async subagents
+Spawn ALL 5 review agents as async subagents
 with `taskId` linking each to its task:
 
 Use the actual task IDs returned by `TaskCreate` — do NOT hardcode IDs.
@@ -457,8 +444,6 @@ Task 10 (Merge findings) auto-unblocks when all 5 reviewer tasks complete.
 
 ### Phase 3: Merge & Deduplicate Findings — Task 10
 
-Mark Task 10 as `in_progress`.
-
 Merge and deduplicate the findings from all 5 reviewers AND the past review comment analysis from Task 4 into a single combined findings list.
 
 Reviewers were already instructed in Phase 2 to skip findings that duplicate existing
@@ -487,11 +472,7 @@ For each `[NEW]` finding, compare against the skipped list using path + body sim
 `"Auto-skipped (previously dismissed): <skip_reason>"`. The user still sees them in the
 Phase 4 table and can override by selecting them explicitly.
 
-Mark Task 10 as `completed`.
-
 ### Phase 4: User Selection — Task 11
-
-Mark Task 11 as `in_progress`.
 
 Present ALL findings to user in one combined list, grouped by severity (CRITICAL, WARNING, SUGGESTION).
 This includes:
@@ -600,11 +581,7 @@ findings minus user-selected findings). If the skipped set is non-empty:
    This file is read by all 5 reviewer agents before reviewing, so the same class of
    finding won't be raised again on future PRs in this repo.
 
-Mark Task 11 as `completed`.
-
 ### Phase 5: Post Comments — Task 12
-
-Mark Task 12 as `in_progress`.
 
 **Step 1: Post `[NEW]` and `[PREV-*]` findings as new review comments:**
 
@@ -675,11 +652,7 @@ NEVER build JSON by string interpolation — always write the reply body as raw 
 and use `jq -Rs '{body: .}'` to produce valid JSON. This prevents both shell injection
 and JSON encoding errors from quotes, backslashes, or newlines in the answer.
 
-Mark Task 12 as `completed`.
-
 ### Phase 5b: Store Posted Comments — Task 13
-
-Mark Task 13 as `in_progress`.
 
 After posting comments, store ALL findings (posted AND skipped) in the PR review database
 for future cycle tracking and same-PR dedup of skipped findings.
@@ -762,11 +735,7 @@ myk-pi-tools pr store-pr-review ${PROJECT_TMP_DIR}/pr-review-store.json
 runs to track which comments were posted, verify they were addressed, and auto-skip
 previously dismissed findings.
 
-Mark Task 13 as `completed`.
-
 ### Phase 6: Summary — Task 14
-
-Mark Task 14 as `in_progress`.
 
 Display final summary with counts and links. Include:
 
@@ -775,8 +744,6 @@ Display final summary with counts and links. Include:
 - Author questions answered / skipped counts
 - Total comments posted
 - PR link
-
-Mark Task 14 as `completed`.
 
 ### Cleanup
 

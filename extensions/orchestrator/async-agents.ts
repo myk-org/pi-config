@@ -112,7 +112,7 @@ export function formatDuration(ms: number): string {
 }
 
 /** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
-async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
+export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
   await taskStoreReady;
 
@@ -138,7 +138,7 @@ async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string)
 }
 
 /** Auto-mark a task in_progress via pi-tasks TaskStore (in-process, no AI involvement). */
-async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
+export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
   await taskStoreReady;
 

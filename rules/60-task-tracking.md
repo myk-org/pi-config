@@ -31,7 +31,8 @@ Tasks MUST be **detailed and specific** — not high-level summaries.
 ## Task Lifecycle (MANDATORY)
 
 Create all tasks BEFORE starting work via `TaskCreate`.
-Mark each `in_progress` before starting and `completed` immediately after finishing via `TaskUpdate`.
+Task status transitions (`in_progress`, `completed`) are **auto-managed by the subagent tool** — do NOT call `TaskUpdate` for status changes.
+The system marks tasks `in_progress` at spawn and `completed` on success, for both sync and async agents.
 Work through tasks in order — do not skip tasks or start new work while unchecked tasks exist (unless user explicitly pivots).
 
 ---
@@ -50,17 +51,18 @@ Never abandon tasks — if scope changes, use `TaskUpdate` with `status: "delete
 
 ---
 
-## Async Agent taskId (MANDATORY — code-enforced)
+## Agent taskId (MANDATORY — code-enforced)
 
-**Every async agent call MUST include `taskId`.** Enforced — calls without it are rejected.
+**Every agent call (sync and async) auto-manages task status when `taskId` is provided.**
+For async agents, `taskId` is enforced — calls without it are rejected.
 Pass the task ID (e.g., `"5"`) when linked to a task, or `"-1"` when not.
-Linked tasks auto-complete on agent success — no manual `TaskUpdate` needed.
+Linked tasks are auto-marked `in_progress` at spawn and `completed` on success — no manual `TaskUpdate` needed.
 
 ```text
 subagent(agent="code-reviewer-quality", task="...", cwd="...", async=true, name="Review", taskId="5")
 subagent(agent="worker", task="...", cwd="...", async=true, name="Qodo Poll", taskId="-1")
 ```
 
-- ✅ **ALWAYS** pass `taskId` — auto-completes on success, stays `in_progress` on failure
-- ❌ **NEVER** manually `TaskUpdate` a task to `completed` if it has an async agent
-- ❌ **NEVER** omit `taskId` — the call will fail
+- ✅ **ALWAYS** pass `taskId` — auto-marks `in_progress` at spawn, `completed` on success
+- ❌ **NEVER** manually `TaskUpdate` status — the subagent tool handles it
+- ❌ **NEVER** omit `taskId` for async agents — the call will fail

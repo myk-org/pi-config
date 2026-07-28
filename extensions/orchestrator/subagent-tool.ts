@@ -47,6 +47,7 @@ import {
   decideAsyncLlmDispatch,
   supportsAsyncLlm,
 } from "./async-capability.js";
+import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
@@ -829,6 +830,11 @@ export function registerSubagentTool(
       activeAgents.clear();
       activeAgents.add(s.agent);
       updateWorking();
+      // Auto-mark linked task as in_progress (same as async path)
+      const chainTaskId = s.taskId as string | undefined;
+      if (chainTaskId && chainTaskId !== "-1") {
+        await autoMarkInProgress(chainTaskId, s.cwd).catch(() => {});
+      }
       const r = await runSingleAgent(
         agents,
         s.agent,
@@ -860,6 +866,10 @@ export function registerSubagentTool(
           details: mkd("chain")(results),
           isError: true,
         };
+      }
+      // Auto-complete linked task on success (same as async path)
+      if (chainTaskId && chainTaskId !== "-1") {
+        await autoCompleteTask(chainTaskId, s.cwd).catch(() => {});
       }
       prev = getFinalOutput(r.messages);
     }
@@ -971,6 +981,13 @@ export function registerSubagentTool(
         };
       }
     }
+    // Auto-mark linked tasks as in_progress
+    for (const t of params.tasks) {
+      const tid = (t as any).taskId as string | undefined;
+      if (tid && tid !== "-1") {
+        await autoMarkInProgress(tid, t.cwd).catch(() => {});
+      }
+    }
     const results = await mapWithConcurrency(
       params.tasks,
       MAX_CONCURRENCY,
@@ -1000,6 +1017,17 @@ export function registerSubagentTool(
         activeAgents.delete(t.name || t.agent);
         updateWorking();
         emitAll();
+        // Auto-complete linked task on success (same as async path)
+        const tid = t.taskId as string | undefined;
+        if (
+          tid &&
+          tid !== "-1" &&
+          r.exitCode === 0 &&
+          r.stopReason !== "error" &&
+          r.stopReason !== "aborted"
+        ) {
+          await autoCompleteTask(tid, t.cwd).catch(() => {});
+        }
         return r;
       },
     );
@@ -1068,6 +1096,11 @@ export function registerSubagentTool(
     const label = params.name || params.agent;
     activeAgents.add(label);
     updateWorking();
+    // Auto-mark linked task as in_progress (same as async path)
+    const syncTaskId = params.taskId as string | undefined;
+    if (syncTaskId && syncTaskId !== "-1") {
+      await autoMarkInProgress(syncTaskId, params.cwd).catch(() => {});
+    }
     const r = await runSingleAgent(
       agents,
       params.agent,
@@ -1098,6 +1131,10 @@ export function registerSubagentTool(
         details: mkd("single")([r]),
         isError: true,
       };
+    // Auto-complete linked task on success (same as async path)
+    if (syncTaskId && syncTaskId !== "-1") {
+      await autoCompleteTask(syncTaskId, params.cwd).catch(() => {});
+    }
     return {
       content: [
         { type: "text" as const, text: getFinalOutput(r.messages) || "(no output)" },
