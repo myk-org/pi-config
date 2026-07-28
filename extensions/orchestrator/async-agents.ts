@@ -6,28 +6,9 @@ import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-
-// Import TaskStore for direct task auto-completion (bypasses AI)
-let TaskStoreClass: any = null;
-const taskStoreReady: Promise<void> = (async () => {
-  const candidates = [
-    "@tintinweb/pi-tasks/dist/task-store.js",
-    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
-  ];
-  for (const candidate of candidates) {
-    try {
-      const mod = await import(candidate);
-      if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; }
-    } catch { continue; }
-  }
-  if (!TaskStoreClass) {
-    throw new Error("[async-agents] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
-  }
-})();
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
@@ -38,6 +19,8 @@ import { addReviewerPending, recordReviewerResult, countFindings, readReviewStat
 import { getMainBranch } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
+export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
+import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -109,58 +92,6 @@ export function formatDuration(ms: number): string {
   const m = Math.floor(ms / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   return `${m}m${s}s`;
-}
-
-/** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
-export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
-  if (!taskId || taskId === "-1") return false;
-  await taskStoreReady;
-
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const candidates: string[] = [];
-  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  candidates.push(path.join(tasksDir, "tasks.json"));
-
-  for (const storePath of candidates) {
-    try {
-      const store = new TaskStoreClass(storePath);
-      const task = store.get(taskId);
-      if (task && task.status !== "completed") {
-        store.update(taskId, { status: "completed" });
-        return true;
-      }
-    } catch (e: any) {
-      console.debug(`[async-agents] autoCompleteTask failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
-      continue;
-    }
-  }
-  return false;
-}
-
-/** Auto-mark a task in_progress via pi-tasks TaskStore (in-process, no AI involvement). */
-export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
-  if (!taskId || taskId === "-1") return false;
-  await taskStoreReady;
-
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const candidates: string[] = [];
-  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  candidates.push(path.join(tasksDir, "tasks.json"));
-
-  for (const storePath of candidates) {
-    try {
-      const store = new TaskStoreClass(storePath);
-      const task = store.get(taskId);
-      if (task && task.status === "pending") {
-        store.update(taskId, { status: "in_progress" });
-        return true;
-      }
-    } catch (e: any) {
-      console.debug(`[async-agents] autoMarkInProgress failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
-      continue;
-    }
-  }
-  return false;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────
