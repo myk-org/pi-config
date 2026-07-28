@@ -181,7 +181,7 @@ describe("cli-provider sessions", () => {
     );
   });
 
-  it("shouldAdoptLegacyCliMarker accepts prev with provisional and next with real session id", async () => {
+  it("shouldAdoptLegacyCliMarker accepts provisional-to-real session id transition", async () => {
     // This tests the scenario where prevKey was stored under a provisional session
     // and nextKey has a real UUID — the adapter should adopt the legacy marker.
     const { shouldAdoptLegacyCliMarker } = await import(
