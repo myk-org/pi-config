@@ -129,7 +129,10 @@ async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string)
         store.update(taskId, { status: "completed" });
         return true;
       }
-    } catch { continue; }
+    } catch (e: any) {
+      console.debug(`[async-agents] autoCompleteTask failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
+      continue;
+    }
   }
   return false;
 }
@@ -152,7 +155,10 @@ async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: strin
         store.update(taskId, { status: "in_progress" });
         return true;
       }
-    } catch { continue; }
+    } catch (e: any) {
+      console.debug(`[async-agents] autoMarkInProgress failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
+      continue;
+    }
   }
   return false;
 }
@@ -1053,6 +1059,8 @@ export function registerAsyncAgents(
     "subagents:rpc:spawn", ({ type, prompt, options }) => {
       const ctx = asyncState.lastCtx;
       if (!ctx) throw new Error("No active session");
+      if (!type || typeof type !== "string") throw new Error("Missing or invalid 'type' parameter");
+      if (!prompt || typeof prompt !== "string") throw new Error("Missing or invalid 'prompt' parameter");
 
       const cwd = options?.cwd || ctx.cwd;
       const discovery = discoverAgents(cwd, "both");

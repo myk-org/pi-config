@@ -3,13 +3,13 @@ description: "Review a GitHub issue spec and fix it — /issue-review [issue num
 argument-hint: "[issue number or URL]"
 ---
 
+# GitHub Issue Review Command
+
 ## Raw Arguments
 
 ```text
 $ARGUMENTS
 ```
-
-# GitHub Issue Review Command
 
 > **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
 > while executing this command — DO NOT work around it silently. Ask the user:
@@ -116,10 +116,10 @@ Extract all file/function/class references from the issue body and comments:
 
 3. Store results as `CODEBASE_REFS` — a list of `{ref, exists, location}` objects.
 
-Write the issue body to a temp file for reviewer access:
+Write the issue body to a temp file for reviewer access using the `write` tool:
 
-```bash
-write ${PROJECT_TMP_DIR}/issue-body.md with the ISSUE_BODY content
+```text
+Use the write tool to create ${PROJECT_TMP_DIR}/issue-body.md with the ISSUE_BODY content
 ```
 
 Mark Task 2 as `completed`.
@@ -267,4 +267,8 @@ Mark Task 10 as `completed`.
 
 ### Cleanup
 
-Delete all tasks created in this workflow.
+Delete all tasks created in this workflow:
+
+```text
+For each task ID created in Phase 0, call TaskUpdate(taskId="<ID>", status="deleted").
+```
