@@ -752,17 +752,17 @@ export function registerAsyncAgents(
     };
     asyncState.jobs.set(id, job);
 
-    // Auto-mark linked task as in_progress at spawn time
-    if (options?.taskId && options.taskId !== "-1") {
-      autoMarkInProgress(options.taskId, asyncState.lastCtx?.sessionManager?.getCwd?.() || cwd, asyncState.lastCtx?.sessionManager?.getSessionId?.() || undefined)
-        .catch(() => {});  // best-effort, don't block spawn
-    }
-
     // addReviewerPending already called above (before piArgs construction)
 
     updateAsyncWidget();
     ensureAsyncPoller();
     startResultWatcher();
+
+    // Auto-mark linked task as in_progress AFTER successful spawn
+    if (options?.taskId && options.taskId !== "-1") {
+      autoMarkInProgress(options.taskId, asyncState.lastCtx?.sessionManager?.getCwd?.() || cwd, asyncState.lastCtx?.sessionManager?.getSessionId?.() || undefined)
+        .catch(() => {});  // best-effort, don't block spawn
+    }
 
     return { id, model: effectiveModel };
   }
