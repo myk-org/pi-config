@@ -335,7 +335,7 @@ describe("autoCompleteTask update-failure handling", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("returns false when TaskStore.update throws", async () => {
+  it("returns false when task completion cannot be persisted", async () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Task" },
     ]);
@@ -363,7 +363,7 @@ describe("autoMarkInProgress update-failure handling", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("returns false when TaskStore.update throws", async () => {
+  it("returns false when in-progress status cannot be persisted", async () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Task" },
     ]);
