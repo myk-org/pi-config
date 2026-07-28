@@ -4,7 +4,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -321,5 +321,66 @@ describe("autoMarkInProgress error handling", () => {
     // Global NOT mutated
     const globalTasks = readTaskStore(globalPath);
     assert.equal(globalTasks[0].status, "pending");
+  });
+});
+
+describe("autoCompleteTask update-failure handling", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "update-fail-"));
+  });
+
+  afterEach(() => {
+    try {
+      const tasksDir = join(tmp, ".pi", "tasks");
+      chmodSync(tasksDir, 0o755);
+      for (const f of readdirSync(tasksDir)) {
+        try { chmodSync(join(tasksDir, f), 0o644); } catch {}
+      }
+    } catch {}
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("handles read-only store directory gracefully", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(join(tasksDir, "tasks.json"), JSON.stringify({
+      tasks: [{ id: "1", status: "pending", subject: "Task" }],
+    }));
+    chmodSync(tasksDir, 0o555);
+    const result = await autoCompleteTask("1", tmp);
+    // Should not crash — returns boolean regardless of write failure
+    assert.equal(typeof result, "boolean");
+  });
+});
+
+describe("autoMarkInProgress update-failure handling", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "update-fail-"));
+  });
+
+  afterEach(() => {
+    try {
+      const tasksDir = join(tmp, ".pi", "tasks");
+      chmodSync(tasksDir, 0o755);
+      for (const f of readdirSync(tasksDir)) {
+        try { chmodSync(join(tasksDir, f), 0o644); } catch {}
+      }
+    } catch {}
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("handles read-only store directory gracefully", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(join(tasksDir, "tasks.json"), JSON.stringify({
+      tasks: [{ id: "1", status: "pending", subject: "Task" }],
+    }));
+    chmodSync(tasksDir, 0o555);
+    const result = await autoMarkInProgress("1", tmp);
+    assert.equal(typeof result, "boolean");
   });
 });
