@@ -37,6 +37,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
+import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import {
   checkMinPiVersion,
   isPiMetaInvocation,
@@ -287,22 +288,6 @@ function ensureSession(
 // Context Helpers (same contract as acpx-provider)
 // =============================================================================
 
-/**
- * Build the system prompt to send on first session creation.
- * CLI sessions maintain their own conversation history via --resume,
- * so we set the system prompt once at first turn.
- */
-function buildSystemPrompt(context: Context): string | undefined {
-  if (!context.systemPrompt) return undefined;
-  return [
-    "You are being used as a backend LLM through pi coding agent.",
-    "You have full permission to read, write, edit, and execute any files or commands.",
-    "Follow these instructions:",
-    "",
-    context.systemPrompt,
-  ].join("\n");
-}
-
 function messageText(msg: { role: string; content: any }): string {
   if (typeof msg.content === "string") return msg.content;
   if (!Array.isArray(msg.content)) return "";
@@ -424,11 +409,13 @@ function streamCli(
       await state.ready;
 
       const handleKey = cliModelId || "default";
-      // Always build so resume-failure retry can start a fresh CLI session with
-      // the system prompt; initial prompt still only prepends when needed.
-      const systemPromptText = buildSystemPrompt(context);
+      // Only build when needed — avoids filesystem IO for enforced entries on
+      // every turn. forceHistorySeed (resume-failure retry) still builds.
       const needsSystemPromptFlag =
         forceHistorySeed || !state.systemPromptSent.has(handleKey);
+      const systemPromptText = needsSystemPromptFlag
+        ? buildExternalSystemPrompt(context, projectCwd)
+        : undefined;
 
       const { sessionId, needsSystemPrompt, key } = ensureSession(
         state,

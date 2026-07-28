@@ -6,37 +6,21 @@ import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
-// Import TaskStore for direct task auto-completion (bypasses AI)
-let TaskStoreClass: any = null;
-const taskStoreReady: Promise<void> = (async () => {
-  const candidates = [
-    "@tintinweb/pi-tasks/dist/task-store.js",
-    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
-  ];
-  for (const candidate of candidates) {
-    try {
-      const mod = await import(candidate);
-      if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; }
-    } catch { continue; }
-  }
-  if (!TaskStoreClass) {
-    throw new Error("[async-agents] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
-  }
-})();
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
+import { discoverAgents } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import { getMainBranch } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
+export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
+import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -108,29 +92,6 @@ export function formatDuration(ms: number): string {
   const m = Math.floor(ms / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   return `${m}m${s}s`;
-}
-
-/** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
-async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
-  if (!taskId || taskId === "-1") return false;
-  await taskStoreReady;
-
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const candidates: string[] = [];
-  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  candidates.push(path.join(tasksDir, "tasks.json"));
-
-  for (const storePath of candidates) {
-    try {
-      const store = new TaskStoreClass(storePath);
-      const task = store.get(taskId);
-      if (task && task.status !== "completed") {
-        store.update(taskId, { status: "completed" });
-        return true;
-      }
-    } catch { continue; }
-  }
-  return false;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────
@@ -346,6 +307,15 @@ export function registerAsyncAgents(
       return;
     }
 
+    // Emit lifecycle events for pi-tasks RPC bridge (one per job)
+    for (const j of groupJobs) {
+      if (j.status === "complete") {
+        pi.events.emit("subagents:completed", { id: j.id, result: j.output || "" });
+      } else if (j.status === "failed") {
+        pi.events.emit("subagents:failed", { id: j.id, error: j.output || "Agent failed", result: j.output || "", status: "failed" });
+      }
+    }
+
     const sections: string[] = [];
     for (const j of groupJobs) {
       if (j.fireAndForget) { j.delivered = true; continue; }
@@ -472,6 +442,13 @@ export function registerAsyncAgents(
         deliverGroupResults(groupJobs);
         updateAsyncWidget();
         return;
+      }
+
+      // Emit lifecycle events for pi-tasks RPC bridge
+      if (data.success) {
+        pi.events.emit("subagents:completed", { id: job.id, result: data.output || "" });
+      } else {
+        pi.events.emit("subagents:failed", { id: job.id, error: data.output || "Agent failed", result: data.output || "", status: "failed" });
       }
 
       // Non-grouped job: deliver immediately (existing behavior)
@@ -717,6 +694,12 @@ export function registerAsyncAgents(
     updateAsyncWidget();
     ensureAsyncPoller();
     startResultWatcher();
+
+    // Auto-mark linked task as in_progress AFTER successful spawn
+    if (options?.taskId && options.taskId !== "-1") {
+      autoMarkInProgress(options.taskId, asyncState.lastCtx?.sessionManager?.getCwd?.() || cwd, asyncState.lastCtx?.sessionManager?.getSessionId?.() || undefined)
+        .catch(() => {});  // best-effort, don't block spawn
+    }
 
     return { id, model: effectiveModel };
   }
@@ -969,6 +952,78 @@ export function registerAsyncAgents(
     if (typeof target === "string") {
       killAsyncAgent(target);
     }
+  });
+
+  // ── pi-subagents RPC compatibility bridge ──────────────────────────────
+  // Implements the subagents:rpc:* protocol so pi-tasks' TaskExecute
+  // can spawn our agents. Protocol version 2 matches @tintinweb/pi-subagents.
+
+  const RPC_PROTOCOL_VERSION = 2;
+
+  /** Handle an RPC request: parse params, run fn, reply on scoped channel. */
+  function handleRpc<P extends { requestId: string }>(
+    channel: string,
+    fn: (params: P) => unknown | Promise<unknown>,
+  ): () => void {
+    return pi.events.on(channel, async (raw: unknown) => {
+      const params = raw as P;
+      try {
+        const data = await fn(params);
+        const reply: { success: true; data?: unknown } = { success: true };
+        if (data !== undefined) reply.data = data;
+        pi.events.emit(`${channel}:reply:${params.requestId}`, reply);
+      } catch (err: any) {
+        pi.events.emit(`${channel}:reply:${params.requestId}`, {
+          success: false, error: err?.message ?? String(err),
+        });
+      }
+    });
+  }
+
+  // Ping — returns protocol version
+  handleRpc("subagents:rpc:ping", () => {
+    return { version: RPC_PROTOCOL_VERSION };
+  });
+
+  // Spawn — create an async agent from pi-tasks' TaskExecute
+  handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(
+    "subagents:rpc:spawn", ({ type, prompt, options }) => {
+      const ctx = asyncState.lastCtx;
+      if (!ctx) throw new Error("No active session");
+      if (!type || typeof type !== "string") throw new Error("Missing or invalid 'type' parameter");
+      if (!prompt || typeof prompt !== "string") throw new Error("Missing or invalid 'prompt' parameter");
+
+      const cwd = options?.cwd || ctx.cwd;
+      const discovery = discoverAgents(cwd, "both");
+      const agents = discovery.agents;
+
+      // Find agent by type (case-insensitive, fall back to "worker")
+      const agentName = agents.find(a => a.name.toLowerCase() === type.toLowerCase())?.name
+        || agents.find(a => a.name === "worker")?.name
+        || type;
+
+      const result = spawnAsyncAgent(agentName, prompt, cwd, agents, {
+        name: options?.description || agentName,
+        taskId: "-1",  // pi-tasks manages its own task linkage via agentTaskMap
+        fireAndForget: false,
+      });
+
+      if (result.error) throw new Error(result.error);
+      return { id: result.id };
+    },
+  );
+
+  // Stop — kill a running async agent
+  handleRpc<{ requestId: string; agentId: string }>(
+    "subagents:rpc:stop", ({ agentId }) => {
+      const { killed, errors } = killAsyncAgent(agentId);
+      if (killed.length === 0) throw new Error(errors[0] || "Agent not found");
+    },
+  );
+
+  // Emit subagents:ready so pi-tasks can discover us
+  pi.on("session_start", () => {
+    pi.events.emit("subagents:ready", {});
   });
 
   return {

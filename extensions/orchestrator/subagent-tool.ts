@@ -47,6 +47,7 @@ import {
   decideAsyncLlmDispatch,
   supportsAsyncLlm,
 } from "./async-capability.js";
+import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
@@ -768,6 +769,7 @@ export function registerSubagentTool(
     parentModelId: string | undefined,
     parentProvider: string | undefined,
     asyncOk: boolean,
+    sessionId?: string,
   ) {
     const results: SingleResult[] = [];
     let prev = "";
@@ -829,6 +831,11 @@ export function registerSubagentTool(
       activeAgents.clear();
       activeAgents.add(s.agent);
       updateWorking();
+      // Auto-mark linked task as in_progress (same as async path)
+      const chainTaskId = s.taskId as string | undefined;
+      if (chainTaskId && chainTaskId !== "-1") {
+        await autoMarkInProgress(chainTaskId, s.cwd, sessionId).catch(() => {});
+      }
       const r = await runSingleAgent(
         agents,
         s.agent,
@@ -861,6 +868,10 @@ export function registerSubagentTool(
           isError: true,
         };
       }
+      // Auto-complete linked task on success (same as async path)
+      if (chainTaskId && chainTaskId !== "-1") {
+        await autoCompleteTask(chainTaskId, s.cwd, sessionId).catch(() => {});
+      }
       prev = getFinalOutput(r.messages);
     }
     return {
@@ -887,6 +898,7 @@ export function registerSubagentTool(
     parentModelId: string | undefined,
     parentProvider: string | undefined,
     asyncOk: boolean,
+    sessionId?: string,
   ) {
     if (params.tasks.length > MAX_PARALLEL_TASKS)
       return {
@@ -971,6 +983,13 @@ export function registerSubagentTool(
         };
       }
     }
+    // Auto-mark linked tasks as in_progress
+    for (const t of params.tasks) {
+      const tid = (t as any).taskId as string | undefined;
+      if (tid && tid !== "-1") {
+        await autoMarkInProgress(tid, t.cwd, sessionId).catch(() => {});
+      }
+    }
     const results = await mapWithConcurrency(
       params.tasks,
       MAX_CONCURRENCY,
@@ -1000,6 +1019,17 @@ export function registerSubagentTool(
         activeAgents.delete(t.name || t.agent);
         updateWorking();
         emitAll();
+        // Auto-complete linked task on success (same as async path)
+        const tid = t.taskId as string | undefined;
+        if (
+          tid &&
+          tid !== "-1" &&
+          r.exitCode === 0 &&
+          r.stopReason !== "error" &&
+          r.stopReason !== "aborted"
+        ) {
+          await autoCompleteTask(tid, t.cwd, sessionId).catch(() => {});
+        }
         return r;
       },
     );
@@ -1031,6 +1061,7 @@ export function registerSubagentTool(
     parentModelId: string | undefined,
     parentProvider: string | undefined,
     asyncOk: boolean,
+    sessionId?: string,
   ) {
     if (!params.cwd) {
       return {
@@ -1068,6 +1099,11 @@ export function registerSubagentTool(
     const label = params.name || params.agent;
     activeAgents.add(label);
     updateWorking();
+    // Auto-mark linked task as in_progress (same as async path)
+    const syncTaskId = params.taskId as string | undefined;
+    if (syncTaskId && syncTaskId !== "-1") {
+      await autoMarkInProgress(syncTaskId, params.cwd, sessionId).catch(() => {});
+    }
     const r = await runSingleAgent(
       agents,
       params.agent,
@@ -1098,6 +1134,10 @@ export function registerSubagentTool(
         details: mkd("single")([r]),
         isError: true,
       };
+    // Auto-complete linked task on success (same as async path)
+    if (syncTaskId && syncTaskId !== "-1") {
+      await autoCompleteTask(syncTaskId, params.cwd, sessionId).catch(() => {});
+    }
     return {
       content: [
         { type: "text" as const, text: getFinalOutput(r.messages) || "(no output)" },
@@ -1555,24 +1595,26 @@ export function registerSubagentTool(
         return result;
       };
 
+      const sessionId = ctx.sessionManager?.getSessionId?.();
+
       // Chain mode
       if (params.chain && params.chain.length > 0) {
         return withCapabilityNote(
-          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
+          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId),
         );
       }
 
       // Parallel mode
       if (params.tasks && params.tasks.length > 0) {
         return withCapabilityNote(
-          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
+          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId),
         );
       }
 
       // Single mode
       if (params.agent && params.task) {
         return withCapabilityNote(
-          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk),
+          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId),
         );
       }
 
