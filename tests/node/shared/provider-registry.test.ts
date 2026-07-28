@@ -38,7 +38,14 @@ describe("ProviderDriverRegistry", () => {
   it("returns live snapshot", async () => { registry.registerDriver(createMockDriver("test")); await registry.reconcile({ inst: { driver: "test" } }, "/tmp"); assert.equal((registry.getSnapshot("inst") as any).available, true); });
   it("returns unavailable snapshot", async () => { registry.registerDriver(createMockDriver("bad", { probeAvailable: false })); await registry.reconcile({ inst: { driver: "bad" } }, "/tmp"); assert.equal((registry.getSnapshot("inst") as any).available, false); });
   it("returns undefined for unknown id", () => { assert.equal(registry.getSnapshot("nope"), undefined); });
-  it("teardownInstance disposes a created instance", async () => {
+  it("teardownInstance removes instance from registry", async () => {
+    registry.registerDriver(createMockDriver("test"));
+    await registry.createInstance("i-remove", { driver: "test", enabled: true }, "/tmp");
+    assert.ok(registry.getInstance("i-remove"));
+    await registry.teardownInstance("i-remove");
+    assert.equal(registry.getInstance("i-remove"), undefined);
+  });
+  it("teardownInstance calls dispose on the instance", async () => {
     let disposed = false;
     const d = createMockDriver("test");
     const origCreate = d.create;
@@ -48,11 +55,9 @@ describe("ProviderDriverRegistry", () => {
       return inst;
     };
     registry.registerDriver(d);
-    const instance = await registry.createInstance("i1", { driver: "test", enabled: true }, "/tmp");
-    assert.ok(registry.getInstance("i1"));
-    await registry.teardownInstance("i1");
-    assert.equal(registry.getInstance("i1"), undefined, "instance removed from registry");
-    assert.equal(disposed, true, "dispose was called");
+    await registry.createInstance("i-dispose", { driver: "test", enabled: true }, "/tmp");
+    await registry.teardownInstance("i-dispose");
+    assert.equal(disposed, true);
   });
   it("reconcile notifies when unavailable entries are removed", async () => {
     let notified = false;
