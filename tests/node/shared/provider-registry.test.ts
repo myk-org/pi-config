@@ -38,4 +38,25 @@ describe("ProviderDriverRegistry", () => {
   it("returns live snapshot", async () => { registry.registerDriver(createMockDriver("test")); await registry.reconcile({ inst: { driver: "test" } }, "/tmp"); assert.equal((registry.getSnapshot("inst") as any).available, true); });
   it("returns unavailable snapshot", async () => { registry.registerDriver(createMockDriver("bad", { probeAvailable: false })); await registry.reconcile({ inst: { driver: "bad" } }, "/tmp"); assert.equal((registry.getSnapshot("inst") as any).available, false); });
   it("returns undefined for unknown id", () => { assert.equal(registry.getSnapshot("nope"), undefined); });
+  it("teardownInstance disposes a created instance", async () => {
+    const d = createMockDriver("test");
+    registry.registerDriver(d);
+    const instance = await registry.createInstance("i1", { driver: "test", enabled: true }, "/tmp");
+    assert.ok(instance);
+    assert.ok(registry.getInstance("i1"));
+    await registry.teardownInstance("i1");
+    assert.equal(registry.getInstance("i1"), undefined);
+  });
+  it("reconcile notifies when unavailable entries are removed", async () => {
+    let notified = false;
+    registry.onChange(() => { notified = true; });
+    // Create an instance with unknown driver → goes to unavailable
+    await registry.reconcile({ bad: { driver: "nope", enabled: true } }, "/tmp");
+    assert.ok(registry.listUnavailable().length > 0);
+    notified = false;
+    // Reconcile with empty config → removes unavailable
+    await registry.reconcile({}, "/tmp");
+    assert.equal(registry.listUnavailable().length, 0);
+    assert.equal(notified, true, "onChange should fire when unavailable entries are removed");
+  });
 });
