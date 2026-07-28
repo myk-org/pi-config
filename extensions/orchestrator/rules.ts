@@ -38,6 +38,7 @@ let lastInjectedMemories: { text: string; category: string; similarity: number }
 // Don't re-fire for the same user message (prevents loops from followUp turns).
 let lastTaskFocusUserMsgId: string | null = null;
 let taskFocusPending = false;
+let taskFocusPendingMsgId: string | null = null;
 
 /** Log what memories were auto-injected for retrieval telemetry */
 function logMemoryInjection(
@@ -94,6 +95,8 @@ export function registerRules(
   pi.on("session_start", async (_event, ctx) => {
     rebuildDone = false;
     lastTaskFocusUserMsgId = null;
+    taskFocusPending = false;
+    taskFocusPendingMsgId = null;
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
@@ -289,25 +292,35 @@ export function registerRules(
         const taskCandidates: string[] = [];
         if (sessionId) taskCandidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
         taskCandidates.push(path.join(tasksDir, "tasks.json"));
+        // Accumulate active tasks across ALL stores (dedupe by id) so fallback
+        // tasks.json is checked even when the session-scoped file exists but
+        // contains no active tasks.
+        const seenIds = new Set<string>();
+        const allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
         for (const taskFile of taskCandidates) {
           try {
             if (!fs.existsSync(taskFile)) continue;
             const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
             const tasks = data.tasks || [];
-            const activeTasks = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
-            if (activeTasks.length > 0) {
-              const summary = activeTasks
-                .slice(0, 3)
-                .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
-                .join(", ");
-              pi.sendMessage({
-                customType: "task-focus-enforcement",
-                content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
-                display: true,
-              }, { triggerTurn: false, deliverAs: "nextTurn" });
+            for (const t of tasks) {
+              if ((t.status === "in_progress" || t.status === "pending") && !seenIds.has(String(t.id))) {
+                seenIds.add(String(t.id));
+                allActiveTasks.push(t);
+              }
             }
-            break;
           } catch { continue; }
+        }
+        if (allActiveTasks.length > 0) {
+          const summary = allActiveTasks
+            .slice(0, 3)
+            .map((t) => `#${t.id} [${t.status}] ${t.subject}`)
+            .join(", ");
+          pi.sendMessage({
+            customType: "task-focus-enforcement",
+            content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${allActiveTasks.length > 3 ? ` (+${allActiveTasks.length - 3} more)` : ""}`,
+            display: true,
+          }, { triggerTurn: false, deliverAs: "nextTurn" });
+          lastTaskFocusUserMsgId = taskFocusPendingMsgId;
         }
       } catch (e: any) { console.debug("[rules] task-focus reminder failed:", e?.message?.slice(0, 100)); }
     }
@@ -377,7 +390,7 @@ export function registerRules(
 
       if (!hadToolCalls && userTriggered) {
         taskFocusPending = true;
-        lastTaskFocusUserMsgId = triggeringMsgId;
+        taskFocusPendingMsgId = triggeringMsgId;
       }
     } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
 

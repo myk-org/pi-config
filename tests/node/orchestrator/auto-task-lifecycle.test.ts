@@ -1,0 +1,174 @@
+/**
+ * Tests for autoCompleteTask() and autoMarkInProgress() task lifecycle helpers.
+ * Run with: npx tsx --test tests/node/orchestrator/auto-task-lifecycle.test.ts
+ */
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  autoCompleteTask,
+  autoMarkInProgress,
+} from "../../../extensions/orchestrator/task-lifecycle.js";
+
+function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string; status: string; subject: string }>): string {
+  const tasksDir = join(dir, ".pi", "tasks");
+  mkdirSync(tasksDir, { recursive: true });
+  const filePath = join(tasksDir, fileName);
+  writeFileSync(filePath, JSON.stringify({ tasks }));
+  return filePath;
+}
+
+function readTaskStore(filePath: string): Array<{ id: string; status: string; subject: string }> {
+  return JSON.parse(readFileSync(filePath, "utf-8")).tasks;
+}
+
+describe("autoCompleteTask", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "auto-complete-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("completes a pending task in tasks.json", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "pending", subject: "Test task" },
+    ]);
+    const result = await autoCompleteTask("1", tmp);
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "completed");
+  });
+
+  it("completes an in_progress task", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "in_progress", subject: "Test task" },
+    ]);
+    const result = await autoCompleteTask("1", tmp);
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "completed");
+  });
+
+  it("skips already completed task", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "completed", subject: "Test task" },
+    ]);
+    const result = await autoCompleteTask("1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("returns false for non-existent task", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "pending", subject: "Test task" },
+    ]);
+    const result = await autoCompleteTask("99", tmp);
+    assert.equal(result, false);
+  });
+
+  it("returns false for empty taskId", async () => {
+    const result = await autoCompleteTask("", tmp);
+    assert.equal(result, false);
+  });
+
+  it("returns false for taskId '-1'", async () => {
+    const result = await autoCompleteTask("-1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("finds task in session-scoped store when sessionId provided", async () => {
+    const storePath = writeTaskStore(tmp, "tasks-sess1.json", [
+      { id: "1", status: "pending", subject: "Session task" },
+    ]);
+    const result = await autoCompleteTask("1", tmp, "sess1");
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "completed");
+  });
+
+  it("falls back to tasks.json when session store does not have the task", async () => {
+    writeTaskStore(tmp, "tasks-sess1.json", [
+      { id: "2", status: "pending", subject: "Other task" },
+    ]);
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "pending", subject: "Fallback task" },
+    ]);
+    const result = await autoCompleteTask("1", tmp, "sess1");
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "completed");
+  });
+
+  it("returns false when no store files exist", async () => {
+    const result = await autoCompleteTask("1", tmp);
+    assert.equal(result, false);
+  });
+});
+
+describe("autoMarkInProgress", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "auto-mark-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("marks a pending task as in_progress", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "pending", subject: "Test task" },
+    ]);
+    const result = await autoMarkInProgress("1", tmp);
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "in_progress");
+  });
+
+  it("does not mark already in_progress task", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "in_progress", subject: "Test task" },
+    ]);
+    const result = await autoMarkInProgress("1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("does not mark completed task", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "completed", subject: "Test task" },
+    ]);
+    const result = await autoMarkInProgress("1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("returns false for empty taskId", async () => {
+    const result = await autoMarkInProgress("", tmp);
+    assert.equal(result, false);
+  });
+
+  it("returns false for taskId '-1'", async () => {
+    const result = await autoMarkInProgress("-1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("finds task in session-scoped store", async () => {
+    const storePath = writeTaskStore(tmp, "tasks-sess2.json", [
+      { id: "1", status: "pending", subject: "Session task" },
+    ]);
+    const result = await autoMarkInProgress("1", tmp, "sess2");
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "in_progress");
+  });
+
+  it("returns false when no store files exist", async () => {
+    const result = await autoMarkInProgress("1", tmp);
+    assert.equal(result, false);
+  });
+});
