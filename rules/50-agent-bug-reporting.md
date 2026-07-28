@@ -18,6 +18,9 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 - code-reviewer-quality
 - code-reviewer-security
 - code-reviewer-spec
+- issue-reviewer-spec
+- issue-reviewer-feasibility
+- issue-reviewer-scope
 - debugger
 - docs-fetcher
 - docker-expert

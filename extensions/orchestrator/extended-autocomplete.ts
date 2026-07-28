@@ -83,11 +83,13 @@ type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
 interface AutocompleteContext {
   prCache: Cache<AutocompleteItem[]>;
   prUrlMap: Map<string, string>;
+  issueCache: Cache<AutocompleteItem[]>;
   branchCache: Cache<AutocompleteItem[]>;
   tagCache: Cache<AutocompleteItem[]>;
   modelCaches: Map<string, Cache<AutocompleteItem[]>>;
   lastCwd: string;
   fetchOpenPRs(cwd: string): Promise<void>;
+  fetchOpenIssues(cwd: string): Promise<void>;
   fetchBranches(cwd: string): Promise<void>;
   fetchModels(provider: string, cwd: string): Promise<void>;
   fetchTags(cwd: string): Promise<void>;
@@ -168,6 +170,11 @@ function registerCompletions(
       if (!ctx.prCache.data) return null;
       const filtered = filter(ctx.prCache.data, prefix.replace(/^#/, ""));
       return filtered ? filtered.map((item) => ({ ...item, value: ctx.prUrlMap.get(item.value) || item.value })) : null;
+    },
+
+    "issue-review": (prefix: string) => {
+      void ctx.fetchOpenIssues(ctx.lastCwd);
+      return ctx.issueCache.data ? filter(ctx.issueCache.data, prefix.replace(/^#/, "")) : null;
     },
 
     "coderabbit-rate-limit": (prefix: string) => {
@@ -339,7 +346,7 @@ function setupPromptTemplateInterceptor(
 
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
-    "external-ai", "pr-review", "coderabbit-rate-limit",
+    "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "cron", "create-skill", "create-coms-feature-manager",
   ]);
 
@@ -440,6 +447,7 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   const ctx = {} as AutocompleteContext;
   ctx.prCache = createCache<AutocompleteItem[]>();
   ctx.prUrlMap = new Map<string, string>();
+  ctx.issueCache = createCache<AutocompleteItem[]>();
   ctx.branchCache = createCache<AutocompleteItem[]>();
   ctx.tagCache = createCache<AutocompleteItem[]>();
   ctx.modelCaches = new Map<string, Cache<AutocompleteItem[]>>();
@@ -468,6 +476,27 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
       }
     } catch (e: any) { console.debug("[autocomplete] PR fetch failed:", e?.message || e); }
     ctx.prCache.loading = false;
+  };
+
+  ctx.fetchOpenIssues = async (cwd: string) => {
+    if (isFresh(ctx.issueCache) || ctx.issueCache.loading) return;
+    ctx.issueCache.loading = true;
+    try {
+      const result = await pi.exec(
+        "gh", ["issue", "list", "--state", "open", "--limit", "50", "--json", "number,title"],
+        { cwd, timeout: 10_000 },
+      );
+      if (result.code === 0) {
+        const issues = JSON.parse(result.stdout) as Array<{ number: number; title: string }>;
+        ctx.issueCache.data = issues.map((issue) => ({
+          value: String(issue.number),
+          label: `#${issue.number}`,
+          description: issue.title,
+        }));
+        ctx.issueCache.timestamp = Date.now();
+      }
+    } catch (e: any) { console.debug("[autocomplete] issue fetch failed:", e?.message || e); }
+    ctx.issueCache.loading = false;
   };
 
   ctx.fetchBranches = async (cwd: string) => {
