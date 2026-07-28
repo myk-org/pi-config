@@ -244,7 +244,7 @@ export function parseCursorStreamJson(stdout: string): CliParseResult {
  * - Claude: result.usage.{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens} + result.total_cost_usd
  * - Gemini: result.stats.{input_tokens, output_tokens, total_tokens, cached}
  */
-function extractCliUsage(ev: any): CliUsage | undefined {
+export function extractCliUsage(ev: any): CliUsage | undefined {
   if (!ev || typeof ev !== "object") return undefined;
 
   // Cursor format: result.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}

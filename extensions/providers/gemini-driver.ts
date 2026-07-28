@@ -76,17 +76,33 @@ function createGeminiAdapter(
   config: GeminiCliConfig,
   cwd: string,
   instanceId: string,
-): ProviderAdapterShape {
-  const piSessionId = createProvisionalPiSessionId();
+): ProviderAdapterShape & {
+  bindPiSessionId: (sid: string) => void;
+  handleSessionStart: (reason: string, sid: string | null) => void;
+} {
+  let piSessionId = createProvisionalPiSessionId();
   const systemPromptSent = new Set<string>();
+  const storedSystemPrompts = new Map<string, string>();
 
   function sessionKeyFor(model: string): CliSessionKey {
     return { cwd, agent: "gemini", model, piSessionId };
   }
 
   return {
+    bindPiSessionId: (sid: string) => {
+      if (sid) piSessionId = sid;
+    },
+
+    handleSessionStart: (reason: string, _sid: string | null) => {
+      if (reason === "new" || reason === "resume") {
+        systemPromptSent.clear();
+        storedSystemPrompts.clear();
+      }
+    },
+
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
+      if (opts.systemPrompt) storedSystemPrompts.set(model, opts.systemPrompt);
       const key = sessionKeyFor(model);
       const existingId = loadCliSessionId(key);
       return {
@@ -107,7 +123,9 @@ function createGeminiAdapter(
 
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
-        systemPrompt = buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
+        systemPrompt =
+          storedSystemPrompts.get(handleKey) ||
+          buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
       }
 
       let finalPrompt = prompt;
@@ -136,6 +154,7 @@ function createGeminiAdapter(
           prompt: p,
           sessionId: sid,
           signal: opts?.signal,
+          binary: config.binary,
           onEvent,
         });
 
@@ -185,11 +204,14 @@ function createGeminiAdapter(
     stopSession: async (handle: SessionHandle): Promise<void> => {
       const key = sessionKeyFor(handle.model);
       clearCliSessionId(key);
-      systemPromptSent.delete(handle.model || "default");
+      const handleKey = handle.model || "default";
+      systemPromptSent.delete(handleKey);
+      storedSystemPrompts.delete(handleKey);
     },
 
     stopAll: async (): Promise<void> => {
       systemPromptSent.clear();
+      storedSystemPrompts.clear();
     },
 
     hasSession: (_sessionId: string): boolean => {

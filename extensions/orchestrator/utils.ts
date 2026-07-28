@@ -125,7 +125,7 @@ export function getProjectTmpDir(cwd: string): string {
 /** Get project-scoped data dir under <cwd>/.pi/data/ */
 export function getProjectDataDir(cwd: string): string {
   const dir = path.join(cwd, ".pi", "data");
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 

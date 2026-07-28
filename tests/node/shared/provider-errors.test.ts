@@ -29,11 +29,19 @@ describe("provider-errors", () => {
   it("ProviderInstanceNotFoundError has correct tag", () => {
     assert.equal(new ProviderInstanceNotFoundError({ instanceId: "cli-cursor" }).tag, "ProviderInstanceNotFoundError");
   });
-  it("adapter errors have correct tags", () => {
+  it("ProviderAdapterValidationError has correct tag", () => {
     assert.equal(new ProviderAdapterValidationError({ provider: "p", operation: "o", issue: "i" }).tag, "ProviderAdapterValidationError");
+  });
+  it("ProviderAdapterSessionNotFoundError has correct tag", () => {
     assert.equal(new ProviderAdapterSessionNotFoundError({ provider: "p", sessionId: "s" }).tag, "ProviderAdapterSessionNotFoundError");
+  });
+  it("ProviderAdapterSessionClosedError has correct tag", () => {
     assert.equal(new ProviderAdapterSessionClosedError({ provider: "p", sessionId: "s" }).tag, "ProviderAdapterSessionClosedError");
+  });
+  it("ProviderAdapterRequestError has correct tag", () => {
     assert.equal(new ProviderAdapterRequestError({ provider: "p", method: "m", detail: "d" }).tag, "ProviderAdapterRequestError");
+  });
+  it("ProviderAdapterProcessError has correct tag", () => {
     assert.equal(new ProviderAdapterProcessError({ provider: "p", sessionId: "s", detail: "d" }).tag, "ProviderAdapterProcessError");
   });
   it("all 9 error types have unique tags", () => {

@@ -161,7 +161,8 @@ export class StreamAssembler {
     }
 
     this.output.stopReason = opts?.stopReason || "stop";
-    this.stream.push({ type: "done", reason: "stop", message: this.output });
+    const reason = (this.output.stopReason === "aborted" ? "aborted" : "stop") as "stop" | "aborted";
+    this.stream.push({ type: "done", reason, message: this.output });
     this.stream.end();
   }
 

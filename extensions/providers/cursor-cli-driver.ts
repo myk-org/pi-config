@@ -80,6 +80,70 @@ const cursorCliConfigSchema: ConfigSchema<CursorCliConfig> = {
 };
 
 // ---------------------------------------------------------------------------
+// History seeding (from original cli-provider)
+// ---------------------------------------------------------------------------
+
+function messageText(msg: { role: string; content: unknown }): string {
+  if (typeof msg.content === "string") return msg.content;
+  if (!Array.isArray(msg.content)) return "";
+  const textParts: string[] = [];
+  for (const block of msg.content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      "text" in block &&
+      typeof (block as { text: unknown }).text === "string"
+    ) {
+      textParts.push((block as { text: string }).text);
+    }
+  }
+  return textParts.join("\n");
+}
+
+/**
+ * When starting a NEW CLI session (no --resume), inject prior pi turns so
+ * switching mid-session does not drop conversation history.
+ */
+function buildPromptWithHistory(
+  messages: Array<{ role: string; content: unknown }>,
+  latest: string,
+  hasCliSession: boolean,
+): string {
+  if (hasCliSession) return latest;
+
+  const prior: string[] = [];
+  let lastUser = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUser = i;
+      break;
+    }
+  }
+  for (let i = 0; i < lastUser; i++) {
+    const msg = messages[i];
+    if (msg.role !== "user" && msg.role !== "assistant") continue;
+    const text = messageText(msg).trim();
+    if (!text) continue;
+    const clipped =
+      text.length > 4000 ? `${text.slice(0, 4000)}\n…[truncated]` : text;
+    prior.push(`${msg.role === "user" ? "User" : "Assistant"}: ${clipped}`);
+  }
+
+  if (prior.length === 0) return latest;
+
+  return [
+    "Prior conversation in this pi session (for context — continue from here):",
+    "",
+    ...prior,
+    "",
+    "---",
+    "",
+    "Current user message:",
+    latest,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
 
@@ -99,6 +163,7 @@ function createCursorCliAdapter(
   const provisionalPiSessionId = createProvisionalPiSessionId();
   let forceHistorySeed = false;
   const systemPromptSent = new Set<string>();
+  const storedSystemPrompts = new Map<string, string>();
   const sessionKeys = new Map<string, CliSessionKey>();
 
   function resolvedPiSessionId(): string {
@@ -165,6 +230,7 @@ function createCursorCliAdapter(
             `session_start marker cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
         systemPromptSent.clear();
+        storedSystemPrompts.clear();
       }
     },
 
@@ -174,6 +240,7 @@ function createCursorCliAdapter(
 
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
+      if (opts.systemPrompt) storedSystemPrompts.set(model, opts.systemPrompt);
       const key = sessionKeyFor(model);
       sessionKeys.set(model, key);
       const existingId = loadCliSessionId(key);
@@ -202,10 +269,12 @@ function createCursorCliAdapter(
 
       const needsSystemPrompt = !systemPromptSent.has(handleKey) || forceHistorySeed;
 
-      // Build system prompt
+      // Prefer the system prompt stored at startSession over rebuilding
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
-        systemPrompt = buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
+        systemPrompt =
+          storedSystemPrompts.get(handleKey) ||
+          buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
       }
 
       // Resolve history seed plan
@@ -219,10 +288,12 @@ function createCursorCliAdapter(
       }
       const effectiveSessionId = seedPlan.useCliSession ? sessionId : null;
 
-      // Apply system prompt
-      let finalPrompt = prompt;
+      // Seed prior pi turns when opening a fresh CLI session
+      let finalPrompt = seedPlan.seedHistory && opts?.context?.messages
+        ? buildPromptWithHistory(opts.context.messages, prompt, false)
+        : prompt;
       if (needsSystemPrompt && systemPrompt) {
-        finalPrompt = applySystemPromptToCliPrompt(prompt, systemPrompt);
+        finalPrompt = applySystemPromptToCliPrompt(finalPrompt, systemPrompt);
       }
 
       // Build event handler
@@ -247,6 +318,7 @@ function createCursorCliAdapter(
           prompt: p,
           sessionId: sid,
           signal: opts?.signal,
+          binary: config.binary,
           onEvent,
         });
 
@@ -279,9 +351,13 @@ function createCursorCliAdapter(
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
             `resume failed, clearing session and retrying: ${message.slice(0, 200)}`);
           clearCliSessionId(key);
-          const retryPrompt = systemPrompt
-            ? applySystemPromptToCliPrompt(prompt, systemPrompt)
+          // Fresh CLI session after failed --resume — re-seed history
+          let retryPrompt = opts?.context?.messages
+            ? buildPromptWithHistory(opts.context.messages, prompt, false)
             : prompt;
+          if (systemPrompt) {
+            retryPrompt = applySystemPromptToCliPrompt(retryPrompt, systemPrompt);
+          }
           const result = await runOnce(null, retryPrompt);
           if (result.sessionId) {
             saveCliSessionId(key, result.sessionId);
@@ -307,13 +383,16 @@ function createCursorCliAdapter(
     stopSession: async (handle: SessionHandle): Promise<void> => {
       const key = sessionKeyFor(handle.model);
       clearCliSessionId(key);
-      sessionKeys.delete(handle.model || "default");
-      systemPromptSent.delete(handle.model || "default");
+      const handleKey = handle.model || "default";
+      sessionKeys.delete(handleKey);
+      systemPromptSent.delete(handleKey);
+      storedSystemPrompts.delete(handleKey);
     },
 
     stopAll: async (): Promise<void> => {
       sessionKeys.clear();
       systemPromptSent.clear();
+      storedSystemPrompts.clear();
     },
 
     hasSession: (_sessionId: string): boolean => {

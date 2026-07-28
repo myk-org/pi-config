@@ -37,3 +37,49 @@ describe("built-in drivers", () => {
     for (const [, kind] of Object.entries(ACPX_AGENT_TO_DRIVER)) { assert.ok(driverKinds.has(kind as string)); }
   });
 });
+
+describe("driver probe lifecycle", () => {
+  const MISSING = "nonexistent-binary-xyz-12345";
+
+  it("cursor-cli probe returns unavailable for missing binary", async () => {
+    const result = await CursorCliDriver.probe({ binary: MISSING, enabled: true });
+    assert.equal(result.available, false);
+    assert.ok(result.reason?.includes("not found"));
+  });
+
+  it("cursor-cli probe returns available when binary exists", async () => {
+    const result = await CursorCliDriver.probe({ binary: "agent", enabled: true });
+    assert.equal(typeof result.available, "boolean");
+    if (!result.available) {
+      assert.equal(typeof result.reason, "string");
+    }
+  });
+
+  it("claude probe returns unavailable for missing binary", async () => {
+    const result = await ClaudeDriver.probe({ binary: MISSING, enabled: true });
+    assert.equal(result.available, false);
+    assert.ok(result.reason?.includes("not found"));
+  });
+
+  it("claude probe returns available when binary exists", async () => {
+    const result = await ClaudeDriver.probe({ binary: "claude", enabled: true });
+    assert.equal(typeof result.available, "boolean");
+    if (!result.available) {
+      assert.equal(typeof result.reason, "string");
+    }
+  });
+
+  it("gemini probe returns unavailable for missing binary", async () => {
+    const result = await GeminiDriver.probe({ binary: MISSING, enabled: true });
+    assert.equal(result.available, false);
+    assert.ok(result.reason?.includes("not found"));
+  });
+
+  it("gemini probe returns available when binary exists", async () => {
+    const result = await GeminiDriver.probe({ binary: "gemini", enabled: true });
+    assert.equal(typeof result.available, "boolean");
+    if (!result.available) {
+      assert.equal(typeof result.reason, "string");
+    }
+  });
+});

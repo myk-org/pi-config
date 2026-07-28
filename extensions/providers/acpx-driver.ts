@@ -80,6 +80,7 @@ function createAcpxAdapter(
   initialHandle?: AcpRuntimeHandle,
 ): ProviderAdapterShape {
   const handles = new Map<string, AcpRuntimeHandle>();
+  const prevCumulative = new Map<string, { inputTokens?: number; outputTokens?: number; totalTokens?: number }>();
   // Seed with the discovery handle so the first turn reuses it
   if (initialHandle) {
     handles.set("default", initialHandle);
@@ -257,15 +258,24 @@ function createAcpxAdapter(
           const su = status.usage;
           if (su?.cumulative) {
             const c = su.cumulative;
-            usage = {
-              inputTokens: c.inputTokens ?? undefined,
-              outputTokens: c.outputTokens ?? undefined,
-              cachedReadTokens: c.cachedReadTokens ?? undefined,
-              cachedWriteTokens: c.cachedWriteTokens ?? undefined,
-              thoughtTokens: c.thoughtTokens ?? undefined,
-              totalTokens: c.totalTokens ?? undefined,
-              costUsd: su.cost?.total ?? su.cost?.usd ?? undefined,
-            };
+            const key = handle.model || "default";
+            const prev = prevCumulative.get(key) || { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+            const deltaInput = (c.inputTokens ?? 0) - (prev.inputTokens ?? 0);
+            const deltaOutput = (c.outputTokens ?? 0) - (prev.outputTokens ?? 0);
+            const deltaTotal = (c.totalTokens ?? 0) - (prev.totalTokens ?? 0);
+            prevCumulative.set(key, {
+              inputTokens: c.inputTokens ?? 0,
+              outputTokens: c.outputTokens ?? 0,
+              totalTokens: c.totalTokens ?? 0,
+            });
+            if (deltaInput > 0 || deltaOutput > 0 || deltaTotal > 0) {
+              usage = {
+                inputTokens: deltaInput > 0 ? deltaInput : undefined,
+                outputTokens: deltaOutput > 0 ? deltaOutput : undefined,
+                totalTokens: deltaTotal > 0 ? deltaTotal : undefined,
+                costUsd: su.cost?.total ?? su.cost?.usd ?? undefined,
+              };
+            }
           }
         } catch {
           // Usage is best-effort — don't fail the turn

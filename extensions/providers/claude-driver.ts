@@ -80,17 +80,33 @@ function createClaudeAdapter(
   config: ClaudeCliConfig,
   cwd: string,
   instanceId: string,
-): ProviderAdapterShape {
-  const piSessionId = createProvisionalPiSessionId();
+): ProviderAdapterShape & {
+  bindPiSessionId: (sid: string) => void;
+  handleSessionStart: (reason: string, sid: string | null) => void;
+} {
+  let piSessionId = createProvisionalPiSessionId();
   const systemPromptSent = new Set<string>();
+  const storedSystemPrompts = new Map<string, string>();
 
   function sessionKeyFor(model: string): CliSessionKey {
     return { cwd, agent: "claude", model, piSessionId };
   }
 
   return {
+    bindPiSessionId: (sid: string) => {
+      if (sid) piSessionId = sid;
+    },
+
+    handleSessionStart: (reason: string, _sid: string | null) => {
+      if (reason === "new" || reason === "resume") {
+        systemPromptSent.clear();
+        storedSystemPrompts.clear();
+      }
+    },
+
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
+      if (opts.systemPrompt) storedSystemPrompts.set(model, opts.systemPrompt);
       const key = sessionKeyFor(model);
       const existingId = loadCliSessionId(key);
       return {
@@ -109,10 +125,12 @@ function createClaudeAdapter(
       const handleKey = handle.model || "default";
       const needsSystemPrompt = !systemPromptSent.has(handleKey);
 
-      // Build system prompt
+      // Prefer the system prompt stored at startSession over rebuilding
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
-        systemPrompt = buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
+        systemPrompt =
+          storedSystemPrompts.get(handleKey) ||
+          buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
       }
 
       // Apply system prompt to the prompt text
@@ -143,6 +161,7 @@ function createClaudeAdapter(
           prompt: p,
           sessionId: sid,
           signal: opts?.signal,
+          binary: config.binary,
           onEvent,
         });
 
@@ -198,14 +217,17 @@ function createClaudeAdapter(
     stopSession: async (handle: SessionHandle): Promise<void> => {
       const key = sessionKeyFor(handle.model);
       clearCliSessionId(key);
-      systemPromptSent.delete(handle.model || "default");
+      const handleKey = handle.model || "default";
+      systemPromptSent.delete(handleKey);
+      storedSystemPrompts.delete(handleKey);
     },
 
     stopAll: async (): Promise<void> => {
       systemPromptSent.clear();
+      storedSystemPrompts.clear();
     },
 
-    hasSession: (sessionId: string): boolean => {
+    hasSession: (_sessionId: string): boolean => {
       // Check if any session key maps to this session id
       return false; // CLI sessions are stateless from adapter perspective
     },

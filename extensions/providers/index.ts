@@ -159,6 +159,7 @@ function makeStreamFunction(
         // Send turn with event bridging
         const result = await instance.adapter.sendTurn(handle, prompt, {
           signal: options?.signal,
+          context: { messages: context.messages },
           onEvent: (event) => assembler.handleEvent(event),
         });
 
@@ -405,7 +406,7 @@ export default async function (pi: ExtensionAPI) {
 
     const acpxResults = await Promise.allSettled(
       acpxAgentList.map(async (agent) => {
-        const driverKind = ACPX_AGENT_TO_DRIVER[agent] || `${agent}-acpx`;
+        const driverKind = ACPX_AGENT_TO_DRIVER[agent] || "acpx";
         // Only proceed if the driver is registered
         if (!registry.getDriver(driverKind)) {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,

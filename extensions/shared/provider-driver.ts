@@ -122,6 +122,8 @@ export interface SessionHandle {
 /** Options for sending a turn. */
 export interface TurnOptions {
   readonly signal?: AbortSignal;
+  /** Pi conversation context — used by drivers that seed history into fresh CLI sessions. */
+  readonly context?: { messages: Array<{ role: string; content: any }> };
   readonly onEvent?: (event: DriverStreamEvent) => void;
 }
 
