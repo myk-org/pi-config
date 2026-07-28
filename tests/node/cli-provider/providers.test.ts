@@ -101,6 +101,16 @@ describe("cli-provider providers", () => {
     });
     assert.equal(binary, "/opt/custom/claude");
   });
+
+  it("buildCliCommand uses custom binary override", () => {
+    const cmd = buildCliCommand({
+      agent: "cursor",
+      model: "default",
+      cwd: "/tmp",
+      binary: "/custom/path/to/agent",
+    });
+    assert.equal(cmd.binary, "/custom/path/to/agent");
+  });
 });
 
 describe("cli-provider discover", () => {

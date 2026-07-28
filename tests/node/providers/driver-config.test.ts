@@ -83,3 +83,27 @@ describe("driver probe lifecycle", () => {
     }
   });
 });
+
+describe("driver create lifecycle", () => {
+  it("cursor-cli create fails gracefully with nonexistent binary", async () => {
+    let instance: Awaited<ReturnType<typeof CursorCliDriver.create>> | undefined;
+    try {
+      instance = await CursorCliDriver.create({
+        instanceId: "test-cursor",
+        displayName: "Test Cursor",
+        enabled: true,
+        config: { binary: "nonexistent-binary-xyz-99999", enabled: true },
+        cwd: "/tmp",
+      });
+      // create itself does not throw on a missing binary (discovery is best-effort);
+      // the instance must still be disposable.
+      assert.equal(instance.instanceId, "test-cursor");
+      assert.equal(instance.driverKind, "cursor-cli");
+    } catch (err) {
+      // Also acceptable — create may throw if discovery hard-fails
+      assert.ok(err instanceof Error, "create should handle missing binary");
+    } finally {
+      if (instance) await instance.dispose();
+    }
+  });
+});

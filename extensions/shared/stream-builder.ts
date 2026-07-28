@@ -160,8 +160,10 @@ export class StreamAssembler {
       };
     }
 
-    this.output.stopReason = opts?.stopReason || "stop";
-    const reason = (this.output.stopReason === "aborted" ? "aborted" : "stop") as "stop" | "aborted";
+    // AssistantMessage.stopReason keeps the full driver value (length, toolUse, …).
+    // pi's done-event reason is only "stop" | "aborted" — map everything else to "stop".
+    const stopReason = this.output.stopReason = opts?.stopReason || "stop";
+    const reason = (stopReason === "aborted" ? "aborted" : "stop") as "stop" | "aborted";
     this.stream.push({ type: "done", reason, message: this.output });
     this.stream.end();
   }

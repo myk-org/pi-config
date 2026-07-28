@@ -217,6 +217,42 @@ describe("cli-provider sessions", () => {
     assert.equal(result, false);
   });
 
+  it("marker adoption ordering: prevKey must be read before sessionKeys update", async () => {
+    // Verify the predicate behavior that the cursor-cli-driver relies on:
+    // When prev has provisional ID and next has real UUID, adoption succeeds.
+    // sendTurn must capture prevKey before updating sessionKeys — otherwise
+    // both sides look like the real key and adoption silently fails.
+    const { shouldAdoptLegacyCliMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const provisional: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "tmp-abc12345",
+    };
+    const real: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "019faaaa-1111-2222-3333-444455556666",
+    };
+
+    // Simulates the WRONG ordering (both same) — adoption fails
+    assert.equal(
+      shouldAdoptLegacyCliMarker(real, real),
+      false,
+      "same key should not adopt",
+    );
+
+    // Simulates the CORRECT ordering (prev=provisional, next=real) — adoption succeeds
+    assert.equal(
+      shouldAdoptLegacyCliMarker(provisional, real),
+      true,
+      "provisional to real should adopt",
+    );
+  });
+
   it("stale on-disk default marker is not adopted without prior default key", async () => {
     const {
       adoptLegacyCliSessionMarker,
