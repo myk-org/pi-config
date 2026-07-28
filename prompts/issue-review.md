@@ -73,7 +73,7 @@ Resolve `OWNER_REPO`:
 Fetch issue metadata:
 
 ```bash
-gh issue view <number> --repo <OWNER_REPO> --json number,title,body,labels,assignees,state,comments,milestone,author --jq '.'
+gh issue view <ISSUE_NUMBER> --repo <OWNER_REPO> --json number,title,body,labels,assignees,state,comments,milestone,author --jq '.'
 ```
 
 Where `<OWNER_REPO>` is from `gh repo view --json owner,name` for auto-detected issues,
@@ -234,11 +234,15 @@ write ${PROJECT_TMP_DIR}/updated-issue-body.md with the new body content
 gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --body-file ${PROJECT_TMP_DIR}/updated-issue-body.md
 ```
 
-If the user also approved label/assignee changes, apply those:
+If the user also approved label/assignee changes, construct the `gh issue edit` command
+dynamically from the approved selections:
 
 ```bash
-gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --add-label "bug" --add-assignee "@me"
+gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> [--add-label "<label>" ...] [--add-assignee "<user>" ...]
 ```
+
+Build the flags from the user's approved findings — only add labels/assignees that were
+explicitly selected. Do not hardcode any specific labels or assignees.
 
 Mark Task 9 as `completed`.
 
