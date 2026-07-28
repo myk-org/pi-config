@@ -292,21 +292,19 @@ export function registerRules(
         const taskCandidates: string[] = [];
         if (sessionId) taskCandidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
         taskCandidates.push(path.join(tasksDir, "tasks.json"));
-        // Accumulate active tasks across ALL stores (dedupe by id) so fallback
-        // tasks.json is checked even when the session-scoped file exists but
-        // contains no active tasks.
-        const seenIds = new Set<string>();
-        const allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
+        // Session-first fallback: prefer session-scoped store, only fall back
+        // to tasks.json when the session store doesn't exist or has no active tasks.
+        // This matches the semantics used by readTaskSummary() and task lifecycle functions.
+        let allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
         for (const taskFile of taskCandidates) {
           try {
             if (!fs.existsSync(taskFile)) continue;
             const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
             const tasks = data.tasks || [];
-            for (const t of tasks) {
-              if ((t.status === "in_progress" || t.status === "pending") && !seenIds.has(String(t.id))) {
-                seenIds.add(String(t.id));
-                allActiveTasks.push(t);
-              }
+            const active = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
+            if (active.length > 0) {
+              allActiveTasks = active;
+              break; // Use the first store that has active tasks
             }
           } catch { continue; }
         }

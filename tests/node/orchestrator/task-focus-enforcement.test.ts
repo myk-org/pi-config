@@ -23,7 +23,7 @@ describe("task-focus enforcement: store scanning", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  /** Replicate the core store-scanning logic from rules.ts */
+  /** Replicate the core store-scanning logic from rules.ts (session-first fallback) */
   function scanTaskStores(cwd: string, sessionId?: string): Array<{ id: string; status: string; subject: string }> {
     const fs = require("node:fs");
     const path = require("node:path");
@@ -32,18 +32,16 @@ describe("task-focus enforcement: store scanning", () => {
     if (sessionId) taskCandidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
     taskCandidates.push(path.join(tasksDir, "tasks.json"));
 
-    const seenIds = new Set<string>();
-    const allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
+    let allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
     for (const taskFile of taskCandidates) {
       try {
         if (!fs.existsSync(taskFile)) continue;
         const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
         const tasks = data.tasks || [];
-        for (const t of tasks) {
-          if ((t.status === "in_progress" || t.status === "pending") && !seenIds.has(String(t.id))) {
-            seenIds.add(String(t.id));
-            allActiveTasks.push(t);
-          }
+        const active = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
+        if (active.length > 0) {
+          allActiveTasks = active;
+          break; // Use the first store that has active tasks
         }
       } catch { continue; }
     }
@@ -107,10 +105,10 @@ describe("task-focus enforcement: store scanning", () => {
     assert.equal(result[0].subject, "Pending in fallback");
   });
 
-  it("deduplicates tasks by id across stores", () => {
+  it("session store wins when it has active tasks (ignores fallback)", () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
-    // Same task id in both files
+    // Same task id in both files — session wins, fallback not merged
     writeFileSync(join(tasksDir, "tasks-sess1.json"), JSON.stringify({
       tasks: [
         { id: "1", status: "in_progress", subject: "Task from session" },
@@ -124,12 +122,9 @@ describe("task-focus enforcement: store scanning", () => {
     }));
 
     const result = scanTaskStores(tmp, "sess1");
-    assert.equal(result.length, 2);
-    // id=1 should come from session (first seen)
+    assert.equal(result.length, 1);
     assert.equal(result[0].id, "1");
     assert.equal(result[0].subject, "Task from session");
-    // id=2 from fallback
-    assert.equal(result[1].id, "2");
   });
 
   it("skips malformed JSON files gracefully", () => {
@@ -147,7 +142,7 @@ describe("task-focus enforcement: store scanning", () => {
     assert.equal(result[0].id, "1");
   });
 
-  it("accumulates active tasks from both stores", () => {
+  it("prefers session store over global when session has active tasks", () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(join(tasksDir, "tasks-multi.json"), JSON.stringify({
@@ -162,8 +157,9 @@ describe("task-focus enforcement: store scanning", () => {
     }));
 
     const result = scanTaskStores(tmp, "multi");
-    assert.equal(result.length, 2);
+    // Session-first: only session tasks — no global leak
+    assert.equal(result.length, 1);
     assert.equal(result[0].id, "1");
-    assert.equal(result[1].id, "2");
+    assert.equal(result[0].subject, "Session task");
   });
 });
