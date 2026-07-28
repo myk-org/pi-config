@@ -37,6 +37,7 @@ let lastInjectedMemories: { text: string; category: string; similarity: number }
 // Track the user message ID that last triggered task-focus enforcement.
 // Don't re-fire for the same user message (prevents loops from followUp turns).
 let lastTaskFocusUserMsgId: string | null = null;
+let taskFocusPending = false;
 
 /** Log what memories were auto-injected for retrieval telemetry */
 function logMemoryInjection(
@@ -279,6 +280,38 @@ export function registerRules(
       } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
+    // Task-focus reminder — compose with FRESH task data (flag set at turn_end)
+    if (taskFocusPending) {
+      taskFocusPending = false;
+      try {
+        const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
+        const sessionId = ctx.sessionManager?.getSessionId?.();
+        const taskCandidates: string[] = [];
+        if (sessionId) taskCandidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+        taskCandidates.push(path.join(tasksDir, "tasks.json"));
+        for (const taskFile of taskCandidates) {
+          try {
+            if (!fs.existsSync(taskFile)) continue;
+            const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
+            const tasks = data.tasks || [];
+            const activeTasks = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
+            if (activeTasks.length > 0) {
+              const summary = activeTasks
+                .slice(0, 3)
+                .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
+                .join(", ");
+              pi.sendMessage({
+                customType: "task-focus-enforcement",
+                content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
+                display: true,
+              }, { triggerTurn: false, deliverAs: "nextTurn" });
+            }
+            break;
+          } catch { continue; }
+        }
+      } catch (e: any) { console.debug("[rules] task-focus reminder failed:", e?.message?.slice(0, 100)); }
+    }
+
     if (!extra && !memories && !contextMemories && !sessionContext) return;
     // Memories at TAIL position (after system prompt) — research proves tail
     // gets highest LLM attention (U-shaped attention curve). Rules/extra stay
@@ -312,12 +345,8 @@ export function registerRules(
 
     // Task-focus enforcement: if this turn had no tool calls but tasks are active,
     // the LLM likely answered a side question and forgot to resume work.
-    // Inject a follow-up to remind about active tasks when the LLM responds
-    // without using any tools (likely chatting instead of working).
-    // Only fires after REAL user messages — not after system-generated followUps.
-    // Detection: walk the branch backwards from the assistant response. If the
-    // entry immediately before the assistant is a custom_message (system-generated),
-    // skip. Only fire if it's a real user message (type: "message", role: "user").
+    // Set a flag here; the actual reminder is composed at before_agent_start
+    // with fresh task data (avoids stale/deleted tasks in the message).
     try {
       const turnToolResults = (_event as any).toolResults;
       const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
@@ -327,16 +356,11 @@ export function registerRules(
         const branch = ctx.sessionManager.getBranch();
         for (let i = branch.length - 1; i >= 0; i--) {
           const entry = branch[i];
-          // Skip assistant messages (current turn's response)
           if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
-          // custom_message = system-generated turn-triggering message (enforcement, async result, coms)
-          // Only check custom_message (from sendMessage), not custom (from appendEntry)
-          // because appendEntry is state storage that other extensions use between turns.
           if (entry.type === "custom_message") {
             userTriggered = false;
             break;
           }
-          // Real user message — but only if we haven't already fired for this exact message
           if (entry.type === "message" && (entry as any).message?.role === "user") {
             const msgId = (entry as any).id;
             if (msgId && msgId === lastTaskFocusUserMsgId) {
@@ -347,39 +371,13 @@ export function registerRules(
             }
             break;
           }
-          // Any other entry type — skip and keep looking
           continue;
         }
       } catch { /* best-effort */ }
 
       if (!hadToolCalls && userTriggered) {
-        // Check for active tasks — session-scoped task file only
-        const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
-        const sessionId = ctx.sessionManager?.getSessionId?.();
-        const candidates: string[] = [];
-        if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-        candidates.push(path.join(tasksDir, "tasks.json"));
-        for (const taskFile of candidates) {
-          try {
-            if (!fs.existsSync(taskFile)) continue;
-            const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
-            const tasks = data.tasks || [];
-            const activeTasks = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
-            if (activeTasks.length > 0) {
-              const summary = activeTasks
-                .slice(0, 3)
-                .map((t: any) => `#${t.id} [${t.status}] ${t.subject}`)
-                .join(", ");
-              lastTaskFocusUserMsgId = triggeringMsgId;
-              pi.sendMessage({
-                customType: "task-focus-enforcement",
-                content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${activeTasks.length > 3 ? ` (+${activeTasks.length - 3} more)` : ""}`,
-                display: true,
-              }, { triggerTurn: false, deliverAs: "nextTurn" });
-              break;
-            }
-          } catch { continue; }
-        }
+        taskFocusPending = true;
+        lastTaskFocusUserMsgId = triggeringMsgId;
       }
     } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
 
