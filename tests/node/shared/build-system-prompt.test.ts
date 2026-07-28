@@ -4,6 +4,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { buildExternalSystemPrompt } from "../../../extensions/shared/build-system-prompt.js";
 
 describe("buildExternalSystemPrompt", () => {
@@ -34,10 +37,15 @@ describe("buildExternalSystemPrompt", () => {
   });
 
   it("works with cwd that has no enforced entries", () => {
-    // Use /tmp which has no .pi/memory directory
-    const result = buildExternalSystemPrompt({ systemPrompt: "Hello" }, "/tmp");
-    assert.ok(result);
-    // Should not crash, should not include enforced rules section
-    assert.ok(!result.includes("Enforced Rules"));
+    // Use a temp dir guaranteed to have no .pi/memory
+    const tmpDir = mkdtempSync(join(tmpdir(), "build-prompt-test-"));
+    try {
+      const result = buildExternalSystemPrompt({ systemPrompt: "Hello" }, tmpDir);
+      assert.ok(result);
+      // Should not crash, should not include enforced rules section
+      assert.ok(!result.includes("Enforced Rules"));
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
