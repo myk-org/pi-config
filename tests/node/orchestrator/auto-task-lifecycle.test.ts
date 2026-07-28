@@ -4,7 +4,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -332,31 +332,23 @@ describe("autoCompleteTask update-failure handling", () => {
   });
 
   afterEach(() => {
-    try {
-      const tasksDir = join(tmp, ".pi", "tasks");
-      chmodSync(tasksDir, 0o755);
-      for (const f of readdirSync(tasksDir)) {
-        try { chmodSync(join(tasksDir, f), 0o644); } catch {}
-      }
-    } catch {}
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("returns false when store directory is read-only", async () => {
-    const tasksDir = join(tmp, ".pi", "tasks");
-    mkdirSync(tasksDir, { recursive: true });
-    const storePath = join(tasksDir, "tasks.json");
-    writeFileSync(storePath, JSON.stringify({
-      tasks: [{ id: "1", status: "pending", subject: "Task" }],
-    }));
-    // TaskStore uses temp+rename; read-only file is bypassed. Block temp create via dir perms.
-    chmodSync(tasksDir, 0o555);
-    const result = await autoCompleteTask("1", tmp);
+  it("returns false when TaskStore.update throws", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "pending", subject: "Task" },
+    ]);
+    // Inject a factory that returns a store where update() throws
+    const throwingFactory = (_path: string) => ({
+      get: (id: string) => ({ id, status: "pending", subject: "Task" }),
+      update: () => { throw new Error("disk write failed"); },
+    });
+    const result = await autoCompleteTask("1", tmp, undefined, throwingFactory);
     assert.equal(result, false);
-    // Verify file was NOT mutated
-    chmodSync(tasksDir, 0o755);
-    const content = JSON.parse(readFileSync(storePath, "utf-8"));
-    assert.equal(content.tasks[0].status, "pending");
+    // Verify actual file was NOT mutated
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "pending");
   });
 });
 
@@ -368,29 +360,21 @@ describe("autoMarkInProgress update-failure handling", () => {
   });
 
   afterEach(() => {
-    try {
-      const tasksDir = join(tmp, ".pi", "tasks");
-      chmodSync(tasksDir, 0o755);
-      for (const f of readdirSync(tasksDir)) {
-        try { chmodSync(join(tasksDir, f), 0o644); } catch {}
-      }
-    } catch {}
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("returns false when store directory is read-only", async () => {
-    const tasksDir = join(tmp, ".pi", "tasks");
-    mkdirSync(tasksDir, { recursive: true });
-    const storePath = join(tasksDir, "tasks.json");
-    writeFileSync(storePath, JSON.stringify({
-      tasks: [{ id: "1", status: "pending", subject: "Task" }],
-    }));
-    chmodSync(tasksDir, 0o555);
-    const result = await autoMarkInProgress("1", tmp);
+  it("returns false when TaskStore.update throws", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "1", status: "pending", subject: "Task" },
+    ]);
+    const throwingFactory = (_path: string) => ({
+      get: (id: string) => ({ id, status: "pending", subject: "Task" }),
+      update: () => { throw new Error("disk write failed"); },
+    });
+    const result = await autoMarkInProgress("1", tmp, undefined, throwingFactory);
     assert.equal(result, false);
-    // Verify file was NOT mutated
-    chmodSync(tasksDir, 0o755);
-    const content = JSON.parse(readFileSync(storePath, "utf-8"));
-    assert.equal(content.tasks[0].status, "pending");
+    // Verify actual file was NOT mutated
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "pending");
   });
 });

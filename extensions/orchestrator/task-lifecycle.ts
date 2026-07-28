@@ -26,7 +26,7 @@ const taskStoreReady: Promise<void> = (async () => {
 })();
 
 /** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
-export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
+export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
   await taskStoreReady;
 
@@ -37,7 +37,8 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
 
   for (const storePath of candidates) {
     try {
-      const store = new TaskStoreClass(storePath);
+      const factory = _storeFactory ?? ((p: string) => new TaskStoreClass(p));
+      const store = factory(storePath);
       const task = store.get(taskId);
       if (task) {
         // Task found in this store — do not fall through to later candidates
@@ -56,7 +57,7 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
 }
 
 /** Auto-mark a task in_progress via pi-tasks TaskStore (in-process, no AI involvement). */
-export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
+export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
   await taskStoreReady;
 
@@ -67,7 +68,8 @@ export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?
 
   for (const storePath of candidates) {
     try {
-      const store = new TaskStoreClass(storePath);
+      const factory = _storeFactory ?? ((p: string) => new TaskStoreClass(p));
+      const store = factory(storePath);
       const task = store.get(taskId);
       if (task) {
         // Task found in this store — do not fall through to later candidates
