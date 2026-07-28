@@ -9,7 +9,7 @@ import {
 } from "../../../extensions/shared/provider-errors.js";
 
 describe("provider-errors", () => {
-  it("ProviderDriverError has correct tag and fields", () => {
+  it("ProviderDriverError has correct tag with populated fields", () => {
     const err = new ProviderDriverError({ driver: "cursor-cli", instanceId: "cli-cursor", detail: "binary not found" });
     assert.equal(err.tag, "ProviderDriverError");
     assert.equal(err.driver, "cursor-cli");

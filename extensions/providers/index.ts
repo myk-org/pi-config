@@ -45,7 +45,9 @@ import { ProviderDriverRegistry } from "../shared/provider-registry.js";
 import type { ProviderInstance, DiscoveredModel } from "../shared/provider-driver.js";
 import { BUILT_IN_DRIVERS, CLI_AGENT_TO_DRIVER, ACPX_AGENT_TO_DRIVER } from "./built-in-drivers.js";
 import { isCliBinaryAvailable } from "../cli-provider/discover.js";
+import { bindCliAgentStates } from "../cli-provider/configured.js";
 import { mapCliDiscoveredModels } from "../cli-provider/runtime-models.js";
+import { bindAcpxAgentStates } from "../acpx-provider/configured.js";
 import { mapAcpxDiscoveredModels, modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
 import {
   startCliSessionReaper,
@@ -69,6 +71,10 @@ const registry = new ProviderDriverRegistry();
 /** Track which instances are CLI vs ACPX for configured gates. */
 const cliInstances = new Map<string, ProviderInstance>();
 const acpxInstances = new Map<string, ProviderInstance>();
+
+// Bind legacy configured gates to the unified instance maps
+bindCliAgentStates(cliInstances);
+bindAcpxAgentStates(acpxInstances);
 
 let projectCwd = "";
 let initialized = false;
@@ -364,7 +370,7 @@ export default async function (pi: ExtensionAPI) {
               { driver: driverKind, enabled: true },
               projectCwd,
             );
-            if (timedOut) return null;
+            if (timedOut) return { agent, instance };
             cliInstances.set(agent, instance);
             return { agent, instance };
           } catch (err) {
@@ -373,6 +379,13 @@ export default async function (pi: ExtensionAPI) {
             return null;
           }
         })();
+
+        // Clean up leaked instance if discovery completed after timeout
+        discovery.then((result) => {
+          if (timedOut && result) {
+            registry.teardownInstance(`cli-${agent}`).catch(() => {});
+          }
+        }).catch(() => {});
 
         try {
           const result = await Promise.race([discovery, timeout]);
@@ -431,7 +444,7 @@ export default async function (pi: ExtensionAPI) {
               { driver: driverKind, config: { agent }, enabled: true },
               projectCwd,
             );
-            if (timedOut) return null;
+            if (timedOut) return { agent, instance };
             acpxInstances.set(agent, instance);
             return { agent, instance };
           } catch (err) {
@@ -440,6 +453,13 @@ export default async function (pi: ExtensionAPI) {
             return null;
           }
         })();
+
+        // Clean up leaked instance if discovery completed after timeout
+        discovery.then((result) => {
+          if (timedOut && result) {
+            registry.teardownInstance(`acpx-${agent}`).catch(() => {});
+          }
+        }).catch(() => {});
 
         try {
           const result = await Promise.race([discovery, timeout]);

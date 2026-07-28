@@ -25,7 +25,7 @@ function createMockDriver(kind: string, opts?: { probeAvailable?: boolean; creat
 describe("ProviderDriverRegistry", () => {
   let registry: ProviderDriverRegistry;
   beforeEach(() => { registry = new ProviderDriverRegistry(); });
-  it("registers and retrieves driver", () => { const d = createMockDriver("test"); registry.registerDriver(d); assert.equal(registry.getDriver("test"), d); });
+  it("registered driver is retrievable by kind", () => { const d = createMockDriver("test"); registry.registerDriver(d); assert.equal(registry.getDriver("test"), d); });
   it("lists driver kinds", () => { registry.registerDriver(createMockDriver("a")); registry.registerDriver(createMockDriver("b")); assert.deepEqual(registry.listDriverKinds().sort(), ["a", "b"]); });
   it("creates a live instance", async () => { registry.registerDriver(createMockDriver("test")); const i = await registry.createInstance("t1", { driver: "test", enabled: true }, "/tmp"); assert.equal(i.instanceId, "t1"); });
   it("throws for unknown driver", async () => { await assert.rejects(() => registry.createInstance("x", { driver: "nope" }, "/tmp"), /not registered/); });

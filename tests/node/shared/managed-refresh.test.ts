@@ -18,4 +18,18 @@ describe("managed-refresh", () => {
   it("dispose stops cleanly", () => {
     makeManagedSnapshot({ initialSnapshot: () => buildInitialSnapshot(true, []), checkProvider: async () => buildInitialSnapshot(true, []), getSettings: () => ({}), haveSettingsChanged: () => false, refreshIntervalMs: 100 }).dispose();
   });
+  it("skipInitialRefresh prevents initial doRefresh call", async () => {
+    let refreshCount = 0;
+    const managed = makeManagedSnapshot({
+      skipInitialRefresh: true,
+      initialSnapshot: () => buildInitialSnapshot(true, []),
+      checkProvider: async () => { refreshCount++; return buildInitialSnapshot(true, []); },
+      getSettings: () => ({}),
+      haveSettingsChanged: () => false,
+    });
+    // Wait a tick to ensure no async refresh fires
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(refreshCount, 0, "checkProvider should not be called when skipInitialRefresh is true");
+    managed.dispose();
+  });
 });

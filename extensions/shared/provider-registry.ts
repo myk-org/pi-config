@@ -183,9 +183,11 @@ export class ProviderDriverRegistry {
     }
 
     // Also remove unavailable entries that disappeared from config
+    let changed = toRemove.length > 0;
     for (const instanceId of this.unavailable.keys()) {
       if (!nextKeys.has(instanceId)) {
         this.unavailable.delete(instanceId);
+        changed = true;
       }
     }
 
@@ -195,7 +197,6 @@ export class ProviderDriverRegistry {
     }
 
     // 3. Build new and replaced instances
-    let changed = toRemove.length > 0;
 
     for (const [instanceId, config] of Object.entries(configMap)) {
       // Skip unchanged live entries
