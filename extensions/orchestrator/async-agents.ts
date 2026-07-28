@@ -134,6 +134,29 @@ async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string)
   return false;
 }
 
+/** Auto-mark a task in_progress via pi-tasks TaskStore (in-process, no AI involvement). */
+async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string): Promise<boolean> {
+  if (!taskId || taskId === "-1") return false;
+  await taskStoreReady;
+
+  const tasksDir = path.join(cwd, ".pi", "tasks");
+  const candidates: string[] = [];
+  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+  candidates.push(path.join(tasksDir, "tasks.json"));
+
+  for (const storePath of candidates) {
+    try {
+      const store = new TaskStoreClass(storePath);
+      const task = store.get(taskId);
+      if (task && task.status === "pending") {
+        store.update(taskId, { status: "in_progress" });
+        return true;
+      }
+    } catch { continue; }
+  }
+  return false;
+}
+
 // ── Registration ─────────────────────────────────────────────────────────
 
 export function registerAsyncAgents(
@@ -728,6 +751,12 @@ export function registerAsyncAgents(
       model: effectiveModel,
     };
     asyncState.jobs.set(id, job);
+
+    // Auto-mark linked task as in_progress at spawn time
+    if (options?.taskId && options.taskId !== "-1") {
+      autoMarkInProgress(options.taskId, asyncState.lastCtx?.sessionManager?.getCwd?.() || cwd, asyncState.lastCtx?.sessionManager?.getSessionId?.() || undefined)
+        .catch(() => {});  // best-effort, don't block spawn
+    }
 
     // addReviewerPending already called above (before piArgs construction)
 
