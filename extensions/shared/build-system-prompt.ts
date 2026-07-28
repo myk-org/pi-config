@@ -41,7 +41,9 @@ export function buildExternalSystemPrompt(context: ProviderContext, cwd?: string
             rules.push(`- WARNING when running \`${trigger}\`: ${e.text}`);
           } else if (e.action.startsWith("run_after")) {
             const cmd = e.actionCommand || e.action.slice("run_after ".length);
-            rules.push(`- After running \`${trigger}\`, ALWAYS run: \`${cmd}\``);
+            if (cmd) {
+              rules.push(`- After running \`${trigger}\`, ALWAYS run: \`${cmd}\``);
+            }
           }
         }
         if (rules.length > 0) {
