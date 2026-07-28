@@ -39,9 +39,13 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
     try {
       const store = new TaskStoreClass(storePath);
       const task = store.get(taskId);
-      if (task && task.status !== "completed") {
-        store.update(taskId, { status: "completed" });
-        return true;
+      if (task) {
+        // Task found in this store — do not fall through to later candidates
+        if (task.status !== "completed") {
+          store.update(taskId, { status: "completed" });
+          return true;
+        }
+        return false;
       }
     } catch (e: any) {
       console.debug(`[task-lifecycle] autoCompleteTask failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
@@ -65,9 +69,13 @@ export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?
     try {
       const store = new TaskStoreClass(storePath);
       const task = store.get(taskId);
-      if (task && task.status === "pending") {
-        store.update(taskId, { status: "in_progress" });
-        return true;
+      if (task) {
+        // Task found in this store — do not fall through to later candidates
+        if (task.status === "pending") {
+          store.update(taskId, { status: "in_progress" });
+          return true;
+        }
+        return false;
       }
     } catch (e: any) {
       console.debug(`[task-lifecycle] autoMarkInProgress failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);

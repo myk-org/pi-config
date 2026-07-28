@@ -226,3 +226,100 @@ describe("autoCompleteTask call-site guard (subagent-tool pattern)", () => {
     assert.equal(result, false);
   });
 });
+
+describe("autoCompleteTask error handling", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "lifecycle-err-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("skips malformed store and returns false", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(join(tasksDir, "tasks.json"), "not valid json at all");
+    const result = await autoCompleteTask("1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("does not fall through to global when session store has the task (already completed)", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    // Session store: task exists but already completed
+    writeFileSync(join(tasksDir, "tasks-s1.json"), JSON.stringify({
+      tasks: [{ id: "1", status: "completed", subject: "Done" }],
+    }));
+    // Global store: same ID, pending — should NOT be touched
+    const globalPath = join(tasksDir, "tasks.json");
+    writeFileSync(globalPath, JSON.stringify({
+      tasks: [{ id: "1", status: "pending", subject: "Global task" }],
+    }));
+    const result = await autoCompleteTask("1", tmp, "s1");
+    assert.equal(result, false);
+    // Verify global store was NOT mutated
+    const globalTasks = readTaskStore(globalPath);
+    assert.equal(globalTasks[0].status, "pending");
+  });
+});
+
+describe("autoMarkInProgress error handling", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "lifecycle-err-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("skips malformed store and returns false", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(join(tasksDir, "tasks.json"), "not valid json at all");
+    const result = await autoMarkInProgress("1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("does not fall through to global when session store has the task (already in_progress)", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    // Session store: task exists but already in_progress
+    writeFileSync(join(tasksDir, "tasks-s2.json"), JSON.stringify({
+      tasks: [{ id: "1", status: "in_progress", subject: "Running" }],
+    }));
+    // Global store: same ID, pending — should NOT be touched
+    const globalPath = join(tasksDir, "tasks.json");
+    writeFileSync(globalPath, JSON.stringify({
+      tasks: [{ id: "1", status: "pending", subject: "Global task" }],
+    }));
+    const result = await autoMarkInProgress("1", tmp, "s2");
+    assert.equal(result, false);
+    // Verify global store was NOT mutated
+    const globalTasks = readTaskStore(globalPath);
+    assert.equal(globalTasks[0].status, "pending");
+  });
+
+  it("does not fall through to global when session store has completed task", async () => {
+    const tasksDir = join(tmp, ".pi", "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    // Session store: task completed
+    writeFileSync(join(tasksDir, "tasks-s3.json"), JSON.stringify({
+      tasks: [{ id: "1", status: "completed", subject: "Done" }],
+    }));
+    // Global store: same ID, pending
+    const globalPath = join(tasksDir, "tasks.json");
+    writeFileSync(globalPath, JSON.stringify({
+      tasks: [{ id: "1", status: "pending", subject: "Global pending" }],
+    }));
+    const result = await autoMarkInProgress("1", tmp, "s3");
+    assert.equal(result, false);
+    // Global NOT mutated
+    const globalTasks = readTaskStore(globalPath);
+    assert.equal(globalTasks[0].status, "pending");
+  });
+});
