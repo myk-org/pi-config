@@ -44,11 +44,8 @@ import { StreamAssembler, createAssistantMessageOutput } from "../shared/stream-
 import { ProviderDriverRegistry } from "../shared/provider-registry.js";
 import type { ProviderInstance, DiscoveredModel } from "../shared/provider-driver.js";
 import { BUILT_IN_DRIVERS, CLI_AGENT_TO_DRIVER, ACPX_AGENT_TO_DRIVER } from "./built-in-drivers.js";
-import { isCliBinaryAvailable } from "../cli-provider/discover.js";
-import { bindCliAgentStates } from "../cli-provider/configured.js";
 import { mapCliDiscoveredModels } from "../cli-provider/runtime-models.js";
-import { bindAcpxAgentStates } from "../acpx-provider/configured.js";
-import { mapAcpxDiscoveredModels, modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
+import { mapAcpxDiscoveredModels } from "../acpx-provider/runtime-models.js";
 import {
   startCliSessionReaper,
   stopCliSessionReaper,
@@ -72,15 +69,11 @@ const registry = new ProviderDriverRegistry();
 const cliInstances = new Map<string, ProviderInstance>();
 const acpxInstances = new Map<string, ProviderInstance>();
 
-// Bind legacy configured gates to the unified instance maps
-bindCliAgentStates(cliInstances);
-bindAcpxAgentStates(acpxInstances);
-
 let projectCwd = "";
 let initialized = false;
 
 // ---------------------------------------------------------------------------
-// Configured Gates (backward compatible)
+// Configured Gates
 // ---------------------------------------------------------------------------
 
 function isCliInstanceConfigured(agent: string): boolean {

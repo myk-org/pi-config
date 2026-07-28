@@ -45,11 +45,6 @@ export {
   mapCliDiscoveredModels,
 } from "./runtime-models.js";
 
-// Re-export configured gate (consumed by tests)
-export {
-  isCliAgentConfigured,
-} from "./configured.js";
-
 /**
  * No-op extension entry point.
  *

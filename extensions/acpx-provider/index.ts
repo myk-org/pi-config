@@ -27,11 +27,6 @@ export {
   modelIdToDisplayName,
 } from "./runtime-models.js";
 
-// Re-export configured gate (consumed by tests)
-export {
-  isAcpxAgentConfigured,
-} from "./configured.js";
-
 /**
  * Discover available models for an acpx agent.
  *
