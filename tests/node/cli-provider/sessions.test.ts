@@ -181,6 +181,42 @@ describe("cli-provider sessions", () => {
     );
   });
 
+  it("shouldAdoptLegacyCliMarker accepts prev with provisional and next with real session id", async () => {
+    // This tests the scenario where prevKey was stored under a provisional session
+    // and nextKey has a real UUID — the adapter should adopt the legacy marker.
+    const { shouldAdoptLegacyCliMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const prevKey: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "tmp-12345678",
+    };
+    const nextKey: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "019faaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    };
+    const result = shouldAdoptLegacyCliMarker(prevKey, nextKey);
+    assert.equal(result, true);
+  });
+
+  it("shouldAdoptLegacyCliMarker rejects when both keys have same session id", async () => {
+    const { shouldAdoptLegacyCliMarker } = await import(
+      "../../../extensions/cli-provider/sessions.js"
+    );
+    const key: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "019faaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    };
+    const result = shouldAdoptLegacyCliMarker(key, key);
+    assert.equal(result, false);
+  });
+
   it("stale on-disk default marker is not adopted without prior default key", async () => {
     const {
       adoptLegacyCliSessionMarker,
