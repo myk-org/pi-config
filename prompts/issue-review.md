@@ -207,8 +207,13 @@ gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --body-file <temp_file_with_new
 
 Write the new body to a temp file first to handle special characters:
 
+```text
+Use the write tool to create ${PROJECT_TMP_DIR}/updated-issue-body.md with the new body content
+```
+
+Then apply the update:
+
 ```bash
-write ${PROJECT_TMP_DIR}/updated-issue-body.md with the new body content
 gh issue edit <ISSUE_NUMBER> --repo <OWNER_REPO> --body-file ${PROJECT_TMP_DIR}/updated-issue-body.md
 ```
 

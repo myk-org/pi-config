@@ -409,11 +409,13 @@ function streamCli(
       await state.ready;
 
       const handleKey = cliModelId || "default";
-      // Always build so resume-failure retry can start a fresh CLI session with
-      // the system prompt; initial prompt still only prepends when needed.
-      const systemPromptText = buildExternalSystemPrompt(context, projectCwd);
+      // Only build when needed — avoids filesystem IO for enforced entries on
+      // every turn. forceHistorySeed (resume-failure retry) still builds.
       const needsSystemPromptFlag =
         forceHistorySeed || !state.systemPromptSent.has(handleKey);
+      const systemPromptText = needsSystemPromptFlag
+        ? buildExternalSystemPrompt(context, projectCwd)
+        : undefined;
 
       const { sessionId, needsSystemPrompt, key } = ensureSession(
         state,

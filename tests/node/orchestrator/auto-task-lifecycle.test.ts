@@ -172,3 +172,57 @@ describe("autoMarkInProgress", () => {
     assert.equal(result, false);
   });
 });
+
+describe("autoCompleteTask call-site guard (subagent-tool pattern)", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "call-site-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  async function simulateSubagentCompletion(chainTaskId: string | undefined, cwd: string): Promise<boolean> {
+    // Replicate the guard from subagent-tool.ts[870-873]
+    if (chainTaskId && chainTaskId !== "-1") {
+      return autoCompleteTask(chainTaskId, cwd).catch(() => false);
+    }
+    return false;
+  }
+
+  it("completes task when chainTaskId is valid", async () => {
+    const storePath = writeTaskStore(tmp, "tasks.json", [
+      { id: "5", status: "in_progress", subject: "Linked task" },
+    ]);
+    const result = await simulateSubagentCompletion("5", tmp);
+    assert.equal(result, true);
+    const tasks = readTaskStore(storePath);
+    assert.equal(tasks[0].status, "completed");
+  });
+
+  it("skips when chainTaskId is undefined", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "5", status: "in_progress", subject: "Linked task" },
+    ]);
+    const result = await simulateSubagentCompletion(undefined, tmp);
+    assert.equal(result, false);
+  });
+
+  it("skips when chainTaskId is '-1'", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "5", status: "in_progress", subject: "Linked task" },
+    ]);
+    const result = await simulateSubagentCompletion("-1", tmp);
+    assert.equal(result, false);
+  });
+
+  it("skips when chainTaskId is empty string", async () => {
+    writeTaskStore(tmp, "tasks.json", [
+      { id: "5", status: "in_progress", subject: "Linked task" },
+    ]);
+    const result = await simulateSubagentCompletion("", tmp);
+    assert.equal(result, false);
+  });
+});
