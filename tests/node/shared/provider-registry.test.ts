@@ -39,13 +39,20 @@ describe("ProviderDriverRegistry", () => {
   it("returns unavailable snapshot", async () => { registry.registerDriver(createMockDriver("bad", { probeAvailable: false })); await registry.reconcile({ inst: { driver: "bad" } }, "/tmp"); assert.equal((registry.getSnapshot("inst") as any).available, false); });
   it("returns undefined for unknown id", () => { assert.equal(registry.getSnapshot("nope"), undefined); });
   it("teardownInstance disposes a created instance", async () => {
+    let disposed = false;
     const d = createMockDriver("test");
+    const origCreate = d.create;
+    d.create = async (input: any) => {
+      const inst = await origCreate(input);
+      inst.dispose = async () => { disposed = true; };
+      return inst;
+    };
     registry.registerDriver(d);
     const instance = await registry.createInstance("i1", { driver: "test", enabled: true }, "/tmp");
-    assert.ok(instance);
     assert.ok(registry.getInstance("i1"));
     await registry.teardownInstance("i1");
-    assert.equal(registry.getInstance("i1"), undefined);
+    assert.equal(registry.getInstance("i1"), undefined, "instance removed from registry");
+    assert.equal(disposed, true, "dispose was called");
   });
   it("reconcile notifies when unavailable entries are removed", async () => {
     let notified = false;
