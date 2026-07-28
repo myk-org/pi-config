@@ -89,6 +89,9 @@ describe("cli-provider providers", () => {
     assert.ok(args.includes("/tmp/ws"));
   });
 
+  // runCliAgent forwards opts.binary to buildCliCommand (runner.ts); the
+  // override is covered here at the command-build boundary rather than by
+  // spawning a custom binary through the full runner path.
   it("prefers custom binary override over agent default", () => {
     const { binary } = buildCliCommand({
       agent: "claude",

@@ -257,10 +257,11 @@ function createCursorCliAdapter(
     ): Promise<TurnResult> => {
       const handleKey = handle.model || "default";
       const key = sessionKeyFor(handle.model);
+      // Read previous key BEFORE updating so legacy-marker adoption can compare categories
+      const prevKey = sessionKeys.get(handleKey);
       sessionKeys.set(handleKey, key);
 
       let sessionId = loadCliSessionId(key);
-      const prevKey = sessionKeys.get(handleKey);
       // Mid-session bind: adopt legacy marker
       if (!sessionId && shouldAdoptLegacyCliMarker(prevKey, key) && prevKey?.piSessionId) {
         migrateCliSessionMarker(key, prevKey.piSessionId);

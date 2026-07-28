@@ -296,6 +296,7 @@ function createAcpxAdapter(
         handles.delete(key);
       }
       systemPromptSent.delete(key);
+      prevCumulative.delete(key);
     },
 
     stopAll: async (): Promise<void> => {
@@ -312,6 +313,7 @@ function createAcpxAdapter(
       handles.clear();
       pendingHandles.clear();
       systemPromptSent.clear();
+      prevCumulative.clear();
     },
 
     hasSession: (sessionId: string): boolean => {

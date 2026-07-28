@@ -129,7 +129,7 @@ describe("StreamAssembler", () => {
     assert.equal(stream.ended, true);
   });
 
-  it("emitError aborted vs non-aborted", () => {
+  it("emitError sets aborted stop reason when signal aborted", () => {
     const aborted = createAssembler();
     aborted.assembler.emitError(new Error("cancelled"), true);
     assert.equal(aborted.output.stopReason, "aborted");
@@ -137,7 +137,9 @@ describe("StreamAssembler", () => {
     assert.equal(aborted.stream.events[0].type, "error");
     assert.equal(aborted.stream.events[0].reason, "aborted");
     assert.equal(aborted.stream.ended, true);
+  });
 
+  it("emitError sets error stop reason when not aborted", () => {
     const errored = createAssembler();
     errored.assembler.emitError("boom", false);
     assert.equal(errored.output.stopReason, "error");
