@@ -37,6 +37,7 @@ import os from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
+import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import {
 	checkMinPiVersion,
 	isPiMetaInvocation,
@@ -294,22 +295,6 @@ async function discoverModelsInternal(state: AgentState): Promise<string[]> {
 // =============================================================================
 
 /**
- * Build the system prompt to send on first session creation.
- * Since acpx sessions maintain their own conversation history,
- * we set the system prompt once at session creation time.
- */
-function buildSystemPrompt(context: Context): string | undefined {
-	if (!context.systemPrompt) return undefined;
-	return [
-		"You are being used as a backend LLM through pi coding agent.",
-		"You have full permission to read, write, edit, and execute any files or commands.",
-		"Follow these instructions:",
-		"",
-		context.systemPrompt,
-	].join("\n");
-}
-
-/**
  * Extract the latest user message from pi's context.
  * Since the acpx session maintains its own conversation history,
  * we only send the newest user message.
@@ -388,7 +373,7 @@ function streamAcpx(
 			// Build system prompt for first use
 			const handleKey = acpxModelId || "default";
 			const needsSystemPrompt = !state.systemPromptSent.has(handleKey);
-			const systemPrompt = needsSystemPrompt ? buildSystemPrompt(context) : undefined;
+			const systemPrompt = needsSystemPrompt ? buildExternalSystemPrompt(context, projectCwd) : undefined;
 
 			// Ensure session handle exists (creates session with model + system prompt if needed)
 			const handle = await ensureHandle(state, acpxModelId, systemPrompt);
