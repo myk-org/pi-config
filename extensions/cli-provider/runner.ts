@@ -187,6 +187,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
           text: acc.text,
           sessionId: acc.sessionId,
           thinking: acc.thinking || undefined,
+          usage: acc.usage,
           exitCode: code,
           stderr,
         });

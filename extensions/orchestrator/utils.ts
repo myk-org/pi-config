@@ -122,6 +122,13 @@ export function getProjectTmpDir(cwd: string): string {
   return dir;
 }
 
+/** Get project-scoped data dir under <cwd>/.pi/data/ */
+export function getProjectDataDir(cwd: string): string {
+  const dir = path.join(cwd, ".pi", "data");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Parse start time (field 22) from /proc stat content — handles comm fields with spaces */
 export function parseProcStartTime(statContent: string): string | null {
   // Field 2 (comm) is wrapped in parens and may contain spaces/parens.

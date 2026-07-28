@@ -15,6 +15,7 @@ import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 import { getSetting } from "./project-settings.js";
 import { substituteRulePlaceholders } from "./rule-placeholders.js";
+import { getProjectDataDir } from "./utils.js";
 
 /** Social closer gate — skip expensive vector search for trivial messages */
 const SOCIAL_CLOSERS = new Set([
@@ -48,9 +49,7 @@ function logMemoryInjection(
   queryClass?: string,
 ): void {
   try {
-    const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
-    const dir = path.dirname(telemetryPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const telemetryPath = path.join(getProjectDataDir(cwd), "memory-telemetry.jsonl");
     const entry = JSON.stringify({
       ts: new Date().toISOString(),
       prompt: prompt.slice(0, 200),
@@ -70,7 +69,7 @@ function logMemoryInjection(
 /** Log whether injected memories were referenced in the LLM response */
 function logMemoryUsage(cwd: string, injected: { text: string; category: string; similarity: number }[], used: { text: string; category: string; similarity: number }[]): void {
   try {
-    const telemetryPath = path.join(cwd, ".pi", "data", "memory-telemetry.jsonl");
+    const telemetryPath = path.join(getProjectDataDir(cwd), "memory-telemetry.jsonl");
     const entry = JSON.stringify({
       ts: new Date().toISOString(),
       event: "usage",
@@ -263,9 +262,7 @@ export function registerRules(
             "\n\n";
           // Telemetry — log session injections (same safeguards as logMemoryInjection)
           try {
-            const telemetryPath = path.join(ctx.cwd, ".pi", "data", "memory-telemetry.jsonl");
-            const dir = path.dirname(telemetryPath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+            const telemetryPath = path.join(getProjectDataDir(ctx.cwd), "memory-telemetry.jsonl");
             const entry = JSON.stringify({
               ts: new Date().toISOString(),
               event: "session-inject",

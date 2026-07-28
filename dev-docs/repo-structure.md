@@ -93,20 +93,32 @@ pi-config/
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
+│   │   ├── provider-driver.ts       # ProviderDriver SPI interfaces (t3code-inspired driver architecture)
+│   │   ├── provider-errors.ts       # Tagged error hierarchy for provider system
+│   │   ├── provider-registry.ts     # ProviderDriverRegistry — lifecycle management for driver instances
+│   │   ├── stream-builder.ts        # StreamAssembler — unified thinking/text event→pi stream mapping
+│   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
-│   ├── acpx-provider/              # ACPX provider extension (createProvider + acpx/runtime)
-│   │   ├── index.ts                # Provider registration + streamAcpx + discoverAcpxModels
+│   ├── acpx-provider/              # ACPX provider — backward-compatible shim (re-exports for pi-sidecar)
+│   │   ├── index.ts                # Shim: re-exports discoverAcpxModels + no-op extension entry
 │   │   ├── load-runtime.ts         # Resolve acpx/runtime (global npm, then package-local)
 │   │   └── runtime-models.ts       # mapAcpxDiscoveredModels → createProvider Model[]
-│   ├── cli-provider/               # CLI-backed providers (createProvider; cli-claude/gemini/cursor)
+│   ├── cli-provider/               # CLI provider — backward-compatible shim (re-exports for pi-sidecar)
 │   │   ├── agents/                 # Per-CLI drivers (cursor/claude/gemini) — add new CLI here
 │   │   ├── shared/                 # Shared discovery cache helpers
 │   │   ├── sessions.ts             # Resume directory (lastSeen/status)
 │   │   ├── session-reaper.ts       # Idle session marker cleanup
 │   │   ├── runtime-models.ts       # mapCliDiscoveredModels → createProvider Model[]
-│   │   └── index.ts                # Provider registration + streamCli + discoverCliModels
+│   │   └── index.ts                # Shim: re-exports discoverCliModels + no-op extension entry
+│   ├── providers/                  # Unified provider extension (t3code-inspired driver architecture)
+│   │   ├── index.ts                # Extension entry — registers all providers via ProviderDriverRegistry
+│   │   ├── built-in-drivers.ts     # Static driver list + agent→driver mappings
+│   │   ├── claude-driver.ts        # ClaudeDriver — ProviderDriver<ClaudeCliConfig> (CLI)
+│   │   ├── gemini-driver.ts        # GeminiDriver — ProviderDriver<GeminiCliConfig> (CLI)
+│   │   ├── cursor-cli-driver.ts    # CursorCliDriver — ProviderDriver<CursorCliConfig> (CLI)
+│   │   └── acpx-driver.ts          # AcpxDriver — ProviderDriver<AcpxConfig> (ACPX)
 │   └── image-gen/                   # Image generation extension (standalone)
 │       ├── index.ts                # Entry point — registers generate_image tool
 │       └── image-gen.ts            # Gemini API image generation (settings: image_model; env: GEMINI_API_KEY)
@@ -170,6 +182,7 @@ pi-config/
 │   ├── node/                        # Node.js tests (tsx + node:test)
 │   │   ├── acpx-provider/           # ACPX createProvider / runtime-model tests
 │   │   ├── cli-provider/            # CLI createProvider / runtime-model tests
+│   │   ├── providers/               # Driver config schema + built-in-drivers tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
 │   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider)

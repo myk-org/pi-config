@@ -3,10 +3,21 @@
  * Also supports incremental NDJSON event parsing for live streaming.
  */
 
+/** Per-turn usage extracted from CLI result events. */
+export interface CliUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+}
+
 export interface CliParseResult {
   text: string;
   sessionId?: string;
   thinking?: string;
+  usage?: CliUsage;
 }
 
 export type CliStreamEvent =
@@ -79,6 +90,7 @@ export class StreamJsonAccumulator {
   text = "";
   thinking = "";
   sessionId?: string;
+  usage?: CliUsage;
 
   /** Feed one NDJSON object; returns events to emit to pi. */
   push(ev: any): CliStreamEvent[] {
@@ -160,6 +172,9 @@ export class StreamJsonAccumulator {
           }
         }
       }
+      // Extract usage from result event (format varies by CLI agent)
+      this.usage = extractCliUsage(ev);
+
       out.push({
         kind: "done",
         text: this.text,
@@ -219,7 +234,57 @@ export function parseCursorStreamJson(stdout: string): CliParseResult {
     text: acc.text,
     sessionId: acc.sessionId,
     thinking: acc.thinking || undefined,
+    usage: acc.usage,
   };
+}
+
+/**
+ * Extract usage from a CLI result event. Handles three formats:
+ * - Cursor: result.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}
+ * - Claude: result.usage.{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens} + result.total_cost_usd
+ * - Gemini: result.stats.{input_tokens, output_tokens, total_tokens, cached}
+ */
+function extractCliUsage(ev: any): CliUsage | undefined {
+  if (!ev || typeof ev !== "object") return undefined;
+
+  // Cursor format: result.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}
+  if (ev.usage && typeof ev.usage === "object" && typeof ev.usage.inputTokens === "number") {
+    const u = ev.usage;
+    return {
+      inputTokens: u.inputTokens ?? undefined,
+      outputTokens: u.outputTokens ?? undefined,
+      cachedReadTokens: u.cacheReadTokens ?? undefined,
+      cachedWriteTokens: u.cacheWriteTokens ?? undefined,
+      totalTokens: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+    };
+  }
+
+  // Claude format: result.usage.{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}
+  if (ev.usage && typeof ev.usage === "object" && typeof ev.usage.input_tokens === "number") {
+    const u = ev.usage;
+    const cost = typeof ev.total_cost_usd === "number" ? ev.total_cost_usd : undefined;
+    return {
+      inputTokens: u.input_tokens ?? undefined,
+      outputTokens: u.output_tokens ?? undefined,
+      cachedReadTokens: u.cache_read_input_tokens ?? undefined,
+      cachedWriteTokens: u.cache_creation_input_tokens ?? undefined,
+      totalTokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+      costUsd: cost,
+    };
+  }
+
+  // Gemini format: result.stats.{input_tokens, output_tokens, total_tokens, cached}
+  if (ev.stats && typeof ev.stats === "object" && typeof ev.stats.input_tokens === "number") {
+    const s = ev.stats;
+    return {
+      inputTokens: s.input_tokens ?? undefined,
+      outputTokens: s.output_tokens ?? undefined,
+      cachedReadTokens: s.cached ?? undefined,
+      totalTokens: s.total_tokens ?? undefined,
+    };
+  }
+
+  return undefined;
 }
 
 export function parseCliOutput(agent: string, stdout: string): CliParseResult {
