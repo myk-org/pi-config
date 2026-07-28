@@ -238,7 +238,7 @@ describe("autoCompleteTask error handling", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("skips malformed store and returns false", async () => {
+  it("returns false for malformed store", async () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(join(tasksDir, "tasks.json"), "not valid json at all");
@@ -277,7 +277,7 @@ describe("autoMarkInProgress error handling", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("skips malformed store and returns false", async () => {
+  it("returns false for malformed store", async () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(join(tasksDir, "tasks.json"), "not valid json at all");
