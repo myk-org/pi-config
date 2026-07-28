@@ -342,16 +342,21 @@ describe("autoCompleteTask update-failure handling", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("handles read-only store directory gracefully", async () => {
+  it("returns false when store directory is read-only", async () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
-    writeFileSync(join(tasksDir, "tasks.json"), JSON.stringify({
+    const storePath = join(tasksDir, "tasks.json");
+    writeFileSync(storePath, JSON.stringify({
       tasks: [{ id: "1", status: "pending", subject: "Task" }],
     }));
+    // TaskStore uses temp+rename; read-only file is bypassed. Block temp create via dir perms.
     chmodSync(tasksDir, 0o555);
     const result = await autoCompleteTask("1", tmp);
-    // Should not crash — returns boolean regardless of write failure
-    assert.equal(typeof result, "boolean");
+    assert.equal(result, false);
+    // Verify file was NOT mutated
+    chmodSync(tasksDir, 0o755);
+    const content = JSON.parse(readFileSync(storePath, "utf-8"));
+    assert.equal(content.tasks[0].status, "pending");
   });
 });
 
@@ -373,14 +378,19 @@ describe("autoMarkInProgress update-failure handling", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("handles read-only store directory gracefully", async () => {
+  it("returns false when store directory is read-only", async () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
-    writeFileSync(join(tasksDir, "tasks.json"), JSON.stringify({
+    const storePath = join(tasksDir, "tasks.json");
+    writeFileSync(storePath, JSON.stringify({
       tasks: [{ id: "1", status: "pending", subject: "Task" }],
     }));
     chmodSync(tasksDir, 0o555);
     const result = await autoMarkInProgress("1", tmp);
-    assert.equal(typeof result, "boolean");
+    assert.equal(result, false);
+    // Verify file was NOT mutated
+    chmodSync(tasksDir, 0o755);
+    const content = JSON.parse(readFileSync(storePath, "utf-8"));
+    assert.equal(content.tasks[0].status, "pending");
   });
 });
