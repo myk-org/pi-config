@@ -788,6 +788,19 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)
 
+## Workspace Packages
+
+### pi-sidecar
+
+A standalone HTTP sidecar wrapping the Pi SDK, living under `packages/pi-sidecar/`.
+
+| Package | Language | Registry |
+|---------|----------|----------|
+| `@myk-org/pi-sidecar` | TypeScript | npm |
+| `pi-sidecar-client` | Python | PyPI |
+
+See [`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md) for full documentation.
+
 ## License
 
 MIT
