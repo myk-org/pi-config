@@ -172,6 +172,30 @@ pi-config/
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
 │   ├── symlink-cli-specialists.sh   # Symlink package agents into .cursor/.claude/.gemini/agents (container entrypoint)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
+├── packages/                        # Workspace packages
+│   └── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
+│       ├── src/                     # TypeScript source
+│       │   ├── index.ts             # Public API + startSidecar()
+│       │   ├── server.ts            # CLI entry point
+│       │   ├── sessions.ts          # SessionStore — session lifecycle + model discovery
+│       │   ├── http-tool-executor.ts # HTTP-backed custom tool execution
+│       │   ├── watchdog.ts          # Health-check poller for companion backend
+│       │   ├── resolve-extension-path.ts # Extension path resolution (env override + require.resolve)
+│       │   ├── pi-version.ts        # Pi SDK version floor assertion
+│       │   └── logger.ts            # Structured logger
+│       ├── pi_sidecar_client/       # Python client (pi-sidecar-client on PyPI)
+│       │   └── __init__.py          # SidecarClient, call_ai_once, call_ai
+│       ├── scripts/                 # Sidecar scripts
+│       │   ├── start-sidecar.sh     # Dev launcher (background, tsx from source)
+│       │   └── enforce-protobufjs-floor.mjs # Postinstall protobufjs version fix
+│       ├── tests/                   # Sidecar tests
+│       │   ├── test_ts/             # TypeScript unit tests (node:test)
+│       │   ├── test_python/         # Python client tests (pytest)
+│       │   └── e2e/                 # End-to-end live battery (opt-in: pytest -m e2e)
+│       ├── examples/               # Usage examples (Python + TypeScript)
+│       ├── package.json            # @myk-org/pi-sidecar (npm workspace package)
+│       ├── pyproject.toml          # pi-sidecar-client (PyPI)
+│       └── tsconfig.json           # TypeScript config
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)

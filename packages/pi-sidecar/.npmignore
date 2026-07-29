@@ -1,0 +1,14 @@
+# Override .gitignore for npm — dist/ must be included
+src/
+tests/
+examples/
+pi_sidecar_client/
+*.py
+*.toml
+.pre-commit-config.yaml
+.flake8
+.gitignore
+.coderabbit.yaml
+AGENTS.md
+*.whl
+*.tar.gz

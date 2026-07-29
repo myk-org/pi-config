@@ -1,0 +1,44 @@
+skipsdist = true
+envlist = ["python", "typescript", "python_package"]
+
+[env.python]
+description = "Run Python client unit tests (e2e excluded)"
+commands = [
+  [
+    "uv",
+    "run",
+    "--group",
+    "tests",
+    "pytest",
+    "tests/test_python/",
+    "-v",
+    "-n",
+    "auto",
+    "-m",
+    "not e2e",
+  ],
+]
+allowlist_externals = ["uv"]
+skip_install = true
+
+[env.typescript]
+description = "Run TypeScript sidecar tests"
+commands = [["npm", "ci", "--no-audit", "--no-fund"], ["npm", "test"]]
+allowlist_externals = ["npm"]
+skip_install = true
+
+[env.python_package]
+description = "Smoke-test Python package install/import"
+commands = [
+  [
+    "uv",
+    "run",
+    "--with-editable",
+    ".",
+    "python",
+    "-c",
+    "import pi_sidecar_client",
+  ],
+]
+allowlist_externals = ["uv"]
+skip_install = true

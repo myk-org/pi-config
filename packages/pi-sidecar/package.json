@@ -1,0 +1,62 @@
+{
+  "name": "@myk-org/pi-sidecar",
+  "version": "1.5.0",
+  "description": "Standalone HTTP sidecar wrapping the Pi coding agent SDK",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/myk-org/pi-sidecar"
+  },
+  "keywords": [
+    "pi",
+    "sidecar",
+    "ai",
+    "coding-agent",
+    "llm"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "scripts"
+  ],
+  "scripts": {
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "postbuild": "rm -f dist/.gitignore",
+    "prepublishOnly": "npm run build",
+    "test": "node --import tsx --test tests/test_ts/*.test.ts",
+    "postinstall": "node scripts/enforce-protobufjs-floor.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.81.1",
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "acpx": "^0.8.0",
+    "jiti": "^2.7.0",
+    "protobufjs": "7.6.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.81.1",
+    "@earendil-works/pi-coding-agent": ">=0.81.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "undici": ">=6.27.0",
+    "uuid": ">=11.1.1",
+    "google-auth-library": ">=10.0.0",
+    "brace-expansion": ">=5.0.7 <6",
+    "adm-zip": "0.6.0",
+    "protobufjs": "7.6.5",
+    "@earendil-works/pi-coding-agent": {
+      "protobufjs": "7.6.5"
+    }
+  }
+}

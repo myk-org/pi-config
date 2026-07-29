@@ -1,0 +1,60 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+uv.lock
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking / linting
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# Project specific
+/data/
+
+# Local development directory
+.dev/
+
+# Superpowers development tool artifacts
+.superpowers/
+
+# Node
+node_modules/
+
+# Local config
+.envrc
+.claude/
