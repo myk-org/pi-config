@@ -5,9 +5,9 @@
  * Used by enforcement to block git commit until all reviewers approve.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { resolveWorktreeRoot } from "./utils.js";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import { resolveWorktreeRoot, getProjectDataDir } from "./utils.js";
 
 type StateTransitionCallback = (state: ReviewState) => void;
 let onTransitionCb: StateTransitionCallback | null = null;
@@ -25,8 +25,6 @@ function notifyTransition(state: ReviewState): void {
   catch (e: any) { console.debug("[pi-config-review-state] transition callback failed:", e?.message); }
 }
 
-const DATA_DIR = ".pi/data";
-
 export interface ReviewState {
   status: "none" | "needs_review" | "in_progress" | "has_findings" | "clean";
   cycle: number;
@@ -42,11 +40,11 @@ export interface ReviewState {
 const STATE_FILE = "pi-config-review-state.json";
 
 export function statePath(cwd: string): string {
-  return join(resolveWorktreeRoot(cwd), DATA_DIR, STATE_FILE);
+  return join(getProjectDataDir(resolveWorktreeRoot(cwd)), STATE_FILE);
 }
 
 function ensureDataDir(cwd: string): void {
-  mkdirSync(join(resolveWorktreeRoot(cwd), DATA_DIR), { recursive: true });
+  getProjectDataDir(resolveWorktreeRoot(cwd));
 }
 
 function defaultState(): ReviewState {

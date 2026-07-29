@@ -40,6 +40,8 @@ export function buildCliCommand(opts: {
   cwd: string;
   sessionId?: string | null;
   continueSession?: boolean;
+  /** Override the default agent binary (from driver config). */
+  binary?: string;
 }): { binary: string; args: string[]; promptOnStdin: boolean } {
   const def = CLI_PROVIDERS[opts.agent];
   const args = [...def.buildBaseArgs(opts.model, opts.cwd)];
@@ -48,5 +50,9 @@ export function buildCliCommand(opts: {
   } else if (opts.continueSession) {
     args.push(...def.continueFlags);
   }
-  return { binary: def.binary, args, promptOnStdin: def.promptOnStdin };
+  return {
+    binary: opts.binary || def.binary,
+    args,
+    promptOnStdin: def.promptOnStdin,
+  };
 }

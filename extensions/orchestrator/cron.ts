@@ -20,6 +20,7 @@ import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { discoverAgents } from "./agents.js";
 import { formatCronSchedule, toCronStatusTaskView } from "./cron-status-format.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
+import { setSlot } from "./status-bar.js";
 import { getProjectTmpDir, parseProcStartTime } from "./utils.js";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -500,13 +501,15 @@ export function registerCron(
   function updateCronStatus() {
     const count = tasks.size;
     saveCrons([...tasks.values()]);
-    if (state.lastCtx?.hasUI) {
-      if (count > 0) {
-        state.lastCtx.ui.setStatus("3-crons", state.lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`));
-      } else {
-        state.lastCtx.ui.setStatus("3-crons", state.lastCtx.ui.theme.fg("muted", `⏰ 0 crons`));
+    try {
+      if (state.lastCtx?.hasUI) {
+        if (count > 0) {
+          setSlot("crons", state.lastCtx.ui.theme.fg("muted", `⏰ ${count} cron${count > 1 ? "s" : ""}`), state.lastCtx);
+        } else {
+          setSlot("crons", state.lastCtx.ui.theme.fg("muted", `⏰ 0 crons`), state.lastCtx);
+        }
       }
-    }
+    } catch { /* stale ctx after session replacement */ }
     pi.events.emit("pidash:cron-status", {
       count,
       tasks: [...tasks.values()].map(t => ({

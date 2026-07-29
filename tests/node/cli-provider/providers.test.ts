@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildCliCommand, isCliAgentName } from "../../../extensions/cli-provider/providers.js";
 import {
+  extractCliUsage,
   parseClaudeJson,
   parseCursorStreamJson,
   parseGeminiJson,
@@ -86,6 +87,29 @@ describe("cli-provider providers", () => {
     assert.ok(args.includes("--stream-partial-output"));
     assert.ok(args.includes("--workspace"));
     assert.ok(args.includes("/tmp/ws"));
+  });
+
+  // runCliAgent forwards opts.binary to buildCliCommand (runner.ts); the
+  // override is covered here at the command-build boundary rather than by
+  // spawning a custom binary through the full runner path.
+  it("prefers custom binary override over agent default", () => {
+    const { binary } = buildCliCommand({
+      agent: "claude",
+      model: "default",
+      cwd: "/tmp/proj",
+      binary: "/opt/custom/claude",
+    });
+    assert.equal(binary, "/opt/custom/claude");
+  });
+
+  it("buildCliCommand uses custom binary override", () => {
+    const cmd = buildCliCommand({
+      agent: "cursor",
+      model: "default",
+      cwd: "/tmp",
+      binary: "/custom/path/to/agent",
+    });
+    assert.equal(cmd.binary, "/custom/path/to/agent");
   });
 });
 
@@ -245,6 +269,80 @@ describe("cli-provider parsers", () => {
     assert.equal(acc.sessionId, "g1");
     assert.equal(acc.text, "LIVE_OK_1");
     assert.equal(deltas.join(""), "LIVE_OK_1");
+  });
+
+  it("extractCliUsage parses Cursor format", () => {
+    assert.deepEqual(
+      extractCliUsage({
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 10,
+          cacheWriteTokens: 5,
+        },
+      }),
+      {
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedReadTokens: 10,
+        cachedWriteTokens: 5,
+        totalTokens: 150,
+      },
+    );
+  });
+
+  it("extractCliUsage parses Claude format with total_cost_usd", () => {
+    assert.deepEqual(
+      extractCliUsage({
+        usage: {
+          input_tokens: 200,
+          output_tokens: 80,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 15,
+        },
+        total_cost_usd: 0.042,
+      }),
+      {
+        inputTokens: 200,
+        outputTokens: 80,
+        cachedReadTokens: 20,
+        cachedWriteTokens: 15,
+        totalTokens: 280,
+        costUsd: 0.042,
+      },
+    );
+  });
+
+  it("extractCliUsage parses Gemini stats format", () => {
+    assert.deepEqual(
+      extractCliUsage({
+        stats: {
+          input_tokens: 300,
+          output_tokens: 120,
+          total_tokens: 420,
+          cached: 40,
+        },
+      }),
+      {
+        inputTokens: 300,
+        outputTokens: 120,
+        cachedReadTokens: 40,
+        totalTokens: 420,
+      },
+    );
+  });
+
+  it("extractCliUsage returns undefined for missing usage", () => {
+    assert.equal(extractCliUsage(undefined), undefined);
+    assert.equal(extractCliUsage(null), undefined);
+    assert.equal(extractCliUsage("not-an-object"), undefined);
+    assert.equal(extractCliUsage({ result: "ok" }), undefined);
+  });
+
+  it("extractCliUsage returns undefined for empty usage objects", () => {
+    assert.equal(extractCliUsage({}), undefined);
+    assert.equal(extractCliUsage({ usage: {} }), undefined);
+    assert.equal(extractCliUsage({ stats: {} }), undefined);
   });
 });
 

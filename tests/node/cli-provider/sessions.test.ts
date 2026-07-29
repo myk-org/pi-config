@@ -12,6 +12,7 @@ import {
   loadCliSessionId,
   loadCliSessionRecord,
   saveCliSessionId,
+  shouldAdoptLegacyCliMarker,
   touchCliSession,
   setCliSessionMarkerMeta,
   type CliSessionKey,
@@ -179,6 +180,32 @@ describe("cli-provider sessions", () => {
       shouldAdoptLegacyCliMarker({ ...real, piSessionId: "other" }, real),
       false,
     );
+  });
+
+  it("shouldAdoptLegacyCliMarker rejects identical session keys", () => {
+    const key: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "019faaaa-1111-2222-3333-444455556666",
+    };
+    assert.equal(shouldAdoptLegacyCliMarker(key, key), false);
+  });
+
+  it("shouldAdoptLegacyCliMarker adopts provisional-to-real transition", () => {
+    const provisional: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "tmp-abc12345",
+    };
+    const real: CliSessionKey = {
+      cwd: "/tmp",
+      agent: "cursor",
+      model: "default",
+      piSessionId: "019faaaa-1111-2222-3333-444455556666",
+    };
+    assert.equal(shouldAdoptLegacyCliMarker(provisional, real), true);
   });
 
   it("stale on-disk default marker is not adopted without prior default key", async () => {

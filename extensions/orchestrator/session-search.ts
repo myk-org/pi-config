@@ -9,10 +9,11 @@
  * Uses JSON storage instead of SQLite for portability (no native deps).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { getProjectDataDir } from "./utils.js";
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
@@ -27,7 +28,7 @@ interface SessionStore {
 }
 
 function getStorePath(cwd: string): string {
-  return join(cwd, ".pi", "data", "session-search.json");
+  return join(getProjectDataDir(cwd), "session-search.json");
 }
 
 function loadStore(cwd: string): SessionStore {
@@ -55,10 +56,6 @@ function loadStore(cwd: string): SessionStore {
 }
 
 function saveStore(cwd: string, store: SessionStore): void {
-  const dir = join(cwd, ".pi", "data");
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
   writeFileSync(getStorePath(cwd), JSON.stringify(store, null, 2), "utf-8");
 }
 

@@ -21,6 +21,7 @@ import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
+import { setSlot } from "./status-bar.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -125,30 +126,32 @@ export function registerAsyncAgents(
   let lastWidgetKey = "";
   function updateAsyncWidget() {
     if (!asyncState.lastCtx?.hasUI) return;
-    const ctx = asyncState.lastCtx;
-    const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
-    const names = running.map(j => j.name || j.agent).join(", ");
-    const widgetKey = `${running.length}:${names}`;
-    const changed = widgetKey !== lastWidgetKey;
-    lastWidgetKey = widgetKey;
-    if (running.length > 0) {
-      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("warning", `⏳ async: ${running.length}`));
-    } else if (changed) {
-      ctx.ui.setStatus("1-async", ctx.ui.theme.fg("muted", `💤 async: 0`));
-    }
-    // Always emit to pidash — browser may have reconnected and needs fresh state
-    pi.events.emit("pidash:async-status", {
-      count: running.length,
-      agents: names,
-      jobs: running.map(j => ({
-        id: j.id,
-        name: j.name || j.agent,
-        agent: j.agent,
-        task: j.task,
-        status: j.status,
-        startedAt: j.startedAt,
-      })),
-    });
+    try {
+      const ctx = asyncState.lastCtx;
+      const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
+      const names = running.map(j => j.name || j.agent).join(", ");
+      const widgetKey = `${running.length}:${names}`;
+      const changed = widgetKey !== lastWidgetKey;
+      lastWidgetKey = widgetKey;
+      if (running.length > 0) {
+        setSlot("async", ctx.ui.theme.fg("warning", `⏳ async: ${running.length}`), ctx);
+      } else if (changed) {
+        setSlot("async", ctx.ui.theme.fg("muted", `💤 async: 0`), ctx);
+      }
+      // Always emit to pidash — browser may have reconnected and needs fresh state
+      pi.events.emit("pidash:async-status", {
+        count: running.length,
+        agents: names,
+        jobs: running.map(j => ({
+          id: j.id,
+          name: j.name || j.agent,
+          agent: j.agent,
+          task: j.task,
+          status: j.status,
+          startedAt: j.startedAt,
+        })),
+      });
+    } catch { /* stale ctx after session replacement */ }
   }
 
   function ensureAsyncPoller() {

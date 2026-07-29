@@ -20,6 +20,8 @@ export interface CliRunOptions {
   sessionId?: string | null;
   continueSession?: boolean;
   signal?: AbortSignal;
+  /** Override the default agent binary (from driver config). */
+  binary?: string;
   /** Optional only — no default. Omit for unlimited turn duration. */
   timeoutMs?: number;
   /** When set, stream NDJSON events as they arrive (stream-json agents). */
@@ -65,6 +67,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     continueSession: opts.continueSession,
+    binary: opts.binary,
   });
 
   const argv = promptOnStdin ? args : [...args, opts.prompt];
@@ -187,6 +190,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
           text: acc.text,
           sessionId: acc.sessionId,
           thinking: acc.thinking || undefined,
+          usage: acc.usage,
           exitCode: code,
           stderr,
         });

@@ -12,6 +12,7 @@ import {
   scheduleOpenPrStatusRefresh,
 } from "./git-helpers.js";
 import { ICON_SEP, ICON_CONTAINER, ICON_GIT_CLEAN, ICON_GIT_DIRTY } from "./icons.js";
+import { setSlot } from "./status-bar.js";
 import { clockHHMM } from "./utils.js";
 
 export function registerStatusLine(
@@ -31,7 +32,7 @@ export function registerStatusLine(
     const text = parts.join(ctx.ui.theme.fg("dim", ICON_SEP));
     if (text === lastStatusText) return; // Skip redundant re-renders
     lastStatusText = text;
-    ctx.ui.setStatus("4-git", text);
+    setSlot("git", text, ctx);
     // Clear legacy status keys to avoid duplicates
     ctx.ui.setStatus("container", undefined);
     ctx.ui.setStatus("git", undefined);
@@ -152,7 +153,7 @@ export function registerStatusLine(
   const updateTimestamp = (ctx: any) => {
     if (!lastActivityTime) return;
     const text = ctx.ui.theme.fg("dim", `⏱ ${clockHHMM(lastActivityTime)} (${ago(lastActivityTime)})`);
-    ctx.ui.setStatus("0-time", text);
+    setSlot("time", text, ctx);
   };
 
   const touchActivity = (_event: any, ctx: any) => {

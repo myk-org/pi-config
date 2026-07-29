@@ -1,22 +1,9 @@
 /**
  * Tests for cli-provider createProvider model mapping / fetchModels shape.
  */
-import { describe, it, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
-import {
-  bindCliAgentStates,
-  bindCliAgentStatesForTests,
-  isCliAgentConfigured,
-} from "../../../extensions/cli-provider/configured.js";
-import { clearResolveBinaryCache } from "../../../extensions/cli-provider/shared/discover-cache.js";
 import {
   buildAmbientLoginAuth,
   filterModelsWhenConfigured,
@@ -25,7 +12,7 @@ import type { DiscoveredCliModel } from "../../../extensions/cli-provider/discov
 
 /**
  * Mirrors cli-provider fetchModels gate + mapping (without loading index/stream).
- * available ≡ isCliBinaryAvailable(agent) && agents.has(agent).
+ * available ≡ instance map has the agent (isCliInstanceConfigured).
  */
 async function simulateCliFetchModels(
   available: boolean,
@@ -131,66 +118,5 @@ describe("cli-provider auth/filter wiring shape", () => {
     ]);
     const filtered = filterModelsWhenConfigured(models, undefined, () => false);
     assert.deepEqual(filtered, []);
-  });
-});
-
-describe("isCliAgentConfigured", () => {
-  const prevPath = process.env.PATH;
-  let binDir: string | undefined;
-
-  afterEach(() => {
-    process.env.PATH = prevPath;
-    clearResolveBinaryCache();
-    bindCliAgentStatesForTests([]);
-    if (binDir) {
-      rmSync(binDir, { recursive: true, force: true });
-      binDir = undefined;
-    }
-  });
-
-  function installFakeBinary(name: string): void {
-    binDir = mkdtempSync(join(tmpdir(), "cli-bin-"));
-    const dest = join(binDir, name);
-    writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    process.env.PATH = [binDir, prevPath].filter(Boolean).join(delimiter);
-    clearResolveBinaryCache();
-  }
-
-  it("false when agent state missing", () => {
-    installFakeBinary("agent");
-    bindCliAgentStatesForTests([]);
-    assert.equal(isCliAgentConfigured("cursor"), false);
-  });
-
-  it("false when binary missing despite agent state", () => {
-    binDir = mkdtempSync(join(tmpdir(), "cli-bin-empty-"));
-    // PATH with empty dir — no "agent" binary
-    process.env.PATH = binDir;
-    clearResolveBinaryCache();
-    bindCliAgentStatesForTests(["cursor"]);
-    assert.equal(isCliAgentConfigured("cursor"), false);
-  });
-
-  it("true when binary on PATH with agent state", () => {
-    installFakeBinary("agent");
-    bindCliAgentStatesForTests(["cursor"]);
-    assert.equal(isCliAgentConfigured("cursor"), true);
-  });
-
-  it("false for unknown agent name", () => {
-    installFakeBinary("agent");
-    bindCliAgentStatesForTests(["not-a-cli-agent"]);
-    assert.equal(isCliAgentConfigured("not-a-cli-agent"), false);
-  });
-
-  it("bindCliAgentStates wires a live Map used by isCliAgentConfigured", () => {
-    installFakeBinary("agent");
-    const live = new Map<string, unknown>();
-    bindCliAgentStates(live);
-    assert.equal(isCliAgentConfigured("cursor"), false);
-    live.set("cursor", {});
-    assert.equal(isCliAgentConfigured("cursor"), true);
-    live.delete("cursor");
-    assert.equal(isCliAgentConfigured("cursor"), false);
   });
 });

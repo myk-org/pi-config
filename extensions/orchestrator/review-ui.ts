@@ -1,7 +1,7 @@
 /**
  * Review loop status — status bar indicator + transcript cards.
  *
- * Status bar: persistent "5-review" key (last in bar, after git).
+ * Status bar: persistent "6-review" key (last in bar, after git).
  * Cards: durable entry renderers via pi.appendEntry (persist across reload,
  * no LLM context cost).
  */
@@ -11,6 +11,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { onStateTransition, readReviewState, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
+import { setSlot, clearSlot } from "./status-bar.js";
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -97,43 +98,45 @@ export function registerReviewUI(pi: ExtensionAPI): void {
 
   function updateStatusBar(state: ReviewState): void {
     if (!lastCtx?.hasUI) return;
-    const ctx = lastCtx;
+    try {
+      const ctx = lastCtx;
 
-    let label: string;
-    let color: string;
-    switch (state.status) {
-      case "none":
-        ctx.ui.setStatus("5-review", undefined);
-        lastBarKey = "";
-        return;
-      case "needs_review":
-        label = `${ICON_REVIEW_NEEDED} review needed`;
-        color = "warning";
-        break;
-      case "in_progress": {
-        const pending = state.reviewers_pending.length;
-        const total = state.reviewers_total;
-        label = `${ICON_REVIEW_PROGRESS} review ${total - pending}/${total}`;
-        color = "accent";
-        break;
+      let label: string;
+      let color: string;
+      switch (state.status) {
+        case "none":
+          clearSlot("review", ctx);
+          lastBarKey = "";
+          return;
+        case "needs_review":
+          label = `${ICON_REVIEW_NEEDED} review needed`;
+          color = "warning";
+          break;
+        case "in_progress": {
+          const pending = state.reviewers_pending.length;
+          const total = state.reviewers_total;
+          label = `${ICON_REVIEW_PROGRESS} review ${total - pending}/${total}`;
+          color = "accent";
+          break;
+        }
+        case "has_findings":
+          label = `${ICON_REVIEW_FINDINGS} ${state.findings_count} finding${state.findings_count !== 1 ? "s" : ""}`;
+          color = "error";
+          break;
+        case "clean":
+          label = state.tests_passed ? `${ICON_REVIEW_CLEAN} ready` : `${ICON_REVIEW_CLEAN} review clean`;
+          color = "success";
+          break;
+        default:
+          label = `${ICON_REVIEW_PROGRESS} ${state.status}`;
+          color = "dim";
       }
-      case "has_findings":
-        label = `${ICON_REVIEW_FINDINGS} ${state.findings_count} finding${state.findings_count !== 1 ? "s" : ""}`;
-        color = "error";
-        break;
-      case "clean":
-        label = state.tests_passed ? `${ICON_REVIEW_CLEAN} ready` : `${ICON_REVIEW_CLEAN} review clean`;
-        color = "success";
-        break;
-      default:
-        label = `${ICON_REVIEW_PROGRESS} ${state.status}`;
-        color = "dim";
-    }
 
-    const barKey = stateKey(state);
-    if (barKey === lastBarKey) return;
-    lastBarKey = barKey;
-    ctx.ui.setStatus("5-review", ctx.ui.theme.fg(color, label));
+      const barKey = stateKey(state);
+      if (barKey === lastBarKey) return;
+      lastBarKey = barKey;
+      setSlot("review", ctx.ui.theme.fg(color, label), ctx);
+    } catch { /* stale ctx after session replacement */ }
   }
 
   // Capture ctx and show current state on load
@@ -142,7 +145,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     if (getSetting(ctx.cwd, "review_loop_enforcement")) {
       updateStatusBar(readReviewState(ctx.cwd));
     } else if (ctx.hasUI) {
-      ctx.ui.setStatus("5-review", undefined);
+      clearSlot("review", ctx);
       lastBarKey = "";
     }
   });
@@ -155,7 +158,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
     try {
       if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) {
-        if (lastCtx.hasUI) lastCtx.ui.setStatus("5-review", undefined);
+        if (lastCtx.hasUI) clearSlot("review", lastCtx);
         lastBarKey = "";
         return;
       }

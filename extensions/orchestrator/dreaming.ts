@@ -19,6 +19,7 @@ import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
+import { setSlot } from "./status-bar.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
@@ -64,9 +65,9 @@ export function registerDreaming(
     try {
       if (!lastCtx?.ui) return;
       if (dreamInFlight) {
-        lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("warning", ICON_DREAM));
+        setSlot("dream", lastCtx.ui.theme.fg("warning", ICON_DREAM), lastCtx);
       } else {
-        lastCtx.ui.setStatus("3b-dream", lastCtx.ui.theme.fg("muted", ICON_DREAM));
+        setSlot("dream", lastCtx.ui.theme.fg("muted", ICON_DREAM), lastCtx);
       }
     } catch { /* stale UI context — ignore */ }
   }
