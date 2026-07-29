@@ -20,6 +20,8 @@ pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is
 - Shared types or re-exports: check `packages/pi-sidecar/src/sessions.ts` imports
 - Before release: run live sidecar smoke test (see `.pi/skills/sidecar-test/`)
 
+**CLI commands:** `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
+
 **Public API contract:** The HTTP REST API (`/health`, `/models`, `/sessions`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
 Internal code, imports, and structure can change freely.
 
