@@ -24,6 +24,10 @@ _resolve_symlink() {
         target="$(readlink "$target")"
         [[ "$target" != /* ]] && target="$dir/$target"
     done
+    if [ -L "$target" ]; then
+        echo "ERROR: symlink resolution exceeded 20 hops (possible cycle): $1" >&2
+        exit 1
+    fi
     echo "$target"
 }
 readonly SCRIPT_DIR="$(cd "$(dirname "$(_resolve_symlink "${BASH_SOURCE[0]}")")" && pwd)"
