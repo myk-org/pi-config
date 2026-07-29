@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Clear process.argv[1] so the subagent extension's getPiInvocation() falls
 // through to `{ command: "pi", args }` instead of re-running the sidecar.
 // This is intentionally in the CLI entry point (not startSidecar()) to avoid

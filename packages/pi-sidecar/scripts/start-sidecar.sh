@@ -15,7 +15,7 @@
 # ---------------------------------------------------------
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 readonly PKG_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly PORT="${SIDECAR_PORT:-9201}"
 readonly HOST="${SIDECAR_HOST:-127.0.0.1}"

@@ -799,6 +799,8 @@ A standalone HTTP sidecar wrapping the Pi SDK, living under `packages/pi-sidecar
 | `@myk-org/pi-sidecar` | TypeScript | npm |
 | `pi-sidecar-client` | Python | PyPI |
 
+CLI commands: `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
+
 See [`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md) for full documentation.
 
 ## License
