@@ -17,7 +17,8 @@ set -euo pipefail
 
 _resolve_symlink() {
     local target="$1"
-    while [ -L "$target" ]; do
+    local max=20
+    while [ -L "$target" ] && (( max-- > 0 )); do
         local dir
         dir="$(cd "$(dirname "$target")" && pwd)"
         target="$(readlink "$target")"
