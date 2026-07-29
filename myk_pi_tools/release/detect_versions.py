@@ -8,6 +8,7 @@ their current version strings.
 from __future__ import annotations
 
 import configparser
+import glob
 import json
 import os
 import re
@@ -200,6 +201,33 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
             version = parser(filepath)
             if version:
                 results.append(VersionFile(path=filename, current_version=version, file_type=file_type))
+
+    # Scan npm workspace packages for version files
+    root_pkg_json = root / "package.json"
+    if root_pkg_json.is_file():
+        try:
+            root_pkg_data = json.loads(root_pkg_json.read_text(encoding="utf-8"))
+            workspaces = root_pkg_data.get("workspaces", [])
+            if isinstance(workspaces, list):
+                for workspace_pattern in workspaces:
+                    for workspace_dir in sorted(glob.glob(str(root / workspace_pattern))):
+                        ws_path = Path(workspace_dir)
+                        if not ws_path.is_dir():
+                            continue
+                        for filename, parser, file_type in _ROOT_SCANNERS:
+                            filepath = ws_path / filename
+                            if filepath.is_file():
+                                version = parser(filepath)
+                                if version:
+                                    results.append(
+                                        VersionFile(
+                                            path=filepath.relative_to(root).as_posix(),
+                                            current_version=version,
+                                            file_type=file_type,
+                                        )
+                                    )
+        except (OSError, json.JSONDecodeError):
+            pass
 
     results.extend(_find_python_version_files(root))
 
