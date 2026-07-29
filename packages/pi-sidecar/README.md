@@ -5,7 +5,7 @@ A standalone HTTP service that wraps the
 (requires `@earendil-works/pi-coding-agent` ≥ 0.81.1), exposing AI sessions over a
 simple JSON API. Ships with a Python client for easy integration.
 
-📖 **[Full Documentation](https://myk-org.github.io/pi-sidecar/)**
+📖 **[Full Documentation](https://myk-org.github.io/pi-config/)**
 
 ## Features
 
@@ -51,7 +51,7 @@ npm run build && node dist/server.js  # listens on 127.0.0.1:9100
 scripts/start-sidecar.sh
 ```
 
-See the [full documentation](https://myk-org.github.io/pi-sidecar/) for everything else.
+See the [full documentation](https://myk-org.github.io/pi-config/) for everything else.
 
 ## License
 

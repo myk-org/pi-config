@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/myk-org/pi-sidecar"
+    "url": "https://github.com/myk-org/pi-config"
   },
   "keywords": [
     "pi",
