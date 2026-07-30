@@ -15,7 +15,22 @@
 # ---------------------------------------------------------
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_resolve_symlink() {
+    local target="$1"
+    local max=20
+    while [ -L "$target" ] && (( max-- > 0 )); do
+        local dir
+        dir="$(cd "$(dirname "$target")" && pwd)"
+        target="$(readlink "$target")"
+        [[ "$target" != /* ]] && target="$dir/$target"
+    done
+    if [ -L "$target" ]; then
+        echo "ERROR: symlink resolution exceeded 20 hops (possible cycle): $1" >&2
+        exit 1
+    fi
+    echo "$target"
+}
+readonly SCRIPT_DIR="$(cd "$(dirname "$(_resolve_symlink "${BASH_SOURCE[0]}")")" && pwd)"
 readonly PKG_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly PORT="${SIDECAR_PORT:-9201}"
 readonly HOST="${SIDECAR_HOST:-127.0.0.1}"

@@ -53,6 +53,20 @@ scripts/start-sidecar.sh
 
 See the [full documentation](https://myk-org.github.io/pi-config/) for everything else.
 
+## CLI Commands
+
+After installing `@myk-org/pi-sidecar`, two CLI commands are available:
+
+```bash
+# Start the sidecar server (Node.js entry point)
+npx pi-sidecar
+
+# Start/stop via shell script (background mode, dev defaults on port 9201)
+npx pi-sidecar-start
+npx pi-sidecar-start --stop
+npx pi-sidecar-start --help
+```
+
 ## License
 
 Apache-2.0
