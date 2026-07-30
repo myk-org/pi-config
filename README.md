@@ -803,6 +803,16 @@ CLI commands: `npx pi-sidecar` (start server), `npx pi-sidecar-start` (backgroun
 
 See [`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md) for full documentation.
 
+### pi-vertex-claude
+
+Google Vertex AI Claude provider for Pi, living under `packages/pi-vertex-claude/`.
+
+| Package | Language | Registry |
+|---------|----------|----------|
+| `@myk-org/pi-vertex-claude` | TypeScript | npm |
+
+See [`packages/pi-vertex-claude/README.md`](packages/pi-vertex-claude/README.md) for full documentation.
+
 ## License
 
 MIT

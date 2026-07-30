@@ -88,7 +88,7 @@ const PROVIDER_EXTENSION = resolveExt("SIDECAR_PROVIDER_EXTENSION_PATH", "pi-orc
  */
 const CLI_DISCOVER_MODULE = CLI_PROVIDER_EXTENSION;
 const ACPX_DISCOVER_MODULE = ACPX_EXTENSION;
-const VERTEX_EXTENSION = resolveAndLog("SIDECAR_VERTEX_EXTENSION_PATH", "pi-vertex-claude", "index.ts");
+const VERTEX_EXTENSION = resolveExt("SIDECAR_VERTEX_EXTENSION_PATH", "@myk-org/pi-vertex-claude", "index.ts", "packages/pi-vertex-claude/index.ts");
 const SUBAGENT_EXTENSION = resolveAndLog("SIDECAR_SUBAGENT_EXTENSION_PATH", "@earendil-works/pi-coding-agent", "examples/extensions/subagent/index.ts");
 
 /** Cache of jiti-loaded fallback discovery modules, keyed by resolved path. */

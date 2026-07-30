@@ -6,7 +6,7 @@
     "pi-package"
   ],
   "license": "MIT",
-  "workspaces": ["packages/pi-sidecar"],
+  "workspaces": ["packages/pi-sidecar", "packages/pi-vertex-claude"],
   "files": [
     "extensions/acpx-provider/",
     "extensions/cli-provider/",

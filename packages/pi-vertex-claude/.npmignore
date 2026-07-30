@@ -1,0 +1,18 @@
+# Test files
+test/
+*.test.ts
+vitest.config.ts
+
+# Development files
+.git/
+.github/
+node_modules/
+*.log
+.DS_Store
+
+# Documentation (keep README.md)
+docs/
+
+# CI/CD
+.gitlab-ci.yml
+.travis.yml

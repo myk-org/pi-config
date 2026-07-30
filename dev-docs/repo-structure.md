@@ -173,7 +173,7 @@ pi-config/
 │   ├── symlink-cli-specialists.sh   # Symlink package agents into .cursor/.claude/.gemini/agents (container entrypoint)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── packages/                        # Workspace packages
-│   └── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
+│   ├── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
 │       ├── src/                     # TypeScript source
 │       │   ├── index.ts             # Public API + startSidecar()
 │       │   ├── server.ts            # CLI entry point
@@ -196,6 +196,13 @@ pi-config/
 │       ├── package.json            # @myk-org/pi-sidecar (npm workspace package)
 │       ├── pyproject.toml          # pi-sidecar-client (PyPI)
 │       └── tsconfig.json           # TypeScript config
+│   └── pi-vertex-claude/              # Vertex AI Claude provider (@myk-org/pi-vertex-claude)
+│       ├── index.ts                   # Provider extension entry point
+│       ├── test/                      # Tests (vitest)
+│       │   ├── vertex-claude.test.ts
+│       │   └── vertex-claude.integration.test.ts
+│       ├── package.json               # @myk-org/pi-vertex-claude (npm workspace package)
+│       └── vitest.config.ts           # Test config
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
 ├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)
