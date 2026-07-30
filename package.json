@@ -7,6 +7,22 @@
   ],
   "license": "MIT",
   "workspaces": ["packages/pi-sidecar"],
+  "files": [
+    "extensions/acpx-provider/",
+    "extensions/cli-provider/",
+    "extensions/providers/",
+    "extensions/shared/",
+    "extensions/orchestrator/",
+    "extensions/coms/",
+    "extensions/image-gen/",
+    "extensions/pidash/*.ts",
+    "extensions/pidiff/*.ts",
+    "agents/",
+    "rules/",
+    "prompts/",
+    "templates/",
+    "skills/"
+  ],
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "acpx": ">=0.12.0 <1",

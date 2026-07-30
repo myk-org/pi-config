@@ -69,17 +69,18 @@ type AcpxDiscoverModule = {
   discoverAcpxModels: (agent: string, cwd?: string) => Promise<DiscoveredModel[]>;
 };
 
-// Monorepo: extensions are siblings at known relative paths.
-// Env var overrides still work for custom setups.
-const ACPX_EXTENSION = process.env.SIDECAR_ACPX_EXTENSION_PATH
-  ? resolve(process.env.SIDECAR_ACPX_EXTENSION_PATH)
-  : join(__dirname, "..", "..", "..", "extensions", "acpx-provider", "index.ts");
-const CLI_PROVIDER_EXTENSION = process.env.SIDECAR_CLI_PROVIDER_EXTENSION_PATH
-  ? resolve(process.env.SIDECAR_CLI_PROVIDER_EXTENSION_PATH)
-  : join(__dirname, "..", "..", "..", "extensions", "cli-provider", "index.ts");
-const PROVIDER_EXTENSION = process.env.SIDECAR_PROVIDER_EXTENSION_PATH
-  ? resolve(process.env.SIDECAR_PROVIDER_EXTENSION_PATH)
-  : join(__dirname, "..", "..", "..", "extensions", "providers", "index.ts");
+/** Resolve extension: env override → npm package → monorepo relative path. */
+export function resolveExt(envVar: string, packageName: string, entryFile: string, monorepoRelative: string): string {
+  const envPath = process.env[envVar];
+  if (envPath) return resolve(envPath);
+  const pkg = resolveExtensionPathDetailed(envVar, packageName, entryFile);
+  if (pkg.path) return pkg.path;
+  return join(__dirname, "..", "..", "..", monorepoRelative);
+}
+
+const ACPX_EXTENSION = resolveExt("SIDECAR_ACPX_EXTENSION_PATH", "pi-orchestrator-config", "extensions/acpx-provider/index.ts", "extensions/acpx-provider/index.ts");
+const CLI_PROVIDER_EXTENSION = resolveExt("SIDECAR_CLI_PROVIDER_EXTENSION_PATH", "pi-orchestrator-config", "extensions/cli-provider/index.ts", "extensions/cli-provider/index.ts");
+const PROVIDER_EXTENSION = resolveExt("SIDECAR_PROVIDER_EXTENSION_PATH", "pi-orchestrator-config", "extensions/providers/index.ts", "extensions/providers/index.ts");
 /**
  * Load fallback discovery via jiti from each extension's public entry
  * (`index.ts`), which re-exports discoverCliModels / discoverAcpxModels —
