@@ -70,7 +70,7 @@ type AcpxDiscoverModule = {
 };
 
 /** Resolve extension: env override → npm package → monorepo relative path. */
-function resolveExt(envVar: string, packageName: string, entryFile: string, monorepoRelative: string): string {
+export function resolveExt(envVar: string, packageName: string, entryFile: string, monorepoRelative: string): string {
   const envPath = process.env[envVar];
   if (envPath) return resolve(envPath);
   const pkg = resolveExtensionPathDetailed(envVar, packageName, entryFile);
