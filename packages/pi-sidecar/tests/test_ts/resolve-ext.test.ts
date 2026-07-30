@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/resolve-extension-path.js";
@@ -55,7 +55,7 @@ describe("resolveExt extension resolution chain", () => {
     try {
       process.env[envVar] = "/override/path/index.ts";
       const result = resolveExt(envVar, "pi-orchestrator-config", "extensions/acpx-provider/index.ts", "extensions/acpx-provider/index.ts");
-      assert.equal(result, "/override/path/index.ts");
+      assert.equal(result, resolve("/override/path/index.ts"), "should use resolved env var path");
     } finally {
       delete process.env[envVar];
     }
