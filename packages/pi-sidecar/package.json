@@ -42,7 +42,7 @@
     "acpx": "^0.8.0",
     "jiti": "^2.7.0",
     "protobufjs": "7.6.5",
-    "pi-orchestrator-config": "^4.1.3"
+    "pi-orchestrator-config": "*"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.81.1",
