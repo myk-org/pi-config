@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,76 +302,163 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="automating-code-reviews">Automating Code Reviews</h1>
-<p>Configure automated pipelines to gather and apply code review feedback from AI agents like Qodo and CodeRabbit. By setting up continuous pull request feedback, you can automatically ingest comments, apply code fixes, and push updates without manual intervention.</p>
+<p>Use the review loop when you want Pi to fetch PR feedback, apply fixes, reply to review comments, and keep re-checking until your AI reviewers approve. This is the fastest way to turn Qodo and CodeRabbit feedback into working code without hand-copying comments between GitHub and your editor.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>A GitHub Pull Request active on your current branch.</li>
-<li>CodeRabbit and/or Qodo installed as GitHub apps on your repository.</li>
+<li>A GitHub pull request already opened for your current branch</li>
+<li>Qodo and/or CodeRabbit enabled on that repository</li>
+<li>A Pi session running in the repo</li>
+<li><code>uv</code>, <code>gh</code>, and <code>myk-pi-tools</code> available in your environment</li>
 </ul>
 <h2 id="quick-example">Quick Example</h2>
-<p>To automatically poll, fix, and resolve all pending AI code review comments in a continuous loop:</p>
 <div class="highlight"><pre><span></span><code>/review-handler<span class="w"> </span>--autorabbit<span class="w"> </span>--autoqodo
 </code></pre></div>
 
+<p>Run this inside Pi to start the automatic loop for the current PR. It watches both AI review sources, fixes actionable findings, posts replies, pushes follow-up commits, and keeps polling until approval or until you stop it.</p>
 <h2 id="step-by-step">Step-by-Step</h2>
-<p>Follow these steps to fully automate the review loop for your Pull Requests.</p>
 <ol>
-<li>
-<p><strong>Trigger the review loop</strong>
-   Start the automated review processor on your active branch. This fetches all pending comments, categorizes them by source, and attempts to write the necessary code fixes.
-   <code>bash
-   /review-handler --autoqodo</code></p>
-</li>
-<li>
-<p><strong>Handle AI pushback</strong>
-   If an AI reviewer disagrees with a fix, it generates a "sticky finding" with a pushback response. The automation loop automatically surfaces this new feedback and attempts a different approach on the next iteration.</p>
-</li>
-<li>
-<p><strong>Resolve threads automatically</strong>
-   Once you push new commits, the handler waits for the AI reviewer to re-evaluate. If the bot confirms the fix, the threads are automatically marked as skipped and will not appear in future iterations.</p>
-</li>
+<li><strong>Choose the review mode</strong></li>
 </ol>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="review-loop-cycles-and-limits">Review Loop Cycles and Limits</h3>
-<p>When using <code>--autorabbit</code> or <code>--autoqodo</code> in <code>/review-handler</code>, the automation loop is subject to the <code>review_loop_max_cycles</code> configuration (default: 3).</p>
+<p>Use the command that matches how much automation you want:</p>
+<table>
+<thead>
+<tr>
+<th>Goal</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Auto-fix CodeRabbit comments</td>
+<td><code>/review-handler --autorabbit</code></td>
+</tr>
+<tr>
+<td>Auto-fix Qodo comments</td>
+<td><code>/review-handler --autoqodo</code></td>
+</tr>
+<tr>
+<td>Auto-fix both AI reviewers</td>
+<td><code>/review-handler --autorabbit --autoqodo</code></td>
+</tr>
+<tr>
+<td>Review all sources manually</td>
+<td><code>/review-handler</code></td>
+</tr>
+</tbody>
+</table>
+<ol>
+<li><strong>Start with the simplest working flow</strong></li>
+</ol>
+<p>If you want a hands-off loop, start with both AI reviewers enabled:</p>
+<p><code>bash
+   /review-handler --autorabbit --autoqodo</code></p>
+<p>In auto mode, Pi skips the manual approval table and goes straight into fetch → fix → test → commit → push → reply → poll.</p>
+<ol>
+<li><strong>Let Pi process the current round of comments</strong></li>
+</ol>
+<p>In auto mode, the handler works from the current PR and processes:
+   - CodeRabbit comments
+   - Qodo findings
+   - follow-up reviewer pushback on earlier fixes</p>
+<p>The loop keeps running until one of these happens:
+   - the reviewer approves the PR
+   - you explicitly stop the loop</p>
 <blockquote>
-<p><strong>Note:</strong> Staged mode shares one total <code>review_loop_max_cycles</code> budget across both its Spec Compliance and Code Quality stages — it is not a separate cap per stage.</p>
+<p><strong>Tip:</strong> The loop can run for a long time while waiting for new bot comments. See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details on monitoring long-running background work.</p>
 </blockquote>
-<p>Hitting the cycle cap stops re-dispatching reviewers, but any remaining unresolved findings or failing tests will still block commits if <code>review_loop_enforcement</code> is enabled. You can adjust this limit (1-10) in your <code>pi-config-settings.json</code>.</p>
-<h3 id="handling-coderabbit-rate-limits">Handling CodeRabbit Rate Limits</h3>
-<p>CodeRabbit rate limits can temporarily pause your automated workflows. You can manually handle rate limits and force a re-trigger on your current branch's PR:</p>
-<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit
+<ol>
+<li><strong>Use manual mode when humans are involved</strong></li>
+</ol>
+<p>If you run:</p>
+<p><code>bash
+   /review-handler</code></p>
+<p>Pi fetches human, Qodo, and CodeRabbit items and presents them for review. This is the better choice when you want to approve, skip, or explain items one by one before Pi makes changes.</p>
+<ol>
+<li><strong>Handle one reviewer at a time when needed</strong></li>
+</ol>
+<p>If one bot is noisy or blocked, run only the other source first:</p>
+<p><code>bash
+   /review-handler --autorabbit</code></p>
+<p><code>bash
+   /review-handler --autoqodo</code></p>
+<p>This is useful when you want a smaller fix cycle before bringing both reviewers back in.</p>
+<ol>
+<li><strong>Let the loop re-check after each push</strong></li>
+</ol>
+<p>After Pi fixes comments and pushes a follow-up commit, it polls for new reviewer output again. For Qodo, that includes follow-up responses on sticky findings; for CodeRabbit, it includes re-triggered review cycles after cooldowns or pauses.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="review-with-the-cli-instead-of-the-slash-command">Review with the CLI instead of the slash command</h3>
+<p>Use the CLI flow when you want to script review automation outside the interactive handler:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
-<p>To target a specific pull request number:</p>
-<div class="highlight"><pre><span></span><code>/coderabbit-rate-limit<span class="w"> </span><span class="m">123</span>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--source<span class="w"> </span>qodo<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
-<h3 id="isolating-specific-review-sources">Isolating Specific Review Sources</h3>
-<p>If you prefer to integrate the review loop into custom scripts instead of using the interactive handler, you can poll specific sources using the CLI:</p>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--output-dir<span class="w"> </span>/tmp/reviews<span class="w"> </span>--source<span class="w"> </span>coderabbit
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>post<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
-<p>You can set <code>--source</code> to <code>qodo</code>, <code>coderabbit</code>, or <code>human</code> to process specific subsets of feedback. See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for more details.</p>
-<h3 id="customizing-coderabbit-rules">Customizing CodeRabbit Rules</h3>
-<p>To adjust how assertive CodeRabbit is or to disable automatic review pausing, create or update <code>.coderabbit.yaml</code> in your project root:</p>
-<div class="highlight"><pre><span></span><code><span class="c1"># .coderabbit.yaml</span>
-<span class="nt">reviews</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assertive</span>
-<span class="w">  </span><span class="nt">request_changes_workflow</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>store<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
+<p>Use this flow when you need custom wrappers, CI experiments, or one-off tooling. See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for details.</p>
+<blockquote>
+<p><strong>Warning:</strong> <code>--autorabbit</code> and <code>--autoqodo</code> are slash-command flags for <code>/review-handler</code>. They are not CLI flags for <code>myk-pi-tools reviews ...</code>.</p>
+</blockquote>
+<h3 id="ask-qodo-follow-up-questions">Ask Qodo follow-up questions</h3>
+<p>If Qodo keeps objecting and you need a more specific answer, ask it directly from the current PR context:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span><span class="s2">&quot;What edge cases are missing?&quot;</span>
+</code></pre></div>
+
+<p>This is especially useful when a finding is still actionable but the fix direction is unclear.</p>
+<h3 id="generate-a-review-status-report">Generate a review status report</h3>
+<p>To inspect the current PR’s accumulated review history and produce an HTML report:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span class="w"> </span>--output-dir<span class="w"> </span>.pi/reports/
+</code></pre></div>
+
+<p>Use this when you want a durable summary across multiple review cycles instead of only the latest comment thread state.</p>
+<h3 id="run-multiple-pr-review-loops-safely">Run multiple PR review loops safely</h3>
+<p>If you need to automate reviews for more than one PR at the same time, use separate worktrees instead of switching branches in place:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/pr-42<span class="w"> </span>origin/fix/issue-42
+git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/pr-43<span class="w"> </span>origin/feat/issue-43
+</code></pre></div>
+
+<p>Then run <code>/review-handler</code> from each worktree independently. This avoids cross-contaminating parallel review sessions.</p>
+<h3 id="understand-cycle-limits-in-auto-mode">Understand cycle limits in auto mode</h3>
+<p>Automated review flows use a shared review-cycle budget controlled by <code>review_loop_max_cycles</code>. Auto mode also runs in two stages: spec first, then code quality, with both stages drawing from the same cycle cap.</p>
+<p>If the cycle cap is reached before approval, Pi stops re-dispatching reviewers and reports the remaining state instead of pretending the PR is clean. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>CodeRabbit pauses reviews:</strong> If CodeRabbit replies with "reviews paused by coderabbit.ai", add <code>request_changes_workflow: false</code> to your <code>.coderabbit.yaml</code> to prevent it from halting automation.</li>
-<li><strong>Stuck Qodo findings:</strong> If Qodo findings appear "stuck" (you pushed a fix but the AI hasn't resolved the thread), the review loop will automatically attempt to post a cleanup request to force re-evaluation. </li>
+<li>
+<p><strong>CodeRabbit is rate-limited:</strong> run:
+  <code>bash
+  /coderabbit-rate-limit</code>
+  This waits out the cooldown and re-triggers the review on the current PR.</p>
+</li>
+<li>
+<p><strong>CodeRabbit pauses after too many reviewed commits:</strong> add this to <code>.coderabbit.yaml</code>:
+  <code>yaml
+  reviews:
+    auto_review:
+      auto_pause_after_reviewed_commits: 0</code></p>
+</li>
+<li>
+<p><strong>Qodo keeps resurfacing the same finding:</strong> ask a follow-up question with <code>myk-pi-tools reviews ask-qodo "..."</code>, then either change the code or clarify the requirement before rerunning the loop.</p>
+</li>
+<li>
+<p><strong>Commits are blocked even after fixes:</strong> your review loop may still be failing tests or waiting on reviewer approval. See <a href="configuration.html">Configuration &amp; Settings</a> for the cycle cap settings, and see <a href="safety-enforcements.html">Implementing Command Guards</a> for commit enforcement details.</p>
+</li>
+<li>
+<p><strong>You want a simpler first pass:</strong> start with <code>/review-handler --autorabbit</code> or <code>/review-handler --autoqodo</code>, then enable both once the PR is stable.</p>
+</li>
 </ul>
-<p>For additional agent customization and setup, see <a href="configuration.html">Configuration &amp; Settings</a>.</p>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
-<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
-<li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
+<li><a href="cli-reference.html">myk_pi_tools CLI Reference</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
+<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
+<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
 </ul>
                 </div>
             </article>
@@ -371,10 +486,11 @@
 <li><a href="#quick-example">Quick Example</a></li>
 <li><a href="#step-by-step">Step-by-Step</a></li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#review-loop-cycles-and-limits">Review Loop Cycles and Limits</a></li>
-<li><a href="#handling-coderabbit-rate-limits">Handling CodeRabbit Rate Limits</a></li>
-<li><a href="#isolating-specific-review-sources">Isolating Specific Review Sources</a></li>
-<li><a href="#customizing-coderabbit-rules">Customizing CodeRabbit Rules</a></li>
+<li><a href="#review-with-the-cli-instead-of-the-slash-command">Review with the CLI instead of the slash command</a></li>
+<li><a href="#ask-qodo-follow-up-questions">Ask Qodo follow-up questions</a></li>
+<li><a href="#generate-a-review-status-report">Generate a review status report</a></li>
+<li><a href="#run-multiple-pr-review-loops-safely">Run multiple PR review loops safely</a></li>
+<li><a href="#understand-cycle-limits-in-auto-mode">Understand cycle limits in auto mode</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -390,7 +506,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

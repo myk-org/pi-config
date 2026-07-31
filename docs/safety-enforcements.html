@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,76 +302,123 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="implementing-command-guards">Implementing Command Guards</h1>
-<p>Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.</p>
-<h2 id="block-a-destructive-command-pattern">Block a Destructive Command Pattern</h2>
-<p>Stop the agent from executing specific, potentially destructive commands using memory enforcement triggers.</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Never prune docker images&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;trigger&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bash_contains docker system prune&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;block&quot;</span>
-<span class="p">}</span>
-</code></pre></div>
-
-<p>Ask the agent to run the <code>memory_add</code> tool with these parameters to block commands matching the trigger. The agent evaluates the trigger against <code>bash</code> tool invocations and immediately rejects matching requests.</p>
+<p>Use these recipes to create code-enforced memories with <code>memory_add(...)</code>. For how memories are stored and managed over time, see <a href="curating-project-memory.html">Curating Project Memory</a>. For automated review-loop commit blocking, see <a href="automating-code-reviews.html">Automating Code Reviews</a>.</p>
 <blockquote>
-<p><strong>Tip:</strong> You can also use the <code>bash_regex</code> trigger for more complex matches, or <code>tool_name</code> to block specific tools entirely.</p>
+<p><strong>Note:</strong> These recipes document project-specific guards you add yourself. For the full settings reference, see <a href="configuration.html">Configuration &amp; Settings</a>.</p>
 </blockquote>
-<h2 id="trigger-an-automatic-post-command-script">Trigger an Automatic Post-Command Script</h2>
-<p>Automatically run a deployment or cleanup script immediately after a specific command finishes.</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Sync database after schema changes&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;trigger&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bash_contains prisma db push&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;run_after ./scripts/sync-db.sh&quot;</span>
-<span class="p">}</span>
+<h2 id="block-a-destructive-cleanup-command">Block a destructive cleanup command</h2>
+<p>Use this when you want Pi to reject a specific bash command before it runs.</p>
+<div class="highlight"><pre><span></span><code>memory_add(
+  text=&quot;Never prune Docker images or containers from this repo&quot;,
+  category=&quot;lesson&quot;,
+  trigger=&quot;bash_contains docker system prune&quot;,
+  action=&quot;block&quot;
+)
 </code></pre></div>
 
-<p>Ask the agent to run the <code>memory_add</code> tool with the <code>run_after</code> action. When the trigger matches a bash command, the enforcement engine will automatically execute the trailing script in the background.</p>
-<h2 id="restrict-allowed-automatic-scripts">Restrict Allowed Automatic Scripts</h2>
-<p>Limit which scripts can be executed automatically by enforcement rules to prevent malicious chaining.</p>
-<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_ALLOWED_COMMANDS</span><span class="o">=</span><span class="s2">&quot;./scripts/sync-db.sh:make format:npm run build&quot;</span>
+<p>This creates a hard block on any <code>bash</code> tool call containing <code>docker system prune</code>. Use <code>bash_contains</code> when the command is easy to match with a plain substring and you do not need regex flexibility.</p>
+<ul>
+<li>Good fits: <code>terraform destroy</code>, <code>kubectl delete namespace</code>, <code>aws s3 rm --recursive</code></li>
+<li>Keep one rule per dangerous command so the reason stays obvious</li>
+</ul>
+<h2 id="block-force-pushes-with-a-regex">Block force-pushes with a regex</h2>
+<p>Use this when a command has multiple spellings and you need one rule to catch all of them.</p>
+<div class="highlight"><pre><span></span><code>memory_add(
+  text=&quot;Never force-push from this repo&quot;,
+  category=&quot;lesson&quot;,
+  trigger=&quot;bash_regex git\\s+push\\s+--force(?:-with-lease)?\\b&quot;,
+  action=&quot;block&quot;
+)
 </code></pre></div>
 
-<p>Set this environment variable in your terminal or container environment. When defined, any <code>run_after</code> actions must exactly match an entry in this colon-separated allowlist.</p>
+<p>This blocks both <code>git push --force</code> and <code>git push --force-with-lease</code>. Use <code>bash_regex</code> when a simple substring is too broad or would miss important variants.</p>
 <blockquote>
-<p><strong>Warning:</strong> Exact matches are required. Prefix matching is disabled to prevent shell chaining bypasses.</p>
+<p><strong>Tip:</strong> Keep regexes short and targeted. This matcher is for command guards, not full shell parsing.</p>
 </blockquote>
-<h2 id="warn-the-agent-on-sensitive-file-modifications">Warn the Agent on Sensitive File Modifications</h2>
-<p>Inject a contextual warning directly into the agent's context whenever specific files are modified.</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Ensure CI workflows are tested locally before pushing&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;trigger&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;file_modified .github/workflows/*.yml&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;warn&quot;</span>
-<span class="p">}</span>
+<h2 id="warn-when-editing-secret-files">Warn when editing secret files</h2>
+<p>Use this when a file should stay editable, but every edit deserves an extra reminder.</p>
+<div class="highlight"><pre><span></span><code>memory_add(
+  text=&quot;Check for secrets before saving .env files&quot;,
+  category=&quot;pattern&quot;,
+  trigger=&quot;file_modified *.env&quot;,
+  action=&quot;warn&quot;
+)
 </code></pre></div>
 
-<p>Ask the agent to run the <code>memory_add</code> tool using a <code>file_modified</code> trigger and the <code>warn</code> action. When the agent uses file-writing tools (like <code>write</code> or <code>edit</code>) on matching paths, the memory text is automatically appended as a warning in the tool results.</p>
-<h2 id="require-a-prerequisite-tool-call">Require a Prerequisite Tool Call</h2>
-<p>Prevent the execution of a specific command unless another tool was invoked earlier in the same turn.</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Always ask user before merging PRs&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pattern&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;verifier&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tool_called ask_user before gh pr merge&quot;</span>
-<span class="p">}</span>
+<p>This appends a warning when Pi uses <code>write</code> or <code>edit</code> on a matching file path. Use <code>warn</code> for sensitive files that sometimes need changes but should never be edited casually.</p>
+<ul>
+<li><code>file_modified *.py</code> matches by extension</li>
+<li><code>file_modified Dockerfile</code> matches by path substring</li>
+</ul>
+<h2 id="require-approval-before-merging-a-pr">Require approval before merging a PR</h2>
+<p>Use this when a command is allowed only after another tool has run in the same turn.</p>
+<div class="highlight"><pre><span></span><code>memory_add(
+  text=&quot;Always get explicit approval before merging a pull request&quot;,
+  category=&quot;pattern&quot;,
+  verifier=&quot;tool_called ask_user before gh pr merge&quot;
+)
 </code></pre></div>
 
-<p>Ask the agent to run the <code>memory_add</code> tool with this semantic verifier. The orchestrator checks the active turn's tool history at <code>turn_end</code> and logs a violation if the specified command (<code>gh pr merge</code>) was executed without the required tool (<code>ask_user</code>) preceding it.</p>
-<h2 id="enable-the-automated-code-review-loop">Enable the Automated Code Review Loop</h2>
-<p>Block agents from committing code until all automated reviewers report zero findings.</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;review_loop_enforcement&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;review_loop_max_cycles&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
-<span class="p">}</span>
+<p>This adds a semantic verifier instead of a trigger/action pair. If Pi runs <code>gh pr merge</code> without calling <code>ask_user</code> first, the turn is flagged as a violation.</p>
+<blockquote>
+<p><strong>Note:</strong> This checks ordering inside a single turn: <code>ask_user</code> must happen before the merge command.</p>
+</blockquote>
+<h2 id="make-the-repo-read-only-for-direct-edits">Make the repo read-only for direct edits</h2>
+<p>Use this when you want Pi to inspect and plan, but never modify files directly.</p>
+<div class="highlight"><pre><span></span><code>memory_add(
+  text=&quot;Do not write files directly in this repo&quot;,
+  category=&quot;preference&quot;,
+  trigger=&quot;tool_name write&quot;,
+  action=&quot;block&quot;
+)
+
+memory_add(
+  text=&quot;Do not edit files directly in this repo&quot;,
+  category=&quot;preference&quot;,
+  trigger=&quot;tool_name edit&quot;,
+  action=&quot;block&quot;
+)
 </code></pre></div>
 
-<p>Set these values in your project's <code>.pi/pi-config-settings.json</code> file. When enabled, the orchestrator intercepts <code>git commit</code> commands and checks the review state machine, enforcing that tests pass and subagent reviewers approve. Hitting the cycle cap stops the loop but does NOT bypass the commit block.</p>
-<p>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
+<p>These rules block tool calls by exact tool name rather than by shell text. Use <code>tool_name</code> when the risky behavior is the tool itself, not a particular bash command.</p>
+<ul>
+<li>Common targets: <code>write</code>, <code>edit</code>, or other project-specific tools</li>
+<li>For agent-level workflow controls, see <a href="managing-custom-agents.html">Managing Custom Agents</a></li>
+</ul>
+<h2 id="run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</h2>
+<p>Use this when you want Pi to perform a tightly controlled check right after a successful change.</p>
+<div class="highlight"><pre><span></span><code># In your shell before starting pi
+export PI_ENFORCEMENT_ALLOWED_COMMANDS=&quot;git diff -- Dockerfile&quot;
+
+# In pi chat
+memory_add(
+  text=&quot;Show the Dockerfile diff after every edit&quot;,
+  category=&quot;pattern&quot;,
+  trigger=&quot;file_modified Dockerfile&quot;,
+  action=&quot;run_after git diff -- Dockerfile&quot;
+)
+</code></pre></div>
+
+<p>This runs <code>git diff -- Dockerfile</code> immediately after a matching <code>write</code> or <code>edit</code> succeeds, and only because the command is allowlisted exactly. Use this for short, deterministic checks that you want attached to a specific kind of edit.</p>
+<blockquote>
+<p><strong>Warning:</strong> Allowlist entries must match exactly, character for character.</p>
+</blockquote>
+<ul>
+<li>
+<p>To allow more than one follow-up command, use a colon-separated list:
+  <code>export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"</code></p>
+</li>
+<li>
+<p>Keep follow-up commands fast so they do not slow down normal edits</p>
+</li>
+</ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="custom-slash-commands.html">Creating Slash Commands</a></li>
-<li><a href="cli-reference.html">myk_pi_tools CLI Reference</a></li>
+<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
+<li><a href="memory-architecture.html">Memory Architecture</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="automating-code-reviews.html">Automating Code Reviews</a></li>
+<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
 </ul>
                 </div>
             </article>
@@ -367,12 +442,12 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#block-a-destructive-command-pattern">Block a Destructive Command Pattern</a></li>
-<li><a href="#trigger-an-automatic-post-command-script">Trigger an Automatic Post-Command Script</a></li>
-<li><a href="#restrict-allowed-automatic-scripts">Restrict Allowed Automatic Scripts</a></li>
-<li><a href="#warn-the-agent-on-sensitive-file-modifications">Warn the Agent on Sensitive File Modifications</a></li>
-<li><a href="#require-a-prerequisite-tool-call">Require a Prerequisite Tool Call</a></li>
-<li><a href="#enable-the-automated-code-review-loop">Enable the Automated Code Review Loop</a></li>
+<li><a href="#block-a-destructive-cleanup-command">Block a destructive cleanup command</a></li>
+<li><a href="#block-force-pushes-with-a-regex">Block force-pushes with a regex</a></li>
+<li><a href="#warn-when-editing-secret-files">Warn when editing secret files</a></li>
+<li><a href="#require-approval-before-merging-a-pr">Require approval before merging a PR</a></li>
+<li><a href="#make-the-repo-read-only-for-direct-edits">Make the repo read-only for direct edits</a></li>
+<li><a href="#run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -385,7 +460,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

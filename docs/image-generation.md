@@ -1,80 +1,147 @@
 # Image Generation
 
-Generate custom images directly through your AI agents using Google's Gemini models to quickly create visual assets or concept art for your projects. This allows your agents to handle both code changes and their accompanying visual assets without leaving the development environment.
+Set up Gemini once, then ask Pi to create images directly in chat so you can produce mockups, concept art, and visual assets without leaving your development session. You should be able to go from API key to saved image in a minute.
 
 ## Prerequisites
 
-- An active Gemini API key.
-- A supported Gemini image model (e.g., `gemini-2.0-flash-exp`).
+- A Gemini API key in `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- An image-capable Gemini model set with `PI_IMAGE_MODEL` or in `.pi/pi-config-settings.json`
+- An active Pi session
 
 ## Quick Example
-
-First, configure your API key and model. You can set the model in `pi-config-settings.json` (`"image_model": "gemini-3-pro-image"`) or use environment variables:
 
 ```bash
 export GEMINI_API_KEY="your-api-key"
 export PI_IMAGE_MODEL="gemini-3-pro-image"
 ```
 
-Next, ask your agent to generate an image during your chat session:
-
 ```text
-User: Generate a pixel art image of a cat hacking on a mechanical keyboard.
+Generate a pixel art image of a cat hacking on a mechanical keyboard.
 ```
 
-The agent will return the local file path where the image was saved, and if you are running in a containerised environment, a local preview URL.
+Pi replies with the saved file path under your project's `.pi/tmp/` directory. In container-based sessions, Pi also includes a clickable `http://localhost:<port>/<filename>` preview URL.
 
 ## Step-by-step
 
-1. **Configure your environment:** Ensure your API key is exposed to the tool (via `GEMINI_API_KEY` or `GOOGLE_API_KEY` env vars). You must also set the model to use for generation, either via the `image_model` setting in `pi-config-settings.json` or the `PI_IMAGE_MODEL` environment variable.
+1. **Set the model**
 
-2. **Prompt your agent:** Simply ask your agent to generate an image. The agent will automatically structure your request and invoke the generation tool. You only need to describe the main subject, but you can be as descriptive as you like.
+   For the current shell:
 
-3. **Access the output:** The generated image will be downloaded and saved to your project's `.pi/tmp/` directory. The agent will respond with the absolute path to the `.jpg`, `.png`, or `.webp` file.
+   ```bash
+   export PI_IMAGE_MODEL="gemini-3-pro-image"
+   ```
+
+   Or save it in your project settings:
+
+   ```json
+   {
+     "image_model": "gemini-3-pro-image"
+   }
+   ```
+
+   Save that JSON in `.pi/pi-config-settings.json`.
+
+2. **Set the API key**
+
+   ```bash
+   export GEMINI_API_KEY="your-api-key"
+   ```
+
+   If you already use `GOOGLE_API_KEY`, that works too.
+
+3. **Ask for the image in plain language**
+
+   ```text
+   Generate an image of a coffee cup spilling over on a futuristic desk.
+   ```
+
+   You do not need a special slash command. A normal request is enough.
+
+4. **Open the result**
+
+   Pi returns one or more saved file paths such as:
+
+   ```text
+   /your-project/.pi/tmp/pi-image-123456-abcd12.png
+   ```
+
+   If your session is running in a container, Pi also prints a localhost preview link for the same file.
+
+> **Tip:** Keep the model in `.pi/pi-config-settings.json` if you want the same default across sessions, and keep the API key in your shell environment.
 
 ## Advanced Usage
 
-When you need precise control over the output, you can ask your agent to use specific compositional parameters.
+### Use structured prompt fields
 
-### Structured Generation Parameters
+When you want tighter control over composition, ask with named fields:
 
-The generation tool accepts the following detailed parameters. You can ask your agent to explicitly follow these in your prompt:
-
-*   **Subject:** The main focus of the image (required).
-*   **Action:** What the subject is currently doing.
-*   **Scene:** The location or background environment.
-*   **Composition:** Camera angles, framing, and perspective (e.g., "close up", "wide angle").
-*   **Lighting:** The lighting setup (e.g., "cinematic lighting", "neon glow", "golden hour").
-*   **Style:** The artistic style (e.g., "photorealistic", "watercolor", "pixel art", "cyberpunk").
-*   **Text:** Specific text you want rendered directly inside the image.
-
-**Example structured prompt:**
 ```text
-User: Generate an image. Subject: A coffee cup. Action: spilling over. Scene: A busy futuristic desk. Lighting: Neon cyberpunk glow. Style: Photorealistic. Text: "ERROR 404". Aspect ratio: 16:9.
+Generate an image. Subject: A coffee cup. Action: spilling over. Scene: A busy futuristic desk. Composition: close-up. Lighting: neon glow. Style: photorealistic. Text: "ERROR 404". Aspect ratio: 16:9.
 ```
 
-### Supported Aspect Ratios
+These fields are supported:
 
-You can instruct the agent to use a specific aspect ratio. The supported values are:
-*   `1:1` (Square)
-*   `3:4` (Portrait)
-*   `4:3` (Landscape)
-*   `9:16` (Vertical/Mobile)
-*   `16:9` (Widescreen)
+- `Subject`
+- `Action`
+- `Scene`
+- `Composition`
+- `Lighting`
+- `Style`
+- `Text`
+- `Aspect ratio`
 
-### Automatic Preview Server
+Use this format when a short natural-language prompt is not specific enough.
 
-If you are running the project inside a container (like Docker), the file system is isolated from your host machine. To make viewing images frictionless, the tool automatically detects container environments and spins up a temporary background HTTP server.
+### Supported aspect ratios
 
-When this happens, the agent's response will include both the internal file path and a `http://localhost:<port>/<filename>` preview URL that you can click directly in your terminal or editor to open in your host browser.
+Use one of these exact values when you want a specific canvas shape:
+
+| Value | Best for |
+|---|---|
+| `1:1` | Square avatars, icons, thumbnails |
+| `3:4` | Portrait images |
+| `4:3` | Standard landscape images |
+| `9:16` | Mobile and story-style images |
+| `16:9` | Widescreen banners and mockups |
+
+If you omit `Aspect ratio`, Pi sends the request without one and lets the model use its default output shape.
+
+### Know what file types to expect
+
+Pi saves whatever image format Gemini returns. Current output formats include:
+
+- `.png`
+- `.jpg`
+- `.gif`
+- `.webp`
+
+If a request returns multiple images, Pi lists every saved path in the response.
+
+### Work smoothly in containers
+
+In Docker or Podman-style sessions, Pi automatically serves generated images over HTTP so you can open them outside the container. You do not need to start a separate preview command.
+
+See [Configuration & Settings](configuration.html) for the full settings reference and [Installation & Quickstart](quickstart.html) for general setup.
 
 ## Troubleshooting
 
-*   **"Model not configured":** You must specify the model name before starting your session. Set `image_model` in `pi-config-settings.json` or export `PI_IMAGE_MODEL=gemini-3-pro-image` in your shell.
-*   **"Image generation blocked by safety filter":** Gemini's safety filters have blocked the prompt. You will need to rephrase your request to remove potentially unsafe, violent, or explicit concepts.
-*   **"No API key found":** Make sure you have exported `GEMINI_API_KEY` or `GOOGLE_API_KEY` in the environment where the daemon is running. See [External AI Agents & CLI](external-ai-agents.html) for more about managing external model keys.
+- **"Model not configured"**  
+  Set `PI_IMAGE_MODEL` or add `"image_model": "gemini-3-pro-image"` to `.pi/pi-config-settings.json`, then restart Pi.
+
+- **"No API key found"**  
+  Export `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting Pi.
+
+- **"Image generation blocked by safety filter"**  
+  Rephrase the prompt to remove unsafe or explicit content.
+
+- **"No image data returned from Gemini"**  
+  Retry with a simpler prompt or switch to a different image-capable Gemini model.
+
+> **Warning:** Pi reads the API key from the current session environment, so export it before launching Pi.
 
 ## Related Pages
 
-- [Installation & Quickstart](quickstart.html)
 - [Configuration & Settings](configuration.html)
+- [Installation & Quickstart](quickstart.html)
+- [External AI Agents & CLI](external-ai-agents.html)
+- [Google Vertex Claude Provider](vertex-claude-provider.html)

@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pi Sidecar HTTP API - pi-config</title>
+    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">User Guides</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Recipes</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Internals</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link active" aria-current="page">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Usage</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Advanced Features</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Memory System</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Extensions</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
+                    ⚡ docs<span class="brand-accent">fy</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="or-pip-install-pi-sidecar-client">or: pip install pi-sidecar-client</h1>
+<div class="highlight"><pre><span></span><code>CLIs after install: `pi-sidecar` (server) and `pi-sidecar-start` (dev start script).
+
+### 2. Start the sidecar
+
+**Production-style (default port 9100):**
+
+```bash
+npx pi-sidecar
+# or: node dist/server.js
+</code></pre></div>
+
+<p><strong>Local dev helper (default port 9201):</strong></p>
+<div class="highlight"><pre><span></span><code>npx<span class="w"> </span>pi-sidecar-start
+<span class="c1"># foreground: npx pi-sidecar-start --foreground</span>
+<span class="c1"># stop:       npx pi-sidecar-start --stop</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Variable</th>
+<th style="text-align: left;">Default (<code>pi-sidecar</code>)</th>
+<th style="text-align: left;">Default (<code>pi-sidecar-start</code>)</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>SIDECAR_PORT</code></td>
+<td style="text-align: left;"><code>9100</code></td>
+<td style="text-align: left;"><code>9201</code></td>
+<td style="text-align: left;">Listen port</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>SIDECAR_HOST</code></td>
+<td style="text-align: left;"><code>127.0.0.1</code></td>
+<td style="text-align: left;"><code>127.0.0.1</code></td>
+<td style="text-align: left;">Bind address (<code>DEV_MODE=true</code> → <code>0.0.0.0</code> if host unset)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>SIDECAR_URL</code></td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Client base URL (Python default <code>http://127.0.0.1:9100</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>PI_SIDECAR_LOG_LEVEL</code></td>
+<td style="text-align: left;"><code>info</code></td>
+<td style="text-align: left;"><code>info</code></td>
+<td style="text-align: left;">Server / client log level</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Tip:</strong> Point the client at the port you actually started. Dev script uses <strong>9201</strong>; the Node server and Python client default to <strong>9100</strong>.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">SIDECAR_URL</span><span class="o">=</span>http://127.0.0.1:9201<span class="w">   </span><span class="c1"># when using pi-sidecar-start</span>
+</code></pre></div>
+
+<h3 id="3-wait-until-healthy">3. Wait until healthy</h3>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:9100/health
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: left;"><code>status</code></th>
+<th style="text-align: left;">Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>ok</code></td>
+<td style="text-align: left;">Ready (model discovery finished)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>starting</code></td>
+<td style="text-align: left;">Discovery still running (HTTP 503)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>degraded</code></td>
+<td style="text-align: left;">Discovery failed; sessions may still work for already-known models</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pi_sidecar_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">check_sidecar_available</span>
+
+<span class="n">ok</span><span class="p">,</span> <span class="n">msg</span> <span class="o">=</span> <span class="k">await</span> <span class="n">check_sidecar_available</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ok</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span>
+</code></pre></div>
+
+<h3 id="4-discover-models">4. Discover models</h3>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pi_sidecar_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">list_models</span>
+
+<span class="n">all_models</span> <span class="o">=</span> <span class="k">await</span> <span class="n">list_models</span><span class="p">()</span>
+<span class="n">gemini</span> <span class="o">=</span> <span class="k">await</span> <span class="n">list_models</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="s2">&quot;gemini&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p>Friendly Python provider aliases map to sidecar ids:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Client alias</th>
+<th style="text-align: left;">Sidecar provider</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>gemini</code></td>
+<td style="text-align: left;"><code>google</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>cursor</code></td>
+<td style="text-align: left;"><code>acpx-cursor</code> (model prefixed with <code>cursor:</code> if needed)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude</code></td>
+<td style="text-align: left;"><code>google-vertex-claude</code></td>
+</tr>
+</tbody>
+</table>
+<p>Refresh after changing agents or auth:</p>
+<div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:9100/models/refresh
+</code></pre></div>
+
+<p>Diagnose a single provider:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pi_sidecar_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_sidecar_client</span>
+
+<span class="n">client</span> <span class="o">=</span> <span class="n">get_sidecar_client</span><span class="p">()</span>
+<span class="n">status</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">get_model_provider_status</span><span class="p">(</span><span class="s2">&quot;google&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">status</span><span class="p">[</span><span class="s2">&quot;registered&quot;</span><span class="p">],</span> <span class="n">status</span><span class="p">[</span><span class="s2">&quot;modelCount&quot;</span><span class="p">])</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Note:</strong> On non-loopback binds, auth fields on provider status are redacted. Prefer <code>127.0.0.1</code> for local diagnostics. For Vertex auth setup, see <a href="vertex-claude-provider.html">Google Vertex Claude Provider</a>.</p>
+</blockquote>
+<h3 id="5-run-a-session">5. Run a session</h3>
+<p><strong>Single-shot (auto cleanup):</strong> use <code>call_ai_once</code> as in the Quick Example.</p>
+<p><strong>Multi-turn:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pi_sidecar_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">call_ai</span><span class="p">,</span> <span class="n">get_sidecar_client</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_ai</span><span class="p">(</span>
+    <span class="s2">&quot;I&#39;m building a REST API in Python. What framework should I use?&quot;</span><span class="p">,</span>
+    <span class="n">ai_provider</span><span class="o">=</span><span class="s2">&quot;gemini&quot;</span><span class="p">,</span>
+    <span class="n">ai_model</span><span class="o">=</span><span class="s2">&quot;gemini-2.5-flash&quot;</span><span class="p">,</span>
+    <span class="n">system_prompt</span><span class="o">=</span><span class="s2">&quot;You are a senior Python developer. Be concise.&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">session_id</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">session_id</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_ai</span><span class="p">(</span>
+    <span class="s2">&quot;Show me a minimal example with that framework.&quot;</span><span class="p">,</span>
+    <span class="n">ai_provider</span><span class="o">=</span><span class="s2">&quot;gemini&quot;</span><span class="p">,</span>
+    <span class="n">ai_model</span><span class="o">=</span><span class="s2">&quot;gemini-2.5-flash&quot;</span><span class="p">,</span>
+    <span class="n">session_id</span><span class="o">=</span><span class="n">session_id</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="k">await</span> <span class="n">get_sidecar_client</span><span class="p">()</span><span class="o">.</span><span class="n">delete_session</span><span class="p">(</span><span class="n">session_id</span><span class="p">)</span>
+</code></pre></div>
+
+<p>Session lifecycle:</p>
+<ol>
+<li>Create session (<code>POST /sessions</code>) with provider, model, system prompt, cwd.</li>
+<li>Prompt (<code>POST /sessions/:id/prompt</code>) — one in-flight prompt per session.</li>
+<li>Optional abort (<code>POST /sessions/:id/abort</code>).</li>
+<li>Delete (<code>DELETE /sessions/:id</code>) when finished.</li>
+</ol>
+<p>Default built-in tools when you omit <code>tools</code>: <code>read</code>, <code>grep</code>, <code>find</code>, <code>ls</code>, <code>bash</code>.</p>
+<p><code>cwd</code> loads project resources from <code>{cwd}/.pi/</code> and <code>AGENTS.md</code>. Optional <code>agent_dir</code> points at a global agent directory (e.g. <code>~/.pi/agent</code>); it is rejected on non-loopback binds unless <code>DEV_MODE=true</code> (then ignored).</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="http-api-surface">HTTP API surface</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Method</th>
+<th style="text-align: left;">Path</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>GET</code></td>
+<td style="text-align: left;"><code>/health</code></td>
+<td style="text-align: left;">Readiness (<code>ok</code> / <code>starting</code> / <code>degraded</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>GET</code></td>
+<td style="text-align: left;"><code>/models</code></td>
+<td style="text-align: left;">List discovered models</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>POST</code></td>
+<td style="text-align: left;"><code>/models/refresh</code></td>
+<td style="text-align: left;">Re-run discovery</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>GET</code></td>
+<td style="text-align: left;"><code>/models/:provider/status</code></td>
+<td style="text-align: left;">Registration, model count, auth (redacted off-loopback)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>POST</code></td>
+<td style="text-align: left;"><code>/sessions</code></td>
+<td style="text-align: left;">Create session → <code>{ session_id }</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>POST</code></td>
+<td style="text-align: left;"><code>/sessions/:id/prompt</code></td>
+<td style="text-align: left;">Send <code>{ "message": "..." }</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>POST</code></td>
+<td style="text-align: left;"><code>/sessions/:id/abort</code></td>
+<td style="text-align: left;">Cancel in-flight prompt</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>DELETE</code></td>
+<td style="text-align: left;"><code>/sessions/:id</code></td>
+<td style="text-align: left;">Destroy session</td>
+</tr>
+</tbody>
+</table>
+<p>Body size limit: 1 MiB. Concurrent prompts on the same session return conflict (busy).</p>
+<h3 id="custom-http-backed-tools">Custom HTTP-backed tools</h3>
+<p>Pass <code>custom_tools</code> when creating a session. Entries with an <code>http</code> block are executed as outbound HTTP; <code>{param}</code> placeholders interpolate from tool args.</p>
+<div class="highlight"><pre><span></span><code><span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_ai_once</span><span class="p">(</span>
+    <span class="s2">&quot;Look up user 42&quot;</span><span class="p">,</span>
+    <span class="n">ai_provider</span><span class="o">=</span><span class="s2">&quot;gemini&quot;</span><span class="p">,</span>
+    <span class="n">ai_model</span><span class="o">=</span><span class="s2">&quot;gemini-2.5-flash&quot;</span><span class="p">,</span>
+    <span class="n">custom_tools</span><span class="o">=</span><span class="p">[{</span>
+        <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;fetch_data&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Fetch user data by ID&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;parameters&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;userId&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">}},</span>
+        <span class="p">},</span>
+        <span class="s2">&quot;http&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="s2">&quot;GET&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;url&quot;</span><span class="p">:</span> <span class="s2">&quot;https://api.example.com/users/</span><span class="si">{userId}</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="p">},</span>
+    <span class="p">}],</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: left;"><code>http</code> field</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>method</code></td>
+<td style="text-align: left;"><code>GET</code> | <code>POST</code> | <code>PUT</code> | <code>DELETE</code> | <code>PATCH</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">HTTP method</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>url</code></td>
+<td style="text-align: left;">string</td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">URL template with <code>{params}</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>headers</code></td>
+<td style="text-align: left;">object</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Header templates</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>query_params</code> / <code>queryParams</code></td>
+<td style="text-align: left;">object</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Query templates</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>body_template</code> / <code>bodyTemplate</code></td>
+<td style="text-align: left;">object | string</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Body template</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>timeout_ms</code> / <code>timeoutMs</code></td>
+<td style="text-align: left;">number</td>
+<td style="text-align: left;"><code>30000</code></td>
+<td style="text-align: left;">Request timeout</td>
+</tr>
+</tbody>
+</table>
+<p>Restrict the built-in tool allowlist with <code>tools=["read", "grep"]</code> (or <code>[]</code> for none).</p>
+<h3 id="acpx-and-cli-model-sources">ACPX and CLI model sources</h3>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">ACPX_AGENTS</span><span class="o">=</span>cursor
+<span class="nb">export</span><span class="w"> </span><span class="nv">CLI_AGENTS</span><span class="o">=</span>claude,gemini
+npx<span class="w"> </span>pi-sidecar
+</code></pre></div>
+
+<p>Then use providers such as <code>acpx-cursor</code> / <code>cli-claude</code> (or Python aliases <code>cursor</code> / mapped names). Refresh with <code>POST /models/refresh</code> after changing env. See <a href="configuration.html">Configuration &amp; Settings</a> for project-level agent lists used by interactive Pi.</p>
+<h3 id="watchdog-companion-process">Watchdog (companion process)</h3>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">SIDECAR_WATCHDOG_URL</span><span class="o">=</span>http://127.0.0.1:8000/health
+npx<span class="w"> </span>pi-sidecar
+</code></pre></div>
+
+<p>When set, the sidecar polls that URL and shuts itself down after consecutive failures (default: 60s grace, 30s interval, 10s timeout, 6 failures).</p>
+<h3 id="docker-process-coupling">Docker / process coupling</h3>
+<p>Start the sidecar, wait for <code>/health</code>, then start your app and trap cleanup — see the package <code>entrypoint.example.sh</code> pattern (<code>SIDECAR_PORT</code> default <code>9100</code>).</p>
+<h3 id="using-vs-extending">Using vs extending</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Goal</th>
+<th style="text-align: left;">What you do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Use</strong></td>
+<td style="text-align: left;">Run <code>pi-sidecar</code>, call <code>call_ai_once</code> / <code>SidecarClient</code>, pass <code>custom_tools</code> / <code>tools</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Extend</strong></td>
+<td style="text-align: left;">Call <code>startSidecar({ port, host, watchdogUrl, watchdogOptions })</code> from Node, or override extension paths with <code>SIDECAR_ACPX_EXTENSION_PATH</code>, <code>SIDECAR_CLI_PROVIDER_EXTENSION_PATH</code>, <code>SIDECAR_PROVIDER_EXTENSION_PATH</code>, <code>SIDECAR_VERTEX_EXTENSION_PATH</code>, <code>SIDECAR_SUBAGENT_EXTENSION_PATH</code></td>
+</tr>
+</tbody>
+</table>
+<p>Startup lifecycle:</p>
+<ol>
+<li>Assert Pi SDK version ≥ 0.81.1.</li>
+<li>Listen on host/port.</li>
+<li>Optionally start watchdog.</li>
+<li>Async model discovery — <code>/health</code> is <code>starting</code> until ready.</li>
+<li>Serve session/prompt routes; idle sessions cleaned after 1 hour.</li>
+</ol>
+<h3 id="parallel-calls-and-usage-hooks">Parallel calls and usage hooks</h3>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pi_sidecar_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_parallel_with_limit</span><span class="p">,</span> <span class="n">set_usage_recorder</span>
+
+<span class="n">set_usage_recorder</span><span class="p">(</span><span class="n">my_recorder</span><span class="p">)</span>  <span class="c1"># sync or async; kwargs: request_id, result, call_type, ...</span>
+<span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="n">run_parallel_with_limit</span><span class="p">(</span><span class="n">tasks</span><span class="p">,</span> <span class="n">max_concurrency</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+</code></pre></div>
+
+<p><code>ai_call_timeout</code> on <code>call_ai</code> / <code>call_ai_once</code> is in <strong>minutes</strong> (converted to HTTP timeout seconds).</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Problem</th>
+<th style="text-align: left;">Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Client connection errors</td>
+<td style="text-align: left;">Align <code>SIDECAR_URL</code> with the server port (<code>9100</code> vs <code>9201</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>/health</code> stuck on <code>starting</code> / 503</td>
+<td style="text-align: left;">Wait for discovery; check logs (<code>PI_SIDECAR_LOG_LEVEL=debug</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;">Empty model list</td>
+<td style="text-align: left;">Auth providers; set <code>ACPX_AGENTS</code> / <code>CLI_AGENTS</code>; <code>POST /models/refresh</code>; check <code>GET /models/:provider/status</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Session create rejects model</td>
+<td style="text-align: left;">Use an id from <code>GET /models</code>; interactive OAuth-only providers are blocked in this headless service.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>409</code> / session busy</td>
+<td style="text-align: left;">Wait for the current prompt or <code>POST .../abort</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>agent_dir</code> rejected</td>
+<td style="text-align: left;">Bind on loopback, or use <code>DEV_MODE=true</code> (value discarded).</td>
+</tr>
+<tr>
+<td style="text-align: left;">Pi version error at startup</td>
+<td style="text-align: left;">Upgrade <code>@earendil-works/pi-coding-agent</code> to ≥ 0.81.1.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Default bind is loopback-only. Binding to <code>0.0.0.0</code> exposes an unauthenticated AI API on the network — use only behind a trusted boundary.</p>
+</blockquote>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="vertex-claude-provider.html">Google Vertex Claude Provider</a></li>
+<li><a href="acpx-provider.html">ACPX Provider Integration</a></li>
+<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="vertex-claude-provider.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Google Vertex Claude Provider</span>
+                </a>
+
+
+                <a href="external-ai-agents.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">External AI Agents &amp; CLI</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#3-wait-until-healthy">3. Wait until healthy</a></li>
+<li><a href="#4-discover-models">4. Discover models</a></li>
+<li><a href="#5-run-a-session">5. Run a session</a></li>
+<li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#http-api-surface">HTTP API surface</a></li>
+<li><a href="#custom-http-backed-tools">Custom HTTP-backed tools</a></li>
+<li><a href="#acpx-and-cli-model-sources">ACPX and CLI model sources</a></li>
+<li><a href="#watchdog-companion-process">Watchdog (companion process)</a></li>
+<li><a href="#docker-process-coupling">Docker / process coupling</a></li>
+<li><a href="#using-vs-extending">Using vs extending</a></li>
+<li><a href="#parallel-calls-and-usage-hooks">Parallel calls and usage hooks</a></li>
+</ul>
+</li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            <span class="footer-version">Generated from version 4.2.0</span>
+            <span class="footer-sep">&middot;</span>
+
+            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js"></script>
+    <script src="assets/search.js"></script>
+    <script src="assets/copy.js"></script>
+    <script src="assets/callouts.js"></script>
+    <script src="assets/scrollspy.js"></script>
+    <script src="assets/codelabels.js"></script>
+    <script src="assets/github.js"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Generation - pi-config</title>
+    <title>Google Vertex Claude Provider - pi-config</title>
     <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -170,14 +170,14 @@
 
                     <li>
                         <a href="image-generation.html"
-                           class="nav-link active" aria-current="page">
+                           class="nav-link">
                             Image Generation
                         </a>
                     </li>
 
                     <li>
                         <a href="vertex-claude-provider.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             Google Vertex Claude Provider
                         </a>
                     </li>
@@ -301,163 +301,377 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="image-generation">Image Generation</h1>
-<p>Set up Gemini once, then ask Pi to create images directly in chat so you can produce mockups, concept art, and visual assets without leaving your development session. You should be able to go from API key to saved image in a minute.</p>
+                    <h1 id="google-vertex-claude-provider">Google Vertex Claude Provider</h1>
+<p>Run Claude through your Google Cloud project so usage stays on Vertex AI billing and IAM, without Anthropic API keys.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>A Gemini API key in <code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code></li>
-<li>An image-capable Gemini model set with <code>PI_IMAGE_MODEL</code> or in <code>.pi/pi-config-settings.json</code></li>
-<li>An active Pi session</li>
+<li><code>pi</code> installed and working</li>
+<li>Google Cloud SDK (<code>gcloud</code>) with a project that can call Claude on Vertex AI</li>
+<li>Application Default Credentials (interactive login or a service account key)</li>
 </ul>
 <h2 id="quick-example">Quick Example</h2>
-<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GEMINI_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">PI_IMAGE_MODEL</span><span class="o">=</span><span class="s2">&quot;gemini-3-pro-image&quot;</span>
+<div class="highlight"><pre><span></span><code>gcloud<span class="w"> </span>auth<span class="w"> </span>application-default<span class="w"> </span>login
+<span class="nb">export</span><span class="w"> </span><span class="nv">GOOGLE_CLOUD_PROJECT</span><span class="o">=</span>your-project-id
+
+pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude
+
+pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6
 </code></pre></div>
 
-<div class="highlight"><pre><span></span><code>Generate a pixel art image of a cat hacking on a mechanical keyboard.
-</code></pre></div>
-
-<p>Pi replies with the saved file path under your project's <code>.pi/tmp/</code> directory. In container-based sessions, Pi also includes a clickable <code>http://localhost:&lt;port&gt;/&lt;filename&gt;</code> preview URL.</p>
 <h2 id="step-by-step">Step-by-step</h2>
-<ol>
-<li><strong>Set the model</strong></li>
-</ol>
-<p>For the current shell:</p>
-<p><code>bash
-   export PI_IMAGE_MODEL="gemini-3-pro-image"</code></p>
-<p>Or save it in your project settings:</p>
-<p><code>json
-   {
-     "image_model": "gemini-3-pro-image"
-   }</code></p>
-<p>Save that JSON in <code>.pi/pi-config-settings.json</code>.</p>
-<ol>
-<li><strong>Set the API key</strong></li>
-</ol>
-<p><code>bash
-   export GEMINI_API_KEY="your-api-key"</code></p>
-<p>If you already use <code>GOOGLE_API_KEY</code>, that works too.</p>
-<ol>
-<li><strong>Ask for the image in plain language</strong></li>
-</ol>
-<p><code>text
-   Generate an image of a coffee cup spilling over on a futuristic desk.</code></p>
-<p>You do not need a special slash command. A normal request is enough.</p>
-<ol>
-<li><strong>Open the result</strong></li>
-</ol>
-<p>Pi returns one or more saved file paths such as:</p>
-<p><code>text
-   /your-project/.pi/tmp/pi-image-123456-abcd12.png</code></p>
-<p>If your session is running in a container, Pi also prints a localhost preview link for the same file.</p>
-<blockquote>
-<p><strong>Tip:</strong> Keep the model in <code>.pi/pi-config-settings.json</code> if you want the same default across sessions, and keep the API key in your shell environment.</p>
-</blockquote>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="use-structured-prompt-fields">Use structured prompt fields</h3>
-<p>When you want tighter control over composition, ask with named fields:</p>
-<div class="highlight"><pre><span></span><code>Generate an image. Subject: A coffee cup. Action: spilling over. Scene: A busy futuristic desk. Composition: close-up. Lighting: neon glow. Style: photorealistic. Text: &quot;ERROR 404&quot;. Aspect ratio: 16:9.
+<h3 id="1-install-the-provider">1. Install the provider</h3>
+<p>Interactive installer (choose <strong>pi-vertex-claude</strong> under Pi Packages):</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py
 </code></pre></div>
 
-<p>These fields are supported:</p>
-<ul>
-<li><code>Subject</code></li>
-<li><code>Action</code></li>
-<li><code>Scene</code></li>
-<li><code>Composition</code></li>
-<li><code>Lighting</code></li>
-<li><code>Style</code></li>
-<li><code>Text</code></li>
-<li><code>Aspect ratio</code></li>
-</ul>
-<p>Use this format when a short natural-language prompt is not specific enough.</p>
-<h3 id="supported-aspect-ratios">Supported aspect ratios</h3>
-<p>Use one of these exact values when you want a specific canvas shape:</p>
+<p>Or install / update directly:</p>
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude
+pi<span class="w"> </span>update<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude
+</code></pre></div>
+
+<p>npm package name: <code>@myk-org/pi-vertex-claude</code>.</p>
+<h3 id="2-authenticate">2. Authenticate</h3>
+<div class="highlight"><pre><span></span><code>gcloud<span class="w"> </span>auth<span class="w"> </span>application-default<span class="w"> </span>login
+</code></pre></div>
+
+<p>Credentials are read from <code>GOOGLE_APPLICATION_CREDENTIALS</code> when set; otherwise from the default ADC file under your home directory.</p>
+<blockquote>
+<p><strong>Tip:</strong> In CI, set <code>GOOGLE_APPLICATION_CREDENTIALS</code> to a service account JSON key instead of using interactive login.</p>
+</blockquote>
+<h3 id="3-set-the-gcp-project">3. Set the GCP project</h3>
+<p>One of these must be set (priority order):</p>
 <table>
 <thead>
 <tr>
-<th>Value</th>
-<th>Best for</th>
+<th style="text-align: left;">Variable</th>
+<th style="text-align: left;">Role</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>1:1</code></td>
-<td>Square avatars, icons, thumbnails</td>
+<td style="text-align: left;"><code>GOOGLE_CLOUD_PROJECT</code></td>
+<td style="text-align: left;">Preferred project id</td>
 </tr>
 <tr>
-<td><code>3:4</code></td>
-<td>Portrait images</td>
+<td style="text-align: left;"><code>GCLOUD_PROJECT</code></td>
+<td style="text-align: left;">Common <code>gcloud</code> project id</td>
 </tr>
 <tr>
-<td><code>4:3</code></td>
-<td>Standard landscape images</td>
-</tr>
-<tr>
-<td><code>9:16</code></td>
-<td>Mobile and story-style images</td>
-</tr>
-<tr>
-<td><code>16:9</code></td>
-<td>Widescreen banners and mockups</td>
+<td style="text-align: left;"><code>ANTHROPIC_VERTEX_PROJECT_ID</code></td>
+<td style="text-align: left;">Compatible alternate</td>
 </tr>
 </tbody>
 </table>
-<p>If you omit <code>Aspect ratio</code>, Pi sends the request without one and lets the model use its default output shape.</p>
-<h3 id="know-what-file-types-to-expect">Know what file types to expect</h3>
-<p>Pi saves whatever image format Gemini returns. Current output formats include:</p>
-<ul>
-<li><code>.png</code></li>
-<li><code>.jpg</code></li>
-<li><code>.gif</code></li>
-<li><code>.webp</code></li>
-</ul>
-<p>If a request returns multiple images, Pi lists every saved path in the response.</p>
-<h3 id="work-smoothly-in-containers">Work smoothly in containers</h3>
-<p>In Docker or Podman-style sessions, Pi automatically serves generated images over HTTP so you can open them outside the container. You do not need to start a separate preview command.</p>
-<p>See <a href="configuration.html">Configuration &amp; Settings</a> for the full settings reference and <a href="quickstart.html">Installation &amp; Quickstart</a> for general setup.</p>
-<h2 id="troubleshooting">Troubleshooting</h2>
-<ul>
-<li>
-<p><strong>"Model not configured"</strong><br />
-  Set <code>PI_IMAGE_MODEL</code> or add <code>"image_model": "gemini-3-pro-image"</code> to <code>.pi/pi-config-settings.json</code>, then restart Pi.</p>
-</li>
-<li>
-<p><strong>"No API key found"</strong><br />
-  Export <code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code> before starting Pi.</p>
-</li>
-<li>
-<p><strong>"Image generation blocked by safety filter"</strong><br />
-  Rephrase the prompt to remove unsafe or explicit content.</p>
-</li>
-<li>
-<p><strong>"No image data returned from Gemini"</strong><br />
-  Retry with a simpler prompt or switch to a different image-capable Gemini model.</p>
-</li>
-</ul>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GOOGLE_CLOUD_PROJECT</span><span class="o">=</span>your-project-id
+</code></pre></div>
+
+<h3 id="4-optional-set-the-region">4. (Optional) Set the region</h3>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GOOGLE_CLOUD_LOCATION</span><span class="o">=</span>us-east5
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Variable</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>GOOGLE_CLOUD_LOCATION</code></td>
+<td style="text-align: left;"><code>us-east5</code></td>
+<td style="text-align: left;">Vertex region</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>CLOUD_ML_REGION</code></td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Used only if <code>GOOGLE_CLOUD_LOCATION</code> is unset</td>
+</tr>
+</tbody>
+</table>
+<h3 id="5-start-pi">5. Start Pi</h3>
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6
+</code></pre></div>
+
 <blockquote>
-<p><strong>Warning:</strong> Pi reads the API key from the current session environment, so export it before launching Pi.</p>
+<p><strong>Note:</strong> The provider appears only when a project id <strong>and</strong> ADC credentials exist before <code>pi</code> starts. Export them in the same shell (or your profile), then launch Pi.</p>
+</blockquote>
+<h3 id="6-choose-a-model">6. Choose a model</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Model id</th>
+<th style="text-align: right;">Context</th>
+<th style="text-align: right;">Max output</th>
+<th style="text-align: center;">Reasoning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>claude-opus-4-6</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">128K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-sonnet-4-6</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">64K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-opus-4-5@20251101</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">32K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-opus-4-1@20250805</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">32K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-opus-4@20250514</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">32K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-sonnet-4-5@20250929</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">64K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-sonnet-4@20250514</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">64K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-3-7-sonnet@20250219</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">64K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-haiku-4-5@20251001</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">64K</td>
+<td style="text-align: center;">yes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-3-5-sonnet-v2@20241022</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">8K</td>
+<td style="text-align: center;">no</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-3-5-haiku@20241022</code></td>
+<td style="text-align: right;">200K</td>
+<td style="text-align: right;">8K</td>
+<td style="text-align: center;">no</td>
+</tr>
+</tbody>
+</table>
+<p>All of these accept text and image input.</p>
+<p>For async agents, dreaming, and other settings that take provider/model pairs, use <code>google-vertex-claude</code> with one of the ids above. See <a href="configuration.html">Configuration &amp; Settings</a> and <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="1m-context-variants">1M context variants</h3>
+<p>Enable extra catalog entries for Opus 4.6 and Sonnet 4.6:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">VERTEX_CLAUDE_1M</span><span class="o">=</span><span class="nb">true</span>
+pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-opus-4-6-1m
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Model id</th>
+<th style="text-align: right;">Context</th>
+<th style="text-align: right;">Max output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>claude-opus-4-6-1m</code></td>
+<td style="text-align: right;">1M</td>
+<td style="text-align: right;">128K</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>claude-sonnet-4-6-1m</code></td>
+<td style="text-align: right;">1M</td>
+<td style="text-align: right;">64K</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Warning:</strong> Only the string <code>true</code> enables these models. Other values leave the <code>-1m</code> ids unregistered.</p>
+</blockquote>
+<h3 id="shell-helper">Shell helper</h3>
+<p><strong>bash / zsh:</strong></p>
+<div class="highlight"><pre><span></span><code>piv<span class="o">()</span><span class="w"> </span><span class="o">{</span>
+<span class="w">  </span><span class="nv">GOOGLE_CLOUD_PROJECT</span><span class="o">=</span>your-project-id<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">GOOGLE_CLOUD_LOCATION</span><span class="o">=</span>us-east5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$@</span><span class="s2">&quot;</span>
+<span class="o">}</span>
+</code></pre></div>
+
+<p><strong>fish:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="k">function</span> piv
+  <span class="k">set</span> -x GOOGLE_CLOUD_PROJECT your-project-id
+  <span class="k">set</span> -x GOOGLE_CLOUD_LOCATION us-east5
+  pi --provider google-vertex-claude --model claude-opus-4-5@20251101 <span class="nv">$argv</span>
+<span class="k">end</span>
+</code></pre></div>
+
+<h3 id="environment-reference">Environment reference</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Variable</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: center;">Required</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>GOOGLE_CLOUD_PROJECT</code></td>
+<td style="text-align: left;">string</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: center;">one of three*</td>
+<td style="text-align: left;">GCP project id (highest priority)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>GCLOUD_PROJECT</code></td>
+<td style="text-align: left;">string</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: center;">one of three*</td>
+<td style="text-align: left;">GCP project id</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>ANTHROPIC_VERTEX_PROJECT_ID</code></td>
+<td style="text-align: left;">string</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: center;">one of three*</td>
+<td style="text-align: left;">GCP project id</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>GOOGLE_CLOUD_LOCATION</code></td>
+<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>us-east5</code></td>
+<td style="text-align: center;">no</td>
+<td style="text-align: left;">Vertex region</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>CLOUD_ML_REGION</code></td>
+<td style="text-align: left;">string</td>
+<td style="text-align: left;">—</td>
+<td style="text-align: center;">no</td>
+<td style="text-align: left;">Region fallback</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>GOOGLE_APPLICATION_CREDENTIALS</code></td>
+<td style="text-align: left;">path</td>
+<td style="text-align: left;">ADC default file</td>
+<td style="text-align: center;">no</td>
+<td style="text-align: left;">Service account key path</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>VERTEX_CLAUDE_1M</code></td>
+<td style="text-align: left;"><code>"true"</code> | other</td>
+<td style="text-align: left;">unset</td>
+<td style="text-align: center;">no</td>
+<td style="text-align: left;">When <code>"true"</code>, registers <code>-1m</code> models</td>
+</tr>
+</tbody>
+</table>
+<p>*Set exactly one project id variable for the provider to load and stream.</p>
+<h3 id="using-vs-extending">Using vs extending</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Goal</th>
+<th style="text-align: left;">What you do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Use</strong></td>
+<td style="text-align: left;">Install the package, set project + ADC, run <code>pi --provider google-vertex-claude --model …</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Extend</strong></td>
+<td style="text-align: left;">Publish another pi package that registers its own provider id with a custom stream handler; this package registers <code>google-vertex-claude</code> only when project id and ADC are available at load time</td>
+</tr>
+</tbody>
+</table>
+<p>Lifecycle when you start <code>pi</code>:</p>
+<ol>
+<li>Extension loads.</li>
+<li>Missing project id or ADC → provider is not registered (models stay hidden).</li>
+<li>Both present → <code>google-vertex-claude</code> registers with the current model catalog (including <code>-1m</code> if enabled).</li>
+<li>Each turn re-checks project, region, and ADC, then streams from Vertex.</li>
+</ol>
+<p>For ACPX/CLI backends (separate from Vertex), see <a href="acpx-provider.html">ACPX Provider Integration</a> and <a href="external-ai-agents.html">External AI Agents &amp; CLI</a>.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Problem</th>
+<th style="text-align: left;">Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Provider missing from <code>/model</code></td>
+<td style="text-align: left;">Export a project id, ensure ADC exists, restart <code>pi</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>Vertex AI requires a project ID</code></td>
+<td style="text-align: left;">Set <code>GOOGLE_CLOUD_PROJECT</code>, <code>GCLOUD_PROJECT</code>, or <code>ANTHROPIC_VERTEX_PROJECT_ID</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>Vertex AI requires Application Default Credentials</code></td>
+<td style="text-align: left;">Run <code>gcloud auth application-default login</code>, or set <code>GOOGLE_APPLICATION_CREDENTIALS</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>-1m</code> models not listed</td>
+<td style="text-align: left;">Export <code>VERTEX_CLAUDE_1M=true</code> before starting <code>pi</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Region or quota errors</td>
+<td style="text-align: left;">Set <code>GOOGLE_CLOUD_LOCATION</code> to a region where Claude on Vertex is enabled.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Tip:</strong> Env changes apply only after you start a new <code>pi</code> process so the provider can re-register.</p>
 </blockquote>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
+<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
+<li><a href="pi-sidecar.html">Pi Sidecar HTTP API</a></li>
 <li><a href="configuration.html">Configuration &amp; Settings</a></li>
 <li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
-<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
-<li><a href="vertex-claude-provider.html">Google Vertex Claude Provider</a></li>
+<li><a href="acpx-provider.html">ACPX Provider Integration</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="discord-bot.html" class="page-nav-link page-nav-prev">
+                <a href="image-generation.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Discord Bot Notifications</span>
+                    <span class="page-nav-title">Image Generation</span>
                 </a>
 
 
-                <a href="vertex-claude-provider.html" class="page-nav-link page-nav-next">
+                <a href="pi-sidecar.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Google Vertex Claude Provider</span>
+                    <span class="page-nav-title">Pi Sidecar HTTP API</span>
                 </a>
 
             </nav>
@@ -469,12 +683,20 @@
 <ul>
 <li><a href="#prerequisites">Prerequisites</a></li>
 <li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step">Step-by-step</a></li>
+<li><a href="#step-by-step">Step-by-step</a><ul>
+<li><a href="#1-install-the-provider">1. Install the provider</a></li>
+<li><a href="#2-authenticate">2. Authenticate</a></li>
+<li><a href="#3-set-the-gcp-project">3. Set the GCP project</a></li>
+<li><a href="#4-optional-set-the-region">4. (Optional) Set the region</a></li>
+<li><a href="#5-start-pi">5. Start Pi</a></li>
+<li><a href="#6-choose-a-model">6. Choose a model</a></li>
+</ul>
+</li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#use-structured-prompt-fields">Use structured prompt fields</a></li>
-<li><a href="#supported-aspect-ratios">Supported aspect ratios</a></li>
-<li><a href="#know-what-file-types-to-expect">Know what file types to expect</a></li>
-<li><a href="#work-smoothly-in-containers">Work smoothly in containers</a></li>
+<li><a href="#1m-context-variants">1M context variants</a></li>
+<li><a href="#shell-helper">Shell helper</a></li>
+<li><a href="#environment-reference">Environment reference</a></li>
+<li><a href="#using-vs-extending">Using vs extending</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>

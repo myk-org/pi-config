@@ -1,41 +1,55 @@
 # Installation & Quickstart
 
-Initialize your project configuration, spin up the background daemons, and run your first custom agent workflow to automate your codebase tasks locally. This setup enables your agents to operate seamlessly across different workflows and repositories.
+Get pi-config installed, configure your project, start the local daemons, and run your first agent workflow so you can automate repository tasks in under a minute.
 
 ## Prerequisites
 
 - Node.js (>= 22)
 - Git installed and configured
-- `pi` (installed via `@earendil-works/pi-coding-agent`)
+- `pi` (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
 
-## Quick Install
-
-To install the orchestrator and all dependencies in a single step, run the interactive installer from the command line:
+## Quick Example
 
 ```bash
+# Install everything non-interactively
 uv run scripts/install.py --all
-```
 
-*This command automatically selects and installs all required dependencies without prompting.*
+# Start a session, then in the chat:
+# /pidash start
+# /pidiff start
+# /scout-and-plan Review the authentication module and propose a migration plan to JWT.
+```
 
 ## Step-by-Step Guide
 
-### 1. Run the Interactive Installer
+### 1. Install pi-config and tooling
 
-If you prefer to selectively install tools, run the installation script without the `--all` flag.
+Run the interactive installer from a pi-config checkout:
 
 ```bash
 uv run scripts/install.py
 ```
 
-Follow the prompts to choose your required components (such as browser automation, python tools, or specific `pi` packages).
+Follow the prompts to select packages (orchestrator, CLI tools, browser automation, gitignore entries, and more).
 
-### 2. Initialize Project Settings
+To skip prompts and install everything available:
 
-Project-level configurations give your agents context about how they should interact with your specific repository.
+```bash
+uv run scripts/install.py --all
+```
 
-Create a `.pi/pi-config-settings.json` file in your repository root:
+> **Note:** The installer exits if `pi` is missing. Install `@earendil-works/pi-coding-agent` globally first.
+
+When it finishes, start a session:
+
+```bash
+pi
+```
+
+### 2. Add project settings
+
+Create `.pi/pi-config-settings.json` in your repository root:
 
 ```json
 {
@@ -48,59 +62,79 @@ Create a `.pi/pi-config-settings.json` file in your repository root:
 }
 ```
 
-> **Note:** These settings override global defaults and apply immediately to the current project.
+> **Note:** Project settings override global defaults for the current repository. See [Configuration & Settings](configuration.html) for the full option list.
 
-### 3. Start the Daemons
+### 3. Start the background daemons
 
-In your terminal, start a new `pi` session. Once inside the chat environment, initialize the background tasks required for your workflows.
+Inside an active `pi` TUI session:
 
 ```text
-/pidiff start
 /pidash start
+/pidiff start
 ```
 
-These commands spin up the local diff tracker and dashboard backend respectively.
+- `/pidash start` launches the web dashboard (default `http://localhost:19190`).
+- `/pidiff start` launches the per-project diff viewer on a free local port.
 
-> **Tip:** You can check the health and state of all running services at any time by running `/status`.
+Check daemon state anytime:
 
-### 4. Run Your First Agent Workflow
+```text
+/pidash status
+/pidiff status
+```
 
-With the daemons running and settings configured, instruct the orchestrator to begin a task.
+> **Tip:** Open the dashboard URL from the status output to monitor sessions and background work. See [Using the Web Dashboard](using-the-web-dashboard.html).
+
+### 4. Run your first workflow
 
 ```text
 /scout-and-plan Review the authentication module and propose a migration plan to JWT.
 ```
 
-The orchestrator will automatically pick up the request and dispatch the appropriate agents based on your task.
+This chains a scout pass (find relevant code) into a planner pass (implementation plan) without writing changes yet. For creating and routing specialists, see [Managing Custom Agents](managing-custom-agents.html).
 
 ## Advanced Usage
 
-### Ignoring Project Data Files
+### Install only what you need
 
-To prevent the orchestrator's local databases and worktrees from polluting your git history, ensure they are added to your global `.gitignore`.
+| Mode | Command | Behavior |
+|------|---------|----------|
+| Interactive | `uv run scripts/install.py` | Step through packages and confirm |
+| Non-interactive | `uv run scripts/install.py --all` | Auto-select every available tool |
+
+The installer can also add `.pi/` and `.worktrees/` to your global git excludes file so local agent data is not committed.
+
+### Configure via environment variables
+
+Skip the settings file when you prefer env vars. Resolution order:
+
+1. `.pi/pi-config-settings.json` (project)
+2. `~/.pi/pi-config-settings.json` (global)
+3. Environment variables (for example `PI_DREAM_INTERVAL_HOURS=3`, `CLI_AGENTS=claude,cursor`)
+4. Built-in defaults
+
+See [Configuration & Settings](configuration.html) for keys and env var names. For CLI utilities used by review and memory workflows, see [myk_pi_tools CLI Reference](cli-reference.html).
+
+### Keep project data out of git
 
 | Method | Command |
 |--------|---------|
-| **Old Way (Manual File Edit)** | `echo ".pi/" >> ~/.gitignore` |
-| **New Way (Scripted)** | `git config --global core.excludesfile ~/.config/git/ignore && echo ".pi/" >> ~/.config/git/ignore` |
+| Preferred | `git config --global core.excludesfile ~/.config/git/ignore && echo ".pi/" >> ~/.config/git/ignore` |
+| Manual | Append `.pi/` (and `.worktrees/` if you use worktrees) to your global excludes file |
 
-### Environment Variable Fallbacks
-
-If you prefer not to use a `.pi/pi-config-settings.json` file, you can rely on environment variables. Project settings are resolved in the following priority:
-1. Local `.pi/pi-config-settings.json`
-2. Global `~/.pi/pi-config-settings.json`
-3. Environment variables (e.g., `PI_DREAM_INTERVAL_HOURS=3`)
-4. System defaults
-
-For more details on interacting with the system from your terminal, see [myk_pi_tools CLI Reference](cli-reference.html).
+> **Tip:** The installer Environment Setup step can configure these entries for you.
 
 ## Troubleshooting
 
-- **"Cannot continue without pi" error:** Ensure `@earendil-works/pi-coding-agent` is installed globally via npm before running the python installer.
-- **Daemons failing to start:** Verify that the required ports are available. The `/pidiff` command logs its current port and process ID in `.pi/tmp/pidiff.port`.
-- **Pre-commit hook failures:** If Git hooks complain about formatting, run `prek run --all-files` to automatically apply fixes before committing.
+- **"Cannot continue without pi":** Install the coding agent globally (`npm install -g @earendil-works/pi-coding-agent`), confirm `pi` is on your `PATH`, then re-run the installer.
+- **Daemon fails to start:** Confirm `pidash_enable` / `pidiff_enable` are not set to `false`. Run `/pidash status` or `/pidiff status`. For pidash failures, check `~/.pi/pidash-server.log`.
+- **pidash says TUI-only:** Start daemons from an interactive `pi` session, not a headless/CLI-only mode.
+- **Pre-commit / formatting failures:** Run `prek run --all-files` to apply fixes, then retry the commit.
 
 ## Related Pages
 
 - [Configuration & Settings](configuration.html)
+- [Using the Web Dashboard](using-the-web-dashboard.html)
+- [Built-in Workflow Commands](built-in-workflows.html)
+- [Creating Slash Commands](custom-slash-commands.html)
 - [myk_pi_tools CLI Reference](cli-reference.html)

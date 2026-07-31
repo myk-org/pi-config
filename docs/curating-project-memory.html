@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -273,61 +301,154 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="curating-project-memory">Curating Project Memory</h1>
-<p>You want your AI agents to remember your project conventions, architectural decisions, and past mistakes so you don't have to repeat yourself in every session. This guide shows you how to explicitly seed context, audit what the agents have learned, and organize persistent project memory.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>A project initialized with Pi configuration.</li>
-<li>The <code>myk-pi-tools</code> CLI installed and available in your environment.</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>--category<span class="w"> </span>preference<span class="w"> </span>--summary<span class="w"> </span><span class="s2">&quot;Always use uv run instead of pip&quot;</span><span class="w"> </span>--pinned
+                    <h1 id="project-preference">Project preference</h1>
+<p>myk-pi-tools memory add -c preference -s "Always use uv run" --pinned</p>
+<h1 id="architectural-decision">Architectural decision</h1>
+<p>myk-pi-tools memory add -c decision -s "Use Redis for shared caching"</p>
+<h1 id="repeated-pitfall">Repeated pitfall</h1>
+<p>myk-pi-tools memory add -c mistake -s "Buildah chown -R skips the target dir on this OS"</p>
+<div class="highlight"><pre><span></span><code>Use short, specific summaries. The CLI accepts these categories:
+
+| Category | Use it for |
+|---|---|
+| `preference` | How you want work done |
+| `decision` | A project choice that should stay consistent |
+| `mistake` | A failure mode worth avoiding |
+| `pattern` | A recurring convention or approach |
+| `lesson` | A correction or practical takeaway |
+| `done` | A completed milestone worth remembering |
+
+&gt; **Tip:** Keep each memory to one line. Short, concrete entries are easier for Pi to reuse well.
+
+### 3. Pin rules that should not fade
+
+```bash
+myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 </code></pre></div>
 
-<p>The fastest way to ensure your agents remember a hard-and-fast rule is to explicitly add a pinned preference via the CLI.</p>
-<h2 id="step-by-step">Step-by-Step</h2>
-<h3 id="1-view-current-memory">1. View Current Memory</h3>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
+<p>Use <code>--pinned</code> for rules you want to keep stable over time. Pinned entries are protected during background cleanup and consolidation.</p>
+<p>A good rule of thumb:</p>
+<table>
+<thead>
+<tr>
+<th>If the memory is...</th>
+<th>Save it as...</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A long-term project rule</td>
+<td><code>--pinned</code></td>
+</tr>
+<tr>
+<td>A normal lesson from recent work</td>
+<td>regular memory</td>
+</tr>
+<tr>
+<td>A one-off observation</td>
+<td>regular memory, only if it will matter again</td>
+</tr>
+</tbody>
+</table>
+<h3 id="4-save-memories-directly-from-chat-when-that-is-faster">4. Save memories directly from chat when that is faster</h3>
+<div class="highlight"><pre><span></span><code>/remember Always use uv run for Python commands in this repo
 </code></pre></div>
 
-<p>Agents automatically store context as they work. This command dumps all active memory entries organized by topic and category (lessons, mistakes, preferences, etc.) so you can check what the system already knows before adding new rules.</p>
-<h3 id="2-seed-new-context">2. Seed New Context</h3>
-<div class="highlight"><pre><span></span><code><span class="c1"># Record an architectural decision</span>
-myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>decision<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;We use Redis for all caching instead of Memcached&quot;</span>
-
-<span class="c1"># Record a common stumbling block</span>
-myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Buildah chown -R silently skips the target dir on this OS&quot;</span>
-</code></pre></div>
-
-<p>Use the <code>memory add</code> command to explicitly inject project context. You must select an appropriate category (<code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, <code>preference</code>) and provide a short summary string.</p>
-<blockquote>
-<p><strong>Tip:</strong> Use the <code>--pinned</code> flag for critical rules. Pinned memories are protected from the automatic decay and archiving that happens to older, less relevant context over time.</p>
-</blockquote>
-<h3 id="3-clean-up-obsolete-context">3. Clean Up Obsolete Context</h3>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>decision<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;We use Redis for all caching instead of Memcached&quot;</span>
-</code></pre></div>
-
-<p>If a project's architecture changes, old memories can confuse the agents. Use the <code>memory forget</code> command with the exact category and summary text to permanently remove outdated context.</p>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="automatic-preference-extraction">Automatic Preference Extraction</h3>
-<p>You don't always need to use the CLI to curate memory. During a normal chat session, the agent automatically monitors for phrases like "I prefer...", "Always use...", or "Never do X". When detected, the agent quietly extracts these rules into its memory system and reinforces them if they come up again in future sessions.</p>
-<h3 id="code-review-guidelines">Code Review Guidelines</h3>
-<p>When using the automated code review loop, the system maintains a separate memory track specifically for pull requests. When you skip an agent's code review finding for a generalizable reason (like "this is an intentional project pattern"), the system writes a new guideline. </p>
-<p>All code review agents read these learned guidelines before their next pass, automatically suppressing similar findings. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
-<h3 id="auditing-enforcement-and-promotions">Auditing Enforcement and Promotions</h3>
+<p>Use <code>/remember</code> when you are already in a Pi session and want to save something immediately without leaving chat. It stores the result as a pinned project memory.</p>
+<h3 id="5-audit-memory-quality-and-promotion-status">5. Audit memory quality and promotion status</h3>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>status
 </code></pre></div>
 
-<p>Highly reinforced memories can automatically graduate into code-enforced rules that actively intercept or block destructive commands. This status command outputs an inventory of your "code-tier" (actively hooked) memory entries versus your "injected" (contextual) topics, and lists any pending memory promotions awaiting approval.</p>
+<p>This gives you a quick health check of the memory system, including:</p>
+<ul>
+<li>topic-backed memory currently being injected as context</li>
+<li>code-enforced entries</li>
+<li>open promotion candidates</li>
+</ul>
+<p>Use this when memory feels noisy, when a rule should probably become a hard guard, or when you want to confirm the project is learning from repeated corrections.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="let-pi-capture-preferences-automatically">Let Pi capture preferences automatically</h3>
+<p>You do not need to save every preference manually. During normal conversation, Pi automatically looks for explicit signals such as:</p>
+<ul>
+<li>“I prefer…”</li>
+<li>“always use…”</li>
+<li>“never use…”</li>
+</ul>
+<p>When those statements are clear enough, Pi records them as project preferences and reinforces them when they show up again later.</p>
+<blockquote>
+<p><strong>Note:</strong> Automatic capture works best when you phrase the rule as a short, direct instruction instead of a long explanation.</p>
+</blockquote>
+<h3 id="inspect-where-memory-is-stored">Inspect where memory is stored</h3>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>path
+</code></pre></div>
+
+<p>Use this when you want to inspect the memory directory itself, back it up, or compare projects. This is especially useful if you work across multiple repositories and want to confirm you are editing the right project memory.</p>
+<h3 id="consolidate-memory-in-the-background">Consolidate memory in the background</h3>
+<div class="highlight"><pre><span></span><code>/dream
+/dream-auto on
+</code></pre></div>
+
+<p>Use <code>/dream</code> for a one-time background consolidation pass. Use <code>/dream-auto on</code> to let Pi keep consolidating memories automatically over time.</p>
+<p>Background consolidation helps by:</p>
+<ul>
+<li>extracting durable lessons from past sessions</li>
+<li>deduplicating similar entries</li>
+<li>reorganizing topic files</li>
+<li>preserving pinned entries</li>
+</ul>
+<p>If you want to tune the schedule, set <code>dream_interval_hours</code> in your project settings. See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> and <a href="configuration.html">Configuration &amp; Settings</a> for details.</p>
+<h3 id="migrate-older-memory-data-into-topic-files">Migrate older memory data into topic files</h3>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>migrate
+</code></pre></div>
+
+<p>If your project still has older memory data from a previous format, run this once to move it into the current topic-based layout. This is mainly useful when upgrading an existing project rather than starting fresh.</p>
+<h3 id="learn-from-review-feedback-automatically">Learn from review feedback automatically</h3>
+<p>When you skip a code review finding for a reason that applies more broadly, Pi can reuse that decision in future reviews so the same kind of complaint does not keep coming back.</p>
+<p>Use this together with your PR workflow, then review the results in later cycles. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
+<h3 id="know-when-to-use-memory-versus-hard-guards">Know when to use memory versus hard guards</h3>
+<p>Use memory for guidance such as preferences, patterns, and decisions. Use a command guard when a rule must be enforced mechanically, not just remembered.</p>
+<p>Examples:</p>
+<table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Better fit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>“Prefer this style in this repo”</td>
+<td>Project memory</td>
+</tr>
+<tr>
+<td>“Never allow this dangerous command”</td>
+<td>Command guard</td>
+</tr>
+<tr>
+<td>“Remember this design choice for future work”</td>
+<td>Project memory</td>
+</tr>
+<tr>
+<td>“Block this action unless another step happened first”</td>
+<td>Command guard</td>
+</tr>
+</tbody>
+</table>
+<p>See <a href="safety-enforcements.html">Implementing Command Guards</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Agent ignores a memory:</strong> Verify the memory was actually stored using <code>myk-pi-tools memory show</code>. If a critical rule keeps getting ignored despite being in memory, try re-adding it with the <code>--pinned</code> flag or implementing a hard guard. See <a href="safety-enforcements.html">Implementing Command Guards</a>.</li>
-<li><strong>Context limit warnings:</strong> If the agent complains about memory budgets or consolidation during a session, you have too many active memory topics. Manually drop outdated entries with <code>memory forget</code>, or simply allow the background daemon to organically decay cold topics over time.</li>
+<li><strong>A saved rule does not seem to affect later sessions:</strong> Run <code>myk-pi-tools memory show</code> and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.</li>
+<li><strong>Automatic background consolidation does not run:</strong> If you are using ACPX-backed async work, make sure <code>async_llm_provider</code> and <code>async_llm_model</code> are configured. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
+<li><strong>Memory feels too noisy or repetitive:</strong> Check <code>myk-pi-tools memory status</code>, keep entries one-line and specific, then run <code>/dream</code> to consolidate the store.</li>
+<li><strong>You need deeper scoring and lifecycle details:</strong> See <a href="memory-architecture.html">Memory Architecture</a> for details.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li><a href="memory-architecture.html">Memory Architecture</a></li>
 <li><a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a></li>
+<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
 </ul>
                 </div>
             </article>
@@ -339,9 +460,9 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
                 </a>
 
 
-                <a href="custom-slash-commands.html" class="page-nav-link page-nav-next">
+                <a href="btw-command.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Creating Slash Commands</span>
+                    <span class="page-nav-title">Asking Side Questions with /btw</span>
                 </a>
 
             </nav>
@@ -351,18 +472,15 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step">Step-by-Step</a><ul>
-<li><a href="#1-view-current-memory">1. View Current Memory</a></li>
-<li><a href="#2-seed-new-context">2. Seed New Context</a></li>
-<li><a href="#3-clean-up-obsolete-context">3. Clean Up Obsolete Context</a></li>
-</ul>
-</li>
+<li><a href="#4-save-memories-directly-from-chat-when-that-is-faster">4. Save memories directly from chat when that is faster</a></li>
+<li><a href="#5-audit-memory-quality-and-promotion-status">5. Audit memory quality and promotion status</a></li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#automatic-preference-extraction">Automatic Preference Extraction</a></li>
-<li><a href="#code-review-guidelines">Code Review Guidelines</a></li>
-<li><a href="#auditing-enforcement-and-promotions">Auditing Enforcement and Promotions</a></li>
+<li><a href="#let-pi-capture-preferences-automatically">Let Pi capture preferences automatically</a></li>
+<li><a href="#inspect-where-memory-is-stored">Inspect where memory is stored</a></li>
+<li><a href="#consolidate-memory-in-the-background">Consolidate memory in the background</a></li>
+<li><a href="#migrate-older-memory-data-into-topic-files">Migrate older memory data into topic files</a></li>
+<li><a href="#learn-from-review-feedback-automatically">Learn from review feedback automatically</a></li>
+<li><a href="#know-when-to-use-memory-versus-hard-guards">Know when to use memory versus hard guards</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -378,7 +496,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,30 +302,44 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="installation-quickstart">Installation &amp; Quickstart</h1>
-<p>Initialize your project configuration, spin up the background daemons, and run your first custom agent workflow to automate your codebase tasks locally. This setup enables your agents to operate seamlessly across different workflows and repositories.</p>
+<p>Get pi-config installed, configure your project, start the local daemons, and run your first agent workflow so you can automate repository tasks in under a minute.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
 <li>Node.js (&gt;= 22)</li>
 <li>Git installed and configured</li>
-<li><code>pi</code> (installed via <code>@earendil-works/pi-coding-agent</code>)</li>
+<li><code>pi</code> (install with <code>npm install -g @earendil-works/pi-coding-agent</code>)</li>
 <li><code>uv</code> (Python package manager)</li>
 </ul>
-<h2 id="quick-install">Quick Install</h2>
-<p>To install the orchestrator and all dependencies in a single step, run the interactive installer from the command line:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span class="w"> </span>--all
+<h2 id="quick-example">Quick Example</h2>
+<div class="highlight"><pre><span></span><code><span class="c1"># Install everything non-interactively</span>
+uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span class="w"> </span>--all
+
+<span class="c1"># Start a session, then in the chat:</span>
+<span class="c1"># /pidash start</span>
+<span class="c1"># /pidiff start</span>
+<span class="c1"># /scout-and-plan Review the authentication module and propose a migration plan to JWT.</span>
 </code></pre></div>
 
-<p><em>This command automatically selects and installs all required dependencies without prompting.</em></p>
 <h2 id="step-by-step-guide">Step-by-Step Guide</h2>
-<h3 id="1-run-the-interactive-installer">1. Run the Interactive Installer</h3>
-<p>If you prefer to selectively install tools, run the installation script without the <code>--all</code> flag. </p>
+<h3 id="1-install-pi-config-and-tooling">1. Install pi-config and tooling</h3>
+<p>Run the interactive installer from a pi-config checkout:</p>
 <div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py
 </code></pre></div>
 
-<p>Follow the prompts to choose your required components (such as browser automation, python tools, or specific <code>pi</code> packages).</p>
-<h3 id="2-initialize-project-settings">2. Initialize Project Settings</h3>
-<p>Project-level configurations give your agents context about how they should interact with your specific repository. </p>
-<p>Create a <code>.pi/pi-config-settings.json</code> file in your repository root:</p>
+<p>Follow the prompts to select packages (orchestrator, CLI tools, browser automation, gitignore entries, and more).</p>
+<p>To skip prompts and install everything available:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span class="w"> </span>--all
+</code></pre></div>
+
+<blockquote>
+<p><strong>Note:</strong> The installer exits if <code>pi</code> is missing. Install <code>@earendil-works/pi-coding-agent</code> globally first.</p>
+</blockquote>
+<p>When it finishes, start a session:</p>
+<div class="highlight"><pre><span></span><code>pi
+</code></pre></div>
+
+<h3 id="2-add-project-settings">2. Add project settings</h3>
+<p>Create <code>.pi/pi-config-settings.json</code> in your repository root:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;commit_trailer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Assisted-by&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">&quot;dco&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
@@ -309,27 +351,65 @@
 </code></pre></div>
 
 <blockquote>
-<p><strong>Note:</strong> These settings override global defaults and apply immediately to the current project.</p>
+<p><strong>Note:</strong> Project settings override global defaults for the current repository. See <a href="configuration.html">Configuration &amp; Settings</a> for the full option list.</p>
 </blockquote>
-<h3 id="3-start-the-daemons">3. Start the Daemons</h3>
-<p>In your terminal, start a new <code>pi</code> session. Once inside the chat environment, initialize the background tasks required for your workflows.</p>
-<div class="highlight"><pre><span></span><code>/pidiff start
-/pidash start
+<h3 id="3-start-the-background-daemons">3. Start the background daemons</h3>
+<p>Inside an active <code>pi</code> TUI session:</p>
+<div class="highlight"><pre><span></span><code>/pidash start
+/pidiff start
 </code></pre></div>
 
-<p>These commands spin up the local diff tracker and dashboard backend respectively. </p>
+<ul>
+<li><code>/pidash start</code> launches the web dashboard (default <code>http://localhost:19190</code>).</li>
+<li><code>/pidiff start</code> launches the per-project diff viewer on a free local port.</li>
+</ul>
+<p>Check daemon state anytime:</p>
+<div class="highlight"><pre><span></span><code>/pidash status
+/pidiff status
+</code></pre></div>
+
 <blockquote>
-<p><strong>Tip:</strong> You can check the health and state of all running services at any time by running <code>/status</code>.</p>
+<p><strong>Tip:</strong> Open the dashboard URL from the status output to monitor sessions and background work. See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a>.</p>
 </blockquote>
-<h3 id="4-run-your-first-agent-workflow">4. Run Your First Agent Workflow</h3>
-<p>With the daemons running and settings configured, instruct the orchestrator to begin a task. </p>
+<h3 id="4-run-your-first-workflow">4. Run your first workflow</h3>
 <div class="highlight"><pre><span></span><code>/scout-and-plan Review the authentication module and propose a migration plan to JWT.
 </code></pre></div>
 
-<p>The orchestrator will automatically pick up the request and dispatch the appropriate agents based on your task.</p>
+<p>This chains a scout pass (find relevant code) into a planner pass (implementation plan) without writing changes yet. For creating and routing specialists, see <a href="managing-custom-agents.html">Managing Custom Agents</a>.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="ignoring-project-data-files">Ignoring Project Data Files</h3>
-<p>To prevent the orchestrator's local databases and worktrees from polluting your git history, ensure they are added to your global <code>.gitignore</code>. </p>
+<h3 id="install-only-what-you-need">Install only what you need</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Command</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Interactive</td>
+<td><code>uv run scripts/install.py</code></td>
+<td>Step through packages and confirm</td>
+</tr>
+<tr>
+<td>Non-interactive</td>
+<td><code>uv run scripts/install.py --all</code></td>
+<td>Auto-select every available tool</td>
+</tr>
+</tbody>
+</table>
+<p>The installer can also add <code>.pi/</code> and <code>.worktrees/</code> to your global git excludes file so local agent data is not committed.</p>
+<h3 id="configure-via-environment-variables">Configure via environment variables</h3>
+<p>Skip the settings file when you prefer env vars. Resolution order:</p>
+<ol>
+<li><code>.pi/pi-config-settings.json</code> (project)</li>
+<li><code>~/.pi/pi-config-settings.json</code> (global)</li>
+<li>Environment variables (for example <code>PI_DREAM_INTERVAL_HOURS=3</code>, <code>CLI_AGENTS=claude,cursor</code>)</li>
+<li>Built-in defaults</li>
+</ol>
+<p>See <a href="configuration.html">Configuration &amp; Settings</a> for keys and env var names. For CLI utilities used by review and memory workflows, see <a href="cli-reference.html">myk_pi_tools CLI Reference</a>.</p>
+<h3 id="keep-project-data-out-of-git">Keep project data out of git</h3>
 <table>
 <thead>
 <tr>
@@ -339,33 +419,31 @@
 </thead>
 <tbody>
 <tr>
-<td><strong>Old Way (Manual File Edit)</strong></td>
-<td><code>echo ".pi/" &gt;&gt; ~/.gitignore</code></td>
+<td>Preferred</td>
+<td><code>git config --global core.excludesfile ~/.config/git/ignore &amp;&amp; echo ".pi/" &gt;&gt; ~/.config/git/ignore</code></td>
 </tr>
 <tr>
-<td><strong>New Way (Scripted)</strong></td>
-<td><code>git config --global core.excludesfile ~/.config/git/ignore &amp;&amp; echo ".pi/" &gt;&gt; ~/.config/git/ignore</code></td>
+<td>Manual</td>
+<td>Append <code>.pi/</code> (and <code>.worktrees/</code> if you use worktrees) to your global excludes file</td>
 </tr>
 </tbody>
 </table>
-<h3 id="environment-variable-fallbacks">Environment Variable Fallbacks</h3>
-<p>If you prefer not to use a <code>.pi/pi-config-settings.json</code> file, you can rely on environment variables. Project settings are resolved in the following priority:</p>
-<ol>
-<li>Local <code>.pi/pi-config-settings.json</code></li>
-<li>Global <code>~/.pi/pi-config-settings.json</code></li>
-<li>Environment variables (e.g., <code>PI_DREAM_INTERVAL_HOURS=3</code>)</li>
-<li>System defaults</li>
-</ol>
-<p>For more details on interacting with the system from your terminal, see <a href="cli-reference.html">myk_pi_tools CLI Reference</a>.</p>
+<blockquote>
+<p><strong>Tip:</strong> The installer Environment Setup step can configure these entries for you.</p>
+</blockquote>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>"Cannot continue without pi" error:</strong> Ensure <code>@earendil-works/pi-coding-agent</code> is installed globally via npm before running the python installer.</li>
-<li><strong>Daemons failing to start:</strong> Verify that the required ports are available. The <code>/pidiff</code> command logs its current port and process ID in <code>.pi/tmp/pidiff.port</code>.</li>
-<li><strong>Pre-commit hook failures:</strong> If Git hooks complain about formatting, run <code>prek run --all-files</code> to automatically apply fixes before committing.</li>
+<li><strong>"Cannot continue without pi":</strong> Install the coding agent globally (<code>npm install -g @earendil-works/pi-coding-agent</code>), confirm <code>pi</code> is on your <code>PATH</code>, then re-run the installer.</li>
+<li><strong>Daemon fails to start:</strong> Confirm <code>pidash_enable</code> / <code>pidiff_enable</code> are not set to <code>false</code>. Run <code>/pidash status</code> or <code>/pidiff status</code>. For pidash failures, check <code>~/.pi/pidash-server.log</code>.</li>
+<li><strong>pidash says TUI-only:</strong> Start daemons from an interactive <code>pi</code> session, not a headless/CLI-only mode.</li>
+<li><strong>Pre-commit / formatting failures:</strong> Run <code>prek run --all-files</code> to apply fixes, then retry the commit.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li><a href="custom-slash-commands.html">Creating Slash Commands</a></li>
 <li><a href="cli-reference.html">myk_pi_tools CLI Reference</a></li>
 </ul>
                 </div>
@@ -388,17 +466,18 @@
                     <div class="toc">
 <ul>
 <li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-install">Quick Install</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
 <li><a href="#step-by-step-guide">Step-by-Step Guide</a><ul>
-<li><a href="#1-run-the-interactive-installer">1. Run the Interactive Installer</a></li>
-<li><a href="#2-initialize-project-settings">2. Initialize Project Settings</a></li>
-<li><a href="#3-start-the-daemons">3. Start the Daemons</a></li>
-<li><a href="#4-run-your-first-agent-workflow">4. Run Your First Agent Workflow</a></li>
+<li><a href="#1-install-pi-config-and-tooling">1. Install pi-config and tooling</a></li>
+<li><a href="#2-add-project-settings">2. Add project settings</a></li>
+<li><a href="#3-start-the-background-daemons">3. Start the background daemons</a></li>
+<li><a href="#4-run-your-first-workflow">4. Run your first workflow</a></li>
 </ul>
 </li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#ignoring-project-data-files">Ignoring Project Data Files</a></li>
-<li><a href="#environment-variable-fallbacks">Environment Variable Fallbacks</a></li>
+<li><a href="#install-only-what-you-need">Install only what you need</a></li>
+<li><a href="#configure-via-environment-variables">Configure via environment variables</a></li>
+<li><a href="#keep-project-data-out-of-git">Keep project data out of git</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -414,7 +493,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

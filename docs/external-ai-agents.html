@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,92 +302,158 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="external-ai-agents-cli">External AI Agents &amp; CLI</h1>
-<p>Trigger prompts across different AI providers directly from your terminal or chat session to leverage provider-specific capabilities like Cursor's fast models or Claude's extended reasoning.</p>
+<p>Run prompts through Cursor, Claude, or Gemini from your terminal or Pi chat when you want that provider’s models, tools, and session behavior without leaving your workflow.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <ul>
-<li>The external AI CLIs (<code>cursor</code>, <code>claude</code>, or <code>gemini</code> binaries from <code>ai-cli-runner</code>) must be installed and authenticated on your system.</li>
-<li>The <code>myk-pi-tools</code> CLI must be installed and accessible in your environment.</li>
+<li><code>myk-pi-tools</code> installed and on your <code>PATH</code> (for example <code>uv tool install myk-pi-tools</code>)</li>
+<li>Provider CLIs installed and authenticated:</li>
+<li><strong>cursor</strong> → <code>agent</code> binary</li>
+<li><strong>claude</strong> → <code>claude</code> binary</li>
+<li><strong>gemini</strong> → <code>gemini</code> binary</li>
 </ul>
 <h2 id="quick-example">Quick Example</h2>
-<p>List available models for a provider and run a simple prompt:</p>
-<div class="highlight"><pre><span></span><code><span class="c1"># See what models are available for Claude</span>
+<div class="highlight"><pre><span></span><code><span class="c1"># List models for Claude</span>
 myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>models<span class="w"> </span>claude
 
-<span class="c1"># Run a single prompt through Claude</span>
-myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Summarize the changes in src/main.rs&quot;</span><span class="w"> </span>--provider<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>claude-3-5-sonnet-20241022
+<span class="c1"># Run a one-shot prompt</span>
+myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Summarize the changes in src/main.rs&quot;</span><span class="w"> </span>--provider<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6
 </code></pre></div>
 
-<h2 id="step-by-step-guide">Step-by-Step Guide</h2>
-<h3 id="1-using-the-chat-command">1. Using the Chat Command</h3>
-<p>When working inside Pi, you can use the <code>/external-ai</code> slash command to delegate tasks to an external provider without leaving your chat session.</p>
+<p>Inside a Pi session:</p>
 <div class="highlight"><pre><span></span><code>/external-ai cursor explain the authentication flow
 </code></pre></div>
 
-<p>If you don't specify a model, Pi will use the provider's default model (e.g., <code>composer-2-fast</code> for Cursor).</p>
-<h3 id="2-selecting-a-specific-model">2. Selecting a Specific Model</h3>
-<p>To explicitly request a model, append <code>--model</code>:</p>
+<h2 id="step-by-step-guide">Step-by-Step Guide</h2>
+<h3 id="1-pick-a-provider-and-model">1. Pick a provider and model</h3>
+<p>Supported providers: <code>cursor</code>, <code>claude</code>, <code>gemini</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Default model (when <code>--model</code> is omitted)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cursor</code></td>
+<td><code>composer-2-fast</code></td>
+</tr>
+<tr>
+<td><code>claude</code></td>
+<td><code>claude-sonnet-4-6</code></td>
+</tr>
+<tr>
+<td><code>gemini</code></td>
+<td><code>gemini-2.5-flash</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>models<span class="w"> </span>cursor
+</code></pre></div>
+
 <div class="highlight"><pre><span></span><code>/external-ai cursor --model gpt-5.4-high review the latest PR
 </code></pre></div>
 
-<h3 id="3-granting-write-access">3. Granting Write Access</h3>
-<p>By default, all external AI requests are treated as read-only. Append the <code>--fix</code> flag to let the agent modify, create, or delete files directly in your workspace:</p>
+<h3 id="2-run-a-read-only-prompt">2. Run a read-only prompt</h3>
+<p>By default, <code>/external-ai</code> and <code>ai-cli run</code> are read-only — the external agent should not modify files.</p>
+<div class="highlight"><pre><span></span><code>/external-ai gemini explain this function
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;List security concerns in the auth package&quot;</span><span class="w"> </span>--provider<span class="w"> </span>cursor
+</code></pre></div>
+
+<h3 id="3-allow-writes-with-fix">3. Allow writes with <code>--fix</code></h3>
 <div class="highlight"><pre><span></span><code>/external-ai claude --fix rewrite the error handling in database.ts
 </code></pre></div>
 
 <blockquote>
-<p><strong>Note:</strong> If your git workspace is dirty (uncommitted changes) when running a <code>--fix</code> command, Pi will prompt you to create a checkpoint commit before the agent begins making modifications. This ensures you can easily roll back unwanted changes.</p>
+<p><strong>Note:</strong> In a dirty git worktree, Pi asks whether to create a checkpoint commit (<code>chore: checkpoint before ai-cli changes</code>) or continue anyway before applying changes.</p>
+<p><strong>Warning:</strong> <code>--fix</code> works with a single provider only. It cannot be combined with <code>--peer</code> or a comma-separated provider list.</p>
 </blockquote>
-<h3 id="4-continuing-a-session">4. Continuing a Session</h3>
-<p>If you need to ask follow-up questions or iterate on previous changes, use the <code>--resume</code> flag to maintain conversation context with the agent:</p>
+<h3 id="4-continue-a-session-with-resume">4. Continue a session with <code>--resume</code></h3>
 <div class="highlight"><pre><span></span><code>/external-ai cursor --resume add tests for the edge cases too
 </code></pre></div>
 
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Continue from the last review&quot;</span><span class="w"> </span>--provider<span class="w"> </span>cursor<span class="w"> </span>--resume
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Session behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default</td>
+<td>Fresh session each call</td>
+</tr>
+<tr>
+<td><code>--resume</code></td>
+<td>Continue the most recent session</td>
+</tr>
+<tr>
+<td><code>--session-id &lt;id&gt;</code></td>
+<td>Resume a specific session (CLI only; mutually exclusive with <code>--resume</code>)</td>
+</tr>
+</tbody>
+</table>
 <h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="peer-review-mode">Peer Review Mode</h3>
-<p>You can start an AI-to-AI debate using the <code>--peer</code> flag. In this mode, Pi acts as an orchestrator, bouncing feedback back and forth with the external agent until both agree on the code changes.</p>
+<h3 id="peer-review-loops">Peer review loops</h3>
+<p>Use <code>--peer</code> for an AI-to-AI review loop. Pi orchestrates rounds: the peer reports findings, Pi applies agreed fixes or returns technical counter-arguments, then the peer re-reviews until peers report no remaining issues.</p>
 <div class="highlight"><pre><span></span><code>/external-ai cursor --model gpt-5.4-xhigh --peer review this pull request
 </code></pre></div>
 
-<p>Pi will collect the findings from the peer agent, evaluate them, apply fixes if it agrees, or present a technical counter-argument if it disagrees. The loop continues automatically until all parties reach consensus.</p>
-<h3 id="multi-agent-group-debates">Multi-Agent Group Debates</h3>
-<p>You can instruct multiple providers to review the same code simultaneously. Pass a comma-separated list of providers:</p>
+<p>Multiple peers (comma-separated) review in parallel; later rounds share group context:</p>
 <div class="highlight"><pre><span></span><code>/external-ai cursor,claude --peer review the architecture design
 </code></pre></div>
 
-<p>Each agent will review independently, and Pi will synthesize their findings. During the peer loop, each agent receives the full context of what the other agents said, enabling true group consensus.</p>
-<h3 id="persisting-agent-configurations">Persisting Agent Configurations</h3>
-<p>Pi remembers your last used provider and model. You can manually save your preferred agent setup so you don't have to specify it every time:</p>
-<div class="highlight"><pre><span></span><code><span class="c1"># Save default agent configuration for standard requests</span>
-myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<span class="w"> </span>--agents<span class="w"> </span><span class="s2">&quot;cursor --model gpt-5.4-high&quot;</span>
-
-<span class="c1"># Save default peers configuration for peer review loops</span>
+<blockquote>
+<p><strong>Warning:</strong> Do not combine <code>--peer</code> with <code>--fix</code> or <code>--resume</code>. Peer mode manages sessions automatically via <code>--session-id</code> after the first round.</p>
+</blockquote>
+<h3 id="persist-defaults">Persist defaults</h3>
+<p>Save last-used agents or peer sets to <code>.pi/external-ai-config.json</code>:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<span class="w"> </span>--agents<span class="w"> </span><span class="s2">&quot;cursor --model gpt-5.4-high&quot;</span>
 myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<span class="w"> </span>--peers<span class="w"> </span><span class="s2">&quot;cursor,claude&quot;</span>
 </code></pre></div>
 
-<p>Once saved, you can omit the provider and run prompts implicitly:</p>
+<p>Then omit the provider:</p>
 <div class="highlight"><pre><span></span><code>/external-ai write a unit test for this script
+/external-ai --peer review this
 </code></pre></div>
 
+<h3 id="extra-cli-flags">Extra CLI flags</h3>
+<p>Pass through flags the underlying binary understands:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">&quot;Review auth&quot;</span><span class="w"> </span>--provider<span class="w"> </span>cursor<span class="w"> </span>--cli-flags<span class="o">=</span>--trust
+</code></pre></div>
+
+<h3 id="other-providers">Other providers</h3>
+<p>For agents outside <code>cursor</code> / <code>claude</code> / <code>gemini</code> (for example Codex or Copilot), use ACPX instead of <code>/external-ai</code>. See <a href="acpx-provider.html">ACPX Provider Integration</a>.</p>
+<p>For registering <code>cli-*</code> providers inside Pi sessions, see <a href="configuration.html">Configuration &amp; Settings</a>. To customize slash-command behavior, see <a href="custom-slash-commands.html">Creating Slash Commands</a>.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Command fails with a permission error:</strong> The agent attempted to modify files during a read-only prompt. Retry with the <code>--fix</code> flag.</li>
-<li><strong>Unknown provider error:</strong> Ensure you are using <code>cursor</code>, <code>claude</code>, or <code>gemini</code>. For other agents, use the ACPX integration instead.</li>
-<li><strong>Agent gets stuck or takes too long:</strong> External models can take several minutes to read files and execute multi-step tool calls. Do not cancel the process prematurely; the CLI intentionally does not enforce strict timeouts.</li>
+<li><strong>Permission / unexpected file changes:</strong> You ran without <code>--fix</code>, or the agent ignored read-only instructions. Retry with <code>--fix</code> after a clean or checkpointed tree.</li>
+<li><strong>Unknown provider:</strong> Use only <code>cursor</code>, <code>claude</code>, or <code>gemini</code> with <code>/external-ai</code>. Other agents need <a href="acpx-provider.html">ACPX Provider Integration</a>.</li>
+<li><strong><code>agent</code> / <code>claude</code> / <code>gemini</code> not found:</strong> Install and authenticate that provider’s CLI separately, then confirm it is on your <code>PATH</code>.</li>
+<li><strong>Long-running or “stuck” agents:</strong> Multi-step tool use can take several minutes. Do not cancel early — execution commands intentionally run without strict timeouts.</li>
+<li><strong><code>--resume</code> and <code>--peer</code> together:</strong> Not allowed; drop one of the flags.</li>
 </ul>
-<p>For more details on modifying runtime variables, see <a href="configuration.html">Configuration &amp; Settings</a>. To learn how commands like <code>/external-ai</code> are structured under the hood, see <a href="custom-slash-commands.html">Creating Slash Commands</a>.</p>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
-<li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
 <li><a href="acpx-provider.html">ACPX Provider Integration</a></li>
+<li><a href="vertex-claude-provider.html">Google Vertex Claude Provider</a></li>
+<li><a href="pi-sidecar.html">Pi Sidecar HTTP API</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="image-generation.html" class="page-nav-link page-nav-prev">
+                <a href="pi-sidecar.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Image Generation</span>
+                    <span class="page-nav-title">Pi Sidecar HTTP API</span>
                 </a>
 
 
@@ -378,16 +472,17 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<sp
 <li><a href="#prerequisites">Prerequisites</a></li>
 <li><a href="#quick-example">Quick Example</a></li>
 <li><a href="#step-by-step-guide">Step-by-Step Guide</a><ul>
-<li><a href="#1-using-the-chat-command">1. Using the Chat Command</a></li>
-<li><a href="#2-selecting-a-specific-model">2. Selecting a Specific Model</a></li>
-<li><a href="#3-granting-write-access">3. Granting Write Access</a></li>
-<li><a href="#4-continuing-a-session">4. Continuing a Session</a></li>
+<li><a href="#1-pick-a-provider-and-model">1. Pick a provider and model</a></li>
+<li><a href="#2-run-a-read-only-prompt">2. Run a read-only prompt</a></li>
+<li><a href="#3-allow-writes-with-fix">3. Allow writes with --fix</a></li>
+<li><a href="#4-continue-a-session-with-resume">4. Continue a session with --resume</a></li>
 </ul>
 </li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#peer-review-mode">Peer Review Mode</a></li>
-<li><a href="#multi-agent-group-debates">Multi-Agent Group Debates</a></li>
-<li><a href="#persisting-agent-configurations">Persisting Agent Configurations</a></li>
+<li><a href="#peer-review-loops">Peer review loops</a></li>
+<li><a href="#persist-defaults">Persist defaults</a></li>
+<li><a href="#extra-cli-flags">Extra CLI flags</a></li>
+<li><a href="#other-providers">Other providers</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -403,7 +498,7 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<sp
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

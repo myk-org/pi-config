@@ -78,5 +78,8 @@ See [Installation & Quickstart](quickstart.html) to learn more about basic chat 
 
 ## Related Pages
 
-- [Configuration & Settings](configuration.html)
 - [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Installation & Quickstart](quickstart.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Discord Bot Notifications](discord-bot.html)
+- [Automating Code Reviews](automating-code-reviews.html)

@@ -1,100 +1,136 @@
 # Inter-Agent Communication Network
 
-The Inter-Agent Communication Network (often referred to as `coms-net`) is the backbone that enables multiple independent agent sessions to discover each other, broadcast state, and securely pass messages. Instead of relying on direct inter-process communication (IPC) or complex shared memory, agents coordinate through a lightweight HTTP/SSE (Server-Sent Events) hub.
+`pi-config` includes an on-demand inter-agent messaging system so multiple Pi sessions can discover each other, exchange prompts, and hand work back and forth without leaving the terminal. You should care because this is what makes peer review loops, planner/worker splits, and background helper sessions feel like one coordinated workspace instead of a pile of disconnected terminals.
 
-By standardizing how agents talk to each other, `coms-net` enables true multi-agent orchestration. Developers can spawn specialist agents (like a planner and a researcher), and those agents can delegate tasks, share context, and aggregate results without blocking the user interface.
+## The Big Picture
 
----
+Two communication modes exist in the codebase:
 
-## The Big Picture: Architecture and Flow
+| System | How it is activated | Transport | Tool names | Best fit |
+| :--- | :--- | :--- | :--- | :--- |
+| `coms` | `/coms start` | Direct peer-to-peer | `coms_list`, `coms_send`, `coms_get` | Simple local session-to-session messaging |
+| `coms-net` | `/coms-net start` or `/coms-net connect` | Local HTTP + SSE hub | `coms_net_list`, `coms_net_send`, `coms_net_get` | More durable multi-session coordination |
 
-The network operates on a hub-and-spoke model. A single central server acts as the directory and message broker, while individual agents act as clients.
+This page focuses on `coms-net`, the networked mode built around a local hub server.
 
-| Component | Responsibility | Underlying Tech |
+### Main Components
+
+| Component | What it does | User-visible effect |
 | :--- | :--- | :--- |
-| **Coms Hub** | Central message broker and registry server. Manages routing, TTLs, and queue depth. | Bun HTTP server (`coms-net-server.ts`) |
-| **Registry Directory** | Ephemeral storage for hub state, active session JSONs, and authentication secrets. | `~/.pi/coms-net/` |
-| **Agent Client** | Connects to the hub, registers its identity, handles heartbeats, and processes incoming SSE events. | TypeScript Extension (`coms-net.ts`) |
-| **Tool Interface** | Exposes the network to the LLM via `coms_net_send`, `coms_net_get`, and `coms_net_list`. | Standard Agent Tools |
+| `/coms-net` wrapper | Starts, connects to, disconnects from, or stops the hub | You can bring the network up only when you need it |
+| Hub server | Tracks peers, queues messages, and pushes updates over SSE | Replies arrive automatically while you keep working |
+| Client in each Pi session | Registers identity, sends heartbeats, and receives inbound work | Each session can appear as a named peer |
+| Pool widget | Renders connected peers, status, queue depth, and context usage | You can see who is online and busy at a glance |
+| Messaging tools | `coms_net_list`, `coms_net_send`, `coms_net_get` | Agents can discover peers, delegate work, and inspect message state |
 
-### Message Lifecycle Flow
+### Message Flow
 
-When Agent A delegates a question to Agent B, the flow works like this:
+1. A session activates `coms-net` and registers with the hub.
+2. The hub assigns that session a project-scoped identity and opens an SSE stream.
+3. Another session calls `coms_net_send` with a peer name and prompt.
+4. The hub either delivers the message immediately or queues it if the target is busy.
+5. The receiving session gets the prompt as a follow-up turn in Pi.
+6. The receiver answers normally in chat.
+7. The extension captures that final assistant reply and posts it back to the hub.
+8. The original sender receives the result as a follow-up message automatically.
 
-1. **Initiation:** Agent A calls the `coms_net_send` tool with a target name and prompt.
-2. **Dispatch:** Agent A's extension intercepts the tool call and POSTs the payload to the Coms Hub. The hub generates a `msg_id` and marks it `queued`.
-3. **Delivery:** The Hub pushes the payload down Agent B's open SSE connection. Agent B's extension intercepts the event and injects a hidden message into Agent B's context window.
-4. **Resolution:** Agent B generates a normal conversational response. At the end of the turn, Agent B's extension captures the text and POSTs it back to the Hub as the resolution.
-5. **Callback:** The Hub pushes the response down Agent A's SSE connection. Agent A's extension receives it and injects it as a follow-up message so Agent A knows the task is complete.
-
----
+> **Tip:** In normal use, you send with `coms_net_send`, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with `coms_net_get`.
 
 ## Key Concepts
 
-### The Hub and Authentication
+### Project-Scoped Peer Discovery
 
-The network is secured via a Bearer token generated at startup. The hub binds to a port and writes its connection details to `~/.pi/coms-net/projects/<project>/server.json` and its secure token to `server.secret.json` (chmod `0600`).
+`coms-net` isolates peers by project namespace. If you do not pass `--project`, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.
 
-When an agent extension starts up, it automatically discovers these files and authenticates.
+That is why `/coms-net` only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another.
 
-> **Warning:** You should never commit or log the authentication token. The hub enforces strict token handling and will terminate connections missing valid Bearer headers.
+### Named Identities
 
-### Agent Registration and Heartbeats
+Each session registers with a peer identity: name, purpose, model, color, cwd, and status. The wrapper uses `--cname` for peer naming so it does not conflict with Pi's own `--name` behavior.
 
-When an agent joins, it registers with a name, model identifier, and color. To ensure the registry remains accurate, agents must send a heartbeat (default every 10 seconds).
+This is what makes peer lists readable instead of showing only opaque session IDs. A user can target `planner`, `worker`, or another named peer directly rather than guessing which terminal to message.
 
-The heartbeat contains telemetry:
-- `context_used_pct`: How full the agent's context window is.
-- `queue_depth`: How many pending messages it has.
-- `tasks_summary`: Progress on its current task list (total, completed, in-progress).
+### Heartbeats and Presence
 
-If the Hub misses heartbeats, the agent transitions from `online` to `stale`, and eventually to `offline` where it is removed from the registry.
+Every connected session sends heartbeat updates on a fixed interval. Those updates include context-window usage, queue depth, and optional task summary data.
 
-### Message Queues and Hop Limits
+For users, that turns into a live presence model:
+- `online` means the peer is healthy and actively reporting
+- `stale` means heartbeats stopped recently
+- `offline` means the peer was removed from the active registry
 
-To prevent infinite loops of agents talking to each other forever, the network implements **hop limits** (default: 5). Every time an agent forwards a delegated request, the hop count increments. Once the limit is hit, the Hub rejects the send request.
+The pool widget and peer list output reflect those states, so you can avoid delegating work to a dead or overloaded session.
 
-Additionally, to prevent an agent from being overwhelmed, the Hub enforces an **inbox cap** (default: 100 messages).
+### Automatic Reply Capture
 
-### Task Delegation
+Inbound messages are delivered into Pi as follow-up turns. The important rule is that the receiver should answer normally in chat, because the extension captures that reply automatically and returns it to the sender.
 
-Agents can send more than just raw text strings. The `coms_net_send` payload supports a `tasks` array. When Agent B receives a message containing tasks, its extension renders them as explicit work items, encouraging Agent B to use its `TaskCreate` tools to track the work formally.
+> **Warning:** Do not use `coms_net_send` to reply to an inbound `coms-net` message. That starts a brand-new outbound conversation and can create a ping-pong loop.
 
----
+This behavior matters because it keeps the experience conversational. To the user, cross-session messaging feels like asking a peer for help and getting a normal reply back in the same session.
+
+### Structured Task Delegation
+
+`coms_net_send` supports a `tasks` array alongside the prompt. Those task objects are shown to the receiving peer as structured work items instead of a loose prose blob.
+
+This makes delegation clearer and easier to track when the receiving session uses the task system. For users, it means you can send a prompt plus a checklist, not just a paragraph.
+
+### Hidden vs Discoverable Peers
+
+Peers launched with `--explicit` stay off the default discovery list. They still exist, but they are meant to be contacted intentionally rather than advertised broadly.
+
+This is useful when a helper session should not clutter the shared pool. Users see a cleaner peer list by default, while advanced workflows can still reveal explicit peers when needed.
+
+### Local Server Discovery and Authentication
+
+The hub writes project-local connection details under `~/.pi/coms-net/projects/<project>/`. That includes `server.json`, and for local loopback setups, a `server.secret.json` bearer token file with restricted permissions.
+
+The user-visible effect is convenience with reasonable safety:
+- local sessions can auto-discover the hub
+- the wrapper can reconnect after reloads
+- tokens are kept out of normal command output
+
+> **Note:** By default, the hub is a local service. The wrapper starts it on loopback unless you intentionally change the bind settings.
+
+### Queueing and Hop Limits
+
+The hub enforces queue depth and hop limits. Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever.
+
+For users, that shows up as more predictable behavior:
+- busy peers do not lose messages
+- runaway agent-to-agent loops stop instead of spiraling forever
+- queue depth is visible in pool output and peer listings
 
 ## How It Affects the User
 
-The technical details of SSE streams and Bearer tokens are completely abstracted away from the end user. Here is how `coms-net` surfaces in the application:
+The internals mostly stay out of your way, but they explain several behaviors you will notice in daily use.
 
-* **The Coms-Net Pool Widget:** At the bottom of the user's terminal, a live dashboard shows all connected agents. It updates in real-time as heartbeats arrive, showing their context window usage (`--%`), model type, and queue depth (`📨1`).
-* **Non-Blocking Execution:** Because messages are resolved via SSE push events rather than blocking HTTP polls, users can continue chatting with Agent A while Agent B works in the background. When Agent B finishes, the result cleanly injects into Agent A's chat history.
-* **Agent Transparency:** The Hub broadcasts state changes to all peers. If Agent A wants to know who is available, it can call `coms_net_list` to see exactly what the user sees in their terminal dashboard.
+| What you see | What is happening underneath |
+| :--- | :--- |
+| `/coms-net start` brings peers online | The wrapper starts or reuses the local hub, then registers the current session |
+| A live peer pool appears in the TUI | The client receives SSE updates and re-renders the widget from hub snapshots |
+| A reply shows up later without polling | The receiver's normal assistant reply was captured and pushed back over the hub |
+| A peer shows `stale` instead of disappearing immediately | Heartbeats stopped, but the server has not yet fully expired that peer |
+| A delegated task arrives with structure | The sender included `tasks`, and the receiver rendered them as assigned work |
+| Reconnecting after reload feels automatic | The wrapper persists activation state and re-registers on reload |
 
-> **Tip:** If you see an infinite ping-pong loop (where agents keep saying "I am sending this back to you"), it means an agent's prompt instructions are incorrectly telling it to call `coms_net_send` to *reply*. Agents should always reply by simply speaking normally in their context window. The extension automatically extracts the reply.
+A few practical implications are worth remembering:
 
----
-
-## Extending the Network
-
-If you are writing a custom provider or external daemon, you can interact with the Coms Hub directly via its HTTP API.
-
-* **Registering:** POST `/v1/agents/register` with your `session_id`, `name`, and `project`.
-* **Connecting:** Open an EventSource connection to the `sse_url` returned from the register call.
-* **Sending:** POST `/v1/messages` with `sender_session`, `target`, and `prompt`.
-* **Replying:** Listen for `prompt` events on your SSE stream, process the text, and POST back to `/v1/messages/<msg_id>/response`.
-
-By adhering to this contract, non-Pi systems (like a dedicated python background worker) can masquerade as peer agents on the network.
-
----
+- `coms-net` is best when you want named peer sessions that stay coordinated over time.
+- It is especially useful when one session should keep coding while another handles planning, review, or background work.
+- If you only need a lightweight direct link, the older `coms` mode is still available alongside `coms-net`.
 
 ## Related Pages
 
-* See [Managing Custom Agents](managing-custom-agents.html) to learn how to assign specific roles to agents on the network.
-* See [Daemon & Websocket Networking](daemon-and-websockets.html) to understand how the broader application manages async tasks alongside the `coms-net` hub.
-* See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) to learn how to spawn background peers that wait for network messages.
+- See [Managing Custom Agents](managing-custom-agents.html) for details.
+- See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
+- See [Daemon & Websocket Networking](daemon-and-websockets.html) for details.
+- See [Creating Slash Commands](custom-slash-commands.html) for details.
 
 ## Related Pages
 
 - [Managing Custom Agents](managing-custom-agents.html)
-- [External AI Agents & CLI](external-ai-agents.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Using the Web Dashboard](using-the-web-dashboard.html)
+- [Built-in Workflow Commands](built-in-workflows.html)

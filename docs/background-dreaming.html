@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,163 +302,363 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="background-memory-consolidation-dreaming">Background Memory Consolidation (Dreaming)</h1>
-<p>The <strong>Dreaming</strong> system is an automated background worker that periodically consolidates, reorganizes, and extracts long-term memories from your recent AI sessions. </p>
-<p>Instead of forcing you to manually tell the AI to "remember this," the dreaming worker quietly reads through your past conversations, identifies durable knowledge (like architectural decisions, repeated mistakes, and user preferences), and writes them into persistent memory files. This ensures your custom agents continuously learn and adapt without cluttering your workflow.</p>
-<h2 id="the-big-picture-architecture-and-data-flow">The Big Picture: Architecture and Data Flow</h2>
-<p>The dreaming system runs asynchronously as a background agent. It operates entirely decoupled from your active session, communicating its results by directly manipulating the project's memory store.</p>
-<h3 id="dreaming-lifecycle-flow">Dreaming Lifecycle Flow</h3>
+<p>Dreaming is Pi’s background memory-maintenance system. It periodically reads recent session history, extracts durable project knowledge, and refreshes the files that power long-term memory, skills, and enforcement metadata.</p>
+<p>You should care because it changes what the agent remembers without requiring constant manual cleanup. Over time, recurring decisions, conventions, and corrections become easier for Pi to reuse, while stale or low-value memory is less likely to keep polluting future sessions.</p>
+<h2 id="the-big-picture">The Big Picture</h2>
+<h3 id="what-runs">What Runs</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>What it does</th>
+<th>User-visible effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dream worker</td>
+<td>Runs a background <code>worker</code> agent that reads recent session transcripts and updates memory topic files.</td>
+<td>New lessons, preferences, decisions, and completions appear without manual entry.</td>
+</tr>
+<tr>
+<td>Rebuild pass</td>
+<td>Re-scores and re-organizes memory topic files after dreaming and on a periodic timer.</td>
+<td>Memory stays sorted, deduplicated, and ready for prompt injection.</td>
+</tr>
+<tr>
+<td>Provenance merge</td>
+<td>Merges pending provenance metadata into scored memory records.</td>
+<td>Stored memories can keep a link back to their source session.</td>
+</tr>
+<tr>
+<td>Promotion pass</td>
+<td>Evaluates mature memories for enforcement metadata or queueing into the promotion file.</td>
+<td>Repeated patterns can turn into stronger guardrails or skill candidates.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="trigger-points">Trigger Points</h3>
+<table>
+<thead>
+<tr>
+<th>Trigger</th>
+<th>Source</th>
+<th>Default behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Automatic timer</td>
+<td>Dreaming extension</td>
+<td>Runs periodically while auto-dreaming is enabled.</td>
+</tr>
+<tr>
+<td>Manual run</td>
+<td><code>/dream</code></td>
+<td>Starts a background pass immediately.</td>
+</tr>
+<tr>
+<td>Session quit</td>
+<td>Session shutdown hook</td>
+<td>May queue one final pass when the session exits normally.</td>
+</tr>
+<tr>
+<td>Rebuild timer</td>
+<td>Rebuild worker</td>
+<td>Re-scores topic files every 30 minutes.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="end-to-end-flow">End-to-End Flow</h3>
 <ol>
-<li><strong>Trigger Phase</strong></li>
-<li><strong>Interval:</strong> The <code>dreamTimer</code> triggers every 3 hours by default.</li>
-<li><strong>Shutdown:</strong> A detached dream run automatically executes on <code>session_shutdown</code> (when quitting).</li>
-<li>
-<p><strong>Manual:</strong> User explicitly triggers a run by typing <code>/dream</code>.</p>
-</li>
-<li>
-<p><strong>Quality Gate</strong></p>
-</li>
-<li>Assesses recent <code>.jsonl</code> session files to verify they contain substantial interactions.</li>
-<li>Skips trivial sessions (e.g., <code>&lt; 3</code> exchanges, greetings only).</li>
-<li>
-<p>Uses a <code>.dream-watermark</code> file to ensure it only processes unread sessions (max 5 per cycle).</p>
-</li>
-<li>
-<p><strong>Extraction &amp; Synthesis (LLM Phase)</strong></p>
-</li>
-<li>Uses an async LLM (resolved via <code>decideAsyncLlmDispatch</code>) to process session transcripts.</li>
-<li>Extracts categorized memories into dedicated markdown files (lessons, preferences, mistakes, completions, patterns, decisions).</li>
-<li>
-<p>Auto-generates formal <code>.pi/skills/&lt;name&gt;/SKILL.md</code> files for multi-step workflows.</p>
-</li>
-<li>
-<p><strong>Rebuild &amp; Consolidation (Sync Phase)</strong></p>
-</li>
-<li>On completion, triggers <code>rebuildAndOrganize</code> to deduplicate and rescore topic files.</li>
-<li>Triggers <code>mergeProvenancePending</code> to link newly discovered memories back to their source sessions.</li>
-<li>Triggers <code>runPromotionPass</code> to graduate mature memories into hard enforcements or structural rules.</li>
+<li>Pi decides whether a dream pass can run in the current session.</li>
+<li>A background <code>worker</code> agent is launched with a task focused on memory maintenance.</li>
+<li>The worker reads existing topic files under <code>.pi/memory/topics/</code>.</li>
+<li>The worker scans recent session transcripts and extracts durable knowledge.</li>
+<li>The worker may update topic files, create project skill files, and write promotion/provenance sidecars.</li>
+<li>When the background job completes, Pi runs follow-up maintenance:</li>
+<li><code>rebuildAndOrganize(...)</code></li>
+<li><code>mergeProvenancePending(...)</code></li>
+<li><code>runPromotionPass(...)</code></li>
 </ol>
-<h3 id="process-architecture">Process Architecture</h3>
-<table>
-<thead>
-<tr>
-<th style="text-align: left;">Component</th>
-<th style="text-align: left;">Responsibility</th>
-<th style="text-align: left;">Frequency / Trigger</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: left;"><strong>Async Agent Runner</strong></td>
-<td style="text-align: left;">Spawns a non-blocking background LLM task to read transcripts and write to <code>.pi/memory/topics/</code>.</td>
-<td style="text-align: left;">Every 3 hours / session end</td>
-</tr>
-<tr>
-<td style="text-align: left;"><strong>Rebuild Worker</strong></td>
-<td style="text-align: left;">Lightweight, non-LLM worker that sorts, deduplicates, and rescores topic entries.</td>
-<td style="text-align: left;">Every 30 minutes</td>
-</tr>
-<tr>
-<td style="text-align: left;"><strong>Promotion Engine</strong></td>
-<td style="text-align: left;">Evaluates memories with high evidence scores for conversion into code guards.</td>
-<td style="text-align: left;">Post-dream / threshold cross</td>
-</tr>
-<tr>
-<td style="text-align: left;"><strong>Watermark Tracker</strong></td>
-<td style="text-align: left;">Prevents re-reading the same chat logs on subsequent cycles.</td>
-<td style="text-align: left;">Updated per dream cycle</td>
-</tr>
-</tbody>
-</table>
+<blockquote>
+<p><strong>Note:</strong> Dreaming runs only in the top-level orchestrator session, not inside spawned subagents.</p>
+</blockquote>
 <h2 id="key-concepts">Key Concepts</h2>
-<h3 id="topic-extraction">Topic Extraction</h3>
-<p>The dreamer categorizes unstructured chat logs into discrete markdown files under <code>.pi/memory/topics/</code>:</p>
-<ul>
-<li><code>lessons.md</code>: User corrections and workflow adjustments.</li>
-<li><code>preferences.md</code>: Stylistic or tool-specific preferences.</li>
-<li><code>mistakes.md</code>: Repeated errors and their successful fixes.</li>
-<li><code>completions.md</code>: Merged PRs and completed features.</li>
-<li><code>decisions.md</code>: Architectural or design choices made during the session.</li>
-</ul>
-<blockquote>
-<p><strong>Note:</strong> The dreamer is strictly instructed to never modify entries marked with <code>*(pinned)*</code> or <code>*(enforced)*</code>. Any textual modification to enforced entries destroys their hash binding, permanently breaking the corresponding enforcement rule.</p>
-</blockquote>
-<h3 id="skill-auto-generation">Skill Auto-Generation</h3>
-<p>If the dreamer notices a recurring multi-step workflow across multiple sessions, it bypasses standard topic memory and directly generates a formal skill file at <code>.pi/skills/&lt;name&gt;/SKILL.md</code>. This gives future agents a structured, project-level checklist rather than a vague contextual memory.</p>
-<h3 id="promotion-and-provenance">Promotion and Provenance</h3>
-<p>When extracting knowledge, the dreamer creates a "provenance sidecar" (<code>provenance-pending.json</code>). When the background task successfully completes, this data is merged into the master score registry (<code>memory-scores.json</code>), linking the new memory to the exact session file it originated from. Memories with high evidence scores are sent to the promotion queue to potentially become <code>*(enforced)*</code> command blocks.</p>
-<h2 id="how-it-affects-the-user">How it Affects the User</h2>
-<p>The internal dreaming system surfaces in your daily usage in several ways:</p>
-<ul>
-<li><strong>UI Status Indicators:</strong> While a dream is actively running, the terminal overlay or web dashboard displays a highlighted <code>🌙</code> (3b-dream) status indicator.</li>
-<li><strong>Zero-Touch Learning:</strong> You will notice agents naturally adopting your conventions in subsequent sessions without you having to explicitly invoke memory commands.</li>
-<li><strong>Notifications:</strong> If dreaming fails to start (e.g., missing async LLM configuration), the system will notify your chat view: <code>Dream skipped: set async_llm_provider and async_llm_model</code>.</li>
-</ul>
-<h3 id="using-the-dreaming-system">Using the Dreaming System</h3>
-<p>You can control the dreamer directly via chat commands:</p>
-<ul>
-<li><code>/dream-auto on|off</code>: Toggles the background timer and end-of-session trigger for the current project.</li>
-<li><code>/dream</code>: Manually forces a background consolidation pass immediately (non-blocking).</li>
-</ul>
-<h3 id="configuration-options">Configuration Options</h3>
-<p>You can adjust the dreaming schedule and behavior using environment variables or project settings:</p>
+<h3 id="topic-files">Topic Files</h3>
+<p>Dreaming treats the topic files in <code>.pi/memory/topics/</code> as the source of truth for project memory.</p>
+<p>Current categories map to these files:</p>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Setting</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Category</th>
+<th>Topic file</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>PI_DREAM_INTERVAL_HOURS</code></td>
-<td style="text-align: left;">Environment Var</td>
-<td style="text-align: left;"><code>3</code></td>
-<td style="text-align: left;">Global override for the timer (valid range: 0.5 to 24 hours).</td>
+<td><code>preference</code></td>
+<td><code>preferences.md</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>dream_interval_hours</code></td>
-<td style="text-align: left;">Project Setting</td>
-<td style="text-align: left;"><code>3</code></td>
-<td style="text-align: left;">Per-project setting defined in <code>.pi/settings.json</code>.</td>
+<td><code>lesson</code></td>
+<td><code>lessons.md</code></td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td><code>patterns.md</code></td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td><code>decisions.md</code></td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td><code>completions.md</code></td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td><code>mistakes.md</code></td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Warning:</strong> Dreaming requires a configured background LLM. If you are using ACPX (external providers), you must define <code>async_llm_provider</code> and <code>async_llm_model</code> in your configuration, or dreaming will be skipped.</p>
-</blockquote>
-<h2 id="extending-the-dreaming-system">Extending the Dreaming System</h2>
-<p>The dreaming worker is built as an orchestrator extension using standard event hooks. If you are building custom plugins or native CLI providers, you can hook into the exact same lifecycle events the dreamer uses:</p>
-<h3 id="relevant-hooks">Relevant Hooks</h3>
-<ul>
-<li><code>pi.on("before_agent_start", (event, ctx) =&gt; {...})</code>: Used by the dreamer to initialize UI status immediately before the first prompt.</li>
-<li><code>pi.on("session_start", (event, ctx) =&gt; {...})</code>: Fired when a new workspace session begins. Used to track the current <code>cwd</code> and restart the dream timer.</li>
-<li><code>pi.on("session_shutdown", (event) =&gt; {...})</code>: Fired when the agent shuts down. Used to fire-and-forget a final detached dream before the node process fully exits (skips on <code>/reload</code> or <code>/resume</code>).</li>
-</ul>
-<h3 id="custom-rebuilds-via-spawnasyncagent">Custom Rebuilds via spawnAsyncAgent</h3>
-<p>If your extension introduces a new memory format or tracking state, you can safely queue tasks in the <code>onComplete</code> callback of an async agent, just as the dreamer triggers <code>rebuildAndOrganize(cwd)</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">id</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">spawnAsyncAgent</span><span class="p">(</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;Your custom background prompt...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">cwd</span><span class="p">,</span><span class="w"> </span><span class="nx">agents</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">fireAndForget</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;CustomDream&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">onComplete</span><span class="o">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="c1">// Executes synchronously in the main process when the background LLM task finishes</span>
-<span class="w">    </span><span class="nx">runCustomConsolidation</span><span class="p">(</span><span class="nx">cwd</span><span class="p">);</span>
-<span class="w">  </span><span class="p">}</span>
-<span class="p">});</span>
+<p>Each entry is a single markdown bullet such as:</p>
+<div class="highlight"><pre><span></span><code><span class="k">-</span><span class="w"> </span>[lesson] Use uv run for Python commands
+<span class="k">-</span><span class="w"> </span>[preference] Keep commit messages short <span class="ge">*(pinned)*</span>
 </code></pre></div>
 
+<p>User-visible effect:</p>
+<ul>
+<li>Future sessions can reuse these entries through the memory system.</li>
+<li>Topic files stay readable and editable by humans.</li>
+<li>Pinned entries survive normal cleanup.</li>
+</ul>
+<h3 id="quality-gate">Quality Gate</h3>
+<p>Dreaming does not blindly ingest every chat. The worker is instructed to prefer sessions with actual decisions, corrections, or completed work, and to skip trivial material.</p>
+<p>Examples of high-signal material:</p>
+<ul>
+<li>A user correcting how commands should be run</li>
+<li>A repeated workflow that keeps showing up across sessions</li>
+<li>A completed feature or merged task worth remembering</li>
+</ul>
+<p>Examples of low-signal material:</p>
+<ul>
+<li>Greetings</li>
+<li>Short one-off questions</li>
+<li>Sessions with little substantive work</li>
+</ul>
+<p>User-visible effect:</p>
+<ul>
+<li>Memory quality improves more slowly, but with less noise.</li>
+<li>Pi is less likely to “remember” throwaway chatter as a project rule.</li>
+</ul>
+<h3 id="watermark-tracking">Watermark Tracking</h3>
+<p>Dreaming uses a watermark file at <code>.pi/memory/.dream-watermark</code> to avoid reprocessing the same recent session history over and over.</p>
+<p>It also limits how many historical sessions are processed in one pass.</p>
+<p>User-visible effect:</p>
+<ul>
+<li>Automatic runs stay incremental instead of rescanning everything.</li>
+<li>Dreaming is less likely to monopolize background capacity after a long gap.</li>
+</ul>
+<h3 id="rebuild-and-re-scoring">Rebuild and Re-Scoring</h3>
+<p>After dreaming writes topic content, Pi runs <code>rebuildAndOrganize(...)</code> to rescore entries from the current topic files.</p>
+<p>This keeps the scored memory state aligned with the human-readable files.</p>
+<p>User-visible effect:</p>
+<ul>
+<li>New entries start influencing future prompts more quickly.</li>
+<li>Duplicate or weak entries are less likely to accumulate indefinitely.</li>
+<li>Topic ordering can shift as some memories become “hotter” than others.</li>
+</ul>
+<h3 id="provenance-sidecar">Provenance Sidecar</h3>
+<p>Dreaming can write pending provenance data to <code>.pi/memory/provenance-pending.json</code>.</p>
+<p>That sidecar can include fields such as:</p>
+<ul>
+<li><code>sourceSession</code></li>
+<li><code>derivedFrom</code></li>
+<li><code>informs</code></li>
+</ul>
+<p>After the dream job finishes, Pi merges that sidecar into scored memory records.</p>
+<p>User-visible effect:</p>
+<ul>
+<li>Some memories can retain a trace back to where they came from.</li>
+<li>Provenance helps later tooling explain why a memory exists.</li>
+</ul>
+<h3 id="promotion-queue">Promotion Queue</h3>
+<p>Dreaming and related memory logic can append candidates to <code>.pi/memory/promotions.md</code>.</p>
+<p>Promotion destinations currently include:</p>
+<table>
+<thead>
+<tr>
+<th>Destination</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>memory</code></td>
+<td>Keep as regular memory</td>
+</tr>
+<tr>
+<td><code>skill</code></td>
+<td>Candidate for a project skill</td>
+</tr>
+<tr>
+<td><code>enforcement</code></td>
+<td>Candidate for code-enforced behavior</td>
+</tr>
+<tr>
+<td><code>project_rule</code></td>
+<td>Proposed rule only</td>
+</tr>
+<tr>
+<td><code>discard</code></td>
+<td>Not worth keeping</td>
+</tr>
+</tbody>
+</table>
+<p>Important promotion thresholds in the current code:</p>
+<table>
+<thead>
+<tr>
+<th>Promotion type</th>
+<th>Evidence threshold</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Enforcement</td>
+<td><code>3</code></td>
+</tr>
+<tr>
+<td>Skill</td>
+<td><code>3</code></td>
+</tr>
+<tr>
+<td>Project rule</td>
+<td><code>5</code></td>
+</tr>
+</tbody>
+</table>
+<p>User-visible effect:</p>
+<ul>
+<li>Repeated, strong patterns can graduate into stricter behavior.</li>
+<li>Not everything is auto-applied: project rules remain proposals until a human handles them.</li>
+</ul>
+<blockquote>
+<p><strong>Warning:</strong> <code>project_rule</code> candidates are not auto-written into rule files. They stay proposed in the promotion queue.</p>
+</blockquote>
+<h3 id="skill-auto-creation">Skill Auto-Creation</h3>
+<p>The dream worker may create project-level skill files under <code>.pi/skills/&lt;name&gt;/SKILL.md</code> when it sees a recurring multi-step workflow.</p>
+<p>This is separate from normal topic memory. It is meant for procedures, not just facts.</p>
+<p>User-visible effect:</p>
+<ul>
+<li>Repeated workflows can become reusable agent skills.</li>
+<li>Future sessions may benefit from a structured checklist instead of a loose memory entry.</li>
+</ul>
+<h3 id="pinned-and-enforced-entries">Pinned and Enforced Entries</h3>
+<p>Dreaming is instructed to preserve entries marked with <code>*(pinned)*</code> and not rewrite entries marked <code>*(enforced)*</code>.</p>
+<p>Why that matters to users:</p>
+<ul>
+<li>Pinned entries represent intentionally protected memory.</li>
+<li>Enforced entries are tied to enforcement metadata and should remain stable.</li>
+</ul>
+<p>User-visible effect:</p>
+<ul>
+<li>Explicitly protected memory is safer from cleanup.</li>
+<li>Code-enforced guardrails are less likely to break during reorganization.</li>
+</ul>
+<h2 id="how-it-affects-the-user">How It Affects the User</h2>
+<h3 id="what-you-will-notice">What You Will Notice</h3>
+<table>
+<thead>
+<tr>
+<th>Behavior</th>
+<th>What it means</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A moon icon appears in the status bar</td>
+<td>A dream pass is currently running.</td>
+</tr>
+<tr>
+<td>Pi starts following a repeated convention without being told again</td>
+<td>Dreaming likely turned a repeated correction into stored memory.</td>
+</tr>
+<tr>
+<td>New topic entries show up under <code>.pi/memory/topics/</code></td>
+<td>The worker extracted durable knowledge from recent sessions.</td>
+</tr>
+<tr>
+<td>Promotion candidates appear in <code>.pi/memory/promotions.md</code></td>
+<td>A memory has crossed a threshold for stronger handling.</td>
+</tr>
+<tr>
+<td>A project skill appears under <code>.pi/skills/</code></td>
+<td>Dreaming recognized a repeatable multi-step workflow.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="controls-you-can-use">Controls You Can Use</h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/dream</code></td>
+<td>Starts a manual background pass.</td>
+</tr>
+<tr>
+<td><code>/dream-auto on</code></td>
+<td>Enables periodic dreaming for the current project.</td>
+</tr>
+<tr>
+<td><code>/dream-auto off</code></td>
+<td>Disables the automatic timer for the current project.</td>
+</tr>
+<tr>
+<td><code>dream_interval_hours</code></td>
+<td>Adjusts the automatic interval in project or global settings.</td>
+</tr>
+<tr>
+<td><code>PI_DREAM_INTERVAL_HOURS</code></td>
+<td>Environment-variable override for the interval.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="when-dreaming-skips-work">When Dreaming Skips Work</h3>
+<p>Dreaming depends on an async-capable LLM path. In ACPX-based sessions, that usually means configuring both:</p>
+<ul>
+<li><code>async_llm_provider</code></li>
+<li><code>async_llm_model</code></li>
+</ul>
+<p>If that path is unavailable, Pi skips the run and surfaces a warning in the UI.</p>
+<p>User-visible effect:</p>
+<ul>
+<li>Manual <code>/dream</code> may appear to do nothing except show a warning.</li>
+<li>Auto-dreaming may remain enabled, but individual runs can be skipped until async LLM settings are valid.</li>
+</ul>
+<blockquote>
+<p><strong>Tip:</strong> See <a href="configuration.html">Configuration &amp; Settings</a> for the exact settings used to control the dream interval and async LLM fallback.</p>
+</blockquote>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li>See <a href="curating-project-memory.html">Curating Project Memory</a> for manual memory management and topic file structures.</li>
-<li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details on the <code>spawnAsyncAgent</code> API and tracking background execution.</li>
-<li>See <a href="memory-architecture.html">Memory Architecture</a> for how scoring, hashing, and provenance sidecars work under the hood.</li>
-<li>See <a href="configuration.html">Configuration &amp; Settings</a> to properly configure your fallback async LLM providers.</li>
+<li>See <a href="curating-project-memory.html">Curating Project Memory</a> for details on manual memory entry and inspection.</li>
+<li>See <a href="memory-architecture.html">Memory Architecture</a> for how scores, topic hotness, and prompt injection work.</li>
+<li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for the background execution model used by dreaming.</li>
+<li>See <a href="safety-enforcements.html">Implementing Command Guards</a> for how promoted memory can affect enforcement behavior.</li>
+<li>See <a href="configuration.html">Configuration &amp; Settings</a> for the settings that control dream frequency and async LLM routing.</li>
 </ul>
 <h2 id="related-pages_1">Related Pages</h2>
 <ul>
-<li><a href="memory-architecture.html">Memory Architecture</a></li>
 <li><a href="curating-project-memory.html">Curating Project Memory</a></li>
+<li><a href="memory-architecture.html">Memory Architecture</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
 <li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 </ul>
                 </div>
@@ -455,25 +683,27 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#the-big-picture-architecture-and-data-flow">The Big Picture: Architecture and Data Flow</a><ul>
-<li><a href="#dreaming-lifecycle-flow">Dreaming Lifecycle Flow</a></li>
-<li><a href="#process-architecture">Process Architecture</a></li>
+<li><a href="#the-big-picture">The Big Picture</a><ul>
+<li><a href="#what-runs">What Runs</a></li>
+<li><a href="#trigger-points">Trigger Points</a></li>
+<li><a href="#end-to-end-flow">End-to-End Flow</a></li>
 </ul>
 </li>
 <li><a href="#key-concepts">Key Concepts</a><ul>
-<li><a href="#topic-extraction">Topic Extraction</a></li>
-<li><a href="#skill-auto-generation">Skill Auto-Generation</a></li>
-<li><a href="#promotion-and-provenance">Promotion and Provenance</a></li>
+<li><a href="#topic-files">Topic Files</a></li>
+<li><a href="#quality-gate">Quality Gate</a></li>
+<li><a href="#watermark-tracking">Watermark Tracking</a></li>
+<li><a href="#rebuild-and-re-scoring">Rebuild and Re-Scoring</a></li>
+<li><a href="#provenance-sidecar">Provenance Sidecar</a></li>
+<li><a href="#promotion-queue">Promotion Queue</a></li>
+<li><a href="#skill-auto-creation">Skill Auto-Creation</a></li>
+<li><a href="#pinned-and-enforced-entries">Pinned and Enforced Entries</a></li>
 </ul>
 </li>
-<li><a href="#how-it-affects-the-user">How it Affects the User</a><ul>
-<li><a href="#using-the-dreaming-system">Using the Dreaming System</a></li>
-<li><a href="#configuration-options">Configuration Options</a></li>
-</ul>
-</li>
-<li><a href="#extending-the-dreaming-system">Extending the Dreaming System</a><ul>
-<li><a href="#relevant-hooks">Relevant Hooks</a></li>
-<li><a href="#custom-rebuilds-via-spawnasyncagent">Custom Rebuilds via spawnAsyncAgent</a></li>
+<li><a href="#how-it-affects-the-user">How It Affects the User</a><ul>
+<li><a href="#what-you-will-notice">What You Will Notice</a></li>
+<li><a href="#controls-you-can-use">Controls You Can Use</a></li>
+<li><a href="#when-dreaming-skips-work">When Dreaming Skips Work</a></li>
 </ul>
 </li>
 <li><a href="#related-pages">Related Pages</a></li>
@@ -489,7 +719,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

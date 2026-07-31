@@ -1,15 +1,19 @@
-# Discord Bot Notifications
+# ~/.pi/discord.env
+DISCORD_BOT_TOKEN=MTE...your.token.here...
+DISCORD_ALLOWED_USERS=123456789012345678
+```
 
-Setting up the background Discord bot allows you to receive live event broadcasts, respond to agent prompts, and control running background sessions directly from your Discord client.
+Start the dashboard daemon from Pi:
 
-## Prerequisites
-* Node.js package `discord.js` installed globally.
-* A Discord Developer account with a registered bot application.
-* Your personal Discord User ID.
+```text
+/pidash start
+```
 
-## Quick Example
+Then, in Discord, run `/sessions`, pick a session, and continue the conversation in a DM with the bot.
 
-Create a `.pi/discord.env` file in your home directory to enable the bot:
+## Step-by-Step
+
+### 1. Create the Discord credentials file
 
 ```env
 # ~/.pi/discord.env
@@ -17,72 +21,129 @@ DISCORD_BOT_TOKEN=MTE...your.token.here...
 DISCORD_ALLOWED_USERS=123456789012345678
 ```
 
-## Step-by-Step Setup
+`DISCORD_BOT_TOKEN` enables the bot. `DISCORD_ALLOWED_USERS` is optional, but recommended, and accepts a comma-separated list of Discord user IDs.
 
-1. **Install the Discord library**
-   The bot requires `discord.js` to run in the background. Install it globally:
-   ```bash
-   npm install -g discord.js
-   ```
+### 2. Create and configure the Discord bot
 
-2. **Create the Discord App**
-   Go to the Discord Developer Portal, create a new Application, and navigate to the **Bot** tab. Under **Privileged Gateway Intents**, enable the **Message Content Intent**. Generate and copy your bot token.
+Set up your bot in the Discord Developer Portal, then:
 
-3. **Get your User ID**
-   In Discord, enable Developer Mode in your Advanced settings. Right-click your profile and select **Copy User ID**.
+- copy the bot token
+- enable **Message Content Intent**
+- invite the bot to your server with the `application.commands` scope if you want slash commands there
 
-4. **Configure the environment**
-   Create the environment file at `~/.pi/discord.env` and populate it with your token and user ID (comma-separated for multiple users).
+If you only want DM-based control, the bot can still work without using server chat for prompts.
 
-5. **Restart the daemon**
-   Restart your background pi process so it picks up the new credentials. The daemon will automatically log in to Discord on startup.
+### 3. Start or restart the pidash daemon
 
-## Interacting with the Bot
+```text
+/pidash start
+```
 
-Once connected, you can interact with the bot in any server it is invited to or via Direct Messages.
+If pidash is already running, restart it so it reloads the Discord credentials:
 
-### Slash Commands
+```text
+/pidash restart
+```
 
-The bot registers guild-scoped slash commands for instant control:
+The Discord integration is attached to the pidash daemon, so the bot logs in when pidash starts.
 
-| Command | Description |
+> **Note:** If you are already using the web dashboard, you do not need a separate Discord-specific service. The same pidash daemon handles both.
+
+### 4. Choose a session from Discord
+
+Use these slash commands in a Discord server where the bot is present:
+
+| Command | What it does |
 |---|---|
-| `/sessions` | Lists all active background sessions. Click the interactive buttons to connect and start watching a session. |
-| `/status` | Shows the model, branch, and active status of the session you are currently watching. |
-| `/stop` | Sends an abort signal to interrupt the currently running agent. |
+| `/sessions` | Lists active Pi sessions and shows buttons to connect or disconnect |
+| `/status` | Shows the currently watched session, model, branch, and current state |
+| `/stop` | Sends an interrupt to the watched session |
 
-### Sending Prompts and Attachments
+A typical flow is:
 
-When you are "watching" a session via `/sessions`, you can interact with the agent directly in your Direct Messages.
+1. Run `/sessions`
+2. Click the session you want to watch
+3. Open a DM with the bot
+4. Send prompts there
 
-* **Text Prompts:** Send a DM to the bot. It forwards your message to the running session as if you typed it in the terminal.
-* **File Attachments:** Upload text files (under 100KB) or images directly in the DM. The bot automatically parses text file contents and encodes images for the agent.
-* **Interactive Dialogs:** When an agent prompts you for a choice (like an ask-user dialog), the bot will DM you the options. Reply with the number or text to continue.
+### 5. Send prompts from Discord DMs
 
-> **Tip:** The bot displays a typing indicator in Discord while the agent is processing a request, so you always know when it is actively working.
+Once you are watching a session, send a DM to the bot just like you would type into Pi.
+
+- Plain text messages are forwarded as prompts
+- If the agent asks a question, reply in the same DM
+- `/stop` also works as a DM message
+
+Use this split to stay oriented:
+
+| Use Discord server slash commands for | Use Discord DMs for |
+|---|---|
+| picking a session | sending prompts |
+| checking status | replying to agent questions |
+| sending stop signals | uploading files or images |
+
+### 6. Send attachments when needed
+
+You can DM attachments to the bot along with your prompt.
+
+Supported behavior:
+
+- text-like files under 100KB are inlined into the prompt
+- images are forwarded for the agent to inspect
+- larger or binary files are only mentioned, not embedded
+
+This is useful for quick log review, screenshots, small configs, or error snippets.
+
+> **Tip:** If you want the agent to focus on an uploaded file, include a short instruction in the same DM, such as “Review this log and summarize the failure.”
 
 ## Advanced Usage
 
-### Handling Multiple Authorized Users
-
-You can allow multiple team members to control background sessions by adding their User IDs to `DISCORD_ALLOWED_USERS`:
+### Authorize multiple people
 
 ```env
 # ~/.pi/discord.env
 DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
 ```
 
-> **Warning:** Anyone not listed in this variable will receive a "Not authorized" response if they attempt to click buttons or use slash commands. If the variable is entirely omitted, *all* users are accepted (not recommended).
+Use this when a small team needs access to the same running sessions.
+
+> **Warning:** If `DISCORD_ALLOWED_USERS` is omitted, the bot accepts DMs from any user who can reach it. Set this variable unless you intentionally want open access.
+
+### Understand how “watching” works
+
+The bot only forwards prompts to the session you are currently watching. If you switch sessions in Discord, new prompts go to the newly selected one.
+
+This makes it easy to keep one DM thread per active task without guessing where your next message will land.
+
+### Use the bot with agent questions
+
+If the running agent triggers an interactive choice, the bot forwards that prompt into your DM and waits for your reply. You can respond with either:
+
+- a number, when options are listed
+- free text, when the prompt expects a typed answer
+
+### Change the pidash port if needed
+
+If port `19190` is already taken, configure pidash with either:
+
+- `PI_PIDASH_PORT`
+- `pidash_port` in project settings
+
+Then start pidash again. See [Using the Web Dashboard](using-the-web-dashboard.html) and [Configuration & Settings](configuration.html) for details.
 
 ## Troubleshooting
 
-* **Bot fails to start:** Check the background daemon logs. If you see `[discord] discord.js not installed`, verify your global npm install path is accessible to the daemon.
-* **Slash commands not appearing:** Ensure your bot was invited to the server with the `application.commands` scope enabled in your OAuth2 URL generator.
-* **No responses in DM:** Verify you are actively watching a session using `/sessions`. The bot ignores text messages if you are not tethered to an active background job.
+- **Bot does not come online:** Make sure `DISCORD_BOT_TOKEN` is present in `~/.pi/discord.env`, then run `/pidash restart`.
+- **Slash commands do not appear:** Confirm the bot was invited with the `application.commands` scope, then restart pidash so commands are registered again.
+- **Your DM gets “Not watching any session”:** Run `/sessions` first and click a session button before sending prompts.
+- **Another user cannot control the bot:** Add their Discord user ID to `DISCORD_ALLOWED_USERS`, comma-separated, then restart pidash.
+- **Uploaded file does not seem to reach the agent:** Keep text files under 100KB for inline forwarding. Very large or binary files are only referenced, not embedded.
 
-For more information on configuring your global paths and environment variables, see [Configuration & Settings](configuration.html).
+See [Using the Web Dashboard](using-the-web-dashboard.html) for details on starting and managing pidash. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details on the kinds of long-running work you can monitor from Discord.
 
 ## Related Pages
 
-- [Daemon & Websocket Networking](daemon-and-websockets.html)
 - [Using the Web Dashboard](using-the-web-dashboard.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)

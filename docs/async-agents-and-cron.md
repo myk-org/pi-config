@@ -1,125 +1,148 @@
 # Running Background Agents and Scheduled Tasks
 
-This guide explains how to offload long-running tasks to non-blocking background agents and schedule recurring workflows. Using background tasks keeps your main session free for active development while AI handles research, tests, or code reviews concurrently.
+Run long tasks without blocking your main session, and schedule recurring work so Pi can keep checking, reviewing, or cleaning up in the background. This is useful when you want to keep coding while another agent works, or when you want a workflow to run on a timer.
 
 ## Prerequisites
 
-- A running Pi session in your project repository.
-- Familiarity with the web dashboard (See [Using the Web Dashboard](using-the-web-dashboard.html)).
+- A running Pi session in your project repository
+- A TUI session if you want to use the fullscreen status overlays
+- `git` available if your background task depends on repository state
+- If you use ACPX-backed models for detached work, `async_llm_provider` and `async_llm_model` may be required. See [Configuration & Settings](configuration.html) for details.
 
 ## Quick Example
 
-To run a task in the background, simply ask Pi to do it asynchronously:
+Start a background agent with a plain-English request:
 
-> "Run the `security-auditor` on the `src/` directory in the background. Let me know when it's done."
+> Run the `security-auditor` on the `src/` directory in the background. Let me know when it's done.
 
-Pi will spawn the agent asynchronously. Your terminal remains unblocked, and Pi will notify you when the agent finishes.
-
-To schedule a recurring task, use the `/cron` command with natural language:
+Schedule a recurring task with `/cron`:
 
 ```bash
 /cron Run the test-automator every 30 minutes
 ```
 
-## Spawning and Managing Async Agents
+Use these when you want non-blocking work right away: one-off jobs through natural language, recurring jobs through `/cron`.
 
-Background agents are managed natively by Pi. They run in a separate process and report their results back to your chat automatically.
+## Step-by-Step
 
-### 1. Spawning Agents
+1. Start a background job.
 
-You can instruct Pi to run any specialist agent in the background. Certain agents (like code reviewers) are enforced to always run asynchronously to prevent blocking your session.
+Ask Pi to run a specialist in the background:
 
-When you ask Pi to run a background agent, it automatically links the job to a Task ID to track completion.
+> Run the `security-auditor` on the `src/` directory in the background. Let me know when it's done.
 
-> **Tip:** You can ask Pi to spawn multiple agents at once: "Run `python-expert` on the backend and `ts-expert` on the frontend in the background."
+Pi can keep your main session free while the background job runs and report back when it finishes.
 
-### 2. Monitoring Background Tasks
+2. Monitor running async work.
 
-To view active background tasks, their elapsed time, and live logs, open the async status dashboard:
+Open the async overlay:
 
 ```bash
 /async-status
 ```
 
-This opens a fullscreen overlay. You can navigate through the queued and running tasks to see what the agents are currently processing.
+This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, or press `x` to kill the selected job.
 
-### 3. Killing Misbehaving Agents
+3. Stop async work when needed.
 
-If an agent gets stuck or you no longer need its result, you can terminate it directly from the chat:
+Open the interactive kill picker:
 
 ```bash
-/async-kill code-reviewer
+/async-kill
 ```
 
-You can target agents by their exact name, ID prefix, or use `all` to cancel everything:
+Or cancel everything at once:
 
 ```bash
 /async-kill all
 ```
 
-Alternatively, you can press `x` while highlighting a job inside the `/async-status` overlay.
+> **Tip:** If you only need to stop one job, the interactive picker is safer because it shows the exact running entries before you kill them.
 
-## Scheduling Recurring Tasks (Cron)
+4. Create a recurring schedule.
 
-The `/cron` command allows you to define recurring jobs using plain English. Pi interprets your request and sets up the appropriate timers.
-
-### Adding a Scheduled Task
-
-To schedule a new task, pass your requirements directly to the `/cron` command:
+Use `/cron` with natural language:
 
 ```bash
 /cron Every day at 9:00 AM, run the git-expert to generate a daily summary.
 ```
 
-Pi will parse the time ("9:00 AM") and the action, start the timer, and confirm the schedule.
+Pi turns that into a recurring task for the current session.
 
-> **Note:** Cron tasks are scoped to your active session process. If you exit Pi, the timers stop. They resume automatically when you start a new session in the same project directory.
+5. Review or remove scheduled tasks.
 
-### Listing and Removing Tasks
-
-To see what tasks are currently scheduled in your local session:
+List tasks in the current session:
 
 ```bash
 /cron list
 ```
 
-To see tasks scheduled across all active Pi sessions on your machine:
+List tasks across active Pi sessions:
 
 ```bash
 /cron list-all
 ```
 
-If you want to stop a recurring task, find its ID from the list command and remove it:
+Remove a task by ID:
 
 ```bash
 /cron remove 1
 ```
 
+In the cron overlays, you can also press `x` to remove the selected task.
+
 ## Advanced Usage
 
-### Persistent Sessions
+### Pick the Right Monitoring Command
 
-Normally, async agents start with a fresh memory state (an ephemeral session). If you want an agent to retain context across multiple background runs, you can ask Pi to enable session persistence:
+| Goal | Command | What you get |
+|---|---|---|
+| Watch async jobs | `/async-status` | Fullscreen list, live output, kill with `x` |
+| Kill async jobs | `/async-kill` | Interactive kill picker |
+| See local schedules | `/cron list` | Fullscreen list of this session’s recurring tasks |
+| See all session schedules | `/cron list-all` | Cross-session view of active cron files |
+| Remove a known cron | `/cron remove <id>` | Direct removal by task ID |
 
-> "Run the code reviewer in the background and persist its session so it remembers previous feedback."
+### Keep Background Context Between Runs
 
-This is heavily utilized by automated code reviews to maintain context over iterative PR improvements. See [Automating Code Reviews](automating-code-reviews.html) for more details.
+If you want a background agent to remember previous work, ask Pi to persist that session:
 
-### Fire and Forget Mode
+> Run the code reviewer in the background and persist its session so it remembers previous feedback.
 
-For background maintenance tasks (like memory consolidation or cache cleanup), results don't need to clutter your active chat. Ask Pi to run the task in "fire and forget" mode:
+This is most useful for iterative review loops and repeated follow-up work. See [Automating Code Reviews](automating-code-reviews.html) for a full review workflow.
 
-> "Run a background memory cleanup task as fire-and-forget."
+### Use Fire-and-Forget for Maintenance Jobs
 
-The task will execute silently. You will only see a lightweight terminal notification when it completes. See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for an example of this pattern.
+For maintenance tasks where you do not want a follow-up result injected back into chat, ask for fire-and-forget behavior:
+
+> Run a background memory cleanup task as fire-and-forget.
+
+This is a good fit for housekeeping work where a completion notification is enough. See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for a concrete example.
+
+### Understand Cron Lifetime
+
+Cron tasks belong to the current Pi process. They survive session refreshes inside that process, but they do not keep running after a full Pi exit.
+
+> **Note:** If you need to confirm what is still scheduled, run `/cron list` or `/cron list-all` after reconnecting instead of assuming an older schedule is still active.
+
+### ACPX Compatibility
+
+Detached LLM work is more restricted when your parent session is using an `acpx-*` provider. In that case, some async work may be skipped or require a separate async LLM provider/model to be configured first.
+
+See [ACPX Provider Integration](acpx-provider.html) and [Configuration & Settings](configuration.html) for the exact setup.
 
 ## Troubleshooting
 
-- **Agent skips execution:** If an async agent immediately fails or skips, ensure your provider supports async LLM invocation. Some ACPX integrations cannot spawn child processes. See [ACPX Provider Integration](acpx-provider.html) for compatibility details.
-- **Missing Task IDs:** If Pi refuses to spawn an agent, complaining about a "missing taskId", ensure your prompt asks Pi to either link the background agent to an existing task list item, or explicitly tell it the task is independent.
-- **Zombie processes:** Pi automatically cleans up orphaned background agents on startup. If you notice high CPU usage after a crash, restart your session to trigger the cleanup sequence.
+- **Async job does not start:** If Pi complains about a missing `taskId`, the workflow is expecting the background work to be linked to a tracked task or explicitly marked as independent.
+- **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `async_llm_provider` and `async_llm_model` before retrying.
+- **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface.
+- **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all`, then remove the old task and create a fresh one.
+- **You want browser-based monitoring instead of terminal overlays:** See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 ## Related Pages
 
-- [Background Memory Consolidation (Dreaming)](background-dreaming.html)
-- [Inter-Agent Communication Network](inter-agent-communication.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Using the Web Dashboard](using-the-web-dashboard.html)
+- [Automating Code Reviews](automating-code-reviews.html)
+- [Managing Custom Agents](managing-custom-agents.html)
+- [Configuration & Settings](configuration.html)

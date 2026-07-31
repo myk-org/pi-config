@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -273,95 +301,37 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="myk_pi_tools-cli-reference">myk_pi_tools CLI Reference</h1>
-<p>This reference documents the subcommands available through the <code>myk-pi-tools</code> command line interface for database queries, code review handling, and managing project memory. </p>
-<p>For information on how the daemon runs behind the scenes, see <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a>. For project-wide environment configurations, see <a href="configuration.html">Configuration &amp; Settings</a>.</p>
-<hr />
-<h2 id="database-queries-myk-pi-tools-db">Database Queries (<code>myk-pi-tools db</code>)</h2>
-<p>The <code>db</code> command group provides ad-hoc access to the SQLite reviews database for analytics and auto-skip logic.</p>
-<h3 id="db-stats"><code>db stats</code></h3>
-<p>Groups and returns review statistics based on source or reviewer.</p>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--by-source</code></td>
-<td>Flag</td>
-<td><code>True</code></td>
-<td>Group statistics by source (human, qodo, coderabbit)</td>
-</tr>
-<tr>
-<td><code>--by-reviewer</code></td>
-<td>Flag</td>
-<td><code>False</code></td>
-<td>Group statistics by the reviewer author</td>
-</tr>
-<tr>
-<td><code>--json</code></td>
-<td>Flag</td>
-<td><code>False</code></td>
-<td>Output results as JSON instead of formatted text table</td>
-</tr>
-<tr>
-<td><code>--db-path</code></td>
-<td>String</td>
-<td>None</td>
-<td>Path to the SQLite database file</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Get stats grouped by source (default)</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats
+                    <h1 id="default-grouping-by-source">Default grouping (by source)</h1>
+<p>myk-pi-tools db stats</p>
+<h1 id="group-by-reviewer-and-print-json">Group by reviewer and print JSON</h1>
+<p>myk-pi-tools db stats --by-reviewer --json</p>
+<div class="highlight"><pre><span></span><code>**Return value / effect**
 
-<span class="c1"># Output reviewer stats as JSON</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="w"> </span>--by-reviewer<span class="w"> </span>--json
+- Prints a table or JSON array to stdout.
+- Exits with an error if both `--by-source` and `--by-reviewer` are passed.
+
+### `db patterns`
+
+Finds recurring dismissed comment patterns grouped by file path and body similarity.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--min` | Integer | `2` | Minimum occurrence count required for a pattern to be reported. |
+| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
+
+```bash
+# Show recurring dismissed patterns with at least 3 occurrences
+myk-pi-tools db patterns --min 3
 </code></pre></div>
 
-<h3 id="db-patterns"><code>db patterns</code></h3>
-<p>Identifies comments that appear multiple times with similar content, helping to identify potential auto-skip rules.</p>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--min</code></td>
-<td>Integer</td>
-<td><code>2</code></td>
-<td>Minimum number of occurrences to report</td>
-</tr>
-<tr>
-<td><code>--json</code></td>
-<td>Flag</td>
-<td><code>False</code></td>
-<td>Output results as JSON</td>
-</tr>
-<tr>
-<td><code>--db-path</code></td>
-<td>String</td>
-<td>None</td>
-<td>Path to the SQLite database file</td>
-</tr>
-</tbody>
-</table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Find recurring patterns with at least 3 occurrences</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--min<span class="w"> </span><span class="m">3</span>
-</code></pre></div>
-
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints rows with <code>path</code>, <code>occurrences</code>, <code>reason</code>, and <code>body_sample</code>.</li>
+<li>Uses dismissed comments (<code>not_addressed</code> / <code>skipped</code>) as the source set.</li>
+</ul>
 <h3 id="db-dismissed"><code>db dismissed</code></h3>
-<p>Retrieves all <code>not_addressed</code> or <code>skipped</code> comments for a repository.</p>
+<p>Returns stored dismissed comments for a repository.</p>
 <table>
 <thead>
 <tr>
@@ -375,42 +345,44 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span clas
 <tr>
 <td><code>--owner</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Repository owner (organization or user)</td>
+<td><code>(required)</code></td>
+<td>Repository owner or organization.</td>
 </tr>
 <tr>
 <td><code>--repo</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Repository name</td>
+<td><code>(required)</code></td>
+<td>Repository name.</td>
 </tr>
 <tr>
 <td><code>--json</code></td>
 <td>Flag</td>
 <td><code>False</code></td>
-<td>Output results as JSON</td>
+<td>Output JSON instead of a formatted table.</td>
 </tr>
 <tr>
 <td><code>--db-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Path to the SQLite database file</td>
+<td>auto-detected</td>
+<td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># View dismissed comments for the pi-config repo</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints dismissed review records for the specified repository.</li>
+<li>Returned rows include <code>path</code>, <code>line</code>, <code>body</code>, <code>status</code>, <code>reply</code>, <code>skip_reason</code>, <code>author</code>, <code>type</code>, and <code>comment_id</code>.</li>
+<li>Includes <code>not_addressed</code> and <code>skipped</code> comments, plus supported addressed body-comment/Qodo sticky types used for auto-skip logic.</li>
+</ul>
 <h3 id="db-query"><code>db query</code></h3>
-<p>Runs a raw SELECT query against the review database.</p>
-<blockquote>
-<p><strong>Warning:</strong> Only SELECT statements are permitted for safety reasons.</p>
-</blockquote>
+<p>Runs a read-only SQL query against the reviews database.</p>
 <table>
 <thead>
 <tr>
-<th>Parameter/Option</th>
+<th>Parameter / Option</th>
 <th>Type</th>
 <th>Default</th>
 <th>Description</th>
@@ -420,29 +392,41 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span cla
 <tr>
 <td><code>sql</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>The SQL query to execute</td>
+<td><code>(required)</code></td>
+<td>SQL statement to execute.</td>
 </tr>
 <tr>
 <td><code>--json</code></td>
 <td>Flag</td>
 <td><code>False</code></td>
-<td>Output results as JSON</td>
+<td>Output JSON instead of a formatted table.</td>
 </tr>
 <tr>
 <td><code>--db-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Path to the SQLite database file</td>
+<td>auto-detected</td>
+<td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Count comments grouped by status</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT status, COUNT(*) as cnt FROM comments GROUP BY status&quot;</span>
+<blockquote>
+<p><strong>Warning:</strong> Only <code>SELECT</code> and <code>WITH</code> (CTE) queries are accepted. Multiple statements and write-oriented keywords are rejected.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="c1"># Count comments by status</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT status, COUNT(*) AS cnt FROM comments GROUP BY status&quot;</span>
+
+<span class="c1"># JSON output</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT path, line, status FROM comments LIMIT 5&quot;</span><span class="w"> </span>--json
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints query results as a table or JSON array.</li>
+<li>Returns an empty result set if the database is missing.</li>
+<li>Exits with an error for disallowed SQL.</li>
+</ul>
 <h3 id="db-find-similar"><code>db find-similar</code></h3>
-<p>Accepts JSON via <code>stdin</code> (requires <code>path</code> and <code>body</code> keys) and attempts to find a previously dismissed comment matching the exact file path and body similarity (Jaccard word overlap).</p>
+<p>Reads a candidate comment from stdin and finds a previously dismissed comment with the same path and similar body text.</p>
 <table>
 <thead>
 <tr>
@@ -456,48 +440,52 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <tr>
 <td><code>--owner</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Repository owner (organization or user)</td>
+<td><code>(required)</code></td>
+<td>Repository owner or organization.</td>
 </tr>
 <tr>
 <td><code>--repo</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Repository name</td>
+<td><code>(required)</code></td>
+<td>Repository name.</td>
 </tr>
 <tr>
 <td><code>--threshold</code></td>
 <td>Float</td>
 <td><code>0.6</code></td>
-<td>Minimum similarity threshold (0.0 to 1.0)</td>
+<td>Minimum similarity score from <code>0.0</code> to <code>1.0</code>.</td>
 </tr>
 <tr>
 <td><code>--json</code></td>
 <td>Flag</td>
 <td><code>False</code></td>
-<td>Output results as JSON</td>
+<td>Output JSON instead of human-readable text.</td>
 </tr>
 <tr>
 <td><code>--db-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Path to the SQLite database file</td>
+<td>auto-detected</td>
+<td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{&quot;path&quot;: &quot;foo.py&quot;, &quot;body&quot;: &quot;Add error handling...&quot;}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{&quot;path&quot;:&quot;src/main.py&quot;,&quot;body&quot;:&quot;Add error handling for edge cases&quot;}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>find-similar<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
 </code></pre></div>
 
-<hr />
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Reads JSON from stdin with required keys <code>path</code> and <code>body</code>.</li>
+<li>Prints the best match or <code>null</code> / “No similar comment found”.</li>
+<li>Uses exact path match plus Jaccard word-overlap similarity.</li>
+</ul>
 <h2 id="review-handling-myk-pi-tools-reviews">Review Handling (<code>myk-pi-tools reviews</code>)</h2>
-<p>Commands for managing pull request review fetch loops, automated Qodo interactions, and persistence.</p>
 <h3 id="reviews-fetch"><code>reviews fetch</code></h3>
-<p>Fetches review threads from the current pull request and categorizes them by source (human, qodo, coderabbit). Saves output to <code>&lt;output-dir&gt;/pr-&lt;number&gt;-reviews.json</code>.</p>
+<p>Fetches review threads for the current PR and writes a normalized review JSON file.</p>
 <table>
 <thead>
 <tr>
-<th>Parameter/Option</th>
+<th>Parameter / Option</th>
 <th>Type</th>
 <th>Default</th>
 <th>Description</th>
@@ -508,37 +496,43 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <td><code>review_url</code></td>
 <td>String</td>
 <td><code>""</code></td>
-<td>Optional specific review URL for context (e.g., <code>#discussion_rXXX</code>)</td>
+<td>Optional PR review URL or discussion URL for context.</td>
 </tr>
 <tr>
 <td><code>--include-resolved</code></td>
 <td>Flag</td>
 <td><code>False</code></td>
-<td>Include resolved threads in the fetch output</td>
+<td>Include resolved threads in the output JSON.</td>
 </tr>
 <tr>
 <td><code>--user</code></td>
 <td>String</td>
-<td>None</td>
-<td>Filter threads by author username</td>
+<td><code>None</code></td>
+<td>Filter threads by author username.</td>
 </tr>
 <tr>
 <td><code>--output-dir</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Directory to write the output JSON file</td>
+<td><code>(required)</code></td>
+<td>Directory for the output JSON file.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Writes <code>&lt;output-dir&gt;/pr-&lt;number&gt;-reviews.json</code>.</li>
+<li>Prints the full normalized JSON payload to stdout.</li>
+<li>Output JSON contains <code>metadata</code>, <code>human</code>, <code>qodo</code>, and <code>coderabbit</code> arrays.</li>
+</ul>
 <h3 id="reviews-poll"><code>reviews poll</code></h3>
-<p>Polls for reviews until new actionable comments appear.</p>
+<p>Polls for new review activity until actionable feedback or approval is detected.</p>
 <table>
 <thead>
 <tr>
-<th>Parameter/Option</th>
+<th>Parameter / Option</th>
 <th>Type</th>
 <th>Default</th>
 <th>Description</th>
@@ -549,28 +543,41 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <td><code>review_url</code></td>
 <td>String</td>
 <td><code>""</code></td>
-<td>Optional specific review URL</td>
+<td>Optional PR review URL or discussion URL for context.</td>
 </tr>
 <tr>
 <td><code>--source</code></td>
 <td>String</td>
 <td><code>coderabbit</code></td>
-<td>Which reviewer to poll for (<code>coderabbit</code> or <code>qodo</code>)</td>
+<td>Reviewer source to poll: <code>coderabbit</code> or <code>qodo</code>.</td>
 </tr>
 <tr>
 <td><code>--output-dir</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Directory to write the output JSON file</td>
+<td><code>(required)</code></td>
+<td>Directory for the review JSON file.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Poll for Qodo comments</span>
+<div class="highlight"><pre><span></span><code><span class="c1"># Poll CodeRabbit</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
+
+<span class="c1"># Poll Qodo</span>
 myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--source<span class="w"> </span>qodo<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Loops until one of these conditions is met:</li>
+<li>approval is detected, or</li>
+<li>actionable comments are available.</li>
+<li>Updates <code>&lt;output-dir&gt;/pr-&lt;number&gt;-reviews.json</code>.</li>
+<li>Prints a JSON object to stdout with review data and an <code>approved</code> flag when it returns.</li>
+<li>For <code>coderabbit</code>, handles rate-limit and paused-review recovery internally.</li>
+<li>For <code>qodo</code>, retries stuck reviews and may request sticky-comment re-evaluation before returning.</li>
+</ul>
 <h3 id="reviews-post"><code>reviews post</code></h3>
-<p>Posts replies and resolves review threads based on status. Reads from a JSON file generated by <code>reviews fetch</code> and processed by the AI handler.</p>
+<p>Posts replies and resolves review threads from a processed reviews JSON file.</p>
 <table>
 <thead>
 <tr>
@@ -584,20 +591,30 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>json_path</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Path to the JSON file containing the review payload</td>
+<td><code>(required)</code></td>
+<td>Path to the processed review JSON file.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>post<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Reads the JSON produced by <code>reviews fetch</code>.</li>
+<li>Posts replies for processed entries and resolves eligible threads.</li>
+<li>Updates the JSON file with posting and resolution timestamps.</li>
+<li>Exits with an error if required replies are empty or too vague.</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> Qodo sticky findings are code-enforced to require status <code>addressed</code>. Non-<code>addressed</code> sticky entries are rejected.</p>
+</blockquote>
 <h3 id="reviews-pending-fetch"><code>reviews pending-fetch</code></h3>
-<p>Fetches the authenticated user's PENDING review and its comments from a GitHub PR.</p>
+<p>Fetches the authenticated user’s pending PR review and writes a pending-review JSON file.</p>
 <table>
 <thead>
 <tr>
-<th>Parameter/Option</th>
+<th>Parameter / Option</th>
 <th>Type</th>
 <th>Default</th>
 <th>Description</th>
@@ -607,26 +624,32 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>pr_url</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>GitHub PR URL</td>
+<td><code>(required)</code></td>
+<td>GitHub PR URL.</td>
 </tr>
 <tr>
 <td><code>--output-dir</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Directory to write the output JSON file</td>
+<td><code>(required)</code></td>
+<td>Directory for the output JSON file.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-fetch<span class="w"> </span><span class="s2">&quot;https://github.com/owner/repo/pull/123&quot;</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Writes <code>&lt;output-dir&gt;/pr-&lt;owner&gt;-&lt;repo&gt;-&lt;number&gt;-pending-review.json</code>.</li>
+<li>Prints the saved file path to stdout.</li>
+<li>Output JSON contains <code>metadata</code>, <code>comments</code>, and <code>diff</code>.</li>
+</ul>
 <h3 id="reviews-pending-update"><code>reviews pending-update</code></h3>
-<p>Updates accepted comment bodies in a pending review and optionally submits the review.</p>
+<p>Updates accepted pending-review comment bodies, and optionally submits the review.</p>
 <table>
 <thead>
 <tr>
-<th>Parameter/Option</th>
+<th>Parameter / Option</th>
 <th>Type</th>
 <th>Default</th>
 <th>Description</th>
@@ -636,22 +659,29 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>json_path</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Path to the processed pending review JSON</td>
+<td><code>(required)</code></td>
+<td>Path to the pending-review JSON file.</td>
 </tr>
 <tr>
 <td><code>--submit</code></td>
 <td>Flag</td>
 <td><code>False</code></td>
-<td>Submit the review immediately after updating comments</td>
+<td>Submit the review after updating comments. Submission only occurs if the JSON metadata also includes a valid <code>submit_action</code>.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>.pi/tmp/pr-123-pending-review.json<span class="w"> </span>--submit
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>.pi/tmp/pr-owner-repo-123-pending-review.json<span class="w"> </span>--submit
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Updates comments whose status is <code>accepted</code> and that include <code>refined_body</code>.</li>
+<li>Backfills missing <code>node_id</code> values from the GitHub API before applying updates.</li>
+<li>If both <code>--submit</code> and JSON metadata <code>submit_action</code> are present, submits the review with <code>COMMENT</code>, <code>APPROVE</code>, or <code>REQUEST_CHANGES</code>.</li>
+<li>Exits with an error if required <code>node_id</code> values cannot be resolved.</li>
+</ul>
 <h3 id="reviews-status"><code>reviews status</code></h3>
-<p>Displays the review status for the current PR and generates an HTML report.</p>
+<p>Shows stored review status for a PR and generates an HTML report.</p>
 <table>
 <thead>
 <tr>
@@ -665,22 +695,33 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>--pr</code></td>
 <td>Integer</td>
-<td>None</td>
-<td>PR number (defaults to auto-detect from current branch)</td>
+<td>auto-detect</td>
+<td>PR number. If omitted, the command tries to detect the current branch’s PR.</td>
 </tr>
 <tr>
 <td><code>--output-dir</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Directory for output HTML report</td>
+<td><code>(required)</code></td>
+<td>Directory for the generated HTML report.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span class="w"> </span>--output-dir<span class="w"> </span>.pi/reports/
+
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/reports/
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Writes <code>&lt;output-dir&gt;/review-status-&lt;pr&gt;.html</code>.</li>
+<li>Prints a terminal table and the HTML report location.</li>
+<li>If no PR can be auto-detected and <code>--pr</code> is omitted, lists PRs present in the local reviews database instead of generating a report.</li>
+</ul>
+<blockquote>
+<p><strong>Tip:</strong> Use this command against stored review data after <code>reviews store</code>. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for review-loop usage.</p>
+</blockquote>
 <h3 id="reviews-ask-qodo"><code>reviews ask-qodo</code></h3>
-<p>Posts a <code>/qodo</code> comment to ask a question and waits up to 10 minutes for a reply.</p>
+<p>Posts a <code>/qodo</code> comment on a PR and waits for a matching reply.</p>
 <table>
 <thead>
 <tr>
@@ -694,16 +735,26 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>args</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>The question string, optionally prepended with <code>--pr owner/repo N</code></td>
+<td><code>(required)</code></td>
+<td>Question text, or <code>--pr owner/repo &lt;pr_number&gt; &lt;question&gt;</code> to target a specific PR.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span><span class="s2">&quot;What edge cases are missing?&quot;</span>
+<div class="highlight"><pre><span></span><code><span class="c1"># Auto-detect the current PR</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span><span class="s2">&quot;What edge cases are missing?&quot;</span>
+
+<span class="c1"># Target a specific PR</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span>--pr<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span><span class="s2">&quot;What edge cases are missing?&quot;</span>
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints Qodo’s reply body to stdout.</li>
+<li>Auto-detects the current PR if <code>--pr</code> is not provided.</li>
+<li>Exits with code <code>1</code> if the question is empty, the post fails, or no matching reply arrives before timeout.</li>
+</ul>
 <h3 id="reviews-store"><code>reviews store</code></h3>
-<p>Stores completed review to the local SQLite database (<code>.pi/data/reviews.db</code>) for analytics, then deletes the JSON file.</p>
+<p>Stores a completed review JSON payload in the local SQLite database.</p>
 <table>
 <thead>
 <tr>
@@ -717,19 +768,50 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>json_path</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Path to the completed review JSON file</td>
+<td><code>(required)</code></td>
+<td>Path to the completed review JSON file.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>store<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
-<hr />
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Stores review metadata and comment rows in <code>&lt;project-root&gt;/.pi/data/reviews.db</code>.</li>
+<li>Anchors the stored review to the current commit SHA.</li>
+<li>Deletes the source JSON file after successful storage.</li>
+</ul>
 <h2 id="memory-management-myk-pi-tools-memory">Memory Management (<code>myk-pi-tools memory</code>)</h2>
-<p>Manual maintenance commands for reading, adding, or forgetting learned topics.</p>
+<h3 id="global-option-memory-group">Global Option (<code>memory</code> group)</h3>
+<p>This option applies to every <code>memory</code> subcommand.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--file-path</code></td>
+<td>String</td>
+<td>auto-detected</td>
+<td>Path to the memory topics directory. If omitted, uses <code>&lt;git-root&gt;/.pi/memory/topics/</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>--file-path<span class="w"> </span>/tmp/topics<span class="w"> </span>show
+</code></pre></div>
+
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Overrides the default per-repository topics directory for the current invocation.</li>
+</ul>
 <h3 id="memory-add"><code>memory add</code></h3>
-<p>Adds a memory entry to the repository's topics directory.</p>
+<p>Adds a memory entry to a topic file.</p>
 <table>
 <thead>
 <tr>
@@ -743,35 +825,44 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <tr>
 <td><code>--category</code>, <code>-c</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>One of: <code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, <code>preference</code></td>
+<td><code>(required)</code></td>
+<td>Memory category: <code>lesson</code>, <code>decision</code>, <code>mistake</code>, <code>pattern</code>, <code>done</code>, or <code>preference</code>.</td>
 </tr>
 <tr>
 <td><code>--summary</code>, <code>-s</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>Short one-line description of the memory</td>
+<td><code>(required)</code></td>
+<td>One-line memory text.</td>
 </tr>
 <tr>
 <td><code>--pinned</code></td>
 <td>Flag</td>
 <td><code>False</code></td>
-<td>Marks entry as user-requested (protected from automated pruning)</td>
-</tr>
-<tr>
-<td><code>--file-path</code></td>
-<td>String</td>
-<td>None</td>
-<td>Global option: specific topics directory path</td>
+<td>Store the entry as pinned.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="c1"># Add a persistent user preference</span>
+<div class="highlight"><pre><span></span><code><span class="c1"># Learned memory</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Cache mounts need uid&quot;</span>
+
+<span class="c1"># Pinned memory</span>
 myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Always use uv run&quot;</span><span class="w"> </span>--pinned
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Appends a markdown entry to the category’s topic file.</li>
+<li>Category-to-file mapping:</li>
+<li><code>preference</code> → <code>preferences.md</code></li>
+<li><code>lesson</code> → <code>lessons.md</code></li>
+<li><code>pattern</code> → <code>patterns.md</code></li>
+<li><code>decision</code> → <code>decisions.md</code></li>
+<li><code>done</code> → <code>completions.md</code></li>
+<li><code>mistake</code> → <code>mistakes.md</code></li>
+<li>Pinned entries are written with <code>*(pinned)*</code>.</li>
+</ul>
 <h3 id="memory-show"><code>memory show</code></h3>
-<p>Prints all memory entries across all topic markdown files.</p>
+<p>Prints all topic files as merged markdown.</p>
 <table>
 <thead>
 <tr>
@@ -785,16 +876,21 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <tr>
 <td><code>--file-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Global option: specific topics directory path</td>
+<td>auto-detected</td>
+<td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints merged topic-file contents to stdout.</li>
+<li>Reads all <code>*.md</code> files from the topics directory in filename order.</li>
+</ul>
 <h3 id="memory-migrate"><code>memory migrate</code></h3>
-<p>One-time migration script. Moves all entries from the legacy <code>memories.db</code> SQLite database to the file-backed topics directory.</p>
+<p>Migrates legacy SQLite memory data into topic files.</p>
 <table>
 <thead>
 <tr>
@@ -808,16 +904,23 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <tr>
 <td><code>--file-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Global option: specific topics directory path</td>
+<td>auto-detected</td>
+<td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>migrate
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Reads <code>memories.db</code> from the parent memory directory.</li>
+<li>Writes migrated entries as learned topic-file entries.</li>
+<li>Deletes legacy files after migration: <code>memories.db</code>, <code>dreams.md</code>, and <code>dreams.lock</code>.</li>
+<li>Prints a migration summary to stderr.</li>
+</ul>
 <h3 id="memory-forget"><code>memory forget</code></h3>
-<p>Removes a specific memory entry if it exists in the active topic files.</p>
+<p>Removes a matching memory entry.</p>
 <table>
 <thead>
 <tr>
@@ -831,28 +934,34 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <tr>
 <td><code>--category</code>, <code>-c</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>The category the memory belongs to</td>
+<td><code>(required)</code></td>
+<td>Memory category.</td>
 </tr>
 <tr>
 <td><code>--summary</code>, <code>-s</code></td>
 <td>String</td>
-<td>(Required)</td>
-<td>The exact text of the entry to forget</td>
+<td><code>(required)</code></td>
+<td>Exact entry text to remove.</td>
 </tr>
 <tr>
 <td><code>--file-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Global option: specific topics directory path</td>
+<td>auto-detected</td>
+<td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Used pip instead of uv run&quot;</span>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Used sleep for polling&quot;</span>
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Removes the matching learned or pinned line from the category topic file.</li>
+<li>Removes the matching entry hash from <code>memory-scores.json</code> if present.</li>
+<li>Prints either <code>Forgotten: ...</code> or <code>Not found: ...</code>.</li>
+</ul>
 <h3 id="memory-path"><code>memory path</code></h3>
-<p>Outputs the absolute directory path where project memory topics are stored.</p>
+<p>Prints the active memory topics directory.</p>
 <table>
 <thead>
 <tr>
@@ -866,19 +975,20 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <tr>
 <td><code>--file-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Global option: specific topics directory path</td>
+<td>auto-detected</td>
+<td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>path
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints the absolute path to the active topics directory.</li>
+</ul>
 <h3 id="memory-status"><code>memory status</code></h3>
-<p>Shows the enforcement honesty inventory for project memory, analyzing code-tier implementations versus injected topic counts.</p>
-<blockquote>
-<p><strong>Tip:</strong> Used to ensure the AI's "learned" behaviors actually map cleanly to local hooks and rules.</p>
-</blockquote>
+<p>Prints the memory enforcement-honesty inventory.</p>
 <table>
 <thead>
 <tr>
@@ -892,18 +1002,32 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <tr>
 <td><code>--file-path</code></td>
 <td>String</td>
-<td>None</td>
-<td>Global option: specific topics directory path</td>
+<td>auto-detected</td>
+<td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>status
 </code></pre></div>
 
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints:</li>
+<li>active topics path,</li>
+<li>injected topic-entry count,</li>
+<li>code-tier enforced-entry count,</li>
+<li>proposed promotion-candidate count.</li>
+<li>Lists code-tier entries when present.</li>
+<li>Reads <code>memory-scores.json</code> and <code>promotions.md</code> from the parent memory directory.</li>
+</ul>
+<blockquote>
+<p><strong>Tip:</strong> See <a href="safety-enforcements.html">Implementing Command Guards</a> for enforcement behavior and <a href="memory-architecture.html">Memory Architecture</a> for storage and scoring details.</p>
+</blockquote>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
-<li><a href="custom-slash-commands.html">Creating Slash Commands</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li><a href="automating-code-reviews.html">Automating Code Reviews</a></li>
+<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
 <li><a href="configuration.html">Configuration &amp; Settings</a></li>
 </ul>
                 </div>
@@ -928,14 +1052,9 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#database-queries-myk-pi-tools-db">Database Queries (myk-pi-tools db)</a><ul>
-<li><a href="#db-stats">db stats</a></li>
-<li><a href="#db-patterns">db patterns</a></li>
 <li><a href="#db-dismissed">db dismissed</a></li>
 <li><a href="#db-query">db query</a></li>
 <li><a href="#db-find-similar">db find-similar</a></li>
-</ul>
-</li>
 <li><a href="#review-handling-myk-pi-tools-reviews">Review Handling (myk-pi-tools reviews)</a><ul>
 <li><a href="#reviews-fetch">reviews fetch</a></li>
 <li><a href="#reviews-poll">reviews poll</a></li>
@@ -948,6 +1067,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </ul>
 </li>
 <li><a href="#memory-management-myk-pi-tools-memory">Memory Management (myk-pi-tools memory)</a><ul>
+<li><a href="#global-option-memory-group">Global Option (memory group)</a></li>
 <li><a href="#memory-add">memory add</a></li>
 <li><a href="#memory-show">memory show</a></li>
 <li><a href="#memory-migrate">memory migrate</a></li>
@@ -968,7 +1088,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
