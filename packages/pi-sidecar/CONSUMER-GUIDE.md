@@ -221,19 +221,21 @@ COPY --from=sidecar-builder /usr/local/bin/node /usr/local/bin/node
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm
 ```
 
-### CLI agents (optional)
+### CLI agents
 
 Install CLI agents if you need CLI/ACPX providers:
 
 ```dockerfile
-# Cursor Agent CLI
-RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
-
-# Claude Code CLI
+# Claude Code CLI (installs to ~/.local/bin)
 RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
 
-# Gemini CLI (npm global)
-RUN npm install -g @google/gemini-cli
+# Cursor Agent CLI (installs to ~/.local/bin)
+RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
+
+# Gemini CLI (npm global install)
+RUN mkdir -p $HOME_DIR/.npm-global \
+  && npm config set prefix "$HOME_DIR/.npm-global" \
+  && npm install -g @google/gemini-cli
 
 # ACPX (needed for acpx-cursor provider)
 RUN npm install -g acpx
