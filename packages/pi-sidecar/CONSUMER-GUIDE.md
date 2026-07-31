@@ -228,10 +228,13 @@ Required CLIs:
 |-----|---------------|-----------------|
 | Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `~/.local/bin/claude` |
 | Cursor Agent | `curl -fsSL https://cursor.com/install \| bash` | `~/.local/bin/agent` |
-| Gemini | `npm install -g @google/gemini-cli` | npm global bin |
+| Gemini | `npm install -g @google/gemini-cli@0.1` | npm global bin |
 | ACPX | `npm install -g acpx` | npm global bin |
 
-**Note:** Gemini requires npm prefix setup (`npm config set prefix`) for non-root users. The Cursor CLI binary is named `agent`, but the sidecar agent name is `cursor`.
+**Note:** Gemini requires npm prefix setup (`npm config set prefix`) for non-root users.
+The Cursor CLI binary is named `agent`, but the sidecar agent name is `cursor`.
+Pin CLI versions in Dockerfiles for reproducible builds (e.g., `@google/gemini-cli@0.1`).
+Claude and Cursor use official vendor install scripts — verify URLs before use in production.
 
 ### Entrypoint pattern
 

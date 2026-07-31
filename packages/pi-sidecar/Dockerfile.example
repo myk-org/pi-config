@@ -75,15 +75,17 @@ ENV PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${PATH}"
 # ---------------------------------------------------------------------------
 
 # Claude Code CLI (installs to ~/.local/bin)
+# Verify: https://claude.ai/install.sh is Anthropic's official installer
 RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
 
 # Cursor Agent CLI (installs to ~/.local/bin)
+# Verify: https://cursor.com/install is Cursor's official installer
 RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 
 # Gemini CLI (npm global install)
 RUN mkdir -p ${HOME}/.npm-global \
     && npm config set prefix "${HOME}/.npm-global" \
-    && npm install -g @google/gemini-cli
+    && npm install -g @google/gemini-cli@0.1
 
 # ACPX (needed for acpx-cursor provider)
 RUN npm install -g acpx
