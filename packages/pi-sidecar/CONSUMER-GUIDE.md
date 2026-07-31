@@ -183,7 +183,11 @@ exec your-app "$@"
 
 ## Docker Integration
 
+> **Example files:** [`Dockerfile.example`](Dockerfile.example) and [`entrypoint.example.sh`](entrypoint.example.sh) — copy these to your project as a starting point.
+
 ### Multi-stage build pattern
+
+> See [`Dockerfile.example`](Dockerfile.example) for the full working example.
 
 Use a dedicated sidecar builder stage to keep the runtime image small:
 
@@ -242,6 +246,8 @@ RUN npm install -g acpx
 ```
 
 ### Entrypoint pattern
+
+> See [`entrypoint.example.sh`](entrypoint.example.sh) for the full working example.
 
 Start the sidecar in background, wait for health, then start your app:
 
