@@ -342,6 +342,8 @@ class SidecarClient:
         logger.debug("Session deleted: %s", session_id)
 
     async def __aenter__(self) -> "SidecarClient":
+        if self._closed:
+            raise RuntimeError("SidecarClient is already closed")
         return self
 
     async def __aexit__(self, *args: object) -> None:

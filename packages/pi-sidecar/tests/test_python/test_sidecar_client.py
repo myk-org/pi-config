@@ -666,3 +666,19 @@ class TestRecordUsage:
             assert pi_sidecar_client._usage_recorder is my_recorder
         finally:
             pi_sidecar_client._usage_recorder = original
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager() -> None:
+    async with SidecarClient(base_url="http://127.0.0.1:99999") as client:
+        assert isinstance(client, SidecarClient)
+    assert client._closed is True
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_reuse_after_close() -> None:
+    client = SidecarClient(base_url="http://127.0.0.1:99999")
+    await client.close()
+    with pytest.raises(RuntimeError, match="already closed"):
+        async with client:
+            pass

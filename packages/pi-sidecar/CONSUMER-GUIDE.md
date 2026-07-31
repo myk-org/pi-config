@@ -88,11 +88,11 @@ async with SidecarClient() as client:
         model="gemini-2.5-flash",
         system_prompt="You are a helpful assistant.",
     )
-
-    result1 = await client.prompt(session_id, "What is Python?")
-    result2 = await client.prompt(session_id, "Show me an example")
-
-    await client.delete_session(session_id)
+    try:
+        result1 = await client.prompt(session_id, "What is Python?")
+        result2 = await client.prompt(session_id, "Show me an example")
+    finally:
+        await client.delete_session(session_id)
 ```
 
 ### Custom tools
