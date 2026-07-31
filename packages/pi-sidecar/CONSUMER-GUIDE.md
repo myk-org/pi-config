@@ -117,7 +117,7 @@ result = await call_ai_once(
             "http": {
                 "method": "GET",
                 "url": "https://api.example.com/projects/{project_name}/status",
-                "headers": {"Authorization": "Bearer ${API_TOKEN}"}
+                "headers": {"Authorization": "Bearer YOUR_TOKEN_HERE"}
             }
         }
     ],
@@ -132,7 +132,7 @@ After `npm install @myk-org/pi-sidecar`:
 # Start the sidecar server (foreground)
 npx pi-sidecar
 
-# Start/stop in background (dev mode, port 9201)
+# Start/stop in background (port 9201)
 npx pi-sidecar-start
 npx pi-sidecar-start --stop
 npx pi-sidecar-start --help
