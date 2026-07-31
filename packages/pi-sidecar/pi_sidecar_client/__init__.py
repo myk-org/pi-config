@@ -341,6 +341,14 @@ class SidecarClient:
         resp.raise_for_status()
         logger.debug("Session deleted: %s", session_id)
 
+    async def __aenter__(self) -> "SidecarClient":
+        if self._closed:
+            raise RuntimeError("SidecarClient is already closed")
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()
+
     async def close(self) -> None:
         """Close the HTTP client."""
         logger.debug("Closing sidecar client: url=%s", self._base_url)

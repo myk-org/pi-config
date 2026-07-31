@@ -1,0 +1,130 @@
+# =============================================================================
+# Pi-Sidecar Example Dockerfile
+#
+# Multi-stage build pattern for projects using @myk-org/pi-sidecar.
+# Copy this file to your project, rename to Dockerfile, and adapt the
+# runtime stage for your application.
+#
+# Provides:
+#   - AI sessions via REST API (port 9100)
+#   - CLI providers: cursor, claude, gemini
+#   - ACPX provider: cursor
+#   - Google native + Vertex AI providers (via API keys)
+#
+# Build: docker build -t my-app .
+# Run:   docker run -p 8000:8000 -e GEMINI_API_KEY=... my-app
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Sidecar Builder
+# ---------------------------------------------------------------------------
+FROM node:22-slim AS sidecar-builder
+
+WORKDIR /sidecar
+
+COPY sidecar-helper/package.json sidecar-helper/package-lock.json* ./
+RUN npm ci
+
+COPY sidecar-helper/ .
+RUN npx tsc
+RUN npm prune --omit=dev
+
+# ---------------------------------------------------------------------------
+# Stage 2: Python Builder (adapt for your language/framework)
+# ---------------------------------------------------------------------------
+FROM python:3.14-slim AS builder
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+COPY src/ src/
+
+RUN uv sync --frozen --no-dev
+
+# ---------------------------------------------------------------------------
+# Stage 3: Runtime
+# ---------------------------------------------------------------------------
+FROM python:3.14-slim
+
+WORKDIR /app
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    curl \
+    git \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js from sidecar builder (only node binary needed at runtime)
+COPY --from=sidecar-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=sidecar-builder /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Non-root user
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
+
+ENV HOME="/home/appuser"
+ENV PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# CLI Agents
+# ---------------------------------------------------------------------------
+
+# Claude Code CLI (installs to ~/.local/bin)
+# Verify: https://claude.ai/install.sh is Anthropic's official installer
+RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
+
+# Cursor Agent CLI (installs to ~/.local/bin)
+# Verify: https://cursor.com/install is Cursor's official installer
+RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
+
+# Gemini CLI (npm global install)
+RUN mkdir -p ${HOME}/.npm-global \
+    && npm config set prefix "${HOME}/.npm-global" \
+    && npm install -g @google/gemini-cli
+
+# ACPX (needed for acpx-cursor provider)
+RUN npm install -g acpx
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
+USER root
+
+# Copy uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Copy Python venv from builder
+COPY --chown=appuser:appuser --from=builder /app/.venv /app/.venv
+COPY --chown=appuser:appuser --from=builder /app/pyproject.toml /app/uv.lock ./
+COPY --chown=appuser:appuser --from=builder /app/src /app/src
+
+# Copy sidecar (3 things: dist, node_modules, package.json)
+COPY --chown=appuser:appuser --from=sidecar-builder /sidecar/dist /app/sidecar-helper/dist
+COPY --chown=appuser:appuser --from=sidecar-builder /sidecar/node_modules /app/sidecar-helper/node_modules
+COPY --chown=appuser:appuser --from=sidecar-builder /sidecar/package.json /app/sidecar-helper/package.json
+
+# Copy entrypoint (rename entrypoint.example.sh to entrypoint.sh in your project)
+COPY --chown=appuser:appuser entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+USER appuser
+
+# ---------------------------------------------------------------------------
+# Runtime Config
+# ---------------------------------------------------------------------------
+EXPOSE 8000
+EXPOSE 9100
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health \
+     && curl -f http://localhost:${SIDECAR_PORT:-9100}/health \
+     || exit 1
+
+# Use tini as PID 1 for proper signal forwarding (apt-get install -y tini in system deps)
+ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]
