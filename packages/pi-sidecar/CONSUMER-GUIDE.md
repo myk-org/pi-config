@@ -126,9 +126,11 @@ result = await call_ai_once(
 
 ## CLI Commands
 
-After `npm install @myk-org/pi-sidecar`:
+After `npm install @myk-org/pi-sidecar`, run from the `sidecar-helper/` directory:
 
 ```bash
+cd sidecar-helper
+
 # Start the sidecar server (foreground)
 npx pi-sidecar
 
