@@ -672,6 +672,13 @@ class TestRecordUsage:
 async def test_async_context_manager() -> None:
     async with SidecarClient(base_url="http://127.0.0.1:59999") as client:
         assert isinstance(client, SidecarClient)
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_closes_on_exit() -> None:
+    client: SidecarClient
+    async with SidecarClient(base_url="http://127.0.0.1:59999") as client:
+        pass
     with pytest.raises(RuntimeError, match="already closed"):
         async with client:
             pass
