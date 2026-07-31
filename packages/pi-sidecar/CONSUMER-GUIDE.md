@@ -247,7 +247,7 @@ Key requirements:
 - **Health wait:** poll `/health` up to 15s before starting app
 - **Exit on failure:** if sidecar not healthy, exit 1 (don't proceed with broken AI)
 - **Run app in background + wait** — start your app with `&`, then `wait $APP_PID`. This lets the EXIT trap fire for sidecar cleanup.
-- **Forward signals** — trap SIGTERM/SIGINT and forward to the app: `trap 'kill $APP_PID' TERM INT`
+- **Forward signals** — trap SIGTERM and SIGINT separately: `trap 'kill -TERM $APP_PID' TERM` and `trap 'kill -INT $APP_PID' INT`
 - **Use `tini` as PID 1** — ensures signals reach the entrypoint shell. Use `ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]` in your Dockerfile.
 
 ### Health check
