@@ -215,7 +215,7 @@ COPY --from=sidecar-builder /sidecar/package.json /app/sidecar-helper/package.js
 
 ### Runtime dependencies
 
-The runtime stage needs Node.js, `curl` (health checks), and `bash`.
+The runtime stage needs Node.js, `curl` (health checks), `bash`, and `uv` (if using Python).
 See [`Dockerfile.example`](Dockerfile.example) for the complete setup including system packages, non-root user, and PATH configuration.
 
 ### CLI agents
@@ -226,8 +226,8 @@ Required CLIs:
 
 | CLI | Install method | Binary location |
 |-----|---------------|-----------------|
-| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `~/.local/bin/claude` |
-| Cursor Agent | `curl -fsSL https://cursor.com/install \| bash` | `~/.local/bin/agent` |
+| Claude Code | `curl -fsSL https://claude.ai/install.sh` piped to `bash` | `~/.local/bin/claude` |
+| Cursor Agent | `curl -fsSL https://cursor.com/install` piped to `bash` | `~/.local/bin/agent` |
 | Gemini | `npm install -g @google/gemini-cli` | npm global bin |
 | ACPX | `npm install -g acpx` | npm global bin |
 
@@ -246,7 +246,7 @@ Key requirements:
 - **Monitor:** background watcher kills container if sidecar dies
 - **Health wait:** poll `/health` up to 15s before starting app
 - **Exit on failure:** if sidecar not healthy, exit 1 (don't proceed with broken AI)
-- **Don't use `exec`** for your app when sidecar runs — the EXIT trap needs to fire
+- **Don't use `exec`** for your app command in the entrypoint script when sidecar runs — the EXIT trap needs to fire. `exec` is fine when sidecar is NOT running.
 
 ### Health check
 
