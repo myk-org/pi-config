@@ -50,10 +50,17 @@ fi
 # ---------------------------------------------------------------------------
 # Start your application
 #
-# IMPORTANT: Do NOT use `exec` when sidecar is running — the EXIT trap needs
-# to fire to clean up the sidecar process. Use plain invocation instead.
+# Run in background + wait so the shell can forward signals.
+# The EXIT trap cleans up the sidecar; SIGTERM is forwarded to the app.
 # ---------------------------------------------------------------------------
 export PORT="${PORT:-8000}"
 
 # Replace this with your application start command:
-uv run --no-sync uvicorn your_app.main:app --host 0.0.0.0 --port "$PORT"
+uv run --no-sync uvicorn your_app.main:app --host 0.0.0.0 --port "$PORT" &
+APP_PID=$!
+
+# Forward SIGTERM/SIGINT to the app process
+trap 'kill $APP_PID 2>/dev/null; wait $APP_PID 2>/dev/null' TERM INT
+
+# Wait for app to exit
+wait $APP_PID
