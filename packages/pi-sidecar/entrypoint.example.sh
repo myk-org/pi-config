@@ -60,8 +60,8 @@ uv run --no-sync uvicorn your_app.main:app --host 0.0.0.0 --port "$PORT" &
 APP_PID=$!
 
 # Forward signals to the app process (main wait below handles reaping)
-trap 'kill -TERM $APP_PID 2>/dev/null' TERM
-trap 'kill -INT $APP_PID 2>/dev/null' INT
+trap 'kill -TERM $APP_PID 2>/dev/null || true' TERM
+trap 'kill -INT $APP_PID 2>/dev/null || true' INT
 
 # Wait for app to exit
 wait $APP_PID
