@@ -85,7 +85,7 @@ RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
 # Gemini CLI (npm global install)
 RUN mkdir -p ${HOME}/.npm-global \
     && npm config set prefix "${HOME}/.npm-global" \
-    && npm install -g @google/gemini-cli@0.1
+    && npm install -g @google/gemini-cli
 
 # ACPX (needed for acpx-cursor provider)
 RUN npm install -g acpx
