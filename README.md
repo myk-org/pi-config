@@ -802,6 +802,7 @@ A standalone HTTP sidecar wrapping the Pi SDK, living under `packages/pi-sidecar
 CLI commands: `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
 
 See [`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md) for full documentation.
+See [`packages/pi-sidecar/CONSUMER-GUIDE.md`](packages/pi-sidecar/CONSUMER-GUIDE.md) for integration best practices.
 
 ### pi-vertex-claude
 

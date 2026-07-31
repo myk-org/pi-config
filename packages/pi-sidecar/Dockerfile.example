@@ -108,7 +108,7 @@ COPY --chown=appuser:appuser --from=sidecar-builder /sidecar/dist /app/sidecar-h
 COPY --chown=appuser:appuser --from=sidecar-builder /sidecar/node_modules /app/sidecar-helper/node_modules
 COPY --chown=appuser:appuser --from=sidecar-builder /sidecar/package.json /app/sidecar-helper/package.json
 
-# Copy entrypoint
+# Copy entrypoint (rename entrypoint.example.sh to entrypoint.sh in your project)
 COPY --chown=appuser:appuser entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

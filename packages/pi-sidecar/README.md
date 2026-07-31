@@ -51,6 +51,7 @@ npm run build && node dist/server.js  # listens on 127.0.0.1:9100
 scripts/start-sidecar.sh
 ```
 
+See the [Consumer Integration Guide](CONSUMER-GUIDE.md) for Docker, Python client, and deployment best practices.
 See the [full documentation](https://myk-org.github.io/pi-config/) for everything else.
 
 ## CLI Commands
