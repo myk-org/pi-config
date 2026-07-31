@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -273,103 +301,158 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="discord-bot-notifications">Discord Bot Notifications</h1>
-<p>Setting up the background Discord bot allows you to receive live event broadcasts, respond to agent prompts, and control running background sessions directly from your Discord client.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>Node.js package <code>discord.js</code> installed globally.</li>
-<li>A Discord Developer account with a registered bot application.</li>
-<li>Your personal Discord User ID.</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>Create a <code>.pi/discord.env</code> file in your home directory to enable the bot:</p>
+                    <h1 id="pidiscordenv">~/.pi/discord.env</h1>
+<p>DISCORD_BOT_TOKEN=MTE...your.token.here...
+DISCORD_ALLOWED_USERS=123456789012345678</p>
+<div class="highlight"><pre><span></span><code>Start the dashboard daemon from Pi:
+
+```text
+/pidash start
+</code></pre></div>
+
+<p>Then, in Discord, run <code>/sessions</code>, pick a session, and continue the conversation in a DM with the bot.</p>
+<h2 id="step-by-step">Step-by-Step</h2>
+<h3 id="1-create-the-discord-credentials-file">1. Create the Discord credentials file</h3>
 <div class="highlight"><pre><span></span><code># ~/.pi/discord.env
 DISCORD_BOT_TOKEN=MTE...your.token.here...
 DISCORD_ALLOWED_USERS=123456789012345678
 </code></pre></div>
 
-<h2 id="step-by-step-setup">Step-by-Step Setup</h2>
-<ol>
-<li>
-<p><strong>Install the Discord library</strong>
-   The bot requires <code>discord.js</code> to run in the background. Install it globally:
-   <code>bash
-   npm install -g discord.js</code></p>
-</li>
-<li>
-<p><strong>Create the Discord App</strong>
-   Go to the Discord Developer Portal, create a new Application, and navigate to the <strong>Bot</strong> tab. Under <strong>Privileged Gateway Intents</strong>, enable the <strong>Message Content Intent</strong>. Generate and copy your bot token.</p>
-</li>
-<li>
-<p><strong>Get your User ID</strong>
-   In Discord, enable Developer Mode in your Advanced settings. Right-click your profile and select <strong>Copy User ID</strong>. </p>
-</li>
-<li>
-<p><strong>Configure the environment</strong>
-   Create the environment file at <code>~/.pi/discord.env</code> and populate it with your token and user ID (comma-separated for multiple users).</p>
-</li>
-<li>
-<p><strong>Restart the daemon</strong>
-   Restart your background pi process so it picks up the new credentials. The daemon will automatically log in to Discord on startup.</p>
-</li>
-</ol>
-<h2 id="interacting-with-the-bot">Interacting with the Bot</h2>
-<p>Once connected, you can interact with the bot in any server it is invited to or via Direct Messages.</p>
-<h3 id="slash-commands">Slash Commands</h3>
-<p>The bot registers guild-scoped slash commands for instant control:</p>
+<p><code>DISCORD_BOT_TOKEN</code> enables the bot. <code>DISCORD_ALLOWED_USERS</code> is optional, but recommended, and accepts a comma-separated list of Discord user IDs.</p>
+<h3 id="2-create-and-configure-the-discord-bot">2. Create and configure the Discord bot</h3>
+<p>Set up your bot in the Discord Developer Portal, then:</p>
+<ul>
+<li>copy the bot token</li>
+<li>enable <strong>Message Content Intent</strong></li>
+<li>invite the bot to your server with the <code>application.commands</code> scope if you want slash commands there</li>
+</ul>
+<p>If you only want DM-based control, the bot can still work without using server chat for prompts.</p>
+<h3 id="3-start-or-restart-the-pidash-daemon">3. Start or restart the pidash daemon</h3>
+<div class="highlight"><pre><span></span><code>/pidash start
+</code></pre></div>
+
+<p>If pidash is already running, restart it so it reloads the Discord credentials:</p>
+<div class="highlight"><pre><span></span><code>/pidash restart
+</code></pre></div>
+
+<p>The Discord integration is attached to the pidash daemon, so the bot logs in when pidash starts.</p>
+<blockquote>
+<p><strong>Note:</strong> If you are already using the web dashboard, you do not need a separate Discord-specific service. The same pidash daemon handles both.</p>
+</blockquote>
+<h3 id="4-choose-a-session-from-discord">4. Choose a session from Discord</h3>
+<p>Use these slash commands in a Discord server where the bot is present:</p>
 <table>
 <thead>
 <tr>
 <th>Command</th>
-<th>Description</th>
+<th>What it does</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>/sessions</code></td>
-<td>Lists all active background sessions. Click the interactive buttons to connect and start watching a session.</td>
+<td>Lists active Pi sessions and shows buttons to connect or disconnect</td>
 </tr>
 <tr>
 <td><code>/status</code></td>
-<td>Shows the model, branch, and active status of the session you are currently watching.</td>
+<td>Shows the currently watched session, model, branch, and current state</td>
 </tr>
 <tr>
 <td><code>/stop</code></td>
-<td>Sends an abort signal to interrupt the currently running agent.</td>
+<td>Sends an interrupt to the watched session</td>
 </tr>
 </tbody>
 </table>
-<h3 id="sending-prompts-and-attachments">Sending Prompts and Attachments</h3>
-<p>When you are "watching" a session via <code>/sessions</code>, you can interact with the agent directly in your Direct Messages. </p>
+<p>A typical flow is:</p>
+<ol>
+<li>Run <code>/sessions</code></li>
+<li>Click the session you want to watch</li>
+<li>Open a DM with the bot</li>
+<li>Send prompts there</li>
+</ol>
+<h3 id="5-send-prompts-from-discord-dms">5. Send prompts from Discord DMs</h3>
+<p>Once you are watching a session, send a DM to the bot just like you would type into Pi.</p>
 <ul>
-<li><strong>Text Prompts:</strong> Send a DM to the bot. It forwards your message to the running session as if you typed it in the terminal.</li>
-<li><strong>File Attachments:</strong> Upload text files (under 100KB) or images directly in the DM. The bot automatically parses text file contents and encodes images for the agent.</li>
-<li><strong>Interactive Dialogs:</strong> When an agent prompts you for a choice (like an ask-user dialog), the bot will DM you the options. Reply with the number or text to continue.</li>
+<li>Plain text messages are forwarded as prompts</li>
+<li>If the agent asks a question, reply in the same DM</li>
+<li><code>/stop</code> also works as a DM message</li>
 </ul>
+<p>Use this split to stay oriented:</p>
+<table>
+<thead>
+<tr>
+<th>Use Discord server slash commands for</th>
+<th>Use Discord DMs for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>picking a session</td>
+<td>sending prompts</td>
+</tr>
+<tr>
+<td>checking status</td>
+<td>replying to agent questions</td>
+</tr>
+<tr>
+<td>sending stop signals</td>
+<td>uploading files or images</td>
+</tr>
+</tbody>
+</table>
+<h3 id="6-send-attachments-when-needed">6. Send attachments when needed</h3>
+<p>You can DM attachments to the bot along with your prompt.</p>
+<p>Supported behavior:</p>
+<ul>
+<li>text-like files under 100KB are inlined into the prompt</li>
+<li>images are forwarded for the agent to inspect</li>
+<li>larger or binary files are only mentioned, not embedded</li>
+</ul>
+<p>This is useful for quick log review, screenshots, small configs, or error snippets.</p>
 <blockquote>
-<p><strong>Tip:</strong> The bot displays a typing indicator in Discord while the agent is processing a request, so you always know when it is actively working.</p>
+<p><strong>Tip:</strong> If you want the agent to focus on an uploaded file, include a short instruction in the same DM, such as “Review this log and summarize the failure.”</p>
 </blockquote>
 <h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="handling-multiple-authorized-users">Handling Multiple Authorized Users</h3>
-<p>You can allow multiple team members to control background sessions by adding their User IDs to <code>DISCORD_ALLOWED_USERS</code>:</p>
+<h3 id="authorize-multiple-people">Authorize multiple people</h3>
 <div class="highlight"><pre><span></span><code># ~/.pi/discord.env
 DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
 </code></pre></div>
 
+<p>Use this when a small team needs access to the same running sessions.</p>
 <blockquote>
-<p><strong>Warning:</strong> Anyone not listed in this variable will receive a "Not authorized" response if they attempt to click buttons or use slash commands. If the variable is entirely omitted, <em>all</em> users are accepted (not recommended).</p>
+<p><strong>Warning:</strong> If <code>DISCORD_ALLOWED_USERS</code> is omitted, the bot accepts DMs from any user who can reach it. Set this variable unless you intentionally want open access.</p>
 </blockquote>
+<h3 id="understand-how-watching-works">Understand how “watching” works</h3>
+<p>The bot only forwards prompts to the session you are currently watching. If you switch sessions in Discord, new prompts go to the newly selected one.</p>
+<p>This makes it easy to keep one DM thread per active task without guessing where your next message will land.</p>
+<h3 id="use-the-bot-with-agent-questions">Use the bot with agent questions</h3>
+<p>If the running agent triggers an interactive choice, the bot forwards that prompt into your DM and waits for your reply. You can respond with either:</p>
+<ul>
+<li>a number, when options are listed</li>
+<li>free text, when the prompt expects a typed answer</li>
+</ul>
+<h3 id="change-the-pidash-port-if-needed">Change the pidash port if needed</h3>
+<p>If port <code>19190</code> is already taken, configure pidash with either:</p>
+<ul>
+<li><code>PI_PIDASH_PORT</code></li>
+<li><code>pidash_port</code> in project settings</li>
+</ul>
+<p>Then start pidash again. See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> and <a href="configuration.html">Configuration &amp; Settings</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Bot fails to start:</strong> Check the background daemon logs. If you see <code>[discord] discord.js not installed</code>, verify your global npm install path is accessible to the daemon.</li>
-<li><strong>Slash commands not appearing:</strong> Ensure your bot was invited to the server with the <code>application.commands</code> scope enabled in your OAuth2 URL generator.</li>
-<li><strong>No responses in DM:</strong> Verify you are actively watching a session using <code>/sessions</code>. The bot ignores text messages if you are not tethered to an active background job.</li>
+<li><strong>Bot does not come online:</strong> Make sure <code>DISCORD_BOT_TOKEN</code> is present in <code>~/.pi/discord.env</code>, then run <code>/pidash restart</code>.</li>
+<li><strong>Slash commands do not appear:</strong> Confirm the bot was invited with the <code>application.commands</code> scope, then restart pidash so commands are registered again.</li>
+<li><strong>Your DM gets “Not watching any session”:</strong> Run <code>/sessions</code> first and click a session button before sending prompts.</li>
+<li><strong>Another user cannot control the bot:</strong> Add their Discord user ID to <code>DISCORD_ALLOWED_USERS</code>, comma-separated, then restart pidash.</li>
+<li><strong>Uploaded file does not seem to reach the agent:</strong> Keep text files under 100KB for inline forwarding. Very large or binary files are only referenced, not embedded.</li>
 </ul>
-<p>For more information on configuring your global paths and environment variables, see <a href="configuration.html">Configuration &amp; Settings</a>.</p>
+<p>See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details on starting and managing pidash. See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details on the kinds of long-running work you can monitor from Discord.</p>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
 <li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
+<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
+<li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
 </ul>
                 </div>
             </article>
@@ -393,16 +476,20 @@ DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step-setup">Step-by-Step Setup</a></li>
-<li><a href="#interacting-with-the-bot">Interacting with the Bot</a><ul>
-<li><a href="#slash-commands">Slash Commands</a></li>
-<li><a href="#sending-prompts-and-attachments">Sending Prompts and Attachments</a></li>
+<li><a href="#step-by-step">Step-by-Step</a><ul>
+<li><a href="#1-create-the-discord-credentials-file">1. Create the Discord credentials file</a></li>
+<li><a href="#2-create-and-configure-the-discord-bot">2. Create and configure the Discord bot</a></li>
+<li><a href="#3-start-or-restart-the-pidash-daemon">3. Start or restart the pidash daemon</a></li>
+<li><a href="#4-choose-a-session-from-discord">4. Choose a session from Discord</a></li>
+<li><a href="#5-send-prompts-from-discord-dms">5. Send prompts from Discord DMs</a></li>
+<li><a href="#6-send-attachments-when-needed">6. Send attachments when needed</a></li>
 </ul>
 </li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#handling-multiple-authorized-users">Handling Multiple Authorized Users</a></li>
+<li><a href="#authorize-multiple-people">Authorize multiple people</a></li>
+<li><a href="#understand-how-watching-works">Understand how “watching” works</a></li>
+<li><a href="#use-the-bot-with-agent-questions">Use the bot with agent questions</a></li>
+<li><a href="#change-the-pidash-port-if-needed">Change the pidash port if needed</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -418,7 +505,7 @@ DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

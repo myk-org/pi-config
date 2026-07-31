@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,89 +302,195 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="creating-slash-commands">Creating Slash Commands</h1>
-<h2 id="creating-a-prompt-based-slash-command">Creating a Prompt-Based Slash Command</h2>
-<p>Create a simple chat alias for a frequently used, complex prompt.</p>
-<div class="highlight"><pre><span></span><code>---
-<span class="gu">description: &quot;Run a quick security audit on the current changes&quot;</span>
+<p><code>pi-config</code> already points Pi at <code>./prompts</code> and <code>./extensions</code> in <code>package.json</code>, so those are the supported places to add new slash commands.</p>
+<h2 id="add-a-prompt-only-command">Add a prompt-only command</h2>
+<p>Use this when you want a reusable slash command without writing any TypeScript.</p>
+<div class="highlight"><pre><span></span><code><span class="gu">&lt;!-- prompts/security-audit.md --&gt;</span>
 <span class="gu">---</span>
-Review the git diff of the current changes and look for security vulnerabilities.
-Check for hardcoded secrets, injection vectors, and broken access control.
+<span class="gu">description: &quot;Scan the current changes for security problems&quot;</span>
+<span class="gu">---</span>
+
+Review the current git diff for security issues.
+
+Focus on:
+<span class="k">-</span><span class="w"> </span>hardcoded secrets
+<span class="k">-</span><span class="w"> </span>shell injection
+<span class="k">-</span><span class="w"> </span>auth and permission regressions
+<span class="k">-</span><span class="w"> </span>unsafe file or network access
+
+Return the findings as a short bullet list with severity labels.
 </code></pre></div>
 
-<p>Place this in <code>prompts/security-audit.md</code> to automatically register the <code>/security-audit</code> command. The markdown filename determines the slash command name, and the description populates the command menu in the UI.</p>
-<h2 id="passing-arguments-to-a-prompt-command">Passing Arguments to a Prompt Command</h2>
-<p>Inject user input from the chat bar directly into your prompt template.</p>
-<div class="highlight"><pre><span></span><code>---
-description: &quot;Explain a specific concept or file — /explain &lt;target&gt;&quot;
-<span class="gu">argument-hint: &quot;&lt;target&gt;&quot;</span>
+<p>Dropping this file into <code>prompts/</code> creates <code>/security-audit</code>. The filename becomes the command name, and the frontmatter <code>description</code> is what users see when browsing commands. Use this pattern for repeatable prompts that only need text instructions.</p>
+<ul>
+<li>Keep filenames kebab-case so the slash command is predictable.</li>
+<li>Use prompt templates when the command does not need UI hooks, events, or custom runtime logic.</li>
+</ul>
+<h2 id="pass-arguments-into-a-prompt-command">Pass arguments into a prompt command</h2>
+<p>Use this when the command should accept a target like a file path, branch name, or symbol.</p>
+<div class="highlight"><pre><span></span><code><span class="gu">&lt;!-- prompts/explain-file.md --&gt;</span>
+<span class="gu">---</span>
+description: &quot;Explain a file or symbol from the current project&quot;
+<span class="gu">argument-hint: &quot;&lt;path-or-symbol&gt;&quot;</span>
 <span class="gu">---</span>
 
 <span class="gu">## Raw Arguments</span>
+
+<span class="sb">```text</span>
+$ARGUMENTS
+<span class="sb">```</span>
+
+Explain the target above in 5-8 bullets.
+
+Include:
+<span class="k">-</span><span class="w"> </span>what it is
+<span class="k">-</span><span class="w"> </span>where it fits in the project
+<span class="k">-</span><span class="w"> </span>risky edges or gotchas
+<span class="k">-</span><span class="w"> </span>the next file to read
+</code></pre></div>
+
+<p><code>$ARGUMENTS</code> is replaced with the raw text after the slash command, and <code>argument-hint</code> gives the user an inline usage hint. This is the fastest way to turn an ad hoc prompt into a reusable command without adding extension code.</p>
+<blockquote>
+<p><strong>Tip:</strong> Keep the prompt robust when <code>$ARGUMENTS</code> is empty, either by asking a follow-up question or by describing the expected input format.</p>
+</blockquote>
+<h2 id="register-a-typescript-command">Register a TypeScript command</h2>
+<p>Use this when the command needs session context, UI notifications, or custom runtime behavior.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// extensions/orchestrator/hello.ts</span>
+<span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">ExtensionAPI</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@earendil-works/pi-coding-agent&quot;</span><span class="p">;</span>
+
+<span class="k">export</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">registerHello</span><span class="p">(</span><span class="nx">pi</span><span class="o">:</span><span class="w"> </span><span class="kt">ExtensionAPI</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">pi</span><span class="p">.</span><span class="nx">registerCommand</span><span class="p">(</span><span class="s2">&quot;hello&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Show a quick greeting for the current workspace&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">handler</span><span class="o">:</span><span class="w"> </span><span class="kt">async</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">args</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s2">&quot;Developer&quot;</span><span class="p">;</span>
+
+<span class="w">      </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">hasUI</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="p">;</span>
+
+<span class="w">      </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">ui</span><span class="p">.</span><span class="nx">notify</span><span class="p">(</span><span class="sb">`Hello, </span><span class="si">${</span><span class="nx">name</span><span class="si">}</span><span class="sb">! Workspace: </span><span class="si">${</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">cwd</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;info&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">  </span><span class="p">});</span>
+<span class="p">}</span>
+
+<span class="c1">// extensions/orchestrator/index.ts</span>
+<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">registerHello</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./hello.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// inside the default export:</span>
+<span class="nx">registerHello</span><span class="p">(</span><span class="nx">pi</span><span class="p">);</span>
+</code></pre></div>
+
+<p>This follows the same <code>registerCommand()</code> pattern used throughout <code>extensions/orchestrator/</code>. The handler receives raw arguments plus a live command context, including <code>ctx.cwd</code>, <code>ctx.hasUI</code>, and <code>ctx.ui.notify()</code>. Use this when the command needs to inspect session state or talk to the UI directly.</p>
+<ul>
+<li>Put orchestrator commands under <code>extensions/orchestrator/</code> so they can be wired into <code>extensions/orchestrator/index.ts</code>.</li>
+<li>For larger delegated workflows, see <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</li>
+</ul>
+<h2 id="add-static-argument-completions-to-an-extension-command">Add static argument completions to an extension command</h2>
+<p>Use this when an extension command has a small fixed set of subcommands or modes.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// extensions/orchestrator/deploy-check.ts</span>
+<span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">ExtensionAPI</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@earendil-works/pi-coding-agent&quot;</span><span class="p">;</span>
+
+<span class="k">export</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">registerDeployCheck</span><span class="p">(</span><span class="nx">pi</span><span class="o">:</span><span class="w"> </span><span class="kt">ExtensionAPI</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">pi</span><span class="p">.</span><span class="nx">registerCommand</span><span class="p">(</span><span class="s2">&quot;deploy-check&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Run a quick pre-deploy checklist&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">getArgumentCompletions</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">prefix</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">items</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;staging&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;staging&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Check staging settings&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prod&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prod&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Check production settings&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">      </span><span class="p">];</span>
+<span class="w">      </span><span class="k">return</span><span class="w"> </span><span class="nx">items</span><span class="p">.</span><span class="nx">filter</span><span class="p">((</span><span class="nx">item</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span>
+<span class="w">        </span><span class="nx">item</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">startsWith</span><span class="p">(</span><span class="nx">prefix</span><span class="p">.</span><span class="nx">toLowerCase</span><span class="p">()),</span>
+<span class="w">      </span><span class="p">);</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nx">handler</span><span class="o">:</span><span class="w"> </span><span class="kt">async</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s2">&quot;staging&quot;</span><span class="p">).</span><span class="nx">toLowerCase</span><span class="p">();</span>
+
+<span class="w">      </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">hasUI</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="p">;</span>
+
+<span class="w">      </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">ui</span><span class="p">.</span><span class="nx">notify</span><span class="p">(</span><span class="sb">`Running deploy checks for </span><span class="si">${</span><span class="nx">target</span><span class="si">}</span><span class="sb">...`</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;info&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">  </span><span class="p">});</span>
+<span class="p">}</span>
+
+<span class="c1">// extensions/orchestrator/index.ts</span>
+<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">registerDeployCheck</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./deploy-check.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// inside the default export:</span>
+<span class="nx">registerDeployCheck</span><span class="p">(</span><span class="nx">pi</span><span class="p">);</span>
+</code></pre></div>
+
+<p>This matches the built-in pattern used by commands like <code>/pidash</code> and <code>/pidiff</code>. <code>getArgumentCompletions()</code> is the shortest path when your choices are known up front and do not require fetching repository data.</p>
+<ul>
+<li>Prefer this over editing the shared autocomplete layer when the command is a normal extension command.</li>
+<li>For daemon-backed or long-running handlers, see <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a> for details.</li>
+</ul>
+<h2 id="add-issue-number-autocomplete-to-a-prompt-command">Add issue-number autocomplete to a prompt command</h2>
+<p>Use this when a prompt template should tab-complete dynamic values like open issues, PRs, branches, or models.</p>
+<div class="highlight"><pre><span></span><code># prompts/pick-issue.md
+---
+description: &quot;Summarize an open issue by number&quot;
+argument-hint: &quot;[issue number]&quot;
+---
+
+## Raw Arguments
 
 ```text
 $ARGUMENTS
 </code></pre></div>
 
+<p>Summarize issue #$ARGUMENTS in 5 bullets:</p>
+<ul>
+<li>problem</li>
+<li>current scope</li>
+<li>missing acceptance criteria</li>
+<li>likely owner</li>
+<li>first implementation step</li>
+</ul>
+<h1 id="extensionsorchestratorextended-autocompletets">extensions/orchestrator/extended-autocomplete.ts</h1>
+<p>// 1) Add a completion entry inside the <code>completions</code> record
+"pick-issue": (prefix: string) =&gt; {
+  void ctx.fetchOpenIssues(ctx.lastCwd);
+  return ctx.issueCache.data
+    ? filter(ctx.issueCache.data, prefix.replace(/^#/, ""))
+    : null;
+},</p>
+<p>// 2) Add the command name to <code>promptTemplateCommands</code>
+const promptTemplateCommands = new Set([
+  "external-ai",
+  "pr-review",
+  "issue-review",
+  "coderabbit-rate-limit",
+  "review-local",
+  "release",
+  "review-handler",
+  "cron",
+  "create-skill",
+  "create-coms-feature-manager",
+  "pick-issue",
+]);</p>
+<p>```</p>
+<p>Prompt templates are registered by Pi itself, so they do not go through the <code>registerCommand()</code> wrapper used for extension commands. That is why prompt-template autocomplete needs both pieces: a <code>completions</code> entry and inclusion in <code>promptTemplateCommands</code>.</p>
 <blockquote>
-<p><strong>Bug Reporting:</strong> If this command fails, use the <code>/bug</code> command to report it.</p>
+<p><strong>Note:</strong> <code>extensions/orchestrator/extended-autocomplete.ts</code> already includes cached fetchers such as <code>ctx.fetchOpenIssues(ctx.lastCwd)</code>, so follow that pattern instead of building a second autocomplete system.</p>
 </blockquote>
-<p>Explain the target provided in the raw arguments above. Keep the explanation concise and focus on how it fits into the project architecture.</p>
-<div class="highlight"><pre><span></span><code>When a user runs `/explain src/main.ts`, the `$ARGUMENTS` token is replaced with `src/main.ts`. The `argument-hint` frontmatter provides inline help in the command palette.
-&gt; **Note:** The bug reporting blockquote is a project standard and must immediately follow the `$ARGUMENTS` block.
-
-## Creating an Interactive TypeScript Command
-Register a programmable extension command to interact with the workspace, manipulate the UI, or trigger background tasks.
-
-```typescript
-import type { ExtensionAPI } from &quot;@earendil-works/pi-coding-agent&quot;;
-
-export function registerHelloCommand(pi: ExtensionAPI): void {
-  pi.registerCommand(&quot;hello&quot;, {
-    description: &quot;Display a custom notification greeting&quot;,
-    handler: async (args, ctx) =&gt; {
-      const name = args?.trim() || &quot;Developer&quot;;
-
-      if (!ctx.hasUI) {
-        return; // Ensure the session supports UI before notifying
-      }
-
-      ctx.ui.notify(`Hello, ${name}! Your workspace is ${ctx.cwd}`, &quot;info&quot;);
-    },
-  });
-}
-</code></pre></div>
-
-<p>Place this in a new file within the <code>extensions/</code> directory and call it during extension initialization. The handler function receives the raw argument string and a context object containing the session state, UI tools, and workspace details.</p>
-<blockquote>
-<p><strong>Tip:</strong> See <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a> for details on handling asynchronous background tasks within command handlers.</p>
-</blockquote>
-<h2 id="adding-argument-autocomplete-to-a-command">Adding Argument Autocomplete to a Command</h2>
-<p>Provide interactive tab-completions for your custom slash commands.</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Add to the `completions` record in extensions/orchestrator/extended-autocomplete.ts</span>
-<span class="s2">&quot;hello&quot;</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">prefix</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="nx">filter</span><span class="p">([</span>
-<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;--verbose&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;--verbose&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Show detailed greeting output&quot;</span><span class="w"> </span><span class="p">},</span>
-<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;--quiet&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;--quiet&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Suppress the notification bell&quot;</span><span class="w"> </span><span class="p">}</span>
-<span class="w">  </span><span class="p">],</span><span class="w"> </span><span class="nx">prefix</span><span class="p">);</span>
-<span class="p">},</span>
-</code></pre></div>
-
-<p>Add your completion logic to <code>extensions/orchestrator/extended-autocomplete.ts</code>. The <code>filter</code> helper automatically handles fuzzy matching against the user's current typed prefix.</p>
-<blockquote>
-<p><strong>Warning:</strong> If you are adding autocomplete for a prompt template (like the <code>/explain</code> example above), you must also add the command name to the <code>promptTemplateCommands</code> set located in the same file to intercept the routing.</p>
-</blockquote>
+<ul>
+<li>For PR numbers, mirror the existing <code>/pr-review</code> pattern.</li>
+<li>For branch names, mirror the existing <code>/review-local</code> pattern.</li>
+<li>For model/provider completions, see <a href="external-ai-agents.html">External AI Agents &amp; CLI</a> for details.</li>
+</ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
+<li><a href="btw-command.html">Asking Side Questions with /btw</a></li>
 <li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
-<li><a href="cli-reference.html">myk_pi_tools CLI Reference</a></li>
+<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="curating-project-memory.html" class="page-nav-link page-nav-prev">
+                <a href="btw-command.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Curating Project Memory</span>
+                    <span class="page-nav-title">Asking Side Questions with /btw</span>
                 </a>
 
 
@@ -372,9 +506,11 @@ export function registerHelloCommand(pi: ExtensionAPI): void {
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#creating-a-prompt-based-slash-command">Creating a Prompt-Based Slash Command</a></li>
-<li><a href="#passing-arguments-to-a-prompt-command">Passing Arguments to a Prompt Command</a></li>
-<li><a href="#adding-argument-autocomplete-to-a-command">Adding Argument Autocomplete to a Command</a></li>
+<li><a href="#add-a-prompt-only-command">Add a prompt-only command</a></li>
+<li><a href="#pass-arguments-into-a-prompt-command">Pass arguments into a prompt command</a></li>
+<li><a href="#register-a-typescript-command">Register a TypeScript command</a></li>
+<li><a href="#add-static-argument-completions-to-an-extension-command">Add static argument completions to an extension command</a></li>
+<li><a href="#add-issue-number-autocomplete-to-a-prompt-command">Add issue-number autocomplete to a prompt command</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -387,7 +523,7 @@ export function registerHelloCommand(pi: ExtensionAPI): void {
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

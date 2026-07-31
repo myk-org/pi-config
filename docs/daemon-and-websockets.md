@@ -1,62 +1,79 @@
 # Daemon & Websocket Networking
 
-Modern project automations require continuous background work, real-time UI updates, and isolated execution scopes. `pi-config` achieves this through a robust inter-process communication (IPC) architecture built on background daemons, WebSockets, and asynchronous LLM states.
+Background daemons and WebSockets keep your terminal session, browser dashboard, and long-running agents in sync without blocking your chat. Understanding this networking model helps when ports collide, a dashboard looks empty after a refresh, or an async agent keeps running after a crash.
 
-Understanding this networking architecture is crucial if you are troubleshooting port collisions, monitoring background agent execution, or trying to understand how the web dashboard stays perfectly in sync with your terminal session.
+## The Big Picture
 
-## The Big Picture: Architecture & Data Flow
+Two complementary servers handle real-time UI and IPC. They share the same WebSocket patterns but differ in scope and how they pick ports.
 
-The architecture is divided into three distinct layers that communicate over WebSockets and file-system watchers.
+| Component | Scope | Port | What users see |
+|-----------|-------|------|----------------|
+| **pidash** | Shared across all `pi` sessions on the machine | Fixed (default `19190`, overridable) | Global web dashboard — sessions, prompts, async status |
+| **pidiff** | One instance per project working directory | Free port chosen at start | Project diff viewer with review comments |
 
-| Layer | Responsibility | State Location |
-|-------|----------------|----------------|
-| **Interactive Client (`pi`)** | Triggers workflows, intercepts terminal events, and routes subagent requests. | In-memory, per-terminal session. |
-| **Daemon Servers** | Centralized hubs (like `pidash-server` and `pidiff-server`) that aggregate data from multiple interactive clients. | Runs in background; tracks state in `.pi/tmp/` lockfiles. |
-| **Web Dashboard** | Subscribes to the daemon via WebSockets to visualize diffs, prompts, and agent activity. | Browser UI. |
+| Layer | Role | Typical state |
+|-------|------|----------------|
+| **Interactive `pi` client** | Starts/stops daemons, forwards session events over WebSocket | In-memory per terminal |
+| **Daemon HTTP + WebSocket server** | Aggregates clients, serves UI, health checks | Background Node process |
+| **Browser UI** | Subscribes to the daemon for live updates | React app talking to `/ws/browser` |
 
-**The WebSocket Data Flow:**
-1. You run a command in the `pi` terminal.
-2. The active extension (e.g., `pidash.ts`) checks the lockfile in `.pi/tmp/` to see if a daemon is running.
-3. If no daemon exists, it spawns one dynamically via `daemon-manager.ts` and waits for it to bind to a free port.
-4. The `pi` client connects to the daemon's WebSocket and begins buffering and forwarding terminal events (prompts, git status, agent logs).
-5. The local React dashboard connects to the same daemon, instantly receiving the buffered real-time events.
+**Typical connect flow:**
+
+1. You start `pi` (or run `/pidash start` / `/pidiff start`).
+2. The extension checks whether a healthy daemon already answers `/api/health`.
+3. If not, it spawns the server script and waits until health checks succeed.
+4. The terminal connects on `/ws/pi` and begins forwarding session events.
+5. The browser connects on `/ws/browser` and receives the same live stream (plus buffered catch-up when needed).
+
+> **Tip:** Check daemon health with `/pidash status` or `/pidiff status`. See [Using the Web Dashboard](using-the-web-dashboard.html) for day-to-day UI usage.
 
 ## Key Concepts
 
-### Daemon Management & Lifecycle
-Daemons in this project are long-lived, per-project background Node servers.
-- **Auto-Spawning:** Tools like the web dashboard will automatically spawn their required daemon (e.g., `pidash-server.ts`) upon initialization.
-- **Lockfiles & Ports:** Daemons track their active Process ID (PID) and port dynamically in `.pi/tmp/` (e.g., `.pi/tmp/pidiff.pid`, `.pi/tmp/pidiff.port`). This prevents port collisions between different projects.
-- **Health Checks:** Interactive clients periodically ping the daemon's HTTP endpoints. If the daemon crashes, the client gracefully buffers outgoing events and attempts a respawn.
+### Shared dashboard vs per-project diff server
 
-### Async Agent States
-When you run complex tasks that take a long time, the orchestrator delegates them to asynchronous "subagent children."
-- **Isolated Execution:** Each async task spins up a detached `pi` child process with a unique `PI_SUBAGENT_CHILD=1` flag.
-- **Zombie Cleanup:** The daemon orchestrator tracks the parent PID and start time. If the parent process crashes or is killed abruptly, the daemon sweeps through and eliminates any lingering "zombie" child processes to free system resources.
-- **Persistent Context:** Async tasks write their ongoing context, system prompts, and completion results into isolated project-scoped folders under `.pi/tmp/worker-<id>/`.
+**pidash** listens on a configured port (`pidash_port`, default `19190`). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under `~/.pi/pidash-server.log`.
 
-### The WebSocket Bridge
-Because the LLM providers stream their output chunk-by-chunk, `pi-config` relies on WebSockets rather than REST APIs to bridge the gap between the LLM and the UI.
-- All real-time text generations are emitted as local events inside the `pi` core.
-- Extension hooks intercept these events and forward them via WebSocket.
-- The web UI maintains active WebSocket listeners, updating the browser DOM iteratively as each token arrives.
+**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/tmp/` directory as `pidiff.port` / `pidiff.pid`. That avoids collisions when several projects run diffs at once.
+
+> **Note:** Toggle either server with `pidash_enable` / `pidiff_enable` (or their env vars). See [Configuration & Settings](configuration.html).
+
+### Health checks, heartbeats, and reconnect
+
+Clients probe `http://127.0.0.1:<port>/api/health` before trusting a daemon. WebSocket connections use ping/pong heartbeats; a missed pong forces reconnect. A periodic reconnect poller also re-attaches sessions that started before the daemon was ready.
+
+While disconnected, the pidash client buffers recent events and replays them when the socket comes back — so a browser refresh usually catches up instead of starting blank.
+
+### Async agent isolation
+
+Long-running specialist work can spawn a detached child `pi` process with `PI_SUBAGENT_CHILD=1`. That flag tells extensions to skip UI mounts and other parent-only behavior so background work does not steal focus from your editor or chat.
+
+Each job keeps status, prompts, and output under a unique directory in the project’s `.pi/tmp/` tree (named from the agent and a unique suffix). Results surface back to the parent session when the job finishes. For spawning, monitoring, and killing these jobs, see [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html).
+
+### Event bridge to the browser
+
+Token streams and tool activity originate inside the `pi` session. Extensions forward those events over the daemon WebSocket so the React UI can update live. The daemon also exposes session lists and other small HTTP APIs for the UI — the hot path for streaming remains WebSockets, not REST polling.
 
 ## How it Affects the User
 
-The internal daemon and networking logic drives several distinct behaviors you might notice while working in your project:
+- **Refresh without losing context:** Closing the laptop or reloading the dashboard usually reconnects to the same pidash daemon and replays buffered activity.
+- **Multiple terminals, one dashboard:** Several `pi` sessions can share pidash; the UI lists them so you can jump between projects.
+- **Project-local diffs:** Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under `.pi/tmp/`.
+- **Files appear under `.pi/tmp/`:** Expect job folders, result JSON, debug logs, and pidiff lockfiles. They are project-scoped working state, not source code — keep `.pi/` out of git (the installer can configure this; see [Installation & Quickstart](quickstart.html)).
+- **Graceful degradation:** If a daemon cannot start (port busy, slow first compile, firewall), the terminal session keeps working; real-time dashboard features simply stay disconnected until `/pidash start` or `/pidiff start` succeeds.
 
-- **Instant Reconnections:** If you refresh your web browser or close your laptop and reopen it, the dashboard instantly catches up. This happens because the daemon acts as a central buffer, storing recent events until the UI reconnects.
-- **Cross-Terminal Syncing:** You can run `pi` in multiple terminal panes, and the shared `pidash` daemon will aggregate all of their activity into a single unified web dashboard.
-- **Temporary File Accumulation:** You will occasionally notice `.pi/tmp/` populating with debug logs, worker folders, and JSON state files. The system automatically prunes these over time, but they remain highly useful for investigating failed async agent runs.
-- **Graceful Degradation:** If the daemon fails to spawn (due to strict firewalls or extreme system load), your terminal session will not crash. The interactive UI continues working normally, simply logging that real-time features are currently disconnected.
+> **Warning:** pidash requires TUI mode. Headless or non-UI invocations will not keep a dashboard connection.
 
 ## Related Pages
-- [Using the Web Dashboard](using-the-web-dashboard.html) — See how to view the real-time WebSocket data in the local React UI.
-- [Configuration & Settings](configuration.html) — Learn how to tweak project settings that interact with daemon behavior.
-- [Memory Architecture](memory-architecture.html) — Understand how the data gathered by background agents is permanently embedded into your project.
+
+- [Using the Web Dashboard](using-the-web-dashboard.html) — Start, stop, and use pidash / pidiff day to day.
+- [Configuration & Settings](configuration.html) — `pidash_port`, enable flags, and related env vars.
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — Spawn, monitor, and kill async agents that use this IPC path.
+- [Installation & Quickstart](quickstart.html) — First-time install and daemon startup.
 
 ## Related Pages
 
 - [Using the Web Dashboard](using-the-web-dashboard.html)
-- [Neovim Integration](neovim-integration.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Installation & Quickstart](quickstart.html)
 - [Discord Bot Notifications](discord-bot.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)

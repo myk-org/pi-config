@@ -1,112 +1,150 @@
 # External AI Agents & CLI
 
-Trigger prompts across different AI providers directly from your terminal or chat session to leverage provider-specific capabilities like Cursor's fast models or Claude's extended reasoning.
+Run prompts through Cursor, Claude, or Gemini from your terminal or Pi chat when you want that provider’s models, tools, and session behavior without leaving your workflow.
 
 ## Prerequisites
 
-- The external AI CLIs (`cursor`, `claude`, or `gemini` binaries from `ai-cli-runner`) must be installed and authenticated on your system.
-- The `myk-pi-tools` CLI must be installed and accessible in your environment.
+- `myk-pi-tools` installed and on your `PATH` (for example `uv tool install myk-pi-tools`)
+- Provider CLIs installed and authenticated:
+  - **cursor** → `agent` binary
+  - **claude** → `claude` binary
+  - **gemini** → `gemini` binary
 
 ## Quick Example
 
-List available models for a provider and run a simple prompt:
-
 ```bash
-# See what models are available for Claude
+# List models for Claude
 myk-pi-tools ai-cli models claude
 
-# Run a single prompt through Claude
-myk-pi-tools ai-cli run "Summarize the changes in src/main.rs" --provider claude --model claude-3-5-sonnet-20241022
+# Run a one-shot prompt
+myk-pi-tools ai-cli run "Summarize the changes in src/main.rs" --provider claude --model claude-sonnet-4-6
 ```
 
-## Step-by-Step Guide
-
-### 1. Using the Chat Command
-
-When working inside Pi, you can use the `/external-ai` slash command to delegate tasks to an external provider without leaving your chat session.
+Inside a Pi session:
 
 ```text
 /external-ai cursor explain the authentication flow
 ```
 
-If you don't specify a model, Pi will use the provider's default model (e.g., `composer-2-fast` for Cursor).
+## Step-by-Step Guide
 
-### 2. Selecting a Specific Model
+### 1. Pick a provider and model
 
-To explicitly request a model, append `--model`:
+Supported providers: `cursor`, `claude`, `gemini`.
+
+| Provider | Default model (when `--model` is omitted) |
+|----------|-------------------------------------------|
+| `cursor` | `composer-2-fast` |
+| `claude` | `claude-sonnet-4-6` |
+| `gemini` | `gemini-2.5-flash` |
+
+```bash
+myk-pi-tools ai-cli models cursor
+```
 
 ```text
 /external-ai cursor --model gpt-5.4-high review the latest PR
 ```
 
-### 3. Granting Write Access
+### 2. Run a read-only prompt
 
-By default, all external AI requests are treated as read-only. Append the `--fix` flag to let the agent modify, create, or delete files directly in your workspace:
+By default, `/external-ai` and `ai-cli run` are read-only — the external agent should not modify files.
+
+```text
+/external-ai gemini explain this function
+```
+
+```bash
+myk-pi-tools ai-cli run "List security concerns in the auth package" --provider cursor
+```
+
+### 3. Allow writes with `--fix`
 
 ```text
 /external-ai claude --fix rewrite the error handling in database.ts
 ```
 
-> **Note:** If your git workspace is dirty (uncommitted changes) when running a `--fix` command, Pi will prompt you to create a checkpoint commit before the agent begins making modifications. This ensures you can easily roll back unwanted changes.
+> **Note:** In a dirty git worktree, Pi asks whether to create a checkpoint commit (`chore: checkpoint before ai-cli changes`) or continue anyway before applying changes.
 
-### 4. Continuing a Session
 
-If you need to ask follow-up questions or iterate on previous changes, use the `--resume` flag to maintain conversation context with the agent:
+> **Warning:** `--fix` works with a single provider only. It cannot be combined with `--peer` or a comma-separated provider list.
+
+### 4. Continue a session with `--resume`
 
 ```text
 /external-ai cursor --resume add tests for the edge cases too
 ```
 
+```bash
+myk-pi-tools ai-cli run "Continue from the last review" --provider cursor --resume
+```
+
+| Mode | Session behavior |
+|------|------------------|
+| Default | Fresh session each call |
+| `--resume` | Continue the most recent session |
+| `--session-id <id>` | Resume a specific session (CLI only; mutually exclusive with `--resume`) |
+
 ## Advanced Usage
 
-### Peer Review Mode
+### Peer review loops
 
-You can start an AI-to-AI debate using the `--peer` flag. In this mode, Pi acts as an orchestrator, bouncing feedback back and forth with the external agent until both agree on the code changes.
+Use `--peer` for an AI-to-AI review loop. Pi orchestrates rounds: the peer reports findings, Pi applies agreed fixes or returns technical counter-arguments, then the peer re-reviews until peers report no remaining issues.
 
 ```text
 /external-ai cursor --model gpt-5.4-xhigh --peer review this pull request
 ```
 
-Pi will collect the findings from the peer agent, evaluate them, apply fixes if it agrees, or present a technical counter-argument if it disagrees. The loop continues automatically until all parties reach consensus.
-
-### Multi-Agent Group Debates
-
-You can instruct multiple providers to review the same code simultaneously. Pass a comma-separated list of providers:
+Multiple peers (comma-separated) review in parallel; later rounds share group context:
 
 ```text
 /external-ai cursor,claude --peer review the architecture design
 ```
 
-Each agent will review independently, and Pi will synthesize their findings. During the peer loop, each agent receives the full context of what the other agents said, enabling true group consensus.
+> **Warning:** Do not combine `--peer` with `--fix` or `--resume`. Peer mode manages sessions automatically via `--session-id` after the first round.
 
-### Persisting Agent Configurations
+### Persist defaults
 
-Pi remembers your last used provider and model. You can manually save your preferred agent setup so you don't have to specify it every time:
+Save last-used agents or peer sets to `.pi/external-ai-config.json`:
 
 ```bash
-# Save default agent configuration for standard requests
 myk-pi-tools ai-cli save-config --agents "cursor --model gpt-5.4-high"
-
-# Save default peers configuration for peer review loops
 myk-pi-tools ai-cli save-config --peers "cursor,claude"
 ```
 
-Once saved, you can omit the provider and run prompts implicitly:
+Then omit the provider:
 
 ```text
 /external-ai write a unit test for this script
+/external-ai --peer review this
 ```
+
+### Extra CLI flags
+
+Pass through flags the underlying binary understands:
+
+```bash
+myk-pi-tools ai-cli run "Review auth" --provider cursor --cli-flags=--trust
+```
+
+### Other providers
+
+For agents outside `cursor` / `claude` / `gemini` (for example Codex or Copilot), use ACPX instead of `/external-ai`. See [ACPX Provider Integration](acpx-provider.html).
+
+For registering `cli-*` providers inside Pi sessions, see [Configuration & Settings](configuration.html). To customize slash-command behavior, see [Creating Slash Commands](custom-slash-commands.html).
 
 ## Troubleshooting
 
-- **Command fails with a permission error:** The agent attempted to modify files during a read-only prompt. Retry with the `--fix` flag.
-- **Unknown provider error:** Ensure you are using `cursor`, `claude`, or `gemini`. For other agents, use the ACPX integration instead.
-- **Agent gets stuck or takes too long:** External models can take several minutes to read files and execute multi-step tool calls. Do not cancel the process prematurely; the CLI intentionally does not enforce strict timeouts.
-
-For more details on modifying runtime variables, see [Configuration & Settings](configuration.html). To learn how commands like `/external-ai` are structured under the hood, see [Creating Slash Commands](custom-slash-commands.html).
+- **Permission / unexpected file changes:** You ran without `--fix`, or the agent ignored read-only instructions. Retry with `--fix` after a clean or checkpointed tree.
+- **Unknown provider:** Use only `cursor`, `claude`, or `gemini` with `/external-ai`. Other agents need [ACPX Provider Integration](acpx-provider.html).
+- **`agent` / `claude` / `gemini` not found:** Install and authenticate that provider’s CLI separately, then confirm it is on your `PATH`.
+- **Long-running or “stuck” agents:** Multi-step tool use can take several minutes. Do not cancel early — execution commands intentionally run without strict timeouts.
+- **`--resume` and `--peer` together:** Not allowed; drop one of the flags.
 
 ## Related Pages
 
-- [Managing Custom Agents](managing-custom-agents.html)
-- [Inter-Agent Communication Network](inter-agent-communication.html)
 - [ACPX Provider Integration](acpx-provider.html)
+- [Google Vertex Claude Provider](vertex-claude-provider.html)
+- [Pi Sidecar HTTP API](pi-sidecar.html)
+- [Configuration & Settings](configuration.html)
+- [Built-in Workflow Commands](built-in-workflows.html)

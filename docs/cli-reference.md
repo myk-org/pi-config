@@ -1,298 +1,426 @@
-# myk_pi_tools CLI Reference
-
-This reference documents the subcommands available through the `myk-pi-tools` command line interface for database queries, code review handling, and managing project memory.
-
-For information on how the daemon runs behind the scenes, see [Daemon & Websocket Networking](daemon-and-websockets.html). For project-wide environment configurations, see [Configuration & Settings](configuration.html).
-
----
-
-## Database Queries (`myk-pi-tools db`)
-
-The `db` command group provides ad-hoc access to the SQLite reviews database for analytics and auto-skip logic.
-
-### `db stats`
-
-Groups and returns review statistics based on source or reviewer.
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--by-source` | Flag | `True` | Group statistics by source (human, qodo, coderabbit) |
-| `--by-reviewer` | Flag | `False` | Group statistics by the reviewer author |
-| `--json` | Flag | `False` | Output results as JSON instead of formatted text table |
-| `--db-path` | String | None | Path to the SQLite database file |
-
-```bash
-# Get stats grouped by source (default)
+# Default grouping (by source)
 myk-pi-tools db stats
 
-# Output reviewer stats as JSON
+# Group by reviewer and print JSON
 myk-pi-tools db stats --by-reviewer --json
 ```
 
+**Return value / effect**
+
+- Prints a table or JSON array to stdout.
+- Exits with an error if both `--by-source` and `--by-reviewer` are passed.
+
 ### `db patterns`
 
-Identifies comments that appear multiple times with similar content, helping to identify potential auto-skip rules.
+Finds recurring dismissed comment patterns grouped by file path and body similarity.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--min` | Integer | `2` | Minimum number of occurrences to report |
-| `--json` | Flag | `False` | Output results as JSON |
-| `--db-path` | String | None | Path to the SQLite database file |
+| `--min` | Integer | `2` | Minimum occurrence count required for a pattern to be reported. |
+| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
 
 ```bash
-# Find recurring patterns with at least 3 occurrences
+# Show recurring dismissed patterns with at least 3 occurrences
 myk-pi-tools db patterns --min 3
 ```
 
+**Return value / effect**
+
+- Prints rows with `path`, `occurrences`, `reason`, and `body_sample`.
+- Uses dismissed comments (`not_addressed` / `skipped`) as the source set.
+
 ### `db dismissed`
 
-Retrieves all `not_addressed` or `skipped` comments for a repository.
+Returns stored dismissed comments for a repository.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--owner` | String | (Required) | Repository owner (organization or user) |
-| `--repo` | String | (Required) | Repository name |
-| `--json` | Flag | `False` | Output results as JSON |
-| `--db-path` | String | None | Path to the SQLite database file |
+| `--owner` | String | `(required)` | Repository owner or organization. |
+| `--repo` | String | `(required)` | Repository name. |
+| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
 
 ```bash
-# View dismissed comments for the pi-config repo
-myk-pi-tools db dismissed --owner myk-org --repo pi-config
+myk-pi-tools db dismissed --owner myk-org --repo pi-config --json
 ```
+
+**Return value / effect**
+
+- Prints dismissed review records for the specified repository.
+- Returned rows include `path`, `line`, `body`, `status`, `reply`, `skip_reason`, `author`, `type`, and `comment_id`.
+- Includes `not_addressed` and `skipped` comments, plus supported addressed body-comment/Qodo sticky types used for auto-skip logic.
 
 ### `db query`
 
-Runs a raw SELECT query against the review database.
+Runs a read-only SQL query against the reviews database.
 
-> **Warning:** Only SELECT statements are permitted for safety reasons.
-
-| Parameter/Option | Type | Default | Description |
+| Parameter / Option | Type | Default | Description |
 |---|---|---|---|
-| `sql` | String | (Required) | The SQL query to execute |
-| `--json` | Flag | `False` | Output results as JSON |
-| `--db-path` | String | None | Path to the SQLite database file |
+| `sql` | String | `(required)` | SQL statement to execute. |
+| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
+
+> **Warning:** Only `SELECT` and `WITH` (CTE) queries are accepted. Multiple statements and write-oriented keywords are rejected.
 
 ```bash
-# Count comments grouped by status
-myk-pi-tools db query "SELECT status, COUNT(*) as cnt FROM comments GROUP BY status"
+# Count comments by status
+myk-pi-tools db query "SELECT status, COUNT(*) AS cnt FROM comments GROUP BY status"
+
+# JSON output
+myk-pi-tools db query "SELECT path, line, status FROM comments LIMIT 5" --json
 ```
+
+**Return value / effect**
+
+- Prints query results as a table or JSON array.
+- Returns an empty result set if the database is missing.
+- Exits with an error for disallowed SQL.
 
 ### `db find-similar`
 
-Accepts JSON via `stdin` (requires `path` and `body` keys) and attempts to find a previously dismissed comment matching the exact file path and body similarity (Jaccard word overlap).
+Reads a candidate comment from stdin and finds a previously dismissed comment with the same path and similar body text.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--owner` | String | (Required) | Repository owner (organization or user) |
-| `--repo` | String | (Required) | Repository name |
-| `--threshold` | Float | `0.6` | Minimum similarity threshold (0.0 to 1.0) |
-| `--json` | Flag | `False` | Output results as JSON |
-| `--db-path` | String | None | Path to the SQLite database file |
+| `--owner` | String | `(required)` | Repository owner or organization. |
+| `--repo` | String | `(required)` | Repository name. |
+| `--threshold` | Float | `0.6` | Minimum similarity score from `0.0` to `1.0`. |
+| `--json` | Flag | `False` | Output JSON instead of human-readable text. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
 
 ```bash
-echo '{"path": "foo.py", "body": "Add error handling..."}' | \
+echo '{"path":"src/main.py","body":"Add error handling for edge cases"}' | \
   myk-pi-tools db find-similar --owner myk-org --repo pi-config --json
 ```
 
----
+**Return value / effect**
+
+- Reads JSON from stdin with required keys `path` and `body`.
+- Prints the best match or `null` / “No similar comment found”.
+- Uses exact path match plus Jaccard word-overlap similarity.
 
 ## Review Handling (`myk-pi-tools reviews`)
 
-Commands for managing pull request review fetch loops, automated Qodo interactions, and persistence.
-
 ### `reviews fetch`
 
-Fetches review threads from the current pull request and categorizes them by source (human, qodo, coderabbit). Saves output to `<output-dir>/pr-<number>-reviews.json`.
+Fetches review threads for the current PR and writes a normalized review JSON file.
 
-| Parameter/Option | Type | Default | Description |
+| Parameter / Option | Type | Default | Description |
 |---|---|---|---|
-| `review_url` | String | `""` | Optional specific review URL for context (e.g., `#discussion_rXXX`) |
-| `--include-resolved` | Flag | `False` | Include resolved threads in the fetch output |
-| `--user` | String | None | Filter threads by author username |
-| `--output-dir` | String | (Required) | Directory to write the output JSON file |
+| `review_url` | String | `""` | Optional PR review URL or discussion URL for context. |
+| `--include-resolved` | Flag | `False` | Include resolved threads in the output JSON. |
+| `--user` | String | `None` | Filter threads by author username. |
+| `--output-dir` | String | `(required)` | Directory for the output JSON file. |
 
 ```bash
 myk-pi-tools reviews fetch --output-dir .pi/tmp/
 ```
 
+**Return value / effect**
+
+- Writes `<output-dir>/pr-<number>-reviews.json`.
+- Prints the full normalized JSON payload to stdout.
+- Output JSON contains `metadata`, `human`, `qodo`, and `coderabbit` arrays.
+
 ### `reviews poll`
 
-Polls for reviews until new actionable comments appear.
+Polls for new review activity until actionable feedback or approval is detected.
 
-| Parameter/Option | Type | Default | Description |
+| Parameter / Option | Type | Default | Description |
 |---|---|---|---|
-| `review_url` | String | `""` | Optional specific review URL |
-| `--source` | String | `coderabbit` | Which reviewer to poll for (`coderabbit` or `qodo`) |
-| `--output-dir` | String | (Required) | Directory to write the output JSON file |
+| `review_url` | String | `""` | Optional PR review URL or discussion URL for context. |
+| `--source` | String | `coderabbit` | Reviewer source to poll: `coderabbit` or `qodo`. |
+| `--output-dir` | String | `(required)` | Directory for the review JSON file. |
 
 ```bash
-# Poll for Qodo comments
+# Poll CodeRabbit
+myk-pi-tools reviews poll --output-dir .pi/tmp/
+
+# Poll Qodo
 myk-pi-tools reviews poll --source qodo --output-dir .pi/tmp/
 ```
 
+**Return value / effect**
+
+- Loops until one of these conditions is met:
+  - approval is detected, or
+  - actionable comments are available.
+- Updates `<output-dir>/pr-<number>-reviews.json`.
+- Prints a JSON object to stdout with review data and an `approved` flag when it returns.
+- For `coderabbit`, handles rate-limit and paused-review recovery internally.
+- For `qodo`, retries stuck reviews and may request sticky-comment re-evaluation before returning.
+
 ### `reviews post`
 
-Posts replies and resolves review threads based on status. Reads from a JSON file generated by `reviews fetch` and processed by the AI handler.
+Posts replies and resolves review threads from a processed reviews JSON file.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `json_path` | String | (Required) | Path to the JSON file containing the review payload |
+| `json_path` | String | `(required)` | Path to the processed review JSON file. |
 
 ```bash
 myk-pi-tools reviews post .pi/tmp/pr-42-reviews.json
 ```
 
+**Return value / effect**
+
+- Reads the JSON produced by `reviews fetch`.
+- Posts replies for processed entries and resolves eligible threads.
+- Updates the JSON file with posting and resolution timestamps.
+- Exits with an error if required replies are empty or too vague.
+
+> **Note:** Qodo sticky findings are code-enforced to require status `addressed`. Non-`addressed` sticky entries are rejected.
+
 ### `reviews pending-fetch`
 
-Fetches the authenticated user's PENDING review and its comments from a GitHub PR.
+Fetches the authenticated user’s pending PR review and writes a pending-review JSON file.
 
-| Parameter/Option | Type | Default | Description |
+| Parameter / Option | Type | Default | Description |
 |---|---|---|---|
-| `pr_url` | String | (Required) | GitHub PR URL |
-| `--output-dir` | String | (Required) | Directory to write the output JSON file |
+| `pr_url` | String | `(required)` | GitHub PR URL. |
+| `--output-dir` | String | `(required)` | Directory for the output JSON file. |
 
 ```bash
 myk-pi-tools reviews pending-fetch "https://github.com/owner/repo/pull/123" --output-dir .pi/tmp/
 ```
 
+**Return value / effect**
+
+- Writes `<output-dir>/pr-<owner>-<repo>-<number>-pending-review.json`.
+- Prints the saved file path to stdout.
+- Output JSON contains `metadata`, `comments`, and `diff`.
+
 ### `reviews pending-update`
 
-Updates accepted comment bodies in a pending review and optionally submits the review.
+Updates accepted pending-review comment bodies, and optionally submits the review.
 
-| Parameter/Option | Type | Default | Description |
+| Parameter / Option | Type | Default | Description |
 |---|---|---|---|
-| `json_path` | String | (Required) | Path to the processed pending review JSON |
-| `--submit` | Flag | `False` | Submit the review immediately after updating comments |
+| `json_path` | String | `(required)` | Path to the pending-review JSON file. |
+| `--submit` | Flag | `False` | Submit the review after updating comments. Submission only occurs if the JSON metadata also includes a valid `submit_action`. |
 
 ```bash
-myk-pi-tools reviews pending-update .pi/tmp/pr-123-pending-review.json --submit
+myk-pi-tools reviews pending-update .pi/tmp/pr-owner-repo-123-pending-review.json --submit
 ```
+
+**Return value / effect**
+
+- Updates comments whose status is `accepted` and that include `refined_body`.
+- Backfills missing `node_id` values from the GitHub API before applying updates.
+- If both `--submit` and JSON metadata `submit_action` are present, submits the review with `COMMENT`, `APPROVE`, or `REQUEST_CHANGES`.
+- Exits with an error if required `node_id` values cannot be resolved.
 
 ### `reviews status`
 
-Displays the review status for the current PR and generates an HTML report.
+Shows stored review status for a PR and generates an HTML report.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--pr` | Integer | None | PR number (defaults to auto-detect from current branch) |
-| `--output-dir` | String | (Required) | Directory for output HTML report |
+| `--pr` | Integer | auto-detect | PR number. If omitted, the command tries to detect the current branch’s PR. |
+| `--output-dir` | String | `(required)` | Directory for the generated HTML report. |
 
 ```bash
 myk-pi-tools reviews status --output-dir .pi/reports/
+
+myk-pi-tools reviews status --pr 42 --output-dir .pi/reports/
 ```
+
+**Return value / effect**
+
+- Writes `<output-dir>/review-status-<pr>.html`.
+- Prints a terminal table and the HTML report location.
+- If no PR can be auto-detected and `--pr` is omitted, lists PRs present in the local reviews database instead of generating a report.
+
+> **Tip:** Use this command against stored review data after `reviews store`. See [Automating Code Reviews](automating-code-reviews.html) for review-loop usage.
 
 ### `reviews ask-qodo`
 
-Posts a `/qodo` comment to ask a question and waits up to 10 minutes for a reply.
+Posts a `/qodo` comment on a PR and waits for a matching reply.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `args` | String | (Required) | The question string, optionally prepended with `--pr owner/repo N` |
+| `args` | String | `(required)` | Question text, or `--pr owner/repo <pr_number> <question>` to target a specific PR. |
 
 ```bash
+# Auto-detect the current PR
 myk-pi-tools reviews ask-qodo "What edge cases are missing?"
+
+# Target a specific PR
+myk-pi-tools reviews ask-qodo --pr myk-org/pi-config 42 "What edge cases are missing?"
 ```
+
+**Return value / effect**
+
+- Prints Qodo’s reply body to stdout.
+- Auto-detects the current PR if `--pr` is not provided.
+- Exits with code `1` if the question is empty, the post fails, or no matching reply arrives before timeout.
 
 ### `reviews store`
 
-Stores completed review to the local SQLite database (`.pi/data/reviews.db`) for analytics, then deletes the JSON file.
+Stores a completed review JSON payload in the local SQLite database.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `json_path` | String | (Required) | Path to the completed review JSON file |
+| `json_path` | String | `(required)` | Path to the completed review JSON file. |
 
 ```bash
 myk-pi-tools reviews store .pi/tmp/pr-42-reviews.json
 ```
 
----
+**Return value / effect**
+
+- Stores review metadata and comment rows in `<project-root>/.pi/data/reviews.db`.
+- Anchors the stored review to the current commit SHA.
+- Deletes the source JSON file after successful storage.
 
 ## Memory Management (`myk-pi-tools memory`)
 
-Manual maintenance commands for reading, adding, or forgetting learned topics.
+### Global Option (`memory` group)
+
+This option applies to every `memory` subcommand.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--file-path` | String | auto-detected | Path to the memory topics directory. If omitted, uses `<git-root>/.pi/memory/topics/`. |
+
+```bash
+myk-pi-tools memory --file-path /tmp/topics show
+```
+
+**Return value / effect**
+
+- Overrides the default per-repository topics directory for the current invocation.
 
 ### `memory add`
 
-Adds a memory entry to the repository's topics directory.
+Adds a memory entry to a topic file.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--category`, `-c` | String | (Required) | One of: `lesson`, `decision`, `mistake`, `pattern`, `done`, `preference` |
-| `--summary`, `-s` | String | (Required) | Short one-line description of the memory |
-| `--pinned` | Flag | `False` | Marks entry as user-requested (protected from automated pruning) |
-| `--file-path` | String | None | Global option: specific topics directory path |
+| `--category`, `-c` | String | `(required)` | Memory category: `lesson`, `decision`, `mistake`, `pattern`, `done`, or `preference`. |
+| `--summary`, `-s` | String | `(required)` | One-line memory text. |
+| `--pinned` | Flag | `False` | Store the entry as pinned. |
 
 ```bash
-# Add a persistent user preference
+# Learned memory
+myk-pi-tools memory add -c lesson -s "Cache mounts need uid"
+
+# Pinned memory
 myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
 ```
 
+**Return value / effect**
+
+- Appends a markdown entry to the category’s topic file.
+- Category-to-file mapping:
+  - `preference` → `preferences.md`
+  - `lesson` → `lessons.md`
+  - `pattern` → `patterns.md`
+  - `decision` → `decisions.md`
+  - `done` → `completions.md`
+  - `mistake` → `mistakes.md`
+- Pinned entries are written with `*(pinned)*`.
+
 ### `memory show`
 
-Prints all memory entries across all topic markdown files.
+Prints all topic files as merged markdown.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--file-path` | String | None | Global option: specific topics directory path |
+| `--file-path` | String | auto-detected | Global `memory` option. |
 
 ```bash
 myk-pi-tools memory show
 ```
 
+**Return value / effect**
+
+- Prints merged topic-file contents to stdout.
+- Reads all `*.md` files from the topics directory in filename order.
+
 ### `memory migrate`
 
-One-time migration script. Moves all entries from the legacy `memories.db` SQLite database to the file-backed topics directory.
+Migrates legacy SQLite memory data into topic files.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--file-path` | String | None | Global option: specific topics directory path |
+| `--file-path` | String | auto-detected | Global `memory` option. |
 
 ```bash
 myk-pi-tools memory migrate
 ```
 
+**Return value / effect**
+
+- Reads `memories.db` from the parent memory directory.
+- Writes migrated entries as learned topic-file entries.
+- Deletes legacy files after migration: `memories.db`, `dreams.md`, and `dreams.lock`.
+- Prints a migration summary to stderr.
+
 ### `memory forget`
 
-Removes a specific memory entry if it exists in the active topic files.
+Removes a matching memory entry.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--category`, `-c` | String | (Required) | The category the memory belongs to |
-| `--summary`, `-s` | String | (Required) | The exact text of the entry to forget |
-| `--file-path` | String | None | Global option: specific topics directory path |
+| `--category`, `-c` | String | `(required)` | Memory category. |
+| `--summary`, `-s` | String | `(required)` | Exact entry text to remove. |
+| `--file-path` | String | auto-detected | Global `memory` option. |
 
 ```bash
-myk-pi-tools memory forget -c mistake -s "Used pip instead of uv run"
+myk-pi-tools memory forget -c mistake -s "Used sleep for polling"
 ```
+
+**Return value / effect**
+
+- Removes the matching learned or pinned line from the category topic file.
+- Removes the matching entry hash from `memory-scores.json` if present.
+- Prints either `Forgotten: ...` or `Not found: ...`.
 
 ### `memory path`
 
-Outputs the absolute directory path where project memory topics are stored.
+Prints the active memory topics directory.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--file-path` | String | None | Global option: specific topics directory path |
+| `--file-path` | String | auto-detected | Global `memory` option. |
 
 ```bash
 myk-pi-tools memory path
 ```
 
+**Return value / effect**
+
+- Prints the absolute path to the active topics directory.
+
 ### `memory status`
 
-Shows the enforcement honesty inventory for project memory, analyzing code-tier implementations versus injected topic counts.
-
-> **Tip:** Used to ensure the AI's "learned" behaviors actually map cleanly to local hooks and rules.
+Prints the memory enforcement-honesty inventory.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--file-path` | String | None | Global option: specific topics directory path |
+| `--file-path` | String | auto-detected | Global `memory` option. |
 
 ```bash
 myk-pi-tools memory status
 ```
 
+**Return value / effect**
+
+- Prints:
+  - active topics path,
+  - injected topic-entry count,
+  - code-tier enforced-entry count,
+  - proposed promotion-candidate count.
+- Lists code-tier entries when present.
+- Reads `memory-scores.json` and `promotions.md` from the parent memory directory.
+
+> **Tip:** See [Implementing Command Guards](safety-enforcements.html) for enforcement behavior and [Memory Architecture](memory-architecture.html) for storage and scoring details.
+
 ## Related Pages
 
-- [Installation & Quickstart](quickstart.html)
-- [Creating Slash Commands](custom-slash-commands.html)
+- [Built-in Workflow Commands](built-in-workflows.html)
+- [Automating Code Reviews](automating-code-reviews.html)
+- [Curating Project Memory](curating-project-memory.html)
 - [Configuration & Settings](configuration.html)

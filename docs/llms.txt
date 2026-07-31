@@ -12,6 +12,7 @@
 - [Managing Custom Agents](managing-custom-agents.md): Create, route, and test new specialist agents to handle specific tasks like security auditing or test running.
 - [Using the Web Dashboard](using-the-web-dashboard.md): Monitor background tasks, inspect code diffs, and switch between sessions using the local React UI.
 - [Curating Project Memory](curating-project-memory.md): Seed, score, and organize learned topics to give your agents persistent context across sessions.
+- [Asking Side Questions with /btw](btw-command.md): Use /btw to ask a quick model question using conversation context without adding the exchange to the main session history.
 
 ## Recipes
 
@@ -22,6 +23,7 @@
 
 - [myk_pi_tools CLI Reference](cli-reference.md): Complete command index for database queries, review handling, and manual memory management.
 - [Configuration & Settings](configuration.md): Comprehensive lookup for pi project settings, UI configuration, and environment variables.
+- [Built-in Workflow Commands](built-in-workflows.md): Catalog of shipped prompt commands (/implement, /implement-and-review, /issue-review, /pr-review, /review-local, /refine-review, /release, /remember, /create-skill, /domain-model, /query-db): arguments, prerequisites, and when to use each.
 
 ## Internals
 
@@ -33,6 +35,8 @@
 - [Neovim Integration](neovim-integration.md): How to use Pi within Neovim, populate the quickfix list with git changed files, and leverage the remote lua execution capabilities.
 - [Discord Bot Notifications](discord-bot.md): Setting up the background Discord bot to broadcast daemon events, review handler updates, and agent status notifications.
 - [Image Generation](image-generation.md): Configuring and using the agent image generation tool with Gemini, including supported aspect ratios and output handling.
+- [Google Vertex Claude Provider](vertex-claude-provider.md): Install and configure the google-vertex-claude provider, authenticate with gcloud, select models (including 1M context variants via VERTEX_CLAUDE_1M), and run pi with --provider google-vertex-claude.
+- [Pi Sidecar HTTP API](pi-sidecar.md): Run the pi-sidecar server, manage AI sessions over REST, discover models from ACPX and CLI providers, configure custom HTTP-backed tools, and integrate with the Python SidecarClient.
 
 ## Advanced Usage
 

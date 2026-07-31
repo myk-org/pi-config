@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,9 +302,11 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="acpx-provider-integration">ACPX Provider Integration</h1>
-<h2 id="acpx-agent-configuration">ACPX Agent Configuration</h2>
-<p>Settings that determine which external agents are loaded via the ACPX runtime.</p>
-<p><strong>Configuration Key:</strong> <code>acpx_agents</code></p>
+<blockquote>
+<p><strong>Note:</strong> <code>extensions/acpx-provider/</code> is a backward-compatible shim for consumers such as pi-sidecar. It exports <code>discoverAcpxModels</code>, <code>mapAcpxDiscoveredModels</code>, <code>modelIdToDisplayName</code>, and a no-op extension entry. Provider registration and streaming run through <code>extensions/providers/</code> (<code>AcpxDriver</code> + <code>ProviderDriverRegistry</code>). See <a href="configuration.html">Configuration &amp; Settings</a> for settings file locations and <a href="external-ai-agents.html">External AI Agents &amp; CLI</a> for CLI usage of external agents.</p>
+</blockquote>
+<h2 id="acpx_agents"><code>acpx_agents</code></h2>
+<p>Agents registered as ACPX providers at session start.</p>
 <table>
 <thead>
 <tr>
@@ -289,24 +319,33 @@
 <tbody>
 <tr>
 <td style="text-align: left;"><code>acpx_agents</code></td>
-<td style="text-align: left;">Array<string> | string</td>
+<td style="text-align: left;"><code>string[]</code> | <code>string</code></td>
 <td style="text-align: left;"><code>[]</code></td>
-<td style="text-align: left;">Comma-separated list of agent identifiers (e.g., <code>cursor</code>, <code>claude</code>) to initialize via the ACPX runtime.</td>
+<td style="text-align: left;">Agent identifiers to create via <code>AcpxDriver</code>. Accepts a JSON array or a comma-separated string. Names are trimmed, lowercased, and filtered to <code>/^[a-z0-9_-]+$/</code>.</td>
 </tr>
 </tbody>
 </table>
+<p><strong>Resolution order:</strong> project settings → global settings → <code>ACPX_AGENTS</code> env → <code>[]</code>.</p>
+<p><strong>Driver mapping (<code>ACPX_AGENT_TO_DRIVER</code>):</strong> <code>cursor</code> → <code>acpx</code>. Any other listed name falls back to driver kind <code>acpx</code> with <code>config.agent</code> set to that name.</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;acpx_agents&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;claude&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="nt">&quot;acpx_agents&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;cursor&quot;</span><span class="p">]</span>
 <span class="p">}</span>
 </code></pre></div>
 
-<h2 id="acpx-runtime-module">ACPX Runtime Module</h2>
-<p>The runtime integration requires the <code>acpx</code> package to be resolvable on the system. </p>
-<p><strong>Method:</strong> <code>loadAcpxRuntime()</code></p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">ACPX_AGENTS</span><span class="o">=</span>cursor
+</code></pre></div>
+
+<p><strong>Effect:</strong> For each agent, <code>extensions/providers/</code> creates a <code>ProviderInstance</code>, registers provider id <code>acpx-&lt;agent&gt;</code>, and exposes models under that provider.</p>
+<blockquote>
+<p><strong>Note:</strong> During extension startup, each agent races <code>registry.createInstance</code> against <code>DISCOVERY_TIMEOUT_MS</code> (<code>30000</code>). Timed-out creates are torn down if they finish later.</p>
+</blockquote>
+<h2 id="loadacpxruntime"><code>loadAcpxRuntime()</code></h2>
+<p>Resolves the <code>acpx/runtime</code> module. Memoized across calls; failed loads clear the cache.</p>
+<p><strong>Module:</strong> <code>extensions/acpx-provider/load-runtime.ts</code></p>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Property</th>
+<th style="text-align: left;">Return field</th>
 <th style="text-align: left;">Type</th>
 <th style="text-align: left;">Description</th>
 </tr>
@@ -314,32 +353,37 @@
 <tbody>
 <tr>
 <td style="text-align: left;"><code>createAcpRuntime</code></td>
-<td style="text-align: left;">Function</td>
-<td style="text-align: left;">Instantiates the core ACP runtime instance.</td>
+<td style="text-align: left;"><code>Function</code></td>
+<td style="text-align: left;">Builds an ACP runtime for a cwd / session store / agent registry.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>createFileSessionStore</code></td>
-<td style="text-align: left;">Function</td>
-<td style="text-align: left;">Initializes persistent session storage on the filesystem.</td>
+<td style="text-align: left;"><code>Function</code></td>
+<td style="text-align: left;">Filesystem session store factory.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>createAgentRegistry</code></td>
-<td style="text-align: left;">Function</td>
-<td style="text-align: left;">Provides the registry of available ACPX agents.</td>
+<td style="text-align: left;"><code>Function</code></td>
+<td style="text-align: left;">ACPX agent registry factory.</td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Note:</strong> The module searches for a global <code>npm install -g acpx</code> first, followed by local package dependencies.</p>
-</blockquote>
+<p><strong>Resolution order:</strong></p>
+<ol>
+<li>Global npm root (<code>npm root -g</code>) package <code>acpx</code> → <code>dist/runtime.js</code></li>
+<li>Candidate roots: <code>/usr/local/lib/node_modules</code>, <code>~/.npm-global/lib/node_modules</code></li>
+<li>Package import <code>acpx/runtime</code></li>
+</ol>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./load-runtime.js&quot;</span><span class="p">;</span>
 
-<span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">createAcpRuntime</span><span class="p">,</span><span class="w"> </span><span class="nx">createFileSessionStore</span><span class="p">,</span><span class="w"> </span><span class="nx">createAgentRegistry</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="p">();</span>
+<span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">createAcpRuntime</span><span class="p">,</span><span class="w"> </span><span class="nx">createFileSessionStore</span><span class="p">,</span><span class="w"> </span><span class="nx">createAgentRegistry</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="k">await</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="p">();</span>
 </code></pre></div>
 
-<h2 id="model-discovery">Model Discovery</h2>
-<p>Synchronously queries an agent for its available models using a temporary session.</p>
-<p><strong>Method:</strong> <code>discoverAcpxModels(agent, cwd?)</code></p>
+<p><strong>Throws:</strong> <code>Error</code> if runtime cannot be resolved (<code>npm install -g acpx</code> or package dependency <code>acpx</code> required).</p>
+<h2 id="discoveracpxmodelsagent-cwd"><code>discoverAcpxModels(agent, cwd?)</code></h2>
+<p>Async discovery of available model ids for one ACPX agent. Creates a temporary oneshot session, reads <code>getStatus().models.availableModelIds</code>, closes the session, and deletes the temp state dir.</p>
+<p><strong>Module:</strong> <code>extensions/acpx-provider/index.ts</code></p>
 <table>
 <thead>
 <tr>
@@ -352,31 +396,132 @@
 <tbody>
 <tr>
 <td style="text-align: left;"><code>agent</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">The identifier of the agent (e.g., <code>cursor</code>).</td>
+<td style="text-align: left;">Agent id. Must match <code>/^[a-z0-9_-]+$/i</code>.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>cwd</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;"><code>process.cwd()</code></td>
-<td style="text-align: left;">Directory to use as the base for the discovery session context.</td>
+<td style="text-align: left;">Working directory for the discovery session.</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Returns:</strong> <code>Array&lt;{ id: string, name: string, provider: string }&gt;</code></p>
-<blockquote>
-<p><strong>Tip:</strong> Model discovery operations automatically time out after 30 seconds if the external agent fails to respond.</p>
-</blockquote>
+<p><strong>Returns:</strong> <code>Promise&lt;Array&lt;{ id: string; name: string; provider: string }&gt;&gt;</code></p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Field</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>id</code></td>
+<td style="text-align: left;"><code>&lt;agent&gt;:&lt;modelId&gt;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>name</code></td>
+<td style="text-align: left;">Display name from <code>modelIdToDisplayName(modelId)</code> plus <code>(&lt;agent&gt;)</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>provider</code></td>
+<td style="text-align: left;"><code>acpx-&lt;agent&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>On discovery failure, returns <code>[]</code> (does not throw). Invalid <code>agent</code> throws <code>Error</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;pi-orchestrator-config/extensions/acpx-provider&quot;</span><span class="p">;</span>
 
 <span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">);</span>
-<span class="c1">// Returns: [{ id: &quot;cursor:gpt-5.4[...]&quot;, name: &quot;Gpt 5.4 (cursor)&quot;, provider: &quot;acpx-cursor&quot; }]</span>
+<span class="c1">// [{ id: &quot;cursor:gpt-5.4[...]&quot;, name: &quot;Gpt 5.4 (cursor)&quot;, provider: &quot;acpx-cursor&quot; }]</span>
 </code></pre></div>
 
-<h2 id="ambient-authentication">Ambient Authentication</h2>
-<p>Handles the <code>/login</code> flow for ACPX agents by validating the ambient runtime presence.</p>
-<p><strong>Method:</strong> <code>buildAmbientLoginAuth(opts)</code></p>
+<blockquote>
+<p><strong>Note:</strong> Discovery uses <code>permissionMode: "deny-all"</code> and state under <code>~/.acpx/discover-&lt;pid&gt;-&lt;uid&gt;/</code>.</p>
+</blockquote>
+<h2 id="mapacpxdiscoveredmodelsagent-modelids"><code>mapAcpxDiscoveredModels(agent, modelIds)</code></h2>
+<p>Maps raw model id strings to pi-ai runtime <code>Model</code> objects for provider registration.</p>
+<p><strong>Module:</strong> <code>extensions/acpx-provider/runtime-models.ts</code></p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>agent</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Agent id used in model/provider ids.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>modelIds</code></td>
+<td style="text-align: left;"><code>readonly string[]</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Raw ids from ACPX status / snapshot.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Returns:</strong> <code>Model[]</code> with <code>api: "acpx"</code> and <code>provider: "acpx-&lt;agent&gt;"</code>.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Condition</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>modelIds.length === 0</code></td>
+<td style="text-align: left;">Single fallback model <code>{ id: "&lt;agent&gt;:default", name: "&lt;agent&gt; (default)" }</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">otherwise</td>
+<td style="text-align: left;">One model per id: <code>{ id: "&lt;agent&gt;:&lt;m&gt;", name: "&lt;Display&gt; (&lt;agent&gt;)" }</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;pi-orchestrator-config/extensions/acpx-provider&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gpt-5.4[context=272k]&quot;</span><span class="p">]);</span>
+<span class="c1">// id: &quot;cursor:gpt-5.4[context=272k]&quot;, name: &quot;Gpt 5.4 (cursor)&quot;, provider: &quot;acpx-cursor&quot;</span>
+</code></pre></div>
+
+<h2 id="modelidtodisplaynamemodelid"><code>modelIdToDisplayName(modelId)</code></h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>modelId</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Raw ACPX model id.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Returns:</strong> <code>string</code> — bracket suffix stripped, hyphens → spaces, title-cased.</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">modelIdToDisplayName</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;pi-orchestrator-config/extensions/acpx-provider&quot;</span><span class="p">;</span>
+
+<span class="nx">modelIdToDisplayName</span><span class="p">(</span><span class="s2">&quot;gpt-5.4[context=272k]&quot;</span><span class="p">);</span><span class="w"> </span><span class="c1">// &quot;Gpt 5.4&quot;</span>
+</code></pre></div>
+
+<h2 id="buildambientloginauthopts"><code>buildAmbientLoginAuth(opts)</code></h2>
+<p>Builds <code>/login</code> api-key auth that stores a configured marker when <code>isConfigured()</code> is true.</p>
+<p><strong>Module:</strong> <code>extensions/shared/create-runtime-provider.ts</code><br />
+<strong>Wired by:</strong> <code>registerAcpxAgent()</code> in <code>extensions/providers/index.ts</code></p>
 <table>
 <thead>
 <tr>
@@ -389,60 +534,286 @@
 <tbody>
 <tr>
 <td style="text-align: left;"><code>displayName</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">The UI name for the authentication prompt.</td>
+<td style="text-align: left;">Label in the <code>/login</code> prompt (<code>ACPX &lt;agent&gt;</code>).</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>isConfigured</code></td>
-<td style="text-align: left;">Function</td>
+<td style="text-align: left;"><code>() =&gt; boolean \| Promise&lt;boolean&gt;</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Callback returning boolean if the agent state/runtime is present.</td>
+<td style="text-align: left;">Gate for login/resolve/check. For ACPX: <code>acpxInstances.has(agent)</code>.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>sourceLabel</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Human-readable string indicating where the auth comes from (e.g., "cursor acpx runtime").</td>
+<td style="text-align: left;">Auth source string (e.g. <code>"cursor acpx runtime"</code>).</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Returns:</strong> A <code>ProviderAuth["apiKey"]</code> object compatible with <code>createProvider()</code>.</p>
+<p><strong>Returns:</strong> <code>ProviderAuth["apiKey"]</code> for <code>createRuntimeProvider()</code> / <code>createProvider()</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">buildAmbientLoginAuth</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;../shared/create-runtime-provider.js&quot;</span><span class="p">;</span>
-<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">isAcpxAgentConfigured</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./configured.js&quot;</span><span class="p">;</span>
 
+<span class="c1">// Wired in extensions/providers/index.ts during registerAcpxAgent()</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">buildAmbientLoginAuth</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">displayName</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;ACPX cursor&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">isConfigured</span><span class="o">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">isAcpxAgentConfigured</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">),</span>
+<span class="w">  </span><span class="nx">isConfigured</span><span class="o">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">acpxInstances</span><span class="p">.</span><span class="nx">has</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">),</span>
 <span class="w">  </span><span class="nx">sourceLabel</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor acpx runtime&quot;</span><span class="p">,</span>
 <span class="p">});</span>
 </code></pre></div>
 
-<h2 id="stream-execution">Stream Execution</h2>
-<p>Processes LLM requests through the persistent ACPX agent session via <code>streamAcpx()</code>.</p>
-<p><strong>Execution Mechanics:</strong></p>
+<h2 id="acpxdriver"><code>AcpxDriver</code></h2>
+<p>Built-in <code>ProviderDriver</code> (<code>driverKind: "acpx"</code>) in <code>extensions/providers/acpx-driver.ts</code>. Listed in <code>BUILT_IN_DRIVERS</code> and created through <code>ProviderDriverRegistry</code> in <code>extensions/providers/index.ts</code>.</p>
+<h3 id="config-acpxconfig">Config (<code>AcpxConfig</code>)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Field</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>agent</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;"><code>"cursor"</code></td>
+<td style="text-align: left;">ACPX agent name passed to <code>ensureSession</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>enabled</code></td>
+<td style="text-align: left;"><code>boolean</code></td>
+<td style="text-align: left;"><code>true</code></td>
+<td style="text-align: left;">Instance enabled flag.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="acpxdriverprobeconfig"><code>AcpxDriver.probe(config)</code></h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>config</code></td>
+<td style="text-align: left;"><code>AcpxConfig</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Passed by the registry; availability checks <code>loadAcpxRuntime()</code> only.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Returns:</strong> <code>{ available: true }</code> if <code>loadAcpxRuntime()</code> resolves; otherwise <code>{ available: false, reason: string }</code>.</p>
+<h3 id="acpxdrivercreateinput"><code>AcpxDriver.create(input)</code></h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>input.instanceId</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Registry instance id (<code>acpx-&lt;agent&gt;</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>input.config</code></td>
+<td style="text-align: left;"><code>AcpxConfig</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Agent + enabled.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>input.cwd</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Project cwd; hashed to 12-char <code>cwdSlug</code> for state/session keys.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>input.displayName</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;"><code>`ACPX ${agent}`</code></td>
+<td style="text-align: left;">UI display name.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>input.enabled</code></td>
+<td style="text-align: left;"><code>boolean</code></td>
+<td style="text-align: left;">from input</td>
+<td style="text-align: left;">Instance enabled flag.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Returns:</strong> <code>ProviderInstance</code> with managed model snapshot, adapter, and <code>dispose</code> → <code>adapter.stopAll()</code>.</p>
+<p><strong>Create side effects:</strong></p>
 <ul>
-<li><strong>Context:</strong> Maintains conversation history entirely within the remote ACPX agent side.</li>
-<li><strong>Prompting:</strong> Extracts and sends only the latest user message from the incoming context.</li>
-<li><strong>System Prompt:</strong> Injected exactly once per session handle during initialization.</li>
-<li><strong>Tokens:</strong> Maps remote <code>text_delta</code> and <code>thought</code> streams into native text/thinking content blocks.</li>
+<li>Runtime state dir: <code>~/.acpx/pi-&lt;cwdSlug&gt;/</code></li>
+<li><code>permissionMode: "approve-all"</code></li>
+<li>Initial persistent session key: <code>pi-&lt;agent&gt;-default</code></li>
+<li>Snapshot refresh uses a separate oneshot discovery helper</li>
 </ul>
-<blockquote>
-<p><strong>Warning:</strong> Context arrays with historical messages are not forwarded to the ACPX runtime on subsequent turns.</p>
-</blockquote>
-<div class="highlight"><pre><span></span><code><span class="c1">// Internal ACPX startTurn request mapping</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">state</span><span class="p">.</span><span class="nx">runtime</span><span class="p">.</span><span class="nx">startTurn</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">handle</span><span class="o">:</span><span class="w"> </span><span class="kt">sessionHandle</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">text</span><span class="o">:</span><span class="w"> </span><span class="kt">extractLatestUserMessage</span><span class="p">(</span><span class="nx">context</span><span class="p">),</span>
-<span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prompt&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">requestId</span><span class="o">:</span><span class="w"> </span><span class="sb">`pi-</span><span class="si">${</span><span class="nb">Date</span><span class="p">.</span><span class="nx">now</span><span class="p">()</span><span class="si">}</span><span class="sb">-</span><span class="si">${</span><span class="nx">randomId</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">signal</span><span class="o">:</span><span class="w"> </span><span class="kt">abortController.signal</span><span class="p">,</span>
-<span class="p">});</span>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">instance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">registry</span><span class="p">.</span><span class="nx">createInstance</span><span class="p">(</span>
+<span class="w">  </span><span class="s2">&quot;acpx-cursor&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nx">driver</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;acpx&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">config</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor&quot;</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="nx">enabled</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nx">projectCwd</span><span class="p">,</span>
+<span class="p">);</span>
 </code></pre></div>
 
-<h2 id="session-management">Session Management</h2>
-<p>Persistent handles map specific working directories and model IDs to long-running ACPX agent sessions.</p>
-<p><strong>Method:</strong> <code>runtime.ensureSession(options)</code></p>
+<h3 id="adapter-startsessionopts">Adapter: <code>startSession(opts)</code></h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Option</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>model</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;"><code>"default"</code></td>
+<td style="text-align: left;">ACPX model id (suffix of pi model id after <code>:</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>systemPrompt</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">from <code>buildExternalSystemPrompt</code></td>
+<td style="text-align: left;">Prompt applied when the handle is first created for that model.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>cwd</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">(required by type)</td>
+<td style="text-align: left;">Project cwd (adapter already bound at create).</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Returns:</strong> <code>{ sessionId, model }</code> where <code>sessionId</code> is <code>pi-&lt;agent&gt;[-&lt;sanitizedModel&gt;]-&lt;cwdSlug&gt;</code>.</p>
+<h3 id="adapter-sendturnhandle-prompt-opts">Adapter: <code>sendTurn(handle, prompt, opts?)</code></h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Default</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>handle</code></td>
+<td style="text-align: left;"><code>SessionHandle</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">From <code>startSession</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>prompt</code></td>
+<td style="text-align: left;"><code>string</code></td>
+<td style="text-align: left;">(required)</td>
+<td style="text-align: left;">Latest user message text only.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>opts.signal</code></td>
+<td style="text-align: left;"><code>AbortSignal</code></td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Aborts the turn.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>opts.onEvent</code></td>
+<td style="text-align: left;"><code>(event) =&gt; void</code></td>
+<td style="text-align: left;">—</td>
+<td style="text-align: left;">Receives <code>{ kind: "text_delta" \| "thinking_delta", text }</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Returns:</strong> <code>TurnResult</code> — <code>{ text, thinking?, stopReason?, usage? }</code>.</p>
+<p><strong>Stream mapping:</strong> ACPX <code>text_delta</code> with <code>stream === "thought"</code> → <code>thinking_delta</code>; other <code>text_delta</code> → <code>text_delta</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">startTurn</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">handle</span><span class="o">:</span><span class="w"> </span><span class="kt">acpxHandle</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">text</span><span class="o">:</span><span class="w"> </span><span class="kt">prompt</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prompt&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">requestId</span><span class="o">:</span><span class="w"> </span><span class="sb">`pi-</span><span class="si">${</span><span class="nb">Date</span><span class="p">.</span><span class="nx">now</span><span class="p">()</span><span class="si">}</span><span class="sb">-</span><span class="si">${</span><span class="nx">randomSuffix</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">signal</span><span class="o">:</span><span class="w"> </span><span class="kt">abortController.signal</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="k">for</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="nx">event</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">turn</span><span class="p">.</span><span class="nx">events</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">event</span><span class="p">.</span><span class="kr">type</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="s2">&quot;text_delta&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nx">event</span><span class="p">.</span><span class="nx">text</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// event.stream === &quot;thought&quot; → thinking_delta; else → text_delta</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Warning:</strong> Only the latest user message is sent each turn. Full historical message arrays are not forwarded to the ACPX runtime.</p>
+</blockquote>
+<h3 id="adapter-stopsession-stopall">Adapter: <code>stopSession</code> / <code>stopAll</code></h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Method</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>stopSession(handle)</code></td>
+<td style="text-align: left;"><code>runtime.close</code> for that model handle; clears prompt/usage tracking for the key.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>stopAll()</code></td>
+<td style="text-align: left;">Closes all handles; clears handle maps. Called from instance <code>dispose</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="stream-bridge-streamassembler">Stream bridge (<code>StreamAssembler</code>)</h2>
+<p><code>extensions/providers/index.ts</code> wraps <code>adapter.sendTurn</code> and feeds driver events into <code>StreamAssembler</code> (<code>extensions/shared/stream-builder.ts</code>) for native pi assistant streams.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Step</th>
+<th style="text-align: left;">Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">1</td>
+<td style="text-align: left;">Resolve instance from <code>acpxInstances</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">2</td>
+<td style="text-align: left;">Parse model id: <code>agent:modelId</code> → driver model suffix</td>
+</tr>
+<tr>
+<td style="text-align: left;">3</td>
+<td style="text-align: left;"><code>adapter.startSession({ model, systemPrompt, cwd })</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">4</td>
+<td style="text-align: left;"><code>extractLatestUserMessage(context)</code> → prompt</td>
+</tr>
+<tr>
+<td style="text-align: left;">5</td>
+<td style="text-align: left;"><code>adapter.sendTurn(..., { onEvent: assembler.handleEvent })</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">6</td>
+<td style="text-align: left;"><code>assembler.finalize({ finalText, finalThinking, stopReason, usage })</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="runtimeensuresessionoptions"><code>runtime.ensureSession(options)</code></h2>
+<p>ACPX runtime API used by discovery and the driver adapter.</p>
 <table>
 <thead>
 <tr>
@@ -455,48 +826,68 @@
 <tbody>
 <tr>
 <td style="text-align: left;"><code>sessionKey</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Unique hash of agent, model ID, and cwd identifier.</td>
+<td style="text-align: left;">Stable key (<code>discover-...</code> or <code>pi-&lt;agent&gt;...-&lt;cwdSlug&gt;</code>).</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>agent</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">The target agent identifier.</td>
+<td style="text-align: left;">Target agent id.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>mode</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;"><code>persistent</code> for standard streams, <code>oneshot</code> for model discovery.</td>
+<td style="text-align: left;"><code>"oneshot"</code> for throwaway discovery; <code>"persistent"</code> for stream sessions.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>cwd</code></td>
-<td style="text-align: left;">string</td>
+<td style="text-align: left;"><code>string</code></td>
 <td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Project working directory captured at init time.</td>
+<td style="text-align: left;">Session working directory.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>sessionOptions</code></td>
-<td style="text-align: left;">Object</td>
-<td style="text-align: left;"><code>{}</code></td>
-<td style="text-align: left;">Key-value options for model selection and system prompt initialization.</td>
+<td style="text-align: left;"><code>object</code></td>
+<td style="text-align: left;">omitted if empty</td>
+<td style="text-align: left;">Optional <code>{ model?, systemPrompt? }</code>.</td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>Note:</strong> All active ACPX runtime sessions are actively terminated and closed during the primary <code>session_shutdown</code> hook.</p>
-</blockquote>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ensureSession</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">sessionKey</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;pi-cursor-gpt-4-cwdSlug123&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">sessionKey</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;pi-cursor-gpt-4-a1b2c3d4e5f6&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;persistent&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">cwd</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/home/user/project&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">sessionOptions</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">model</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor:gpt-4&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nx">systemPrompt</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;You are being used as a backend LLM...&quot;</span>
-<span class="w">  </span><span class="p">}</span>
+<span class="w">    </span><span class="nx">model</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">systemPrompt</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;You are being used as a backend LLM...&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<h2 id="session-shutdown">Session shutdown</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Hook</th>
+<th style="text-align: left;">Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>session_shutdown</code></td>
+<td style="text-align: left;">Stops CLI session reaper; <code>registry.teardownAll()</code> (each ACPX instance <code>dispose</code> → <code>adapter.stopAll()</code>); clears <code>cliInstances</code> and <code>acpxInstances</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nx">pi</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">&quot;session_shutdown&quot;</span><span class="p">,</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">stopCliSessionReaper</span><span class="p">();</span>
+<span class="w">  </span><span class="k">await</span><span class="w"> </span><span class="nx">registry</span><span class="p">.</span><span class="nx">teardownAll</span><span class="p">();</span>
+<span class="w">  </span><span class="nx">cliInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
+<span class="w">  </span><span class="nx">acpxInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
 <span class="p">});</span>
 </code></pre></div>
 
@@ -504,6 +895,9 @@
 <ul>
 <li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
 <li><a href="configuration.html">Configuration &amp; Settings</a></li>
+<li><a href="pi-sidecar.html">Pi Sidecar HTTP API</a></li>
+<li><a href="vertex-claude-provider.html">Google Vertex Claude Provider</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 </ul>
                 </div>
             </article>
@@ -524,12 +918,24 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#acpx-agent-configuration">ACPX Agent Configuration</a></li>
-<li><a href="#acpx-runtime-module">ACPX Runtime Module</a></li>
-<li><a href="#model-discovery">Model Discovery</a></li>
-<li><a href="#ambient-authentication">Ambient Authentication</a></li>
-<li><a href="#stream-execution">Stream Execution</a></li>
-<li><a href="#session-management">Session Management</a></li>
+<li><a href="#acpx_agents">acpx_agents</a></li>
+<li><a href="#loadacpxruntime">loadAcpxRuntime()</a></li>
+<li><a href="#discoveracpxmodelsagent-cwd">discoverAcpxModels(agent, cwd?)</a></li>
+<li><a href="#mapacpxdiscoveredmodelsagent-modelids">mapAcpxDiscoveredModels(agent, modelIds)</a></li>
+<li><a href="#modelidtodisplaynamemodelid">modelIdToDisplayName(modelId)</a></li>
+<li><a href="#buildambientloginauthopts">buildAmbientLoginAuth(opts)</a></li>
+<li><a href="#acpxdriver">AcpxDriver</a><ul>
+<li><a href="#config-acpxconfig">Config (AcpxConfig)</a></li>
+<li><a href="#acpxdriverprobeconfig">AcpxDriver.probe(config)</a></li>
+<li><a href="#acpxdrivercreateinput">AcpxDriver.create(input)</a></li>
+<li><a href="#adapter-startsessionopts">Adapter: startSession(opts)</a></li>
+<li><a href="#adapter-sendturnhandle-prompt-opts">Adapter: sendTurn(handle, prompt, opts?)</a></li>
+<li><a href="#adapter-stopsession-stopall">Adapter: stopSession / stopAll</a></li>
+</ul>
+</li>
+<li><a href="#stream-bridge-streamassembler">Stream bridge (StreamAssembler)</a></li>
+<li><a href="#runtimeensuresessionoptions">runtime.ensureSession(options)</a></li>
+<li><a href="#session-shutdown">Session shutdown</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>
@@ -542,7 +948,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

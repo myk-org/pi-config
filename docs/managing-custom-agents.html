@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -273,91 +301,187 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="managing-custom-agents">Managing Custom Agents</h1>
-<p>Create specialized AI agents to handle specific, recurring tasks within your workflow. By defining dedicated agents with distinct instructions, tools, and routing rules, you prevent the primary orchestrator from becoming overloaded and ensure complex tasks follow strict procedures.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>A running background daemon. See <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a>.</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>To create a new specialist agent, define a Markdown file in the <code>agents/</code> directory containing YAML frontmatter and the system instructions. </p>
-<p>For example, to create a basic log analyzer, create a file named <code>agents/log-analyzer.md</code>:</p>
+                    <h1 id="piagentssecurity-auditormd">.pi/agents/security-auditor.md</h1>
+<hr />
+<p>name: security-auditor
+description: Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals.
+tools: read, bash</p>
+<hr />
+<h1 id="security-auditor">Security Auditor</h1>
+<p>You are a security auditor specializing in evaluating external repositories for safe adoption.
+Your job is to determine: <strong>Is this repo safe for us to use?</strong></p>
+<div class="highlight"><pre><span></span><code>Then start a new Pi session and ask:
+
+```text
+Audit this GitHub repository before we adopt it.
+</code></pre></div>
+
+<p>Because the agent keeps the same <code>name: security-auditor</code>, your project version takes precedence for this repo.</p>
+<h2 id="step-by-step">Step-by-Step</h2>
+<h3 id="1-choose-the-right-scope">1. Choose the right scope</h3>
+<p>Use the smallest scope that matches how broadly you want the agent to apply.</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Put the file here</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Project-only</td>
+<td><code>.pi/agents/</code></td>
+<td>One repository with project-specific behavior</td>
+</tr>
+<tr>
+<td>Global</td>
+<td><code>~/.pi/agent/agents/</code></td>
+<td>The same specialist across all repositories</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Tip:</strong> Project-local agents win over global agents when both use the same <code>name:</code>.</p>
+</blockquote>
+<h3 id="2-create-the-agent-file">2. Create the agent file</h3>
+<p>Start with a <code>.md</code> file that has YAML frontmatter at the top, then write the instructions below it.</p>
 <div class="highlight"><pre><span></span><code>---
-name: log-analyzer
-description: Parses server logs to identify crash stack traces and performance bottlenecks.
+name: security-auditor
+description: Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals.
 <span class="gu">tools: read, bash</span>
 <span class="gu">---</span>
 
-<span class="gh"># Log Analyzer</span>
+<span class="gh"># Security Auditor</span>
 
-You are an expert at reading unstructured application logs.
-
-<span class="gu">## Your Task</span>
-
-<span class="k">1.</span> Read the provided log files using <span class="sb">`bash`</span> tools like <span class="sb">`grep`</span> and <span class="sb">`awk`</span>.
-<span class="k">2.</span> Identify any stack traces or lines containing &quot;ERROR&quot; or &quot;FATAL&quot;.
-<span class="k">3.</span> Summarize the frequency of each error type.
+You are a security auditor specializing in evaluating external repositories for safe adoption.
 </code></pre></div>
 
-<h2 id="step-by-step-guide">Step-by-Step Guide</h2>
-<h3 id="1-create-the-agent-profile">1. Create the Agent Profile</h3>
-<p>All custom agents live in the <code>agents/</code> directory. Create a new file named <code>&lt;agent-name&gt;.md</code>. </p>
-<p>The file must begin with a YAML block defining:</p>
+<p>Use these fields:</p>
 <ul>
-<li><code>name</code>: The exact string identifier for your agent.</li>
-<li><code>description</code>: A clear explanation of what the agent does. The orchestrator reads this to decide when to invoke the agent.</li>
-<li><code>tools</code>: A comma-separated list of capabilities the agent can use.</li>
+<li><code>name</code> — the agent ID Pi uses when selecting or dispatching the agent</li>
+<li><code>description</code> — a short summary of what the agent is for</li>
+<li><code>tools</code> — a comma-separated allowlist such as <code>read, bash</code> or <code>read, write, edit, bash</code></li>
 </ul>
-<p>Everything below the YAML block becomes the agent's system prompt. Use structured markdown headings, clear numbered lists, and specific domain rules.</p>
-<h3 id="2-configure-agent-routing">2. Configure Agent Routing</h3>
-<p>The orchestrator needs to know when to dispatch tasks to your new agent. Open <code>rules/10-agent-routing.md</code> and add your agent to the "Routing Table" section.</p>
-<div class="highlight"><pre><span></span><code>| Domain/Tool | Agent |
-|---|---|
-| Python (.py) | <span class="sb">`python-expert`</span> |
-| Server Logs (.log) | <span class="sb">`log-analyzer`</span> |
-</code></pre></div>
-
-<p>If your agent handles a broader task intent rather than just a specific file type, add a bullet point to the "Routing by Intent, Not Tool" section in the same file to clarify edge cases.</p>
-<h3 id="3-register-the-agent-for-bug-reporting">3. Register the Agent for Bug Reporting</h3>
-<p>To ensure the orchestrator can report bugs if it detects logic flaws in your agent's instructions, add your new agent's name to the alphabetical list in <code>rules/50-agent-bug-reporting.md</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="k">-</span><span class="w"> </span>kubernetes-expert
-<span class="k">-</span><span class="w"> </span>log-analyzer
-<span class="k">-</span><span class="w"> </span>planner
-</code></pre></div>
-
-<h3 id="4-test-your-agent">4. Test Your Agent</h3>
-<p>Agents and rules are loaded dynamically from the filesystem. Your changes will take effect immediately on your next session.</p>
-<ol>
-<li>Start a new Pi chat session.</li>
-<li>Ask the orchestrator to perform a task matching your new agent's domain (e.g., "Find the cause of the crash in <code>app.log</code>").</li>
-<li>Verify that the orchestrator routes the task to your <code>log-analyzer</code> agent.</li>
-</ol>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="using-external-ai-agents">Using External AI Agents</h3>
-<p>You can route specific domains to external AI providers (like Claude, Gemini, or Cursor) instead of handling them locally. To do this, point the intent to the special <code>/acpx-prompt</code> handler in your routing table.</p>
-<p>See <a href="external-ai-agents.html">External AI Agents &amp; CLI</a> for detailed configuration.</p>
-<h3 id="tool-selection">Tool Selection</h3>
-<p>Only give your agent the tools it actually needs to accomplish its domain tasks. The <code>tools</code> list in the YAML frontmatter restricts what the agent is permitted to execute:</p>
-<ul>
-<li><code>read</code>: Allows the agent to read file contents, search patterns, and list directories.</li>
-<li><code>write</code> / <code>edit</code>: Allows the agent to create new files or modify existing source code.</li>
-<li><code>bash</code>: Allows the agent to execute shell commands.</li>
-</ul>
+<p>You can also add optional <code>provider</code> and <code>model</code> frontmatter if you want that agent to prefer a specific backend.</p>
 <blockquote>
-<p><strong>Warning:</strong> Be cautious when granting the <code>bash</code> tool to agents that process untrusted external data. For securing bash capabilities, see <a href="safety-enforcements.html">Implementing Command Guards</a>.</p>
+<p><strong>Warning:</strong> Give agents the fewest tools they need. If an agent can work with <code>read</code> alone, do not add write-capable tools. For shell-heavy agents, see <a href="safety-enforcements.html">Implementing Command Guards</a> for details.</p>
 </blockquote>
-<h3 id="prompt-templates-vs-agents">Prompt Templates vs Agents</h3>
-<p>If you only need the AI to format text, translate a snippet, or perform a quick stateless transformation, do not create a full agent. Use a Prompt Template instead. Specialist agents should be reserved for complex workflows that require multi-step reasoning, tool usage, or iterative loops.</p>
+<h3 id="3-keep-the-instructions-narrow">3. Keep the instructions narrow</h3>
+<p>The bundled specialists are very specific: one agent reviews, another runs tests, another audits third-party repos. Follow the same pattern for your own agents.</p>
+<p>Good custom-agent prompts usually include:</p>
+<ul>
+<li>what the agent should do</li>
+<li>what it must not do</li>
+<li>the format you want back</li>
+<li>any repo-specific rules that matter every time</li>
+</ul>
+<p>A strong prompt is usually better than a long prompt. Short, opinionated instructions are easier for Pi to follow reliably.</p>
+<h3 id="4-route-the-agent-from-normal-chat">4. Route the agent from normal chat</h3>
+<p>If you want Pi to pick your specialist from everyday requests, add a project rule that tells the orchestrator when to use it.</p>
+<div class="highlight"><pre><span></span><code><span class="gh"># .pi/rules/custom-agents.md</span>
+
+<span class="k">-</span><span class="w"> </span>When the task is to audit a third-party repository before adoption, delegate to <span class="sb">`security-auditor`</span>.
+<span class="k">-</span><span class="w"> </span>When the task is to run tests and explain failures without fixing code, delegate to <span class="sb">`test-runner`</span>.
+</code></pre></div>
+
+<p>Write the rule in plain language. Be specific about both the trigger and the agent name.</p>
+<blockquote>
+<p><strong>Note:</strong> Project rules are loaded automatically for that repository. Start a new session after adding or changing them.</p>
+</blockquote>
+<h3 id="5-test-the-routing">5. Test the routing</h3>
+<p>Start a fresh session, then try a request that should clearly match your rule.</p>
+<p>Examples that align with bundled specialists already in the project:</p>
+<div class="highlight"><pre><span></span><code>Audit this dependency repo before we vendor it.
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code>Run the tests and summarize the failures without fixing anything.
+</code></pre></div>
+
+<p>A good test prompt is narrow enough that only one specialist should make sense. If Pi chooses the wrong one, tighten the wording in your rule instead of making the agent prompt broader.</p>
+<h3 id="6-use-workflow-only-agents-when-chat-routing-is-the-wrong-fit">6. Use workflow-only agents when chat routing is the wrong fit</h3>
+<p>Some specialists should only run inside a specific flow rather than being selected from general chat. In that case, keep them out of your chat-routing rules and dispatch them from a prompt template or slash command instead.</p>
+<p>Built-in workflows already do this for review specialists such as <code>/issue-review</code>, <code>/pr-review</code>, and <code>/review-local</code>. See <a href="custom-slash-commands.html">Creating Slash Commands</a> for details.</p>
+<h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="override-order">Override order</h3>
+<p>When two agents use the same <code>name:</code>, Pi resolves them in this order:</p>
+<table>
+<thead>
+<tr>
+<th>Highest precedence</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.pi/agents/</code></td>
+<td>Override behavior for one repository</td>
+</tr>
+<tr>
+<td><code>~/.pi/agent/agents/</code></td>
+<td>Reuse a specialist everywhere</td>
+</tr>
+<tr>
+<td>Bundled defaults</td>
+<td>Fallback when you have not overridden anything</td>
+</tr>
+</tbody>
+</table>
+<p>This is the easiest way to customize a built-in agent for one repo without affecting your other work.</p>
+<h3 id="reuse-a-built-in-pattern-instead-of-starting-from-scratch">Reuse a built-in pattern instead of starting from scratch</h3>
+<p>If your new agent is “like the existing one, but stricter,” copy the shape of a bundled specialist and change only what matters:</p>
+<ul>
+<li><code>security-auditor</code> for third-party repo checks</li>
+<li><code>test-runner</code> for test execution and failure summaries</li>
+<li><code>reviewer</code> for read-only analysis</li>
+<li><code>worker</code> for broad, write-capable tasks</li>
+</ul>
+<p>This gets you productive faster than inventing a brand-new prompt structure.</p>
+<h3 id="pin-a-provider-or-model-for-one-agent">Pin a provider or model for one agent</h3>
+<p>If one specialist works better on a specific backend, set defaults in project settings:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;agent_provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cli-cursor&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;agent_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cursor:cursor-grok-4.5-high-fast&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;agent_overrides&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;test-runner&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cli-claude&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-3-5-sonnet&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Use this when one agent needs a different model from the rest of your session. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</p>
+<h3 id="force-an-agent-to-inherit-the-parent-session-model">Force an agent to inherit the parent session model</h3>
+<p>You can explicitly clear an override with <code>null</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;agent_overrides&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;reviewer&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>This is useful when you want most agents pinned, but one specialist should always follow the current session.</p>
+<h3 id="prefer-workflow-agents-for-long-or-structured-jobs">Prefer workflow agents for long or structured jobs</h3>
+<p>If the agent needs multiple phases, parallel reviewers, scheduled runs, or background execution, put it behind a workflow instead of normal chat routing. See <a href="custom-slash-commands.html">Creating Slash Commands</a> and <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Agent isn't selected:</strong> Ensure the agent's file name exactly matches the name you placed in <code>rules/10-agent-routing.md</code>. Start a completely new session to ensure the orchestrator has loaded the latest routing table.</li>
-<li><strong>Agent forgets instructions:</strong> Keep your Markdown system prompt concise. Use bullet points instead of long paragraphs. If your agent's instructions are too long or contain contradictory steps, the underlying model may ignore them.</li>
+<li><strong>Pi does not pick the new agent:</strong> Start a new session, confirm the file is under <code>.pi/agents/</code> or <code>~/.pi/agent/agents/</code>, and make sure the frontmatter includes both <code>name:</code> and <code>description:</code>.</li>
+<li><strong>Pi picks the wrong specialist:</strong> Make your routing rule more explicit. If the task is really workflow-only, dispatch it from a slash command instead of relying on everyday chat.</li>
+<li><strong>The agent has too much authority:</strong> Reduce the <code>tools:</code> list first. Many specialists only need <code>read</code> and <code>bash</code>.</li>
+<li><strong>The agent uses the wrong model:</strong> Check <code>provider:</code> / <code>model:</code> frontmatter and your <code>agent_provider</code>, <code>agent_model</code>, and <code>agent_overrides</code> settings. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
+<li><strong>A project-level agent is not found from a subdirectory:</strong> Put it under the repository’s <code>.pi/agents/</code> folder, then start a new session from anywhere inside that repo.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
+<li><a href="custom-slash-commands.html">Creating Slash Commands</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 <li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
-<li><a href="automating-code-reviews.html">Automating Code Reviews</a></li>
+<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
 </ul>
                 </div>
             </article>
@@ -381,19 +505,21 @@ You are an expert at reading unstructured application logs.
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step-guide">Step-by-Step Guide</a><ul>
-<li><a href="#1-create-the-agent-profile">1. Create the Agent Profile</a></li>
-<li><a href="#2-configure-agent-routing">2. Configure Agent Routing</a></li>
-<li><a href="#3-register-the-agent-for-bug-reporting">3. Register the Agent for Bug Reporting</a></li>
-<li><a href="#4-test-your-agent">4. Test Your Agent</a></li>
+<li><a href="#step-by-step">Step-by-Step</a><ul>
+<li><a href="#1-choose-the-right-scope">1. Choose the right scope</a></li>
+<li><a href="#2-create-the-agent-file">2. Create the agent file</a></li>
+<li><a href="#3-keep-the-instructions-narrow">3. Keep the instructions narrow</a></li>
+<li><a href="#4-route-the-agent-from-normal-chat">4. Route the agent from normal chat</a></li>
+<li><a href="#5-test-the-routing">5. Test the routing</a></li>
+<li><a href="#6-use-workflow-only-agents-when-chat-routing-is-the-wrong-fit">6. Use workflow-only agents when chat routing is the wrong fit</a></li>
 </ul>
 </li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#using-external-ai-agents">Using External AI Agents</a></li>
-<li><a href="#tool-selection">Tool Selection</a></li>
-<li><a href="#prompt-templates-vs-agents">Prompt Templates vs Agents</a></li>
+<li><a href="#override-order">Override order</a></li>
+<li><a href="#reuse-a-built-in-pattern-instead-of-starting-from-scratch">Reuse a built-in pattern instead of starting from scratch</a></li>
+<li><a href="#pin-a-provider-or-model-for-one-agent">Pin a provider or model for one agent</a></li>
+<li><a href="#force-an-agent-to-inherit-the-parent-session-model">Force an agent to inherit the parent session model</a></li>
+<li><a href="#prefer-workflow-agents-for-long-or-structured-jobs">Prefer workflow agents for long or structured jobs</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -409,7 +535,7 @@ You are an expert at reading unstructured application logs.
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>

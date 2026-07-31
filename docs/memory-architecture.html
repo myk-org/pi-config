@@ -70,6 +70,13 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
@@ -109,6 +116,13 @@
                         <a href="configuration.html"
                            class="nav-link">
                             Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
                         </a>
                     </li>
 
@@ -158,6 +172,20 @@
                         <a href="image-generation.html"
                            class="nav-link">
                             Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -274,75 +302,360 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="memory-architecture">Memory Architecture</h1>
-<p>Understanding how Pi stores, scores, and retrieves memory is essential for building agents that improve over time and retain context across sessions. The memory architecture transforms raw interactions into a structured, persistent knowledge base that guides future agent behavior.</p>
-<p>By leveraging this architecture, your agents won't just solve immediate problems—they will adapt to project conventions, remember user preferences, and enforce security policies without requiring manual rule updates.</p>
+<p>Pi’s memory architecture is the layer that turns one-off conversations into durable project knowledge. It matters because it decides what the agent remembers, what it forgets, what gets surfaced automatically in future turns, and when repeated lessons become stronger guardrails instead of loose suggestions.</p>
+<p>The practical result is simple: you spend less time repeating project conventions, and the agent gets better at bringing the right context back at the right moment.</p>
 <h2 id="the-big-picture">The Big Picture</h2>
-<p>The memory system is built as a multi-layered pipeline that prioritizes, retrieves, and injects context based on relevance and history.</p>
+<p>The memory system is local, file-backed, and layered. Topic files are the source of truth; everything else is derived from or built around them.</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it stores</th>
+<th>Where it lives</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Topic files</td>
+<td>Human-readable memory entries by category</td>
+<td><code>.pi/memory/topics/*.md</code></td>
+<td>This is the canonical memory content.</td>
+</tr>
+<tr>
+<td>Score index</td>
+<td>Stability score, evidence count, lifecycle, enforcement metadata</td>
+<td><code>.pi/memory/memory-scores.json</code></td>
+<td>Decides which memories stay active and which fade out.</td>
+</tr>
+<tr>
+<td>Embedding store</td>
+<td>Local vectors for semantic matching</td>
+<td><code>.pi/memory/embeddings.json</code></td>
+<td>Lets Pi retrieve related memories even when the wording changes.</td>
+</tr>
+<tr>
+<td>Situation report</td>
+<td>Token-budgeted summary for prompt injection</td>
+<td>Built at runtime</td>
+<td>Determines what memory the agent actually sees during a turn.</td>
+</tr>
+<tr>
+<td>Promotion queue</td>
+<td>Candidates for skills, enforcement, or project rules</td>
+<td><code>.pi/memory/promotions.md</code></td>
+<td>Captures repeated patterns that may deserve stronger structure.</td>
+</tr>
+<tr>
+<td>Provenance sidecar</td>
+<td>Source-session metadata waiting to be merged</td>
+<td><code>.pi/memory/provenance-pending.json</code></td>
+<td>Preserves where a memory came from without letting background jobs edit the score file directly.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="end-to-end-flow">End-to-end flow</h3>
 <ol>
-<li><strong>Scored Memory (<code>memory-scores.json</code>)</strong> — Tracks raw memory entries using a stability formula. Memories have an evidence count and decay over time unless reinforced.</li>
-<li><strong>Topic Tree (<code>.pi/memory/topics/</code>)</strong> — Organizes scored entries into structured Markdown topic files (~3000 tokens each). Cold topics are automatically archived.</li>
-<li><strong>Vector Embeddings (<code>embeddings.json</code>)</strong> — Generates local semantic embeddings (using <code>Xenova/bge-small-en-v1.5</code>) without requiring external API keys. Enables hybrid keyword and vector search.</li>
-<li><strong>Situation Reports</strong> — Dynamically builds a token-budgeted context block from the highest-priority active memories.</li>
-<li><strong>Auto-Injection Pipeline</strong> — Injects the Situation Report at the <strong>tail end</strong> of the system prompt (where LLM attention is statistically highest) just before the agent starts a turn.</li>
+<li>A memory enters the system from a direct tool call, the Python CLI, or background consolidation.</li>
+<li>The entry is written into a category topic file such as <code>lessons.md</code> or <code>preferences.md</code>.</li>
+<li>The scoring engine rebuilds <code>memory-scores.json</code>, recalculates stability, and assigns a lifecycle state.</li>
+<li>The embedding layer lazily creates or refreshes local vectors for semantic search.</li>
+<li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.</li>
+<li>As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.</li>
 </ol>
-<h2 id="key-concepts">Key Concepts</h2>
-<h3 id="topic-scoring-and-decay">Topic Scoring and Decay</h3>
-<p>Memories aren't static; they live in a dynamic ecosystem governed by a stability formula:
-<code>cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)</code></p>
-<p>Each memory falls into a category with a specific half-life:</p>
-<ul>
-<li><strong>Preferences:</strong> 90 days</li>
-<li><strong>Lessons:</strong> 60 days</li>
-<li><strong>Done/Tasks:</strong> 14 days</li>
-</ul>
-<p>As a memory ages without being referenced (evidence count stays flat), its stability score drops. If a topic becomes too cold (2× half-life without reinforcement), it is automatically archived.</p>
-<h3 id="vector-embeddings-and-hybrid-search">Vector Embeddings and Hybrid Search</h3>
-<p>When an agent needs context, the system doesn't just match keywords. The <code>memory-embeddings.ts</code> module runs a local ONNX model to generate 384-dimensional embeddings for every memory on write.</p>
-<p>When the agent uses the <code>memory_search</code> tool, the system performs a <strong>hybrid search</strong>: combining exact keyword matches with cosine similarity vector matching (threshold ≥0.90 similarity). If a memory being added is extremely similar to an existing one, the system automatically <em>reinforces</em> the existing memory (bumping its evidence count) instead of creating a duplicate.</p>
-<h3 id="situation-reports-and-query-classes">Situation Reports and Query Classes</h3>
-<p>The <strong>Situation Report</strong> is the actual text injected into the LLM's system prompt. It organizes memories by priority: preferences → lessons → mistakes → patterns → decisions → completions.</p>
-<p>To ensure relevance, a heuristic classifier runs <code>before_agent_start</code> to determine the <strong>Query Class</strong> (e.g., <code>pr_review</code>, <code>git_release</code>, <code>debug</code>, <code>general</code>). This class dynamically adjusts which sections get priority in the token budget and tweaks the vector <code>topK</code> search limits. </p>
 <blockquote>
-<p><strong>Tip:</strong> You can monitor memory capacity directly in the UI. The Situation Report header shows usage (e.g., <code>[72% — 1,224/1,700 tokens]</code>), and consolidation warnings trigger when exceeding 80%.</p>
+<p><strong>Note:</strong> The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.</p>
 </blockquote>
-<h3 id="enforcement-rules">Enforcement Rules</h3>
-<p>Code-enforced memory entries act as hard constraints that the LLM cannot ignore. When adding a memory, the agent can attach triggers and actions.</p>
+<h2 id="key-concepts">Key Concepts</h2>
+<h3 id="topic-files-are-the-source-of-truth">Topic files are the source of truth</h3>
+<p>Pi stores memory as Markdown topic files under <code>.pi/memory/topics/</code>, not in a database-first format.</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Topic file</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preference</code></td>
+<td><code>preferences.md</code></td>
+</tr>
+<tr>
+<td><code>lesson</code></td>
+<td><code>lessons.md</code></td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td><code>patterns.md</code></td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td><code>decisions.md</code></td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td><code>completions.md</code></td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td><code>mistakes.md</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each line is a single memory entry. Entries can carry markers such as <code>*(pinned)*</code> or <code>*(enforced)*</code>.</p>
+<p>That design has two user-visible benefits:</p>
 <ul>
-<li><strong>Triggers:</strong> What activates the rule (e.g., <code>bash_contains &lt;str&gt;</code>, <code>tool_name &lt;name&gt;</code>).</li>
-<li><strong>Actions:</strong> How the system responds (<code>block</code>, <code>run_after</code>, <code>warn</code>).</li>
-<li><strong>Verifiers:</strong> Semantic conditions checked at <code>turn_end</code> (e.g., ensuring a specific tool was called before a command).</li>
+<li>You can inspect project memory with normal file tools.</li>
+<li>Background maintenance can reorganize memories without inventing a separate opaque store.</li>
 </ul>
-<p>These hooks execute via the <code>tool_result</code> and <code>turn_end</code> lifecycle events. If a verifier fails, the system automatically forces a retry, keeping the agent honest.</p>
-<h3 id="promotion-queue">Promotion Queue</h3>
-<p>High-evidence memories (e.g., a behavior reinforced 3-5 times) graduate through the <strong>Promotion Queue</strong>. A background process proposes elevating these memories into permanent skills, enforcement rules, or project-wide rules. High-confidence enforcement rules (<code>block</code> or <code>warn</code>) can be auto-applied safely, ensuring the project becomes more resilient over time.</p>
-<h3 id="pr-review-store">PR Review Store</h3>
-<p>Code review memory is handled specially by an SQLite database (<code>.pi/data/pr-reviews.db</code>). It tracks both posted and skipped findings. If a user dismisses a finding for a generalizable reason, the agent appends a guideline to <code>.pi/data/review-guidelines.md</code>. This prevents the AI from repeatedly raising the same stylistic complaints in future PRs.</p>
-<h2 id="how-it-affects-the-user">How it Affects the User</h2>
+<h3 id="scoring-is-what-makes-memory-fade-or-stick">Scoring is what makes memory fade or stick</h3>
+<p>The scoring engine calculates stability with this formula:</p>
+<p><code>cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)</code></p>
+<p>It combines three forces:</p>
 <ul>
-<li><strong>Agent Adaptability:</strong> Because of the scoring and decay system, users don't have to manually delete outdated instructions. The agent naturally "forgets" old task contexts while retaining long-term preferences.</li>
-<li><strong>Immediate Context:</strong> When users modify specific files, the auto-injection pipeline searches for file-path vector matches and injects file-change memory reminders instantly.</li>
-<li><strong>Privacy First:</strong> All vector embeddings and database queries happen entirely locally. No code snippets or memory topics are sent to external embedding APIs.</li>
-<li><strong>Automated Guardrails:</strong> Through enforcement rules and the promotion queue, if an agent repeatedly makes a mistake and is corrected, it will naturally evolve a hard boundary (like blocking a destructive bash command) without the user ever writing a line of configuration.</li>
+<li><strong>Cue weight:</strong> how strongly the memory was learned.</li>
+<li><strong>Recency decay:</strong> older memories weaken if they are never reinforced.</li>
+<li><strong>Evidence count:</strong> repeated use makes a memory more stable.</li>
+</ul>
+<h4 id="cue-weights">Cue weights</h4>
+<table>
+<thead>
+<tr>
+<th>Cue type</th>
+<th style="text-align: right;">Weight</th>
+<th>Typical meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>explicit</code></td>
+<td style="text-align: right;">1.0</td>
+<td>The user stated it directly.</td>
+</tr>
+<tr>
+<td><code>structural</code></td>
+<td style="text-align: right;">0.9</td>
+<td>It was inferred from durable structure.</td>
+</tr>
+<tr>
+<td><code>behavioral</code></td>
+<td style="text-align: right;">0.7</td>
+<td>It came from repeated workflow behavior.</td>
+</tr>
+<tr>
+<td><code>recurrence</code></td>
+<td style="text-align: right;">0.6</td>
+<td>It was seen enough times to matter.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="half-lives-by-category">Half-lives by category</h4>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Half-life</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Preferences</td>
+<td>90 days</td>
+</tr>
+<tr>
+<td>Lessons</td>
+<td>60 days</td>
+</tr>
+<tr>
+<td>Patterns</td>
+<td>30 days</td>
+</tr>
+<tr>
+<td>Decisions</td>
+<td>30 days</td>
+</tr>
+<tr>
+<td>Completions</td>
+<td>14 days</td>
+</tr>
+<tr>
+<td>Mistakes</td>
+<td>14 days</td>
+</tr>
+</tbody>
+</table>
+<p>Pi then assigns each scored entry to a lifecycle state:</p>
+<ul>
+<li><code>active</code>: high-value memory that should influence current behavior</li>
+<li><code>provisional</code>: still relevant, but below the top tier</li>
+<li><code>candidate</code>: weak memory that may soon be dropped</li>
+<li><code>dropped</code>: no longer injected</li>
+</ul>
+<p>The system also applies caps so one category cannot crowd out everything else. Current budgets allow more room for preferences and lessons than for decisions or completions, with an overall cap of 40 active entries plus a smaller overflow pool for provisional ones.</p>
+<blockquote>
+<p><strong>Tip:</strong> Pinned memories bypass normal decay, and enforced memories are kept active so their guardrails stay intact.</p>
+</blockquote>
+<h3 id="topic-organization-is-separate-from-scoring">Topic organization is separate from scoring</h3>
+<p>Topic files are organized for readability, while <code>memory-scores.json</code> is organized for ranking and lifecycle management. That separation lets Pi:</p>
+<ul>
+<li>reorder and trim injected memory without rewriting your topic structure every turn</li>
+<li>archive cold topic files when their newest entries have aged past roughly two half-lives</li>
+<li>keep pinned topics around even when everything else would have gone cold</li>
+</ul>
+<p>User-visible effect: your memory files stay understandable, while the agent still gets a compact, prioritized view.</p>
+<h3 id="embeddings-are-local-and-file-backed">Embeddings are local and file-backed</h3>
+<p>Semantic retrieval is handled by <code>memory-embeddings.ts</code>. It uses the local <code>Xenova/bge-small-en-v1.5</code> model through <code>@huggingface/transformers</code>, produces 384-dimensional vectors, and stores them in <code>.pi/memory/embeddings.json</code>.</p>
+<p>Important details:</p>
+<ul>
+<li>The model is loaded lazily on first real use.</li>
+<li>Embeddings are cached per process for speed.</li>
+<li>The on-disk store is updated with atomic write-then-rename behavior.</li>
+<li>If the model cannot load, memory features degrade gracefully instead of failing the turn.</li>
+</ul>
+<p>This layer is used in two places:</p>
+<ul>
+<li>semantic memory search</li>
+<li>automatic “contextually relevant memories” injection before a turn starts</li>
+</ul>
+<p>That means Pi can still find a useful lesson even when your current prompt does not repeat the exact wording of the original memory.</p>
+<h3 id="the-situation-report-is-the-runtime-view">The situation report is the runtime view</h3>
+<p>The situation report is the text that Pi actually injects into the system prompt. It is built from scored topic entries, not from raw conversation history.</p>
+<p>By default, it targets a 1700-token budget and builds sections such as:</p>
+<ul>
+<li>Pinned</li>
+<li>Active Preferences</li>
+<li>Active Lessons</li>
+<li>Vetoes &amp; Mistakes</li>
+<li>Patterns</li>
+<li>Recent Decisions</li>
+<li>Recent Completions</li>
+</ul>
+<p>It also shows a usage header and warns when memory is above 80% of its budget.</p>
+<p>User-visible effect:</p>
+<ul>
+<li>high-priority memories reliably survive into the prompt</li>
+<li>lower-priority material is truncated instead of overflowing context</li>
+<li>the agent gets a stable, predictable memory block rather than a noisy dump</li>
+</ul>
+<h3 id="query-classes-bias-what-gets-injected">Query classes bias what gets injected</h3>
+<p>Before a turn starts, Pi classifies the prompt into one of four query classes:</p>
+<table>
+<thead>
+<tr>
+<th>Query class</th>
+<th>What it boosts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pr_review</code></td>
+<td>mistakes, patterns, lessons</td>
+</tr>
+<tr>
+<td><code>git_release</code></td>
+<td>lessons, decisions, preferences</td>
+</tr>
+<tr>
+<td><code>debug</code></td>
+<td>mistakes, lessons</td>
+</tr>
+<tr>
+<td><code>general</code></td>
+<td>no special boost</td>
+</tr>
+</tbody>
+</table>
+<p>That bias changes section ordering, section budget, and how many semantic matches Pi prefers to retrieve.</p>
+<p>This is why the same project memory can feel different depending on what you are doing:</p>
+<ul>
+<li>a debugging request brings forward mistakes and lessons</li>
+<li>a release task gives more weight to decisions and conventions</li>
+<li>a review workflow favors repeated review-related guidance</li>
+</ul>
+<h3 id="promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</h3>
+<p>When a memory accumulates enough evidence, Pi can promote it.</p>
+<p>Current promotion destinations are:</p>
+<table>
+<thead>
+<tr>
+<th>Destination</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enforcement</code></td>
+<td>Safe, high-confidence rules can be applied automatically.</td>
+</tr>
+<tr>
+<td><code>skill</code></td>
+<td>Multi-step patterns can be proposed as reusable skills.</td>
+</tr>
+<tr>
+<td><code>project_rule</code></td>
+<td>Project-wide conventions are queued as proposals only.</td>
+</tr>
+<tr>
+<td><code>discard</code></td>
+<td>Low-value or superseded items can be marked for removal.</td>
+</tr>
+</tbody>
+</table>
+<p>The queue is stored in <code>.pi/memory/promotions.md</code> with statuses of <code>proposed</code>, <code>applied</code>, or <code>rejected</code>.</p>
+<p>A few important boundaries keep this safe:</p>
+<ul>
+<li>enforcement auto-application is limited to high-confidence cases</li>
+<li>project rules are never auto-written into <code>rules/</code> or <code>.pi/rules/</code></li>
+<li>promotion state is visible in a plain Markdown file instead of being hidden in a binary store</li>
+</ul>
+<blockquote>
+<p><strong>Warning:</strong> Enforced memories are text-hash keyed. If background maintenance rewrites the text of an enforced entry, the binding would break, so the system explicitly protects those entries.</p>
+</blockquote>
+<h3 id="provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</h3>
+<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it writes a sidecar file at <code>.pi/memory/provenance-pending.json</code>. The orchestrator then merges that metadata back into <code>memory-scores.json</code> on completion.</p>
+<p>This keeps the scoring index authoritative while still preserving traceability.</p>
+<p>User-visible effect: a memory can later explain where it came from without forcing every background worker to edit the score file itself.</p>
+<h3 id="legacy-memory-migration-still-exists">Legacy memory migration still exists</h3>
+<p>The Python memory store includes a one-time migration path from the older SQLite-based memory store.</p>
+<p>The CLI command:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>migrate
+</code></pre></div>
+
+<p>moves entries from legacy <code>memories.db</code> into topic files under <code>.pi/memory/topics/</code>, then cleans up older memory-side files such as <code>dreams.md</code> and <code>dreams.lock</code>.</p>
+<p>That matters if you are carrying an older repo or restoring archived state: the modern architecture is topic-file-first, but the project still provides a supported bridge forward.</p>
+<h2 id="how-it-affects-the-user">How It Affects the User</h2>
+<ul>
+<li><strong>The agent remembers durable project context without re-reading everything.</strong> The situation report surfaces the highest-value memories automatically.</li>
+<li><strong>Project conventions get stronger over time.</strong> Repeated lessons accumulate evidence and can eventually become enforcement metadata or promotion candidates.</li>
+<li><strong>Semantic recall works even when wording changes.</strong> Local embeddings let Pi match meaning, not just exact phrases.</li>
+<li><strong>Memory stays inspectable.</strong> Topic files, score indexes, embedding caches, and promotion queues all live on disk in predictable locations.</li>
+<li><strong>Old state is still recoverable.</strong> If your project used the older memory database, the Python CLI can migrate it into the current topic-file model.</li>
+<li><strong>Background consolidation stays safe.</strong> Dreaming, provenance merges, and promotion passes operate through sidecars and queues instead of rewriting everything in place.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
-<li><a href="curating-project-memory.html">Curating Project Memory</a> — Learn how to manually seed, score, and organize learned topics.</li>
-<li><a href="safety-enforcements.html">Implementing Command Guards</a> — Understand how to map memory triggers to hard enforcement constraints.</li>
-<li><a href="configuration.html">Configuration &amp; Settings</a> — Look up token budgets, decay rates, and directory settings for the memory module.</li>
-<li><a href="cli-reference.html">myk_pi_tools CLI Reference</a> — Discover the CLI commands for manual database queries and memory migrations.</li>
+<li>See <a href="curating-project-memory.html">Curating Project Memory</a> for the hands-on workflow for adding, inspecting, and pruning memories.</li>
+<li>See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for the background process that extracts, reorganizes, and promotes memories over time.</li>
+<li>See <a href="safety-enforcements.html">Implementing Command Guards</a> for the enforcement side of memories that graduate into hard rules.</li>
+<li>See <a href="configuration.html">Configuration &amp; Settings</a> for the knobs that affect memory timing and runtime behavior.</li>
+<li>See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for the Python commands that manage topic files and perform legacy migration.</li>
+<li>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for review-specific workflows that interact with memory, but belong to the review system rather than the core memory model.</li>
 </ul>
 <h2 id="related-pages_1">Related Pages</h2>
 <ul>
 <li><a href="curating-project-memory.html">Curating Project Memory</a></li>
 <li><a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a></li>
+<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="configuration.html" class="page-nav-link page-nav-prev">
+                <a href="built-in-workflows.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Configuration &amp; Settings</span>
+                    <span class="page-nav-title">Built-in Workflow Commands</span>
                 </a>
 
 
@@ -358,17 +671,23 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#the-big-picture">The Big Picture</a></li>
-<li><a href="#key-concepts">Key Concepts</a><ul>
-<li><a href="#topic-scoring-and-decay">Topic Scoring and Decay</a></li>
-<li><a href="#vector-embeddings-and-hybrid-search">Vector Embeddings and Hybrid Search</a></li>
-<li><a href="#situation-reports-and-query-classes">Situation Reports and Query Classes</a></li>
-<li><a href="#enforcement-rules">Enforcement Rules</a></li>
-<li><a href="#promotion-queue">Promotion Queue</a></li>
-<li><a href="#pr-review-store">PR Review Store</a></li>
+<li><a href="#the-big-picture">The Big Picture</a><ul>
+<li><a href="#end-to-end-flow">End-to-end flow</a></li>
 </ul>
 </li>
-<li><a href="#how-it-affects-the-user">How it Affects the User</a></li>
+<li><a href="#key-concepts">Key Concepts</a><ul>
+<li><a href="#topic-files-are-the-source-of-truth">Topic files are the source of truth</a></li>
+<li><a href="#scoring-is-what-makes-memory-fade-or-stick">Scoring is what makes memory fade or stick</a></li>
+<li><a href="#topic-organization-is-separate-from-scoring">Topic organization is separate from scoring</a></li>
+<li><a href="#embeddings-are-local-and-file-backed">Embeddings are local and file-backed</a></li>
+<li><a href="#the-situation-report-is-the-runtime-view">The situation report is the runtime view</a></li>
+<li><a href="#query-classes-bias-what-gets-injected">Query classes bias what gets injected</a></li>
+<li><a href="#promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</a></li>
+<li><a href="#provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</a></li>
+<li><a href="#legacy-memory-migration-still-exists">Legacy memory migration still exists</a></li>
+</ul>
+</li>
+<li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 <li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
@@ -382,7 +701,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 3.16.2</span>
+            <span class="footer-version">Generated from version 4.2.0</span>
             <span class="footer-sep">&middot;</span>
 
             Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
