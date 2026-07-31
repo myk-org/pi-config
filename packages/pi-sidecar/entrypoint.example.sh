@@ -1,6 +1,6 @@
 #!/bin/bash
 # NOTE: Use tini as PID 1 (ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"])
-# Without tini, signals won't reach the entrypoint shell for graceful shutdown.
+# Without tini, child processes won't receive forwarded signals and zombies won't be reaped.
 set -euo pipefail
 
 # =============================================================================
