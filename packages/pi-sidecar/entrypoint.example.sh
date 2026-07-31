@@ -1,4 +1,6 @@
 #!/bin/bash
+# NOTE: Use tini as PID 1 (ENTRYPOINT ["tini", "--", "entrypoint.sh"])
+# Without tini, signals won't reach the app process for graceful shutdown.
 set -euo pipefail
 
 # =============================================================================

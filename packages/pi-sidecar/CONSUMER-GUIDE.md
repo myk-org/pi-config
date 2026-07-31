@@ -247,6 +247,8 @@ Key requirements:
 - **Health wait:** poll `/health` up to 15s before starting app
 - **Exit on failure:** if sidecar not healthy, exit 1 (don't proceed with broken AI)
 - **Don't use `exec`** for your app command in the entrypoint script when sidecar runs — the EXIT trap needs to fire. `exec` is fine when sidecar is NOT running.
+- **Use `tini` as PID 1** — without `exec`, the shell is PID 1 and won't forward signals to the app.
+  Use `tini` in your Dockerfile (`ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]`) or install it as init process to ensure SIGTERM reaches the app for graceful shutdown.
 
 ### Health check
 

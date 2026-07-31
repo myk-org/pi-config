@@ -55,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
     git \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js from sidecar builder (only node binary needed at runtime)
@@ -125,4 +126,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
      && curl -f http://localhost:${SIDECAR_PORT:-9100}/health \
      || exit 1
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Use tini as PID 1 for proper signal forwarding (apt-get install -y tini in system deps)
+ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]
