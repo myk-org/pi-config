@@ -83,16 +83,16 @@ print(result.text)
 from pi_sidecar_client import SidecarClient
 
 async with SidecarClient() as client:
-    session = await client.create_session(
+    session_id = await client.create_session(
         provider="google",
         model="gemini-2.5-flash",
         system_prompt="You are a helpful assistant.",
     )
 
-    result1 = await client.prompt(session.session_id, "What is Python?")
-    result2 = await client.prompt(session.session_id, "Show me an example")
+    result1 = await client.prompt(session_id, "What is Python?")
+    result2 = await client.prompt(session_id, "Show me an example")
 
-    await client.delete_session(session.session_id)
+    await client.delete_session(session_id)
 ```
 
 ### Custom tools
