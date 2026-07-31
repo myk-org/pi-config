@@ -215,71 +215,36 @@ COPY --from=sidecar-builder /sidecar/package.json /app/sidecar-helper/package.js
 
 ### Runtime dependencies
 
-The runtime stage needs Node.js for the sidecar and `curl` for health checks:
-
-```dockerfile
-# Option A: Copy Node.js from the builder (smaller image)
-COPY --from=sidecar-builder /usr/local/bin/node /usr/local/bin/node
-
-# Option B: Install Node.js in runtime (if other Node tools needed)
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm
-```
+The runtime stage needs Node.js, `curl` (health checks), and `bash`.
+See [`Dockerfile.example`](Dockerfile.example) for the complete setup including system packages, non-root user, and PATH configuration.
 
 ### CLI agents
 
-Install CLI agents if you need CLI/ACPX providers:
+Install CLI agents for CLI/ACPX providers. See [`Dockerfile.example`](Dockerfile.example) for the complete pattern with correct `HOME` and npm prefix setup.
 
-```dockerfile
-# Claude Code CLI (installs to ~/.local/bin)
-RUN /bin/bash -o pipefail -c "curl -fsSL https://claude.ai/install.sh | bash"
+Required CLIs:
 
-# Cursor Agent CLI (installs to ~/.local/bin)
-RUN /bin/bash -o pipefail -c "curl -fsSL https://cursor.com/install | bash"
+| CLI | Install method | Binary location |
+|-----|---------------|-----------------|
+| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | `~/.local/bin/claude` |
+| Cursor Agent | `curl -fsSL https://cursor.com/install \| bash` | `~/.local/bin/agent` |
+| Gemini | `npm install -g @google/gemini-cli` | npm global bin |
+| ACPX | `npm install -g acpx` | npm global bin |
 
-# Gemini CLI (npm global install)
-RUN mkdir -p $HOME_DIR/.npm-global \
-  && npm config set prefix "$HOME_DIR/.npm-global" \
-  && npm install -g @google/gemini-cli
-
-# ACPX (needed for acpx-cursor provider)
-RUN npm install -g acpx
-```
+**Note:** Gemini requires npm prefix setup (`npm config set prefix`) for non-root users. The Cursor CLI binary is named `agent`, but the sidecar agent name is `cursor`.
 
 ### Entrypoint pattern
 
 > See [`entrypoint.example.sh`](entrypoint.example.sh) for the full working example.
 
-Start the sidecar in background, wait for health, then start your app:
+Key requirements:
 
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# Start sidecar
-export SIDECAR_PORT="${SIDECAR_PORT:-9100}"
-node /app/sidecar-helper/dist/server.js &
-SIDECAR_PID=$!
-
-# Lifecycle coupling: kill sidecar when app exits
-trap 'kill $SIDECAR_PID 2>/dev/null; wait $SIDECAR_PID 2>/dev/null' EXIT
-
-# Monitor: if sidecar dies, kill the container
-(trap 'exit 0' TERM; while kill -0 $SIDECAR_PID 2>/dev/null; do sleep 5; done
- echo "[sidecar] Sidecar died, shutting down"; kill 1 2>/dev/null) &
-
-# Wait for health (up to 15s)
-for i in $(seq 1 30); do
-    curl -sf "http://127.0.0.1:${SIDECAR_PORT}/health" > /dev/null 2>&1 && break
-    sleep 0.5
-done
-
-if ! curl -sf "http://127.0.0.1:${SIDECAR_PORT}/health" > /dev/null 2>&1; then
-    echo "[sidecar] ERROR: not healthy after 15s" >&2
-fi
-
-# Start your app (don't exec — keep trap alive)
-your-app "$@"
-```
+- Start sidecar in background with `node .../dist/server.js &`
+- **Lifecycle coupling:** `trap` to kill sidecar on exit
+- **Monitor:** background watcher kills container if sidecar dies
+- **Health wait:** poll `/health` up to 15s before starting app
+- **Exit on failure:** if sidecar not healthy, exit 1 (don't proceed with broken AI)
+- **Don't use `exec`** for your app when sidecar runs — the EXIT trap needs to fire
 
 ### Health check
 
