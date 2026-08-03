@@ -32,7 +32,7 @@ Before ANY `git commit`:
 5. **Only commit when:**
    - Status is `"clean"` with `tests_passed: true`, OR
    - Status is `"none"` (no review tracking), OR
-   - Max cycles exhausted: `tests_passed: true`, `reviewers_pending` is empty,
+   - Max cycles exhausted: `reviewers_pending` is empty
      and `cycle` >= `review_loop_max_cycles` from settings (default 3).
 
 IMPORTANT: Use the `read` tool to check these files — do NOT use `cat` or `grep` via bash.

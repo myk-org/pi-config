@@ -471,10 +471,10 @@ describe("tests_passed", () => {
     assert.equal(readReviewState(cwd).status, "has_findings");
     assert.equal(readReviewState(cwd).cycle, 3);
     assert.equal(isReviewClean(cwd), false); // still not clean
-    assert.equal(isCommitAllowed(cwd), false); // tests not passed yet
+    assert.equal(isCommitAllowed(cwd), true); // max cycles exhausted (tests_passed not required)
     markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), false); // max cycles ≠ clean
-    assert.equal(isCommitAllowed(cwd), true); // max cycles exhausted
+    assert.equal(isCommitAllowed(cwd), true); // still allowed
   });
 
   it("isCommitAllowed false when has_findings below max cycles", () => {

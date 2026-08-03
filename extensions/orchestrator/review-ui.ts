@@ -199,11 +199,11 @@ export function registerReviewUI(pi: ExtensionAPI): void {
         // needs_review → no-op (deduped internally)
         try { markNeedsReview(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
       } else if (result.code === 0) {
-        // Tree clean AND git succeeded — only reset from terminal state (clean)
-        // Never reset during in_progress/has_findings/needs_review — stash/checkout
-        // could temporarily empty the tree while review is active
+        // Tree clean AND git succeeded — reset unless none or in_progress
+        // (committed-away needs_review/has_findings/clean). Skip in_progress —
+        // reviewers still running; temporary clean (stash/checkout) must not wipe.
         const state = readReviewState(lastCtx.cwd);
-        if (state.status === "clean") {
+        if (state.status !== "none" && state.status !== "in_progress") {
           try { resetReviewState(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] resetReviewState failed:", e?.message); }
         }
       }
