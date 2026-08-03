@@ -246,15 +246,21 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
   });
 }
 
-/** Check if the review state allows commit.
- *  True when: no tracking active (none), all reviewers clean + tests passed,
- *  or max review cycles exhausted (nothing more to do). */
+/** Check if the review state is clean (all reviewers approved, no edits since). */
 export function isReviewClean(cwd: string): boolean {
   const state = readReviewState(cwd);
-  if (state.status === "none") return true;
-  if (state.status === "clean" && state.tests_passed) return true;
+  if (state.status === "none") return true; // No tracking active — nothing to enforce
+  if (state.status !== "clean") return false;
+  if (!state.tests_passed) return false;
+  return true;
+}
+
+/** Check if commit is allowed — clean review, no tracking, or max cycles exhausted. */
+export function isCommitAllowed(cwd: string): boolean {
+  if (isReviewClean(cwd)) return true;
+  const state = readReviewState(cwd);
   // Allow commit when max review cycles exhausted — all reviewers completed, cap reached
-  if (state.status === "has_findings" && state.reviewers_pending.length === 0 && state.tests_passed) {
+  if (state.status !== "none" && state.reviewers_pending.length === 0 && state.tests_passed) {
     const maxCycles = getSetting(cwd, "review_loop_max_cycles");
     if (state.cycle >= maxCycles) return true;
   }
