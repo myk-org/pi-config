@@ -27,7 +27,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isCommitAllowed, readReviewState, statePath, markTestsPassed, markTestsFailed, resetReviewState } from "./pi-config-review-state.js";
+import { markNeedsReview, isCommitAllowed, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -762,28 +762,6 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         }
       }
     }
-  });
-
-  // ── Reset review state after successful git push ──────────────────────
-  // Push means code is shipped — review tracking for this cycle is done.
-  pi.on("tool_result", async (event, ctx) => {
-    const toolName = (event as any).toolName as string;
-    if (toolName !== "bash") return;
-
-    const command: string = (event as any).input?.command || "";
-    if (!command) return;
-
-    // Only detect git push
-    if (!hasGitSub(command, "push")) return;
-
-    // Only on success
-    const isError = (event as any).isError === true;
-    if (isError) return;
-
-    if (!getSetting(ctx.cwd, "review_loop_enforcement")) return;
-
-    const effectiveCwd = resolveEffectiveCwd(command, ctx.cwd);
-    try { resetReviewState(effectiveCwd); } catch { /* best-effort */ }
   });
 
   // ── /review-status command — read-only access to review state ──────

@@ -15,16 +15,14 @@ import type { AgentConfig } from "./agents.js";
 import { discoverAgents } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
-import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed, resetReviewState } from "./pi-config-review-state.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import {
   getMainBranch,
-  isBranchAhead,
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
-import { getSetting } from "./project-settings.js";
 import { setSlot } from "./status-bar.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -398,11 +396,6 @@ export function registerAsyncAgents(
       job.exitCode = data.exitCode;
       job.durationMs = data.durationMs;
       job.updatedAt = Date.now();
-
-      // Reset review state after git-expert push — CLI providers bypass tool_result hooks
-      if (job.agent === "git-expert" && getSetting(jobCwd(job), "review_loop_enforcement") && !isBranchAhead(jobCwd(job))) {
-        try { resetReviewState(jobCwd(job)); } catch { /* best-effort */ }
-      }
 
       // Notify terminal per-agent (lightweight, non-conversational)
       const displayName = job.name || data.agent;

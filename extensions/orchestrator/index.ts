@@ -110,7 +110,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_callId, params, _signal, _onUpdate, ctx) {
       let models: any[];
       try {
-        const registry = (ctx as any).modelRegistry;
+        const registry = ctx.modelRegistry;
         if (!registry) {
           return {
             content: [{ type: "text" as const, text: "Model registry not available." }],

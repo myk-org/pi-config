@@ -50,9 +50,6 @@ import {
 import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
-import { isBranchAhead } from "./git-helpers.js";
-import { resetReviewState } from "./pi-config-review-state.js";
-import { getSetting } from "./project-settings.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
 export { resolveAgentModelProvider, parseModelOverride };
@@ -537,11 +534,6 @@ export async function runSingleAgent(
 
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
-
-    // Reset review state after git-expert push — CLI providers bypass tool_result hooks
-    if (agentName === "git-expert" && getSetting(cwd, "review_loop_enforcement") && !isBranchAhead(cwd)) {
-      try { resetReviewState(cwd); } catch { /* best-effort */ }
-    }
 
     if (aborted) throw new Error("Subagent was aborted");
     return cur;
