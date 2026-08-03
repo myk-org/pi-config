@@ -487,6 +487,27 @@ describe("tests_passed", () => {
     assert.equal(isReviewClean(cwd), false);
     assert.equal(isCommitAllowed(cwd), false);
   });
+
+  it("isCommitAllowed false for needs_review even when cycle >= max", () => {
+    // Reach max cycles with findings, then edit again → needs_review with empty pending
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    assert.equal(readReviewState(cwd).cycle, 3);
+    assert.equal(isCommitAllowed(cwd), true); // has_findings at max
+
+    markNeedsReview(cwd); // edits again — reviewers not spawned yet
+    assert.equal(readReviewState(cwd).status, "needs_review");
+    assert.equal(readReviewState(cwd).reviewers_pending.length, 0);
+    assert.equal(readReviewState(cwd).cycle, 3);
+    assert.equal(isCommitAllowed(cwd), false); // must not allow before review runs
+  });
 });
 
 // ── Worktree state isolation ──

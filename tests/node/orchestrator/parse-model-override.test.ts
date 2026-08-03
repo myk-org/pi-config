@@ -30,6 +30,24 @@ describe("parseModelOverride", () => {
     const result = parseModelOverride("/model");
     assert.deepStrictEqual(result, { model: "/model" });
   });
+
+  it("trims whitespace around provider/model", () => {
+    const result = parseModelOverride("  litellm/claude  ");
+    assert.deepStrictEqual(result, { provider: "litellm", model: "claude" });
+  });
+
+  it("returns undefined for empty model after slash", () => {
+    assert.strictEqual(parseModelOverride("litellm/"), undefined);
+  });
+
+  it("treats /claude as model only (slashIdx === 0)", () => {
+    const result = parseModelOverride("/claude");
+    assert.deepStrictEqual(result, { model: "/claude" });
+  });
+
+  it("returns undefined for whitespace-only input", () => {
+    assert.strictEqual(parseModelOverride("  "), undefined);
+  });
 });
 
 describe("mergeModelOverride", () => {

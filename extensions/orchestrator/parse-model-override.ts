@@ -1,11 +1,16 @@
 /** Parse 'provider/model-id' into separate provider and model. Plain 'model-id' returns undefined provider. */
 export function parseModelOverride(modelStr: string | undefined): { model?: string; provider?: string } | undefined {
   if (!modelStr) return undefined;
-  const slashIdx = modelStr.indexOf("/");
+  const trimmed = modelStr.trim();
+  if (!trimmed) return undefined;
+  const slashIdx = trimmed.indexOf("/");
   if (slashIdx > 0) {
-    return { provider: modelStr.slice(0, slashIdx), model: modelStr.slice(slashIdx + 1) };
+    const provider = trimmed.slice(0, slashIdx).trim();
+    const model = trimmed.slice(slashIdx + 1).trim();
+    if (!provider || !model) return undefined;
+    return { provider, model };
   }
-  return { model: modelStr };
+  return { model: trimmed };
 }
 
 /** Merge task-level model override with top-level explicit fallback. Task fields win. */

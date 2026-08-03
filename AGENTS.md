@@ -101,6 +101,11 @@ Writing effective rules:
 - `prompts/create-X.md` (prompt) → `templates/X-prompt.md` (template)
 - Templates use `{{PLACEHOLDER}}` for dynamic values, no YAML frontmatter
 
+## Orchestrator Tools
+
+- `list_models` — discover available models and providers (optional `provider` filter). Returns `provider/model-id` pairs for subagent overrides.
+- `subagent(model="provider/model-id")` — explicit model override for a subagent call. Plain `model-id` uses the parent provider; `provider/model-id` selects both.
+
 ## When Modifying Extensions
 
 - **pidiff** runs as a per-project server (one per cwd, not shared).

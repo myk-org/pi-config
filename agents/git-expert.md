@@ -24,7 +24,8 @@ Before ANY `git commit`:
 
 3. **BLOCK the commit unless one of the allow cases in step 5 holds.**
    Common block reasons: `status` is `"needs_review"` / `"in_progress"`,
-   `tests_passed` is `false`, `reviewers_pending` is not empty,
+   `status` is `"clean"` with `tests_passed: false` (does **not** block the max-cycle path),
+   `reviewers_pending` is not empty,
    or `has_findings` but `cycle` still below `review_loop_max_cycles`.
 
 4. When blocking, report: "⛔ Review loop incomplete (status: X, tests_passed: Y). Run the review loop before committing." and STOP — do NOT proceed with the commit.
@@ -32,8 +33,8 @@ Before ANY `git commit`:
 5. **Only commit when:**
    - Status is `"clean"` with `tests_passed: true`, OR
    - Status is `"none"` (no review tracking), OR
-   - Max cycles exhausted: `reviewers_pending` is empty
-     and `cycle` >= `review_loop_max_cycles` from settings (default 3).
+   - Max cycles exhausted: status is `"has_findings"`, `reviewers_pending` is empty,
+     and `cycle` >= `review_loop_max_cycles` from settings (default 3). No `tests_passed` requirement.
 
 IMPORTANT: Use the `read` tool to check these files — do NOT use `cat` or `grep` via bash.
 

@@ -46,8 +46,8 @@ Disable the review loop via `review_loop_enforcement: false` — not via max_cyc
 Cap check is after 5a; it only blocks `go to 2` (re-dispatch of step 2 / all 6 agents,
 including test-automator), not completing the current cycle's fix/explain.
 
-**After 5a completes on the max cycle, two outcomes — neither unblocks `git commit`**
-(still controlled solely by `review_loop_enforcement`; status must be `clean` + `tests_passed: true`):
+**After 5a completes on the max cycle, two outcomes** (report them; commit may still be
+allowed via the max-cycle path — see step 6):
 
 - **Not fixed** (explained why not) → outstanding — report them.
 - **Fixed** (verification blocked by the cap) → cannot re-dispatch to confirm clean — report that
@@ -75,14 +75,15 @@ cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no
           (see "Cycle Definition & Max Cycles" above). Do NOT proceed to step 6.
 6. NOW you can commit — the pre-commit hook will pass when:
    - status is `clean` AND `tests_passed: true`, OR
-   - max cycles exhausted (`has_findings`, no pending reviewers, `tests_passed: true`, `cycle >= review_loop_max_cycles`)
+   - max cycles exhausted (`has_findings` or `clean`, no pending reviewers, `cycle >= review_loop_max_cycles` — no `tests_passed` check)
 ✅ DONE — commit/push allowed
 ```
 
 🚨 **Step 6 applies when clean OR max cycles exhausted.** Do NOT attempt `git commit` before that.
 The enforcement rule blocks commits until this is satisfied — if it blocks you, run the reviewers.
 **After a cap stop:** report the two-outcome result (**Not fixed** → outstanding, **Fixed** → verification
-blocked); commit is allowed when `tests_passed: true` and no reviewers pending; do **not**
+blocked); commit is allowed when status is `has_findings` or `clean`, no reviewers pending, and
+`cycle >= review_loop_max_cycles` (no `tests_passed` requirement); do **not**
 return to step 2 (re-dispatch of all 6 agents, including test-automator).
 
 ## Review Agents
