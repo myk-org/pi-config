@@ -9,7 +9,7 @@ import {
   readReviewState,
   addReviewerPending,
   recordReviewerResult,
-} from "../../../extensions/orchestrator/pi-config-review-state.ts";
+} from "../../../extensions/orchestrator/pi-config-review-state.js";
 
 describe("poller state transitions", () => {
   let tmp: string;
