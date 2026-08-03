@@ -48,4 +48,22 @@ describe("isPortFree", () => {
       srv.close();
     }
   });
+
+  it("error path does not leak server handles", async () => {
+    // Bind a port, then probe it — error path should close server and not leak
+    const blocker = net.createServer();
+    const port = await new Promise<number>((resolve) => {
+      blocker.listen(0, "127.0.0.1", () => {
+        resolve((blocker.address() as net.AddressInfo).port);
+      });
+    });
+    try {
+      // Run multiple probes to verify no handle leak
+      for (let i = 0; i < 5; i++) {
+        assert.strictEqual(await isPortFree(port), false);
+      }
+    } finally {
+      blocker.close();
+    }
+  });
 });

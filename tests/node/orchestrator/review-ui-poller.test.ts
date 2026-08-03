@@ -104,3 +104,58 @@ describe("poller state transitions", () => {
     // Poller skips reset when already none
   });
 });
+
+describe("poller decision logic (replica)", () => {
+  // Replica of the poller's decision branches from review-ui.ts gitDirtyPoller
+  function pollerDecision(
+    snapshot: string,
+    lastSnapshot: string,
+    state: { status: string },
+  ): "skip" | "markNeedsReview" | "resetReviewState" {
+    if (snapshot === lastSnapshot) return "skip";
+    if (snapshot) {
+      return "markNeedsReview";
+    } else {
+      if (state.status === "clean" || state.status === "needs_review") {
+        return "resetReviewState";
+      }
+      return "skip";
+    }
+  }
+
+  it("same snapshot → skip", () => {
+    assert.equal(pollerDecision("M file.ts", "M file.ts", { status: "none" }), "skip");
+  });
+
+  it("dirty from clean snapshot → markNeedsReview", () => {
+    assert.equal(pollerDecision("M file.ts", "", { status: "none" }), "markNeedsReview");
+  });
+
+  it("dirty change (different files) → markNeedsReview", () => {
+    assert.equal(pollerDecision("M a.ts\nM b.ts", "M a.ts", { status: "needs_review" }), "markNeedsReview");
+  });
+
+  it("dirty during in_progress → markNeedsReview (sets edited_during_cycle)", () => {
+    assert.equal(pollerDecision("M file.ts", "", { status: "in_progress" }), "markNeedsReview");
+  });
+
+  it("clean from clean status → resetReviewState", () => {
+    assert.equal(pollerDecision("", "M file.ts", { status: "clean" }), "resetReviewState");
+  });
+
+  it("clean from needs_review → resetReviewState", () => {
+    assert.equal(pollerDecision("", "M file.ts", { status: "needs_review" }), "resetReviewState");
+  });
+
+  it("clean from in_progress → skip (reviewers running)", () => {
+    assert.equal(pollerDecision("", "M file.ts", { status: "in_progress" }), "skip");
+  });
+
+  it("clean from has_findings → skip (review results pending)", () => {
+    assert.equal(pollerDecision("", "M file.ts", { status: "has_findings" }), "skip");
+  });
+
+  it("clean from none → skip (already none)", () => {
+    assert.equal(pollerDecision("", "M file.ts", { status: "none" }), "skip");
+  });
+});
