@@ -247,7 +247,7 @@ At cap, report **Not fixed** (explained why not → outstanding) vs **Fixed**
 forms like `"10.0"` / `"1e1"`) fall through to the next resolution layer / default `3`. Disable the review loop via
 `review_loop_enforcement: false`, not via max_cycles. Commit blocking is code-enforced via `isCommitAllowed`:
 allows commit when `isReviewClean` (`status: clean` + `tests_passed: true`, or `status: none`), or when max cycles are exhausted
-(no pending reviewers, `tests_passed: true`, `cycle >= review_loop_max_cycles`).
+(`status` is `has_findings` or `clean`, no pending reviewers, `cycle >= review_loop_max_cycles` — no `tests_passed` requirement).
 
 Staged mode (`--autorabbit`/`--autoqodo` in `/review-handler`) shares one total `review_loop_max_cycles` budget
 across both its Spec Compliance and Code Quality stages — not a separate cap per stage.
