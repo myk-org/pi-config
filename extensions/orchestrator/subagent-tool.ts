@@ -50,10 +50,10 @@ import {
 import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
-import { markNeedsReview } from "./pi-config-review-state.js";
+import { isBranchAhead } from "./git-helpers.js";
+import { resetReviewState } from "./pi-config-review-state.js";
 import { getSetting } from "./project-settings.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
-import { gitDirtySnapshot } from "./git-dirty-snapshot.js";
 
 export { resolveAgentModelProvider, parseModelOverride };
 
@@ -463,10 +463,6 @@ export async function runSingleAgent(
     args.push(`Task: ${task}`);
     let aborted = false;
 
-    // Snapshot git state before subagent runs — detect CLI/ACPX edits that bypass tool hooks
-    const checkDirty = getSetting(cwd, "review_loop_enforcement");
-    const dirtyBefore = checkDirty ? gitDirtySnapshot(cwd) : "";
-
     const exitCode = await new Promise<number>((resolve) => {
       const inv = getPiInvocation(args);
       const proc = spawn(inv.command, inv.args, {
@@ -542,9 +538,9 @@ export async function runSingleAgent(
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
 
-    // Check if subagent changed files — CLI/ACPX edits bypass tool_result hooks
-    if (checkDirty && gitDirtySnapshot(cwd) !== dirtyBefore) {
-      try { markNeedsReview(cwd); } catch { /* best-effort */ }
+    // Reset review state after git-expert push — CLI providers bypass tool_result hooks
+    if (agentName === "git-expert" && getSetting(cwd, "review_loop_enforcement") && !isBranchAhead(cwd)) {
+      try { resetReviewState(cwd); } catch { /* best-effort */ }
     }
 
     if (aborted) throw new Error("Subagent was aborted");

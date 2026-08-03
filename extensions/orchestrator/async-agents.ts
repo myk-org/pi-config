@@ -15,15 +15,17 @@ import type { AgentConfig } from "./agents.js";
 import { discoverAgents } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
-import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed, markNeedsReview } from "./pi-config-review-state.js";
-import { getMainBranch } from "./git-helpers.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed, resetReviewState } from "./pi-config-review-state.js";
+import {
+  getMainBranch,
+  isBranchAhead,
+} from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { getSetting } from "./project-settings.js";
 import { setSlot } from "./status-bar.js";
-import { gitDirtySnapshot } from "./git-dirty-snapshot.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -54,7 +56,6 @@ export interface AsyncJob {
   projectCwd?: string;
   sessionId?: string;
   model?: string;
-  dirtySnapshot?: string;
 }
 
 /** Get the effective working directory for a job. */
@@ -398,12 +399,9 @@ export function registerAsyncAgents(
       job.durationMs = data.durationMs;
       job.updatedAt = Date.now();
 
-      // Check if async agent changed files — CLI/ACPX edits bypass tool_result hooks
-      if (job.dirtySnapshot !== undefined) {
-        const dirtyNow = gitDirtySnapshot(jobCwd(job));
-        if (dirtyNow !== job.dirtySnapshot) {
-          try { markNeedsReview(jobCwd(job)); } catch { /* best-effort */ }
-        }
+      // Reset review state after git-expert push — CLI providers bypass tool_result hooks
+      if (job.agent === "git-expert" && getSetting(jobCwd(job), "review_loop_enforcement") && !isBranchAhead(jobCwd(job))) {
+        try { resetReviewState(jobCwd(job)); } catch { /* best-effort */ }
       }
 
       // Notify terminal per-agent (lightweight, non-conversational)
@@ -714,10 +712,6 @@ export function registerAsyncAgents(
       sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.(),
       model: effectiveModel,
     };
-    // Snapshot git state for dirty detection on completion (CLI/ACPX edits bypass hooks)
-    if (getSetting(cwd, "review_loop_enforcement")) {
-      job.dirtySnapshot = gitDirtySnapshot(cwd);
-    }
     asyncState.jobs.set(id, job);
 
     const proc = spawn(process.execPath, spawnArgs, {

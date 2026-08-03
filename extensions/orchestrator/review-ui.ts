@@ -8,10 +8,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { onStateTransition, readReviewState, type ReviewState } from "./pi-config-review-state.js";
+import { onStateTransition, readReviewState, markNeedsReview, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
+import { runGit } from "./git-helpers.js";
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -95,6 +96,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
 
   let lastCtx: ExtensionContext | null = null;
   let lastBarKey = "";
+  let lastGitSnapshot = "";
 
   function updateStatusBar(state: ReviewState): void {
     if (!lastCtx?.hasUI) return;
@@ -142,6 +144,8 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   // Capture ctx and show current state on load
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
+    // Initialize git snapshot for dirty detection
+    lastGitSnapshot = runGit(["status", "--porcelain"], ctx.cwd).stdout;
     if (getSetting(ctx.cwd, "review_loop_enforcement")) {
       updateStatusBar(readReviewState(ctx.cwd));
     } else if (ctx.hasUI) {
@@ -169,8 +173,23 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   }, 5000);
   if (reviewPoller.unref) reviewPoller.unref();
 
+  // Poll git status to detect file changes from CLI/ACPX agents
+  const gitDirtyPoller = setInterval(() => {
+    if (!lastCtx) return;
+    try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
+    try {
+      if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) return;
+      const snapshot = runGit(["status", "--porcelain"], lastCtx.cwd).stdout;
+      if (snapshot === lastGitSnapshot) return;
+      lastGitSnapshot = snapshot;
+      if (snapshot) markNeedsReview(lastCtx.cwd);
+    } catch { /* best-effort */ }
+  }, 3000);
+  if (gitDirtyPoller.unref) gitDirtyPoller.unref();
+
   pi.on("session_shutdown", () => {
     clearInterval(reviewPoller);
+    clearInterval(gitDirtyPoller);
   });
 
   // ── Hook into review state transitions ───────────────────────────────
