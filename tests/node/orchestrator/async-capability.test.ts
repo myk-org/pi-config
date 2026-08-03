@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   decideAsyncLlmDispatch,
-  getAsyncLlmSidecar,
+  getInternalOpsProvider,
   getRegisteredAcpxProviders,
   isAcpxProvider,
   isAcpxProviderId,
@@ -25,8 +25,8 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
   let globalTmp: string;
   const prev = {
     ACPX_AGENTS: process.env.ACPX_AGENTS,
-    PI_ASYNC_LLM_PROVIDER: process.env.PI_ASYNC_LLM_PROVIDER,
-    PI_ASYNC_LLM_MODEL: process.env.PI_ASYNC_LLM_MODEL,
+    PI_INTERNAL_OPERATIONS_PROVIDER: process.env.PI_INTERNAL_OPERATIONS_PROVIDER,
+    PI_INTERNAL_OPERATIONS_MODEL: process.env.PI_INTERNAL_OPERATIONS_MODEL,
   };
 
   beforeEach(() => {
@@ -35,8 +35,8 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
     globalTmp = mkdtempSync(join(tmpdir(), "async-cap-g-"));
     setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
     delete process.env.ACPX_AGENTS;
-    delete process.env.PI_ASYNC_LLM_PROVIDER;
-    delete process.env.PI_ASYNC_LLM_MODEL;
+    delete process.env.PI_INTERNAL_OPERATIONS_PROVIDER;
+    delete process.env.PI_INTERNAL_OPERATIONS_MODEL;
   });
 
   afterEach(() => {
@@ -95,15 +95,15 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
   });
 
   it("returns null sidecar when unset", () => {
-    assert.equal(getAsyncLlmSidecar(tmp), null);
+    assert.equal(getInternalOpsProvider(tmp), null);
   });
 
   it("loads sidecar from project settings", () => {
     writeSettings({
-      async_llm_provider: "anthropic",
-      async_llm_model: "claude-sonnet-4-20250514",
+      internal_operations_provider: "anthropic",
+      internal_operations_model: "claude-sonnet-4-20250514",
     });
-    assert.deepEqual(getAsyncLlmSidecar(tmp), {
+    assert.deepEqual(getInternalOpsProvider(tmp), {
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
     });
@@ -111,15 +111,15 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
 
   it("rejects acpx-* sidecar providers", () => {
     writeSettings({
-      async_llm_provider: "acpx-cursor",
-      async_llm_model: "composer-2",
+      internal_operations_provider: "acpx-cursor",
+      internal_operations_model: "composer-2",
     });
-    assert.equal(getAsyncLlmSidecar(tmp), null);
+    assert.equal(getInternalOpsProvider(tmp), null);
   });
 
   it("requires both provider and model", () => {
-    writeSettings({ async_llm_provider: "anthropic" });
-    assert.equal(getAsyncLlmSidecar(tmp), null);
+    writeSettings({ internal_operations_provider: "anthropic" });
+    assert.equal(getInternalOpsProvider(tmp), null);
   });
 
   it("native parent keeps async", () => {
@@ -189,8 +189,8 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
   it("acpx must-async uses sidecar when set", () => {
     writeSettings({
       acpx_agents: ["cursor"],
-      async_llm_provider: "openai",
-      async_llm_model: "gpt-5.4",
+      internal_operations_provider: "openai",
+      internal_operations_model: "gpt-5.4",
     });
     const d = decideAsyncLlmDispatch({
       parentProvider: "acpx-cursor",
@@ -208,8 +208,8 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
   it("must-async skips when sidecar is acpx-*", () => {
     writeSettings({
       acpx_agents: ["cursor"],
-      async_llm_provider: "acpx-cursor",
-      async_llm_model: "composer-2",
+      internal_operations_provider: "acpx-cursor",
+      internal_operations_model: "composer-2",
     });
     const d = decideAsyncLlmDispatch({
       parentProvider: "acpx-cursor",
@@ -221,10 +221,10 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
   });
 
   it("reads sidecar from env when file unset", () => {
-    process.env.PI_ASYNC_LLM_PROVIDER = "openai";
-    process.env.PI_ASYNC_LLM_MODEL = "gpt-4.1";
+    process.env.PI_INTERNAL_OPERATIONS_PROVIDER = "openai";
+    process.env.PI_INTERNAL_OPERATIONS_MODEL = "gpt-4.1";
     clearSettingsCache();
-    assert.deepEqual(getAsyncLlmSidecar(tmp), {
+    assert.deepEqual(getInternalOpsProvider(tmp), {
       provider: "openai",
       model: "gpt-4.1",
     });

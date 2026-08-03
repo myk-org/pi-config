@@ -18,7 +18,7 @@ provider **does not load** in those children (nested `cursor-agent` hangs), so a
 | `cli-${agent}` from `cli_agents` | `true` | CLI providers load in subagent children — async works; no coerce |
 
 Module: `extensions/orchestrator/async-capability.ts`  
-Settings: `acpx_agents`, `cli_agents`, `async_llm_provider` + `async_llm_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
+Settings: `acpx_agents`, `cli_agents`, `internal_operations_provider` + `internal_operations_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
 
 **acpx runtime resolution:** `extensions/acpx-provider/load-runtime.ts` prefers a
 global `npm install -g acpx`, then falls back to the package-local `acpx`

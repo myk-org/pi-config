@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { getSetting } from "./project-settings.js";
 import { resolveWorktreeRoot, getProjectDataDir } from "./utils.js";
 
 type StateTransitionCallback = (state: ReviewState) => void;
@@ -245,13 +246,19 @@ export function recordReviewerResult(cwd: string, reviewerName: string, findings
   });
 }
 
-/** Check if the review state is clean (all reviewers approved, no edits since). */
+/** Check if the review state allows commit.
+ *  True when: no tracking active (none), all reviewers clean + tests passed,
+ *  or max review cycles exhausted (nothing more to do). */
 export function isReviewClean(cwd: string): boolean {
   const state = readReviewState(cwd);
-  if (state.status === "none") return true; // No tracking active — nothing to enforce
-  if (state.status !== "clean") return false;
-  if (!state.tests_passed) return false;
-  return true;
+  if (state.status === "none") return true;
+  if (state.status === "clean" && state.tests_passed) return true;
+  // Allow commit when max review cycles exhausted — all reviewers completed, cap reached
+  if (state.status === "has_findings" && state.reviewers_pending.length === 0 && state.tests_passed) {
+    const maxCycles = getSetting(cwd, "review_loop_max_cycles");
+    if (state.cycle >= maxCycles) return true;
+  }
+  return false;
 }
 
 /** Mark that tests have passed. Only meaningful when review status is being tracked. */

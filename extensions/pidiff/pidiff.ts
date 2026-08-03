@@ -157,8 +157,13 @@ export function registerPidiff(pi: ExtensionAPI): void {
       spawning = true;
       try {
         log("spawning daemon...");
-        port = await findFreePort();
-        log(`allocated free port: ${port}`);
+        // Reuse lockfile port if available — keeps URL stable across reload/restart
+        if (!port) {
+          port = await findFreePort();
+          log(`allocated new port: ${port}`);
+        } else {
+          log(`reusing lockfile port: ${port}`);
+        }
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, log);
         const ready = await waitForDaemon(port, 60, log);
@@ -288,7 +293,8 @@ export function registerPidiff(pi: ExtensionAPI): void {
           if (!connected) connect(ctx);
           return;
         }
-        const port = await findFreePort();
+        // Reuse lockfile port to keep URL stable
+        const port = lock?.port || await findFreePort();
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, log);
         if (ctx.hasUI) ctx.ui.notify("Starting pidiff server...", "info");
@@ -306,10 +312,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
         const pidFile = path.join(lockDir, "pidiff.pid");
+        // Reuse existing port to keep URL stable (read before removeLockfile)
+        const lock = readLockfile(lockDir);
+        const port = activePort || lock?.port || await findFreePort();
         killDaemonByPid(pidFile, log);
         removeLockfile(lockDir, log);
         await new Promise(r => setTimeout(r, 1000));
-        const port = await findFreePort();
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, log);
         if (ctx.hasUI) ctx.ui.notify("Restarting pidiff server...", "info");

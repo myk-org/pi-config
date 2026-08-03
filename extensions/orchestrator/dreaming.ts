@@ -87,7 +87,7 @@ export function registerDreaming(
       dreamingLog("warn", dreamDispatch.note || "dream skipped (no async LLM path)");
       try {
         lastCtx?.ui?.notify?.(
-          "Dream skipped: set async_llm_provider and async_llm_model for acpx sessions",
+          "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions",
           "warning",
         );
       } catch { /* stale UI */ }

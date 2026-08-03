@@ -442,6 +442,45 @@ describe("tests_passed", () => {
     markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
   });
+
+  it("isReviewClean true when has_findings and max cycles exhausted", () => {
+    // Cycle 1: findings
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 2);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 1);
+    assert.equal(isReviewClean(cwd), false); // below default max 3
+
+    // Cycle 2
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).cycle, 2);
+    assert.equal(isReviewClean(cwd), false);
+
+    // Cycle 3 — at default max
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 3);
+    assert.equal(isReviewClean(cwd), false); // tests not passed yet
+    markTestsPassed(cwd);
+    assert.equal(isReviewClean(cwd), true); // max cycles exhausted
+  });
+
+  it("isReviewClean false when has_findings below max cycles", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 3);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 1);
+    assert.equal(isReviewClean(cwd), false);
+  });
 });
 
 // ── Worktree state isolation ──

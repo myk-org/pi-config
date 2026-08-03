@@ -73,14 +73,16 @@ cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no
         · cycle < {{REVIEW_LOOP_MAX_CYCLES}}? → go to 2 (re-run all 6 with prior findings + responses)
         · cycle >= {{REVIEW_LOOP_MAX_CYCLES}}? → **STOP** (terminal): report the two-outcome result
           (see "Cycle Definition & Max Cycles" above). Do NOT proceed to step 6.
-6. NOW you can commit — the pre-commit hook will pass (only when status is `clean` AND `tests_passed: true`)
-✅ DONE — commit/push allowed (enforcement checks status: clean AND tests_passed: true)
+6. NOW you can commit — the pre-commit hook will pass when:
+   - status is `clean` AND `tests_passed: true`, OR
+   - max cycles exhausted (`has_findings`, no pending reviewers, `tests_passed: true`, `cycle >= review_loop_max_cycles`)
+✅ DONE — commit/push allowed
 ```
 
-🚨 **Step 6 applies only when clean.** Do NOT attempt `git commit` before reaching `clean` + `tests_passed: true`.
+🚨 **Step 6 applies when clean OR max cycles exhausted.** Do NOT attempt `git commit` before that.
 The enforcement rule blocks commits until this is satisfied — if it blocks you, run the reviewers.
 **After a cap stop:** report the two-outcome result (**Not fixed** → outstanding, **Fixed** → verification
-blocked); raise `review_loop_max_cycles` or disable `review_loop_enforcement` if needed — do **not**
+blocked); commit is allowed when `tests_passed: true` and no reviewers pending; do **not**
 return to step 2 (re-dispatch of all 6 agents, including test-automator).
 
 ## Review Agents
@@ -100,7 +102,7 @@ Six agents run in parallel for comprehensive coverage:
 Do NOT block waiting for results — continue working while they run.**
 
 Send reviewers "Review the code changes" — never mention `git diff HEAD` in the task prompt.
-Reviewers get `$PI_REVIEW_BASE_BRANCH` env var and use `git diff origin/$PI_REVIEW_BASE_BRANCH...HEAD` themselves.
+Reviewers get `$PI_REVIEW_BASE_BRANCH` env var and use `git diff origin/$PI_REVIEW_BASE_BRANCH` themselves (includes uncommitted changes).
 
 Reviewers return structured JSON: `{"findings": [{"severity": "...", "file": "...", "line": N, "description": "...", "suggestion": "..."}]}`.
 The async runner validates the output is valid JSON and retries if not (up to 3 times).

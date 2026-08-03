@@ -544,7 +544,7 @@ export function registerCron(
         console.debug(`[cron] ${dispatch.note} (task #${task.id})`);
         try {
           state.lastCtx?.ui?.notify?.(
-            `Cron #${task.id} skipped: set async_llm_provider/async_llm_model for acpx`,
+            `Cron #${task.id} skipped: set internal_operations_provider/internal_operations_model for acpx`,
             "warning",
           );
         } catch { /* stale UI */ }

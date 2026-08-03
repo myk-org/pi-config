@@ -41,7 +41,7 @@ pi-config/
 │   │   ├── async-status-parse.ts    # Pure output.log JSONL → display line parser
 │   │   ├── cron-status-ui.ts        # /cron list + list-all overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
-│   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + async_llm sidecar settings
+│   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + internal ops provider settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── btw.ts                   # /btw command
@@ -54,7 +54,9 @@ pi-config/
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
+│   │   ├── parse-model-override.ts  # Parse provider/model-id override strings for subagent model param
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
+│   │   ├── resolve-agent-model.ts   # Resolve effective model/provider for an agent (priority chain)
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
 │   │   ├── rule-placeholders.ts     # Substitutes {{REVIEW_LOOP_MAX_CYCLES}} into injected rules text
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
