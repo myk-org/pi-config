@@ -53,7 +53,7 @@ function getBranch(cwd: string): string {
 function isPortFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const srv = net.createServer();
-    srv.once("error", () => resolve(false));
+    srv.once("error", () => { try { srv.close(); } catch {} resolve(false); });
     srv.listen(port, "127.0.0.1", () => { srv.close(() => resolve(true)); });
   });
 }
