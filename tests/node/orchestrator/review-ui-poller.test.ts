@@ -3,46 +3,104 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  markNeedsReview,
+  resetReviewState,
+  readReviewState,
+  addReviewerPending,
+  recordReviewerResult,
+} from "../../../extensions/orchestrator/pi-config-review-state.ts";
 
-// We can't import from pi-config-review-state directly (blocked by enforcement)
-// Test the poller's decision matrix via state file reads/writes
-
-describe("git dirty poller state transitions", () => {
+describe("poller state transitions", () => {
   let tmp: string;
-  let dataDir: string;
-  let stateFile: string;
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "poller-test-"));
-    dataDir = path.join(tmp, ".pi", "data");
-    fs.mkdirSync(dataDir, { recursive: true });
-    stateFile = path.join(dataDir, "pi-config-review-state.json");
+    fs.mkdirSync(path.join(tmp, ".pi", "data"), { recursive: true });
+    // Create minimal settings file for getSetting
+    fs.mkdirSync(path.join(tmp, ".pi"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, ".pi", "pi-config-settings.json"),
+      JSON.stringify({ review_loop_enforcement: true, review_loop_max_cycles: 3 }),
+    );
   });
 
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  function writeState(state: any) {
-    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
-  }
+  it("dirty from none → needs_review", () => {
+    const before = readReviewState(tmp);
+    assert.equal(before.status, "none");
+    markNeedsReview(tmp);
+    const after = readReviewState(tmp);
+    assert.equal(after.status, "needs_review");
+  });
 
-  function readState() {
-    return JSON.parse(fs.readFileSync(stateFile, "utf-8"));
-  }
+  it("dirty from clean → needs_review", () => {
+    // Set up clean state
+    markNeedsReview(tmp);
+    addReviewerPending(tmp, "test-reviewer");
+    recordReviewerResult(tmp, "test-reviewer", 0);
+    const clean = readReviewState(tmp);
+    assert.equal(clean.status, "clean");
+    // Dirty again
+    markNeedsReview(tmp);
+    const after = readReviewState(tmp);
+    assert.equal(after.status, "needs_review");
+  });
 
-  it("documents poller decision matrix", () => {
-    // This test documents the expected poller behavior:
-    // dirty + none → markNeedsReview → needs_review
-    // dirty + clean → markNeedsReview → needs_review
-    // dirty + has_findings → markNeedsReview → needs_review
-    // dirty + needs_review → markNeedsReview → no-op (already needs_review)
-    // dirty + in_progress → markNeedsReview → sets edited_during_cycle
-    // clean + clean → resetReviewState → none
-    // clean + needs_review → resetReviewState → none
-    // clean + in_progress → skip (reviewers running)
-    // clean + has_findings → skip (review results pending)
-    // clean + none → skip (already none)
-    assert.ok(true, "Poller decision matrix documented");
+  it("dirty from has_findings → needs_review", () => {
+    markNeedsReview(tmp);
+    addReviewerPending(tmp, "test-reviewer");
+    recordReviewerResult(tmp, "test-reviewer", 3);
+    const hf = readReviewState(tmp);
+    assert.equal(hf.status, "has_findings");
+    markNeedsReview(tmp);
+    const after = readReviewState(tmp);
+    assert.equal(after.status, "needs_review");
+  });
+
+  it("dirty during in_progress → sets edited_during_cycle", () => {
+    markNeedsReview(tmp);
+    addReviewerPending(tmp, "test-reviewer");
+    const ip = readReviewState(tmp);
+    assert.equal(ip.status, "in_progress");
+    assert.equal(ip.edited_during_cycle, false);
+    markNeedsReview(tmp);
+    const after = readReviewState(tmp);
+    assert.equal(after.status, "in_progress"); // stays in_progress
+    assert.equal(after.edited_during_cycle, true);
+    assert.equal(after.tests_passed, false);
+  });
+
+  it("dirty from needs_review → no-op (already needs_review)", () => {
+    markNeedsReview(tmp);
+    const before = readReviewState(tmp);
+    assert.equal(before.status, "needs_review");
+    markNeedsReview(tmp);
+    const after = readReviewState(tmp);
+    assert.equal(after.status, "needs_review");
+  });
+
+  it("clean from clean → resets to none", () => {
+    markNeedsReview(tmp);
+    addReviewerPending(tmp, "r");
+    recordReviewerResult(tmp, "r", 0);
+    assert.equal(readReviewState(tmp).status, "clean");
+    resetReviewState(tmp);
+    assert.equal(readReviewState(tmp).status, "none");
+  });
+
+  it("clean from needs_review → resets to none", () => {
+    markNeedsReview(tmp);
+    assert.equal(readReviewState(tmp).status, "needs_review");
+    resetReviewState(tmp);
+    assert.equal(readReviewState(tmp).status, "none");
+  });
+
+  it("clean from none → stays none (no resetReviewState call needed)", () => {
+    assert.equal(readReviewState(tmp).status, "none");
+    // Poller skips reset when already none
   });
 });
