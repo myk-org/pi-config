@@ -12,8 +12,9 @@ Single extension that provides:
 
 | Feature | Description |
 |---------|-------------|
-| **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes) |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `async_llm_provider` + `async_llm_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
+| **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes); optional `model` param for model override |
+| **`list_models`** | List available models and providers for subagent model override |
+| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
 | **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.81): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
@@ -212,6 +213,19 @@ Use python-expert to fix the type errors in src/models.py
 Run scout and planner in a chain to analyze the auth module
 ```
 
+**Run agent with specific model:**
+
+```bash
+# Discover available models
+list_models(provider="litellm")
+
+# Run agent with explicit model
+subagent(agent="worker", task="...", model="litellm/claude-opus-4-6-1m")
+
+# Parallel tasks with per-task models
+subagent(tasks=[{agent: "worker", task: "...", model: "litellm/claude-opus-4-6-1m", cwd: "..."}])
+```
+
 ## Code Review Loop
 
 After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewers + test-automator):
@@ -231,9 +245,9 @@ always completes fix/explain (5a) before the cap check; the cap only blocks re-d
 At cap, report **Not fixed** (explained why not → outstanding) vs **Fixed**
 (verification blocked by the cap — cannot re-dispatch to confirm clean). Invalid values (including non-digit
 forms like `"10.0"` / `"1e1"`) fall through to the next resolution layer / default `3`. Disable the review loop via
-`review_loop_enforcement: false`, not via max_cycles. The max-cycles stop is via injected orchestrator rules
-(LLM compliance only); commit blocking remains code-enforced — blocked unless both `status: clean` and
-`tests_passed: true`; hitting the cycle cap does NOT bypass it.
+`review_loop_enforcement: false`, not via max_cycles. Commit blocking is code-enforced via `isCommitAllowed`:
+allows commit when `isReviewClean` (`status: clean` + `tests_passed: true`, or `status: none`), or when max cycles are exhausted
+(`status` is `has_findings` or `clean`, no pending reviewers, `cycle >= review_loop_max_cycles` — no `tests_passed` requirement).
 
 Staged mode (`--autorabbit`/`--autoqodo` in `/review-handler`) shares one total `review_loop_max_cycles` budget
 across both its Spec Compliance and Code Quality stages — not a separate cap per stage.
@@ -260,8 +274,8 @@ Create `.pi/pi-config-settings.json` in your project to override global defaults
   "image_model": "gemini-3-pro-image",
   "acpx_agents": ["cursor"],
   "cli_agents": ["claude", "cursor"],
-  "async_llm_provider": "anthropic",
-  "async_llm_model": "claude-sonnet-4-20250514",
+  "internal_operations_provider": "anthropic",
+  "internal_operations_model": "claude-sonnet-4-20250514",
   "agent_provider": "cli-cursor",
   "agent_model": "cursor:cursor-grok-4.5-high-fast",
   "agent_overrides": {
@@ -630,8 +644,10 @@ PI_PIDIFF_ENABLE=false pi
 | `git` | Version control |
 | `gh` | GitHub CLI (PRs, issues) |
 | `glab` | GitLab CLI (MRs, issues, pipelines) — install [gitlab-cli-skills](https://github.com/vince-winkintel/gitlab-cli-skills) for full agent support |
+| `gcc` | C compiler — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
 | `uv` / `uvx` | Python execution (enforced by orchestrator) |
 | `go` | Go development and code review |
+| `libxml2-dev` | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
 | `mcpl` | MCP server access (search, Jenkins, etc.) |
 | `myk-pi-tools` | PR review, release, and other CLI utilities |
 | `prek` | Pre-commit hook runner |

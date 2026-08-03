@@ -27,7 +27,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isReviewClean, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
+import { markNeedsReview, isCommitAllowed, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -518,7 +518,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Use resolveEffectiveCwd to detect the worktree from cd commands (e.g., cd .worktrees/issue-622 && git commit)
     if (process.env.PI_AGENT_NAME === "git-expert" && hasGitSub(command, "commit")) {
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
-      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isReviewClean(commitCwd)) {
+      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
         const state = readReviewState(commitCwd);
         const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
         const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";

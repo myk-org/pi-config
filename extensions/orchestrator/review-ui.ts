@@ -8,10 +8,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { onStateTransition, readReviewState, type ReviewState } from "./pi-config-review-state.js";
+import { onStateTransition, readReviewState, markNeedsReview, resetReviewState, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
+import { runGit } from "./git-helpers.js";
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -23,11 +24,13 @@ interface ReviewStatusData {
   timestamp: number;
 }
 
-// Deduplication — skip append if status+cycle hasn't changed
+// Deduplication — skip append if status hasn't changed
 let lastAppendedKey = "";
 
 /** Dedup key shared by status bar and transcript cards. */
 function stateKey(s: { status: string; cycle: number; findings_count: number; tests_passed: boolean; reviewers_pending: { length: number } }): string {
+  // For needs_review, only status+cycle matter — tests_passed flips shouldn't re-trigger the card
+  if (s.status === "needs_review") return `${s.status}:${s.cycle}`;
   return `${s.status}:${s.cycle}:${s.findings_count}:${s.tests_passed}:${s.reviewers_pending.length}`;
 }
 
@@ -95,6 +98,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
 
   let lastCtx: ExtensionContext | null = null;
   let lastBarKey = "";
+  let lastGitSnapshot = "";
 
   function updateStatusBar(state: ReviewState): void {
     if (!lastCtx?.hasUI) return;
@@ -142,6 +146,15 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   // Capture ctx and show current state on load
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
+    // Initialize git snapshot for dirty detection
+    lastGitSnapshot = runGit(["status", "--porcelain"], ctx.cwd).stdout;
+    // If tree is already dirty on session start, ensure review state reflects it
+    if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement")) {
+      const state = readReviewState(ctx.cwd);
+      if (state.status === "none" || state.status === "clean") {
+        try { markNeedsReview(ctx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
+      }
+    }
     if (getSetting(ctx.cwd, "review_loop_enforcement")) {
       updateStatusBar(readReviewState(ctx.cwd));
     } else if (ctx.hasUI) {
@@ -169,22 +182,58 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   }, 5000);
   if (reviewPoller.unref) reviewPoller.unref();
 
+  // Poll git status to detect file changes from CLI/ACPX agents
+  const gitDirtyPoller = setInterval(() => {
+    if (!lastCtx) return;
+    try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
+    try {
+      if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) return;
+      const result = runGit(["status", "--porcelain"], lastCtx.cwd);
+      const snapshot = result.stdout;
+      if (snapshot === lastGitSnapshot) return;
+      lastGitSnapshot = snapshot;
+      if (snapshot) {
+        // Dirty tree — markNeedsReview handles all states:
+        // none/clean/has_findings → sets needs_review
+        // in_progress → sets edited_during_cycle + clears tests_passed
+        // needs_review → no-op (deduped internally)
+        try { markNeedsReview(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
+      } else if (result.code === 0) {
+        // Tree clean AND git succeeded — reset when status is clean (committed-away)
+        // or needs_review (edits reverted, nothing left to review). Skip has_findings
+        // (reviews found issues) and in_progress (reviewers still running).
+        const state = readReviewState(lastCtx.cwd);
+        if (state.status === "clean" || state.status === "needs_review") {
+          try { resetReviewState(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] resetReviewState failed:", e?.message); }
+        }
+      }
+    } catch (e: any) { console.debug("[review-ui] gitDirtyPoller error:", e?.message); }
+  }, 3000);
+  if (gitDirtyPoller.unref) gitDirtyPoller.unref();
+
   pi.on("session_shutdown", () => {
     clearInterval(reviewPoller);
+    clearInterval(gitDirtyPoller);
   });
 
   // ── Hook into review state transitions ───────────────────────────────
 
   onStateTransition((state: ReviewState) => {
-    // Always update status bar (even for "none" — clears it)
-    // Only show if enforcement is enabled
+    // Always update status bar
     if (lastCtx && getSetting(lastCtx.cwd, "review_loop_enforcement")) {
       updateStatusBar(state);
     }
 
-    if (state.status === "none") return;
+    if (state.status === "none") {
+      lastAppendedKey = "";
+      return;
+    }
 
-    const data: ReviewStatusData = {
+    // Card only shows on status change — not on tests_passed/findings/pending changes
+    if (state.status === lastAppendedKey) return;
+    lastAppendedKey = state.status;
+
+    pi.appendEntry<ReviewStatusData>("review-status", {
       status: state.status,
       cycle: state.cycle,
       findings_count: state.findings_count,
@@ -192,13 +241,6 @@ export function registerReviewUI(pi: ExtensionAPI): void {
       reviewers_pending: [...state.reviewers_pending],
       reviewers_total: state.reviewers_total,
       timestamp: Date.now(),
-    };
-
-    // Deduplicate transcript cards — skip if nothing meaningful changed
-    const key = stateKey(data);
-    if (key === lastAppendedKey) return;
-    lastAppendedKey = key;
-
-    pi.appendEntry<ReviewStatusData>("review-status", data);
+    });
   });
 }

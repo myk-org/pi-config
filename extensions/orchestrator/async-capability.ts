@@ -13,7 +13,7 @@
 
 import { asStringArray, getSetting } from "./project-settings.js";
 
-export interface AsyncLlmSidecar {
+export interface InternalOpsProvider {
   provider: string;
   model: string;
 }
@@ -61,9 +61,9 @@ export function supportsAsyncLlm(
  * Sidecar model for must-async LLM work (dream, fireAndForget) when parent is acpx.
  * Both provider and model must be set. Returns null if incomplete or sidecar is acpx-*.
  */
-export function getAsyncLlmSidecar(cwd: string): AsyncLlmSidecar | null {
-  const provider = getSetting(cwd, "async_llm_provider");
-  const model = getSetting(cwd, "async_llm_model");
+export function getInternalOpsProvider(cwd: string): InternalOpsProvider | null {
+  const provider = getSetting(cwd, "internal_operations_provider");
+  const model = getSetting(cwd, "internal_operations_model");
   if (
     typeof provider === "string" &&
     provider.trim() &&
@@ -80,7 +80,7 @@ export function getAsyncLlmSidecar(cwd: string): AsyncLlmSidecar | null {
 export type AsyncDispatchDecision =
   | { action: "keep-async" }
   | { action: "coerce-sync"; note: string }
-  | { action: "sidecar-async"; sidecar: AsyncLlmSidecar; note: string }
+  | { action: "sidecar-async"; sidecar: InternalOpsProvider; note: string }
   | { action: "skip"; note: string };
 
 /**
@@ -106,20 +106,20 @@ export function decideAsyncLlmDispatch(opts: {
   if (asyncOk) {
     return { action: "keep-async" };
   }
-  const sidecar = getAsyncLlmSidecar(opts.cwd);
+  const sidecar = getInternalOpsProvider(opts.cwd);
   if (opts.mustAsync) {
     if (!sidecar) {
       return {
         action: "skip",
         note:
           "Skipped must-async LLM work: parent is acpx and " +
-          "async_llm_provider/async_llm_model are not set (or sidecar is acpx-*).",
+          "internal_operations_provider/internal_operations_model are not set (or sidecar is acpx-*).",
       };
     }
     return {
       action: "sidecar-async",
       sidecar,
-      note: `Using async_llm sidecar ${sidecar.provider}/${sidecar.model} (parent is acpx).`,
+      note: `Using internal ops provider ${sidecar.provider}/${sidecar.model} (parent is acpx).`,
     };
   }
   return {

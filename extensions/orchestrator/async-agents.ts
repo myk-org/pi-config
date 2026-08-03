@@ -16,7 +16,9 @@ import { discoverAgents } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
-import { getMainBranch } from "./git-helpers.js";
+import {
+  getMainBranch,
+} from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
@@ -101,7 +103,7 @@ export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -193,7 +195,7 @@ export function registerAsyncAgents(
                   job.updatedAt = Date.now();
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch {}
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   try { fs.unlinkSync(resultFilePath); } catch {}
                 } catch {
@@ -202,7 +204,7 @@ export function registerAsyncAgents(
                   job.durationMs = Date.now() - job.startedAt;
                   job.updatedAt = Date.now();
                   if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                 }
               } else {
@@ -212,7 +214,7 @@ export function registerAsyncAgents(
                 job.updatedAt = Date.now();
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
                 if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
               }
               // Check if this completes a group — deliver remaining siblings' results
@@ -260,7 +262,6 @@ export function registerAsyncAgents(
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
     // before processResultFile() has read all group members' outputs.
     // Wait up to 2s total (not per-job) for all missing result files.
-    const lateIngestedIds = new Set<string>();
     // Wait for non-failed, non-fireAndForget jobs that haven't been ingested yet
     const waitJobs = groupJobs.filter(j => j.output === undefined && !j.fireAndForget && j.status !== "failed");
     if (waitJobs.length > 0) {
@@ -277,21 +278,33 @@ export function registerAsyncAgents(
         j.exitCode = data.exitCode;
         j.durationMs = data.durationMs;
         if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
-        lateIngestedIds.add(j.id);
         asyncLog(`deliverGroupResults: late-ingested result for ${j.id}`);
       } catch (e: any) { asyncLog(`deliverGroupResults: late-ingest failed for ${j.id}: ${e?.message}`); }
     }
 
-    // Track reviewer completions for late-ingested code-reviewer jobs only
-    // (jobs already processed by processResultFile were tracked there)
+    // Track reviewer completions for ALL code-reviewer jobs in the group.
+    // processResultFile may have already called recordReviewerResult for some,
+    // but recordReviewerResult is idempotent (skips if reviewer already reported).
     for (const j of groupJobs) {
-      if (!j.agent.startsWith("code-reviewer-") || !lateIngestedIds.has(j.id)) continue;
+      if (!j.agent.startsWith("code-reviewer-")) continue;
       try {
         const output = typeof j.output === "string" ? j.output : "";
         const findings = countFindings(output);
         // -1 means invalid JSON output — treat conservatively as having findings
         recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
-      } catch { /* best-effort */ }
+      } catch (e: any) { asyncLog(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); }
+    }
+
+    // Track test agent completions for grouped test-automator/test-runner
+    for (const j of groupJobs) {
+      if (j.agent !== "test-automator" && j.agent !== "test-runner") continue;
+      try {
+        if (j.status === "complete") {
+          markTestsPassed(jobCwd(j));
+        } else if (j.status === "failed") {
+          markTestsFailed(jobCwd(j));
+        }
+      } catch (e: any) { asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); }
     }
 
     // Skip delivery if ALL jobs in group are fire-and-forget
@@ -364,8 +377,16 @@ export function registerAsyncAgents(
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
       asyncLog(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
-      if (!job) return;
-      if (job.delivered) return; // Already delivered to user
+      if (!job) {
+        // Orphan result file — job not in current session. Clean up to prevent re-delivery on reload.
+        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`orphan cleanup failed: ${resultPath}: ${e?.message}`); }
+        return;
+      }
+      if (job.delivered) {
+        // Already delivered — clean up stale file
+        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
+        return;
+      }
       // Skip if already ingested (grouped jobs stay on disk until group delivers)
       if (job.output !== undefined) return;
 
@@ -387,7 +408,7 @@ export function registerAsyncAgents(
           const findings = countFindings(output);
           // -1 means invalid JSON output — treat conservatively as having findings
           recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
-        } catch { /* best-effort */ }
+        } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
         // If agent uses a custom model, we pass its context window via the config.
@@ -513,7 +534,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -536,6 +557,7 @@ export function registerAsyncAgents(
     if (!parentStartTime) {
       console.debug("[async-agents] WARNING: could not read /proc/self/stat starttime after 3 attempts");
     }
+    const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd, options?.explicit);
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
@@ -572,7 +594,6 @@ export function registerAsyncAgents(
       : agentName + ':' + task.slice(0, 100);
     const deterministicSessionId = `async-${agentName}-${djb2Hash(sessionIdSource).toString(36)}`;
     piArgs.push("--session-id", deterministicSessionId);
-    const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd);
     if (effectiveModel) piArgs.push("--model", effectiveModel);
     if (effectiveProvider) piArgs.push("--provider", effectiveProvider);
     if (agent.tools?.length) piArgs.push("--tools", agent.tools.join(","));
@@ -664,14 +685,8 @@ export function registerAsyncAgents(
       }
     }
 
-    const proc = spawn(process.execPath, spawnArgs, {
-      cwd,
-      stdio: "ignore",
-      windowsHide: true,
-      env: spawnEnv,
-    });
-
-    // Track the job
+    // Register job BEFORE spawn — child can finish and write result file before
+    // jobs.set runs; watcher/poller would then treat it as orphan and delete it.
     const job: AsyncJob = {
       id,
       agent: agentName,
@@ -691,6 +706,13 @@ export function registerAsyncAgents(
       model: effectiveModel,
     };
     asyncState.jobs.set(id, job);
+
+    const proc = spawn(process.execPath, spawnArgs, {
+      cwd,
+      stdio: "ignore",
+      windowsHide: true,
+      env: spawnEnv,
+    });
 
     // addReviewerPending already called above (before piArgs construction)
 
@@ -891,7 +913,7 @@ export function registerAsyncAgents(
       job.updatedAt = Date.now();
       // Record killed reviewer as having 0 findings — prevents permanent commit block
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch { /* best-effort */ }
+        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {

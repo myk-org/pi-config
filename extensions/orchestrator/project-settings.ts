@@ -6,7 +6,7 @@
  * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
  *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
- *    PI_ASYNC_LLM_PROVIDER, PI_ASYNC_LLM_MODEL, PI_REVIEW_LOOP_MAX_CYCLES)
+ *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES)
  * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190;
  *    review_loop_max_cycles to 3)
  *
@@ -40,9 +40,9 @@ interface ProjectSettings {
   pidash_port?: number;
   image_model?: string;
   /** Provider for detached LLM async children when parent is acpx (must-async / dream). */
-  async_llm_provider?: string;
+  internal_operations_provider?: string;
   /** Model id for detached LLM async children when parent is acpx. */
-  async_llm_model?: string;
+  internal_operations_model?: string;
   /** Max review-loop cycles injected into the rules prompt. Integer 1-10 only. */
   review_loop_max_cycles?: number;
   /** Default provider for all subagents. */
@@ -83,11 +83,11 @@ function parseSettingsFile(filePath: string): ProjectSettings {
     if (typeof raw.image_model === "string" && raw.image_model.trim()) {
       result.image_model = raw.image_model.trim();
     }
-    if (typeof raw.async_llm_provider === "string" && raw.async_llm_provider.trim()) {
-      result.async_llm_provider = raw.async_llm_provider.trim();
+    if (typeof raw.internal_operations_provider === "string" && raw.internal_operations_provider.trim()) {
+      result.internal_operations_provider = raw.internal_operations_provider.trim();
     }
-    if (typeof raw.async_llm_model === "string" && raw.async_llm_model.trim()) {
-      result.async_llm_model = raw.async_llm_model.trim();
+    if (typeof raw.internal_operations_model === "string" && raw.internal_operations_model.trim()) {
+      result.internal_operations_model = raw.internal_operations_model.trim();
     }
     const parsedMaxCycles = parseReviewLoopMaxCycles(raw.review_loop_max_cycles);
     if (parsedMaxCycles !== undefined) {
@@ -302,8 +302,8 @@ export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
 export function getSetting(cwd: string, key: "pidash_port"): number;
 export function getSetting(cwd: string, key: "image_model"): string;
-export function getSetting(cwd: string, key: "async_llm_provider"): string;
-export function getSetting(cwd: string, key: "async_llm_model"): string;
+export function getSetting(cwd: string, key: "internal_operations_provider"): string;
+export function getSetting(cwd: string, key: "internal_operations_model"): string;
 export function getSetting(cwd: string, key: "review_loop_max_cycles"): number;
 export function getSetting(cwd: string, key: "agent_provider"): string;
 export function getSetting(cwd: string, key: "agent_model"): string;
@@ -426,14 +426,14 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       const env = process.env.PI_IMAGE_MODEL;
       return env !== undefined && env !== "" ? env : "";
     }
-    case "async_llm_provider": {
-      if (settings.async_llm_provider !== undefined) return settings.async_llm_provider;
-      const env = process.env.PI_ASYNC_LLM_PROVIDER;
+    case "internal_operations_provider": {
+      if (settings.internal_operations_provider !== undefined) return settings.internal_operations_provider;
+      const env = process.env.PI_INTERNAL_OPERATIONS_PROVIDER;
       return env !== undefined && env !== "" ? env.trim() : "";
     }
-    case "async_llm_model": {
-      if (settings.async_llm_model !== undefined) return settings.async_llm_model;
-      const env = process.env.PI_ASYNC_LLM_MODEL;
+    case "internal_operations_model": {
+      if (settings.internal_operations_model !== undefined) return settings.internal_operations_model;
+      const env = process.env.PI_INTERNAL_OPERATIONS_MODEL;
       return env !== undefined && env !== "" ? env.trim() : "";
     }
     case "review_loop_max_cycles": {

@@ -165,4 +165,60 @@ describe("resolveAgentModelProvider", () => {
 		assert.strictEqual(result.model, "custom-model");
 		assert.strictEqual(result.provider, "agent-provider"); // from frontmatter, not parent
 	});
+
+	it("explicit model+provider beats agent_overrides and frontmatter", () => {
+		writeSettings({
+			agent_provider: "global-provider",
+			agent_model: "global-model",
+			agent_overrides: {
+				worker: { model: "override-model", provider: "override-provider" },
+			},
+		});
+		const result = resolveAgentModelProvider(
+			"worker",
+			{ model: "fm-model", provider: "fm-provider" },
+			"parent-model",
+			"parent-provider",
+			tmp,
+			{ model: "explicit-model", provider: "explicit-provider" },
+		);
+		assert.deepEqual(result, { model: "explicit-model", provider: "explicit-provider" });
+	});
+
+	it("explicit model only — provider still from overrides (per-field)", () => {
+		writeSettings({
+			agent_provider: "global-provider",
+			agent_model: "global-model",
+			agent_overrides: {
+				worker: { model: "override-model", provider: "override-provider" },
+			},
+		});
+		const result = resolveAgentModelProvider(
+			"worker",
+			{ model: "fm-model", provider: "fm-provider" },
+			"parent-model",
+			"parent-provider",
+			tmp,
+			{ model: "explicit-model" },
+		);
+		// explicit model wins; provider still resolves through override chain
+		assert.deepEqual(result, { model: "explicit-model", provider: "override-provider" });
+	});
+
+	it("undefined explicit leaves priority chain unchanged", () => {
+		writeSettings({
+			agent_overrides: {
+				worker: { model: "override-model", provider: "override-provider" },
+			},
+		});
+		const result = resolveAgentModelProvider(
+			"worker",
+			{ model: "fm-model", provider: "fm-provider" },
+			"parent-model",
+			"parent-provider",
+			tmp,
+			undefined,
+		);
+		assert.deepEqual(result, { model: "override-model", provider: "override-provider" });
+	});
 });

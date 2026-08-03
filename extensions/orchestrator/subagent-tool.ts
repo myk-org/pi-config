@@ -49,9 +49,10 @@ import {
 } from "./async-capability.js";
 import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
+import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
-export { resolveAgentModelProvider };
+export { resolveAgentModelProvider, parseModelOverride };
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ const TaskItem = Type.Object({
   name: Type.Optional(Type.String({ description: "Display name for async status" })),
   estimatedSeconds: Type.Optional(Type.Number({ description: "Estimated task duration in seconds. Required for sync parallel tasks." })),
   taskId: Type.Optional(Type.String({ description: "Task ID to auto-complete when this async agent finishes" })),
+  model: Type.Optional(Type.String({ description: "Override the agent's model. Format: 'provider/model-id' or 'model-id'." })),
 });
 const ChainItem = Type.Object({
   agent: Type.String({ description: "Agent name" }),
@@ -140,6 +142,9 @@ const SubagentParams = Type.Object({
   ),
   persistSession: Type.Optional(
     Type.Boolean({ description: "Persist agent session to disk for reuse across calls. Default: false (ephemeral). When true, the same agent in the same project reuses its session — keeps context, saves tokens." }),
+  ),
+  model: Type.Optional(
+    Type.String({ description: "Override the agent's model. Format: 'provider/model-id' (e.g., 'litellm/claude-opus-4-6-1m') or just 'model-id' (inherits provider). Overrides all other model resolution." }),
   ),
 });
 
@@ -370,6 +375,7 @@ export async function runSingleAgent(
   parentModelId?: string,
   parentProvider?: string,
   persistSession?: boolean,
+  explicit?: { model?: string; provider?: string },
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
@@ -401,7 +407,7 @@ export async function runSingleAgent(
     // Deterministic session ID based on agent + cwd for session reuse
     args.push("--session-id", `sync-${agentName}-${djb2Hash(agentName + ':' + cwd).toString(36)}`);
   }
-  const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, parentModelId, parentProvider, cwd);
+  const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, parentModelId, parentProvider, cwd, explicit);
   if (effectiveModel) args.push("--model", effectiveModel);
   if (effectiveProvider) args.push("--provider", effectiveProvider);
   if (agent.tools && agent.tools.length > 0)
@@ -528,6 +534,7 @@ export async function runSingleAgent(
 
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
+
     if (aborted) throw new Error("Subagent was aborted");
     return cur;
   } finally {
@@ -575,7 +582,7 @@ function validateTaskId(taskId: string, cwd: string, sessionId?: string): string
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -606,6 +613,7 @@ export function registerSubagentTool(
     parentModelId: string | undefined,
     parentProvider: string | undefined,
     ctx: any,
+    explicit?: { model?: string; provider?: string },
   ) {
     if (params.chain) {
       return {
@@ -664,6 +672,7 @@ export function registerSubagentTool(
         ? `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
         : undefined;
       for (const t of params.tasks) {
+        const taskExplicit = mergeModelOverride(t.model, explicit);
         const r = spawnAsyncAgent(t.agent, t.task, t.cwd, agents, {
           fireAndForget: params.fireAndForget,
           name: (t as any).name,
@@ -672,6 +681,7 @@ export function registerSubagentTool(
           groupId,
           taskId: (t as any).taskId,
           persistSession: params.persistSession,
+          explicit: taskExplicit,
         });
         if (r.error) {
           errors.push(`${t.agent}: ${r.error}`);
@@ -742,7 +752,15 @@ export function registerSubagentTool(
         };
       }
     }
-    const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, { fireAndForget: params.fireAndForget, name: params.name, parentModelId, parentProvider, taskId: params.taskId, persistSession: params.persistSession });
+    const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, {
+      fireAndForget: params.fireAndForget,
+      name: params.name,
+      parentModelId,
+      parentProvider,
+      taskId: params.taskId,
+      persistSession: params.persistSession,
+      explicit: explicit,
+    });
     if (result.error) {
       return {
         content: [{ type: "text" as const, text: result.error }],
@@ -770,6 +788,7 @@ export function registerSubagentTool(
     parentProvider: string | undefined,
     asyncOk: boolean,
     sessionId?: string,
+    explicit?: { model?: string; provider?: string },
   ) {
     const results: SingleResult[] = [];
     let prev = "";
@@ -848,6 +867,7 @@ export function registerSubagentTool(
         parentModelId,
         parentProvider,
         params.persistSession,
+        explicit,
       );
       activeAgents.delete(s.agent);
       updateWorking();
@@ -899,6 +919,7 @@ export function registerSubagentTool(
     parentProvider: string | undefined,
     asyncOk: boolean,
     sessionId?: string,
+    explicit?: { model?: string; provider?: string },
   ) {
     if (params.tasks.length > MAX_PARALLEL_TASKS)
       return {
@@ -997,6 +1018,7 @@ export function registerSubagentTool(
         const label = t.name || t.agent;
         activeAgents.add(label);
         updateWorking();
+        const taskExplicit = mergeModelOverride(t.model, explicit);
         const r = await runSingleAgent(
           agents,
           t.agent,
@@ -1014,6 +1036,7 @@ export function registerSubagentTool(
           parentModelId,
           parentProvider,
           params.persistSession,
+          taskExplicit,
         );
         all[i] = r;
         activeAgents.delete(t.name || t.agent);
@@ -1062,6 +1085,7 @@ export function registerSubagentTool(
     parentProvider: string | undefined,
     asyncOk: boolean,
     sessionId?: string,
+    explicit?: { model?: string; provider?: string },
   ) {
     if (!params.cwd) {
       return {
@@ -1116,6 +1140,7 @@ export function registerSubagentTool(
       parentModelId,
       parentProvider,
       params.persistSession,
+      explicit,
     );
     activeAgents.delete(label);
     updateWorking();
@@ -1451,6 +1476,8 @@ export function registerSubagentTool(
       const confirm = params.confirmProjectAgents ?? true;
       let parentModelId = ctx.model?.id as string | undefined;
       let parentProvider = ctx.model?.provider as string | undefined;
+      // Parse explicit model override from params (applies to all execution modes)
+      const explicitOverride = parseModelOverride(params.model);
       const asyncOk = supportsAsyncLlm(parentProvider, ctx.cwd);
       let capabilityNote = "";
 
@@ -1577,9 +1604,11 @@ export function registerSubagentTool(
         }
       }
 
+      const explicit = explicitOverride;
+
       // Async mode — spawn in background and return immediately
       if (params.async === true) {
-        const result = executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx);
+        const result = executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx, explicit);
         if (capabilityNote && result.content?.[0]?.type === "text") {
           result.content[0].text = `${capabilityNote}\n\n${result.content[0].text}`;
         }
@@ -1600,21 +1629,21 @@ export function registerSubagentTool(
       // Chain mode
       if (params.chain && params.chain.length > 0) {
         return withCapabilityNote(
-          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId),
+          await executeChain(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit),
         );
       }
 
       // Parallel mode
       if (params.tasks && params.tasks.length > 0) {
         return withCapabilityNote(
-          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId),
+          await executeParallel(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit),
         );
       }
 
       // Single mode
       if (params.agent && params.task) {
         return withCapabilityNote(
-          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId),
+          await executeSingle(params, agents, mkd, signal, onUpdate, activeAgents, updateWorking, parentModelId, parentProvider, asyncOk, sessionId, explicit),
         );
       }
 

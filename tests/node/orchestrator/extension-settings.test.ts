@@ -118,8 +118,8 @@ describe("extension settings", () => {
 		PI_PIDIFF_ENABLE: process.env.PI_PIDIFF_ENABLE,
 		PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
 		PI_IMAGE_MODEL: process.env.PI_IMAGE_MODEL,
-		PI_ASYNC_LLM_PROVIDER: process.env.PI_ASYNC_LLM_PROVIDER,
-		PI_ASYNC_LLM_MODEL: process.env.PI_ASYNC_LLM_MODEL,
+		PI_INTERNAL_OPERATIONS_PROVIDER: process.env.PI_INTERNAL_OPERATIONS_PROVIDER,
+		PI_INTERNAL_OPERATIONS_MODEL: process.env.PI_INTERNAL_OPERATIONS_MODEL,
 		ACPX_AGENTS: process.env.ACPX_AGENTS,
 		CLI_AGENTS: process.env.CLI_AGENTS,
 		PI_REVIEW_LOOP_MAX_CYCLES: process.env.PI_REVIEW_LOOP_MAX_CYCLES,
@@ -135,8 +135,8 @@ describe("extension settings", () => {
 		delete process.env.PI_PIDIFF_ENABLE;
 		delete process.env.PI_PIDASH_PORT;
 		delete process.env.PI_IMAGE_MODEL;
-		delete process.env.PI_ASYNC_LLM_PROVIDER;
-		delete process.env.PI_ASYNC_LLM_MODEL;
+		delete process.env.PI_INTERNAL_OPERATIONS_PROVIDER;
+		delete process.env.PI_INTERNAL_OPERATIONS_MODEL;
 		delete process.env.ACPX_AGENTS;
 		delete process.env.CLI_AGENTS;
 		delete process.env.PI_REVIEW_LOOP_MAX_CYCLES;
@@ -292,26 +292,26 @@ describe("extension settings", () => {
 		assert.equal(getSetting(tmp, "image_model"), "global-model");
 	});
 
-	it("async_llm_provider/model default empty", () => {
-		assert.equal(getSetting(tmp, "async_llm_provider"), "");
-		assert.equal(getSetting(tmp, "async_llm_model"), "");
+	it("internal_operations_provider/model default empty", () => {
+		assert.equal(getSetting(tmp, "internal_operations_provider"), "");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "");
 	});
 
-	it("async_llm_* from settings file", () => {
+	it("internal_operations_* from settings file", () => {
 		writeSettings({
-			async_llm_provider: "anthropic",
-			async_llm_model: "claude-sonnet-4-20250514",
+			internal_operations_provider: "anthropic",
+			internal_operations_model: "claude-sonnet-4-20250514",
 		});
-		assert.equal(getSetting(tmp, "async_llm_provider"), "anthropic");
-		assert.equal(getSetting(tmp, "async_llm_model"), "claude-sonnet-4-20250514");
+		assert.equal(getSetting(tmp, "internal_operations_provider"), "anthropic");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "claude-sonnet-4-20250514");
 	});
 
-	it("async_llm_* from env when unset in file", () => {
-		process.env.PI_ASYNC_LLM_PROVIDER = "openai";
-		process.env.PI_ASYNC_LLM_MODEL = "gpt-5.4";
+	it("internal_operations_* from env when unset in file", () => {
+		process.env.PI_INTERNAL_OPERATIONS_PROVIDER = "openai";
+		process.env.PI_INTERNAL_OPERATIONS_MODEL = "gpt-5.4";
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "async_llm_provider"), "openai");
-		assert.equal(getSetting(tmp, "async_llm_model"), "gpt-5.4");
+		assert.equal(getSetting(tmp, "internal_operations_provider"), "openai");
+		assert.equal(getSetting(tmp, "internal_operations_model"), "gpt-5.4");
 	});
 
 	it("cli_agents defaults empty", () => {

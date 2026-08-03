@@ -15,17 +15,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
   apt-get update && apt-get install -y --no-install-recommends \
+  acl \
+  ca-certificates \
   curl \
+  gcc \
+  git \
   gnupg \
   jq \
-  unzip \
-  ca-certificates \
-  git \
+  libxml2-dev \
   openssh-client \
   procps \
   psmisc \
-  acl \
   ripgrep \
+  unzip \
   && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI (signed repo, uses curl+gpg from above)

@@ -56,3 +56,14 @@ Some agents are dispatched internally by rules or prompt templates, not by the r
 ## Fallback
 
 **Fallback:** No specialist? → `worker` agent
+
+## Model Override
+
+When the user asks to run an agent with a specific model:
+
+1. Use `list_models` tool to discover available providers and models.
+2. Pass the model to `subagent(model="provider/model-id")`.
+3. Format: `provider/model-id` (e.g., `litellm/claude-opus-4-6-1m`) or just `model-id` (overrides model only; provider follows normal resolution chain).
+4. For parallel tasks, set `model` per-task in the tasks array. Top-level `model` is used as fallback for tasks without their own.
+5. Chain steps share the top-level `model` — no per-step override.
+6. Explicit `model` param overrides agent_overrides, frontmatter, and settings.

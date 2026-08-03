@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerBtw } from "./btw.js";
@@ -97,4 +98,58 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerSessionSearch(pi);
+
+  // ── list_models tool — LLM-callable model discovery ──
+  pi.registerTool({
+    name: "list_models",
+    label: "List Models",
+    description: "List available models and providers. Use when the user asks to run an agent with a specific model, or when you need to discover available models for the subagent model parameter. Returns provider/model pairs that can be passed to subagent(model=\"provider/model-id\").",
+    parameters: Type.Object({
+      provider: Type.Optional(Type.String({ description: "Filter by provider name (e.g., 'litellm', 'cli-cursor', 'google')" })),
+    }),
+    async execute(_callId, params, _signal, _onUpdate, ctx) {
+      let models: any[];
+      try {
+        const registry = ctx.modelRegistry;
+        if (!registry) {
+          return {
+            content: [{ type: "text" as const, text: "Model registry not available." }],
+          };
+        }
+        models = registry.getAvailable?.() || registry.getAll?.() || [];
+      } catch (e: any) {
+        return {
+          content: [{ type: "text" as const, text: `Failed to list models: ${e?.message || e}` }],
+        };
+      }
+      // Filter out acpx-* providers — they cannot work in subagent children
+      // (PI_SUBAGENT_CHILD=1 skips acpx registration)
+      const filtered = (params.provider
+        ? models.filter((m: any) => m.provider === params.provider)
+        : models
+      ).filter((m: any) => !(m.provider || "").startsWith("acpx-"));
+      if (filtered.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: params.provider ? `No models found for provider "${params.provider}".` : "No models available." }],
+        };
+      }
+      // Group by provider for readability
+      const byProvider = new Map<string, string[]>();
+      for (const m of filtered) {
+        const list = byProvider.get(m.provider) || [];
+        list.push(m.id);
+        byProvider.set(m.provider, list);
+      }
+      const lines: string[] = [];
+      for (const [prov, ids] of byProvider) {
+        lines.push(`## ${prov}`);
+        for (const id of ids) {
+          lines.push(`- ${prov}/${id}`);
+        }
+      }
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+      };
+    },
+  });
 }

@@ -13,6 +13,7 @@ import {
   addReviewerPending,
   recordReviewerResult,
   isReviewClean,
+  isCommitAllowed,
   resetReviewState,
   countFindings,
   statePath,
@@ -441,6 +442,71 @@ describe("tests_passed", () => {
 
     markTestsPassed(cwd);
     assert.equal(isReviewClean(cwd), true);
+  });
+
+  it("isCommitAllowed true when has_findings and max cycles exhausted", () => {
+    // Cycle 1: findings
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 2);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 1);
+    assert.equal(isReviewClean(cwd), false); // not clean — still has findings
+    assert.equal(isCommitAllowed(cwd), false); // below default max 3
+
+    // Cycle 2
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).cycle, 2);
+    assert.equal(isReviewClean(cwd), false);
+    assert.equal(isCommitAllowed(cwd), false);
+
+    // Cycle 3 — at default max
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 3);
+    assert.equal(isReviewClean(cwd), false); // still not clean
+    assert.equal(isCommitAllowed(cwd), true); // max cycles exhausted (tests_passed not required)
+    markTestsPassed(cwd);
+    assert.equal(isReviewClean(cwd), false); // max cycles ≠ clean
+    assert.equal(isCommitAllowed(cwd), true); // still allowed
+  });
+
+  it("isCommitAllowed false when has_findings below max cycles", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 3);
+    markTestsPassed(cwd);
+    assert.equal(readReviewState(cwd).status, "has_findings");
+    assert.equal(readReviewState(cwd).cycle, 1);
+    assert.equal(isReviewClean(cwd), false);
+    assert.equal(isCommitAllowed(cwd), false);
+  });
+
+  it("isCommitAllowed false for needs_review even when cycle >= max", () => {
+    // Reach max cycles with findings, then edit again → needs_review with empty pending
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "lint");
+    recordReviewerResult(cwd, "lint", 1);
+    assert.equal(readReviewState(cwd).cycle, 3);
+    assert.equal(isCommitAllowed(cwd), true); // has_findings at max
+
+    markNeedsReview(cwd); // edits again — reviewers not spawned yet
+    assert.equal(readReviewState(cwd).status, "needs_review");
+    assert.equal(readReviewState(cwd).reviewers_pending.length, 0);
+    assert.equal(readReviewState(cwd).cycle, 3);
+    assert.equal(isCommitAllowed(cwd), false); // must not allow before review runs
   });
 });
 
