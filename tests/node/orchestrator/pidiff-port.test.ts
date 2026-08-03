@@ -28,7 +28,7 @@ describe("isPortFree", () => {
     try {
       assert.strictEqual(await isPortFree(port), false);
     } finally {
-      srv.close();
+      await new Promise<void>((resolve) => { srv.close(() => resolve()); });
     }
   });
 
@@ -45,7 +45,7 @@ describe("isPortFree", () => {
       assert.strictEqual(result, false);
       // No leaked servers — if we got here without hanging, cleanup worked
     } finally {
-      srv.close();
+      await new Promise<void>((resolve) => { srv.close(() => resolve()); });
     }
   });
 
@@ -63,7 +63,7 @@ describe("isPortFree", () => {
         assert.strictEqual(await isPortFree(port), false);
       }
     } finally {
-      blocker.close();
+      await new Promise<void>((resolve) => { blocker.close(() => resolve()); });
     }
   });
 });
