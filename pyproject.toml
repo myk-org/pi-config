@@ -40,6 +40,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["myk_pi_tools"]
 
+# settings-keys.json lives at repo root; commands.py resolves it via
+# Path(__file__).parent.parent.parent / "settings-keys.json" (site-packages/).
+[tool.hatch.build.targets.wheel.force-include]
+"settings-keys.json" = "settings-keys.json"
+
 [tool.hatch.build.targets.sdist]
 exclude = ["CLAUDE.md"]
 

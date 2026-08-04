@@ -120,6 +120,11 @@ Writing effective rules:
 - Enforcement honesty (code vs injected): see `dev-docs/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`
 - Project settings: see `dev-docs/project-settings.md`
+- Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
+  Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
+- Settings CLI: `uv run myk-pi-tools settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
+- Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — resolved at prompt assembly time via `substituteSettingsPlaceholders`.
+  Never instruct agents to read `pi-config-settings.json` manually.
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
 - Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries
 - Remote script exec enforcement (`checkRemoteExecBlock` in `enforcement-helpers.ts`):

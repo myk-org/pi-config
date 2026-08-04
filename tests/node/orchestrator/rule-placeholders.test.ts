@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { substituteRulePlaceholders } from "../../../extensions/orchestrator/rule-placeholders.js";
+import { substituteRulePlaceholders, substituteSettingsPlaceholders } from "../../../extensions/orchestrator/rule-placeholders.js";
 
 describe("substituteRulePlaceholders", () => {
 	it("replaces a single placeholder occurrence", () => {
@@ -31,5 +31,44 @@ describe("substituteRulePlaceholders", () => {
 	it("leaves text unchanged when placeholder is absent", () => {
 		const result = substituteRulePlaceholders("No placeholders here.", { reviewLoopMaxCycles: 3 });
 		assert.equal(result, "No placeholders here.");
+	});
+});
+
+describe("substituteSettingsPlaceholders", () => {
+	const resolve = (key: string): unknown => {
+		const values: Record<string, unknown> = {
+			dco: true,
+			commit_trailer: "Assisted-by",
+			use_worktrees: false,
+			comment_signature: true,
+		};
+		return values[key] ?? false;
+	};
+	const allKeys = ["dco", "commit_trailer", "use_worktrees", "comment_signature"];
+
+	it("replaces {{SETTINGS:key1,key2}} with resolved JSON", () => {
+		const result = substituteSettingsPlaceholders("Config: {{SETTINGS:dco,commit_trailer}}", resolve, allKeys);
+		assert.equal(result, 'Config: {"dco":true,"commit_trailer":"Assisted-by"}');
+	});
+
+	it("replaces {{SETTINGS}} (no keys) with all keys", () => {
+		const result = substituteSettingsPlaceholders("All: {{SETTINGS}}", resolve, allKeys);
+		assert.equal(result, 'All: {"dco":true,"commit_trailer":"Assisted-by","use_worktrees":false,"comment_signature":true}');
+	});
+
+	it("handles multiple placeholders", () => {
+		const text = "A: {{SETTINGS:dco}} B: {{SETTINGS:commit_trailer,use_worktrees}}";
+		const result = substituteSettingsPlaceholders(text, resolve, allKeys);
+		assert.equal(result, 'A: {"dco":true} B: {"commit_trailer":"Assisted-by","use_worktrees":false}');
+	});
+
+	it("leaves text unchanged when no placeholders", () => {
+		const result = substituteSettingsPlaceholders("No placeholders here.", resolve, allKeys);
+		assert.equal(result, "No placeholders here.");
+	});
+
+	it("handles unknown keys with default resolve", () => {
+		const result = substituteSettingsPlaceholders("{{SETTINGS:unknown_key}}", resolve, allKeys);
+		assert.equal(result, '{"unknown_key":false}');
 	});
 });

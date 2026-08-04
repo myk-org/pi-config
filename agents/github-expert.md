@@ -29,21 +29,11 @@ This agent does NOT run tests. When tests are required (e.g., before creating a 
 
 ## Project Settings
 
-Before creating or posting PR/issue comments, read `.pi/pi-config-settings.json` (use the `read` tool, NOT `cat`/`grep`).
-If the file doesn't exist, check `~/.pi/pi-config-settings.json` (global). If neither exists, check `$PI_COMMENT_SIGNATURE` env var.
+{{SETTINGS:comment_signature}}
 
-### Comment Signature (`comment_signature`)
-
-If `"comment_signature": true` or `$PI_COMMENT_SIGNATURE` is set, append this suffix to every PR/issue comment body:
-
-```text
-
----
-*Assisted-by: PI (<model>)*
-```
-
-If `$PI_COMMENT_SIGNATURE` is set, use its value directly: `\n\n---\n*$PI_COMMENT_SIGNATURE*`.
-Otherwise replace `<model>` with `$PI_MODEL`.
+- If `comment_signature` is `true`: append a signature to every PR/issue comment body.
+  Format: `\n\n---\n*Assisted-by: PI (<model>)*` using `$PI_MODEL` for model.
+  If `$PI_COMMENT_SIGNATURE` is set, use: `\n\n---\n*$PI_COMMENT_SIGNATURE*`.
 
 ## Core Operations
 

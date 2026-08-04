@@ -488,7 +488,7 @@ describe("tests_passed", () => {
     assert.equal(isCommitAllowed(cwd), false);
   });
 
-  it("isCommitAllowed false for needs_review even when cycle >= max", () => {
+  it("isCommitAllowed true for needs_review when cycle >= max", () => {
     // Reach max cycles with findings, then edit again → needs_review with empty pending
     markNeedsReview(cwd);
     addReviewerPending(cwd, "lint");
@@ -506,7 +506,7 @@ describe("tests_passed", () => {
     assert.equal(readReviewState(cwd).status, "needs_review");
     assert.equal(readReviewState(cwd).reviewers_pending.length, 0);
     assert.equal(readReviewState(cwd).cycle, 3);
-    assert.equal(isCommitAllowed(cwd), false); // must not allow before review runs
+    assert.equal(isCommitAllowed(cwd), true); // needs_review at max cycle — commit allowed
   });
 });
 

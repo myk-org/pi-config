@@ -1,0 +1,102 @@
+{
+  "dco": {
+    "type": "bool",
+    "env": "PI_DCO",
+    "default": false
+  },
+  "commit_trailer": {
+    "type": "bool_or_string",
+    "env": "PI_COMMIT_TRAILER",
+    "default": false
+  },
+  "use_worktrees": {
+    "type": "bool",
+    "env": "PI_USE_WORKTREES",
+    "default": false
+  },
+  "allow_push_to_protected_branches": {
+    "type": "bool",
+    "env": "PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES",
+    "default": false
+  },
+  "comment_signature": {
+    "type": "bool",
+    "default": false
+  },
+  "review_loop_enforcement": {
+    "type": "bool",
+    "env": "PI_REVIEW_LOOP_ENFORCEMENT",
+    "default": false
+  },
+  "review_loop_max_cycles": {
+    "type": "int",
+    "env": "PI_REVIEW_LOOP_MAX_CYCLES",
+    "default": 3,
+    "min": 1,
+    "max": 10,
+    "strict_digits": true
+  },
+  "dream_interval_hours": {
+    "type": "number",
+    "env": "PI_DREAM_INTERVAL_HOURS",
+    "default": 3
+  },
+  "orchestrator_edit_write_block": {
+    "type": "bool",
+    "default": false
+  },
+  "pidash_enable": {
+    "type": "bool_enable",
+    "env": "PI_PIDASH_ENABLE",
+    "default": true
+  },
+  "pidiff_enable": {
+    "type": "bool_enable",
+    "env": "PI_PIDIFF_ENABLE",
+    "default": true
+  },
+  "pidash_port": {
+    "type": "port",
+    "env": "PI_PIDASH_PORT",
+    "default": 19190
+  },
+  "image_model": {
+    "type": "string",
+    "env": "PI_IMAGE_MODEL",
+    "default": ""
+  },
+  "internal_operations_provider": {
+    "type": "string",
+    "env": "PI_INTERNAL_OPERATIONS_PROVIDER",
+    "default": ""
+  },
+  "internal_operations_model": {
+    "type": "string",
+    "env": "PI_INTERNAL_OPERATIONS_MODEL",
+    "default": ""
+  },
+  "acpx_agents": {
+    "type": "agent_list",
+    "env": "ACPX_AGENTS",
+    "default": [],
+    "per_key_resolution": true
+  },
+  "cli_agents": {
+    "type": "agent_list",
+    "env": "CLI_AGENTS",
+    "default": [],
+    "per_key_resolution": true
+  },
+  "agent_provider": {
+    "type": "string",
+    "default": ""
+  },
+  "agent_model": {
+    "type": "string",
+    "default": ""
+  },
+  "agent_overrides": {
+    "type": "agent_overrides",
+    "default": {}
+  }
+}

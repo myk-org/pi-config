@@ -199,11 +199,11 @@ export function registerReviewUI(pi: ExtensionAPI): void {
         // needs_review → no-op (deduped internally)
         try { markNeedsReview(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
       } else if (result.code === 0) {
-        // Tree clean AND git succeeded — reset when status is clean (committed-away)
-        // or needs_review (edits reverted, nothing left to review). Skip has_findings
-        // (reviews found issues) and in_progress (reviewers still running).
+        // Tree clean AND git succeeded — reset when status is clean (committed-away),
+        // needs_review (edits reverted, nothing left to review), or has_findings
+        // (committed+pushed — fresh start). Skip in_progress (reviewers still running).
         const state = readReviewState(lastCtx.cwd);
-        if (state.status === "clean" || state.status === "needs_review") {
+        if (state.status === "clean" || state.status === "needs_review" || state.status === "has_findings") {
           try { resetReviewState(lastCtx.cwd); } catch (e: any) { console.debug("[review-ui] resetReviewState failed:", e?.message); }
         }
       }
