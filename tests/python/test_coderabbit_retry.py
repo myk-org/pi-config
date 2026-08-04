@@ -34,13 +34,14 @@ def test_rate_limited_wait_elapsed(capsys: pytest.CaptureFixture[str]) -> None:
     with (
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, "2020-01-01T00:00:00Z", "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
-        patch(f"{_MODULE}._find_trigger_reply", return_value=True),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
         mock_time.sleep.assert_not_called()
+        mock_find_reply.assert_called_with("owner/repo", 1, 99)
     out = capsys.readouterr().out
     assert '"triggered"' in out
     assert '"comment_id": 42' in out
@@ -55,7 +56,7 @@ def test_rate_limited_wait_remaining() -> None:
     with (
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, recent, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
-        patch(f"{_MODULE}._find_trigger_reply", return_value=True),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
@@ -64,6 +65,7 @@ def test_rate_limited_wait_remaining() -> None:
         mock_time.sleep.assert_called_once()
         slept = mock_time.sleep.call_args[0][0]
         assert 115 <= slept <= 125  # ~120s remaining, allow small timing variance
+        mock_find_reply.assert_called_with("owner/repo", 1, 99)
 
 
 def test_trigger_failure() -> None:
@@ -102,13 +104,14 @@ def test_bad_timestamp_falls_back(capsys: pytest.CaptureFixture[str]) -> None:
     with (
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, _RATE_LIMITED_BODY, "not-a-date", "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
-        patch(f"{_MODULE}._find_trigger_reply", return_value=True),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
         mock_time.sleep.assert_called_once_with(150)  # full 2m30s wait
+        mock_find_reply.assert_called_with("owner/repo", 1, 99)
     captured = capsys.readouterr()
     assert "Could not parse comment timestamp" in captured.err
     assert '"triggered"' in captured.out
@@ -123,13 +126,14 @@ def test_wait_capped_at_one_hour(capsys: pytest.CaptureFixture[str]) -> None:
     with (
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, long_body, "not-a-date", "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
-        patch(f"{_MODULE}._find_trigger_reply", return_value=True),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time") as mock_time,
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
         mock_time.sleep.assert_called_once_with(3600)
+        mock_find_reply.assert_called_with("owner/repo", 1, 99)
     captured = capsys.readouterr()
     # Poll progress goes to stderr (output=sys.stderr)
     assert "Posting @coderabbitai review..." in captured.err
