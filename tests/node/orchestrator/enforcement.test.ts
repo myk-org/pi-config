@@ -1146,16 +1146,16 @@ describe("getCachedBranch", () => {
     assert.equal(result, null);
   });
 
-  it("bump-version branch lookup does not persist in cache", () => {
+  it("returns cached branch within TTL", () => {
     const fakePath = join(tmpdir(), `no-git-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    // Seed cache as if getCurrentBranch returned a normal branch — it persists within TTL
     seedBranchCacheForTests(fakePath, "feature/foo");
     assert.equal(getCachedBranch(fakePath), "feature/foo");
+  });
 
-    // Verify expired cache triggers fresh lookup (returns null for non-git path)
-    const fakePath2 = fakePath + "-expired";
-    seedBranchCacheForTests(fakePath2, "feature/bar", Date.now() - 6000);
-    const fresh = getCachedBranch(fakePath2);
+  it("expired cache triggers fresh branch lookup", () => {
+    const fakePath = join(tmpdir(), `no-git-repo-expired-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    seedBranchCacheForTests(fakePath, "feature/bar", Date.now() - 6000);
+    const fresh = getCachedBranch(fakePath);
     assert.equal(fresh, null); // getCurrentBranch on non-git path returns null
   });
 
