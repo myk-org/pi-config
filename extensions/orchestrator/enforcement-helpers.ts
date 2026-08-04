@@ -528,3 +528,8 @@ export function isTestRunnerCommand(command: string): boolean {
     || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
     || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
 }
+
+/** True for release bump branches: chore/bump-version-<digit>... */
+export function isBumpVersionBranch(branch: string | null): boolean {
+  return !!branch && /^chore\/bump-version-\d/.test(branch);
+}

@@ -26,6 +26,7 @@ import {
   hasGitAddForce,
   stripHeredocBodies,
   isTestRunnerCommand,
+  isBumpVersionBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 // ── extractSubshells ──
@@ -1085,5 +1086,31 @@ describe("isTestRunnerCommand", () => {
 
   it("does not match npm install jest", () => {
     assert.equal(isTestRunnerCommand("npm install jest"), false);
+  });
+});
+
+// ── isBumpVersionBranch ──
+
+describe("isBumpVersionBranch", () => {
+  it("matches valid release branch", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version-4.2.1-1234567890"), true);
+  });
+  it("matches branch with any version", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version-1.0.0-9999"), true);
+  });
+  it("rejects plain chore/bump-version without digit", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version"), false);
+  });
+  it("rejects arbitrary suffix without digit", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version-anything"), false);
+  });
+  it("rejects unrelated branch", () => {
+    assert.equal(isBumpVersionBranch("fix/issue-42"), false);
+  });
+  it("handles null", () => {
+    assert.equal(isBumpVersionBranch(null), false);
+  });
+  it("handles empty string", () => {
+    assert.equal(isBumpVersionBranch(""), false);
   });
 });

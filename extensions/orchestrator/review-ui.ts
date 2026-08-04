@@ -13,7 +13,7 @@ import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIE
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
 import { runGit, getCurrentBranch } from "./git-helpers.js";
-import { isBumpVersionBranch } from "./enforcement.js";
+import { isBumpVersionBranch, getCachedBranch } from "./enforcement.js";
 import { normalizePorcelain } from "./review-porcelain.js";
 
 interface ReviewStatusData {
@@ -193,8 +193,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     try {
       if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) return;
       // Skip on version bump branches (release workflow only)
-      const pollerBranch = getCurrentBranch(lastCtx.cwd);
-      if (isBumpVersionBranch(pollerBranch)) return;
+      if (isBumpVersionBranch(getCachedBranch(lastCtx.cwd))) return;
       const result = runGit(["status", "--porcelain"], lastCtx.cwd);
       const snapshot = normalizePorcelain(result.stdout);
       if (snapshot === lastGitSnapshot) return;

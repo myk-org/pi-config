@@ -42,7 +42,10 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   isTestRunnerCommand,
+  isBumpVersionBranch,
 } from "./enforcement-helpers.js";
+
+export { isBumpVersionBranch };
 
 type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 
@@ -355,16 +358,11 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   return undefined;
 }
 
-/** True for release bump branches: chore/bump-version-<digit>... */
-export function isBumpVersionBranch(branch: string | null): boolean {
-  return !!branch && /^chore\/bump-version-\d/.test(branch);
-}
-
 /** Branch cache per cwd — avoids repeated git calls on hot edit/write path. */
 const branchCache = new Map<string, { branch: string | null; at: number }>();
-const BRANCH_CACHE_TTL_MS = 30_000;
+const BRANCH_CACHE_TTL_MS = 5_000;
 
-function getCachedBranch(cwd: string): string | null {
+export function getCachedBranch(cwd: string): string | null {
   const now = Date.now();
   const cached = branchCache.get(cwd);
   if (cached && now - cached.at < BRANCH_CACHE_TTL_MS) return cached.branch;
