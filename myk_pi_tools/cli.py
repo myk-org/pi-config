@@ -9,6 +9,7 @@ from myk_pi_tools.memory import commands as memory_commands
 from myk_pi_tools.pr import commands as pr_commands
 from myk_pi_tools.release import commands as release_commands
 from myk_pi_tools.reviews import commands as reviews_commands
+from myk_pi_tools.settings import commands as settings_commands
 
 
 @click.group()
@@ -24,6 +25,7 @@ cli.add_command(memory_commands.memory, name="memory")
 cli.add_command(pr_commands.pr, name="pr")
 cli.add_command(release_commands.release, name="release")
 cli.add_command(reviews_commands.reviews, name="reviews")
+cli.add_command(settings_commands.settings, name="settings")
 
 
 def main() -> None:

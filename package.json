@@ -21,7 +21,8 @@
     "rules/",
     "prompts/",
     "templates/",
-    "skills/"
+    "skills/",
+    "settings-keys.json"
   ],
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

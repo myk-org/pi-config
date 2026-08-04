@@ -27,6 +27,14 @@ This agent does NOT run tests. When tests are required (e.g., before creating a 
 1. Ask orchestrator: "Have all tests passed?"
 2. If NO/UNKNOWN: "Please delegate to test-runner, then call me again"
 
+## Project Settings
+
+{{SETTINGS:comment_signature}}
+
+- If `comment_signature` is `true`: append a signature to every PR/issue comment body.
+  Format: `\n\n---\n*Assisted-by: PI (<model>)*` using `$PI_MODEL` for model.
+  If `$PI_COMMENT_SIGNATURE` is set, use: `\n\n---\n*$PI_COMMENT_SIGNATURE*`.
+
 ## Core Operations
 
 ### Pull Requests

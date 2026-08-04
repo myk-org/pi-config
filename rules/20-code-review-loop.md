@@ -17,7 +17,7 @@ call `addReviewerPending`/`recordReviewerResult` from bash, write to the JSON fi
 or use any method to fake a clean state. The enforcement system detects and blocks this.
 The ONLY way to reach `clean` status is to run the actual review agents.
 
-Resolution: project `.pi/pi-config-settings.json` → global `~/.pi/pi-config-settings.json` → `PI_REVIEW_LOOP_ENFORCEMENT` env var → `false`.
+Resolution is handled automatically via project settings injection.
 
 - MUST loop until clean or the max cycle cap is reached — see "Cycle Definition & Max Cycles" below.
 

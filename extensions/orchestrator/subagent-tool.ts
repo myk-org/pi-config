@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createRequire } from "node:module";
 
@@ -48,9 +48,18 @@ import {
   supportsAsyncLlm,
 } from "./async-capability.js";
 import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
+import { getSetting } from "./project-settings.js";
+import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
+
+const SETTINGS_KEYS_FOR_SUBAGENT = JSON.parse(
+  fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"),
+    "utf-8",
+  ),
+);
 
 export { resolveAgentModelProvider, parseModelOverride };
 
@@ -452,7 +461,12 @@ export async function runSingleAgent(
 
   try {
     if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptFile(agent.name, agent.systemPrompt, cwd);
+      const resolvedPrompt = substituteSettingsPlaceholders(
+        agent.systemPrompt,
+        (key) => getSetting(cwd, key as any),
+        Object.keys(SETTINGS_KEYS_FOR_SUBAGENT),
+      );
+      const tmp = await writePromptFile(agent.name, resolvedPrompt, cwd);
       tmpDir = tmp.dir;
       tmpFile = tmp.filePath;
       args.push("--append-system-prompt", tmpFile);

@@ -116,7 +116,7 @@ describe("poller decision logic (replica)", () => {
     if (snapshot) {
       return "markNeedsReview";
     } else {
-      if (state.status === "clean" || state.status === "needs_review") {
+      if (state.status === "clean" || state.status === "needs_review" || state.status === "has_findings") {
         return "resetReviewState";
       }
       return "skip";
@@ -151,8 +151,8 @@ describe("poller decision logic (replica)", () => {
     assert.equal(pollerDecision("", "M file.ts", { status: "in_progress" }), "skip");
   });
 
-  it("clean from has_findings → skip (review results pending)", () => {
-    assert.equal(pollerDecision("", "M file.ts", { status: "has_findings" }), "skip");
+  it("clean from has_findings → resetReviewState (committed+pushed)", () => {
+    assert.equal(pollerDecision("", "M file.ts", { status: "has_findings" }), "resetReviewState");
   });
 
   it("clean from none → skip (already none)", () => {

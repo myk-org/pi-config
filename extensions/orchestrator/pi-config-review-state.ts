@@ -259,8 +259,8 @@ export function isReviewClean(cwd: string): boolean {
 export function isCommitAllowed(cwd: string): boolean {
   if (isReviewClean(cwd)) return true;
   const state = readReviewState(cwd);
-  // Allow commit when max review cycles exhausted — all reviewers completed, cap reached
-  if ((state.status === "has_findings" || state.status === "clean") && state.reviewers_pending.length === 0) {
+  // Allow commit when max review cycles exhausted — cap reached, no reviewers running
+  if ((state.status === "has_findings" || state.status === "clean" || state.status === "needs_review") && state.reviewers_pending.length === 0) {
     const maxCycles = getSetting(cwd, "review_loop_max_cycles");
     if (state.cycle >= maxCycles) return true;
   }

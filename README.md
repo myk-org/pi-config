@@ -680,6 +680,7 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools memory` | Project memory commands — persistent per-repo learning |
 | `myk-pi-tools ai-cli` | AI CLI commands (cursor, claude, gemini) |
 | `myk-pi-tools coderabbit` | CodeRabbit commands |
+| `myk-pi-tools settings get [key ...]` | Resolve settings (project → global → env → default). No args = all keys |
 
 ### What's protected
 

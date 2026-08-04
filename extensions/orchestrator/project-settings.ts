@@ -17,7 +17,8 @@
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { resolveRepoRoot } from "./utils.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -53,7 +54,51 @@ interface ProjectSettings {
   agent_overrides?: Record<string, { provider?: string | null; model?: string | null }>;
 }
 
+/** Key definition from settings-keys.json — single source of truth for env names + defaults. */
+interface SettingsKeyDef {
+  type: string;
+  env?: string;
+  default: unknown;
+  min?: number;
+  max?: number;
+  strict_digits?: boolean;
+  per_key_resolution?: boolean;
+}
+
 const SETTINGS_FILENAME = "pi-config-settings.json";
+
+const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"), "utf-8"),
+);
+
+/** Dev-time check: every ProjectSettings field must have a JSON definition. */
+const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
+  "commit_trailer",
+  "allow_push_to_protected_branches",
+  "use_worktrees",
+  "dream_interval_hours",
+  "dco",
+  "comment_signature",
+  "review_loop_enforcement",
+  "orchestrator_edit_write_block",
+  "acpx_agents",
+  "cli_agents",
+  "pidash_enable",
+  "pidiff_enable",
+  "pidash_port",
+  "image_model",
+  "internal_operations_provider",
+  "internal_operations_model",
+  "review_loop_max_cycles",
+  "agent_provider",
+  "agent_model",
+  "agent_overrides",
+];
+for (const key of PROJECT_SETTINGS_KEYS) {
+  if (!(key in SETTINGS_KEYS)) {
+    throw new Error(`[project-settings] settings-keys.json missing key: ${key}`);
+  }
+}
 
 function getSettingsPath(cwd: string): string {
   return join(resolveRepoRoot(cwd), ".pi", SETTINGS_FILENAME);
@@ -310,59 +355,26 @@ export function getSetting(cwd: string, key: "agent_model"): string;
 export function getSetting(cwd: string, key: "agent_overrides"): Record<string, { provider?: string | null; model?: string | null }>;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
+  const def = SETTINGS_KEYS[key];
+  if (!def) return false;
 
+  // Special cases — unique parsing beyond simple settings → env → default
   switch (key) {
     case "commit_trailer": {
       if (settings.commit_trailer !== undefined) return settings.commit_trailer;
-      const envStr = process.env.PI_COMMIT_TRAILER;
+      const envStr = def.env ? process.env[def.env] : undefined;
       if (envStr !== undefined && envStr !== "") {
         if (["true", "1", "yes", "on"].includes(envStr.toLowerCase())) return true;
         if (["false", "0", "no", "off"].includes(envStr.toLowerCase())) return false;
         return envStr; // treat as custom trailer string
       }
-      return false; // default: disabled
+      return def.default as boolean;
     }
-    case "allow_push_to_protected_branches": {
-      if (settings.allow_push_to_protected_branches !== undefined) return settings.allow_push_to_protected_branches;
-      const env = parseBoolEnv("PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES");
-      if (env !== undefined) return env;
-      return false; // default: block pushes to protected branches
-    }
-    case "use_worktrees": {
-      if (settings.use_worktrees !== undefined) return settings.use_worktrees;
-      const env = parseBoolEnv("PI_USE_WORKTREES");
-      if (env !== undefined) return env;
-      return false; // default: disabled
-    }
-    case "dream_interval_hours": {
-      if (settings.dream_interval_hours !== undefined) return settings.dream_interval_hours;
-      const env = parseNumEnv("PI_DREAM_INTERVAL_HOURS");
-      if (env !== undefined) return env;
-      return 3; // default: 3 hours
-    }
-    case "dco": {
-      if (settings.dco !== undefined) return settings.dco;
-      const env = parseBoolEnv("PI_DCO");
-      if (env !== undefined) return env;
-      return false; // default: disabled
-    }
-    case "comment_signature": {
-      if (settings.comment_signature !== undefined) return settings.comment_signature;
-      return false; // default: disabled
-    }
-    case "review_loop_enforcement": {
-      if (settings.review_loop_enforcement !== undefined) return settings.review_loop_enforcement;
-      const env = parseBoolEnv("PI_REVIEW_LOOP_ENFORCEMENT");
-      if (env !== undefined) return env;
-      return false; // default: disabled (opt-in)
-    }
-    case "orchestrator_edit_write_block": {
-      if (settings.orchestrator_edit_write_block !== undefined) return settings.orchestrator_edit_write_block;
-      return false; // default: disabled
-    }
-    case "acpx_agents": {
-      if (projectSettingsFileHasKey(cwd, "acpx_agents")) {
-        const projectValue = loadProjectSettings(cwd).acpx_agents;
+    case "acpx_agents":
+    case "cli_agents": {
+      const agentKey = key as "acpx_agents" | "cli_agents";
+      if (projectSettingsFileHasKey(cwd, agentKey)) {
+        const projectValue = loadProjectSettings(cwd)[agentKey];
         // Only override when the raw value parsed as a valid type (string or array).
         // Invalid types (number, object, etc.) are skipped by parseSettingsFile,
         // leaving projectValue undefined — fall through to global/env.
@@ -370,44 +382,27 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
           return parseAgentNameList(projectValue);
         }
       }
-      const globalAgents = loadGlobalSettings().acpx_agents;
+      const globalAgents = loadGlobalSettings()[agentKey];
       if (globalAgents !== undefined) {
         return parseAgentNameList(globalAgents);
       }
-      const env = process.env.ACPX_AGENTS;
-      if (env !== undefined && env !== "") {
-        return parseAgentNameList(env);
-      }
-      return [];
-    }
-    case "cli_agents": {
-      if (projectSettingsFileHasKey(cwd, "cli_agents")) {
-        const projectValue = loadProjectSettings(cwd).cli_agents;
-        if (projectValue !== undefined) {
-          return parseAgentNameList(projectValue);
+      if (def.env) {
+        const env = process.env[def.env];
+        if (env !== undefined && env !== "") {
+          return parseAgentNameList(env);
         }
       }
-      const globalAgents = loadGlobalSettings().cli_agents;
-      if (globalAgents !== undefined) {
-        return parseAgentNameList(globalAgents);
-      }
-      const env = process.env.CLI_AGENTS;
-      if (env !== undefined && env !== "") {
-        return parseAgentNameList(env);
-      }
-      return [];
+      return parseAgentNameList(def.default as string | string[] | undefined);
     }
-    case "pidash_enable": {
-      if (settings.pidash_enable !== undefined) return settings.pidash_enable;
-      const disabled = parseDisabledEnv("PI_PIDASH_ENABLE");
-      if (disabled !== undefined) return !disabled;
-      return true;
-    }
+    case "pidash_enable":
     case "pidiff_enable": {
-      if (settings.pidiff_enable !== undefined) return settings.pidiff_enable;
-      const disabled = parseDisabledEnv("PI_PIDIFF_ENABLE");
-      if (disabled !== undefined) return !disabled;
-      return true;
+      const enableKey = key as "pidash_enable" | "pidiff_enable";
+      if (settings[enableKey] !== undefined) return settings[enableKey]!;
+      if (def.env) {
+        const disabled = parseDisabledEnv(def.env);
+        if (disabled !== undefined) return !disabled;
+      }
+      return def.default as boolean;
     }
     case "pidash_port": {
       if (settings.pidash_port !== undefined) {
@@ -417,39 +412,51 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
         }
         // Invalid value in merged settings — fall through to env/default
       }
-      const envPort = parsePortEnv("PI_PIDASH_PORT");
-      if (envPort !== undefined) return envPort;
-      return 19190;
-    }
-    case "image_model": {
-      if (settings.image_model !== undefined) return settings.image_model;
-      const env = process.env.PI_IMAGE_MODEL;
-      return env !== undefined && env !== "" ? env : "";
-    }
-    case "internal_operations_provider": {
-      if (settings.internal_operations_provider !== undefined) return settings.internal_operations_provider;
-      const env = process.env.PI_INTERNAL_OPERATIONS_PROVIDER;
-      return env !== undefined && env !== "" ? env.trim() : "";
-    }
-    case "internal_operations_model": {
-      if (settings.internal_operations_model !== undefined) return settings.internal_operations_model;
-      const env = process.env.PI_INTERNAL_OPERATIONS_MODEL;
-      return env !== undefined && env !== "" ? env.trim() : "";
+      if (def.env) {
+        const envPort = parsePortEnv(def.env);
+        if (envPort !== undefined) return envPort;
+      }
+      return def.default as number;
     }
     case "review_loop_max_cycles": {
       if (settings.review_loop_max_cycles !== undefined) return settings.review_loop_max_cycles;
-      const env = parseReviewLoopMaxCyclesEnv("PI_REVIEW_LOOP_MAX_CYCLES");
-      if (env !== undefined) return env;
-      return 3; // default: 3 cycles
-    }
-    case "agent_provider": {
-      return settings.agent_provider || "";
-    }
-    case "agent_model": {
-      return settings.agent_model || "";
+      if (def.env) {
+        const env = parseReviewLoopMaxCyclesEnv(def.env);
+        if (env !== undefined) return env;
+      }
+      return def.default as number;
     }
     case "agent_overrides": {
-      return settings.agent_overrides || {};
+      return settings.agent_overrides || (def.default as Record<string, { provider?: string | null; model?: string | null }>);
+    }
+  }
+
+  // Generic handler — simple bool / number / string keys driven by settings-keys.json
+  const merged = settings[key as keyof ProjectSettings];
+  switch (def.type) {
+    case "bool": {
+      if (merged !== undefined) return merged as boolean;
+      if (def.env) {
+        const env = parseBoolEnv(def.env);
+        if (env !== undefined) return env;
+      }
+      return def.default as boolean;
+    }
+    case "number": {
+      if (merged !== undefined) return merged as number;
+      if (def.env) {
+        const env = parseNumEnv(def.env);
+        if (env !== undefined) return env;
+      }
+      return def.default as number;
+    }
+    case "string": {
+      if (merged !== undefined) return (merged as string) || (def.default as string);
+      if (def.env) {
+        const env = process.env[def.env];
+        if (env !== undefined && env !== "") return env.trim();
+      }
+      return def.default as string;
     }
     default:
       return false;

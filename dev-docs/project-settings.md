@@ -30,3 +30,23 @@ Resolution: project file → global `~/.pi/pi-config-settings.json` → env var 
 Model resolution priority (highest wins): explicit subagent `model` param > `agent_overrides[name]` > agent frontmatter > `agent_provider`/`agent_model` setting > parent model.
 
 Module: `extensions/orchestrator/project-settings.ts`
+
+## Settings Keys Definition
+
+All setting keys, types, env vars, and defaults are defined in `settings-keys.json` (repo root).
+Both TypeScript and Python implementations derive from this single source of truth.
+
+## CLI
+
+```bash
+uv run myk-pi-tools settings get              # all keys as JSON
+uv run myk-pi-tools settings get dco use_worktrees  # specific keys
+```
+
+## Agent Prompt Injection
+
+Use `{{SETTINGS:key1,key2}}` in agent `.md` files to inject resolved values at prompt assembly time.
+The placeholder is replaced by `substituteSettingsPlaceholders` in `rule-placeholders.ts`
+before the system prompt reaches any model (native or CLI/ACPX).
+
+Never instruct agents to read `pi-config-settings.json` manually.

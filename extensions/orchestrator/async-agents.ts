@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
@@ -24,6 +25,15 @@ import { openAsyncStatusOverlay } from "./async-status-ui.js";
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { setSlot } from "./status-bar.js";
+import { getSetting } from "./project-settings.js";
+import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
+
+const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
+  fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"),
+    "utf-8",
+  ),
+);
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -600,7 +610,12 @@ export function registerAsyncAgents(
 
     if (agent.systemPrompt?.trim()) {
       const promptPath = path.join(workerDir, "system-prompt.md");
-      fs.writeFileSync(promptPath, agent.systemPrompt, { mode: 0o600 });
+      const resolvedPrompt = substituteSettingsPlaceholders(
+        agent.systemPrompt,
+        (key) => getSetting(cwd, key as any),
+        Object.keys(SETTINGS_KEYS),
+      );
+      fs.writeFileSync(promptPath, resolvedPrompt, { mode: 0o600 });
       piArgs.push("--append-system-prompt", promptPath);
     }
 
