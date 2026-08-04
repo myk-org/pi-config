@@ -43,9 +43,10 @@ import {
   escapeForSingleQuote,
   isTestRunnerCommand,
   isBumpVersionBranch,
+  getCachedBranch,
 } from "./enforcement-helpers.js";
 
-export { isBumpVersionBranch };
+export { isBumpVersionBranch, getCachedBranch };
 
 type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 
@@ -356,25 +357,6 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   }
 
   return undefined;
-}
-
-/** Branch cache per cwd — avoids repeated git calls on hot edit/write path. */
-const branchCache = new Map<string, { branch: string | null; at: number }>();
-const BRANCH_CACHE_TTL_MS = 5_000;
-
-export function getCachedBranch(cwd: string): string | null {
-  const now = Date.now();
-  const cached = branchCache.get(cwd);
-  if (cached && now - cached.at < BRANCH_CACHE_TTL_MS) return cached.branch;
-  const branch = getCurrentBranch(cwd);
-  // Only cache non-bump-version branches — bump branches must always be fresh
-  // to avoid stale results after switching away from a release branch.
-  if (!isBumpVersionBranch(branch)) {
-    branchCache.set(cwd, { branch, at: now });
-  } else {
-    branchCache.delete(cwd);
-  }
-  return branch;
 }
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {

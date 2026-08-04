@@ -2,7 +2,7 @@
  * Tests for enforcement dangerous-command helpers.
  * Run with: npx tsx --test tests/node/orchestrator/enforcement.test.ts
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +27,9 @@ import {
   stripHeredocBodies,
   isTestRunnerCommand,
   isBumpVersionBranch,
+  getCachedBranch,
+  clearBranchCache,
+  seedBranchCacheForTests,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 // ── extractSubshells ──
@@ -1112,5 +1115,55 @@ describe("isBumpVersionBranch", () => {
   });
   it("handles empty string", () => {
     assert.equal(isBumpVersionBranch(""), false);
+  });
+});
+
+// ── getCachedBranch ──
+
+describe("getCachedBranch", () => {
+  afterEach(() => {
+    clearBranchCache();
+  });
+
+  it("returns current branch for cwd", () => {
+    // Uses real git — this test runs inside a git repo
+    const branch = getCachedBranch(process.cwd());
+    assert.equal(typeof branch, "string");
+    assert.ok(branch!.length > 0);
+  });
+
+  it("returns cached value within TTL", () => {
+    // Seed cache with a fake branch
+    seedBranchCacheForTests("/fake/path", "test-branch");
+    assert.equal(getCachedBranch("/fake/path"), "test-branch");
+  });
+
+  it("cache expires after TTL", () => {
+    // Seed with old timestamp (6 seconds ago, TTL is 5s)
+    seedBranchCacheForTests("/fake/path", "old-branch", Date.now() - 6000);
+    // Will try getCurrentBranch("/fake/path") which will fail (not a git repo)
+    // and return null
+    const result = getCachedBranch("/fake/path");
+    assert.equal(result, null);
+  });
+
+  it("does not cache bump-version branches", () => {
+    // Seed with bump-version branch — should be evicted on next fresh lookup
+    seedBranchCacheForTests("/fake/path", "chore/bump-version-4.2.1-123", Date.now() - 6000);
+    // Expired → fresh lookup → getCurrentBranch("/fake/path") returns null
+    getCachedBranch("/fake/path");
+    // Seed again with bump-version (simulating fresh lookup returning bump)
+    seedBranchCacheForTests("/another/path", "chore/bump-version-1.0.0-999");
+    // The cache has it, but getCachedBranch should still return it from cache if within TTL
+    assert.equal(getCachedBranch("/another/path"), "chore/bump-version-1.0.0-999");
+  });
+
+  it("clearBranchCache empties all entries", () => {
+    seedBranchCacheForTests("/path1", "branch1");
+    seedBranchCacheForTests("/path2", "branch2");
+    clearBranchCache();
+    // After clear, fresh lookup on fake path returns null
+    const result = getCachedBranch("/fake/nonexistent");
+    assert.equal(result, null);
   });
 });

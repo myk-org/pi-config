@@ -6,7 +6,7 @@
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, hasGitSub } from "./git-helpers.js";
+import { DANGEROUS, getCurrentBranch, hasGitSub } from "./git-helpers.js";
 
 export type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 
@@ -532,4 +532,33 @@ export function isTestRunnerCommand(command: string): boolean {
 /** True for release bump branches: chore/bump-version-<digit>... */
 export function isBumpVersionBranch(branch: string | null): boolean {
   return !!branch && /^chore\/bump-version-\d/.test(branch);
+}
+
+/** Branch cache per cwd — avoids repeated git calls on hot edit/write path. */
+const branchCache = new Map<string, { branch: string | null; at: number }>();
+const BRANCH_CACHE_TTL_MS = 5_000;
+
+export function getCachedBranch(cwd: string): string | null {
+  const now = Date.now();
+  const cached = branchCache.get(cwd);
+  if (cached && now - cached.at < BRANCH_CACHE_TTL_MS) return cached.branch;
+  const branch = getCurrentBranch(cwd);
+  // Only cache non-bump-version branches — bump branches must always be fresh
+  // to avoid stale results after switching away from a release branch.
+  if (!isBumpVersionBranch(branch)) {
+    branchCache.set(cwd, { branch, at: now });
+  } else {
+    branchCache.delete(cwd);
+  }
+  return branch;
+}
+
+/** Clear branch cache (tests). */
+export function clearBranchCache(): void {
+  branchCache.clear();
+}
+
+/** Seed branch cache for testing — inject a value with custom timestamp. */
+export function seedBranchCacheForTests(cwd: string, branch: string | null, at?: number): void {
+  branchCache.set(cwd, { branch, at: at ?? Date.now() });
 }
