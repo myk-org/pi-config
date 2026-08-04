@@ -10,6 +10,7 @@ import {
   addReviewerPending,
   recordReviewerResult,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
 
 describe("poller state transitions", () => {
   let tmp: string;
@@ -106,16 +107,6 @@ describe("poller state transitions", () => {
 });
 
 describe("poller decision logic (replica)", () => {
-  // Replica of porcelain → path-only normalize from review-ui.ts gitDirtyPoller
-  function normalizePorcelain(stdout: string): string {
-    return stdout
-      .split("\n")
-      .map((line) => line.slice(3))
-      .filter(Boolean)
-      .sort()
-      .join("\n");
-  }
-
   // Replica of the poller's decision branches from review-ui.ts gitDirtyPoller
   function pollerDecision(
     snapshot: string,

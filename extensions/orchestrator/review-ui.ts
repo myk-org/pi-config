@@ -13,6 +13,7 @@ import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIE
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
 import { runGit, getCurrentBranch } from "./git-helpers.js";
+import { normalizePorcelain } from "./review-porcelain.js";
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -34,10 +35,7 @@ function stateKey(s: { status: string; cycle: number; findings_count: number; te
   return `${s.status}:${s.cycle}:${s.findings_count}:${s.tests_passed}:${s.reviewers_pending.length}`;
 }
 
-/** Normalize git status --porcelain to path-only snapshot (ignores staging indicators). */
-function normalizePorcelain(stdout: string): string {
-  return stdout.split("\n").map((line) => line.slice(3)).filter(Boolean).sort().join("\n");
-}
+export { normalizePorcelain } from "./review-porcelain.js";
 
 export function registerReviewUI(pi: ExtensionAPI): void {
   // Register the entry renderer for "review-status" custom type

@@ -519,7 +519,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
       // Skip review enforcement on version bump branches (release workflow only)
       const commitBranch = getCurrentBranch(commitCwd);
-      if (!commitBranch?.startsWith("chore/bump-version") && getSetting(ctx.cwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
+      if (!commitBranch?.startsWith("chore/bump-version") && getSetting(commitCwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
         const state = readReviewState(commitCwd);
         const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
         const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
@@ -670,10 +670,6 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   pi.on("tool_result", async (event, ctx) => {
     if (!getSetting(ctx.cwd, "review_loop_enforcement")) return;
 
-    // Skip review tracking on version bump branches (release workflow only)
-    const branch = getCurrentBranch(ctx.cwd);
-    if (branch?.startsWith("chore/bump-version")) return;
-
     const toolName = (event as any).toolName as string;
     if (toolName !== "edit" && toolName !== "write") return;
 
@@ -696,6 +692,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     } catch {
       effectiveCwd = ctx.cwd; // fallback to session cwd
     }
+    // Skip review tracking on version bump branches (release workflow only)
+    if (getCurrentBranch(effectiveCwd)?.startsWith("chore/bump-version")) return;
     const relativePath = path.relative(effectiveCwd, absPath);
 
     // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)

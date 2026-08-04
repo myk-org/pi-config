@@ -20,9 +20,9 @@ export function runGit(
         GCM_INTERACTIVE: "Never",
       },
     });
-    return { stdout: stdout.trim(), code: 0 };
+    return { stdout: stdout.trimEnd(), code: 0 };
   } catch (e: any) {
-    return { stdout: (e.stdout || "").trim(), code: e.status || 1 };
+    return { stdout: (e.stdout || "").trimEnd(), code: e.status || 1 };
   }
 }
 
