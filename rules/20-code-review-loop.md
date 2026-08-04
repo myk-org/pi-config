@@ -64,6 +64,8 @@ cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no
 ```text
 1. Specialist writes/fixes code
 2. Send ALL 6 agents IN PARALLEL (async): 5 reviewers + test-automator
+   **On cycle 2+: MANDATORY — include prior cycle findings + responses in each reviewer's prompt (see Step 5a format).**
+   Reviewers without this context will blindly repeat the same findings. This is not optional.
 3. Wait for all 6 to complete
 4. Merge & deduplicate review findings
 5. Has findings OR tests failed?

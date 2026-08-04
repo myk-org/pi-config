@@ -105,3 +105,13 @@ If no issues: `{"findings": []}`
 Severity values: `CRITICAL`, `WARNING`, `SUGGESTION`
 
 After writing your response, validate it is parseable JSON.
+
+## Prior Review Cycle
+
+If your prompt includes a `<prior-review-cycle>` block with previous findings and responses:
+
+- **Fixed findings** → verify the fix is correct. Do NOT re-raise if the fix addresses the issue.
+- **Explained findings** → accept valid technical explanations. Only re-raise if the explanation is wrong or incomplete (explain why you disagree).
+- **Focus on NEW issues** not covered in prior cycles.
+
+Do NOT repeat findings that were adequately addressed. This wastes review cycles.
