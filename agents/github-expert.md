@@ -27,6 +27,24 @@ This agent does NOT run tests. When tests are required (e.g., before creating a 
 1. Ask orchestrator: "Have all tests passed?"
 2. If NO/UNKNOWN: "Please delegate to test-runner, then call me again"
 
+## Project Settings
+
+Before creating or posting PR/issue comments, read `.pi/pi-config-settings.json` (use the `read` tool, NOT `cat`/`grep`).
+If the file doesn't exist, check `~/.pi/pi-config-settings.json` (global). If neither exists, check `$PI_COMMENT_SIGNATURE` env var.
+
+### Comment Signature (`comment_signature`)
+
+If `"comment_signature": true` or `$PI_COMMENT_SIGNATURE` is set, append this suffix to every PR/issue comment body:
+
+```text
+
+---
+*Assisted-by: PI (<model>)*
+```
+
+If `$PI_COMMENT_SIGNATURE` is set, use its value directly: `\n\n---\n*$PI_COMMENT_SIGNATURE*`.
+Otherwise replace `<model>` with `$PI_MODEL`.
+
 ## Core Operations
 
 ### Pull Requests
