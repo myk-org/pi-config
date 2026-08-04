@@ -1138,32 +1138,34 @@ describe("getCachedBranch", () => {
   });
 
   it("cache expires after TTL", () => {
+    const fakePath = join(tmpdir(), `no-git-repo-ttl-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     // Seed with old timestamp (6 seconds ago, TTL is 5s)
-    seedBranchCacheForTests("/fake/path", "old-branch", Date.now() - 6000);
-    // Will try getCurrentBranch("/fake/path") which will fail (not a git repo)
-    // and return null
-    const result = getCachedBranch("/fake/path");
+    seedBranchCacheForTests(fakePath, "old-branch", Date.now() - 6000);
+    // Will try getCurrentBranch which will fail (not a git repo) and return null
+    const result = getCachedBranch(fakePath);
     assert.equal(result, null);
   });
 
   it("bump-version branch lookup does not persist in cache", () => {
-    // After a fresh lookup on a non-git path, result is null (not cached)
-    // Seed cache as if getCurrentBranch returned a normal branch — it persists
-    seedBranchCacheForTests("/test/normal", "feature/foo");
-    assert.equal(getCachedBranch("/test/normal"), "feature/foo");
+    const fakePath = join(tmpdir(), `no-git-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    // Seed cache as if getCurrentBranch returned a normal branch — it persists within TTL
+    seedBranchCacheForTests(fakePath, "feature/foo");
+    assert.equal(getCachedBranch(fakePath), "feature/foo");
 
     // Verify expired cache triggers fresh lookup (returns null for non-git path)
-    seedBranchCacheForTests("/test/expired", "feature/bar", Date.now() - 6000);
-    const fresh = getCachedBranch("/test/expired");
-    assert.equal(fresh, null); // getCurrentBranch on fake path returns null
+    const fakePath2 = fakePath + "-expired";
+    seedBranchCacheForTests(fakePath2, "feature/bar", Date.now() - 6000);
+    const fresh = getCachedBranch(fakePath2);
+    assert.equal(fresh, null); // getCurrentBranch on non-git path returns null
   });
 
   it("clearBranchCache empties all entries", () => {
-    seedBranchCacheForTests("/path1", "branch1");
-    seedBranchCacheForTests("/path2", "branch2");
+    const fakePath = join(tmpdir(), `no-git-repo-clear-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    seedBranchCacheForTests(fakePath, "branch1");
+    seedBranchCacheForTests(fakePath + "-2", "branch2");
     clearBranchCache();
-    // After clear, fresh lookup on fake path returns null
-    const result = getCachedBranch("/fake/nonexistent");
+    // After clear, fresh lookup on non-git path returns null
+    const result = getCachedBranch(fakePath);
     assert.equal(result, null);
   });
 });
