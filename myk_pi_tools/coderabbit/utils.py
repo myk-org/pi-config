@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 # HTML comment marker in CodeRabbit's summary comment
 SUMMARY_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
@@ -64,6 +65,6 @@ def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, s
 def validate_owner_repo(owner_repo: str) -> bool:
     """Validate owner/repo format."""
     if "/" not in owner_repo or len(owner_repo.split("/")) != 2:
-        print(f"Error: Invalid repository format: {owner_repo}. Expected owner/repo.")
+        print(f"Error: Invalid repository format: {owner_repo}. Expected owner/repo.", file=sys.stderr)
         return False
     return True

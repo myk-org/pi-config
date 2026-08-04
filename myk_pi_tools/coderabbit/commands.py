@@ -42,3 +42,22 @@ def trigger(owner_repo: str, pr_number: int, wait_seconds: int) -> None:
     from myk_pi_tools.coderabbit.rate_limit import run_trigger
 
     sys.exit(run_trigger(owner_repo, pr_number, wait_seconds))
+
+
+@coderabbit.command("retry")
+@click.argument("owner_repo")
+@click.argument("pr_number", type=int)
+def retry(owner_repo: str, pr_number: int) -> None:
+    """Check rate limit and retry CodeRabbit review if needed.
+
+    All-in-one: detects rate limit, waits only the remaining time,
+    triggers review, and polls for confirmation.
+
+    If not rate limited, exits immediately with not_rate_limited status.
+
+    OWNER_REPO: Repository in owner/repo format
+    PR_NUMBER: Pull request number
+    """
+    from myk_pi_tools.coderabbit.rate_limit import run_retry
+
+    sys.exit(run_retry(owner_repo, pr_number))
