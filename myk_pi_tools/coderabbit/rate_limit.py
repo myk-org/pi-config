@@ -122,7 +122,7 @@ def run_check(owner_repo: str, pr_number: int) -> int:
     if not _validate_owner_repo(owner_repo):
         return 1
 
-    comment_id, body, _, error = _find_summary_comment(owner_repo, pr_number)
+    comment_id, body, updated_at, error = _find_summary_comment(owner_repo, pr_number)
 
     if comment_id is None or body is None:
         print(f"Error: {error}")
@@ -139,7 +139,14 @@ def run_check(owner_repo: str, pr_number: int) -> int:
         print(f"Comment snippet:\n{snippet}")
         return 1
 
-    print(json.dumps({"rate_limited": True, "wait_seconds": wait_seconds, "comment_id": comment_id}))
+    print(
+        json.dumps({
+            "rate_limited": True,
+            "wait_seconds": wait_seconds,
+            "comment_id": comment_id,
+            "updated_at": updated_at,
+        })
+    )
     return 0
 
 
