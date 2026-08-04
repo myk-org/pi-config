@@ -13,6 +13,7 @@ import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIE
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
 import { runGit, getCurrentBranch } from "./git-helpers.js";
+import { isBumpVersionBranch } from "./enforcement.js";
 import { normalizePorcelain } from "./review-porcelain.js";
 
 interface ReviewStatusData {
@@ -152,7 +153,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     // Initialize git snapshot for dirty detection
     lastGitSnapshot = normalizePorcelain(runGit(["status", "--porcelain"], ctx.cwd).stdout);
     // If tree is already dirty on session start, ensure review state reflects it
-    if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement") && !getCurrentBranch(ctx.cwd)?.startsWith("chore/bump-version")) {
+    if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement") && !isBumpVersionBranch(getCurrentBranch(ctx.cwd))) {
       const state = readReviewState(ctx.cwd);
       if (state.status === "none" || state.status === "clean") {
         try { markNeedsReview(ctx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
@@ -193,7 +194,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
       if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) return;
       // Skip on version bump branches (release workflow only)
       const pollerBranch = getCurrentBranch(lastCtx.cwd);
-      if (pollerBranch?.startsWith("chore/bump-version")) return;
+      if (isBumpVersionBranch(pollerBranch)) return;
       const result = runGit(["status", "--porcelain"], lastCtx.cwd);
       const snapshot = normalizePorcelain(result.stdout);
       if (snapshot === lastGitSnapshot) return;

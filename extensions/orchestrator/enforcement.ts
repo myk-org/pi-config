@@ -355,6 +355,24 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   return undefined;
 }
 
+/** True for release bump branches: chore/bump-version-<digit>... */
+export function isBumpVersionBranch(branch: string | null): boolean {
+  return !!branch && /^chore\/bump-version-\d/.test(branch);
+}
+
+/** Branch cache per cwd — avoids repeated git calls on hot edit/write path. */
+const branchCache = new Map<string, { branch: string | null; at: number }>();
+const BRANCH_CACHE_TTL_MS = 30_000;
+
+function getCachedBranch(cwd: string): string | null {
+  const now = Date.now();
+  const cached = branchCache.get(cwd);
+  if (cached && now - cached.at < BRANCH_CACHE_TTL_MS) return cached.branch;
+  const branch = getCurrentBranch(cwd);
+  branchCache.set(cwd, { branch, at: now });
+  return branch;
+}
+
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
 
   pi.on("session_start", (_event, ctx) => {
@@ -519,7 +537,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
       // Skip review enforcement on version bump branches (release workflow only)
       const commitBranch = getCurrentBranch(commitCwd);
-      if (!commitBranch?.startsWith("chore/bump-version") && getSetting(commitCwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
+      if (!isBumpVersionBranch(commitBranch) && getSetting(commitCwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
         const state = readReviewState(commitCwd);
         const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
         const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
@@ -693,7 +711,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       effectiveCwd = ctx.cwd; // fallback to session cwd
     }
     // Skip review tracking on version bump branches (release workflow only)
-    if (getCurrentBranch(effectiveCwd)?.startsWith("chore/bump-version")) return;
+    if (isBumpVersionBranch(getCachedBranch(effectiveCwd))) return;
     const relativePath = path.relative(effectiveCwd, absPath);
 
     // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)
