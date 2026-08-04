@@ -163,6 +163,7 @@ is sufficient — fix what you agree with, skip what you don't. No need to expla
 ## Key Rules
 
 Never skip code review — all 6 agents always run (5 reviewers + test-automator).
+Exception: on `chore/bump-version` branches (release version bumps), review dirty-tracking and commit blocking are skipped.
 When `review_loop_enforcement` is enabled: loop, respond to each finding (fix or explain), and re-run all 6 from step 2
 until clean or the cycle cap is reached — see "Cycle Definition & Max Cycles" above for the exact stop conditions.
 When disabled: single pass is sufficient; no mandatory re-loop or explanations.
@@ -178,7 +179,7 @@ This is **code-enforced** — commit/push is blocked unless `tests_passed: true`
 - **Bash hook detection:** When any agent runs a test command (`pytest`, `npm test`, `npx tsx --test`, `tox`, `go test`, `vitest`, `jest`, `mocha`),
   the enforcement hook detects it and auto-marks `tests_passed` based on exit code.
 - **Agent completion:** When `test-automator` or `test-runner` agents complete, their result auto-marks `tests_passed`.
-- **Reset on edit:** Any file edit triggers `markNeedsReview()`, which resets `tests_passed: false` —
+- **Reset on edit:** Any file edit triggers `markNeedsReview()` (except on `chore/bump-version` branches), which resets `tests_passed: false` —
   preventing stale results.
 
 **Duplicate test run avoidance:** If a specialist already ran tests before the review loop, `tests_passed` may already be `true`.
