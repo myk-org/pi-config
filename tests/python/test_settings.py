@@ -20,7 +20,7 @@ _KEYS_FILE = Path(__file__).resolve().parent.parent.parent / "settings-keys.json
 
 
 @pytest.fixture
-def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolate settings resolution from real project/global files and env."""
     repo = tmp_path / "repo"
     home = tmp_path / "home"

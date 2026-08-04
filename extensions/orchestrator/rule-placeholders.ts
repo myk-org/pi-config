@@ -28,6 +28,9 @@ export function substituteSettingsPlaceholders(
       : allKeys;
     const result: Record<string, unknown> = {};
     for (const key of keys) {
+      if (!allKeys.includes(key)) {
+        continue;
+      }
       result[key] = resolve(key);
     }
     return JSON.stringify(result);

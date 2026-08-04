@@ -67,8 +67,13 @@ describe("substituteSettingsPlaceholders", () => {
 		assert.equal(result, "No placeholders here.");
 	});
 
-	it("handles unknown keys with default resolve", () => {
+	it("skips unknown keys", () => {
 		const result = substituteSettingsPlaceholders("{{SETTINGS:unknown_key}}", resolve, allKeys);
-		assert.equal(result, '{"unknown_key":false}');
+		assert.equal(result, '{}');
+	});
+
+	it("skips unknown keys but keeps valid ones", () => {
+		const result = substituteSettingsPlaceholders("{{SETTINGS:dco,bad_key,commit_trailer}}", resolve, allKeys);
+		assert.equal(result, '{"dco":true,"commit_trailer":"Assisted-by"}');
 	});
 });
