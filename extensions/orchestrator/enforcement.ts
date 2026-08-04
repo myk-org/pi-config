@@ -367,7 +367,13 @@ export function getCachedBranch(cwd: string): string | null {
   const cached = branchCache.get(cwd);
   if (cached && now - cached.at < BRANCH_CACHE_TTL_MS) return cached.branch;
   const branch = getCurrentBranch(cwd);
-  branchCache.set(cwd, { branch, at: now });
+  // Only cache non-bump-version branches — bump branches must always be fresh
+  // to avoid stale results after switching away from a release branch.
+  if (!isBumpVersionBranch(branch)) {
+    branchCache.set(cwd, { branch, at: now });
+  } else {
+    branchCache.delete(cwd);
+  }
   return branch;
 }
 
