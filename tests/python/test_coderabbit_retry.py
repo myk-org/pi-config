@@ -126,3 +126,22 @@ def test_wait_capped_at_one_hour() -> None:
         assert run_retry("owner/repo", 1) == 0
         mock_time.sleep.assert_called_once_with(3600)
         assert mock_poll.call_args.kwargs.get("output") is not None
+
+
+def test_run_check_includes_updated_at(capsys: pytest.CaptureFixture[str]) -> None:
+    """run_check rate_limited JSON includes updated_at field."""
+    with patch(
+        f"{_MODULE}._find_summary_comment",
+        return_value=(42, _RATE_LIMITED_BODY, "2025-01-01T00:00:00Z", ""),
+    ):
+        from myk_pi_tools.coderabbit.rate_limit import run_check
+
+        assert run_check("owner/repo", 1) == 0
+    out = capsys.readouterr().out
+    import json as _json
+
+    result = _json.loads(out)
+    assert result["rate_limited"] is True
+    assert result["updated_at"] == "2025-01-01T00:00:00Z"
+    assert "wait_seconds" in result
+    assert "comment_id" in result

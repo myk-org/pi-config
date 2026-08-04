@@ -241,7 +241,7 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
     if updated_at:
         try:
             comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            elapsed = int((datetime.now(UTC) - comment_time).total_seconds())
+            elapsed = max(0, int((datetime.now(UTC) - comment_time).total_seconds()))
             remaining = max(0, wait_seconds - elapsed)
         except (ValueError, TypeError):
             print(

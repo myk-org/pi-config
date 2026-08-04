@@ -142,7 +142,7 @@ The following findings were raised in review cycle {N}. Each has been either fix
 explained. Do NOT re-raise findings that were adequately addressed. Only re-raise if:
 - The code fix is incorrect or incomplete
 - The explanation is invalid or factually wrong
-- You disagree with the reasoning (explain why)
+- You disagree with the reasoning (state why in the finding description field)
 
 Findings with valid explanations that you accept → do not re-raise.
 Findings that were fixed in code → verify the fix, do not re-raise if correct.
