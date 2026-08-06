@@ -158,9 +158,12 @@ export function createCachedStore<T>(
     store = new JsonlStateStore<T>(join(dir, jsonlFilename), options);
     storeCache.set(cacheKey, store);
   }
-  // Retry migration if JSONL file doesn't exist yet — handles transient failures
-  // from previous attempts (e.g., fs errors on read/append/unlink).
-  if (!store.exists()) {
+  // Retry migration when JSONL has no valid state — covers:
+  // - File doesn't exist (first run or previous migration didn't write)
+  // - File exists but is empty/corrupt (crash during first append)
+  // Without this, callers fall back to defaults which can be unsafe
+  // (e.g., review state defaults to "none" → isReviewClean returns true).
+  if (store.read() === null) {
     const legacyPath = join(dir, legacyFilename);
     if (existsSync(legacyPath)) {
       try {
