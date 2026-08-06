@@ -144,9 +144,9 @@ export function parseLastValidLine<T>(raw: string): T | null {
     if (!line) continue;
     try {
       const parsed = JSON.parse(line);
-      // Only accept objects — skip JSON primitives (strings, numbers, booleans)
-      // that could appear as individual lines inside pretty-printed content.
-      if (typeof parsed === "object" && parsed !== null) return parsed as T;
+      // Only accept plain objects — skip JSON primitives (strings, numbers, booleans)
+      // and arrays that could appear as individual lines inside pretty-printed content.
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as T;
     } catch {
       // Truncated or corrupted line — skip and try previous
       continue;
@@ -158,7 +158,8 @@ export function parseLastValidLine<T>(raw: string): T | null {
   // (e.g., dream provenance sidecar). Only reached when NO individual line
   // parses as valid JSON — no performance cost for normal JSONL files.
   try {
-    return JSON.parse(trimmed) as T;
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as T;
   } catch {
     // Not valid JSON either — truly empty/corrupt
   }
@@ -303,8 +304,11 @@ function withFileLock(filePath: string, fn: () => void): void {
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
     if (!acquireFileLock(lockFile)) {
-      // Lock acquisition failed — skip callback to prevent compaction races.
-      // The write is lost but existing data remains intact.
+      // Lock acquisition failed after retries — run callback without lock.
+      // This is a last-resort fallback: the alternative (silently dropping the write)
+      // risks data loss. Running unlocked risks a compaction race, but that only
+      // affects history (latest state is re-read before compaction).
+      fn();
       return;
     }
   }

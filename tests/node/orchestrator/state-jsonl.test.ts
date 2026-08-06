@@ -206,6 +206,18 @@ describe("parseLastValidLine", () => {
     assert.deepEqual(parseLastValidLine(raw), { a: 2 });
   });
 
+  it("skips JSON primitives and returns null", () => {
+    assert.equal(parseLastValidLine('"just a string"\n'), null);
+    assert.equal(parseLastValidLine('42\n'), null);
+    assert.equal(parseLastValidLine('true\n'), null);
+    assert.equal(parseLastValidLine('null\n'), null);
+  });
+
+  it("skips JSON arrays and returns null", () => {
+    assert.equal(parseLastValidLine('[1, 2, 3]\n'), null);
+    assert.equal(parseLastValidLine('["a", "b"]\n'), null);
+  });
+
   it("handles multi-line pretty-printed JSON as fallback", () => {
     // Multi-line JSON where NO individual line is valid JSON on its own —
     // only the full content parses. This is what happens when an LLM pretty-prints.
