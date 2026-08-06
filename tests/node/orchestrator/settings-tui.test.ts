@@ -14,6 +14,7 @@ import {
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
+  sourceGlyph,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -678,5 +679,35 @@ describe("resolveSecretPrefill", () => {
     // Empty submit when scope HAS value = user wants to clear
     assert.equal(isSecretNoChange("", info.scopeValue !== null), false);
     assert.equal(isSecretNoChange(undefined, info.scopeValue !== null), false);
+  });
+});
+
+// ── sourceGlyph ───────────────────────────────────────────────────────
+
+describe("sourceGlyph", () => {
+  const mockTheme = {
+    fg: (color: string, text: string) => `[${color}:${text}]`,
+  };
+
+  it("returns themed P for project source", () => {
+    assert.equal(sourceGlyph("P", mockTheme), "[success:P]");
+  });
+
+  it("returns blue ANSI for global source", () => {
+    const result = sourceGlyph("G", mockTheme);
+    assert.ok(result.includes("G"), "should contain G");
+    assert.ok(result.includes("\x1b["), "should contain ANSI escape");
+  });
+
+  it("returns themed E for env source", () => {
+    assert.equal(sourceGlyph("E", mockTheme), "[warning:E]");
+  });
+
+  it("returns themed D for default source", () => {
+    assert.equal(sourceGlyph("D", mockTheme), "[dim:D]");
+  });
+
+  it("returns themed ? for unknown source", () => {
+    assert.equal(sourceGlyph("X", mockTheme), "[dim:?]");
   });
 });

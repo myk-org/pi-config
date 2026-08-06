@@ -286,6 +286,18 @@ export function resolveSecretPrefill(
   return { scopeValue, prefill, hint };
 }
 
+// ── Source glyph (colored) ──────────────────────────────────────
+
+export function sourceGlyph(source: string, theme: { fg: (color: string, text: string) => string }): string {
+  switch (source) {
+    case "P": return theme.fg("success", "P");
+    case "G": return "\x1b[34mG\x1b[0m";  // blue
+    case "E": return theme.fg("warning", "E");
+    case "D": return theme.fg("dim", "D");
+    default:  return theme.fg("dim", "?");
+  }
+}
+
 // ── Registration helper (testable without pi-coding-agent) ──────────
 
 /**

@@ -39,6 +39,7 @@ import {
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
+  sourceGlyph,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -46,7 +47,6 @@ import {
   padAnsi,
 } from "./overlay-dashboard.js";
 import {
-  sourceGlyph,
   InputSubmenu,
   NumberInputSubmenu,
   PickerSubmenu,
@@ -69,6 +69,7 @@ export {
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
+  sourceGlyph,
 } from "./settings-tui-helpers.js";
 
 // ── Provider/Model data helpers ─────────────────────────────────────
