@@ -180,7 +180,7 @@ export class PickerSubmenu implements Component {
     this.theme = theme;
 
     this.searchInput = new Input();
-    this.selectList = new SelectList(items, Math.min(items.length, 15), getSelectListTheme());
+    this.selectList = new SelectList(items, Math.max(1, Math.min(items.length, 15)), getSelectListTheme());
     this.selectList.onSelect = (item) => this.done(item.value);
     this.selectList.onCancel = () => this.done(undefined);
 
@@ -202,10 +202,10 @@ export class PickerSubmenu implements Component {
   private applyFilter(): void {
     const query = this.searchInput.getValue().trim();
     if (!query) {
-      this.selectList = new SelectList(this.allItems, Math.min(this.allItems.length, 15), getSelectListTheme());
+      this.selectList = new SelectList(this.allItems, Math.max(1, Math.min(this.allItems.length, 15)), getSelectListTheme());
     } else {
       const filtered = fuzzyFilter(this.allItems, query, (item) => `${item.label} ${item.description || ""}`);
-      this.selectList = new SelectList(filtered, Math.min(filtered.length, 15), getSelectListTheme());
+      this.selectList = new SelectList(filtered, Math.max(1, Math.min(filtered.length, 15)), getSelectListTheme());
     }
     this.selectList.onSelect = (item) => this.done(item.value);
     this.selectList.onCancel = () => this.done(undefined);
@@ -408,8 +408,12 @@ export class AgentOverridesSubmenu implements Component {
     }
 
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) {
-      const result = JSON.stringify(this.overrides);
-      this.done(result);
+      // Return undefined for empty overrides so saveChange deletes the key
+      if (Object.keys(this.overrides).length === 0) {
+        this.done(undefined);
+      } else {
+        this.done(JSON.stringify(this.overrides));
+      }
       return;
     }
     if (matchesKey(data, Key.up) && this.selectedIndex > 0) {

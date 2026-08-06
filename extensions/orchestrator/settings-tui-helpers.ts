@@ -14,10 +14,14 @@ import {
 } from "./project-settings.js";
 
 const LOG_PREFIX = "[settings-tui]";
+const loggedErrors = new Set<string>();
 function logWarn(msg: string): void {
+  // Deduplicate: only log each unique message once per session to avoid spam
+  if (loggedErrors.has(msg)) return;
+  loggedErrors.add(msg);
   try {
     const logDir = joinPath(homedir(), ".pi", "logs");
-    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true, mode: 0o700 });
     const logPath = joinPath(logDir, "settings-tui.log");
     appendFileSync(logPath, `${new Date().toISOString()} ${LOG_PREFIX} ${msg}\n`);
   } catch {}

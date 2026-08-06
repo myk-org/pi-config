@@ -332,6 +332,19 @@ describe("CATEGORIES coverage (drift detection against settings-keys.json)", () 
       }
     }
   });
+
+  it("detectSource returns valid source types for all keys", () => {
+    const validSources = new Set(["P", "G", "E", "D"]);
+    // With no files and no env, every key should return "D"
+    for (const key of Object.keys(SETTINGS_KEYS)) {
+      const tempDir2 = mkdtempSync(join(tmpdir(), "settings-drift-"));
+      mkdirSync(join(tempDir2, ".git"), { recursive: true });
+      mkdirSync(join(tempDir2, ".pi"), { recursive: true });
+      const source = detectSource(key, SETTINGS_KEYS[key], tempDir2);
+      assert.ok(validSources.has(source), `detectSource for "${key}" returned invalid source "${source}"`);
+      rmSync(tempDir2, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── readSettingsFile / writeSettingsFile ─────────────────────────────
