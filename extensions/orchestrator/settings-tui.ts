@@ -22,7 +22,7 @@ import {
   fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   SETTINGS_KEYS,
@@ -696,10 +696,13 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
   const current = readSettingsFile(filePath);
   if (current === null) return false; // corrupt file — refuse to clobber
   if (value === undefined) {
+    if (!(key in current)) return true; // key not present — nothing to clear
     delete current[key]; // clear/unset the key
   } else {
     current[key] = value;
   }
+  // Skip write if result would be empty and file doesn't exist yet
+  if (Object.keys(current).length === 0 && !existsSync(filePath)) return true;
   writeSettingsFile(filePath, current);
   clearSettingsCache();
   return true;

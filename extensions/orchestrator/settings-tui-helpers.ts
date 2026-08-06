@@ -3,7 +3,7 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import stripJsonComments from "strip-json-comments";
 import {
@@ -229,7 +229,12 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
 export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+
+  // Atomic write: write to temp file first, then rename to avoid truncation on crash.
+  const content = JSON.stringify(data, null, 2) + "\n";
+  const tmpPath = filePath + ".tmp";
+  writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+  renameSync(tmpPath, filePath);
 }
 
 // ── Registration helper (testable without pi-coding-agent) ──────────
