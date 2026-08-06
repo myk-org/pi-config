@@ -257,10 +257,12 @@ export function resolveSecretPrefill(
   const scopeFile = getFilePathForScope(editScope, cwd);
   const scopeData = readSettingsFile(scopeFile);
   const scopeValue = scopeData && typeof scopeData[key] === "string" ? scopeData[key] as string : null;
-  const prefill = scopeValue !== null ? scopeValue : "";
-  const hint = scopeValue === null
-    ? "Enter new value (not set in this scope)"
-    : "Enter new value (empty to clear)";
+  // Never prefill with the raw secret — always start empty to avoid exposing it on screen.
+  // The user must type a new value; empty submit is handled by isSecretNoChange.
+  const prefill = "";
+  const hint = scopeValue !== null
+    ? "Value set in this scope — enter new value or empty to clear"
+    : "Enter new value (not set in this scope)";
   return { scopeValue, prefill, hint };
 }
 
