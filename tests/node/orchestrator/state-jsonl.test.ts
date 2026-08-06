@@ -4,10 +4,10 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { JsonlStateStore, parseLastValidLine } from "../../../extensions/orchestrator/state-jsonl.js";
+import { JsonlStateStore, parseLastValidLine, createCachedStore } from "../../../extensions/orchestrator/state-jsonl.js";
 
 interface TestState {
   counter: number;
@@ -380,5 +380,53 @@ describe("JsonlStateStore lineCount persistence across instances", () => {
     const linesAfter = readFileSync(filePath, "utf-8").split("\n").filter(l => l.trim()).length;
     assert.equal(linesAfter, 1, "Should have compacted after reaching threshold across instances");
     assert.deepEqual(store2.read(), { counter: 4, name: "entry-4", active: true });
+  });
+});
+
+describe("createCachedStore legacy migration", () => {
+  it("migrates legacy JSON file to JSONL on first access", () => {
+    const dir = join(tmpDir, "migrate-test");
+    const legacyData = { value: 42, name: "legacy" };
+    // Write legacy JSON file
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), JSON.stringify(legacyData) + "\n");
+
+    const store = createCachedStore<typeof legacyData>(dir, "state.jsonl", "state.json");
+    const result = store.read();
+    assert.deepEqual(result, legacyData);
+    // Legacy file should be removed
+    assert.equal(existsSync(join(dir, "state.json")), false);
+    // JSONL file should exist
+    assert.equal(existsSync(join(dir, "state.jsonl")), true);
+  });
+
+  it("retries migration when JSONL exists but is corrupt", () => {
+    const dir = join(tmpDir, "migrate-corrupt");
+    mkdirSync(dir, { recursive: true });
+    // Write corrupt JSONL and valid legacy JSON
+    writeFileSync(join(dir, "state.jsonl"), "corrupt\n");
+    const legacyData = { value: 99 };
+    writeFileSync(join(dir, "state.json"), JSON.stringify(legacyData) + "\n");
+
+    const store = createCachedStore<typeof legacyData>(dir, "state.jsonl", "state.json");
+    const result = store.read();
+    assert.deepEqual(result, legacyData);
+    assert.equal(existsSync(join(dir, "state.json")), false);
+  });
+
+  it("skips migration when JSONL has valid data", () => {
+    const dir = join(tmpDir, "migrate-skip");
+    mkdirSync(dir, { recursive: true });
+    const jsonlData = { value: 1 };
+    const legacyData = { value: 2 };
+    writeFileSync(join(dir, "state.jsonl"), JSON.stringify(jsonlData) + "\n");
+    writeFileSync(join(dir, "state.json"), JSON.stringify(legacyData) + "\n");
+
+    const store = createCachedStore<typeof jsonlData>(dir, "state.jsonl", "state.json");
+    const result = store.read();
+    // Should use JSONL data, not legacy
+    assert.deepEqual(result, jsonlData);
+    // Legacy file should NOT be removed (migration skipped)
+    assert.equal(existsSync(join(dir, "state.json")), true);
   });
 });

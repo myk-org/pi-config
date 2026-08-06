@@ -163,7 +163,8 @@ export function createCachedStore<T>(
   // - File exists but is empty/corrupt (crash during first append)
   // Without this, callers fall back to defaults which can be unsafe
   // (e.g., review state defaults to "none" → isReviewClean returns true).
-  if (store.read() === null) {
+  // Check exists() first to avoid expensive read/parse when JSONL is healthy.
+  if (!store.exists() || store.read() === null) {
     const legacyPath = join(dir, legacyFilename);
     if (existsSync(legacyPath)) {
       try {
