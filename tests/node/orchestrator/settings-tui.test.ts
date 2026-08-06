@@ -12,6 +12,7 @@ import {
   getFilePathForScope,
   CATEGORIES,
   registerSettingsTuiCommand,
+  isSecretNoChange,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -194,16 +195,24 @@ describe("formatValue", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  it("whitespace-only input treated as empty for secret guard", () => {
-    // The secret guard in buildSettingItems uses val?.trim() === ""
-    // to catch whitespace-only submissions as "no change"
-    const whitespaceInputs = ["", " ", "  ", "\t", "\n", " \t\n "];
-    for (const input of whitespaceInputs) {
-      assert.equal(input.trim() === "", true, `"${input.replace(/\n/g, "\\n").replace(/\t/g, "\\t")}" should be treated as empty`);
-    }
-    // Non-whitespace should not be treated as empty
-    assert.equal("real-token".trim() === "", false);
-    assert.equal(" token ".trim() === "", false);
+  it("isSecretNoChange treats whitespace-only as no-change when scope has no value", () => {
+    // When scope does NOT have the value, empty/whitespace = no change
+    assert.equal(isSecretNoChange(undefined, false), true);
+    assert.equal(isSecretNoChange("", false), true);
+    assert.equal(isSecretNoChange(" ", false), true);
+    assert.equal(isSecretNoChange("\t", false), true);
+    assert.equal(isSecretNoChange(" \t\n ", false), true);
+    // Real input = change
+    assert.equal(isSecretNoChange("real-token", false), false);
+    assert.equal(isSecretNoChange(" token ", false), false);
+  });
+
+  it("isSecretNoChange allows all input when scope has existing value", () => {
+    // When scope HAS the value, user is editing — even empty is a valid change (clear)
+    assert.equal(isSecretNoChange(undefined, true), false);
+    assert.equal(isSecretNoChange("", true), false);
+    assert.equal(isSecretNoChange(" ", true), false);
+    assert.equal(isSecretNoChange("new-token", true), false);
   });
 });
 

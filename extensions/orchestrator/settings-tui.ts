@@ -40,6 +40,7 @@ import {
   readSettingsFile,
   writeSettingsFile,
   registerSettingsTuiCommand,
+  isSecretNoChange,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -60,6 +61,7 @@ export {
   readSettingsFile,
   writeSettingsFile,
   registerSettingsTuiCommand,
+  isSecretNoChange,
 } from "./settings-tui-helpers.js";
 
 // ── Provider/Model data helpers ─────────────────────────────────────
@@ -657,7 +659,7 @@ export function buildSettingItems(
                 : "Enter new value (empty to clear)";
               return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
                 // For secrets not in this scope, treat empty submit as "no change"
-                if (isSecret && scopeStringValue === null && (val === undefined || val?.trim() === "")) {
+                if (isSecret && isSecretNoChange(val, scopeStringValue !== null)) {
                   done(undefined); // cancel — don't persist empty string
                   return;
                 }
