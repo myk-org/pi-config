@@ -243,7 +243,9 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
 /** Check if a secret input should be treated as "no change" (cancel). */
 export function isSecretNoChange(val: string | undefined, scopeHasValue: boolean): boolean {
   if (scopeHasValue) return false; // value exists in scope — user is editing, not creating
-  return val === undefined || val?.trim() === "";
+  // Treat undefined, empty, whitespace-only, and the literal "(empty)" as no-change.
+  // "(empty)" is the display placeholder that parseRawValue converts to "".
+  return val === undefined || val?.trim() === "" || val?.trim() === "(empty)";
 }
 
 // ── Registration helper (testable without pi-coding-agent) ──────────

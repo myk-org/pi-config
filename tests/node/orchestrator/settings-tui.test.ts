@@ -202,6 +202,7 @@ describe("formatValue", () => {
     assert.equal(isSecretNoChange(" ", false), true);
     assert.equal(isSecretNoChange("\t", false), true);
     assert.equal(isSecretNoChange(" \t\n ", false), true);
+    assert.equal(isSecretNoChange("(empty)", false), true);
     // Real input = change
     assert.equal(isSecretNoChange("real-token", false), false);
     assert.equal(isSecretNoChange(" token ", false), false);
