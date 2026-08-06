@@ -206,14 +206,14 @@ describe("parseLastValidLine", () => {
     assert.deepEqual(parseLastValidLine(raw), { a: 2 });
   });
 
-  it("skips JSON primitives and returns null", () => {
+  it("skips JSON primitives", () => {
     assert.equal(parseLastValidLine('"just a string"\n'), null);
     assert.equal(parseLastValidLine('42\n'), null);
     assert.equal(parseLastValidLine('true\n'), null);
     assert.equal(parseLastValidLine('null\n'), null);
   });
 
-  it("skips JSON arrays and returns null", () => {
+  it("skips JSON arrays", () => {
     assert.equal(parseLastValidLine('[1, 2, 3]\n'), null);
     assert.equal(parseLastValidLine('["a", "b"]\n'), null);
   });
