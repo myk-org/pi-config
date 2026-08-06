@@ -17,7 +17,7 @@
  * Part of issue #724: migrate state persistence to JSONL.
  */
 
-import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface JsonlStateStoreOptions {
@@ -136,6 +136,108 @@ function countLines(raw: string): number {
     if (line.trim()) count++;
   }
   return count;
+}
+
+// ── JsonlAppendLog ─────────────────────────────────────────────────────────
+
+export interface JsonlAppendLogOptions {
+  /** Maximum file size in bytes before truncation (default: 512KB). */
+  maxSizeBytes?: number;
+  /** Number of lines to keep when truncating (default: 200). */
+  keepLines?: number;
+}
+
+const DEFAULT_MAX_SIZE = 512_000; // 512KB
+const DEFAULT_KEEP_LINES = 200;
+
+/**
+ * Synchronous append-only JSONL log.
+ *
+ * Unlike JsonlStateStore (which reads the latest state), this is for
+ * append-only event logs like telemetry. Each append adds a JSON line
+ * with an auto-incremented sequence number. Size-based truncation
+ * prevents unbounded growth.
+ *
+ * Usage:
+ * ```ts
+ * const log = new JsonlAppendLog<TelemetryEvent>(filePath);
+ * log.append({ event: "inject", count: 3 }); // adds { seq: 1, ts: "...", ...data }
+ * ```
+ */
+export class JsonlAppendLog<T extends object> {
+  private readonly filePath: string;
+  private readonly maxSizeBytes: number;
+  private readonly keepLines: number;
+  private seq: number;
+
+  constructor(filePath: string, options?: JsonlAppendLogOptions) {
+    this.filePath = filePath;
+    this.maxSizeBytes = options?.maxSizeBytes ?? DEFAULT_MAX_SIZE;
+    this.keepLines = options?.keepLines ?? DEFAULT_KEEP_LINES;
+    this.seq = 0;
+  }
+
+  /** Append a log entry. Adds `seq` (auto-incremented) and `ts` (ISO timestamp) fields.
+   *  Auto-truncates when file exceeds size limit. */
+  append(data: T): void {
+    ensureDir(this.filePath);
+    this.seq++;
+    const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
+    appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+
+    // Size-based truncation
+    this.truncateIfNeeded();
+  }
+
+  /** Read all valid log entries. Returns empty array if file doesn't exist. */
+  readAll(): Array<T & { seq: number; ts: string }> {
+    if (!existsSync(this.filePath)) return [];
+    let raw: string;
+    try {
+      raw = readFileSync(this.filePath, "utf-8");
+    } catch {
+      return [];
+    }
+    const entries: Array<T & { seq: number; ts: string }> = [];
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        entries.push(JSON.parse(trimmed));
+      } catch {
+        // Skip corrupt/truncated lines
+        continue;
+      }
+    }
+    return entries;
+  }
+
+  /** Check if the log file exists. */
+  exists(): boolean {
+    return existsSync(this.filePath);
+  }
+
+  /** Get the file path. */
+  get path(): string {
+    return this.filePath;
+  }
+
+  /** Truncate file to keepLines if it exceeds maxSizeBytes. */
+  private truncateIfNeeded(): void {
+    try {
+      const stat = statSync(this.filePath);
+      if (stat.size <= this.maxSizeBytes) return;
+
+      const raw = readFileSync(this.filePath, "utf-8");
+      const lines = raw.split("\n").filter(Boolean);
+      const kept = lines.slice(-this.keepLines);
+      const tmp = `${this.filePath}.${process.pid}.truncate`;
+      writeFileSync(tmp, kept.join("\n") + "\n");
+      renameSync(tmp, this.filePath);
+    } catch {
+      // Truncation failure is non-fatal
+    }
+  }
 }
 
 /** Ensure the parent directory exists. */

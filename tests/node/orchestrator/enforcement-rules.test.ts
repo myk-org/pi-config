@@ -17,7 +17,7 @@ import {
   type EnforcedEntry,
   type VerifierEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
-import { entryHash, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { entryHash, loadScores, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -306,8 +306,8 @@ describe("loadEnforcedEntries — returns entries with trigger and action", () =
         lastRebuild: now,
       };
       fs.writeFileSync(
-        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
-        JSON.stringify(scoresFile),
+        path.join(tmpDir, ".pi", "memory", "memory-scores.jsonl"),
+        JSON.stringify(scoresFile) + "\n",
       );
       fs.writeFileSync(
         path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
@@ -345,8 +345,8 @@ describe("loadEnforcedEntries — returns entries with trigger and action", () =
         lastRebuild: now,
       };
       fs.writeFileSync(
-        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
-        JSON.stringify(scoresFile),
+        path.join(tmpDir, ".pi", "memory", "memory-scores.jsonl"),
+        JSON.stringify(scoresFile) + "\n",
       );
       fs.writeFileSync(
         path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
@@ -397,8 +397,8 @@ describe("loadVerifierEntries — returns entries with verifier field", () => {
         lastRebuild: now,
       };
       fs.writeFileSync(
-        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
-        JSON.stringify(scoresFile),
+        path.join(tmpDir, ".pi", "memory", "memory-scores.jsonl"),
+        JSON.stringify(scoresFile) + "\n",
       );
       fs.writeFileSync(
         path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
@@ -437,8 +437,8 @@ describe("loadVerifierEntries — returns entries with verifier field", () => {
         lastRebuild: now,
       };
       fs.writeFileSync(
-        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
-        JSON.stringify(scoresFile),
+        path.join(tmpDir, ".pi", "memory", "memory-scores.jsonl"),
+        JSON.stringify(scoresFile) + "\n",
       );
       fs.writeFileSync(
         path.join(tmpDir, ".pi", "memory", "topics", "lessons.md"),
@@ -603,8 +603,8 @@ describe("rebuild — orphan preservation for enforced entries", () => {
       lastRebuild: now,
     };
     fs.writeFileSync(
-      path.join(memoryDir, "memory-scores.json"),
-      JSON.stringify(scoresFile),
+      path.join(memoryDir, "memory-scores.jsonl"),
+      JSON.stringify(scoresFile) + "\n",
     );
 
     return tmpDir;
@@ -618,12 +618,7 @@ describe("rebuild — orphan preservation for enforced entries", () => {
         { category: "lesson", text: normalText, pinned: false },
       ]);
 
-      const saved = JSON.parse(
-        fs.readFileSync(
-          path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
-          "utf-8",
-        ),
-      );
+      const saved = loadScores(tmpDir);
 
       // Normal entry should exist
       assert.ok(saved.entries[normalHash], "normal entry should exist");
@@ -652,13 +647,12 @@ describe("rebuild — orphan preservation for enforced entries", () => {
         { category: "lesson", text: normalText, pinned: false },
       ]);
 
-      const raw = fs.readFileSync(
-        path.join(tmpDir, ".pi", "memory", "memory-scores.json"),
-        "utf-8",
-      );
+      const saved = loadScores(tmpDir);
 
-      // _orphaned should not appear anywhere in the saved file
-      assert.ok(!raw.includes("_orphaned"), "_orphaned flag should not be present in saved file");
+      // _orphaned should not appear in any entry
+      for (const [, entry] of Object.entries(saved.entries)) {
+        assert.equal((entry as any)._orphaned, undefined, "_orphaned flag should not be present in saved entries");
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

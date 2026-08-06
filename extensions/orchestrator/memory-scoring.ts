@@ -9,8 +9,9 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { JsonlStateStore } from "./state-jsonl.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -175,33 +176,53 @@ export function entryHash(text: string): string {
 }
 
 // ── Scores File I/O ────────────────────────────────────────────────────────
+// Persistence: append-only JSONL via JsonlStateStore (issue #724).
+// Legacy memory-scores.json is auto-migrated on first access.
 
-const SCORES_FILENAME = "memory-scores.json";
+const SCORES_FILENAME_JSONL = "memory-scores.jsonl";
+const LEGACY_SCORES_FILENAME = "memory-scores.json";
+
+/** Per-cwd scores store cache. */
+const scoresStoreCache = new Map<string, JsonlStateStore<ScoresFile>>();
+
+function getScoresStore(cwd: string): JsonlStateStore<ScoresFile> {
+  const dir = join(cwd, ".pi", "memory");
+  const cached = scoresStoreCache.get(dir);
+  if (cached) return cached;
+  const store = new JsonlStateStore<ScoresFile>(join(dir, SCORES_FILENAME_JSONL), { compactThreshold: 50 });
+  scoresStoreCache.set(dir, store);
+  // One-time migration from legacy JSON
+  if (!store.exists()) {
+    const legacyPath = join(dir, LEGACY_SCORES_FILENAME);
+    if (existsSync(legacyPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as ScoresFile;
+        store.write(raw);
+        unlinkSync(legacyPath);
+        console.debug("[memory-scoring] migrated legacy JSON to JSONL");
+      } catch (e: any) {
+        console.debug("[memory-scoring] legacy migration failed:", e?.message);
+      }
+    }
+  }
+  return store;
+}
 
 export function getScoresPath(cwd: string): string {
-  return join(cwd, ".pi", "memory", SCORES_FILENAME);
+  return join(cwd, ".pi", "memory", SCORES_FILENAME_JSONL);
 }
 
 export function loadScores(cwd: string): ScoresFile {
-  const path = getScoresPath(cwd);
-  if (!existsSync(path)) {
+  const store = getScoresStore(cwd);
+  const data = store.read();
+  if (data === null) {
     return { entries: {}, lastRebuild: new Date().toISOString() };
   }
-  try {
-    const raw = readFileSync(path, "utf-8");
-    return JSON.parse(raw) as ScoresFile;
-  } catch {
-    return { entries: {}, lastRebuild: new Date().toISOString() };
-  }
+  return data;
 }
 
 export function saveScores(cwd: string, scores: ScoresFile): void {
-  const path = getScoresPath(cwd);
-  const dir = dirname(path);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(path, JSON.stringify(scores, null, 2) + "\n", "utf-8");
+  getScoresStore(cwd).write(scores);
 }
 
 // ── Internal Types ─────────────────────────────────────────────────────────

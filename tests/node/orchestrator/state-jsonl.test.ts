@@ -219,3 +219,92 @@ describe("multiple store instances", () => {
     assert.deepEqual(state, { counter: 42, name: "shared", active: true });
   });
 });
+
+// ── 7. JsonlAppendLog ──
+
+import { JsonlAppendLog } from "../../../extensions/orchestrator/state-jsonl.js";
+
+interface TestLogEntry {
+  event: string;
+  count: number;
+}
+
+describe("JsonlAppendLog basic operations", () => {
+  it("readAll returns empty array when file does not exist", () => {
+    const log = new JsonlAppendLog<TestLogEntry>(join(tmpDir, "log.jsonl"));
+    assert.deepEqual(log.readAll(), []);
+  });
+
+  it("append creates file and adds entry with seq and ts", () => {
+    const log = new JsonlAppendLog<TestLogEntry>(join(tmpDir, "log.jsonl"));
+    log.append({ event: "test", count: 1 });
+    const entries = log.readAll();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].event, "test");
+    assert.equal(entries[0].count, 1);
+    assert.equal(entries[0].seq, 1);
+    assert.ok(entries[0].ts);
+  });
+
+  it("multiple appends increment seq", () => {
+    const log = new JsonlAppendLog<TestLogEntry>(join(tmpDir, "log.jsonl"));
+    log.append({ event: "a", count: 1 });
+    log.append({ event: "b", count: 2 });
+    log.append({ event: "c", count: 3 });
+    const entries = log.readAll();
+    assert.equal(entries.length, 3);
+    assert.equal(entries[0].seq, 1);
+    assert.equal(entries[1].seq, 2);
+    assert.equal(entries[2].seq, 3);
+    assert.equal(entries[2].event, "c");
+  });
+
+  it("exists returns false before write, true after", () => {
+    const log = new JsonlAppendLog<TestLogEntry>(join(tmpDir, "log.jsonl"));
+    assert.equal(log.exists(), false);
+    log.append({ event: "x", count: 0 });
+    assert.equal(log.exists(), true);
+  });
+
+  it("path getter returns the file path", () => {
+    const filePath = join(tmpDir, "my-log.jsonl");
+    const log = new JsonlAppendLog<TestLogEntry>(filePath);
+    assert.equal(log.path, filePath);
+  });
+});
+
+describe("JsonlAppendLog size-based truncation", () => {
+  it("truncates when file exceeds maxSizeBytes", () => {
+    const filePath = join(tmpDir, "big-log.jsonl");
+    // Use a very small maxSizeBytes to trigger truncation easily
+    const log = new JsonlAppendLog<TestLogEntry>(filePath, {
+      maxSizeBytes: 200,
+      keepLines: 3,
+    });
+    // Each entry is ~60 bytes, so 5 entries > 200 bytes
+    for (let i = 0; i < 10; i++) {
+      log.append({ event: `event-${i}`, count: i });
+    }
+    const entries = log.readAll();
+    assert.ok(entries.length <= 5, `Expected <= 5 entries after truncation, got ${entries.length}`);
+    // Last entry should still be present
+    const last = entries[entries.length - 1];
+    assert.equal(last.event, "event-9");
+  });
+});
+
+describe("JsonlAppendLog crash recovery", () => {
+  it("skips corrupt lines in readAll", () => {
+    const filePath = join(tmpDir, "corrupt-log.jsonl");
+    writeFileSync(filePath, [
+      '{"seq":1,"ts":"2024-01-01","event":"a","count":1}',
+      'corrupt line',
+      '{"seq":3,"ts":"2024-01-03","event":"c","count":3}',
+    ].join("\n") + "\n");
+    const log = new JsonlAppendLog<TestLogEntry>(filePath);
+    const entries = log.readAll();
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].event, "a");
+    assert.equal(entries[1].event, "c");
+  });
+});
