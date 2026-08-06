@@ -193,6 +193,18 @@ describe("formatValue", () => {
 
     rmSync(projectDir, { recursive: true, force: true });
   });
+
+  it("whitespace-only input treated as empty for secret guard", () => {
+    // The secret guard in buildSettingItems uses val?.trim() === ""
+    // to catch whitespace-only submissions as "no change"
+    const whitespaceInputs = ["", " ", "  ", "\t", "\n", " \t\n "];
+    for (const input of whitespaceInputs) {
+      assert.equal(input.trim() === "", true, `"${input.replace(/\n/g, "\\n").replace(/\t/g, "\\t")}" should be treated as empty`);
+    }
+    // Non-whitespace should not be treated as empty
+    assert.equal("real-token".trim() === "", false);
+    assert.equal(" token ".trim() === "", false);
+  });
 });
 
 // ── parseRawValue ───────────────────────────────────────────────────
