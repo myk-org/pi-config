@@ -11,8 +11,19 @@ from pathlib import Path
 from typing import Any
 
 import click
+import commentjson
 
-SETTINGS_FILENAME = "pi-config-settings.json"
+SETTINGS_FILENAMES = ("pi-config-settings.jsonc", "pi-config-settings.json")
+
+
+def _find_settings_file(directory: Path) -> Path | None:
+    """Find the first existing settings file (.jsonc preferred over .json)."""
+    for name in SETTINGS_FILENAMES:
+        p = directory / name
+        if p.is_file():
+            return p
+    return None
+
 
 _KEYS_FILE = Path(__file__).resolve().parent.parent.parent / "settings-keys.json"
 
@@ -122,14 +133,16 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         if meta.get("strict_digits"):
             return _parse_review_loop_max_cycles(value)
         if isinstance(value, int) and not isinstance(value, bool):
-            return value
+            min_val = meta.get("min", 0)
+            max_val = meta.get("max", 2**53)
+            return value if min_val <= value <= max_val else None
         return None
     if typ == "number":
         if _is_number(value) and math.isfinite(value):
             return value
         return None
     if typ == "port":
-        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535:
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 65535:
             return value
         return None
     if typ == "string":
@@ -148,8 +161,8 @@ def _load_settings_file(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        raw = commentjson.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -167,8 +180,8 @@ def _settings_file_has_key(path: Path, key: str) -> bool:
     if not path.is_file():
         return False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        raw = commentjson.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
         return False
     return isinstance(raw, dict) and key in raw
 
@@ -217,7 +230,7 @@ def _parse_num_env(name: str) -> float | None:
 
 
 def _parse_port_env(name: str) -> int | None:
-    """Parse port env 1-65535; invalid/unset → None."""
+    """Parse port env 0-65535; invalid/unset → None."""
     val = os.environ.get(name)
     if val is None or val == "":
         return None
@@ -225,7 +238,7 @@ def _parse_port_env(name: str) -> int | None:
         port = int(val, 10)
     except ValueError:
         return None
-    return port if 1 <= port <= 65535 else None
+    return port if 0 <= port <= 65535 else None
 
 
 def _parse_review_loop_max_cycles_env(name: str) -> int | None:
@@ -308,6 +321,20 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
                 return env_cycles
         return default
 
+    if typ == "int":
+        if env_name is not None:
+            env_val = os.environ.get(env_name)
+            if env_val is not None and env_val != "":
+                try:
+                    n = int(env_val, 10)
+                except (ValueError, TypeError):
+                    return default
+                min_val = meta.get("min", 0)
+                max_val = meta.get("max", 2**53)
+                if min_val <= n <= max_val:
+                    return n
+        return default
+
     if typ == "number":
         if env_name is not None:
             env_num = _parse_num_env(env_name)
@@ -344,9 +371,11 @@ def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
     typ = meta["type"]
 
     root = _resolve_repo_root(cwd)
-    project_path = root / ".pi" / SETTINGS_FILENAME
+    pi_dir = root / ".pi"
+    project_path = _find_settings_file(pi_dir) or (pi_dir / SETTINGS_FILENAMES[0])
     project = _load_settings_file(project_path)
-    global_settings = _load_settings_file(Path.home() / ".pi" / SETTINGS_FILENAME)
+    global_path = _find_settings_file(Path.home() / ".pi") or (Path.home() / ".pi" / SETTINGS_FILENAMES[0])
+    global_settings = _load_settings_file(global_path)
     merged = {**global_settings, **project}
 
     # Special-case: agent lists use per-key project presence (not simple merge)
@@ -363,7 +392,7 @@ def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
     if key in merged:
         value = merged[key]
         if typ == "port":
-            if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535:
+            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 65535:
                 return value
             # Invalid in merged — fall through to env/default
         elif typ == "agent_overrides":

@@ -1,0 +1,155 @@
+// Pi-config project settings — documented reference. Copy to .pi/pi-config-settings.json.
+// Resolution order: project file → global ~/.pi/pi-config-settings.json → env var → default.
+// Only include settings you want to override — omitted keys use defaults.
+{
+  // ── Git & Commit ──────────────────────────────────────────────────────────
+
+  // Add Developer Certificate of Origin (Signed-off-by) to commits
+  "dco": false,
+
+  // Add trailer to commit messages. true = "Assisted-by: PI (<model>)", or a custom string
+  "commit_trailer": false,
+
+  // Use git worktrees for multi-branch work instead of branch switching
+  "use_worktrees": false,
+
+  // Allow pushing to protected branches (main, master, etc.)
+  "allow_push_to_protected_branches": false,
+
+  // Add "Assisted-by: PI" signature to PR/issue comments
+  "comment_signature": false,
+
+  // ── Code Review ───────────────────────────────────────────────────────────
+
+  // Enable review loop enforcement — blocks commits until review is clean
+  "review_loop_enforcement": false,
+
+  // Max review-loop cycles before stopping (1-10)
+  "review_loop_max_cycles": 3,
+
+  // ── Memory & Dreaming ─────────────────────────────────────────────────────
+
+  // Hours between automatic memory consolidation (dreaming). Range: 0.5-24
+  "dream_interval_hours": 3,
+
+  // ── Orchestrator ──────────────────────────────────────────────────────────
+
+  // Block orchestrator from using edit/write tools directly (must delegate to subagents)
+  "orchestrator_edit_write_block": false,
+
+  // ── Dashboard & Diff ──────────────────────────────────────────────────────
+
+  // Enable pidash web dashboard
+  "pidash_enable": true,
+
+  // Enable pidiff code diff viewer
+  "pidiff_enable": true,
+
+  // Pidash web dashboard port (1-65535)
+  "pidash_port": 19190,
+
+  // ── Image Generation ──────────────────────────────────────────────────────
+
+  // Gemini model for image generation (requires GEMINI_API_KEY env var)
+  "image_model": "",
+
+  // ── Provider & Model ──────────────────────────────────────────────────────
+
+  // Provider for async operations when parent is acpx (dream, cron, must-async agents)
+  "internal_operations_provider": "",
+
+  // Model for async operations when parent is acpx
+  "internal_operations_model": "",
+
+  // Default provider for all subagents
+  "agent_provider": "",
+
+  // Default model for all subagents
+  "agent_model": "",
+
+  // Per-agent provider/model overrides. null = use parent model (skip global agent_provider/agent_model)
+  "agent_overrides": {},
+
+  // ── External Agents ───────────────────────────────────────────────────────
+
+  // ACPX-backed agents to register (e.g. ["cursor"])
+  "acpx_agents": [],
+
+  // CLI-backed agents to register (e.g. ["claude", "cursor", "gemini"])
+  "cli_agents": [],
+
+  // ── Vertex Claude ─────────────────────────────────────────────────────────
+
+  // Enable 1M context window variants for Vertex Claude models
+  "vertex_claude_1m": false,
+
+  // ── Sidecar ───────────────────────────────────────────────────────────────
+
+  // Pi-sidecar log level: debug, info, warn, error
+  "sidecar_log_level": "info",
+
+  // ── Debug ─────────────────────────────────────────────────────────────────
+
+  // Enable debug logging for async agents
+  "async_debug": false,
+
+  // ── Enforcement ───────────────────────────────────────────────────────────
+
+  // Colon-separated command allowlist for enforcement. Empty = allow all
+  "enforcement_allowed_commands": "",
+
+  // ── Coms (P2P) ────────────────────────────────────────────────────────────
+
+  // Max message relay hops for P2P coms (1-50)
+  "coms_max_hops": 5,
+
+  // P2P coms message response timeout in milliseconds
+  "coms_timeout_ms": 1800000,
+
+  // P2P coms peer ping interval in milliseconds
+  "coms_ping_interval_ms": 10000,
+
+  // P2P coms data directory. Empty = ~/.pi/coms
+  "coms_dir": "",
+
+  // ── Coms-Net (Networked) ──────────────────────────────────────────────────
+
+  // Coms-net server listen port. 0 = OS picks a random free port
+  "coms_net_port": 0,
+
+  // Coms-net server bind host (use 0.0.0.0 for LAN access — requires auth token)
+  "coms_net_host": "127.0.0.1",
+
+  // Coms-net auth token for remote access. Empty = auto-generated for loopback
+  "coms_net_auth_token": "",
+
+  // Coms-net public URL for remote peers to connect to
+  "coms_net_public_url": "",
+
+  // Remote coms-net server URL to connect to (client mode)
+  "coms_net_server_url": "",
+
+  // Max message relay hops for coms-net (1-50)
+  "coms_net_max_hops": 5,
+
+  // Coms-net message time-to-live in milliseconds
+  "coms_net_message_ttl_ms": 1800000,
+
+  // Max queued messages per agent (1-10000)
+  "coms_net_max_inbox": 100,
+
+  // Coms-net heartbeat interval in milliseconds
+  "coms_net_heartbeat_ms": 10000,
+
+  // Coms-net stale peer threshold in milliseconds
+  "coms_net_stale_after_ms": 30000,
+
+  // Coms-net offline peer threshold in milliseconds
+  "coms_net_offline_after_ms": 60000,
+
+  // Log coms-net heartbeat traffic (very noisy)
+  "coms_net_log_heartbeat": false,
+
+  // Suppress all coms-net logs except startup/shutdown
+  "coms_net_log_quiet": false
+}

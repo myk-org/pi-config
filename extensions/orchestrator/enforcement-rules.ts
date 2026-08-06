@@ -16,6 +16,7 @@ import {
   type EnforcementAction,
 } from "./memory-scoring.js";
 import { readAllTopicEntries } from "./memory-tree.js";
+import { getSetting } from "./project-settings.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -287,9 +288,9 @@ export function executeAction(
   command: string,
   cwd: string,
 ): ActionResult {
-  // Optional allowlist — if PI_ENFORCEMENT_ALLOWED_COMMANDS is set,
+  // Optional allowlist — if enforcement_allowed_commands setting is set,
   // only permit exact-match commands (colon-separated)
-  const allowedEnv = process.env.PI_ENFORCEMENT_ALLOWED_COMMANDS;
+  const allowedEnv = getSetting(cwd, "enforcement_allowed_commands") as string;
   if (allowedEnv) {
     const allowlist = allowedEnv.split(":").map(s => s.trim()).filter(Boolean);
     // Exact match only — no prefix matching to prevent shell chaining bypass
@@ -297,7 +298,7 @@ export function executeAction(
     const commandTrimmed = command.trim();
     const permitted = allowlist.some(allowed => commandTrimmed === allowed);
     if (!permitted) {
-      return { output: `Blocked: command not in PI_ENFORCEMENT_ALLOWED_COMMANDS allowlist`, success: false };
+      return { output: `Blocked: command not in enforcement_allowed_commands allowlist`, success: false };
     }
   }
 

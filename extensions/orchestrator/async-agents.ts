@@ -120,7 +120,7 @@ export function registerAsyncAgents(
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
-  const ASYNC_DEBUG = !!process.env.PI_ASYNC_DEBUG;
+  let ASYNC_DEBUG = !!getSetting(process.cwd(), "async_debug");
   const EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
   let DEBUG_LOG_PATH = EARLY_LOG_PATH; // Starts with early log, moved to project dir on session_start
   function asyncLog(msg: string) {
@@ -747,6 +747,7 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
+    ASYNC_DEBUG = !!getSetting(ctx.cwd, "async_debug");
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);

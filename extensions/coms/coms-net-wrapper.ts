@@ -27,6 +27,7 @@ import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsNetInit from "./coms-net.js";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
 const SERVER_STARTUP_TIMEOUT_MS = 10_000;
@@ -81,14 +82,16 @@ function getServerScriptPath(): string {
 
 async function ensureServerRunning(
     project: string,
+    cwd: string,
     log: (msg: string) => void,
     options?: { port?: string; host?: string },
 ): Promise<boolean> {
     // If port/host explicitly requested, check if running server matches
     if (await isServerHealthy(project)) {
         const sj = readServerJson(project);
-        const wantPort = options?.port || process.env.PI_COMS_NET_PORT;
-        const wantHost = options?.host || process.env.PI_COMS_NET_HOST;
+        const rawPort = options?.port ? Number(options.port) : getSetting(cwd, "coms_net_port");
+        const wantPort = rawPort > 0 ? String(rawPort) : undefined;
+        const wantHost = options?.host || getSetting(cwd, "coms_net_host");
         const needRestart = (wantPort && sj?.port !== Number(wantPort)) ||
                             (wantHost && sj?.host !== wantHost);
         if (needRestart) {
@@ -117,7 +120,7 @@ async function ensureServerRunning(
     fs.mkdirSync(projDir, { recursive: true });
 
     // Binds to 127.0.0.1 by default (safe). For LAN access, user sets
-    // PI_COMS_NET_AUTH_TOKEN and PI_COMS_NET_HOST=0.0.0.0 in their env.
+    // PI_COMS_NET_AUTH_TOKEN and PI_COMS_NET_HOST=0.0.0.0 via settings/env.
     const logFile = path.join(projDir, "server.log");
     log(`spawning coms-net server: ${bunPath} ${scriptPath}`);
 
@@ -129,8 +132,18 @@ async function ensureServerRunning(
         env: {
             ...process.env,
             PI_COMS_NET_PROJECT: project,
-            PI_COMS_NET_PORT: options?.port || process.env.PI_COMS_NET_PORT || "0",
-            ...(options?.host ? { PI_COMS_NET_HOST: options.host } : {}),
+            PI_COMS_NET_PORT: options?.port || String(getSetting(cwd, "coms_net_port")),
+            PI_COMS_NET_HOST: options?.host || getSetting(cwd, "coms_net_host"),
+            PI_COMS_NET_AUTH_TOKEN: getSetting(cwd, "coms_net_auth_token") || "",
+            PI_COMS_NET_MAX_HOPS: String(getSetting(cwd, "coms_net_max_hops")),
+            PI_COMS_NET_MESSAGE_TTL_MS: String(getSetting(cwd, "coms_net_message_ttl_ms")),
+            PI_COMS_NET_MAX_INBOX: String(getSetting(cwd, "coms_net_max_inbox")),
+            PI_COMS_NET_HEARTBEAT_MS: String(getSetting(cwd, "coms_net_heartbeat_ms")),
+            PI_COMS_NET_STALE_AFTER_MS: String(getSetting(cwd, "coms_net_stale_after_ms")),
+            PI_COMS_NET_OFFLINE_AFTER_MS: String(getSetting(cwd, "coms_net_offline_after_ms")),
+            PI_COMS_NET_LOG_HEARTBEAT: getSetting(cwd, "coms_net_log_heartbeat") ? "1" : "",
+            PI_COMS_NET_LOG_QUIET: getSetting(cwd, "coms_net_log_quiet") ? "1" : "",
+            PI_COMS_NET_PUBLIC_URL: getSetting(cwd, "coms_net_public_url") || "",
         },
     });
     child.unref();
@@ -247,8 +260,12 @@ export function registerComsNet(pi: ExtensionAPI) {
 
     // Prune stale registry entries on session start (cleans up after crashes)
     // Also reset coms-net state on fresh starts (non-reload) to clear phantom peers
-    pi.on("session_start", (evt: any) => {
-        try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms-net] stale cleanup:", e?.message?.slice(0, 100)); }
+    pi.on("session_start", (evt: any, ctx: any) => {
+        try {
+            const cwd = ctx?.cwd || process.cwd();
+            const comsDir = getSetting(cwd, "coms_dir") || path.join(os.homedir(), ".pi", "coms");
+            pruneStaleRegistry(comsDir);
+        } catch (e: any) { console.debug("[coms-net] stale cleanup:", e?.message?.slice(0, 100)); }
         if (evt?.reason !== "reload") {
             state.active = false;
             state.flagValues.delete("auth-token"); // Don't persist auth tokens
@@ -369,12 +386,14 @@ export function registerComsNet(pi: ExtensionAPI) {
                 const host = state.flagValues.get("host") as string | undefined;
 
                 // Auto-start server, or restart if port/host mismatch
+                const cwd = ctx.cwd || "";
                 const alreadyRunning = await isServerHealthy(project);
                 if (alreadyRunning) {
                     // Check if running server matches requested port/host
                     const sj = readServerJson(project);
-                    const wantPort = port || process.env.PI_COMS_NET_PORT;
-                    const wantHost = host || process.env.PI_COMS_NET_HOST;
+                    const rawPort = port ? Number(port) : getSetting(cwd, "coms_net_port");
+                    const wantPort = rawPort > 0 ? String(rawPort) : undefined;
+                    const wantHost = host || getSetting(cwd, "coms_net_host");
                     const mismatch = (wantPort && sj?.port !== Number(wantPort)) ||
                                      (wantHost && sj?.host !== wantHost);
                     if (mismatch) {
@@ -382,7 +401,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                         await killServer(project, log);
                         await new Promise(r => setTimeout(r, 1000));
                         try { ctx.ui.notify("📡 Restarting coms-net server (port/host changed)...", "info"); } catch {}
-                        const started = await ensureServerRunning(project, log, { port, host });
+                        const started = await ensureServerRunning(project, cwd, log, { port, host });
                         if (!started) {
                             try { ctx.ui.notify("📡 coms-net: failed to restart server.", "error"); } catch {}
                             return;
@@ -391,7 +410,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                     }
                 } else {
                     try { ctx.ui.notify("📡 Starting coms-net server...", "info"); } catch {}
-                    const started = await ensureServerRunning(project, log, { port, host });
+                    const started = await ensureServerRunning(project, cwd, log, { port, host });
                     if (!started) {
                         try { ctx.ui.notify("📡 coms-net: failed to start server. Is Bun installed?", "error"); } catch {}
                         return;

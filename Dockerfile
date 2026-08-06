@@ -97,9 +97,6 @@ RUN mkdir -p /home/node/.config/cursor
 # agent-browser: use Playwright's Chromium with container-safe flags
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 
-# acpx agents to register as pi model providers (comma-separated)
-ENV ACPX_AGENTS=""
-
 # Install remote uv tools (cached independently of local source changes)
 RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
   uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \

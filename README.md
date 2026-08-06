@@ -105,7 +105,7 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 /coms-net status
 ```
 
-For LAN/remote access, set `PI_COMS_NET_AUTH_TOKEN` and `PI_COMS_NET_HOST=0.0.0.0` in your environment.
+For LAN/remote access, set `coms_net_auth_token` and `coms_net_host` in `.pi/pi-config-settings.json` (or via env vars `PI_COMS_NET_AUTH_TOKEN` / `PI_COMS_NET_HOST`).
 
 **Tools available once activated:**
 
@@ -259,35 +259,18 @@ Use `/review-status` to inspect the current review loop state. Pass a worktree p
 
 ### Project Settings
 
-Create `.pi/pi-config-settings.json` in your project to override global defaults:
+Copy the example file to your project and customize:
 
-```json
-{
-  "commit_trailer": "Assisted-by",
-  "allow_push_to_protected_branches": false,
-  "use_worktrees": true,
-  "dream_interval_hours": 6,
-  "review_loop_enforcement": false,
-  "review_loop_max_cycles": 3,
-  "pidash_enable": true,
-  "pidiff_enable": true,
-  "pidash_port": 19190,
-  "image_model": "gemini-3-pro-image",
-  "acpx_agents": ["cursor"],
-  "cli_agents": ["claude", "cursor"],
-  "internal_operations_provider": "anthropic",
-  "internal_operations_model": "claude-sonnet-4-20250514",
-  "agent_provider": "cli-cursor",
-  "agent_model": "cursor:cursor-grok-4.5-high-fast",
-  "agent_overrides": {
-    "git-expert": { "provider": null, "model": null }
-  }
-}
+```bash
+cp pi-config-settings.example.jsonc .pi/pi-config-settings.json
 ```
+
+Settings files support JSONC (JSON with `//` comments).
+See [`pi-config-settings.example.jsonc`](pi-config-settings.example.jsonc) for all available settings with descriptions.
 
 Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
-See `dev-docs/project-settings.md` for the full settings table and env vars.
+See `dev-docs/project-settings.md` for the full settings table.
 
 #### Reviewer Environment Variables
 
@@ -458,7 +441,9 @@ docker run --rm -it \
 
 ### Environment file
 
-Create a `.env` file with container-specific variables:
+Create a `.env` file with external service credentials and container-specific
+variables. Pi-config settings (image_model, acpx_agents, vertex_claude_1m, etc.)
+go in `.pi/pi-config-settings.json` — not here:
 
 ```env
 # Timezone (host timezone for correct timestamps)
@@ -471,9 +456,6 @@ PI_HOST_USER=myakove
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
 GOOGLE_APPLICATION_CREDENTIALS=/home/myakove/.config/gcloud/application_default_credentials.json
-VERTEX_PROJECT_ID=your-project-id
-VERTEX_REGION=us-east5
-VERTEX_CLAUDE_1M=true
 
 # GitHub
 GITHUB_TOKEN=ghp_xxx
@@ -482,12 +464,6 @@ GH_CONFIG_DIR=/home/myakove/.config/gh
 
 # Gemini (optional — required for image generation)
 GEMINI_API_KEY=xxx
-
-# Image generation model (required for generate_image tool)
-PI_IMAGE_MODEL=gemini-3-pro-image
-
-# acpx agents (optional)
-# ACPX_AGENTS=cursor
 
 # mcpl (MCP Launchpad) config path inside the container (must match mount target)
 # Use your actual home path — it resolves inside the container via the PI_HOST_USER symlink

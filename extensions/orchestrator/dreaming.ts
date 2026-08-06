@@ -26,11 +26,6 @@ import { mergeProvenancePending } from "./memory-provenance.js";
 import { getProjectTmpDir } from "./utils.js";
 import { dreamingLog } from "../shared/file-logger.js";
 
-// Default: 3 hours. Override with PI_DREAM_INTERVAL_HOURS env var (0.5–24).
-const _rawHours = parseFloat(process.env.PI_DREAM_INTERVAL_HOURS || "3");
-const DREAM_INTERVAL_HOURS = Number.isFinite(_rawHours) && _rawHours >= 0.5 && _rawHours <= 24 ? _rawHours : 3;
-const DREAM_INTERVAL_MS = DREAM_INTERVAL_HOURS * 60 * 60 * 1000;
-
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
 const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
 
