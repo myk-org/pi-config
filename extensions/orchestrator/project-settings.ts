@@ -250,41 +250,44 @@ function parseSettingsFile(filePath: string): ProjectSettings {
       if (Object.keys(overrides).length > 0) result.agent_overrides = overrides;
     }
 
-    // Data-driven parsing for simple settings that follow standard type patterns
-    const SIMPLE_BOOL_KEYS: (keyof ProjectSettings)[] = [
-      "vertex_claude_1m", "async_debug", "coms_net_log_heartbeat", "coms_net_log_quiet",
-    ];
-    for (const k of SIMPLE_BOOL_KEYS) {
-      if (typeof raw[k] === "boolean") result[k] = raw[k] as any;
-    }
-
-    const SIMPLE_STRING_KEYS: (keyof ProjectSettings)[] = [
-      "sidecar_log_level", "enforcement_allowed_commands", "coms_dir",
-      "coms_net_host", "coms_net_auth_token", "coms_net_public_url", "coms_net_server_url",
-    ];
-    for (const k of SIMPLE_STRING_KEYS) {
-      if (typeof raw[k] === "string") {
-        // Store even empty strings — some settings use empty as meaningful ("allow all", "use default dir")
-        result[k] = (raw[k] as string).trim() as any;
-      }
-    }
-
-    const SIMPLE_INT_KEYS: (keyof ProjectSettings)[] = [
-      "coms_max_hops", "coms_timeout_ms", "coms_ping_interval_ms",
-      "coms_net_port", "coms_net_max_hops", "coms_net_message_ttl_ms",
-      "coms_net_max_inbox", "coms_net_heartbeat_ms", "coms_net_stale_after_ms",
-      "coms_net_offline_after_ms",
-    ];
-    for (const k of SIMPLE_INT_KEYS) {
-      if (typeof raw[k] === "number" && Number.isInteger(raw[k]) && raw[k] >= 0) {
-        const keyDef = SETTINGS_KEYS[k];
-        if (keyDef) {
-          const min = keyDef.min ?? 0;
-          const max = keyDef.max ?? Number.MAX_SAFE_INTEGER;
-          if (raw[k] >= min && raw[k] <= max) result[k] = raw[k] as any;
-        } else {
-          result[k] = raw[k] as any;
+    // Data-driven parsing for remaining settings — derive from settings-keys.json types
+    const SPECIAL_CASE_KEYS = new Set<string>([
+      "commit_trailer", "allow_push_to_protected_branches", "use_worktrees",
+      "dream_interval_hours", "dco", "comment_signature", "review_loop_enforcement",
+      "orchestrator_edit_write_block", "pidash_enable", "pidiff_enable", "pidash_port",
+      "image_model", "internal_operations_provider", "internal_operations_model",
+      "review_loop_max_cycles", "acpx_agents", "cli_agents", "agent_provider",
+      "agent_model", "agent_overrides",
+    ]);
+    for (const [k, def] of Object.entries(SETTINGS_KEYS)) {
+      if (SPECIAL_CASE_KEYS.has(k) || k in result) continue;
+      if (!(k in raw)) continue;
+      const val = raw[k];
+      switch (def.type) {
+        case "bool":
+          if (typeof val === "boolean") (result as any)[k] = val;
+          break;
+        case "string":
+          if (typeof val === "string") (result as any)[k] = val.trim();
+          break;
+        case "int": {
+          if (typeof val === "number" && Number.isInteger(val)) {
+            const min = def.min ?? 0;
+            const max = def.max ?? Number.MAX_SAFE_INTEGER;
+            if (val >= min && val <= max) (result as any)[k] = val;
+          }
+          break;
         }
+        case "port": {
+          const min = def.min ?? 0;
+          if (typeof val === "number" && Number.isInteger(val) && val >= min && val <= 65535) {
+            (result as any)[k] = val;
+          }
+          break;
+        }
+        case "number":
+          if (typeof val === "number" && Number.isFinite(val)) (result as any)[k] = val;
+          break;
       }
     }
     return result;
