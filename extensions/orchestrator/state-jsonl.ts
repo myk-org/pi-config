@@ -17,7 +17,7 @@
  * Part of issue #724: migrate state persistence to JSONL.
  */
 
-import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface JsonlStateStoreOptions {
@@ -60,23 +60,33 @@ export class JsonlStateStore<T> {
     return parseLastValidLine<T>(raw);
   }
 
-  /** Append a new state snapshot as a JSON line. Auto-compacts when threshold is exceeded. */
+  /** Append a new state snapshot as a JSON line. Auto-compacts when threshold is exceeded.
+   *  Uses a cross-process lock to prevent concurrent write+compact races. */
   write(state: T): void {
     ensureDir(this.filePath);
-    const line = JSON.stringify(state) + "\n";
-    appendFileSync(this.filePath, line);
-    this.lineCount++;
+    withFileLock(this.filePath, () => {
+      const line = JSON.stringify(state) + "\n";
+      appendFileSync(this.filePath, line);
+      this.lineCount++;
 
-    // Check if compaction is needed using in-memory counter (no file re-read)
-    if (this.lineCount >= this.compactThreshold) {
-      this.compact();
-    }
+      // Check if compaction is needed using in-memory counter (no file re-read)
+      if (this.lineCount >= this.compactThreshold) {
+        this.compactInner();
+      }
+    });
   }
 
   /** Compact the JSONL file to a single line containing the latest state.
    *  Always re-reads the file to get the latest state — prevents overwriting
-   *  newer data from concurrent writers. Uses atomic rename. */
+   *  newer data from concurrent writers. Uses atomic rename + cross-process lock. */
   compact(currentState?: T): void {
+    withFileLock(this.filePath, () => {
+      this.compactInner(currentState);
+    });
+  }
+
+  /** Internal compact — must be called within a lock. */
+  private compactInner(currentState?: T): void {
     const state = currentState ?? this.read();
     if (state === null) return;
     const tmp = `${this.filePath}.${process.pid}.compact`;
@@ -241,6 +251,68 @@ export class JsonlAppendLog<T extends object> {
       // Truncation failure is non-fatal
     }
   }
+}
+
+// ── Cross-process file lock ────────────────────────────────────────────────
+// Prevents concurrent write+compact races between orchestrator and subagents.
+// Same pattern as pi-config-review-state.ts lock mechanism.
+
+const fileLockDepth = new Map<string, number>();
+
+/** Execute fn while holding a cross-process lock on the JSONL file.
+ *  Lock file: <path>.lock with PID. Reentrant within the same process. */
+function withFileLock(filePath: string, fn: () => void): void {
+  const lockFile = filePath + ".lock";
+  const depth = fileLockDepth.get(lockFile) || 0;
+  if (depth === 0) {
+    if (!acquireFileLock(lockFile)) {
+      // Lock acquisition failed — proceed without lock (non-fatal, same as before)
+      fn();
+      return;
+    }
+  }
+  fileLockDepth.set(lockFile, depth + 1);
+  try {
+    fn();
+  } finally {
+    const newDepth = (fileLockDepth.get(lockFile) || 1) - 1;
+    if (newDepth <= 0) {
+      fileLockDepth.delete(lockFile);
+      releaseFileLock(lockFile);
+    } else {
+      fileLockDepth.set(lockFile, newDepth);
+    }
+  }
+}
+
+function acquireFileLock(lockFile: string): boolean {
+  const maxRetries = 50;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      ensureDir(lockFile);
+      writeFileSync(lockFile, String(process.pid), { flag: "wx" });
+      return true;
+    } catch {
+      try {
+        const pid = parseInt(readFileSync(lockFile, "utf-8").trim(), 10);
+        if (pid === process.pid) return true; // Reentrant
+        if (pid) {
+          try { process.kill(pid, 0); } catch {
+            try { unlinkSync(lockFile); } catch { /* race */ }
+            continue;
+          }
+        }
+      } catch {
+        try { unlinkSync(lockFile); } catch { /* race */ }
+        continue;
+      }
+    }
+  }
+  return false;
+}
+
+function releaseFileLock(lockFile: string): void {
+  try { unlinkSync(lockFile); } catch { /* ignore */ }
 }
 
 /** Ensure the parent directory exists. */
