@@ -168,7 +168,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   });
   pi.on("agent_end", (_event, ctx) => { lastCtx = ctx; });
 
-  // Poll pi-config-review-state.json for cross-process updates (subagents write state too)
+  // Poll pi-config-review-state.jsonl for cross-process updates (subagents write state too)
   const reviewPoller = setInterval(() => {
     if (!lastCtx) return;
     // Access a ctx property to detect stale/disposed context (throws if invalidated)

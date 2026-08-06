@@ -1,0 +1,145 @@
+/**
+ * JSONL-backed synchronous state persistence.
+ *
+ * Replaces ad-hoc JSON read/write with an append-only JSONL file.
+ * Each mutation appends a single JSON line — if the process crashes mid-write,
+ * the previous state is still intact (worst case: a truncated last line that
+ * gets skipped on read). Provides:
+ *
+ *   - **Append-only durability** — writes never corrupt existing data
+ *   - **Crash recovery** — last valid JSON line wins
+ *   - **State history** — the JSONL file is a log of all state transitions
+ *   - **Compaction** — rewrites to a single line when the file grows too large
+ *
+ * All operations are synchronous to match the existing extension API surface
+ * (enforcement hooks, status bar pollers, transition callbacks).
+ *
+ * Part of issue #724: migrate state persistence to JSONL.
+ */
+
+import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+export interface JsonlStateStoreOptions {
+  /** Maximum number of lines before automatic compaction (default: 100). */
+  compactThreshold?: number;
+}
+
+const DEFAULT_COMPACT_THRESHOLD = 100;
+
+/**
+ * Synchronous JSONL state store.
+ *
+ * Usage:
+ * ```ts
+ * const store = new JsonlStateStore<MyState>(filePath);
+ * const state = store.read();          // null if no state
+ * store.write({ ...state, field: 1 }); // appends a line
+ * ```
+ */
+export class JsonlStateStore<T> {
+  private readonly filePath: string;
+  private readonly compactThreshold: number;
+
+  constructor(filePath: string, options?: JsonlStateStoreOptions) {
+    this.filePath = filePath;
+    this.compactThreshold = options?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
+  }
+
+  /** Read the latest state from the JSONL file. Returns null if no valid state exists. */
+  read(): T | null {
+    if (!existsSync(this.filePath)) return null;
+    let raw: string;
+    try {
+      raw = readFileSync(this.filePath, "utf-8");
+    } catch {
+      return null;
+    }
+    return parseLastValidLine<T>(raw);
+  }
+
+  /** Append a new state snapshot as a JSON line. Auto-compacts when threshold is exceeded. */
+  write(state: T): void {
+    ensureDir(this.filePath);
+    const line = JSON.stringify(state) + "\n";
+    appendFileSync(this.filePath, line);
+
+    // Check if compaction is needed (count lines without loading full content)
+    if (this.shouldCompact()) {
+      this.compact(state);
+    }
+  }
+
+  /** Compact the JSONL file to a single line containing the given state.
+   *  Uses atomic rename to prevent corruption during compaction. */
+  compact(currentState?: T): void {
+    const state = currentState ?? this.read();
+    if (state === null) return;
+    const tmp = `${this.filePath}.${process.pid}.compact`;
+    try {
+      writeFileSync(tmp, JSON.stringify(state) + "\n");
+      renameSync(tmp, this.filePath);
+    } catch (e: any) {
+      // Compaction failure is non-fatal — the file still has valid data
+      console.debug("[state-jsonl] compaction failed:", e?.message);
+    }
+  }
+
+  /** Check if the file exists. */
+  exists(): boolean {
+    return existsSync(this.filePath);
+  }
+
+  /** Get the file path. */
+  get path(): string {
+    return this.filePath;
+  }
+
+  /** Check line count against compaction threshold. */
+  private shouldCompact(): boolean {
+    try {
+      const raw = readFileSync(this.filePath, "utf-8");
+      const lineCount = countLines(raw);
+      return lineCount >= this.compactThreshold;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Parse the last valid JSON line from raw JSONL content.
+ * Scans from the end for efficiency — the last line is what we want.
+ * Handles truncated last lines (crash recovery) by falling back to the previous line.
+ */
+export function parseLastValidLine<T>(raw: string): T | null {
+  // Split into lines and scan from the end
+  const lines = raw.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      return JSON.parse(line) as T;
+    } catch {
+      // Truncated or corrupted line — skip and try previous
+      continue;
+    }
+  }
+  return null;
+}
+
+/** Count non-empty lines in raw content. */
+function countLines(raw: string): number {
+  let count = 0;
+  const lines = raw.split("\n");
+  for (const line of lines) {
+    if (line.trim()) count++;
+  }
+  return count;
+}
+
+/** Ensure the parent directory exists. */
+function ensureDir(filePath: string): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+}

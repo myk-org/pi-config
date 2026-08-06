@@ -1,13 +1,19 @@
 /**
  * Review state machine — tracks code review loop status.
- * State stored in <worktree-root>/.pi/data/pi-config-review-state.json (per-worktree, not shared).
+ * State stored in <worktree-root>/.pi/data/pi-config-review-state.jsonl (per-worktree, not shared).
  * Each worktree gets its own state file via resolveWorktreeRoot (--show-toplevel).
  * Used by enforcement to block git commit until all reviewers approve.
+ *
+ * Persistence: append-only JSONL via JsonlStateStore (issue #724).
+ * Each state mutation appends a single JSON line. The latest valid line
+ * is the current state. Auto-compaction prevents unbounded growth.
+ * On first access, migrates any legacy pi-config-review-state.json automatically.
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
+import { JsonlStateStore } from "./state-jsonl.js";
 import { resolveWorktreeRoot, getProjectDataDir } from "./utils.js";
 
 type StateTransitionCallback = (state: ReviewState) => void;
@@ -38,14 +44,44 @@ export interface ReviewState {
   tests_passed: boolean;
 }
 
-const STATE_FILE = "pi-config-review-state.json";
+const STATE_FILE_JSONL = "pi-config-review-state.jsonl";
+const LEGACY_STATE_FILE = "pi-config-review-state.json";
 
-export function statePath(cwd: string): string {
-  return join(getProjectDataDir(resolveWorktreeRoot(cwd)), STATE_FILE);
+/** Per-cwd store cache — avoids re-creating JsonlStateStore on every call. */
+const storeCache = new Map<string, JsonlStateStore<ReviewState>>();
+
+function getStore(cwd: string): JsonlStateStore<ReviewState> {
+  const dataDir = getProjectDataDir(resolveWorktreeRoot(cwd));
+  const cached = storeCache.get(dataDir);
+  if (cached) return cached;
+  const store = new JsonlStateStore<ReviewState>(join(dataDir, STATE_FILE_JSONL));
+  storeCache.set(dataDir, store);
+  // One-time migration from legacy JSON file
+  migrateLegacyState(dataDir, store);
+  return store;
 }
 
-function ensureDataDir(cwd: string): void {
-  getProjectDataDir(resolveWorktreeRoot(cwd));
+/** Migrate legacy pi-config-review-state.json to JSONL format.
+ *  Reads the old JSON file, writes it as the first JSONL line, then removes the old file.
+ *  Idempotent — skips if JSONL file already exists or legacy file is absent. */
+function migrateLegacyState(dataDir: string, store: JsonlStateStore<ReviewState>): void {
+  if (store.exists()) return; // Already migrated
+  const legacyPath = join(dataDir, LEGACY_STATE_FILE);
+  if (!existsSync(legacyPath)) return; // No legacy file
+  try {
+    const raw = JSON.parse(readFileSync(legacyPath, "utf-8"));
+    const state = normalizeRawState(raw);
+    store.write(state);
+    // Remove legacy file after successful migration
+    unlinkSync(legacyPath);
+    console.debug("[pi-config-review-state] migrated legacy JSON to JSONL");
+  } catch (e: any) {
+    console.debug("[pi-config-review-state] legacy migration failed:", e?.message);
+  }
+}
+
+export function statePath(cwd: string): string {
+  return join(getProjectDataDir(resolveWorktreeRoot(cwd)), STATE_FILE_JSONL);
 }
 
 function defaultState(): ReviewState {
@@ -62,22 +98,27 @@ function defaultState(): ReviewState {
   };
 }
 
+/** Normalize a raw parsed object into a valid ReviewState with defaults for missing fields. */
+function normalizeRawState(raw: any): ReviewState {
+  return {
+    status: raw.status ?? "none",
+    cycle: typeof raw.cycle === "number" ? raw.cycle : 0,
+    reviewers_pending: Array.isArray(raw.reviewers_pending) ? raw.reviewers_pending : [],
+    reviewers_total: typeof raw.reviewers_total === "number" ? raw.reviewers_total : 0,
+    findings_count: typeof raw.findings_count === "number" ? raw.findings_count : 0,
+    last_edit_at: typeof raw.last_edit_at === "string" ? raw.last_edit_at : null,
+    last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
+    edited_during_cycle: raw.edited_during_cycle === true,
+    tests_passed: raw.tests_passed === true,
+  };
+}
+
 export function readReviewState(cwd: string): ReviewState {
-  const p = statePath(cwd);
-  if (!existsSync(p)) return defaultState();
+  const store = getStore(cwd);
+  const raw = store.read();
+  if (raw === null) return defaultState();
   try {
-    const raw = JSON.parse(readFileSync(p, "utf-8"));
-    return {
-      status: raw.status ?? "none",
-      cycle: typeof raw.cycle === "number" ? raw.cycle : 0,
-      reviewers_pending: Array.isArray(raw.reviewers_pending) ? raw.reviewers_pending : [],
-      reviewers_total: typeof raw.reviewers_total === "number" ? raw.reviewers_total : 0,
-      findings_count: typeof raw.findings_count === "number" ? raw.findings_count : 0,
-      last_edit_at: typeof raw.last_edit_at === "string" ? raw.last_edit_at : null,
-      last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
-      edited_during_cycle: raw.edited_during_cycle === true,
-      tests_passed: raw.tests_passed === true,
-    };
+    return normalizeRawState(raw);
   } catch (e: any) {
     console.debug("[pi-config-review-state] failed to parse state:", e?.message);
     return defaultState();
@@ -85,6 +126,7 @@ export function readReviewState(cwd: string): ReviewState {
 }
 
 function lockPath(cwd: string): string {
+  // Lock file sits next to the JSONL state file
   return statePath(cwd) + ".lock";
 }
 
@@ -93,7 +135,7 @@ function acquireLock(cwd: string): boolean {
   const maxRetries = 100;
   for (let i = 0; i < maxRetries; i++) {
     try {
-      ensureDataDir(cwd);
+      getProjectDataDir(resolveWorktreeRoot(cwd));
       writeFileSync(lock, String(process.pid), { flag: "wx" });
       return true;
     } catch {
@@ -126,13 +168,9 @@ function releaseLock(cwd: string): void {
 }
 
 function writeState(cwd: string, state: ReviewState): void {
-  const p = statePath(cwd);
   try {
-    ensureDataDir(cwd);
-    // Atomic write: temp file + rename
-    const tmp = `${p}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n");
-    renameSync(tmp, p);
+    const store = getStore(cwd);
+    store.write(state);
   } catch (e: any) {
     console.debug("[pi-config-review-state] write failed:", e?.message);
   }
