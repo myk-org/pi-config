@@ -362,7 +362,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
-                    const cwd = ctx.cwd || "";
+                    const cwd = ctx.cwd || process.cwd();
                     const proj = cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
                     if (!proj) {
                         try { ctx.ui.notify("📡 coms-net: cannot start from /. Run from a project directory.", "error"); } catch {}
@@ -386,7 +386,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 const host = state.flagValues.get("host") as string | undefined;
 
                 // Auto-start server, or restart if port/host mismatch
-                const cwd = ctx.cwd || "";
+                const cwd = ctx.cwd || process.cwd();
                 const alreadyRunning = await isServerHealthy(project);
                 if (alreadyRunning) {
                     // Check if running server matches requested port/host
@@ -443,7 +443,7 @@ export function registerComsNet(pi: ExtensionAPI) {
                 }
                 // Default project to cwd so sessions in different dirs are isolated
                 if (!state.flagValues.has("project")) {
-                    const cwd = ctx.cwd || "";
+                    const cwd = ctx.cwd || process.cwd();
                     const proj = cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
                     if (!proj) {
                         try { ctx.ui.notify("📡 coms-net: cannot connect from /. Run from a project directory.", "error"); } catch {}

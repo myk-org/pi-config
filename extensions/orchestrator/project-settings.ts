@@ -1,9 +1,9 @@
 /**
- * Project-level settings — loads .pi/pi-config-settings.json with env var fallback.
+ * Project-level settings — loads .pi/pi-config-settings.jsonc (or .json) with env var fallback.
  *
  * Resolution order:
- * 1. Project .pi/pi-config-settings.json (wins if set)
- * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
+ * 1. Project .pi/pi-config-settings.jsonc or .json (wins if set, .jsonc preferred)
+ * 2. Global ~/.pi/pi-config-settings.jsonc or .json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
  *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
  *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES,
@@ -263,7 +263,10 @@ function parseSettingsFile(filePath: string): ProjectSettings {
       "coms_net_host", "coms_net_auth_token", "coms_net_public_url", "coms_net_server_url",
     ];
     for (const k of SIMPLE_STRING_KEYS) {
-      if (typeof raw[k] === "string" && (raw[k] as string).trim()) result[k] = (raw[k] as string).trim() as any;
+      if (typeof raw[k] === "string") {
+        // Store even empty strings — some settings use empty as meaningful ("allow all", "use default dir")
+        result[k] = (raw[k] as string).trim() as any;
+      }
     }
 
     const SIMPLE_INT_KEYS: (keyof ProjectSettings)[] = [
@@ -585,8 +588,9 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       if (def.env) {
         const val = process.env[def.env];
         if (val !== undefined && val !== "") {
-          const n = parseInt(val, 10);
-          if (Number.isInteger(n)) {
+          const trimmed = val.trim();
+          if (/^-?\d+$/.test(trimmed)) {
+            const n = Number(trimmed);
             const min = def.min ?? 0;
             const max = def.max ?? Number.MAX_SAFE_INTEGER;
             if (n >= min && n <= max) return n;
@@ -603,8 +607,11 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       if (def.env) {
         const val = process.env[def.env];
         if (val !== undefined && val !== "") {
-          const n = parseInt(val, 10);
-          if (Number.isInteger(n) && n >= 0 && n <= 65535) return n;
+          const trimmed = val.trim();
+          if (/^\d+$/.test(trimmed)) {
+            const n = Number(trimmed);
+            if (n >= 0 && n <= 65535) return n;
+          }
         }
       }
       return def.default as number;
@@ -618,7 +625,8 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       return def.default as number;
     }
     case "string": {
-      if (merged !== undefined) return (merged as string) || (def.default as string);
+      // Preserve empty strings — some settings use empty as meaningful ("allow all", "use default dir")
+      if (merged !== undefined) return merged as string;
       if (def.env) {
         const env = process.env[def.env];
         if (env !== undefined && env !== "") return env.trim();

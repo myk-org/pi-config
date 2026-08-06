@@ -58,7 +58,8 @@
   "pidash_port": {
     "type": "port",
     "env": "PI_PIDASH_PORT",
-    "default": 19190
+    "default": 19190,
+    "min": 1
   },
   "image_model": {
     "type": "string",

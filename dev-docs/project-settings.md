@@ -1,6 +1,7 @@
 # Project-Level Settings
 
-Settings file: `.pi/pi-config-settings.json` — per-project configuration overriding global env vars.
+Settings file: `.pi/pi-config-settings.jsonc` (preferred) or `.pi/pi-config-settings.json`.
+Both extensions supported; `.jsonc` allows comments. Per-project settings override global.
 
 | Setting | Type | Default | Env var | Description |
 |---|---|---|---|---|
@@ -46,7 +47,7 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `coms_net_log_heartbeat` | boolean | `false` | `PI_COMS_NET_LOG_HEARTBEAT` | Log coms-net heartbeat traffic (very noisy) |
 | `coms_net_log_quiet` | boolean | `false` | `PI_COMS_NET_LOG_QUIET` | Suppress all coms-net logs except startup/shutdown |
 
-Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
+Resolution: project file → global `~/.pi/pi-config-settings.jsonc` or `.json` → env var → default.
 
 Model resolution priority (highest wins): explicit subagent `model` param > `agent_overrides[name]` > agent frontmatter > `agent_provider`/`agent_model` setting > parent model.
 
@@ -70,4 +71,4 @@ Use `{{SETTINGS:key1,key2}}` in agent `.md` files to inject resolved values at p
 The placeholder is replaced by `substituteSettingsPlaceholders` in `rule-placeholders.ts`
 before the system prompt reaches any model (native or CLI/ACPX).
 
-Never instruct agents to read `pi-config-settings.json` manually.
+Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.

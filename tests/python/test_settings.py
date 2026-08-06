@@ -114,3 +114,80 @@ def test_parse_agent_name_list_from_list() -> None:
 
 def test_parse_agent_name_list_none() -> None:
     assert parse_agent_name_list(None) == []
+
+
+def test_jsonc_settings_file_parses_correctly(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.jsonc").write_text(
+        """{
+  // project comment
+  "image_model": "https://example.com/model", // trailing
+  "coms_max_hops": 7
+}
+""",
+        encoding="utf-8",
+    )
+    assert get_setting("image_model", cwd=_isolated_settings) == "https://example.com/model"
+    assert get_setting("coms_max_hops", cwd=_isolated_settings) == 7
+
+
+def test_find_settings_file_prefers_jsonc_over_json(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.jsonc").write_text(
+        json.dumps({"image_model": "from-jsonc"}),
+        encoding="utf-8",
+    )
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"image_model": "from-json"}),
+        encoding="utf-8",
+    )
+    assert get_setting("image_model", cwd=_isolated_settings) == "from-jsonc"
+
+
+def test_int_env_strict_parsing_rejects_malformed(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PI_COMS_MAX_HOPS", "10abc")
+    assert get_setting("coms_max_hops", cwd=_isolated_settings) == 5
+
+
+def test_int_env_accepts_valid_integer(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PI_COMS_MAX_HOPS", "15")
+    assert get_setting("coms_max_hops", cwd=_isolated_settings) == 15
+
+
+def test_port_0_accepted(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"coms_net_port": 0}),
+        encoding="utf-8",
+    )
+    assert get_setting("coms_net_port", cwd=_isolated_settings) == 0
+
+
+def test_empty_string_stored_for_string_settings(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"enforcement_allowed_commands": ""}),
+        encoding="utf-8",
+    )
+    assert get_setting("enforcement_allowed_commands", cwd=_isolated_settings) == ""
+
+
+def test_pidash_port_0_falls_through_to_default(_isolated_settings: Path) -> None:
+    """pidash_port has min=1; stored 0 is invalid → default 19190."""
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"pidash_port": 0}),
+        encoding="utf-8",
+    )
+    assert get_setting("pidash_port", cwd=_isolated_settings) == 19190

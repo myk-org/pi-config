@@ -142,11 +142,12 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
             return value
         return None
     if typ == "port":
-        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 65535:
+        min_port = meta.get("min", 0)
+        if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:
             return value
         return None
     if typ == "string":
-        if isinstance(value, str) and value.strip():
+        if isinstance(value, str):
             return value.strip()
         return None
     if typ == "agent_list":
@@ -229,16 +230,19 @@ def _parse_num_env(name: str) -> float | None:
     return n if math.isfinite(n) else None
 
 
-def _parse_port_env(name: str) -> int | None:
-    """Parse port env 0-65535; invalid/unset → None."""
+def _parse_port_env(name: str, min_port: int = 0) -> int | None:
+    """Parse port env min_port-65535; invalid/unset → None."""
     val = os.environ.get(name)
     if val is None or val == "":
         return None
     try:
-        port = int(val, 10)
+        trimmed = val.strip()
+        if not re.fullmatch(r"\d+", trimmed):
+            return None
+        port = int(trimmed, 10)
     except ValueError:
         return None
-    return port if 0 <= port <= 65535 else None
+    return port if min_port <= port <= 65535 else None
 
 
 def _parse_review_loop_max_cycles_env(name: str) -> int | None:
@@ -325,8 +329,10 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
         if env_name is not None:
             env_val = os.environ.get(env_name)
             if env_val is not None and env_val != "":
+                if not re.fullmatch(r"-?\d+", env_val.strip()):
+                    return default
                 try:
-                    n = int(env_val, 10)
+                    n = int(env_val.strip(), 10)
                 except (ValueError, TypeError):
                     return default
                 min_val = meta.get("min", 0)
@@ -344,7 +350,7 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
 
     if typ == "port":
         if env_name is not None:
-            env_port = _parse_port_env(env_name)
+            env_port = _parse_port_env(env_name, meta.get("min", 0))
             if env_port is not None:
                 return env_port
         return default
@@ -392,13 +398,14 @@ def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
     if key in merged:
         value = merged[key]
         if typ == "port":
-            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 65535:
+            min_port = meta.get("min", 0)
+            if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:
                 return value
             # Invalid in merged — fall through to env/default
         elif typ == "agent_overrides":
             return value if isinstance(value, dict) else {}
         elif typ == "string":
-            return value or ""
+            return value if isinstance(value, str) else ""
         else:
             return value
 

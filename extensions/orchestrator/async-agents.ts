@@ -121,7 +121,7 @@ export function registerAsyncAgents(
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
   let ASYNC_DEBUG = !!getSetting(process.cwd(), "async_debug");
-  const EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
+  let EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
   let DEBUG_LOG_PATH = EARLY_LOG_PATH; // Starts with early log, moved to project dir on session_start
   function asyncLog(msg: string) {
     if (!ASYNC_DEBUG || !DEBUG_LOG_PATH) return;
@@ -677,6 +677,7 @@ export function registerAsyncAgents(
       ...process.env,
       PI_SUBAGENT_CHILD: "1",
       PI_AGENT_NAME: agentName,
+      PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "",
     };
     if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
       try {
@@ -747,22 +748,35 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
-    ASYNC_DEBUG = !!getSetting(ctx.cwd, "async_debug");
+    // Preserve cwd-based early log path before PROJECT_TMP_DIR update
+    const previousEarlyLogPath = EARLY_LOG_PATH;
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
     // Export as env var so prompts/CLI commands can reference it
     process.env.PROJECT_TMP_DIR = PROJECT_TMP_DIR;
 
+    ASYNC_DEBUG = !!getSetting(ctx.cwd, "async_debug");
+    EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
+    if (!DEBUG_LOG_PATH) DEBUG_LOG_PATH = EARLY_LOG_PATH;
+
     // Set results dir — PID-scoped under project dir
     ASYNC_RESULTS_DIR = path.join(PROJECT_TMP_DIR, sessionResultsDirName());
     const projectLogPath = path.join(PROJECT_TMP_DIR, "debug.log");
-    // Move early startup logs to project dir
-    if (EARLY_LOG_PATH && fs.existsSync(EARLY_LOG_PATH)) {
+    // Move early startup logs to project dir (may still live under previous cwd tmp)
+    const earlyLogToMigrate =
+      previousEarlyLogPath && fs.existsSync(previousEarlyLogPath)
+        ? previousEarlyLogPath
+        : EARLY_LOG_PATH && fs.existsSync(EARLY_LOG_PATH)
+          ? EARLY_LOG_PATH
+          : "";
+    if (earlyLogToMigrate) {
       try {
-        fs.appendFileSync(projectLogPath, fs.readFileSync(EARLY_LOG_PATH, "utf-8"));
-        fs.unlinkSync(EARLY_LOG_PATH);
-      } catch {}
+        fs.appendFileSync(projectLogPath, fs.readFileSync(earlyLogToMigrate, "utf-8"));
+        fs.unlinkSync(earlyLogToMigrate);
+      } catch (err) {
+        asyncLog(`early-log migrate failed: ${err}`);
+      }
     }
     DEBUG_LOG_PATH = projectLogPath;
 
