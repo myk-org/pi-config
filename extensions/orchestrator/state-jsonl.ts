@@ -40,10 +40,12 @@ const DEFAULT_COMPACT_THRESHOLD = 100;
 export class JsonlStateStore<T> {
   private readonly filePath: string;
   private readonly compactThreshold: number;
+  private lineCount: number;
 
   constructor(filePath: string, options?: JsonlStateStoreOptions) {
     this.filePath = filePath;
     this.compactThreshold = options?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
+    this.lineCount = 0;
   }
 
   /** Read the latest state from the JSONL file. Returns null if no valid state exists. */
@@ -63,15 +65,17 @@ export class JsonlStateStore<T> {
     ensureDir(this.filePath);
     const line = JSON.stringify(state) + "\n";
     appendFileSync(this.filePath, line);
+    this.lineCount++;
 
-    // Check if compaction is needed (count lines without loading full content)
-    if (this.shouldCompact()) {
-      this.compact(state);
+    // Check if compaction is needed using in-memory counter (no file re-read)
+    if (this.lineCount >= this.compactThreshold) {
+      this.compact();
     }
   }
 
-  /** Compact the JSONL file to a single line containing the given state.
-   *  Uses atomic rename to prevent corruption during compaction. */
+  /** Compact the JSONL file to a single line containing the latest state.
+   *  Always re-reads the file to get the latest state — prevents overwriting
+   *  newer data from concurrent writers. Uses atomic rename. */
   compact(currentState?: T): void {
     const state = currentState ?? this.read();
     if (state === null) return;
@@ -79,9 +83,9 @@ export class JsonlStateStore<T> {
     try {
       writeFileSync(tmp, JSON.stringify(state) + "\n");
       renameSync(tmp, this.filePath);
-    } catch (e: any) {
+      this.lineCount = 1;
+    } catch {
       // Compaction failure is non-fatal — the file still has valid data
-      console.debug("[state-jsonl] compaction failed:", e?.message);
     }
   }
 
@@ -95,16 +99,6 @@ export class JsonlStateStore<T> {
     return this.filePath;
   }
 
-  /** Check line count against compaction threshold. */
-  private shouldCompact(): boolean {
-    try {
-      const raw = readFileSync(this.filePath, "utf-8");
-      const lineCount = countLines(raw);
-      return lineCount >= this.compactThreshold;
-    } catch {
-      return false;
-    }
-  }
 }
 
 /**
@@ -126,16 +120,6 @@ export function parseLastValidLine<T>(raw: string): T | null {
     }
   }
   return null;
-}
-
-/** Count non-empty lines in raw content. */
-function countLines(raw: string): number {
-  let count = 0;
-  const lines = raw.split("\n");
-  for (const line of lines) {
-    if (line.trim()) count++;
-  }
-  return count;
 }
 
 // ── JsonlAppendLog ─────────────────────────────────────────────────────────
@@ -174,7 +158,26 @@ export class JsonlAppendLog<T extends object> {
     this.filePath = filePath;
     this.maxSizeBytes = options?.maxSizeBytes ?? DEFAULT_MAX_SIZE;
     this.keepLines = options?.keepLines ?? DEFAULT_KEEP_LINES;
-    this.seq = 0;
+    // Initialize seq from existing log to prevent reset on restart
+    this.seq = this.readLastSeq();
+  }
+
+  /** Read the last seq number from the existing log file. Returns 0 if no log exists. */
+  private readLastSeq(): number {
+    if (!existsSync(this.filePath)) return 0;
+    try {
+      const raw = readFileSync(this.filePath, "utf-8");
+      const lines = raw.split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (typeof entry.seq === "number") return entry.seq;
+        } catch { continue; }
+      }
+    } catch { /* ignore */ }
+    return 0;
   }
 
   /** Append a log entry. Adds `seq` (auto-incremented) and `ts` (ISO timestamp) fields.
