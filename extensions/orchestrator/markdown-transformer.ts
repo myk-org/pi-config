@@ -82,6 +82,21 @@ function escapeMarkdown(text: string): string {
   return text.replace(/([*_~`\\[\]()#>+\-!|{}])/g, "\\$1");
 }
 
+/**
+ * Wrap text in a CommonMark inline code span, safely handling backticks.
+ * Uses a delimiter longer than the longest backtick run in the content.
+ */
+function inlineCode(text: string): string {
+  const maxRun = (text.match(/`+/g) || []).reduce(
+    (max, run) => Math.max(max, run.length),
+    0,
+  );
+  const delim = "`".repeat(maxRun + 1);
+  // CommonMark requires a space after/before delimiter when content starts/ends with backtick
+  const needsSpace = text.startsWith("`") || text.endsWith("`");
+  return needsSpace ? `${delim} ${text} ${delim}` : `${delim}${text}${delim}`;
+}
+
 // ── Transform functions (exported for testing) ──
 
 /**
@@ -125,13 +140,13 @@ export function transformMemorySectionHeaders(markdown: string): string {
 
 /**
  * Transform coms message headers with styled formatting.
- * `[from peer @ /path/to/cwd]` → `📨 **peer** _@ /path/to/cwd_`
+ * `[from peer @ /path/to/cwd]` → `📨 **peer** \`@ /path/to/cwd\``
  */
 export function transformComsHeaders(markdown: string): string {
   return transformOutsideCodeBlocks(markdown, (text) =>
     text.replace(
       /\[from (\S+) @ ([^\]]+)\]/g,
-      (_match, peer, cwd) => `📨 **${escapeMarkdown(peer)}** \`@ ${cwd.trim().replace(/`/g, "'")}\``,
+      (_match, peer, cwd) => `📨 **${escapeMarkdown(peer)}** ${inlineCode(`@ ${cwd.trim()}`)}`,
     ),
   );
 }
