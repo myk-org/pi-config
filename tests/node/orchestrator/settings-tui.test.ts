@@ -152,6 +152,25 @@ describe("formatValue", () => {
     assert.equal(formatValue("dco", undefined, SETTINGS_KEYS.dco), "false");
     assert.equal(formatValue("dco", null, SETTINGS_KEYS.dco), "false");
   });
+
+  it("masks secret-like string keys", () => {
+    const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
+    assert.equal(formatValue("coms_net_auth_token", "my-super-secret-token", tokenDef), "••••oken");
+  });
+
+  it("masks short secret values fully", () => {
+    const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
+    assert.equal(formatValue("coms_net_auth_token", "abc", tokenDef), "••••••••");
+  });
+
+  it("does not mask empty secret values", () => {
+    const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
+    assert.equal(formatValue("coms_net_auth_token", "", tokenDef), "(empty)");
+  });
+
+  it("does not mask non-secret string keys", () => {
+    assert.equal(formatValue("image_model", "gemini-2.0-flash", SETTINGS_KEYS.image_model), "gemini-2.0-flash");
+  });
 });
 
 // ── parseRawValue ───────────────────────────────────────────────────
@@ -338,6 +357,19 @@ describe("readSettingsFile / writeSettingsFile", () => {
     const result = readSettingsFile(filePath);
     assert.deepEqual(result, data);
   });
+
+  it("writes to .json when target is .jsonc to preserve comments", () => {
+    const jsoncPath = join(tempDir, "pi-config-settings.jsonc");
+    const jsonPath = join(tempDir, "pi-config-settings.json");
+    writeFileSync(jsoncPath, '// user comments\n{"dco": true}');
+    writeSettingsFile(jsoncPath, { dco: true, use_worktrees: true });
+    // .jsonc should be untouched
+    const jsoncContent = readFileSync(jsoncPath, "utf-8");
+    assert.ok(jsoncContent.includes("// user comments"), "jsonc file should preserve comments");
+    // .json should have the new data
+    const jsonContent = readFileSync(jsonPath, "utf-8");
+    assert.ok(jsonContent.includes('"use_worktrees": true'), "json file should have new data");
+  });
 });
 
 // ── getFilePathForScope ─────────────────────────────────────────────
@@ -426,11 +458,14 @@ describe("buildSettingItems integration", () => {
       agent_overrides: { worker: { provider: "litellm" } },
     };
 
+    const SECRET_PATTERNS = /token|secret|password|auth/i;
+
     for (const category of CATEGORIES) {
       for (const key of category.keys) {
         const def = SETTINGS_KEYS[key];
         const testVal = testValues[def.type];
-        if (testVal === undefined || def.type === "agent_overrides") continue;
+        // Secret strings are masked by formatValue — skip round-trip
+        if (testVal === undefined || def.type === "agent_overrides" || SECRET_PATTERNS.test(key)) continue;
 
         const formatted = formatValue(key, testVal, def);
         const parsed = parseRawValue(key, formatted, def);
