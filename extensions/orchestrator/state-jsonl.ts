@@ -280,9 +280,10 @@ export class JsonlAppendLog<T extends object> {
 const fileLockDepth = new Map<string, number>();
 
 /** Execute fn while holding a cross-process lock on the JSONL file.
- *  Lock file: <path>.lock with PID. Reentrant within the same process. */
+ *  Lock file: <path>.wlock with PID. Uses ".wlock" suffix to avoid collision
+ *  with pi-config-review-state's ".lock" suffix (separate depth maps). */
 function withFileLock(filePath: string, fn: () => void): void {
-  const lockFile = filePath + ".lock";
+  const lockFile = filePath + ".wlock";
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
     if (!acquireFileLock(lockFile)) {
