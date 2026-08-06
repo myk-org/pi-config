@@ -72,3 +72,18 @@ The placeholder is replaced by `substituteSettingsPlaceholders` in `rule-placeho
 before the system prompt reaches any model (native or CLI/ACPX).
 
 Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.
+
+## TUI Editor
+
+The `/pi-config-settings [project|global]` slash command opens an interactive TUI overlay for editing settings.
+
+- **Two scopes:** `project` (writes to `<repo>/.pi/pi-config-settings.json`) and `global` (writes to `~/.pi/pi-config-settings.json`). Press Tab to switch.
+- **Source indicators:** Each setting shows its source: `P` (project file), `G` (global file), `E` (env var), `D` (default).
+- **Smart pickers:** Provider and model fields use fuzzy-searchable `SelectList` from `ctx.modelRegistry`.
+- **Agent lists:** `acpx_agents` and `cli_agents` use multi-select with ☑/☐ toggles.
+- **Agent overrides:** Nested per-agent provider/model editor.
+- **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.
+- **JSONC preservation:** TUI always writes to `.json` (not `.jsonc`) to preserve user comments in `.jsonc` files.
+- **Immediate save:** Each change writes immediately with `clearSettingsCache()`.
+
+Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `settings-tui-submenus.ts`.

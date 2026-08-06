@@ -3,14 +3,25 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join as joinPath } from "node:path";
 import stripJsonComments from "strip-json-comments";
 import {
   type SettingsKeyDef,
   getSettingsPath,
   getGlobalSettingsPath,
 } from "./project-settings.js";
+
+const LOG_PREFIX = "[settings-tui]";
+function logWarn(msg: string): void {
+  try {
+    const logDir = joinPath(homedir(), ".pi", "logs");
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+    const logPath = joinPath(logDir, "settings-tui.log");
+    appendFileSync(logPath, `${new Date().toISOString()} ${LOG_PREFIX} ${msg}\n`);
+  } catch {}
+}
 
 // ── Category grouping ───────────────────────────────────────────────
 
@@ -114,7 +125,7 @@ export function detectSource(key: string, def: SettingsKeyDef, cwd: string): Set
     try {
       const raw = JSON.parse(stripJsonComments(readFileSync(projectPath, "utf-8")));
       if (typeof raw === "object" && raw !== null && key in raw) return "P";
-    } catch {}
+    } catch (e: any) { logWarn(`parse error in ${projectPath}: ${e?.message?.slice(0, 100)}`); }
   }
 
   // Check global settings file (honors setGlobalSettingsPath for tests)
@@ -123,7 +134,7 @@ export function detectSource(key: string, def: SettingsKeyDef, cwd: string): Set
     try {
       const raw = JSON.parse(stripJsonComments(readFileSync(globalPath, "utf-8")));
       if (typeof raw === "object" && raw !== null && key in raw) return "G";
-    } catch {}
+    } catch (e: any) { logWarn(`parse error in ${globalPath}: ${e?.message?.slice(0, 100)}`); }
   }
 
   // Check env var
@@ -222,20 +233,25 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
   try {
     const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
     if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) return raw;
-  } catch {}
+  } catch (e: any) { logWarn(`parse error in ${filePath}: ${e?.message?.slice(0, 100)}`); }
   return null;
 }
 
-export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
-  const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+/** Resolve the actual file path for writing — .jsonc redirects to .json to preserve user comments. */
+export function resolveWritePath(filePath: string): string {
+  return filePath.endsWith(".jsonc") ? filePath.replace(/\.jsonc$/, ".json") : filePath;
+}
 
-  // Atomic write: write to temp file with random suffix, then rename.
-  // Random suffix prevents symlink attacks and concurrent write collisions.
+export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
+  // Redirect .jsonc → .json to preserve user comments in the .jsonc file.
+  // TUI writes to .json; .jsonc remains as the user's commented reference.
+  const writePath = resolveWritePath(filePath);
+  const dir = dirname(writePath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const content = JSON.stringify(data, null, 2) + "\n";
-  const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
+  const tmpPath = `${writePath}.${process.pid}.${Date.now().toString(36)}`;
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-  renameSync(tmpPath, filePath);
+  renameSync(tmpPath, writePath);
 }
 
 // ── Secret submit guard (extracted for testability) ────────────────
