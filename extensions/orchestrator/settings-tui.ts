@@ -638,11 +638,17 @@ export function buildSettingItems(
             };
             break;
 
-          case "string":
+          case "string": {
+            // For secret-like keys, prefill with real value (not masked display)
+            const SECRET_PATTERN = /token|secret|password|auth/i;
+            const isSecret = SECRET_PATTERN.test(key);
+            const realStringValue = isSecret && typeof effectiveValue === "string" ? effectiveValue : null;
             item.submenu = (current: string, done: (val?: string) => void): Component => {
-              return new InputSubmenu(key, current, "Enter new value (empty to clear)", theme, done);
+              const prefill = realStringValue !== null ? realStringValue : current;
+              return new InputSubmenu(key, prefill, "Enter new value (empty to clear)", theme, done);
             };
             break;
+          }
 
           case "int":
           case "port":
@@ -729,6 +735,7 @@ class SettingsOverlay implements Component {
   private modelRegistry: ModelRegistry | undefined;
   private editScope: "project" | "global";
   private done: (value: undefined) => void;
+  private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
   private cachedWidth?: number;
   private cachedLines?: string[];
@@ -740,6 +747,7 @@ class SettingsOverlay implements Component {
     modelRegistry: ModelRegistry | undefined,
     initialScope: "project" | "global",
     done: (value: undefined) => void,
+    notify: (msg: string, level: "info" | "error") => void,
   ) {
     this.tui = tui;
     this.theme = theme;
@@ -747,6 +755,7 @@ class SettingsOverlay implements Component {
     this.modelRegistry = modelRegistry;
     this.editScope = initialScope;
     this.done = done;
+    this.notify = notify;
     this.rebuild();
   }
 
@@ -770,9 +779,13 @@ class SettingsOverlay implements Component {
         }
 
         // Save immediately to the current scope
+        const filePath = getFilePathForScope(this.editScope, this.cwd);
         if (!saveChange(id, parsed, this.editScope, this.cwd)) {
-          // File is corrupt — can't save without clobbering
+          this.notify(`Failed to save: settings file is corrupt (${filePath})`, "error");
           return;
+        }
+        if (filePath.endsWith(".jsonc")) {
+          this.notify("Saved to .jsonc — comments were stripped", "info");
         }
         this.rebuild();
         this.tui.requestRender();
@@ -874,7 +887,7 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
 
   await ctx.ui.custom<undefined>(
     (tui, theme, _kb, done) =>
-      new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done),
+      new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done, (msg, level) => ctx.ui.notify(msg, level)),
     OVERLAY_OPTS,
   );
 }
