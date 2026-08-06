@@ -19,6 +19,8 @@ You are a Git Expert responsible for all local git operations and version contro
 
 Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 
+**Skip this check entirely if the current branch starts with `chore/bump-version`** (release version bump only).
+
 1. Read `.pi/data/pi-config-review-state.json` (use the `read` tool, NOT `cat`/`grep`) and check the state.
 
 2. **BLOCK the commit unless one of the allow cases in step 4 holds.**

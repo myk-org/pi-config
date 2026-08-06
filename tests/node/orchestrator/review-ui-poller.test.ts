@@ -10,6 +10,7 @@ import {
   addReviewerPending,
   recordReviewerResult,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
 
 describe("poller state transitions", () => {
   let tmp: string;
@@ -124,38 +125,45 @@ describe("poller decision logic (replica)", () => {
   }
 
   it("same snapshot → skip", () => {
-    assert.equal(pollerDecision("M file.ts", "M file.ts", { status: "none" }), "skip");
+    assert.equal(pollerDecision("file.ts", "file.ts", { status: "none" }), "skip");
+  });
+
+  it("staging-only change (same paths) → skip", () => {
+    const unstaged = normalizePorcelain(" M file.ts");
+    const staged = normalizePorcelain("M  file.ts");
+    assert.equal(unstaged, staged);
+    assert.equal(pollerDecision(staged, unstaged, { status: "needs_review" }), "skip");
   });
 
   it("dirty from clean snapshot → markNeedsReview", () => {
-    assert.equal(pollerDecision("M file.ts", "", { status: "none" }), "markNeedsReview");
+    assert.equal(pollerDecision("file.ts", "", { status: "none" }), "markNeedsReview");
   });
 
   it("dirty change (different files) → markNeedsReview", () => {
-    assert.equal(pollerDecision("M a.ts\nM b.ts", "M a.ts", { status: "needs_review" }), "markNeedsReview");
+    assert.equal(pollerDecision("a.ts\nb.ts", "a.ts", { status: "needs_review" }), "markNeedsReview");
   });
 
   it("dirty during in_progress → markNeedsReview (sets edited_during_cycle)", () => {
-    assert.equal(pollerDecision("M file.ts", "", { status: "in_progress" }), "markNeedsReview");
+    assert.equal(pollerDecision("file.ts", "", { status: "in_progress" }), "markNeedsReview");
   });
 
   it("clean from clean status → resetReviewState", () => {
-    assert.equal(pollerDecision("", "M file.ts", { status: "clean" }), "resetReviewState");
+    assert.equal(pollerDecision("", "file.ts", { status: "clean" }), "resetReviewState");
   });
 
   it("clean from needs_review → resetReviewState", () => {
-    assert.equal(pollerDecision("", "M file.ts", { status: "needs_review" }), "resetReviewState");
+    assert.equal(pollerDecision("", "file.ts", { status: "needs_review" }), "resetReviewState");
   });
 
   it("clean from in_progress → skip (reviewers running)", () => {
-    assert.equal(pollerDecision("", "M file.ts", { status: "in_progress" }), "skip");
+    assert.equal(pollerDecision("", "file.ts", { status: "in_progress" }), "skip");
   });
 
   it("clean from has_findings → resetReviewState (committed+pushed)", () => {
-    assert.equal(pollerDecision("", "M file.ts", { status: "has_findings" }), "resetReviewState");
+    assert.equal(pollerDecision("", "file.ts", { status: "has_findings" }), "resetReviewState");
   });
 
   it("clean from none → skip (already none)", () => {
-    assert.equal(pollerDecision("", "M file.ts", { status: "none" }), "skip");
+    assert.equal(pollerDecision("", "file.ts", { status: "none" }), "skip");
   });
 });

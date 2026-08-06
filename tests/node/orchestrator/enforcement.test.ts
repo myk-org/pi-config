@@ -2,7 +2,7 @@
  * Tests for enforcement dangerous-command helpers.
  * Run with: npx tsx --test tests/node/orchestrator/enforcement.test.ts
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +26,10 @@ import {
   hasGitAddForce,
   stripHeredocBodies,
   isTestRunnerCommand,
+  isBumpVersionBranch,
+  getCachedBranch,
+  clearBranchCache,
+  seedBranchCacheForTests,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 // ── extractSubshells ──
@@ -1085,5 +1089,83 @@ describe("isTestRunnerCommand", () => {
 
   it("does not match npm install jest", () => {
     assert.equal(isTestRunnerCommand("npm install jest"), false);
+  });
+});
+
+// ── isBumpVersionBranch ──
+
+describe("isBumpVersionBranch", () => {
+  it("matches valid release branch", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version-4.2.1-1234567890"), true);
+  });
+  it("matches branch with any version", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version-1.0.0-9999"), true);
+  });
+  it("rejects plain chore/bump-version without digit", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version"), false);
+  });
+  it("rejects arbitrary suffix without digit", () => {
+    assert.equal(isBumpVersionBranch("chore/bump-version-anything"), false);
+  });
+  it("rejects unrelated branch", () => {
+    assert.equal(isBumpVersionBranch("fix/issue-42"), false);
+  });
+  it("handles null", () => {
+    assert.equal(isBumpVersionBranch(null), false);
+  });
+  it("handles empty string", () => {
+    assert.equal(isBumpVersionBranch(""), false);
+  });
+});
+
+// ── getCachedBranch ──
+
+describe("getCachedBranch", () => {
+  afterEach(() => {
+    clearBranchCache();
+  });
+
+  it("returns current branch or null for cwd", () => {
+    // Uses real git — returns branch name or null (detached HEAD)
+    const branch = getCachedBranch(process.cwd());
+    assert.ok(branch === null || (typeof branch === "string" && branch.length > 0));
+  });
+
+  it("returns cached value within TTL", () => {
+    // Seed cache with a fake branch
+    seedBranchCacheForTests("/fake/path", "test-branch");
+    assert.equal(getCachedBranch("/fake/path"), "test-branch");
+  });
+
+  it("cache expires after TTL", () => {
+    const fakePath = join(tmpdir(), `no-git-repo-ttl-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    // Seed with old timestamp (6 seconds ago, TTL is 5s)
+    seedBranchCacheForTests(fakePath, "old-branch", Date.now() - 6000);
+    // Will try getCurrentBranch which will fail (not a git repo) and return null
+    const result = getCachedBranch(fakePath);
+    assert.equal(result, null);
+  });
+
+  it("returns cached branch within TTL", () => {
+    const fakePath = join(tmpdir(), `no-git-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    seedBranchCacheForTests(fakePath, "feature/foo");
+    assert.equal(getCachedBranch(fakePath), "feature/foo");
+  });
+
+  it("expired cache triggers fresh branch lookup", () => {
+    const fakePath = join(tmpdir(), `no-git-repo-expired-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    seedBranchCacheForTests(fakePath, "feature/bar", Date.now() - 6000);
+    const fresh = getCachedBranch(fakePath);
+    assert.equal(fresh, null); // getCurrentBranch on non-git path returns null
+  });
+
+  it("clearBranchCache empties all entries", () => {
+    const fakePath = join(tmpdir(), `no-git-repo-clear-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    seedBranchCacheForTests(fakePath, "branch1");
+    seedBranchCacheForTests(fakePath + "-2", "branch2");
+    clearBranchCache();
+    // After clear, fresh lookup on non-git path returns null
+    const result = getCachedBranch(fakePath);
+    assert.equal(result, null);
   });
 });

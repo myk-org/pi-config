@@ -42,7 +42,11 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   isTestRunnerCommand,
+  isBumpVersionBranch,
+  getCachedBranch,
 } from "./enforcement-helpers.js";
+
+export { isBumpVersionBranch, getCachedBranch };
 
 type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 
@@ -517,7 +521,9 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Use resolveEffectiveCwd to detect the worktree from cd commands (e.g., cd .worktrees/issue-622 && git commit)
     if (process.env.PI_AGENT_NAME === "git-expert" && hasGitSub(command, "commit")) {
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
-      if (getSetting(ctx.cwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
+      // Skip review enforcement on version bump branches (release workflow only)
+      const commitBranch = getCurrentBranch(commitCwd);
+      if (!isBumpVersionBranch(commitBranch) && getSetting(commitCwd, "review_loop_enforcement") && !isCommitAllowed(commitCwd)) {
         const state = readReviewState(commitCwd);
         const testInfo = state.status === "clean" && !state.tests_passed ? " Tests have not passed yet — run tests before committing." : "";
         const reviewAdvice = state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
@@ -690,6 +696,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     } catch {
       effectiveCwd = ctx.cwd; // fallback to session cwd
     }
+    // Skip review tracking on version bump branches (release workflow only)
+    if (isBumpVersionBranch(getCachedBranch(effectiveCwd))) return;
     const relativePath = path.relative(effectiveCwd, absPath);
 
     // Skip gitignored files (build artifacts, .pi/tmp/, node_modules, etc.)

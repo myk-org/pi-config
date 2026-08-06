@@ -12,7 +12,9 @@ import { onStateTransition, readReviewState, markNeedsReview, resetReviewState, 
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
-import { runGit } from "./git-helpers.js";
+import { runGit, getCurrentBranch } from "./git-helpers.js";
+import { isBumpVersionBranch, getCachedBranch } from "./enforcement.js";
+import { normalizePorcelain } from "./review-porcelain.js";
 
 interface ReviewStatusData {
   status: ReviewState["status"];
@@ -33,6 +35,8 @@ function stateKey(s: { status: string; cycle: number; findings_count: number; te
   if (s.status === "needs_review") return `${s.status}:${s.cycle}`;
   return `${s.status}:${s.cycle}:${s.findings_count}:${s.tests_passed}:${s.reviewers_pending.length}`;
 }
+
+export { normalizePorcelain } from "./review-porcelain.js";
 
 export function registerReviewUI(pi: ExtensionAPI): void {
   // Register the entry renderer for "review-status" custom type
@@ -147,9 +151,9 @@ export function registerReviewUI(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
     // Initialize git snapshot for dirty detection
-    lastGitSnapshot = runGit(["status", "--porcelain"], ctx.cwd).stdout;
+    lastGitSnapshot = normalizePorcelain(runGit(["status", "--porcelain"], ctx.cwd).stdout);
     // If tree is already dirty on session start, ensure review state reflects it
-    if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement")) {
+    if (lastGitSnapshot && getSetting(ctx.cwd, "review_loop_enforcement") && !isBumpVersionBranch(getCurrentBranch(ctx.cwd))) {
       const state = readReviewState(ctx.cwd);
       if (state.status === "none" || state.status === "clean") {
         try { markNeedsReview(ctx.cwd); } catch (e: any) { console.debug("[review-ui] markNeedsReview failed:", e?.message); }
@@ -188,8 +192,10 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     try { void lastCtx.ui.theme; } catch { lastCtx = null; return; }
     try {
       if (!getSetting(lastCtx.cwd, "review_loop_enforcement")) return;
+      // Skip on version bump branches (release workflow only)
+      if (isBumpVersionBranch(getCachedBranch(lastCtx.cwd))) return;
       const result = runGit(["status", "--porcelain"], lastCtx.cwd);
-      const snapshot = result.stdout;
+      const snapshot = normalizePorcelain(result.stdout);
       if (snapshot === lastGitSnapshot) return;
       lastGitSnapshot = snapshot;
       if (snapshot) {

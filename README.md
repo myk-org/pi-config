@@ -248,6 +248,7 @@ forms like `"10.0"` / `"1e1"`) fall through to the next resolution layer / defau
 `review_loop_enforcement: false`, not via max_cycles. Commit blocking is code-enforced via `isCommitAllowed`:
 allows commit when `isReviewClean` (`status: clean` + `tests_passed: true`, or `status: none`), or when max cycles are exhausted
 (`status` is `has_findings` or `clean`, no pending reviewers, `cycle >= review_loop_max_cycles` — no `tests_passed` requirement).
+Review enforcement and dirty tracking are automatically skipped on `chore/bump-version-<version>` branches (e.g. `chore/bump-version-4.2.1-1234567890`, used by the release workflow).
 
 Staged mode (`--autorabbit`/`--autoqodo` in `/review-handler`) shares one total `review_loop_max_cycles` budget
 across both its Spec Compliance and Code Quality stages — not a separate cap per stage.
