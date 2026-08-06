@@ -8,9 +8,12 @@ import {
   transformMemoryBadges,
   transformMemorySectionHeaders,
   transformComsHeaders,
+  transformReviewFindings,
+  transformSettingsDisplay,
   transformMarkdown,
   transformOutsideCodeBlocks,
   MEMORY_BADGES,
+  SEVERITY_BADGES,
 } from "../../../extensions/orchestrator/markdown-transformer.ts";
 import type { MarkdownTransformContext } from "@earendil-works/pi-coding-agent";
 
@@ -221,6 +224,157 @@ describe("transformComsHeaders", () => {
   });
 });
 
+// ── transformReviewFindings ──
+
+describe("transformReviewFindings", () => {
+  it("transforms findings JSON into readable format", () => {
+    const json = JSON.stringify({
+      findings: [{
+        severity: "CRITICAL",
+        file: "src/index.ts",
+        line: 42,
+        description: "Missing null check",
+        suggestion: "Add null guard before access",
+      }],
+    }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("🔴 **CRITICAL**"));
+    assert.ok(result.includes("`src/index.ts:42`"));
+    assert.ok(result.includes("Missing null check"));
+    assert.ok(result.includes("💡 Add null guard before access"));
+    assert.ok(result.includes("**1 finding:**"));
+  });
+
+  it("transforms multiple findings with plural label", () => {
+    const json = JSON.stringify({
+      findings: [
+        { severity: "WARNING", file: "a.ts", description: "Issue 1" },
+        { severity: "SUGGESTION", file: "b.ts", description: "Issue 2" },
+      ],
+    }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("**2 findings:**"));
+    assert.ok(result.includes("🟡 **WARNING**"));
+    assert.ok(result.includes("🟢 SUGGESTION"));
+  });
+
+  it("renders empty findings as passed", () => {
+    const json = JSON.stringify({ findings: [] }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("✅ **No findings** — review passed"));
+  });
+
+  it("renders impact field", () => {
+    const json = JSON.stringify({
+      findings: [{
+        severity: "CRITICAL",
+        file: "x.ts",
+        description: "Bug",
+        impact: "Crashes in prod",
+      }],
+    }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("⚡ Crashes in prod"));
+  });
+
+  it("handles file without line number", () => {
+    const json = JSON.stringify({
+      findings: [{ severity: "INFO", file: "readme.md", description: "Typo" }],
+    }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("`readme.md`"));
+    assert.ok(!result.includes("undefined"));
+  });
+
+  it("preserves non-findings JSON code blocks", () => {
+    const input = '```json\n{"name": "test"}\n```';
+    const result = transformReviewFindings(input);
+    assert.equal(result, input);
+  });
+
+  it("preserves invalid JSON code blocks", () => {
+    const input = "```json\n{invalid json}\n```";
+    const result = transformReviewFindings(input);
+    assert.equal(result, input);
+  });
+
+  it("handles bare code fence without json label", () => {
+    const json = JSON.stringify({
+      findings: [{ severity: "WARNING", file: "a.ts", description: "Test" }],
+    }, null, 2);
+    const input = "```\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("🟡 **WARNING**"));
+  });
+
+  it("handles case-insensitive severity", () => {
+    const json = JSON.stringify({
+      findings: [{ severity: "critical", file: "a.ts", description: "Test" }],
+    }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformReviewFindings(input);
+    assert.ok(result.includes("🔴 **CRITICAL**"));
+  });
+});
+
+// ── transformSettingsDisplay ──
+
+describe("transformSettingsDisplay", () => {
+  it("transforms project-sourced setting", () => {
+    const input = "dco = true (source: project)";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, "`dco` = **true** 📁 _project_");
+  });
+
+  it("transforms global-sourced setting", () => {
+    const input = "dream_interval_hours = 3 (source: global)";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, "`dream_interval_hours` = **3** 🌐 _global_");
+  });
+
+  it("transforms env-sourced setting", () => {
+    const input = "review_loop_enforcement = true (source: env)";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, "`review_loop_enforcement` = **true** 🔧 _env_");
+  });
+
+  it("transforms default-sourced setting", () => {
+    const input = "pidash_enable = true (source: default)";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, "`pidash_enable` = **true** ⚙️ _default_");
+  });
+
+  it("transforms multiple settings lines", () => {
+    const input = "dco = true (source: project)\nuse_worktrees = false (source: default)";
+    const result = transformSettingsDisplay(input);
+    assert.ok(result.includes("`dco` = **true** 📁 _project_"));
+    assert.ok(result.includes("`use_worktrees` = **false** ⚙️ _default_"));
+  });
+
+  it("preserves indentation", () => {
+    const input = "  pidash_port = 8080 (source: env)";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, "  `pidash_port` = **8080** 🔧 _env_");
+  });
+
+  it("does not transform non-settings text", () => {
+    const input = "This is a regular sentence.";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, input);
+  });
+
+  it("preserves settings inside code blocks", () => {
+    const input = "```\ndco = true (source: project)\n```";
+    const result = transformSettingsDisplay(input);
+    assert.equal(result, input);
+  });
+});
+
 // ── transformMarkdown (main dispatcher) ──
 
 describe("transformMarkdown", () => {
@@ -260,6 +414,9 @@ describe("transformMarkdown", () => {
   });
 
   it("applies all transformers in sequence", () => {
+    const findingsJson = JSON.stringify({
+      findings: [{ severity: "WARNING", file: "test.ts", line: 1, description: "Issue" }],
+    }, null, 2);
     const input = [
       "# Project Memory [50% — 850/1700 tokens]",
       "## Active Preferences",
@@ -269,6 +426,12 @@ describe("transformMarkdown", () => {
       "",
       "[from manager @ /home/user/project]",
       "Hello from coms!",
+      "",
+      "```json",
+      findingsJson,
+      "```",
+      "",
+      "dco = true (source: project)",
     ].join("\n");
     const result = transformMarkdown(input, assistantCtx());
 
@@ -283,6 +446,12 @@ describe("transformMarkdown", () => {
 
     // Coms
     assert.ok(result.includes("📨 **manager**"));
+
+    // Review findings
+    assert.ok(result.includes("🟡 **WARNING**"));
+
+    // Settings
+    assert.ok(result.includes("`dco` = **true** 📁 _project_"));
   });
 
   it("preserves non-matching content unchanged", () => {

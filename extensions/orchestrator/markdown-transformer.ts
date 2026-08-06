@@ -36,6 +36,14 @@ const SECTION_ICONS: Record<string, string> = {
   "Project Memory": "🧠",
 };
 
+/** Severity → styled badge for review findings */
+export const SEVERITY_BADGES: Record<string, string> = {
+  CRITICAL: "🔴 **CRITICAL**",
+  WARNING: "🟡 **WARNING**",
+  SUGGESTION: "🟢 SUGGESTION",
+  INFO: "🔵 INFO",
+};
+
 // ── Code block protection ──
 
 /**
@@ -106,6 +114,72 @@ export function transformComsHeaders(markdown: string): string {
   );
 }
 
+// ── Review findings (Deliverable 3) ──
+
+/** Shape of a single review finding from code reviewers */
+interface ReviewFinding {
+  severity?: string;
+  file?: string;
+  line?: number;
+  description?: string;
+  suggestion?: string;
+  impact?: string;
+  rule?: string;
+}
+
+/**
+ * Transform review findings JSON blocks into readable tables.
+ * Matches ```json blocks containing {"findings": [...]} and renders
+ * each finding with severity badges, file:line refs, and descriptions.
+ */
+export function transformReviewFindings(markdown: string): string {
+  return markdown.replace(
+    /```(?:json)?\s*\n(\{[\s\S]*?"findings"\s*:\s*\[[\s\S]*?\]\s*\})\s*\n```/g,
+    (_match, jsonStr) => {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (!parsed || !Array.isArray(parsed.findings)) return _match;
+        const findings: ReviewFinding[] = parsed.findings;
+        if (findings.length === 0) return "✅ **No findings** — review passed";
+
+        const lines: string[] = [`**${findings.length} finding${findings.length !== 1 ? "s" : ""}:**`, ""];
+        for (const f of findings) {
+          const sev = SEVERITY_BADGES[(f.severity || "INFO").toUpperCase()] || f.severity || "INFO";
+          const loc = f.file ? `\`${f.file}${f.line ? `:${f.line}` : ""}\`` : "";
+          lines.push(`${sev}${loc ? ` — ${loc}` : ""}`);
+          if (f.description) lines.push(`  ${f.description}`);
+          if (f.suggestion) lines.push(`  💡 ${f.suggestion}`);
+          if (f.impact) lines.push(`  ⚡ ${f.impact}`);
+          lines.push("");
+        }
+        return lines.join("\n");
+      } catch {
+        return _match;
+      }
+    },
+  );
+}
+
+// ── Settings display (Deliverable 4) ──
+
+/**
+ * Transform settings display output into a styled table.
+ * Matches lines like `key = value (source: project)` or `key: value`
+ * from settings get output.
+ */
+export function transformSettingsDisplay(markdown: string): string {
+  return transformOutsideCodeBlocks(markdown, (text) => {
+    // Match blocks of settings lines: `key = value (source: ...)` pattern
+    return text.replace(
+      /^([ \t]*)([\w.]+)\s*=\s*(.+?)\s*\(source:\s*(\w+)\)\s*$/gm,
+      (_match, indent, key, value, source) => {
+        const sourceIcon = source === "project" ? "📁" : source === "global" ? "🌐" : source === "env" ? "🔧" : "⚙️";
+        return `${indent}\`${key}\` = **${value.trim()}** ${sourceIcon} _${source}_`;
+      },
+    );
+  });
+}
+
 // ── Main dispatcher ──
 
 /**
@@ -124,6 +198,8 @@ export function transformMarkdown(
   result = transformMemoryBadges(result);
   result = transformMemorySectionHeaders(result);
   result = transformComsHeaders(result);
+  result = transformReviewFindings(result);
+  result = transformSettingsDisplay(result);
   return result;
 }
 
