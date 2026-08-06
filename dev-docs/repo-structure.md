@@ -61,6 +61,7 @@ pi-config/
 │   │   ├── rule-placeholders.ts     # Substitutes {{REVIEW_LOOP_MAX_CYCLES}} into injected rules text
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
+│   │   ├── state-jsonl.ts               # JSONL state persistence (JsonlStateStore + JsonlAppendLog)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification
 │   │   ├── nvim.ts                  # Neovim integration (quickfix, /nvim-changed-files)
 │   │   ├── status.ts                # /status command — unified session status snapshot
