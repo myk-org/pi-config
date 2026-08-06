@@ -11,6 +11,7 @@ import {
   writeSettingsFile,
   getFilePathForScope,
   CATEGORIES,
+  registerSettingsTuiCommand,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -446,30 +447,7 @@ describe("buildSettingItems integration", () => {
 
 // ── registerSettingsTui guard ────────────────────────────────────────
 
-describe("registerSettingsTui behavior", () => {
-  it("PI_SUBAGENT_CHILD=1 skips registration", () => {
-    const original = process.env.PI_SUBAGENT_CHILD;
-    try {
-      process.env.PI_SUBAGENT_CHILD = "1";
-      // Simulate the guard: the function checks this condition first
-      const shouldSkip = process.env.PI_SUBAGENT_CHILD === "1";
-      assert.equal(shouldSkip, true, "guard should trigger when PI_SUBAGENT_CHILD=1");
-
-      // Verify no command would be registered
-      const registered: string[] = [];
-      const mockPi = { registerCommand: (name: string) => { registered.push(name); } };
-
-      // Replicate the guard logic from registerSettingsTui
-      if (process.env.PI_SUBAGENT_CHILD !== "1") {
-        mockPi.registerCommand("pi-config-settings");
-      }
-      assert.equal(registered.length, 0, "should not register when PI_SUBAGENT_CHILD=1");
-    } finally {
-      if (original !== undefined) process.env.PI_SUBAGENT_CHILD = original;
-      else delete process.env.PI_SUBAGENT_CHILD;
-    }
-  });
-
+describe("registerSettingsTuiCommand", () => {
   it("registers pi-config-settings command when PI_SUBAGENT_CHILD is unset", () => {
     const original = process.env.PI_SUBAGENT_CHILD;
     try {
@@ -477,17 +455,13 @@ describe("registerSettingsTui behavior", () => {
 
       const registered: Array<{ name: string; description: string }> = [];
       const mockPi = {
-        registerCommand: (name: string, opts: { description: string }) => {
+        registerCommand: (name: string, opts: { description: string; handler: any }) => {
           registered.push({ name, description: opts.description });
         },
       };
+      const mockHandler = async () => {};
 
-      // Replicate the guard + registration logic from registerSettingsTui
-      if (process.env.PI_SUBAGENT_CHILD !== "1") {
-        mockPi.registerCommand("pi-config-settings", {
-          description: "Interactive settings editor for pi-config",
-        });
-      }
+      registerSettingsTuiCommand(mockPi, mockHandler);
 
       assert.equal(registered.length, 1, "should register one command");
       assert.equal(registered[0].name, "pi-config-settings");
@@ -498,12 +472,41 @@ describe("registerSettingsTui behavior", () => {
     }
   });
 
-  it("PI_SUBAGENT_CHILD=0 allows registration", () => {
+  it("skips registration when PI_SUBAGENT_CHILD=1", () => {
+    const original = process.env.PI_SUBAGENT_CHILD;
+    try {
+      process.env.PI_SUBAGENT_CHILD = "1";
+
+      const registered: string[] = [];
+      const mockPi = {
+        registerCommand: (name: string) => { registered.push(name); },
+      };
+      const mockHandler = async () => {};
+
+      registerSettingsTuiCommand(mockPi as any, mockHandler);
+
+      assert.equal(registered.length, 0, "should not register when PI_SUBAGENT_CHILD=1");
+    } finally {
+      if (original !== undefined) process.env.PI_SUBAGENT_CHILD = original;
+      else delete process.env.PI_SUBAGENT_CHILD;
+    }
+  });
+
+  it("allows registration when PI_SUBAGENT_CHILD=0", () => {
     const original = process.env.PI_SUBAGENT_CHILD;
     try {
       process.env.PI_SUBAGENT_CHILD = "0";
-      const shouldSkip = process.env.PI_SUBAGENT_CHILD === "1";
-      assert.equal(shouldSkip, false, "guard should not trigger when PI_SUBAGENT_CHILD=0");
+
+      const registered: string[] = [];
+      const mockPi = {
+        registerCommand: (name: string) => { registered.push(name); },
+      };
+      const mockHandler = async () => {};
+
+      registerSettingsTuiCommand(mockPi as any, mockHandler);
+
+      assert.equal(registered.length, 1, "should register when PI_SUBAGENT_CHILD=0");
+      assert.equal(registered[0], "pi-config-settings");
     } finally {
       if (original !== undefined) process.env.PI_SUBAGENT_CHILD = original;
       else delete process.env.PI_SUBAGENT_CHILD;

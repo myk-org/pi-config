@@ -39,6 +39,7 @@ import {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
+  registerSettingsTuiCommand,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -58,6 +59,7 @@ export {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
+  registerSettingsTuiCommand,
 } from "./settings-tui-helpers.js";
 
 // ── Provider/Model data helpers ─────────────────────────────────────
@@ -877,13 +879,8 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
 // ── Registration ────────────────────────────────────────────────────
 
 export function registerSettingsTui(pi: ExtensionAPI): void {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return;
-
-  pi.registerCommand("pi-config-settings", {
-    description: "Interactive settings editor for pi-config",
-    handler: async (args, ctx) => {
-      const scope = args?.trim().toLowerCase();
-      await openSettingsTui(ctx, scope || undefined);
-    },
+  registerSettingsTuiCommand(pi, async (args, ctx) => {
+    const scope = args?.trim().toLowerCase();
+    await openSettingsTui(ctx, scope || undefined);
   });
 }

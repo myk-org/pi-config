@@ -225,3 +225,21 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
 }
+
+// ── Registration helper (testable without pi-coding-agent) ──────────
+
+/**
+ * Core registration logic extracted for testability.
+ * Accepts a minimal pi-like object with registerCommand.
+ */
+export function registerSettingsTuiCommand(
+  pi: { registerCommand: (name: string, opts: { description: string; handler: (...args: any[]) => any }) => void },
+  handler: (args: string, ctx: any) => Promise<void>,
+): void {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  pi.registerCommand("pi-config-settings", {
+    description: "Interactive settings editor for pi-config",
+    handler,
+  });
+}
