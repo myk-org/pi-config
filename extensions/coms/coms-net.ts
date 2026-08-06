@@ -38,20 +38,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const COMS_NET_DIR = path.join(os.homedir(), ".pi", "coms-net");
-const MAX_HOPS = Number(process.env.PI_COMS_NET_MAX_HOPS) || 5;
-const HEARTBEAT_MS = Number(process.env.PI_COMS_NET_HEARTBEAT_MS) || 10_000;
+let MAX_HOPS = 5;
+let HEARTBEAT_MS = 10_000;
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
-const MESSAGE_TIMEOUT_MS = Number(process.env.PI_COMS_NET_MESSAGE_TTL_MS) || 1_800_000;
+let MESSAGE_TIMEOUT_MS = 1_800_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const SHUTDOWN_DELETE_TIMEOUT_MS = 2_000;
 
-const SERVER_URL_ENV = process.env.PI_COMS_NET_SERVER_URL;
-const AUTH_TOKEN_ENV = process.env.PI_COMS_NET_AUTH_TOKEN;
+let SERVER_URL_ENV: string | undefined;
+let AUTH_TOKEN_ENV: string | undefined;
 const PROJECT_ENV = process.env.PI_COMS_NET_PROJECT;
 
 
@@ -848,6 +849,12 @@ export default function (pi: ExtensionAPI) {
 		if (flags.color && isValidHex(flags.color)) color = flags.color;
 
 		const cwd = ctx.cwd || process.cwd();
+		MAX_HOPS = getSetting(cwd, "coms_net_max_hops");
+		HEARTBEAT_MS = getSetting(cwd, "coms_net_heartbeat_ms");
+		MESSAGE_TIMEOUT_MS = getSetting(cwd, "coms_net_message_ttl_ms");
+		SERVER_URL_ENV = getSetting(cwd, "coms_net_server_url") || undefined;
+		AUTH_TOKEN_ENV = getSetting(cwd, "coms_net_auth_token") || undefined;
+
 		const model = ctx.model?.id ?? "unknown";
 		const started_at = nowIso();
 

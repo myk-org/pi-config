@@ -206,14 +206,14 @@ let _pruned = false;
  * Prune stale coms registry entries — non-blocking.
  * Runs once per session (coms + coms-net both call this).
  */
-export function pruneStaleRegistry(): void {
+export function pruneStaleRegistry(comsDir?: string): void {
     if (_pruned) return;
     _pruned = true;
+    const resolvedComsDir = comsDir || path.join(os.homedir(), ".pi", "coms");
     // Run async to avoid blocking session_start
     setImmediate(() => {
         try {
-            const comsDir = process.env.PI_COMS_DIR || path.join(os.homedir(), ".pi", "coms");
-            const projectsDir = path.join(comsDir, "projects");
+            const projectsDir = path.join(resolvedComsDir, "projects");
             if (!fs.existsSync(projectsDir)) return;
             let dirs: string[];
             try { dirs = fs.readdirSync(projectsDir); } catch { return; }
@@ -280,7 +280,7 @@ export function pruneStaleRegistry(): void {
                 } catch { /* skip unreadable project directory */ }
             }
             // Cleanup orphan sockets (no matching registry entry)
-            const socketsDir = path.join(comsDir, "sockets");
+            const socketsDir = path.join(resolvedComsDir, "sockets");
             if (fs.existsSync(socketsDir)) {
                 try {
                     const allEndpoints = new Set<string>();

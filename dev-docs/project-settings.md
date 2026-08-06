@@ -1,6 +1,7 @@
 # Project-Level Settings
 
-Settings file: `.pi/pi-config-settings.json` — per-project configuration overriding global env vars.
+Settings file: `.pi/pi-config-settings.jsonc` (preferred) or `.pi/pi-config-settings.json`.
+Both extensions supported; `.jsonc` allows comments. Per-project settings override global.
 
 | Setting | Type | Default | Env var | Description |
 |---|---|---|---|---|
@@ -24,8 +25,29 @@ Settings file: `.pi/pi-config-settings.json` — per-project configuration overr
 | `agent_provider` | string | `""` | — | Default provider for all subagents (e.g. `cli-cursor`). |
 | `agent_model` | string | `""` | — | Default model for all subagents (e.g. `cursor:cursor-grok-4.5-high-fast`). |
 | `agent_overrides` | object | `{}` | — | Per-agent provider/model overrides. `null` values = use parent model (skip global setting). |
+| `vertex_claude_1m` | boolean | `false` | `VERTEX_CLAUDE_1M` | Enable 1M context window variants for Vertex Claude models |
+| `sidecar_log_level` | string | `info` | `PI_SIDECAR_LOG_LEVEL` | Pi-sidecar log level: `debug`, `info`, `warn`, `error` |
+| `async_debug` | boolean | `false` | `PI_ASYNC_DEBUG` | Enable debug logging for async agents |
+| `enforcement_allowed_commands` | string | `""` | `PI_ENFORCEMENT_ALLOWED_COMMANDS` | Colon-separated command allowlist for enforcement. Empty = allow all |
+| `coms_max_hops` | number | `5` | `PI_COMS_MAX_HOPS` | Max message relay hops for P2P coms (1-50) |
+| `coms_timeout_ms` | number | `1800000` | `PI_COMS_TIMEOUT_MS` | P2P coms message response timeout in milliseconds |
+| `coms_ping_interval_ms` | number | `10000` | `PI_COMS_PING_INTERVAL_MS` | P2P coms peer ping interval in milliseconds |
+| `coms_dir` | string | `""` | `PI_COMS_DIR` | P2P coms data directory. Empty = `~/.pi/coms` |
+| `coms_net_port` | number | `0` | `PI_COMS_NET_PORT` | Coms-net server listen port. `0` = OS picks a random free port |
+| `coms_net_host` | string | `127.0.0.1` | `PI_COMS_NET_HOST` | Coms-net server bind host (use `0.0.0.0` for LAN access — requires auth token) |
+| `coms_net_auth_token` | string | `""` | `PI_COMS_NET_AUTH_TOKEN` | Coms-net auth token for remote access. Empty = auto-generated for loopback |
+| `coms_net_public_url` | string | `""` | `PI_COMS_NET_PUBLIC_URL` | Coms-net public URL for remote peers to connect to |
+| `coms_net_server_url` | string | `""` | `PI_COMS_NET_SERVER_URL` | Remote coms-net server URL to connect to (client mode) |
+| `coms_net_max_hops` | number | `5` | `PI_COMS_NET_MAX_HOPS` | Max message relay hops for coms-net (1-50) |
+| `coms_net_message_ttl_ms` | number | `1800000` | `PI_COMS_NET_MESSAGE_TTL_MS` | Coms-net message time-to-live in milliseconds |
+| `coms_net_max_inbox` | number | `100` | `PI_COMS_NET_MAX_INBOX` | Max queued messages per agent (1-10000) |
+| `coms_net_heartbeat_ms` | number | `10000` | `PI_COMS_NET_HEARTBEAT_MS` | Coms-net heartbeat interval in milliseconds |
+| `coms_net_stale_after_ms` | number | `30000` | `PI_COMS_NET_STALE_AFTER_MS` | Coms-net stale peer threshold in milliseconds |
+| `coms_net_offline_after_ms` | number | `60000` | `PI_COMS_NET_OFFLINE_AFTER_MS` | Coms-net offline peer threshold in milliseconds |
+| `coms_net_log_heartbeat` | boolean | `false` | `PI_COMS_NET_LOG_HEARTBEAT` | Log coms-net heartbeat traffic (very noisy) |
+| `coms_net_log_quiet` | boolean | `false` | `PI_COMS_NET_LOG_QUIET` | Suppress all coms-net logs except startup/shutdown |
 
-Resolution: project file → global `~/.pi/pi-config-settings.json` → env var → default.
+Resolution: project file → global `~/.pi/pi-config-settings.jsonc` or `.json` → env var → default.
 
 Model resolution priority (highest wins): explicit subagent `model` param > `agent_overrides[name]` > agent frontmatter > `agent_provider`/`agent_model` setting > parent model.
 
@@ -49,4 +71,4 @@ Use `{{SETTINGS:key1,key2}}` in agent `.md` files to inject resolved values at p
 The placeholder is replaced by `substituteSettingsPlaceholders` in `rule-placeholders.ts`
 before the system prompt reaches any model (native or CLI/ACPX).
 
-Never instruct agents to read `pi-config-settings.json` manually.
+Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.

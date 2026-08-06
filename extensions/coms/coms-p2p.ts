@@ -26,13 +26,14 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
 import { Worker } from "node:worker_threads";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const COMS_DIR = process.env.PI_COMS_DIR || path.join(os.homedir(), ".pi", "coms");
-const MAX_HOPS = Number(process.env.PI_COMS_MAX_HOPS) || 5;
-const TIMEOUT_MS = Number(process.env.PI_COMS_TIMEOUT_MS) || 1_800_000;
-const PING_INTERVAL_MS = Number(process.env.PI_COMS_PING_INTERVAL_MS) || 10_000;
+let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
+let MAX_HOPS = 5;
+let TIMEOUT_MS = 1_800_000;
+let PING_INTERVAL_MS = 10_000;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 const LINE_CAP_BYTES = 64 * 1024;
 
@@ -879,8 +880,15 @@ export default function (pi: ExtensionAPI) {
 			color = flags.color;
 		}
 
-		const endpoint = makeEndpoint(session_id);
 		const cwd = ctx.cwd || process.cwd();
+
+		// Resolve coms settings from project settings
+		COMS_DIR = getSetting(cwd, "coms_dir") || path.join(os.homedir(), ".pi", "coms");
+		MAX_HOPS = getSetting(cwd, "coms_max_hops");
+		TIMEOUT_MS = getSetting(cwd, "coms_timeout_ms");
+		PING_INTERVAL_MS = getSetting(cwd, "coms_ping_interval_ms");
+
+		const endpoint = makeEndpoint(session_id);
 		const model = ctx.model?.id ?? "unknown";
 
 		// 2. Ensure storage dirs exist.

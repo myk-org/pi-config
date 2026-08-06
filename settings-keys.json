@@ -58,7 +58,8 @@
   "pidash_port": {
     "type": "port",
     "env": "PI_PIDASH_PORT",
-    "default": 19190
+    "default": 19190,
+    "min": 1
   },
   "image_model": {
     "type": "string",
@@ -98,5 +99,122 @@
   "agent_overrides": {
     "type": "agent_overrides",
     "default": {}
+  },
+  "vertex_claude_1m": {
+    "type": "bool",
+    "env": "VERTEX_CLAUDE_1M",
+    "default": false
+  },
+  "sidecar_log_level": {
+    "type": "string",
+    "env": "PI_SIDECAR_LOG_LEVEL",
+    "default": "info"
+  },
+  "async_debug": {
+    "type": "bool",
+    "env": "PI_ASYNC_DEBUG",
+    "default": false
+  },
+  "enforcement_allowed_commands": {
+    "type": "string",
+    "env": "PI_ENFORCEMENT_ALLOWED_COMMANDS",
+    "default": ""
+  },
+  "coms_max_hops": {
+    "type": "int",
+    "env": "PI_COMS_MAX_HOPS",
+    "default": 5,
+    "min": 1,
+    "max": 50
+  },
+  "coms_timeout_ms": {
+    "type": "int",
+    "env": "PI_COMS_TIMEOUT_MS",
+    "default": 1800000,
+    "min": 1000
+  },
+  "coms_ping_interval_ms": {
+    "type": "int",
+    "env": "PI_COMS_PING_INTERVAL_MS",
+    "default": 10000,
+    "min": 1000
+  },
+  "coms_dir": {
+    "type": "string",
+    "env": "PI_COMS_DIR",
+    "default": ""
+  },
+  "coms_net_port": {
+    "type": "port",
+    "env": "PI_COMS_NET_PORT",
+    "default": 0
+  },
+  "coms_net_host": {
+    "type": "string",
+    "env": "PI_COMS_NET_HOST",
+    "default": "127.0.0.1"
+  },
+  "coms_net_auth_token": {
+    "type": "string",
+    "env": "PI_COMS_NET_AUTH_TOKEN",
+    "default": ""
+  },
+  "coms_net_public_url": {
+    "type": "string",
+    "env": "PI_COMS_NET_PUBLIC_URL",
+    "default": ""
+  },
+  "coms_net_server_url": {
+    "type": "string",
+    "env": "PI_COMS_NET_SERVER_URL",
+    "default": ""
+  },
+  "coms_net_max_hops": {
+    "type": "int",
+    "env": "PI_COMS_NET_MAX_HOPS",
+    "default": 5,
+    "min": 1,
+    "max": 50
+  },
+  "coms_net_message_ttl_ms": {
+    "type": "int",
+    "env": "PI_COMS_NET_MESSAGE_TTL_MS",
+    "default": 1800000,
+    "min": 1000
+  },
+  "coms_net_max_inbox": {
+    "type": "int",
+    "env": "PI_COMS_NET_MAX_INBOX",
+    "default": 100,
+    "min": 1,
+    "max": 10000
+  },
+  "coms_net_heartbeat_ms": {
+    "type": "int",
+    "env": "PI_COMS_NET_HEARTBEAT_MS",
+    "default": 10000,
+    "min": 1000
+  },
+  "coms_net_stale_after_ms": {
+    "type": "int",
+    "env": "PI_COMS_NET_STALE_AFTER_MS",
+    "default": 30000,
+    "min": 1000
+  },
+  "coms_net_offline_after_ms": {
+    "type": "int",
+    "env": "PI_COMS_NET_OFFLINE_AFTER_MS",
+    "default": 60000,
+    "min": 1000
+  },
+  "coms_net_log_heartbeat": {
+    "type": "bool",
+    "env": "PI_COMS_NET_LOG_HEARTBEAT",
+    "default": false
+  },
+  "coms_net_log_quiet": {
+    "type": "bool",
+    "env": "PI_COMS_NET_LOG_QUIET",
+    "default": false
   }
 }

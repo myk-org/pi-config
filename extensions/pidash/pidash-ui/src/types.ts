@@ -16,7 +16,6 @@ export interface PiEvent {
   assistantMessageEvent?: {
     type: string;
     delta?: string;
-    partial?: { model?: string; usage?: TokenUsage };
   };
   toolCallId?: string;
   toolName?: string;

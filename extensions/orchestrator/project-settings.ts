@@ -1,12 +1,18 @@
 /**
- * Project-level settings — loads .pi/pi-config-settings.json with env var fallback.
+ * Project-level settings — loads .pi/pi-config-settings.jsonc (or .json) with env var fallback.
  *
  * Resolution order:
- * 1. Project .pi/pi-config-settings.json (wins if set)
- * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
+ * 1. Project .pi/pi-config-settings.jsonc or .json (wins if set, .jsonc preferred)
+ * 2. Global ~/.pi/pi-config-settings.jsonc or .json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
  *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
- *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES)
+ *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES,
+ *    PI_ASYNC_DEBUG, PI_ENFORCEMENT_ALLOWED_COMMANDS, VERTEX_CLAUDE_1M, PI_SIDECAR_LOG_LEVEL,
+ *    PI_COMS_MAX_HOPS, PI_COMS_TIMEOUT_MS, PI_COMS_PING_INTERVAL_MS, PI_COMS_DIR,
+ *    PI_COMS_NET_PORT, PI_COMS_NET_HOST, PI_COMS_NET_AUTH_TOKEN, PI_COMS_NET_PUBLIC_URL,
+ *    PI_COMS_NET_SERVER_URL, PI_COMS_NET_MAX_HOPS, PI_COMS_NET_MESSAGE_TTL_MS, PI_COMS_NET_MAX_INBOX,
+ *    PI_COMS_NET_HEARTBEAT_MS, PI_COMS_NET_STALE_AFTER_MS, PI_COMS_NET_OFFLINE_AFTER_MS,
+ *    PI_COMS_NET_LOG_HEARTBEAT, PI_COMS_NET_LOG_QUIET)
  * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190;
  *    review_loop_max_cycles to 3)
  *
@@ -20,6 +26,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import stripJsonComments from "strip-json-comments";
 import { resolveRepoRoot } from "./utils.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -52,6 +59,48 @@ interface ProjectSettings {
   agent_model?: string;
   /** Per-agent provider/model overrides. null = use parent model (skip global agent_provider/agent_model). */
   agent_overrides?: Record<string, { provider?: string | null; model?: string | null }>;
+  /** Enable 1M context window variants for Vertex Claude models. */
+  vertex_claude_1m?: boolean;
+  /** Log level for pi-sidecar (debug, info, warn, error). */
+  sidecar_log_level?: string;
+  /** Enable debug logging for async agents. */
+  async_debug?: boolean;
+  /** Colon-separated command allowlist for enforcement. Empty = allow all. */
+  enforcement_allowed_commands?: string;
+  /** Max hops for P2P coms message relay. */
+  coms_max_hops?: number;
+  /** P2P coms message response timeout in ms. */
+  coms_timeout_ms?: number;
+  /** P2P coms peer ping interval in ms. */
+  coms_ping_interval_ms?: number;
+  /** P2P coms data directory. Empty = ~/.pi/coms. */
+  coms_dir?: string;
+  /** Coms-net server listen port. 0 = random. */
+  coms_net_port?: number;
+  /** Coms-net server bind host. */
+  coms_net_host?: string;
+  /** Coms-net auth token. */
+  coms_net_auth_token?: string;
+  /** Coms-net public URL for remote access. */
+  coms_net_public_url?: string;
+  /** Coms-net remote server URL to connect to. */
+  coms_net_server_url?: string;
+  /** Coms-net max message relay hops. */
+  coms_net_max_hops?: number;
+  /** Coms-net message TTL in ms. */
+  coms_net_message_ttl_ms?: number;
+  /** Coms-net max queued messages per agent. */
+  coms_net_max_inbox?: number;
+  /** Coms-net heartbeat interval in ms. */
+  coms_net_heartbeat_ms?: number;
+  /** Coms-net stale peer threshold in ms. */
+  coms_net_stale_after_ms?: number;
+  /** Coms-net offline peer threshold in ms. */
+  coms_net_offline_after_ms?: number;
+  /** Log coms-net heartbeat noise. */
+  coms_net_log_heartbeat?: boolean;
+  /** Suppress coms-net logs except startup/shutdown. */
+  coms_net_log_quiet?: boolean;
 }
 
 /** Key definition from settings-keys.json — single source of truth for env names + defaults. */
@@ -65,7 +114,16 @@ interface SettingsKeyDef {
   per_key_resolution?: boolean;
 }
 
-const SETTINGS_FILENAME = "pi-config-settings.json";
+const SETTINGS_FILENAMES = ["pi-config-settings.jsonc", "pi-config-settings.json"];
+
+/** Find the first existing settings file in a directory (.jsonc preferred over .json). */
+function findSettingsFile(dir: string): string | null {
+  for (const name of SETTINGS_FILENAMES) {
+    const p = join(dir, name);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
 
 const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"), "utf-8"),
@@ -93,6 +151,27 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "agent_provider",
   "agent_model",
   "agent_overrides",
+  "vertex_claude_1m",
+  "sidecar_log_level",
+  "async_debug",
+  "enforcement_allowed_commands",
+  "coms_max_hops",
+  "coms_timeout_ms",
+  "coms_ping_interval_ms",
+  "coms_dir",
+  "coms_net_port",
+  "coms_net_host",
+  "coms_net_auth_token",
+  "coms_net_public_url",
+  "coms_net_server_url",
+  "coms_net_max_hops",
+  "coms_net_message_ttl_ms",
+  "coms_net_max_inbox",
+  "coms_net_heartbeat_ms",
+  "coms_net_stale_after_ms",
+  "coms_net_offline_after_ms",
+  "coms_net_log_heartbeat",
+  "coms_net_log_quiet",
 ];
 for (const key of PROJECT_SETTINGS_KEYS) {
   if (!(key in SETTINGS_KEYS)) {
@@ -101,13 +180,14 @@ for (const key of PROJECT_SETTINGS_KEYS) {
 }
 
 function getSettingsPath(cwd: string): string {
-  return join(resolveRepoRoot(cwd), ".pi", SETTINGS_FILENAME);
+  const piDir = join(resolveRepoRoot(cwd), ".pi");
+  return findSettingsFile(piDir) ?? join(piDir, SETTINGS_FILENAMES[0]);
 }
 
 function parseSettingsFile(filePath: string): ProjectSettings {
   if (!existsSync(filePath)) return {};
   try {
-    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
     const result: ProjectSettings = {};
     if (typeof raw.commit_trailer === "boolean" || typeof raw.commit_trailer === "string") result.commit_trailer = raw.commit_trailer;
@@ -160,12 +240,55 @@ function parseSettingsFile(filePath: string): ProjectSettings {
         if (typeof val === "object" && val !== null && !Array.isArray(val)) {
           const v = val as { provider?: unknown; model?: unknown };
           const entry: { provider?: string | null; model?: string | null } = {};
-          if (v.provider === null || (typeof v.provider === "string")) entry.provider = v.provider === null ? null : v.provider.trim() || undefined;
-          if (v.model === null || (typeof v.model === "string")) entry.model = v.model === null ? null : v.model.trim() || undefined;
+          if (v.provider === null) entry.provider = null;
+          else if (typeof v.provider === "string") entry.provider = v.provider.trim() || undefined;
+          if (v.model === null) entry.model = null;
+          else if (typeof v.model === "string") entry.model = v.model.trim() || undefined;
           if (entry.provider !== undefined || entry.model !== undefined) overrides[name] = entry;
         }
       }
       if (Object.keys(overrides).length > 0) result.agent_overrides = overrides;
+    }
+
+    // Data-driven parsing for remaining settings — derive from settings-keys.json types
+    const SPECIAL_CASE_KEYS = new Set<string>([
+      "commit_trailer", "allow_push_to_protected_branches", "use_worktrees",
+      "dream_interval_hours", "dco", "comment_signature", "review_loop_enforcement",
+      "orchestrator_edit_write_block", "pidash_enable", "pidiff_enable", "pidash_port",
+      "image_model", "internal_operations_provider", "internal_operations_model",
+      "review_loop_max_cycles", "acpx_agents", "cli_agents", "agent_provider",
+      "agent_model", "agent_overrides",
+    ]);
+    for (const [k, def] of Object.entries(SETTINGS_KEYS)) {
+      if (SPECIAL_CASE_KEYS.has(k) || k in result) continue;
+      if (!(k in raw)) continue;
+      const val = raw[k];
+      switch (def.type) {
+        case "bool":
+          if (typeof val === "boolean") (result as any)[k] = val;
+          break;
+        case "string":
+          if (typeof val === "string") (result as any)[k] = val.trim();
+          break;
+        case "int": {
+          if (typeof val === "number" && Number.isInteger(val)) {
+            const min = def.min ?? 0;
+            const max = def.max ?? Number.MAX_SAFE_INTEGER;
+            if (val >= min && val <= max) (result as any)[k] = val;
+          }
+          break;
+        }
+        case "port": {
+          const min = def.min ?? 0;
+          if (typeof val === "number" && Number.isInteger(val) && val >= min && val <= 65535) {
+            (result as any)[k] = val;
+          }
+          break;
+        }
+        case "number":
+          if (typeof val === "number" && Number.isFinite(val)) (result as any)[k] = val;
+          break;
+      }
     }
     return result;
   } catch (e: any) {
@@ -188,7 +311,7 @@ export function setGlobalSettingsPath(path: string | null): void {
 }
 
 function loadGlobalSettings(): ProjectSettings {
-  const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
+  const globalPath = globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
   return parseSettingsFile(globalPath);
 }
 
@@ -196,7 +319,7 @@ function projectSettingsFileHasKey(cwd: string, key: string): boolean {
   const filePath = getSettingsPath(cwd);
   if (!existsSync(filePath)) return false;
   try {
-    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
     return typeof raw === "object" && raw !== null && !Array.isArray(raw) && key in raw;
   } catch (e: any) {
     console.debug(`[project-settings] failed to check key in ${filePath}:`, e?.message?.slice(0, 100));
@@ -302,7 +425,7 @@ function getSettings(cwd: string): ProjectSettings {
       cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
     try {
-      const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
+      const globalPath = globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
       cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
     } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
@@ -312,7 +435,7 @@ function getSettings(cwd: string): ProjectSettings {
   if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
-  const globalPath = globalSettingsPathOverride ?? join(homedir(), ".pi", SETTINGS_FILENAME);
+  const globalPath = globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
   let mtime = 0;
   let globalMtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
@@ -353,6 +476,27 @@ export function getSetting(cwd: string, key: "review_loop_max_cycles"): number;
 export function getSetting(cwd: string, key: "agent_provider"): string;
 export function getSetting(cwd: string, key: "agent_model"): string;
 export function getSetting(cwd: string, key: "agent_overrides"): Record<string, { provider?: string | null; model?: string | null }>;
+export function getSetting(cwd: string, key: "vertex_claude_1m"): boolean;
+export function getSetting(cwd: string, key: "sidecar_log_level"): string;
+export function getSetting(cwd: string, key: "async_debug"): boolean;
+export function getSetting(cwd: string, key: "enforcement_allowed_commands"): string;
+export function getSetting(cwd: string, key: "coms_max_hops"): number;
+export function getSetting(cwd: string, key: "coms_timeout_ms"): number;
+export function getSetting(cwd: string, key: "coms_ping_interval_ms"): number;
+export function getSetting(cwd: string, key: "coms_dir"): string;
+export function getSetting(cwd: string, key: "coms_net_port"): number;
+export function getSetting(cwd: string, key: "coms_net_host"): string;
+export function getSetting(cwd: string, key: "coms_net_auth_token"): string;
+export function getSetting(cwd: string, key: "coms_net_public_url"): string;
+export function getSetting(cwd: string, key: "coms_net_server_url"): string;
+export function getSetting(cwd: string, key: "coms_net_max_hops"): number;
+export function getSetting(cwd: string, key: "coms_net_message_ttl_ms"): number;
+export function getSetting(cwd: string, key: "coms_net_max_inbox"): number;
+export function getSetting(cwd: string, key: "coms_net_heartbeat_ms"): number;
+export function getSetting(cwd: string, key: "coms_net_stale_after_ms"): number;
+export function getSetting(cwd: string, key: "coms_net_offline_after_ms"): number;
+export function getSetting(cwd: string, key: "coms_net_log_heartbeat"): boolean;
+export function getSetting(cwd: string, key: "coms_net_log_quiet"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
   const def = SETTINGS_KEYS[key];
@@ -442,6 +586,39 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       }
       return def.default as boolean;
     }
+    case "int": {
+      if (merged !== undefined) return merged as number;
+      if (def.env) {
+        const val = process.env[def.env];
+        if (val !== undefined && val !== "") {
+          const trimmed = val.trim();
+          if (/^-?\d+$/.test(trimmed)) {
+            const n = Number(trimmed);
+            const min = def.min ?? 0;
+            const max = def.max ?? Number.MAX_SAFE_INTEGER;
+            if (n >= min && n <= max) return n;
+          }
+        }
+      }
+      return def.default as number;
+    }
+    case "port": {
+      if (merged !== undefined) {
+        const n = merged as number;
+        if (Number.isInteger(n) && n >= 0 && n <= 65535) return n;
+      }
+      if (def.env) {
+        const val = process.env[def.env];
+        if (val !== undefined && val !== "") {
+          const trimmed = val.trim();
+          if (/^\d+$/.test(trimmed)) {
+            const n = Number(trimmed);
+            if (n >= 0 && n <= 65535) return n;
+          }
+        }
+      }
+      return def.default as number;
+    }
     case "number": {
       if (merged !== undefined) return merged as number;
       if (def.env) {
@@ -451,7 +628,8 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
       return def.default as number;
     }
     case "string": {
-      if (merged !== undefined) return (merged as string) || (def.default as string);
+      // Preserve empty strings — some settings use empty as meaningful ("allow all", "use default dir")
+      if (merged !== undefined) return merged as string;
       if (def.env) {
         const env = process.env[def.env];
         if (env !== undefined && env !== "") return env.trim();
@@ -471,5 +649,27 @@ export function registerProjectSettings(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     clearSettingsCache();
+
+    // Inject settings into process.env for standalone packages that can't call getSetting
+    const cwd = ctx.cwd;
+    const vertexClaude1m = getSetting(cwd, "vertex_claude_1m");
+    if (vertexClaude1m) process.env.VERTEX_CLAUDE_1M = "true";
+    else delete process.env.VERTEX_CLAUDE_1M;
+
+    const sidecarLogLevel = getSetting(cwd, "sidecar_log_level");
+    if (sidecarLogLevel) process.env.PI_SIDECAR_LOG_LEVEL = sidecarLogLevel;
+    else delete process.env.PI_SIDECAR_LOG_LEVEL;
+
+    const acpxAgents = getSetting(cwd, "acpx_agents");
+    if (acpxAgents.length > 0) process.env.ACPX_AGENTS = acpxAgents.join(",");
+    else delete process.env.ACPX_AGENTS;
+
+    const cliAgents = getSetting(cwd, "cli_agents");
+    if (cliAgents.length > 0) process.env.CLI_AGENTS = cliAgents.join(",");
+    else delete process.env.CLI_AGENTS;
+
+    const imageModel = getSetting(cwd, "image_model");
+    if (imageModel) process.env.PI_IMAGE_MODEL = imageModel;
+    else delete process.env.PI_IMAGE_MODEL;
   });
 }

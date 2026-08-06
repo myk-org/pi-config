@@ -8,8 +8,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
+import * as path from "node:path";
+import * as os from "node:os";
 import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./coms-p2p.js";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
     if (!query.trim()) return items.length > 0 ? items : null;
@@ -35,8 +38,12 @@ export function registerComs(pi: ExtensionAPI) {
 
     // Prune stale registry entries on session start (cleans up after crashes)
     // Also reset coms state on fresh starts (non-reload) to clear phantom peers
-    pi.on("session_start", (evt: any) => {
-        try { pruneStaleRegistry(); } catch (e: any) { console.debug("[coms] stale cleanup:", e?.message?.slice(0, 100)); }
+    pi.on("session_start", (evt: any, ctx: any) => {
+        try {
+            const cwd = ctx?.cwd || process.cwd();
+            const comsDir = getSetting(cwd, "coms_dir") || path.join(os.homedir(), ".pi", "coms");
+            pruneStaleRegistry(comsDir);
+        } catch (e: any) { console.debug("[coms] stale cleanup:", e?.message?.slice(0, 100)); }
         if (evt?.reason !== "reload") {
             state.active = false;
             persistState(pi, PERSIST_KEY, state);

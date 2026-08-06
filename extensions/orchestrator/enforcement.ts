@@ -86,7 +86,7 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   const trailerSetting = getSetting(gitCwd, "commit_trailer");
   if (typeof trailerSetting !== "string") return undefined;
 
-  const modelId = (process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+  const modelId = (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
 
   const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
   let trailerName: string;
@@ -365,7 +365,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     cachedTrailerSelection = null;
     // Set comment signature env var for CLI tools to read
     if (getSetting(ctx.cwd, "comment_signature")) {
-      const modelId = (process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+      const modelId = (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
       process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
     } else {
       delete process.env.PI_COMMENT_SIGNATURE;

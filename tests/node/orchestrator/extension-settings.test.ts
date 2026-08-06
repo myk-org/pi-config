@@ -474,3 +474,121 @@ describe("extension settings", () => {
 		});
 	});
 });
+
+describe("JSONC and file discovery", () => {
+	let tmp: string;
+	let globalTmp: string;
+	const prev = {
+		PI_COMS_MAX_HOPS: process.env.PI_COMS_MAX_HOPS,
+	};
+
+	beforeEach(() => {
+		clearSettingsCache();
+		tmp = mkdtempSync(join(tmpdir(), "pi-ext-settings-jsonc-"));
+		globalTmp = mkdtempSync(join(tmpdir(), "pi-ext-global-jsonc-"));
+		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
+		delete process.env.PI_COMS_MAX_HOPS;
+	});
+
+	afterEach(() => {
+		setGlobalSettingsPath(null);
+		clearSettingsCache();
+		rmSync(tmp, { recursive: true, force: true });
+		rmSync(globalTmp, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(prev)) {
+			if (v === undefined) delete (process.env as Record<string, string | undefined>)[k];
+			else (process.env as Record<string, string>)[k] = v;
+		}
+	});
+
+	it("JSONC settings file parses correctly", () => {
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".pi", "pi-config-settings.jsonc"),
+			`{
+  // project comment
+  "image_model": "https://example.com/model", // trailing
+  "coms_max_hops": 7
+}
+`,
+		);
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "image_model"), "https://example.com/model");
+		assert.equal(getSetting(tmp, "coms_max_hops"), 7);
+	});
+
+	it("findSettingsFile prefers .jsonc over .json", () => {
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".pi", "pi-config-settings.jsonc"),
+			JSON.stringify({ image_model: "from-jsonc" }),
+		);
+		writeFileSync(
+			join(tmp, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ image_model: "from-json" }),
+		);
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "image_model"), "from-jsonc");
+	});
+
+	it("Falls back to .json when no .jsonc exists", () => {
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ image_model: "from-json-only" }),
+		);
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "image_model"), "from-json-only");
+	});
+
+	it("Global settings file supports .jsonc", () => {
+		const globalJsonc = join(globalTmp, "pi-config-settings.jsonc");
+		setGlobalSettingsPath(globalJsonc);
+		writeFileSync(
+			globalJsonc,
+			`{
+  // global comment
+  "image_model": "https://cdn.example.com/global", // keep // in string
+  "coms_max_hops": 9
+}
+`,
+		);
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "image_model"), "https://cdn.example.com/global");
+		assert.equal(getSetting(tmp, "coms_max_hops"), 9);
+	});
+
+	it("int env strict parsing rejects malformed values", () => {
+		process.env.PI_COMS_MAX_HOPS = "10abc";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "coms_max_hops"), 5);
+		delete process.env.PI_COMS_MAX_HOPS;
+	});
+
+	it("int env accepts valid integer", () => {
+		process.env.PI_COMS_MAX_HOPS = "15";
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "coms_max_hops"), 15);
+		delete process.env.PI_COMS_MAX_HOPS;
+	});
+
+	it("port 0 accepted for coms_net_port", () => {
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ coms_net_port: 0 }),
+		);
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "coms_net_port"), 0);
+	});
+
+	it("Empty string stored for string settings", () => {
+		mkdirSync(join(tmp, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmp, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ enforcement_allowed_commands: "" }),
+		);
+		clearSettingsCache();
+		assert.equal(getSetting(tmp, "enforcement_allowed_commands"), "");
+	});
+});
