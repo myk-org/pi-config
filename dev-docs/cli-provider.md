@@ -25,7 +25,7 @@ Empty / unset → extension registers nothing.
 2. For each agent: probe binary (30s discovery timeout), create agent state
 3. **Discover models from the CLI only** (see below) — no API keys, no cloud list APIs
 4. Register `cli-${agent}` via **`createRuntimeProvider()`** (shared helper wrapping
-   `createProvider`) then `pi.registerProvider(provider)` (pi ≥ 0.81), with discovered
+   `createProvider`) then `pi.registerProvider(provider)` (pi ≥ 0.84.0), with discovered
    models or `${agent}:default` if discovery returns empty
 5. Skip registration if binary missing (no agent state)
 6. Start session reaper (5m sweep; no immediate sweep at load) for
@@ -49,7 +49,7 @@ Empty / unset → extension registers nothing.
 `cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
 they do not run model discovery for meta invocations.
 
-## Native createProvider (pi ≥ 0.81)
+## Native createProvider (pi ≥ 0.84.0)
 
 Shared helper: `extensions/shared/create-runtime-provider.ts`.
 

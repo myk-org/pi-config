@@ -56,7 +56,7 @@ Search past conversation summaries for references to previous sessions. Returns 
 
 ```text
 .pi/memory/
-├── memory-scores.json     # Scoring backend (auto-managed)
+├── memory-scores.jsonl     # Scoring backend (auto-managed)
 └── topics/
     ├── preferences.md     # [preference] entries
     ├── lessons.md         # [lesson] entries
@@ -228,8 +228,8 @@ On reinforce crossing a threshold, a promotion pass runs automatically.
 
 `memory_add` / `memory_edit` accept optional `sourceSession`, `derivedFrom`, `informs`.
 Preference extractor sets `sourceSession` when the session id is available.
-Dream may write `.pi/memory/provenance-pending.json`; merge happens on dream complete.
-Stored in `memory-scores.json` only — not injected into the situation report.
+Dream may write `.pi/memory/provenance-pending.jsonl`; merge happens on dream complete.
+Stored in `memory-scores.jsonl` only — not injected into the situation report.
 Shown in `memory_search` / `memory_reflect` when present.
 
 ---
