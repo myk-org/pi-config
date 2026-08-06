@@ -179,12 +179,12 @@ export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef
 
     case "int":
     case "port": {
-      const n = parseInt(rawValue, 10);
-      return Number.isFinite(n) ? n : def.default;
+      const n = Number(rawValue);
+      return Number.isFinite(n) && Number.isInteger(n) ? n : def.default;
     }
 
     case "number": {
-      const n = parseFloat(rawValue);
+      const n = Number(rawValue);
       return Number.isFinite(n) ? n : def.default;
     }
 
@@ -209,17 +209,17 @@ export function getFilePathForScope(scope: "project" | "global", cwd: string): s
   return getGlobalSettingsPath();
 }
 
-export function readSettingsFile(filePath: string): Record<string, unknown> {
+export function readSettingsFile(filePath: string): Record<string, unknown> | null {
   if (!existsSync(filePath)) return {};
   try {
     const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
     if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) return raw;
   } catch {}
-  return {};
+  return null;
 }
 
 export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
   const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
 }

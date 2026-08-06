@@ -286,18 +286,18 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.deepEqual(result, {});
   });
 
-  it("returns empty object for invalid JSON", () => {
+  it("returns null for invalid JSON", () => {
     const filePath = join(tempDir, "bad.json");
     writeFileSync(filePath, "not json at all");
     const result = readSettingsFile(filePath);
-    assert.deepEqual(result, {});
+    assert.equal(result, null);
   });
 
-  it("returns empty object for array JSON", () => {
+  it("returns null for array JSON", () => {
     const filePath = join(tempDir, "array.json");
     writeFileSync(filePath, "[1,2,3]");
     const result = readSettingsFile(filePath);
-    assert.deepEqual(result, {});
+    assert.equal(result, null);
   });
 
   it("writes JSON file with formatting", () => {

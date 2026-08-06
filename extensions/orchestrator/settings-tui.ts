@@ -30,6 +30,7 @@ import {
   getSetting,
   clearSettingsCache,
 } from "./project-settings.js";
+import { resolveRepoRoot } from "./utils.js";
 import {
   CATEGORIES,
   detectSource,
@@ -86,7 +87,7 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
   const modelItems: SelectItem[] = models
     .filter((m) => !(m.provider || "").startsWith("acpx-"))
     .map((m) => ({
-      value: `${m.provider}/${m.id}`,
+      value: m.id,
       label: m.id,
       description: m.provider,
     }));
@@ -97,7 +98,7 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
 // ── Available agent names ───────────────────────────────────────────
 
 function getAvailableAgentNames(cwd: string): string[] {
-  const agentsDir = join(cwd, "agents");
+  const agentsDir = join(resolveRepoRoot(cwd), "agents");
   try {
     return readdirSync(agentsDir)
       .filter((f) => f.endsWith(".md"))
@@ -688,12 +689,14 @@ export function buildSettingItems(
 
 // ── Save a single change ────────────────────────────────────────────
 
-function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): void {
+function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): boolean {
   const filePath = getFilePathForScope(scope, cwd);
   const current = readSettingsFile(filePath);
+  if (current === null) return false; // corrupt file — refuse to clobber
   current[key] = value;
   writeSettingsFile(filePath, current);
   clearSettingsCache();
+  return true;
 }
 
 // ── Parse value for agent_overrides ─────────────────────────────────
@@ -757,7 +760,11 @@ class SettingsOverlay implements Component {
           parsed = parseRawValue(id, newValue, def);
         }
 
-        saveChange(id, parsed, this.editScope, this.cwd);
+        // Save immediately to the current scope
+        if (!saveChange(id, parsed, this.editScope, this.cwd)) {
+          // File is corrupt — can't save without clobbering
+          return;
+        }
         this.rebuild();
         this.tui.requestRender();
       },
