@@ -693,7 +693,11 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
   const filePath = getFilePathForScope(scope, cwd);
   const current = readSettingsFile(filePath);
   if (current === null) return false; // corrupt file — refuse to clobber
-  current[key] = value;
+  if (value === undefined) {
+    delete current[key]; // clear/unset the key
+  } else {
+    current[key] = value;
+  }
   writeSettingsFile(filePath, current);
   clearSettingsCache();
   return true;

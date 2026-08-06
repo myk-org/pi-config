@@ -179,11 +179,13 @@ export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef
 
     case "int":
     case "port": {
+      if (rawValue.trim() === "") return undefined;
       const n = Number(rawValue);
       return Number.isFinite(n) && Number.isInteger(n) ? n : def.default;
     }
 
     case "number": {
+      if (rawValue.trim() === "") return undefined;
       const n = Number(rawValue);
       return Number.isFinite(n) ? n : def.default;
     }

@@ -230,6 +230,14 @@ describe("parseRawValue", () => {
     const formatted = formatValue("image_model", "", def);
     assert.equal(parseRawValue("image_model", formatted, def), "");
   });
+
+  it("returns undefined for empty int", () => {
+    assert.equal(parseRawValue("review_loop_max_cycles", "", SETTINGS_KEYS.review_loop_max_cycles), undefined);
+  });
+
+  it("returns undefined for empty port", () => {
+    assert.equal(parseRawValue("pidash_port", "", SETTINGS_KEYS.pidash_port), undefined);
+  });
 });
 
 // ── CATEGORIES coverage ─────────────────────────────────────────────────────
