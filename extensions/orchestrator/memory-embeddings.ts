@@ -3,15 +3,17 @@
  *
  * Embeds memory entries and search queries using Xenova/bge-small-en-v1.5 via
  * @huggingface/transformers (in-process ONNX, no Python, no subprocess).
- * Stores embeddings in .pi/memory/embeddings.json.
+ * Stores embeddings in .pi/memory/embeddings.jsonl (JSONL persistence, issue #724).
+ * Legacy embeddings.json auto-migrated on first access.
  *
  * Falls back gracefully when the model is unavailable — callers always get a
  * result (possibly empty) and never throw.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { JsonlStateStore } from "./state-jsonl.js";
 
 const EMBEDDING_DIM = 384;
 export const EMBEDDING_POOLING = "mean";
@@ -31,39 +33,59 @@ interface EmbeddingStore {
   entries: Record<string, number[]>; // text hash → vector
 }
 
+const STORE_FILENAME_JSONL = "embeddings.jsonl";
+const LEGACY_STORE_FILENAME = "embeddings.json";
+
+/** Per-cwd embedding store cache. */
+const embeddingStoreCache = new Map<string, JsonlStateStore<EmbeddingStore>>();
+
+function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
+  const dir = join(cwd, ".pi", "memory");
+  const cached = embeddingStoreCache.get(dir);
+  if (cached) return cached;
+  const store = new JsonlStateStore<EmbeddingStore>(join(dir, STORE_FILENAME_JSONL), { compactThreshold: 30 });
+  embeddingStoreCache.set(dir, store);
+  // One-time migration from legacy JSON
+  if (!store.exists()) {
+    const legacyPath = join(dir, LEGACY_STORE_FILENAME);
+    if (existsSync(legacyPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as EmbeddingStore;
+        store.write(raw);
+        unlinkSync(legacyPath);
+        console.debug("[memory-embeddings] migrated legacy JSON to JSONL");
+      } catch (e: any) {
+        console.debug("[memory-embeddings] legacy migration failed:", e?.message);
+      }
+    }
+  }
+  return store;
+}
+
 function getStorePath(cwd: string): string {
-  return join(cwd, ".pi", "memory", "embeddings.json");
+  return join(cwd, ".pi", "memory", STORE_FILENAME_JSONL);
 }
 
 function loadStore(cwd: string): EmbeddingStore {
-  const storePath = getStorePath(cwd);
-  if (existsSync(storePath)) {
-    try {
-      const store = JSON.parse(readFileSync(storePath, "utf-8")) as EmbeddingStore;
-      // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
-      if (store.pooling !== EMBEDDING_POOLING) {
-        console.debug(`[memory-embeddings] pooling changed (${store.pooling ?? "cls"} → ${EMBEDDING_POOLING}), clearing ${Object.keys(store.entries).length} cached embeddings`);
-        store.entries = {};
-        store.pooling = EMBEDDING_POOLING;
-        queryCache.clear();
-        saveStore(cwd, store);
-      }
-      return store;
-    } catch {
-      // Corrupted file — start fresh
+  const store = getEmbeddingStore(cwd);
+  const data = store.read();
+  if (data !== null) {
+    // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
+    if (data.pooling !== EMBEDDING_POOLING) {
+      console.debug(`[memory-embeddings] pooling changed (${data.pooling ?? "cls"} → ${EMBEDDING_POOLING}), clearing ${Object.keys(data.entries).length} cached embeddings`);
+      data.entries = {};
+      data.pooling = EMBEDDING_POOLING;
+      queryCache.clear();
+      saveStore(cwd, data);
     }
+    return data;
   }
   return { model: "Xenova/bge-small-en-v1.5", dim: EMBEDDING_DIM, pooling: EMBEDDING_POOLING, entries: {} };
 }
 
 function saveStore(cwd: string, store: EmbeddingStore): void {
   try {
-    const dir = join(cwd, ".pi", "memory");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const target = getStorePath(cwd);
-    const tmp = target + ".tmp";
-    writeFileSync(tmp, JSON.stringify(store), "utf-8");
-    renameSync(tmp, target);
+    getEmbeddingStore(cwd).write(store);
   } catch (err: any) {
     console.debug("[memory-embeddings] save failed:", err?.message?.slice(0, 100));
   }
