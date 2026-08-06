@@ -53,9 +53,9 @@ function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
         const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as EmbeddingStore;
         store.write(raw);
         unlinkSync(legacyPath);
-        console.debug("[memory-embeddings] migrated legacy JSON to JSONL");
-      } catch (e: any) {
-        console.debug("[memory-embeddings] legacy migration failed:", e?.message);
+        // migration succeeded — legacy file removed
+      } catch {
+        // migration failed — legacy file remains, will retry next access
       }
     }
   }
@@ -72,7 +72,7 @@ function loadStore(cwd: string): EmbeddingStore {
   if (data !== null) {
     // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
     if (data.pooling !== EMBEDDING_POOLING) {
-      console.debug(`[memory-embeddings] pooling changed (${data.pooling ?? "cls"} → ${EMBEDDING_POOLING}), clearing ${Object.keys(data.entries).length} cached embeddings`);
+      // pooling strategy changed — clear incompatible cached embeddings
       data.entries = {};
       data.pooling = EMBEDDING_POOLING;
       queryCache.clear();

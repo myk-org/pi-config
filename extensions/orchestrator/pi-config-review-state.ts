@@ -74,9 +74,9 @@ function migrateLegacyState(dataDir: string, store: JsonlStateStore<ReviewState>
     store.write(state);
     // Remove legacy file after successful migration
     unlinkSync(legacyPath);
-    console.debug("[pi-config-review-state] migrated legacy JSON to JSONL");
-  } catch (e: any) {
-    console.debug("[pi-config-review-state] legacy migration failed:", e?.message);
+    // migration succeeded — legacy file removed
+  } catch {
+    // migration failed — legacy file remains, will retry next access
   }
 }
 

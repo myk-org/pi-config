@@ -143,7 +143,10 @@ export function parseLastValidLine<T>(raw: string): T | null {
     const line = lines[i].trim();
     if (!line) continue;
     try {
-      return JSON.parse(line) as T;
+      const parsed = JSON.parse(line);
+      // Only accept objects — skip JSON primitives (strings, numbers, booleans)
+      // that could appear as individual lines inside pretty-printed content.
+      if (typeof parsed === "object" && parsed !== null) return parsed as T;
     } catch {
       // Truncated or corrupted line — skip and try previous
       continue;
@@ -300,8 +303,8 @@ function withFileLock(filePath: string, fn: () => void): void {
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
     if (!acquireFileLock(lockFile)) {
-      // Lock acquisition failed — proceed without lock (non-fatal, same as before)
-      fn();
+      // Lock acquisition failed — skip callback to prevent compaction races.
+      // The write is lost but existing data remains intact.
       return;
     }
   }

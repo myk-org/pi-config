@@ -199,9 +199,9 @@ function getScoresStore(cwd: string): JsonlStateStore<ScoresFile> {
         const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as ScoresFile;
         store.write(raw);
         unlinkSync(legacyPath);
-        console.debug("[memory-scoring] migrated legacy JSON to JSONL");
-      } catch (e: any) {
-        console.debug("[memory-scoring] legacy migration failed:", e?.message);
+        // migration succeeded — legacy file removed
+      } catch {
+        // migration failed — legacy file remains, will retry next access
       }
     }
   }

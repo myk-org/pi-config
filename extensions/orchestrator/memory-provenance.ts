@@ -45,9 +45,9 @@ function getProvenanceStore(cwd: string): JsonlStateStore<ProvenancePendingFile>
         const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as ProvenancePendingFile;
         store.write(raw);
         unlinkSync(legacyPath);
-        console.debug("[memory-provenance] migrated legacy JSON to JSONL");
-      } catch (e: any) {
-        console.debug("[memory-provenance] legacy migration failed:", e?.message);
+        // migration succeeded — legacy file removed
+      } catch {
+        // migration failed — legacy file remains, will retry next access
       }
     }
   }
