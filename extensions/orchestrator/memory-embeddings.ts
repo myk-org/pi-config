@@ -10,10 +10,10 @@
  * result (possibly empty) and never throw.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { JsonlStateStore } from "./state-jsonl.js";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
 
 const EMBEDDING_DIM = 384;
 export const EMBEDDING_POOLING = "mean";
@@ -36,30 +36,10 @@ interface EmbeddingStore {
 const STORE_FILENAME_JSONL = "embeddings.jsonl";
 const LEGACY_STORE_FILENAME = "embeddings.json";
 
-/** Per-cwd embedding store cache. */
-const embeddingStoreCache = new Map<string, JsonlStateStore<EmbeddingStore>>();
-
 function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
-  const dir = join(cwd, ".pi", "memory");
-  const cached = embeddingStoreCache.get(dir);
-  if (cached) return cached;
-  const store = new JsonlStateStore<EmbeddingStore>(join(dir, STORE_FILENAME_JSONL), { compactThreshold: 30 });
-  embeddingStoreCache.set(dir, store);
-  // One-time migration from legacy JSON
-  if (!store.exists()) {
-    const legacyPath = join(dir, LEGACY_STORE_FILENAME);
-    if (existsSync(legacyPath)) {
-      try {
-        const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as EmbeddingStore;
-        store.write(raw);
-        unlinkSync(legacyPath);
-        // migration succeeded — legacy file removed
-      } catch {
-        // migration failed — legacy file remains, will retry next access
-      }
-    }
-  }
-  return store;
+  return createCachedStore<EmbeddingStore>(
+    join(cwd, ".pi", "memory"), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 30 },
+  );
 }
 
 function getStorePath(cwd: string): string {

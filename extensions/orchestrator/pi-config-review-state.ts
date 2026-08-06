@@ -10,10 +10,11 @@
  * On first access, migrates any legacy pi-config-review-state.json automatically.
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
-import { JsonlStateStore } from "./state-jsonl.js";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
 import { resolveWorktreeRoot, getProjectDataDir } from "./utils.js";
 
 type StateTransitionCallback = (state: ReviewState) => void;
@@ -47,37 +48,9 @@ export interface ReviewState {
 const STATE_FILE_JSONL = "pi-config-review-state.jsonl";
 const LEGACY_STATE_FILE = "pi-config-review-state.json";
 
-/** Per-cwd store cache — avoids re-creating JsonlStateStore on every call. */
-const storeCache = new Map<string, JsonlStateStore<ReviewState>>();
-
 function getStore(cwd: string): JsonlStateStore<ReviewState> {
   const dataDir = getProjectDataDir(resolveWorktreeRoot(cwd));
-  const cached = storeCache.get(dataDir);
-  if (cached) return cached;
-  const store = new JsonlStateStore<ReviewState>(join(dataDir, STATE_FILE_JSONL));
-  storeCache.set(dataDir, store);
-  // One-time migration from legacy JSON file
-  migrateLegacyState(dataDir, store);
-  return store;
-}
-
-/** Migrate legacy pi-config-review-state.json to JSONL format.
- *  Reads the old JSON file, writes it as the first JSONL line, then removes the old file.
- *  Idempotent — skips if JSONL file already exists or legacy file is absent. */
-function migrateLegacyState(dataDir: string, store: JsonlStateStore<ReviewState>): void {
-  if (store.exists()) return; // Already migrated
-  const legacyPath = join(dataDir, LEGACY_STATE_FILE);
-  if (!existsSync(legacyPath)) return; // No legacy file
-  try {
-    const raw = JSON.parse(readFileSync(legacyPath, "utf-8"));
-    const state = normalizeRawState(raw);
-    store.write(state);
-    // Remove legacy file after successful migration
-    unlinkSync(legacyPath);
-    // migration succeeded — legacy file removed
-  } catch {
-    // migration failed — legacy file remains, will retry next access
-  }
+  return createCachedStore<ReviewState>(dataDir, STATE_FILE_JSONL, LEGACY_STATE_FILE);
 }
 
 export function statePath(cwd: string): string {

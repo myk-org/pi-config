@@ -8,10 +8,11 @@
  * Persistence: JsonlStateStore (issue #724). Legacy JSON auto-migrated.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { entryHash, loadScores, saveScores, type MemoryCategory } from "./memory-scoring.js";
-import { JsonlStateStore } from "./state-jsonl.js";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
 
 export interface ProvenancePendingItem {
   category: MemoryCategory | string;
@@ -28,30 +29,10 @@ export interface ProvenancePendingFile {
 const PROVENANCE_FILENAME_JSONL = "provenance-pending.jsonl";
 const LEGACY_PROVENANCE_FILENAME = "provenance-pending.json";
 
-/** Per-cwd provenance store cache. */
-const provenanceStoreCache = new Map<string, JsonlStateStore<ProvenancePendingFile>>();
-
 function getProvenanceStore(cwd: string): JsonlStateStore<ProvenancePendingFile> {
-  const dir = join(cwd, ".pi", "memory");
-  const cached = provenanceStoreCache.get(dir);
-  if (cached) return cached;
-  const store = new JsonlStateStore<ProvenancePendingFile>(join(dir, PROVENANCE_FILENAME_JSONL));
-  provenanceStoreCache.set(dir, store);
-  // One-time migration from legacy JSON
-  if (!store.exists()) {
-    const legacyPath = join(dir, LEGACY_PROVENANCE_FILENAME);
-    if (existsSync(legacyPath)) {
-      try {
-        const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as ProvenancePendingFile;
-        store.write(raw);
-        unlinkSync(legacyPath);
-        // migration succeeded — legacy file removed
-      } catch {
-        // migration failed — legacy file remains, will retry next access
-      }
-    }
-  }
-  return store;
+  return createCachedStore<ProvenancePendingFile>(
+    join(cwd, ".pi", "memory"), PROVENANCE_FILENAME_JSONL, LEGACY_PROVENANCE_FILENAME,
+  );
 }
 
 export function getProvenancePendingPath(cwd: string): string {
@@ -97,8 +78,7 @@ export function mergeProvenancePending(cwd: string): number {
 
   if (updated > 0) saveScores(cwd, scores);
 
-  // Delete the consumed sidecar and clear cache
+  // Delete the consumed sidecar
   try { unlinkSync(getProvenancePendingPath(cwd)); } catch { /* ignore */ }
-  provenanceStoreCache.delete(join(cwd, ".pi", "memory"));
   return updated;
 }

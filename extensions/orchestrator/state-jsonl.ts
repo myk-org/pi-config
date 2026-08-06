@@ -18,7 +18,7 @@
  */
 
 import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface JsonlStateStoreOptions {
   /** Maximum number of lines before automatic compaction (default: 100). */
@@ -81,7 +81,7 @@ export class JsonlStateStore<T> {
    *  Uses a cross-process lock to prevent concurrent write+compact races. */
   write(state: T): void {
     ensureDir(this.filePath);
-    withFileLock(this.filePath, () => {
+    const locked = withFileLock(this.filePath, () => {
       const line = JSON.stringify(state) + "\n";
       appendFileSync(this.filePath, line);
       this.lineCount++;
@@ -91,6 +91,13 @@ export class JsonlStateStore<T> {
         this.compactInner();
       }
     });
+    if (!locked) {
+      // Lock failed — append-only without compaction to prevent data loss.
+      // Compaction will happen on a future write when the lock is available.
+      const line = JSON.stringify(state) + "\n";
+      appendFileSync(this.filePath, line);
+      this.lineCount++;
+    }
   }
 
   /** Compact the JSONL file to a single line containing the latest state.
@@ -112,7 +119,9 @@ export class JsonlStateStore<T> {
       renameSync(tmp, this.filePath);
       this.lineCount = 1;
     } catch {
-      // Compaction failure is non-fatal — the file still has valid data
+      // Compaction failure is non-fatal — the JSONL file still has valid data.
+      // Silent: no logging because extensions must not use console.* (AGENTS.md policy).
+      // The file simply retains extra lines until the next successful compaction.
     }
   }
 
@@ -128,6 +137,42 @@ export class JsonlStateStore<T> {
 
 }
 
+// ── Shared store factory ───────────────────────────────────────────────────
+
+/** Global store cache — keyed by directory path. */
+const storeCache = new Map<string, JsonlStateStore<any>>();
+
+/**
+ * Create a cached JsonlStateStore with automatic legacy JSON migration.
+ * Deduplicates the identical cache+migrate pattern across all JSONL-migrated files.
+ */
+export function createCachedStore<T>(
+  dir: string,
+  jsonlFilename: string,
+  legacyFilename: string,
+  options?: JsonlStateStoreOptions,
+): JsonlStateStore<T> {
+  const cacheKey = join(dir, jsonlFilename);
+  const cached = storeCache.get(cacheKey);
+  if (cached) return cached as JsonlStateStore<T>;
+  const store = new JsonlStateStore<T>(join(dir, jsonlFilename), options);
+  storeCache.set(cacheKey, store);
+  // One-time migration from legacy JSON
+  if (!store.exists()) {
+    const legacyPath = join(dir, legacyFilename);
+    if (existsSync(legacyPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as T;
+        store.write(raw);
+        unlinkSync(legacyPath);
+      } catch {
+        // migration failed — legacy file remains, will retry next access
+      }
+    }
+  }
+  return store;
+}
+
 /**
  * Parse the last valid JSON line from raw JSONL content.
  * Scans from the end for efficiency — the last line is what we want.
@@ -137,33 +182,36 @@ export function parseLastValidLine<T>(raw: string): T | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
-  // Fast path: line-by-line scan from end — efficient for well-formed JSONL
+  // Try whole-file parse first — handles both single-line JSON and multi-line
+  // pretty-printed JSON (e.g., from LLM dream agents). For well-formed JSONL
+  // with multiple entries this fails fast (multiple root values → SyntaxError).
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (isPlainObject(parsed)) return parsed as T;
+  } catch {
+    // Not a single JSON value — fall through to line-by-line scan
+  }
+
+  // Line-by-line scan from end — for JSONL files with multiple entries.
+  // Only accepts plain objects to avoid matching JSON primitives or arrays
+  // that could appear as individual lines inside pretty-printed content.
   const lines = trimmed.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
     try {
       const parsed = JSON.parse(line);
-      // Only accept plain objects — skip JSON primitives (strings, numbers, booleans)
-      // and arrays that could appear as individual lines inside pretty-printed content.
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as T;
+      if (isPlainObject(parsed)) return parsed as T;
     } catch {
-      // Truncated or corrupted line — skip and try previous
       continue;
     }
   }
-
-  // Fallback: try parsing the entire content as a single multi-line JSON object.
-  // Handles cases where an LLM agent pretty-prints JSON with newlines
-  // (e.g., dream provenance sidecar). Only reached when NO individual line
-  // parses as valid JSON — no performance cost for normal JSONL files.
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as T;
-  } catch {
-    // Not valid JSON either — truly empty/corrupt
-  }
   return null;
+}
+
+/** Check if value is a plain object (not null, not array). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // ── JsonlAppendLog ─────────────────────────────────────────────────────────
@@ -299,17 +347,13 @@ const fileLockDepth = new Map<string, number>();
 /** Execute fn while holding a cross-process lock on the JSONL file.
  *  Lock file: <path>.wlock with PID. Uses ".wlock" suffix to avoid collision
  *  with pi-config-review-state's ".lock" suffix (separate depth maps). */
-function withFileLock(filePath: string, fn: () => void): void {
+function withFileLock(filePath: string, fn: () => void): boolean {
   const lockFile = filePath + ".wlock";
   const depth = fileLockDepth.get(lockFile) || 0;
   if (depth === 0) {
     if (!acquireFileLock(lockFile)) {
-      // Lock acquisition failed after retries — run callback without lock.
-      // This is a last-resort fallback: the alternative (silently dropping the write)
-      // risks data loss. Running unlocked risks a compaction race, but that only
-      // affects history (latest state is re-read before compaction).
-      fn();
-      return;
+      // Lock acquisition failed — return false so caller can skip compaction.
+      return false;
     }
   }
   fileLockDepth.set(lockFile, depth + 1);
@@ -324,6 +368,7 @@ function withFileLock(filePath: string, fn: () => void): void {
       fileLockDepth.set(lockFile, newDepth);
     }
   }
+  return true;
 }
 
 function acquireFileLock(lockFile: string): boolean {

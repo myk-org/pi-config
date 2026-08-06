@@ -9,9 +9,9 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { JsonlStateStore } from "./state-jsonl.js";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -182,30 +182,10 @@ export function entryHash(text: string): string {
 const SCORES_FILENAME_JSONL = "memory-scores.jsonl";
 const LEGACY_SCORES_FILENAME = "memory-scores.json";
 
-/** Per-cwd scores store cache. */
-const scoresStoreCache = new Map<string, JsonlStateStore<ScoresFile>>();
-
 function getScoresStore(cwd: string): JsonlStateStore<ScoresFile> {
-  const dir = join(cwd, ".pi", "memory");
-  const cached = scoresStoreCache.get(dir);
-  if (cached) return cached;
-  const store = new JsonlStateStore<ScoresFile>(join(dir, SCORES_FILENAME_JSONL), { compactThreshold: 50 });
-  scoresStoreCache.set(dir, store);
-  // One-time migration from legacy JSON
-  if (!store.exists()) {
-    const legacyPath = join(dir, LEGACY_SCORES_FILENAME);
-    if (existsSync(legacyPath)) {
-      try {
-        const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as ScoresFile;
-        store.write(raw);
-        unlinkSync(legacyPath);
-        // migration succeeded — legacy file removed
-      } catch {
-        // migration failed — legacy file remains, will retry next access
-      }
-    }
-  }
-  return store;
+  return createCachedStore<ScoresFile>(
+    join(cwd, ".pi", "memory"), SCORES_FILENAME_JSONL, LEGACY_SCORES_FILENAME, { compactThreshold: 50 },
+  );
 }
 
 export function getScoresPath(cwd: string): string {
