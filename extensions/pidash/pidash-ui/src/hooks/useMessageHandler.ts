@@ -136,9 +136,7 @@ export function useMessageHandler(
             else updMsg(assistRef.current.id, assistRef.current.text);
           }
           if (ae.type === "text_end" && assistRef.current.id) updCls(assistRef.current.id, undefined);
-          const p = ae.partial;
-          if (p?.model) setModel(p.model);
-          if (p?.usage) setTokens({ ...p.usage });
+          // model and usage are set from message_end / turn_end events
           break;
         }
 
