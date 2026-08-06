@@ -209,20 +209,17 @@ export class JsonlAppendLog<T extends object> {
 
   /** Append a log entry. Adds `seq` (auto-incremented) and `ts` (ISO timestamp) fields.
    *  Auto-truncates when file exceeds size limit.
-   *  Uses cross-process lock to prevent seq duplicates from concurrent writers. */
+   *  Uses cross-process lock to prevent seq duplicates and protect truncation. */
   append(data: T): void {
     ensureDir(this.filePath);
     withFileLock(this.filePath, () => {
-      // Re-read seq under lock to prevent duplicates from concurrent writers
-      const diskSeq = this.readLastSeq();
-      if (diskSeq > this.seq) this.seq = diskSeq;
       this.seq++;
       const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
       appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
-    });
 
-    // Size-based truncation (outside lock — non-critical)
-    this.truncateIfNeeded();
+      // Size-based truncation inside lock to prevent overwriting concurrent appends
+      this.truncateIfNeeded();
+    });
   }
 
   /** Read all valid log entries. Returns empty array if file doesn't exist. */
