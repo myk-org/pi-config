@@ -44,6 +44,23 @@ export const SEVERITY_BADGES: Record<string, string> = {
   INFO: "🔵 INFO",
 };
 
+/** Task status → styled badge */
+export const TASK_STATUS_BADGES: Record<string, string> = {
+  pending: "⏳",
+  in_progress: "🔄",
+  completed: "✅",
+  deleted: "🗑️",
+};
+
+/** Async agent status → styled badge */
+export const ASYNC_STATUS_BADGES: Record<string, string> = {
+  running: "🟡 **running**",
+  queued: "🟡 queued",
+  complete: "🟢 **done**",
+  failed: "🔴 **failed**",
+  killed: "⚪ killed",
+};
+
 // ── Code block protection ──
 
 /**
@@ -180,6 +197,64 @@ export function transformSettingsDisplay(markdown: string): string {
   });
 }
 
+// ── Task list formatting (Deliverable 5) ──
+
+/**
+ * Transform task list status markers into styled badges.
+ * Matches patterns like `status: pending`, `status: in_progress`, `status: completed`
+ * in task list output lines, and also `[pending]`, `[in_progress]`, `[completed]` markers.
+ */
+export function transformTaskStatus(markdown: string): string {
+  return transformOutsideCodeBlocks(markdown, (text) => {
+    // Match `status: <value>` patterns
+    let result = text.replace(
+      /\bstatus:\s*(pending|in_progress|completed|deleted)\b/g,
+      (_match, status) => {
+        const badge = TASK_STATUS_BADGES[status];
+        return badge ? `status: ${badge} ${status}` : _match;
+      },
+    );
+    // Match `[pending]`, `[in_progress]`, `[completed]` standalone markers
+    result = result.replace(
+      /\[(pending|in_progress|completed|deleted)\]/g,
+      (_match, status) => {
+        const badge = TASK_STATUS_BADGES[status];
+        return badge ? `${badge} ${status}` : _match;
+      },
+    );
+    return result;
+  });
+}
+
+// ── Async agent status formatting (Deliverable 6) ──
+
+/**
+ * Transform async agent status indicators into styled badges.
+ * Matches patterns like `status: running`, `[running]`, `[complete]`, etc.
+ * Also formats duration strings like `duration: 45s` or `(12.3s)`.
+ */
+export function transformAsyncStatus(markdown: string): string {
+  return transformOutsideCodeBlocks(markdown, (text) => {
+    // Match `status: <value>` patterns for async agents
+    let result = text.replace(
+      /\bstatus:\s*(running|queued|complete|failed|killed)\b/g,
+      (_match, status) => {
+        const badge = ASYNC_STATUS_BADGES[status];
+        return badge ? `status: ${badge}` : _match;
+      },
+    );
+    // Match `[running]`, `[complete]`, `[failed]` standalone markers
+    result = result.replace(
+      /\[(running|queued|complete|failed|killed)\]/g,
+      (_match, status) => {
+        const badge = ASYNC_STATUS_BADGES[status];
+        return badge ? badge : _match;
+      },
+    );
+    return result;
+  });
+}
+
 // ── Main dispatcher ──
 
 /**
@@ -200,6 +275,8 @@ export function transformMarkdown(
   result = transformComsHeaders(result);
   result = transformReviewFindings(result);
   result = transformSettingsDisplay(result);
+  result = transformTaskStatus(result);
+  result = transformAsyncStatus(result);
   return result;
 }
 

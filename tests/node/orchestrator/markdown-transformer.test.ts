@@ -10,10 +10,14 @@ import {
   transformComsHeaders,
   transformReviewFindings,
   transformSettingsDisplay,
+  transformTaskStatus,
+  transformAsyncStatus,
   transformMarkdown,
   transformOutsideCodeBlocks,
   MEMORY_BADGES,
   SEVERITY_BADGES,
+  TASK_STATUS_BADGES,
+  ASYNC_STATUS_BADGES,
 } from "../../../extensions/orchestrator/markdown-transformer.ts";
 import type { MarkdownTransformContext } from "@earendil-works/pi-coding-agent";
 
@@ -375,6 +379,124 @@ describe("transformSettingsDisplay", () => {
   });
 });
 
+// ── transformTaskStatus ──
+
+describe("transformTaskStatus", () => {
+  it("adds badge to status: pending", () => {
+    const result = transformTaskStatus("status: pending");
+    assert.equal(result, "status: ⏳ pending");
+  });
+
+  it("adds badge to status: in_progress", () => {
+    const result = transformTaskStatus("status: in_progress");
+    assert.equal(result, "status: 🔄 in_progress");
+  });
+
+  it("adds badge to status: completed", () => {
+    const result = transformTaskStatus("status: completed");
+    assert.equal(result, "status: ✅ completed");
+  });
+
+  it("adds badge to [pending] marker", () => {
+    const result = transformTaskStatus("Task #1 [pending] Fix bug");
+    assert.equal(result, "Task #1 ⏳ pending Fix bug");
+  });
+
+  it("adds badge to [in_progress] marker", () => {
+    const result = transformTaskStatus("Task #2 [in_progress] Writing code");
+    assert.equal(result, "Task #2 🔄 in_progress Writing code");
+  });
+
+  it("adds badge to [completed] marker", () => {
+    const result = transformTaskStatus("Task #3 [completed] Done");
+    assert.equal(result, "Task #3 ✅ completed Done");
+  });
+
+  it("transforms multiple task statuses", () => {
+    const input = "Task #1 [pending]\nTask #2 [in_progress]\nTask #3 [completed]";
+    const result = transformTaskStatus(input);
+    assert.ok(result.includes("⏳ pending"));
+    assert.ok(result.includes("🔄 in_progress"));
+    assert.ok(result.includes("✅ completed"));
+  });
+
+  it("does not transform unknown statuses", () => {
+    const input = "status: unknown";
+    const result = transformTaskStatus(input);
+    assert.equal(result, input);
+  });
+
+  it("preserves task status inside code blocks", () => {
+    const input = "```\nstatus: pending\n```";
+    const result = transformTaskStatus(input);
+    assert.equal(result, input);
+  });
+});
+
+// ── transformAsyncStatus ──
+
+describe("transformAsyncStatus", () => {
+  it("adds badge to status: running", () => {
+    const result = transformAsyncStatus("status: running");
+    assert.equal(result, "status: 🟡 **running**");
+  });
+
+  it("adds badge to status: complete", () => {
+    const result = transformAsyncStatus("status: complete");
+    assert.equal(result, "status: 🟢 **done**");
+  });
+
+  it("adds badge to status: failed", () => {
+    const result = transformAsyncStatus("status: failed");
+    assert.equal(result, "status: 🔴 **failed**");
+  });
+
+  it("adds badge to status: queued", () => {
+    const result = transformAsyncStatus("status: queued");
+    assert.equal(result, "status: 🟡 queued");
+  });
+
+  it("adds badge to status: killed", () => {
+    const result = transformAsyncStatus("status: killed");
+    assert.equal(result, "status: ⚪ killed");
+  });
+
+  it("transforms [running] marker", () => {
+    const result = transformAsyncStatus("code-reviewer [running] 45s");
+    assert.equal(result, "code-reviewer 🟡 **running** 45s");
+  });
+
+  it("transforms [complete] marker", () => {
+    const result = transformAsyncStatus("code-reviewer [complete] 12s");
+    assert.equal(result, "code-reviewer 🟢 **done** 12s");
+  });
+
+  it("transforms [failed] marker", () => {
+    const result = transformAsyncStatus("code-reviewer [failed]");
+    assert.equal(result, "code-reviewer 🔴 **failed**");
+  });
+
+  it("transforms multiple async statuses", () => {
+    const input = "reviewer [running]\nlinter [complete]\nbuilder [failed]";
+    const result = transformAsyncStatus(input);
+    assert.ok(result.includes("🟡 **running**"));
+    assert.ok(result.includes("🟢 **done**"));
+    assert.ok(result.includes("🔴 **failed**"));
+  });
+
+  it("does not transform unknown statuses", () => {
+    const input = "status: paused";
+    const result = transformAsyncStatus(input);
+    assert.equal(result, input);
+  });
+
+  it("preserves async status inside code blocks", () => {
+    const input = "```\nstatus: running\n```";
+    const result = transformAsyncStatus(input);
+    assert.equal(result, input);
+  });
+});
+
 // ── transformMarkdown (main dispatcher) ──
 
 describe("transformMarkdown", () => {
@@ -432,6 +554,9 @@ describe("transformMarkdown", () => {
       "```",
       "",
       "dco = true (source: project)",
+      "",
+      "Task #1 [pending] Fix the bug",
+      "code-reviewer [running] 45s",
     ].join("\n");
     const result = transformMarkdown(input, assistantCtx());
 
@@ -452,6 +577,12 @@ describe("transformMarkdown", () => {
 
     // Settings
     assert.ok(result.includes("`dco` = **true** 📁 _project_"));
+
+    // Task status
+    assert.ok(result.includes("⏳ pending"));
+
+    // Async status
+    assert.ok(result.includes("🟡 **running**"));
   });
 
   it("preserves non-matching content unchanged", () => {
