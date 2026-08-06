@@ -86,8 +86,8 @@ function loadStore(cwd: string): EmbeddingStore {
 function saveStore(cwd: string, store: EmbeddingStore): void {
   try {
     getEmbeddingStore(cwd).write(store);
-  } catch (err: any) {
-    console.debug("[memory-embeddings] save failed:", err?.message?.slice(0, 100));
+  } catch {
+    // save failed — non-fatal, embeddings will be recomputed on next access
   }
 }
 
@@ -114,8 +114,8 @@ async function getPipeline(): Promise<any> {
       });
       pipelineInstance = extractor;
       return extractor;
-    } catch (err: any) {
-      console.debug("[memory-embeddings] model init failed:", err?.message?.slice(0, 100));
+    } catch {
+      // model init failed — vector search will be unavailable
       // Don't permanently disable — allow retry on next call
       return null;
     } finally {
@@ -145,8 +145,8 @@ async function embed(texts: string[]): Promise<number[][] | null> {
       vectors.push(Array.from(result[i].data as Float32Array));
     }
     return vectors;
-  } catch (err: any) {
-    console.debug("[memory-embeddings] embed failed:", err?.message?.slice(0, 100));
+  } catch {
+    // embed failed — return null, caller handles gracefully
     return null;
   }
 }
@@ -211,8 +211,8 @@ export async function embedEntry(cwd: string, text: string, category?: string): 
 
     store.entries[hash] = vectors[0];
     saveStore(cwd, store);
-  } catch (err: any) {
-    console.debug("[memory-embeddings] embedEntry failed:", err?.message?.slice(0, 100));
+  } catch {
+    // embedEntry failed — non-fatal
   }
 }
 
@@ -227,8 +227,8 @@ export function removeEmbedding(cwd: string, text: string, category?: string): v
       delete store.entries[hash];
       saveStore(cwd, store);
     }
-  } catch (err: any) {
-    console.debug("[memory-embeddings] removeEmbedding failed:", err?.message?.slice(0, 100));
+  } catch {
+    // removeEmbedding failed — non-fatal, stale embedding is harmless
   }
 }
 

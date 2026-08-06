@@ -29,7 +29,7 @@ export function onStateTransition(cb: StateTransitionCallback): void {
 function notifyTransition(state: ReviewState): void {
   if (!onTransitionCb) return;
   try { onTransitionCb({ ...state, reviewers_pending: [...state.reviewers_pending] }); }
-  catch (e: any) { console.debug("[pi-config-review-state] transition callback failed:", e?.message); }
+  catch { /* transition callback failed — fire-and-forget, never propagate */ }
 }
 
 export interface ReviewState {
@@ -119,8 +119,8 @@ export function readReviewState(cwd: string): ReviewState {
   if (raw === null) return defaultState();
   try {
     return normalizeRawState(raw);
-  } catch (e: any) {
-    console.debug("[pi-config-review-state] failed to parse state:", e?.message);
+  } catch {
+    // failed to parse state — return defaults
     return defaultState();
   }
 }
@@ -171,8 +171,8 @@ function writeState(cwd: string, state: ReviewState): void {
   try {
     const store = getStore(cwd);
     store.write(state);
-  } catch (e: any) {
-    console.debug("[pi-config-review-state] write failed:", e?.message);
+  } catch {
+    // write failed — non-fatal, state file may be stale
   }
 }
 
