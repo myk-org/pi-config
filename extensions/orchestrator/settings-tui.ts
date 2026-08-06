@@ -655,7 +655,14 @@ export function buildSettingItems(
               const hint = isSecret && scopeStringValue === null
                 ? "Enter new value (not set in this scope)"
                 : "Enter new value (empty to clear)";
-              return new InputSubmenu(key, prefill, hint, theme, done);
+              return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
+                // For secrets not in this scope, treat empty submit as "no change"
+                if (isSecret && scopeStringValue === null && (val === undefined || val === "")) {
+                  done(undefined); // cancel — don't persist empty string
+                  return;
+                }
+                done(val);
+              });
             };
             break;
           }

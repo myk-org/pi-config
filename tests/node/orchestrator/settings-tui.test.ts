@@ -171,6 +171,25 @@ describe("formatValue", () => {
   it("does not mask non-secret string keys", () => {
     assert.equal(formatValue("image_model", "gemini-2.0-flash", SETTINGS_KEYS.image_model), "gemini-2.0-flash");
   });
+
+  it("readSettingsFile returns scope-specific value for secret keys", () => {
+    // Simulate: secret set in project file only
+    const projectDir = mkdtempSync(join(tmpdir(), "settings-secret-scope-"));
+    const settingsPath = join(projectDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ coms_net_auth_token: "real-token-value" }));
+
+    const data = readSettingsFile(settingsPath);
+    assert.ok(data !== null);
+    assert.equal(data!["coms_net_auth_token"], "real-token-value");
+
+    // Secret not in another scope file
+    const otherPath = join(projectDir, "other.json");
+    const otherData = readSettingsFile(otherPath);
+    assert.deepEqual(otherData, {}); // missing file = empty, not the secret
+    assert.equal(otherData!["coms_net_auth_token"], undefined);
+
+    rmSync(projectDir, { recursive: true, force: true });
+  });
 });
 
 // ── parseRawValue ───────────────────────────────────────────────────
