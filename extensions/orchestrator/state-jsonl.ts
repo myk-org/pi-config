@@ -137,17 +137,7 @@ export function parseLastValidLine<T>(raw: string): T | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
-  // Fast path: try parsing the entire content first. Handles both single-line JSON
-  // and multi-line pretty-printed JSON (e.g., from LLM dream agents).
-  // For well-formed JSONL with multiple entries, this will fail (multiple root values)
-  // and we fall through to line-by-line scan below.
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch {
-    // Not a single JSON value — fall through to line-by-line scan
-  }
-
-  // Line-by-line scan from end — for JSONL files with multiple entries
+  // Fast path: line-by-line scan from end — efficient for well-formed JSONL
   const lines = trimmed.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
@@ -158,6 +148,16 @@ export function parseLastValidLine<T>(raw: string): T | null {
       // Truncated or corrupted line — skip and try previous
       continue;
     }
+  }
+
+  // Fallback: try parsing the entire content as a single multi-line JSON object.
+  // Handles cases where an LLM agent pretty-prints JSON with newlines
+  // (e.g., dream provenance sidecar). Only reached when NO individual line
+  // parses as valid JSON — no performance cost for normal JSONL files.
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    // Not valid JSON either — truly empty/corrupt
   }
   return null;
 }

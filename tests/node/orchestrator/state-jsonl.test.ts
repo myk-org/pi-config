@@ -207,7 +207,9 @@ describe("parseLastValidLine", () => {
   });
 
   it("handles multi-line pretty-printed JSON as fallback", () => {
-    const raw = '{\n  "entries": [\n    {"category": "lesson", "text": "test"}\n  ]\n}\n';
+    // Multi-line JSON where NO individual line is valid JSON on its own —
+    // only the full content parses. This is what happens when an LLM pretty-prints.
+    const raw = '{\n  "entries": [\n    {\n      "category": "lesson",\n      "text": "test"\n    }\n  ]\n}\n';
     const result = parseLastValidLine<{ entries: Array<{ category: string; text: string }> }>(raw);
     assert.ok(result, "Should parse multi-line JSON");
     assert.equal(result!.entries.length, 1);

@@ -163,9 +163,8 @@ export function registerDreaming(
       `   - discard: stale or superseded noise\n` +
       `   - Do not reopen entries already marked applied or rejected in promotions.md\n` +
       `11. Provenance sidecar (optional): for newly extracted entries, write\n` +
-      `   ${topicsDir}/../provenance-pending.jsonl as a SINGLE LINE of JSON (no pretty-printing, no newlines inside the JSON):\n` +
+      `   ${topicsDir}/../provenance-pending.jsonl as a single line of JSON (preferred):\n` +
       `   {"entries":[{"category":"lesson","text":"<exact topic text>","sourceSession":"<session basename>","derivedFrom":"<optional>","informs":["optional"]}]}\n` +
-      `   IMPORTANT: The entire JSON object MUST be on ONE line — multi-line/pretty-printed JSON will be lost.\n` +
       `   Do NOT edit memory-scores.jsonl yourself — onComplete merges the sidecar.`,
       cwd,
       agents,
