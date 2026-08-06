@@ -233,6 +233,12 @@ describe("transformComsHeaders", () => {
     assert.ok(result.includes("peer\\_name"));
     assert.ok(!result.includes("peer_name**"));
   });
+
+  it("escapes backticks in cwd to prevent code span breakage", () => {
+    const result = transformComsHeaders("[from peer @ /path/with`backtick]");
+    assert.ok(result.includes("`@ /path/with'backtick`"));
+    assert.ok(!result.includes("``"));
+  });
 });
 
 // ── transformReviewFindings ──

@@ -131,7 +131,7 @@ export function transformComsHeaders(markdown: string): string {
   return transformOutsideCodeBlocks(markdown, (text) =>
     text.replace(
       /\[from (\S+) @ ([^\]]+)\]/g,
-      (_match, peer, cwd) => `📨 **${escapeMarkdown(peer)}** \`@ ${cwd.trim()}\``,
+      (_match, peer, cwd) => `📨 **${escapeMarkdown(peer)}** \`@ ${cwd.trim().replace(/`/g, "'")}\``,
     ),
   );
 }
