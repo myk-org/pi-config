@@ -308,3 +308,55 @@ describe("JsonlAppendLog crash recovery", () => {
     assert.equal(entries[1].event, "c");
   });
 });
+
+describe("JsonlAppendLog seq persistence across instances", () => {
+  it("new instance continues seq from existing log", () => {
+    const filePath = join(tmpDir, "seq-persist.jsonl");
+    const log1 = new JsonlAppendLog<TestLogEntry>(filePath);
+    log1.append({ event: "a", count: 1 });
+    log1.append({ event: "b", count: 2 });
+    log1.append({ event: "c", count: 3 });
+    assert.equal(log1.readAll().length, 3);
+    assert.equal(log1.readAll()[2].seq, 3);
+
+    // Create a new instance (simulates process restart)
+    const log2 = new JsonlAppendLog<TestLogEntry>(filePath);
+    log2.append({ event: "d", count: 4 });
+
+    const entries = log2.readAll();
+    assert.equal(entries.length, 4);
+    // seq should continue from 3, not restart at 1
+    assert.equal(entries[3].seq, 4);
+    assert.equal(entries[3].event, "d");
+  });
+
+  it("handles empty file gracefully", () => {
+    const filePath = join(tmpDir, "seq-empty.jsonl");
+    writeFileSync(filePath, "");
+    const log = new JsonlAppendLog<TestLogEntry>(filePath);
+    log.append({ event: "first", count: 1 });
+    assert.equal(log.readAll()[0].seq, 1);
+  });
+});
+
+describe("JsonlStateStore lineCount persistence across instances", () => {
+  it("new instance initializes lineCount from existing file", () => {
+    const filePath = join(tmpDir, "lc-persist.jsonl");
+    // compactThreshold = 5 — write 4 lines, then create new instance + write 1 more = compact
+    const store1 = new JsonlStateStore<TestState>(filePath, { compactThreshold: 5 });
+    for (let i = 0; i < 4; i++) {
+      store1.write({ counter: i, name: `entry-${i}`, active: true });
+    }
+    const linesBefore = readFileSync(filePath, "utf-8").split("\n").filter(l => l.trim()).length;
+    assert.equal(linesBefore, 4);
+
+    // New instance should know there are 4 lines already
+    const store2 = new JsonlStateStore<TestState>(filePath, { compactThreshold: 5 });
+    store2.write({ counter: 4, name: "entry-4", active: true });
+
+    // Should have compacted (4 existing + 1 new = 5 >= threshold)
+    const linesAfter = readFileSync(filePath, "utf-8").split("\n").filter(l => l.trim()).length;
+    assert.equal(linesAfter, 1, "Should have compacted after reaching threshold across instances");
+    assert.deepEqual(store2.read(), { counter: 4, name: "entry-4", active: true });
+  });
+});

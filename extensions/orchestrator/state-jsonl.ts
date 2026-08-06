@@ -45,7 +45,24 @@ export class JsonlStateStore<T> {
   constructor(filePath: string, options?: JsonlStateStoreOptions) {
     this.filePath = filePath;
     this.compactThreshold = options?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
-    this.lineCount = 0;
+    // Initialize lineCount from existing file to ensure compaction triggers
+    // correctly across process restarts and multi-process writers.
+    this.lineCount = this.countExistingLines();
+  }
+
+  /** Count non-empty lines in the existing JSONL file. Returns 0 if file doesn't exist. */
+  private countExistingLines(): number {
+    if (!existsSync(this.filePath)) return 0;
+    try {
+      const raw = readFileSync(this.filePath, "utf-8");
+      let count = 0;
+      for (const line of raw.split("\n")) {
+        if (line.trim()) count++;
+      }
+      return count;
+    } catch {
+      return 0;
+    }
   }
 
   /** Read the latest state from the JSONL file. Returns null if no valid state exists. */
@@ -191,14 +208,20 @@ export class JsonlAppendLog<T extends object> {
   }
 
   /** Append a log entry. Adds `seq` (auto-incremented) and `ts` (ISO timestamp) fields.
-   *  Auto-truncates when file exceeds size limit. */
+   *  Auto-truncates when file exceeds size limit.
+   *  Uses cross-process lock to prevent seq duplicates from concurrent writers. */
   append(data: T): void {
     ensureDir(this.filePath);
-    this.seq++;
-    const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
-    appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+    withFileLock(this.filePath, () => {
+      // Re-read seq under lock to prevent duplicates from concurrent writers
+      const diskSeq = this.readLastSeq();
+      if (diskSeq > this.seq) this.seq = diskSeq;
+      this.seq++;
+      const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
+      appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+    });
 
-    // Size-based truncation
+    // Size-based truncation (outside lock — non-critical)
     this.truncateIfNeeded();
   }
 
