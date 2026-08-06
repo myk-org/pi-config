@@ -693,10 +693,8 @@ describe("sourceGlyph", () => {
     assert.equal(sourceGlyph("P", mockTheme), "[success:P]");
   });
 
-  it("returns blue ANSI for global source", () => {
-    const result = sourceGlyph("G", mockTheme);
-    assert.ok(result.includes("G"), "should contain G");
-    assert.ok(result.includes("\x1b["), "should contain ANSI escape");
+  it("returns themed G for global source", () => {
+    assert.equal(sourceGlyph("G", mockTheme), "[accent:G]");
   });
 
   it("returns themed E for env source", () => {
