@@ -153,11 +153,13 @@ export function createCachedStore<T>(
   options?: JsonlStateStoreOptions,
 ): JsonlStateStore<T> {
   const cacheKey = join(dir, jsonlFilename);
-  const cached = storeCache.get(cacheKey);
-  if (cached) return cached as JsonlStateStore<T>;
-  const store = new JsonlStateStore<T>(join(dir, jsonlFilename), options);
-  storeCache.set(cacheKey, store);
-  // One-time migration from legacy JSON
+  let store = storeCache.get(cacheKey) as JsonlStateStore<T> | undefined;
+  if (!store) {
+    store = new JsonlStateStore<T>(join(dir, jsonlFilename), options);
+    storeCache.set(cacheKey, store);
+  }
+  // Retry migration if JSONL file doesn't exist yet — handles transient failures
+  // from previous attempts (e.g., fs errors on read/append/unlink).
   if (!store.exists()) {
     const legacyPath = join(dir, legacyFilename);
     if (existsSync(legacyPath)) {
