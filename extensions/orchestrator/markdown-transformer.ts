@@ -77,6 +77,11 @@ export function transformOutsideCodeBlocks(
     .join("");
 }
 
+/** Escape markdown metacharacters in a string to prevent formatting corruption. */
+function escapeMarkdown(text: string): string {
+  return text.replace(/([*_~`\\[\]()#>+\-!|{}])/g, "\\$1");
+}
+
 // ── Transform functions (exported for testing) ──
 
 /**
@@ -126,7 +131,7 @@ export function transformComsHeaders(markdown: string): string {
   return transformOutsideCodeBlocks(markdown, (text) =>
     text.replace(
       /\[from (\S+) @ ([^\]]+)\]/g,
-      (_match, peer, cwd) => `📨 **${peer}** _@ ${cwd.trim()}_`,
+      (_match, peer, cwd) => `📨 **${escapeMarkdown(peer)}** \`@ ${cwd.trim()}\``,
     ),
   );
 }
@@ -216,7 +221,7 @@ export function transformTaskStatus(markdown: string): string {
     );
     // Match `[pending]`, `[in_progress]`, `[completed]` standalone markers
     result = result.replace(
-      /\[(pending|in_progress|completed|deleted)\]/g,
+      /\[(pending|in_progress|completed|deleted)\](?!\()/g,
       (_match, status) => {
         const badge = TASK_STATUS_BADGES[status];
         return badge ? `${badge} ${status}` : _match;
@@ -245,7 +250,7 @@ export function transformAsyncStatus(markdown: string): string {
     );
     // Match `[running]`, `[complete]`, `[failed]` standalone markers
     result = result.replace(
-      /\[(running|queued|complete|failed|killed)\]/g,
+      /\[(running|queued|complete|failed|killed)\](?!\()/g,
       (_match, status) => {
         const badge = ASYNC_STATUS_BADGES[status];
         return badge ? badge : _match;
@@ -273,15 +278,17 @@ export function transformMarkdown(
   result = transformMemoryBadges(result);
   result = transformMemorySectionHeaders(result);
   result = transformComsHeaders(result);
-  result = transformReviewFindings(result);
   result = transformSettingsDisplay(result);
   result = transformTaskStatus(result);
   result = transformAsyncStatus(result);
+  // Review findings last — its output should not be mutated by other transforms
+  result = transformReviewFindings(result);
   return result;
 }
 
 // ── Registration ──
 
 export function registerMarkdownTransformer(pi: ExtensionAPI): void {
+  if (typeof (pi as any).registerMarkdownTransformer !== "function") return;
   pi.registerMarkdownTransformer(transformMarkdown);
 }

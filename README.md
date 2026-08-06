@@ -15,7 +15,7 @@ Single extension that provides:
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes); optional `model` param for model override |
 | **`list_models`** | List available models and providers for subagent model override |
 | **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
-| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.81): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
+| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`/async-kill` command** | Kill async agents (overlay picker or by name/id) |
@@ -777,7 +777,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.81.0**)
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.84.0**)
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

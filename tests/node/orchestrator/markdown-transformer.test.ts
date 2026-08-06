@@ -14,6 +14,7 @@ import {
   transformAsyncStatus,
   transformMarkdown,
   transformOutsideCodeBlocks,
+  registerMarkdownTransformer,
   MEMORY_BADGES,
   SEVERITY_BADGES,
   TASK_STATUS_BADGES,
@@ -203,28 +204,34 @@ describe("transformComsHeaders", () => {
     const result = transformComsHeaders(
       "[from worker @ /home/user/project]",
     );
-    assert.equal(result, "📨 **worker** _@ /home/user/project_");
+    assert.equal(result, "📨 **worker** `@ /home/user/project`");
   });
 
   it("transforms multiple coms headers", () => {
     const input =
       "[from agent1 @ /path/one]\nHello\n[from agent2 @ /path/two]";
     const result = transformComsHeaders(input);
-    assert.ok(result.includes("📨 **agent1** _@ /path/one_"));
-    assert.ok(result.includes("📨 **agent2** _@ /path/two_"));
+    assert.ok(result.includes("📨 **agent1** `@ /path/one`"));
+    assert.ok(result.includes("📨 **agent2** `@ /path/two`"));
   });
 
   it("preserves surrounding text", () => {
     const result = transformComsHeaders(
       "Before [from peer @ /cwd] after",
     );
-    assert.equal(result, "Before 📨 **peer** _@ /cwd_ after");
+    assert.equal(result, "Before 📨 **peer** `@ /cwd` after");
   });
 
   it("preserves coms headers inside code blocks", () => {
     const input = "```\n[from peer @ /cwd]\n```";
     const result = transformComsHeaders(input);
     assert.equal(result, input);
+  });
+
+  it("escapes markdown metacharacters in peer name", () => {
+    const result = transformComsHeaders("[from peer_name @ /cwd]");
+    assert.ok(result.includes("peer\\_name"));
+    assert.ok(!result.includes("peer_name**"));
   });
 });
 
@@ -323,6 +330,21 @@ describe("transformReviewFindings", () => {
     const input = "```json\n" + json + "\n```";
     const result = transformReviewFindings(input);
     assert.ok(result.includes("🔴 **CRITICAL**"));
+  });
+
+  it("findings content is not mutated by later transforms in dispatcher", () => {
+    const json = JSON.stringify({
+      findings: [{
+        severity: "WARNING",
+        file: "test.ts",
+        line: 1,
+        description: "The status: running should not become a badge",
+      }],
+    }, null, 2);
+    const input = "```json\n" + json + "\n```";
+    const result = transformMarkdown(input, assistantCtx());
+    assert.ok(result.includes("The status: running should not become a badge"));
+    assert.ok(!result.includes("🟡 **running**"));
   });
 });
 
@@ -431,6 +453,12 @@ describe("transformTaskStatus", () => {
     const result = transformTaskStatus(input);
     assert.equal(result, input);
   });
+
+  it("does not corrupt markdown links", () => {
+    const input = "[pending](https://example.com)";
+    const result = transformTaskStatus(input);
+    assert.equal(result, input);
+  });
 });
 
 // ── transformAsyncStatus ──
@@ -492,6 +520,12 @@ describe("transformAsyncStatus", () => {
 
   it("preserves async status inside code blocks", () => {
     const input = "```\nstatus: running\n```";
+    const result = transformAsyncStatus(input);
+    assert.equal(result, input);
+  });
+
+  it("does not corrupt markdown links", () => {
+    const input = "[running](https://example.com)";
     const result = transformAsyncStatus(input);
     assert.equal(result, input);
   });
@@ -570,7 +604,7 @@ describe("transformMarkdown", () => {
     assert.ok(result.includes("⚠️ Vetoes & Mistakes"));
 
     // Coms
-    assert.ok(result.includes("📨 **manager**"));
+    assert.ok(result.includes("📨 **manager**"), "coms header should have manager badge");
 
     // Review findings
     assert.ok(result.includes("🟡 **WARNING**"));
@@ -589,5 +623,24 @@ describe("transformMarkdown", () => {
     const input = "Just a regular paragraph with no special patterns.";
     const result = transformMarkdown(input, assistantCtx());
     assert.equal(result, input);
+  });
+});
+
+// ── registerMarkdownTransformer ──
+
+describe("registerMarkdownTransformer", () => {
+  it("calls pi.registerMarkdownTransformer with transformMarkdown", () => {
+    let registered: unknown = null;
+    const mockPi = {
+      registerMarkdownTransformer: (fn: unknown) => { registered = fn; },
+    };
+    registerMarkdownTransformer(mockPi as any);
+    assert.equal(registered, transformMarkdown);
+  });
+
+  it("skips registration when API is not available (pre-0.84.0)", () => {
+    const mockPi = {};
+    // Should not throw
+    registerMarkdownTransformer(mockPi as any);
   });
 });
