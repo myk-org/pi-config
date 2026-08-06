@@ -226,18 +226,10 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
   return null;
 }
 
-/** Resolve the actual file path for writing — .jsonc files redirect to .json to preserve comments. */
-export function resolveWritePath(filePath: string): string {
-  return filePath.endsWith(".jsonc") ? filePath.replace(/\.jsonc$/, ".json") : filePath;
-}
-
 export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-
-  // Write to .json when target is .jsonc to preserve user comments in the .jsonc file.
-  const writePath = resolveWritePath(filePath);
-  writeFileSync(writePath, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+  writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
 }
 
 // ── Registration helper (testable without pi-coding-agent) ──────────

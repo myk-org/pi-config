@@ -358,17 +358,13 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.deepEqual(result, data);
   });
 
-  it("writes to .json when target is .jsonc to preserve comments", () => {
+  it("writes directly to .jsonc file", () => {
     const jsoncPath = join(tempDir, "pi-config-settings.jsonc");
-    const jsonPath = join(tempDir, "pi-config-settings.json");
     writeFileSync(jsoncPath, '// user comments\n{"dco": true}');
     writeSettingsFile(jsoncPath, { dco: true, use_worktrees: true });
-    // .jsonc should be untouched
-    const jsoncContent = readFileSync(jsoncPath, "utf-8");
-    assert.ok(jsoncContent.includes("// user comments"), "jsonc file should preserve comments");
-    // .json should have the new data
-    const jsonContent = readFileSync(jsonPath, "utf-8");
-    assert.ok(jsonContent.includes('"use_worktrees": true'), "json file should have new data");
+    const content = readFileSync(jsoncPath, "utf-8");
+    assert.ok(content.includes('"use_worktrees": true'), "should write new data to .jsonc");
+    assert.ok(content.includes('"dco": true'), "should preserve existing keys");
   });
 });
 

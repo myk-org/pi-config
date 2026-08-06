@@ -39,7 +39,6 @@ import {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
-  resolveWritePath,
   registerSettingsTuiCommand,
 } from "./settings-tui-helpers.js";
 import {
@@ -60,7 +59,6 @@ export {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
-  resolveWritePath,
   registerSettingsTuiCommand,
 } from "./settings-tui-helpers.js";
 
@@ -695,10 +693,7 @@ export function buildSettingItems(
 
 function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): boolean {
   const filePath = getFilePathForScope(scope, cwd);
-  // Read from the actual write target (.json) when original path is .jsonc,
-  // so we merge with previously TUI-saved values, not the .jsonc source.
-  const writePath = resolveWritePath(filePath);
-  const current = readSettingsFile(writePath);
+  const current = readSettingsFile(filePath);
   if (current === null) return false; // corrupt file — refuse to clobber
   if (value === undefined) {
     delete current[key]; // clear/unset the key
