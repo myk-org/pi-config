@@ -172,8 +172,7 @@ describe("formatValue", () => {
     assert.equal(formatValue("image_model", "gemini-2.0-flash", SETTINGS_KEYS.image_model), "gemini-2.0-flash");
   });
 
-  it("readSettingsFile returns scope-specific value for secret keys", () => {
-    // Simulate: secret set in project file only
+  it("reads secret value from scope file that contains it", () => {
     const projectDir = mkdtempSync(join(tmpdir(), "settings-secret-scope-"));
     const settingsPath = join(projectDir, "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ coms_net_auth_token: "real-token-value" }));
@@ -182,10 +181,14 @@ describe("formatValue", () => {
     assert.ok(data !== null);
     assert.equal(data!["coms_net_auth_token"], "real-token-value");
 
-    // Secret not in another scope file
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("returns no secret from scope file that does not contain it", () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "settings-secret-scope-"));
     const otherPath = join(projectDir, "other.json");
     const otherData = readSettingsFile(otherPath);
-    assert.deepEqual(otherData, {}); // missing file = empty, not the secret
+    assert.deepEqual(otherData, {});
     assert.equal(otherData!["coms_net_auth_token"], undefined);
 
     rmSync(projectDir, { recursive: true, force: true });

@@ -657,7 +657,7 @@ export function buildSettingItems(
                 : "Enter new value (empty to clear)";
               return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
                 // For secrets not in this scope, treat empty submit as "no change"
-                if (isSecret && scopeStringValue === null && (val === undefined || val === "")) {
+                if (isSecret && scopeStringValue === null && (val === undefined || val?.trim() === "")) {
                   done(undefined); // cancel — don't persist empty string
                   return;
                 }
