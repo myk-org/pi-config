@@ -205,6 +205,14 @@ describe("parseLastValidLine", () => {
     const raw = '{"a":1}\n{"a":2}\n{"a":3\n';
     assert.deepEqual(parseLastValidLine(raw), { a: 2 });
   });
+
+  it("handles multi-line pretty-printed JSON as fallback", () => {
+    const raw = '{\n  "entries": [\n    {"category": "lesson", "text": "test"}\n  ]\n}\n';
+    const result = parseLastValidLine<{ entries: Array<{ category: string; text: string }> }>(raw);
+    assert.ok(result, "Should parse multi-line JSON");
+    assert.equal(result!.entries.length, 1);
+    assert.equal(result!.entries[0].text, "test");
+  });
 });
 
 // ── 6. Multiple store instances for same file ──

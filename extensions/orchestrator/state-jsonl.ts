@@ -134,8 +134,21 @@ export class JsonlStateStore<T> {
  * Handles truncated last lines (crash recovery) by falling back to the previous line.
  */
 export function parseLastValidLine<T>(raw: string): T | null {
-  // Split into lines and scan from the end
-  const lines = raw.split("\n");
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // Fast path: try parsing the entire content first. Handles both single-line JSON
+  // and multi-line pretty-printed JSON (e.g., from LLM dream agents).
+  // For well-formed JSONL with multiple entries, this will fail (multiple root values)
+  // and we fall through to line-by-line scan below.
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    // Not a single JSON value — fall through to line-by-line scan
+  }
+
+  // Line-by-line scan from end — for JSONL files with multiple entries
+  const lines = trimmed.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
