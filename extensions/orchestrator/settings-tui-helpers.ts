@@ -230,10 +230,11 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  // Atomic write: write to temp file first, then rename to avoid truncation on crash.
+  // Atomic write: write to temp file with random suffix, then rename.
+  // Random suffix prevents symlink attacks and concurrent write collisions.
   const content = JSON.stringify(data, null, 2) + "\n";
-  const tmpPath = filePath + ".tmp";
-  writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
+  writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
   renameSync(tmpPath, filePath);
 }
 
