@@ -1,10 +1,9 @@
 /**
  * Settings TUI — interactive editor for pi-config settings.
  *
- * /pi-config-settings [scope] opens a fullscreen SettingsList overlay
- * showing all keys grouped by category with scope indicators [P]/[G]/[E]/[D].
- * Tab switches between project and global scope.
- * Phase 2: provider/model pickers, agent list multi-select, agent overrides editor.
+ * /pi-config-settings [scope] opens a fullscreen overlay with box-drawing borders,
+ * themed header/footer, colored source glyphs, and fuzzy-searchable pickers.
+ * Matches the async-status / cron overlay design pattern.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ModelRegistry, Theme } from "@earendil-works/pi-coding-agent";
@@ -16,13 +15,13 @@ import {
   SelectList,
   type SettingItem,
   SettingsList,
-  Text,
   matchesKey,
   Key,
   truncateToWidth,
+  visibleWidth,
   fuzzyFilter,
 } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -40,6 +39,12 @@ import {
   readSettingsFile,
   writeSettingsFile,
 } from "./settings-tui-helpers.js";
+import {
+  OVERLAY_OPTS,
+  borderSegment,
+  padAnsi,
+  splitRow,
+} from "./overlay-dashboard.js";
 
 // Re-export helpers for external consumers
 export {
@@ -66,7 +71,6 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
 
   const models = modelRegistry.getAvailable?.() || modelRegistry.getAll?.() || [];
 
-  // Unique providers (exclude acpx-* which can't work in subagents)
   const providerSet = new Set<string>();
   for (const m of models) {
     if (!(m.provider || "").startsWith("acpx-")) {
@@ -104,6 +108,18 @@ function getAvailableAgentNames(cwd: string): string[] {
   }
 }
 
+// ── Source glyph (colored) ──────────────────────────────────────────
+
+function sourceGlyph(source: string, theme: Theme): string {
+  switch (source) {
+    case "P": return theme.fg("success", "P");
+    case "G": return "\x1b[34mG\x1b[0m";  // blue
+    case "E": return theme.fg("warning", "E");
+    case "D": return theme.fg("dim", "D");
+    default:  return theme.fg("dim", "?");
+  }
+}
+
 // ── Input submenu component ─────────────────────────────────────────
 
 class InputSubmenu implements Component {
@@ -111,11 +127,13 @@ class InputSubmenu implements Component {
   private label: string;
   private hint: string;
   private done: (value?: string) => void;
+  private theme: Theme;
 
-  constructor(label: string, currentValue: string, hint: string, done: (value?: string) => void) {
+  constructor(label: string, currentValue: string, hint: string, theme: Theme, done: (value?: string) => void) {
     this.label = label;
     this.hint = hint;
     this.done = done;
+    this.theme = theme;
     this.input = new Input();
     this.input.setValue(currentValue === "(empty)" ? "" : currentValue);
     this.input.onSubmit = (val: string) => this.done(val);
@@ -123,16 +141,17 @@ class InputSubmenu implements Component {
   }
 
   render(width: number): string[] {
+    const t = this.theme;
     const lines: string[] = [];
-    lines.push(truncateToWidth(`  ${this.label}`, width));
-    lines.push(truncateToWidth(`  ${this.hint}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", this.hint)}`, width));
     lines.push("");
     const inputLines = this.input.render(Math.max(10, width - 4));
     for (const line of inputLines) {
       lines.push(truncateToWidth(`  ${line}`, width));
     }
     lines.push("");
-    lines.push(truncateToWidth("  Enter: save · Esc: cancel", width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", "Enter: save · Esc: cancel")}`, width));
     return lines;
   }
 
@@ -153,11 +172,13 @@ class NumberInputSubmenu implements Component {
   private isInt: boolean;
   private error: string;
   private done: (value?: string) => void;
+  private theme: Theme;
 
   constructor(
     label: string,
     currentValue: string,
     def: SettingsKeyDef,
+    theme: Theme,
     done: (value?: string) => void,
   ) {
     this.label = label;
@@ -166,6 +187,7 @@ class NumberInputSubmenu implements Component {
     this.isInt = def.type === "int" || def.type === "port";
     this.error = "";
     this.done = done;
+    this.theme = theme;
     this.input = new Input();
     this.input.setValue(currentValue);
     this.input.onSubmit = (val: string) => this.validate(val);
@@ -199,15 +221,16 @@ class NumberInputSubmenu implements Component {
   }
 
   render(width: number): string[] {
+    const t = this.theme;
     const lines: string[] = [];
-    lines.push(truncateToWidth(`  ${this.label}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
 
     const constraints: string[] = [];
     if (this.min !== undefined) constraints.push(`min: ${this.min}`);
     if (this.max !== undefined) constraints.push(`max: ${this.max}`);
     if (this.isInt) constraints.push("integer");
     if (constraints.length > 0) {
-      lines.push(truncateToWidth(`  (${constraints.join(", ")})`, width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", `(${constraints.join(", ")})`)}`, width));
     }
 
     lines.push("");
@@ -217,10 +240,10 @@ class NumberInputSubmenu implements Component {
     }
 
     if (this.error) {
-      lines.push(truncateToWidth(`  ⚠ ${this.error}`, width));
+      lines.push(truncateToWidth(`  ${t.fg("error", `⚠ ${this.error}`)}`, width));
     }
     lines.push("");
-    lines.push(truncateToWidth("  Enter: save · Esc: cancel", width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", "Enter: save · Esc: cancel")}`, width));
     return lines;
   }
 
@@ -240,26 +263,25 @@ class PickerSubmenu implements Component {
   private allItems: SelectItem[];
   private label: string;
   private done: (value?: string) => void;
+  private theme: Theme;
 
-  constructor(label: string, items: SelectItem[], done: (value?: string) => void) {
+  constructor(label: string, items: SelectItem[], theme: Theme, done: (value?: string) => void) {
     this.label = label;
     this.allItems = items;
     this.done = done;
+    this.theme = theme;
 
     this.searchInput = new Input();
     this.selectList = new SelectList(items, Math.min(items.length, 15), getSelectListTheme());
     this.selectList.onSelect = (item) => this.done(item.value);
     this.selectList.onCancel = () => this.done(undefined);
 
-    // Wire search input to filter the list
     const origHandleInput = this.searchInput.handleInput.bind(this.searchInput);
     this.searchInput.handleInput = (data: string) => {
-      // Let Escape cancel the whole picker
       if (matchesKey(data, Key.escape)) {
         this.done(undefined);
         return;
       }
-      // Pass arrow keys and Enter to the select list
       if (matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter)) {
         this.selectList.handleInput(data);
         return;
@@ -282,25 +304,21 @@ class PickerSubmenu implements Component {
   }
 
   render(width: number): string[] {
+    const t = this.theme;
     const lines: string[] = [];
-    lines.push(truncateToWidth(`  ${this.label}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
     lines.push("");
-
-    // Search input
     const inputLines = this.searchInput.render(Math.max(10, width - 6));
     for (const line of inputLines) {
-      lines.push(truncateToWidth(`  🔍 ${line}`, width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", "🔍")} ${line}`, width));
     }
     lines.push("");
-
-    // Select list
     const listLines = this.selectList.render(Math.max(10, width - 4));
     for (const line of listLines) {
       lines.push(truncateToWidth(`  ${line}`, width));
     }
-
     lines.push("");
-    lines.push(truncateToWidth("  ↑↓ navigate · Enter: select · Esc: cancel · Type to filter", width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Enter select · Esc cancel · Type to filter")}`, width));
     return lines;
   }
 
@@ -319,33 +337,43 @@ class MultiSelectSubmenu implements Component {
   private selectedIndex: number;
   private done: (value?: string) => void;
   private label: string;
+  private theme: Theme;
 
-  constructor(label: string, available: string[], current: string[], done: (value?: string) => void) {
+  constructor(label: string, available: string[], current: string[], theme: Theme, done: (value?: string) => void) {
     this.label = label;
     this.agents = available;
     this.selected = new Set(current);
     this.selectedIndex = 0;
     this.done = done;
+    this.theme = theme;
   }
 
   render(width: number): string[] {
+    const t = this.theme;
     const lines: string[] = [];
-    lines.push(truncateToWidth(`  ${this.label}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
     lines.push("");
 
     for (let i = 0; i < this.agents.length; i++) {
       const agent = this.agents[i];
-      const checked = this.selected.has(agent) ? "☑" : "☐";
-      const cursor = i === this.selectedIndex ? "❯" : " ";
-      lines.push(truncateToWidth(`  ${cursor} ${checked} ${agent}`, width));
+      const checked = this.selected.has(agent)
+        ? t.fg("success", "☑")
+        : t.fg("dim", "☐");
+      const cursor = i === this.selectedIndex
+        ? t.fg("accent", "❯")
+        : " ";
+      const name = i === this.selectedIndex
+        ? t.fg("accent", agent)
+        : t.fg("text", agent);
+      lines.push(truncateToWidth(`  ${cursor} ${checked} ${name}`, width));
     }
 
     if (this.agents.length === 0) {
-      lines.push(truncateToWidth("  (no agents found)", width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", "(no agents found)")}`, width));
     }
 
     lines.push("");
-    lines.push(truncateToWidth("  ↑↓ navigate · Space: toggle · Enter: save · Esc: cancel", width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Space toggle · Enter save · Esc cancel")}`, width));
     return lines;
   }
 
@@ -390,6 +418,7 @@ class AgentOverridesSubmenu implements Component {
   private selectedIndex: number;
   private done: (value?: string) => void;
   private label: string;
+  private theme: Theme;
   private mode: "list" | "edit-provider" | "edit-model";
   private editingAgent: string;
   private editInput: Input;
@@ -398,56 +427,63 @@ class AgentOverridesSubmenu implements Component {
     label: string,
     currentOverrides: Record<string, { provider?: string | null; model?: string | null }>,
     availableAgents: string[],
+    theme: Theme,
     done: (value?: string) => void,
   ) {
     this.label = label;
-    // Deep copy
     this.overrides = JSON.parse(JSON.stringify(currentOverrides || {}));
     this.agentNames = availableAgents;
     this.selectedIndex = 0;
     this.done = done;
+    this.theme = theme;
     this.mode = "list";
     this.editingAgent = "";
     this.editInput = new Input();
   }
 
   render(width: number): string[] {
+    const t = this.theme;
     const lines: string[] = [];
-    lines.push(truncateToWidth(`  ${this.label}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
     lines.push("");
 
     if (this.mode === "list") {
       for (let i = 0; i < this.agentNames.length; i++) {
         const agent = this.agentNames[i];
         const override = this.overrides[agent];
-        const cursor = i === this.selectedIndex ? "❯" : " ";
-        let info = "(default)";
+        const cursor = i === this.selectedIndex ? t.fg("accent", "❯") : " ";
+        const name = i === this.selectedIndex ? t.fg("accent", agent) : t.fg("text", agent);
+        let info = t.fg("dim", "(default)");
         if (override) {
           const parts: string[] = [];
-          if (override.provider !== undefined) parts.push(`provider: ${override.provider ?? "parent"}`);
-          if (override.model !== undefined) parts.push(`model: ${override.model ?? "parent"}`);
-          info = parts.join(", ") || "(default)";
+          if (override.provider !== undefined) {
+            parts.push(`provider: ${t.fg("success", String(override.provider ?? "parent"))}`);
+          }
+          if (override.model !== undefined) {
+            parts.push(`model: ${t.fg("success", String(override.model ?? "parent"))}`);
+          }
+          info = parts.join(t.fg("dim", ", ")) || t.fg("dim", "(default)");
         }
-        lines.push(truncateToWidth(`  ${cursor} ${agent}: ${info}`, width));
+        lines.push(truncateToWidth(`  ${cursor} ${name}${t.fg("dim", ":")} ${info}`, width));
       }
 
       if (this.agentNames.length === 0) {
-        lines.push(truncateToWidth("  (no agents found)", width));
+        lines.push(truncateToWidth(`  ${t.fg("dim", "(no agents found)")}`, width));
       }
 
       lines.push("");
-      lines.push(truncateToWidth("  ↑↓ navigate · p: set provider · m: set model · d: delete override · Enter/Esc: save & close", width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · p provider · m model · d delete · Enter/Esc save")}`, width));
     } else {
       const field = this.mode === "edit-provider" ? "provider" : "model";
-      lines.push(truncateToWidth(`  Set ${field} for: ${this.editingAgent}`, width));
-      lines.push(truncateToWidth(`  Enter value (empty to clear, "null" to use parent model):`, width));
+      lines.push(truncateToWidth(`  ${t.fg("text", `Set ${field} for:`)} ${t.fg("accent", this.editingAgent)}`, width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", 'Enter value (empty to clear, "null" to use parent model)')}`, width));
       lines.push("");
       const inputLines = this.editInput.render(Math.max(10, width - 4));
       for (const line of inputLines) {
         lines.push(truncateToWidth(`  ${line}`, width));
       }
       lines.push("");
-      lines.push(truncateToWidth("  Enter: save · Esc: cancel", width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", "Enter: save · Esc: cancel")}`, width));
     }
 
     return lines;
@@ -460,12 +496,10 @@ class AgentOverridesSubmenu implements Component {
         return;
       }
       this.editInput.handleInput(data);
-      // Check if Enter was pressed (onSubmit handles it)
       return;
     }
 
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) {
-      // Serialize overrides back
       const result = JSON.stringify(this.overrides);
       this.done(result);
       return;
@@ -521,7 +555,6 @@ class AgentOverridesSubmenu implements Component {
 
     if (trimmed === "") {
       delete this.overrides[agent]![field];
-      // Clean up empty entry
       if (Object.keys(this.overrides[agent]!).length === 0) {
         delete this.overrides[agent];
       }
@@ -548,10 +581,10 @@ export function buildSettingItems(
   const availableAgents = getAvailableAgentNames(cwd);
 
   for (const category of CATEGORIES) {
-    // Category header as a non-editable item
+    // Category separator — themed like borderSegment
     items.push({
       id: `__category_${category.label}`,
-      label: `── ${category.label} ──`,
+      label: `${theme.fg("border", "──")} ${theme.fg("muted", category.label)} ${theme.fg("border", "──")}`,
       currentValue: "",
     });
 
@@ -562,11 +595,11 @@ export function buildSettingItems(
       const effectiveValue = getSetting(cwd, key as any);
       const source = detectSource(key, def, cwd);
       const displayValue = formatValue(key, effectiveValue, def);
-      const sourceTag = `[${source}]`;
+      const glyph = sourceGlyph(source, theme);
 
       const item: SettingItem = {
         id: key,
-        label: `${sourceTag} ${key}`,
+        label: `${glyph} ${key}`,
         currentValue: displayValue,
         description: def.env ? `env: ${def.env}` : undefined,
       };
@@ -576,14 +609,12 @@ export function buildSettingItems(
       const isModelKey = key === "agent_model" || key === "internal_operations_model";
 
       if (isProviderKey && pmInfo.providers.length > 0) {
-        // Provider picker with fuzzy search
         item.submenu = (_current: string, done: (val?: string) => void): Component => {
-          return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, done);
+          return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done);
         };
       } else if (isModelKey && pmInfo.models.length > 0) {
-        // Model picker with fuzzy search (shows provider/model-id)
         item.submenu = (_current: string, done: (val?: string) => void): Component => {
-          return new PickerSubmenu(`Select model for ${key}`, pmInfo.models, done);
+          return new PickerSubmenu(`Select model for ${key}`, pmInfo.models, theme, done);
         };
       } else {
         switch (def.type) {
@@ -598,6 +629,7 @@ export function buildSettingItems(
                 `${key} (bool or custom string)`,
                 current === "true" || current === "false" ? current : current,
                 'Enter "true", "false", or a custom string',
+                theme,
                 done,
               );
             };
@@ -605,7 +637,7 @@ export function buildSettingItems(
 
           case "string":
             item.submenu = (current: string, done: (val?: string) => void): Component => {
-              return new InputSubmenu(key, current, "Enter new value (empty to clear)", done);
+              return new InputSubmenu(key, current, "Enter new value (empty to clear)", theme, done);
             };
             break;
 
@@ -613,7 +645,7 @@ export function buildSettingItems(
           case "port":
           case "number":
             item.submenu = (current: string, done: (val?: string) => void): Component => {
-              return new NumberInputSubmenu(key, current, def, done);
+              return new NumberInputSubmenu(key, current, def, theme, done);
             };
             break;
 
@@ -624,6 +656,7 @@ export function buildSettingItems(
                 `${key} — select agents`,
                 availableAgents,
                 currentAgents,
+                theme,
                 done,
               );
             };
@@ -638,6 +671,7 @@ export function buildSettingItems(
                 "Agent overrides — per-agent provider/model",
                 currentOverrides,
                 availableAgents,
+                theme,
                 done,
               );
             };
@@ -674,6 +708,141 @@ function parseOverridesValue(rawValue: string): Record<string, { provider?: stri
   return {};
 }
 
+// ── Settings overlay component ──────────────────────────────────────
+
+class SettingsOverlay implements Component {
+  private tui: TUI;
+  private theme: Theme;
+  private cwd: string;
+  private modelRegistry: ModelRegistry | undefined;
+  private editScope: "project" | "global";
+  private done: (value: undefined) => void;
+  private settingsList!: SettingsList;
+  private cachedWidth?: number;
+  private cachedLines?: string[];
+
+  constructor(
+    tui: TUI,
+    theme: Theme,
+    cwd: string,
+    modelRegistry: ModelRegistry | undefined,
+    initialScope: "project" | "global",
+    done: (value: undefined) => void,
+  ) {
+    this.tui = tui;
+    this.theme = theme;
+    this.cwd = cwd;
+    this.modelRegistry = modelRegistry;
+    this.editScope = initialScope;
+    this.done = done;
+    this.rebuild();
+  }
+
+  private rebuild(): void {
+    const items = buildSettingItems(this.cwd, this.editScope, this.theme, this.modelRegistry);
+
+    this.settingsList = new SettingsList(
+      items,
+      20,
+      getSettingsListTheme(),
+      (id: string, newValue: string) => {
+        if (id.startsWith("__category_")) return;
+        const def = SETTINGS_KEYS[id];
+        if (!def) return;
+
+        let parsed: unknown;
+        if (def.type === "agent_overrides") {
+          parsed = parseOverridesValue(newValue);
+        } else {
+          parsed = parseRawValue(id, newValue, def);
+        }
+
+        saveChange(id, parsed, this.editScope, this.cwd);
+        this.rebuild();
+        this.tui.requestRender();
+      },
+      () => this.done(undefined),
+      { enableSearch: true },
+    );
+
+    this.invalidate();
+  }
+
+  handleInput(data: string): void {
+    // Tab to switch scope
+    if (matchesKey(data, Key.tab)) {
+      this.editScope = this.editScope === "project" ? "global" : "project";
+      this.rebuild();
+      this.tui.requestRender();
+      return;
+    }
+
+    this.settingsList.handleInput?.(data);
+    this.invalidate();
+    this.tui.requestRender();
+  }
+
+  render(width: number): string[] {
+    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+
+    const theme = this.theme;
+    const rows = this.tui.terminal.rows || 30;
+    const innerWidth = Math.max(0, width - 2);
+    const lines: string[] = [];
+
+    // Count non-category items
+    const allKeys = CATEGORIES.flatMap((c) => c.keys);
+    const keyCount = allKeys.length;
+    const scopeLabel = this.editScope === "project" ? "Project" : "Global";
+
+    // ── Header line ──
+    const headerLeft = theme.fg("accent", theme.bold("Settings"));
+    const headerRight = theme.fg("muted", `${keyCount} keys`);
+    const headerPad = Math.max(1, width - visibleWidth(headerLeft) - visibleWidth(headerRight) - 4);
+    lines.push(truncateToWidth(`  ${headerLeft}${" ".repeat(headerPad)}${headerRight}  `, width));
+
+    // ── Top border with title ──
+    const borderTitle = `${scopeLabel} scope`;
+    lines.push(
+      theme.fg("border", "╭") +
+      borderSegment(theme, innerWidth, borderTitle) +
+      theme.fg("border", "╮"),
+    );
+
+    // ── Settings list body ──
+    const divider = theme.fg("border", "│");
+    const bodyHeight = Math.max(6, rows - 5);
+    const settingsLines = this.settingsList.render(innerWidth);
+
+    for (let i = 0; i < bodyHeight; i++) {
+      const line = settingsLines[i] ?? "";
+      lines.push(divider + padAnsi(line, innerWidth) + divider);
+    }
+
+    // ── Bottom border ──
+    lines.push(
+      theme.fg("border", "╰") +
+      theme.fg("border", "─".repeat(innerWidth)) +
+      theme.fg("border", "╯"),
+    );
+
+    // ── Footer hints ──
+    lines.push(truncateToWidth(
+      theme.fg("dim", `  Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · / search · Esc close`),
+      width,
+    ));
+
+    this.cachedLines = lines;
+    this.cachedWidth = width;
+    return lines;
+  }
+
+  invalidate(): void {
+    this.cachedWidth = undefined;
+    this.cachedLines = undefined;
+  }
+}
+
 // ── Main command handler ────────────────────────────────────────────
 
 async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: string): Promise<void> {
@@ -683,80 +852,15 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
     return;
   }
 
-  let editScope: "project" | "global" = initialScope === "global" ? "global" : "project";
+  const editScope: "project" | "global" = initialScope === "global" ? "global" : "project";
   const cwd = ctx.cwd;
   const modelRegistry = ctx.modelRegistry;
 
-  await ctx.ui.custom((tui, theme, _kb, done) => {
-    const container = new Container();
-    let settingsList: SettingsList;
-    let items: SettingItem[];
-
-    function rebuild(): void {
-      container.clear();
-
-      // Header
-      const scopeLabel = editScope === "project" ? "Project" : "Global";
-      const headerText = theme.fg("accent", theme.bold(" Settings")) +
-        theme.fg("dim", "  ") +
-        theme.fg("text", `[${scopeLabel}]`) +
-        theme.fg("dim", "  Tab: switch scope");
-      container.addChild(new Text(headerText, 0, 0));
-      container.addChild(new Text("", 0, 0));
-
-      items = buildSettingItems(cwd, editScope, theme, modelRegistry);
-
-      settingsList = new SettingsList(
-        items,
-        Math.min(items.length + 2, 20),
-        getSettingsListTheme(),
-        (id: string, newValue: string) => {
-          // Skip category headers
-          if (id.startsWith("__category_")) return;
-
-          const def = SETTINGS_KEYS[id];
-          if (!def) return;
-
-          let parsed: unknown;
-          if (def.type === "agent_overrides") {
-            parsed = parseOverridesValue(newValue);
-          } else {
-            parsed = parseRawValue(id, newValue, def);
-          }
-
-          // Save immediately to the current scope
-          saveChange(id, parsed, editScope, cwd);
-
-          // Rebuild to refresh source indicators
-          rebuild();
-          tui.requestRender();
-        },
-        () => done(undefined),
-        { enableSearch: true },
-      );
-
-      container.addChild(settingsList);
-    }
-
-    rebuild();
-
-    return {
-      render: (w: number) => container.render(w),
-      invalidate: () => container.invalidate(),
-      handleInput: (data: string) => {
-        // Tab to switch scope
-        if (matchesKey(data, Key.tab)) {
-          editScope = editScope === "project" ? "global" : "project";
-          rebuild();
-          tui.requestRender();
-          return;
-        }
-
-        settingsList.handleInput?.(data);
-        tui.requestRender();
-      },
-    };
-  });
+  await ctx.ui.custom<undefined>(
+    (tui, theme, _kb, done) =>
+      new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done),
+    OVERLAY_OPTS,
+  );
 }
 
 // ── Registration ────────────────────────────────────────────────────
