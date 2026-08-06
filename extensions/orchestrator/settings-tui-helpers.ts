@@ -248,6 +248,22 @@ export function isSecretNoChange(val: string | undefined, scopeHasValue: boolean
   return val === undefined || val?.trim() === "" || val?.trim() === "(empty)";
 }
 
+/** Resolve the prefill value for a secret key from the current scope's file only. */
+export function resolveSecretPrefill(
+  key: string,
+  editScope: "project" | "global",
+  cwd: string,
+): { scopeValue: string | null; prefill: string; hint: string } {
+  const scopeFile = getFilePathForScope(editScope, cwd);
+  const scopeData = readSettingsFile(scopeFile);
+  const scopeValue = scopeData && typeof scopeData[key] === "string" ? scopeData[key] as string : null;
+  const prefill = scopeValue !== null ? scopeValue : "";
+  const hint = scopeValue === null
+    ? "Enter new value (not set in this scope)"
+    : "Enter new value (empty to clear)";
+  return { scopeValue, prefill, hint };
+}
+
 // ── Registration helper (testable without pi-coding-agent) ──────────
 
 /**

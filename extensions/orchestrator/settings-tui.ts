@@ -41,6 +41,7 @@ import {
   writeSettingsFile,
   registerSettingsTuiCommand,
   isSecretNoChange,
+  resolveSecretPrefill,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -62,6 +63,7 @@ export {
   writeSettingsFile,
   registerSettingsTuiCommand,
   isSecretNoChange,
+  resolveSecretPrefill,
 } from "./settings-tui-helpers.js";
 
 // ── Provider/Model data helpers ─────────────────────────────────────
@@ -641,26 +643,15 @@ export function buildSettingItems(
             break;
 
           case "string": {
-            // For secret-like keys, prefill with the value from the CURRENT SCOPE's file only
-            // (not the effective value which may come from env or another scope).
-            // This prevents accidentally persisting env/global secrets into the project file.
             const SECRET_PATTERN = /token|secret|password|auth/i;
             const isSecret = SECRET_PATTERN.test(key);
-            let scopeStringValue: string | null = null;
-            if (isSecret) {
-              const scopeFile = getFilePathForScope(editScope, cwd);
-              const scopeData = readSettingsFile(scopeFile);
-              scopeStringValue = scopeData && typeof scopeData[key] === "string" ? scopeData[key] as string : null;
-            }
+            const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
             item.submenu = (current: string, done: (val?: string) => void): Component => {
-              const prefill = scopeStringValue !== null ? scopeStringValue : (isSecret ? "" : current);
-              const hint = isSecret && scopeStringValue === null
-                ? "Enter new value (not set in this scope)"
-                : "Enter new value (empty to clear)";
+              const prefill = secretInfo ? secretInfo.prefill : current;
+              const hint = secretInfo ? secretInfo.hint : "Enter new value (empty to clear)";
               return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
-                // For secrets not in this scope, treat empty submit as "no change"
-                if (isSecret && isSecretNoChange(val, scopeStringValue !== null)) {
-                  done(undefined); // cancel — don't persist empty string
+                if (isSecret && secretInfo && isSecretNoChange(val, secretInfo.scopeValue !== null)) {
+                  done(undefined);
                   return;
                 }
                 done(val);

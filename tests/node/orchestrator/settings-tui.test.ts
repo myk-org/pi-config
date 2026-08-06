@@ -13,6 +13,7 @@ import {
   CATEGORIES,
   registerSettingsTuiCommand,
   isSecretNoChange,
+  resolveSecretPrefill,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -586,5 +587,80 @@ describe("registerSettingsTuiCommand", () => {
       if (original !== undefined) process.env.PI_SUBAGENT_CHILD = original;
       else delete process.env.PI_SUBAGENT_CHILD;
     }
+  });
+});
+
+// ── resolveSecretPrefill (secret scope composition) ────────────────
+
+describe("resolveSecretPrefill", () => {
+  let tempDir: string;
+  let globalDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "settings-secret-prefill-"));
+    mkdirSync(join(tempDir, ".git"), { recursive: true });
+    mkdirSync(join(tempDir, ".pi"), { recursive: true });
+    globalDir = mkdtempSync(join(tmpdir(), "settings-secret-prefill-global-"));
+    setGlobalSettingsPath(join(globalDir, "pi-config-settings.json"));
+    clearSettingsCache();
+  });
+
+  afterEach(() => {
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(tempDir, { recursive: true, force: true });
+    rmSync(globalDir, { recursive: true, force: true });
+  });
+
+  it("returns scope value when secret exists in project scope", () => {
+    writeFileSync(join(tempDir, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "project-token" }));
+    const result = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    assert.equal(result.scopeValue, "project-token");
+    assert.equal(result.prefill, "project-token");
+    assert.equal(result.hint, "Enter new value (empty to clear)");
+  });
+
+  it("returns null scope value when secret not in project scope", () => {
+    // Secret not set in project file
+    const result = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    assert.equal(result.scopeValue, null);
+    assert.equal(result.prefill, "");
+    assert.ok(result.hint.includes("not set in this scope"));
+  });
+
+  it("does not leak global secret into project scope prefill", () => {
+    // Secret set in global, NOT in project
+    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "global-token" }));
+    const result = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    assert.equal(result.scopeValue, null, "should not see global token in project scope");
+    assert.equal(result.prefill, "");
+  });
+
+  it("returns global scope value when editing global scope", () => {
+    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "global-token" }));
+    const result = resolveSecretPrefill("coms_net_auth_token", "global", tempDir);
+    assert.equal(result.scopeValue, "global-token");
+    assert.equal(result.prefill, "global-token");
+  });
+
+  it("end-to-end: secret not in scope + empty submit = no change", () => {
+    // Compose resolveSecretPrefill + isSecretNoChange like buildSettingItems does
+    const info = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    assert.equal(info.scopeValue, null);
+    // Empty submit should be treated as no-change
+    assert.equal(isSecretNoChange("", info.scopeValue !== null), true);
+    assert.equal(isSecretNoChange(undefined, info.scopeValue !== null), true);
+    assert.equal(isSecretNoChange("(empty)", info.scopeValue !== null), true);
+    // Real input should be a change
+    assert.equal(isSecretNoChange("new-token", info.scopeValue !== null), false);
+  });
+
+  it("end-to-end: secret in scope + empty submit = allowed change", () => {
+    writeFileSync(join(tempDir, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "existing" }));
+    const info = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    assert.equal(info.scopeValue, "existing");
+    // Empty submit when scope HAS value = user wants to clear
+    assert.equal(isSecretNoChange("", info.scopeValue !== null), false);
+    assert.equal(isSecretNoChange(undefined, info.scopeValue !== null), false);
   });
 });
