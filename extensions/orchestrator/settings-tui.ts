@@ -38,6 +38,7 @@ import {
   isSecretNoChange,
   resolveSecretPrefill,
   sourceGlyph,
+  filterModelsByProvider,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -67,6 +68,7 @@ export {
   isSecretNoChange,
   resolveSecretPrefill,
   sourceGlyph,
+  filterModelsByProvider,
 } from "./settings-tui-helpers.js";
 
 // ── Provider/Model data helpers ─────────────────────────────────────
@@ -171,7 +173,12 @@ export function buildCategoryItems(
       };
     } else if (isModelKey && pmInfo.models.length > 0) {
       item.submenu = (_current: string, done: (val?: string) => void): Component => {
-        return new PickerSubmenu(`Select model for ${key}`, pmInfo.models, theme, done);
+        // Filter models by the paired provider setting
+        const pairedProvider = key === "agent_model"
+          ? getSetting(cwd, "agent_provider")
+          : getSetting(cwd, "internal_operations_provider");
+        const filteredModels = filterModelsByProvider(pmInfo.models, pairedProvider || undefined);
+        return new PickerSubmenu(`Select model for ${key}`, filteredModels.length > 0 ? filteredModels : pmInfo.models, theme, done);
       };
     } else {
       switch (def.type) {

@@ -280,6 +280,17 @@ export function resolveSecretPrefill(
   return { scopeValue, prefill, hint };
 }
 
+// ── Provider-filtered model items ───────────────────────────────
+
+/** Filter model SelectItems by provider. Returns all models if provider is empty/undefined. */
+export function filterModelsByProvider(
+  allModels: Array<{ value: string; label: string; description?: string }>,
+  provider?: string,
+): Array<{ value: string; label: string; description?: string }> {
+  if (!provider) return allModels;
+  return allModels.filter((m) => m.description === provider);
+}
+
 // ── Source glyph (colored) ──────────────────────────────────────
 
 export function sourceGlyph(source: string, theme: { fg: (color: string, text: string) => string }): string {

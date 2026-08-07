@@ -453,7 +453,15 @@ export class AgentOverridesSubmenu implements Component {
       }
       if (matchesKey(data, Key.enter)) {
         const field = this.editFieldIndex === 0 ? "provider" : "model";
-        const items = this.editFieldIndex === 0 ? this.providerItems : this.modelItems;
+        let items = this.editFieldIndex === 0 ? this.providerItems : this.modelItems;
+        // When editing model, filter by agent's provider override if set
+        if (this.editFieldIndex === 1) {
+          const agentProvider = this.overrides[this.editingAgent]?.provider;
+          if (agentProvider && typeof agentProvider === "string") {
+            const filtered = this.modelItems.filter((m) => m.description === agentProvider);
+            if (filtered.length > 0) items = filtered;
+          }
+        }
         if (items.length > 0) {
           // Use fuzzy picker for provider/model
           this.pickerSubmenu = new PickerSubmenu(
