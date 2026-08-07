@@ -283,16 +283,21 @@ export function registerAsyncAgents(
             const displayName = job.name || job.agent;
             const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
             const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
-            const output = (job.output || "").slice(0, 3000);
-            // Auto-complete linked task
+            // Auto-complete linked task (with logging, matching processResultFile behavior)
             let autoCompleteError = "";
             if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
               try {
-                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId).catch(() => {});
+                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId)
+                  .then((completed) => asyncLog(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
+                  .catch((e: any) => asyncLog(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
               } catch (e: any) {
                 autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
+                asyncLog(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`);
               }
             }
+            // Enforce same output-length budget as processResultFile
+            const maxOutput = 3000 - autoCompleteError.length;
+            const output = (job.output || "").slice(0, Math.max(maxOutput, 500));
             // Emit lifecycle events
             if (job.status === "complete") {
               pi.events.emit("subagents:completed", { id: job.id, result: job.output || "" });

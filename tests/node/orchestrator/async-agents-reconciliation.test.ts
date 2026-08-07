@@ -306,74 +306,97 @@ describe("async-agents reconciliation (issue #734)", () => {
   });
 
   describe("end-to-end reconciliation scenario", () => {
-    it("simulates the bug: complete job with failed delivery gets reconciled", () => {
+    it("stuck grouped job is targeted by reconciliation", () => {
+      const groupId = "review-batch-1";
+      const stuckJob = makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId, delivered: false, sideEffectsApplied: false });
+      assert.equal(needsReconciliation(stuckJob), true);
+    });
+
+    it("stuck grouped job needs side-effects retry", () => {
+      const stuckJob = makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId: "grp", delivered: false, sideEffectsApplied: false });
+      assert.equal(needsSideEffects(stuckJob), true);
+    });
+
+    it("stuck grouped job triggers group delivery when all members done", () => {
       const groupId = "review-batch-1";
       const jobs = [
         makeJob({ id: "r-sec", agent: "code-reviewer-security", groupId, delivered: true, sideEffectsApplied: true }),
-        makeJob({ id: "r-qual", agent: "code-reviewer-quality", groupId, delivered: true, sideEffectsApplied: true }),
-        makeJob({ id: "r-guide", agent: "code-reviewer-guidelines", groupId, delivered: true, sideEffectsApplied: true }),
-        makeJob({ id: "r-safe", agent: "code-reviewer-security", groupId, delivered: true, sideEffectsApplied: true }),
         makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId, delivered: false, sideEffectsApplied: false }),
-        makeJob({ id: "t-auto", agent: "test-automator", groupId, delivered: true, sideEffectsApplied: true }),
       ];
-
-      const stuckJob = jobs[4];
-      assert.equal(needsReconciliation(stuckJob), true, "stuck job needs reconciliation");
-      assert.equal(needsSideEffects(stuckJob), true, "stuck job needs side-effects");
-      assert.equal(groupReadyForDelivery(stuckJob, jobs), true, "group is fully done");
-
-      stuckJob.sideEffectsApplied = true;
-      assert.equal(needsSideEffects(stuckJob), false, "side-effects should not retry again");
-
-      stuckJob.delivered = true;
-      assert.equal(needsReconciliation(stuckJob), false, "no longer needs reconciliation");
-      assert.equal(shouldCleanup(stuckJob, Date.now() + 31000), true, "can now be cleaned up");
+      assert.equal(groupReadyForDelivery(jobs[1], jobs), true);
     });
 
-    it("non-grouped zombie-ingested job gets delivery retried", () => {
+    it("stuck job stops needing side-effects after they succeed", () => {
+      const job = makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId: "grp", delivered: false, sideEffectsApplied: false });
+      job.sideEffectsApplied = true;
+      assert.equal(needsSideEffects(job), false);
+    });
+
+    it("stuck job exits reconciliation after delivery", () => {
+      const job = makeJob({ id: "r-docs", agent: "code-reviewer-docs", groupId: "grp", delivered: false });
+      job.delivered = true;
+      assert.equal(needsReconciliation(job), false);
+    });
+
+    it("delivered job can be cleaned up after 30s", () => {
+      const job = makeJob({ id: "r-docs", agent: "code-reviewer-docs", delivered: true, updatedAt: Date.now() - 60000 });
+      assert.equal(shouldCleanup(job, Date.now()), true);
+    });
+
+    it("non-grouped zombie-ingested job is targeted by reconciliation", () => {
       const job = makeJob({ id: "zombie-1", agent: "worker", output: "done" });
       assert.equal(needsReconciliation(job), true);
-      assert.equal(nonGroupNeedsDelivery(job), true, "non-group delivery retry should trigger");
-      assert.equal(shouldCleanup(job, Date.now() + 60000), false, "must not clean up before delivery");
-
-      job.delivered = true;
-      assert.equal(shouldCleanup(job, Date.now() + 60000), true, "can clean up after delivery");
     });
 
-    it("side-effect failure allows retry on next poll cycle", () => {
-      const job = makeJob({ id: "retry-1", agent: "code-reviewer-docs" });
+    it("non-grouped zombie-ingested job triggers non-group delivery retry", () => {
+      const job = makeJob({ id: "zombie-1", agent: "worker", output: "done" });
+      assert.equal(nonGroupNeedsDelivery(job), true);
+    });
 
-      // Cycle 1: side-effect fails (simulates sideEffectsOk pattern)
+    it("non-grouped undelivered job is not cleaned up", () => {
+      const job = makeJob({ id: "zombie-1", agent: "worker", output: "done", updatedAt: Date.now() - 60000 });
+      assert.equal(shouldCleanup(job, Date.now()), false);
+    });
+
+    it("non-grouped job can be cleaned up after delivery", () => {
+      const job = makeJob({ id: "zombie-1", agent: "worker", delivered: true, updatedAt: Date.now() - 60000 });
+      assert.equal(shouldCleanup(job, Date.now()), true);
+    });
+
+    it("side-effect failure keeps sideEffectsApplied unset", () => {
+      const job = makeJob({ id: "retry-1", agent: "code-reviewer-docs" });
       let ok = true;
       try { throw new Error("transient lock failure"); } catch { ok = false; }
       if (ok) job.sideEffectsApplied = true;
-      assert.equal(job.sideEffectsApplied, undefined, "should remain unset after failure");
-      assert.equal(needsSideEffects(job), true, "should retry on next poll");
-
-      // Cycle 2: side-effect succeeds
-      ok = true;
-      if (ok) job.sideEffectsApplied = true;
-      assert.equal(job.sideEffectsApplied, true, "should be set after success");
-      assert.equal(needsSideEffects(job), false, "should NOT retry again");
+      assert.equal(job.sideEffectsApplied, undefined);
     });
 
-    it("group per-job sideEffectsApplied tracking (production pattern)", () => {
-      const jobs = [
-        makeJob({ id: "g-ok", agent: "code-reviewer-security", groupId: "grp-1" }),
-        makeJob({ id: "g-fail", agent: "code-reviewer-docs", groupId: "grp-1" }),
-      ];
+    it("side-effect failure allows retry on next poll", () => {
+      const job = makeJob({ id: "retry-1", agent: "code-reviewer-docs" });
+      // Simulate failed side-effect — sideEffectsApplied stays unset
+      assert.equal(needsSideEffects(job), true);
+    });
 
-      // Simulate deliverGroupResults: first job succeeds, second fails
-      // (mirrors production: catch sets j.sideEffectsApplied = false)
-      jobs[1].sideEffectsApplied = false;
+    it("side-effect success sets sideEffectsApplied and stops retries", () => {
+      const job = makeJob({ id: "retry-1", agent: "code-reviewer-docs" });
+      let ok = true;
+      if (ok) job.sideEffectsApplied = true;
+      assert.equal(job.sideEffectsApplied, true);
+      assert.equal(needsSideEffects(job), false);
+    });
 
-      // Post-loop: mark non-failed jobs (mirrors production line 393)
-      for (const j of jobs) {
-        if (j.sideEffectsApplied !== false) j.sideEffectsApplied = true;
-      }
+    it("group: successful job gets sideEffectsApplied marked true", () => {
+      const job = makeJob({ id: "g-ok", agent: "code-reviewer-security", groupId: "grp-1" });
+      // Post-loop: mark non-failed jobs (mirrors production)
+      if (job.sideEffectsApplied !== false) job.sideEffectsApplied = true;
+      assert.equal(job.sideEffectsApplied, true);
+    });
 
-      assert.equal(jobs[0].sideEffectsApplied, true, "successful job marked applied");
-      assert.equal(jobs[1].sideEffectsApplied, false, "failed job stays false for retry");
+    it("group: failed side-effect job stays false for retry", () => {
+      const job = makeJob({ id: "g-fail", agent: "code-reviewer-docs", groupId: "grp-1" });
+      job.sideEffectsApplied = false; // simulate catch in deliverGroupResults
+      if (job.sideEffectsApplied !== false) job.sideEffectsApplied = true;
+      assert.equal(job.sideEffectsApplied, false);
     });
   });
 });
