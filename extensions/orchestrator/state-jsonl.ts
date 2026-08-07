@@ -141,6 +141,8 @@ export class JsonlStateStore<T> {
 
 /** Global store cache — keyed by directory path. */
 const storeCache = new Map<string, JsonlStateStore<any>>();
+/** Track stores where migration failed — prevents infinite retry per-process. */
+const migrationFailed = new Set<string>();
 
 /**
  * Create a cached JsonlStateStore with automatic legacy JSON migration.
@@ -164,7 +166,7 @@ export function createCachedStore<T>(
   // Without this, callers fall back to defaults which can be unsafe
   // (e.g., review state defaults to "none" → isReviewClean returns true).
   // Check exists() first to avoid expensive read/parse when JSONL is healthy.
-  if (!store.exists() || store.read() === null) {
+  if (!migrationFailed.has(cacheKey) && (!store.exists() || store.read() === null)) {
     const legacyPath = join(dir, legacyFilename);
     if (existsSync(legacyPath)) {
       try {
@@ -172,7 +174,10 @@ export function createCachedStore<T>(
         store.write(raw);
         unlinkSync(legacyPath);
       } catch {
-        // migration failed — legacy file remains, will retry next access
+        // Migration failed (corrupt/unreadable legacy file) — stop retrying this process.
+        // Silent: extensions must not use console.* per AGENTS.md policy.
+        // The legacy file remains on disk for manual inspection or next process restart.
+        migrationFailed.add(cacheKey);
       }
     }
   }
@@ -283,7 +288,7 @@ export class JsonlAppendLog<T extends object> {
    *  Uses cross-process lock to prevent seq duplicates and protect truncation. */
   append(data: T): void {
     ensureDir(this.filePath);
-    withFileLock(this.filePath, () => {
+    const locked = withFileLock(this.filePath, () => {
       this.seq++;
       const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
       appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
@@ -291,6 +296,13 @@ export class JsonlAppendLog<T extends object> {
       // Size-based truncation inside lock to prevent overwriting concurrent appends
       this.truncateIfNeeded();
     });
+    if (!locked) {
+      // Lock failed — append-only without truncation to prevent event loss.
+      // seq may duplicate with concurrent writers, but event data is preserved.
+      this.seq++;
+      const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
+      appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+    }
   }
 
   /** Read all valid log entries. Returns empty array if file doesn't exist. */
@@ -339,7 +351,8 @@ export class JsonlAppendLog<T extends object> {
       writeFileSync(tmp, kept.join("\n") + "\n");
       renameSync(tmp, this.filePath);
     } catch {
-      // Truncation failure is non-fatal
+      // Truncation failure is non-fatal — log file retains extra entries until next success.
+      // Silent: extensions must not use console.* per AGENTS.md policy.
     }
   }
 }
