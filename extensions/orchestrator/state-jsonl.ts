@@ -304,7 +304,8 @@ export class JsonlAppendLog<T extends object> {
       // An unlocked append can race with truncateIfNeeded's read+rename in another
       // process, causing the append to be silently lost anyway. Dropping one event
       // under extreme lock contention is acceptable for best-effort telemetry.
-      // The lock failure itself indicates heavy contention (50 retries exhausted).
+      // Lock uses immediate retries with no backoff — failure can occur even with
+      // brief contention, not just sustained overload.
     }
   }
 
