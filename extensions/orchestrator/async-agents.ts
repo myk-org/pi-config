@@ -419,6 +419,7 @@ export function registerAsyncAgents(
     }
 
     const sections: string[] = [];
+    const deliverableJobs: AsyncJob[] = [];
     for (const j of groupJobs) {
       if (j.fireAndForget) { j.delivered = true; continue; }
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
@@ -437,19 +438,29 @@ export function registerAsyncAgents(
       }
       const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
       sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
-      j.delivered = true;
+      deliverableJobs.push(j);
     }
 
     if (sections.length > 0) {
-      pi.sendMessage({
-        customType: "async-agent-result",
-        content: sections.join("\n\n---\n\n"),
-        display: true,
-      }, { triggerTurn: true, deliverAs: "followUp" });
+      try {
+        pi.sendMessage({
+          customType: "async-agent-result",
+          content: sections.join("\n\n---\n\n"),
+          display: true,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+        // Only mark delivered AFTER sendMessage succeeds
+        for (const j of deliverableJobs) j.delivered = true;
+      } catch (e: any) {
+        asyncLog(`deliverGroupResults: sendMessage failed: ${e?.message}`);
+        // delivered stays false — reconciliation will retry on next poll
+      }
+    } else {
+      // No sections to deliver (all fire-and-forget) — already marked above
     }
 
-    // Clean up result files for group members now that delivery succeeded
+    // Clean up result files only for delivered group members
     for (const j of groupJobs) {
+      if (!j.delivered) continue;
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
     }
@@ -565,6 +576,7 @@ export function registerAsyncAgents(
       }
 
       // Non-grouped job: deliver immediately (existing behavior)
+      let sendSucceeded = false;
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         let autoCompleteError = "";
@@ -580,18 +592,26 @@ export function registerAsyncAgents(
         }
         const maxOutput = 3000 - autoCompleteError.length;
         const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
-        pi.sendMessage({
-          customType: "async-agent-result",
-          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
-          display: true,
-        }, { triggerTurn: true, deliverAs: "followUp" });
+        try {
+          pi.sendMessage({
+            customType: "async-agent-result",
+            content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+          sendSucceeded = true;
+        } catch (e: any) {
+          asyncLog(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
+          // sendSucceeded stays false — delivered won't be set, reconciliation retries
+        }
+      } else if (job.fireAndForget) {
+        sendSucceeded = true; // fire-and-forget doesn't need sendMessage
       }
 
       // Invoke onComplete callback if registered (e.g., dreaming → rebuildAndOrganize)
       if (job.onComplete) {
         try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
       }
-      job.delivered = true;
+      if (sendSucceeded) job.delivered = true;
       // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
     } catch (e: any) {
