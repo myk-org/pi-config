@@ -204,24 +204,26 @@ export function registerAsyncAgents(
                   job.exitCode = data.exitCode;
                   job.durationMs = data.durationMs;
                   job.updatedAt = Date.now();
+                  let zombieSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (job.agent === "test-automator" || job.agent === "test-runner") {
-                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { asyncLog(`markTests failed for ${job.agent}: ${e?.message}`); }
+                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { zombieSideEffectsOk = false; asyncLog(`markTests failed for ${job.agent}: ${e?.message}`); }
                   }
-                  job.sideEffectsApplied = true;
+                  if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
                 } catch {
                   job.status = "failed";
                   job.output = "Process exited before result could be read";
                   job.durationMs = Date.now() - job.startedAt;
                   job.updatedAt = Date.now();
+                  let catchSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { catchSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
-                  job.sideEffectsApplied = true;
+                  if (catchSideEffectsOk) job.sideEffectsApplied = true;
                 }
               } else {
                 job.status = "failed";
@@ -229,10 +231,11 @@ export function registerAsyncAgents(
                 job.durationMs = Date.now() - job.startedAt;
                 job.updatedAt = Date.now();
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
+                let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { noFileSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
-                job.sideEffectsApplied = true;
+                if (noFileSideEffectsOk) job.sideEffectsApplied = true;
               }
               // Check if this completes a group — deliver remaining siblings' results
               if (job.groupId) {
@@ -256,16 +259,17 @@ export function registerAsyncAgents(
       // Reconciliation pass — retry side-effects + delivery for done-but-undelivered jobs
       for (const [id, job] of asyncState.jobs.entries()) {
         if ((job.status === "complete" || job.status === "failed") && !job.delivered) {
-          // Side-effects: ensure they fired
+          // Side-effects: ensure they fired (only mark applied when ALL succeed)
           if (!job.sideEffectsApplied) {
+            let sideEffectsOk = true;
             if (job.agent.startsWith("code-reviewer-")) {
               const findings = countFindings(typeof job.output === "string" ? job.output : "");
-              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { asyncLog(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; asyncLog(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
             }
             if (job.agent === "test-automator" || job.agent === "test-runner") {
-              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { asyncLog(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
+              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { sideEffectsOk = false; asyncLog(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
             }
-            job.sideEffectsApplied = true;
+            if (sideEffectsOk) job.sideEffectsApplied = true;
           }
           // Delivery: retry for groups where all members are done
           if (job.groupId) {
@@ -274,6 +278,41 @@ export function registerAsyncAgents(
             if (pending.length === 0) {
               deliverGroupResults(groupJobs);
             }
+          // Delivery: retry for non-grouped jobs (zombie-ingest path may skip delivery)
+          } else if (asyncState.lastCtx && !job.fireAndForget) {
+            const displayName = job.name || job.agent;
+            const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
+            const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
+            const output = (job.output || "").slice(0, 3000);
+            // Auto-complete linked task
+            let autoCompleteError = "";
+            if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
+              try {
+                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId).catch(() => {});
+              } catch (e: any) {
+                autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
+              }
+            }
+            // Emit lifecycle events
+            if (job.status === "complete") {
+              pi.events.emit("subagents:completed", { id: job.id, result: job.output || "" });
+            } else {
+              pi.events.emit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
+            }
+            pi.sendMessage({
+              customType: "async-agent-result",
+              content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            if (job.onComplete) {
+              try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+            }
+            job.delivered = true;
+          } else if (job.fireAndForget) {
+            if (job.onComplete) {
+              try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+            }
+            job.delivered = true;
           }
         }
       }
@@ -334,7 +373,7 @@ export function registerAsyncAgents(
         const findings = countFindings(output);
         // -1 means invalid JSON output — treat conservatively as having findings
         recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
-      } catch (e: any) { asyncLog(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); }
+      } catch (e: any) { j.sideEffectsApplied = false; asyncLog(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); continue; }
     }
 
     // Track test agent completions for grouped test-automator/test-runner
@@ -346,11 +385,13 @@ export function registerAsyncAgents(
         } else if (j.status === "failed") {
           markTestsFailed(jobCwd(j));
         }
-      } catch (e: any) { asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); }
+      } catch (e: any) { j.sideEffectsApplied = false; asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); continue; }
     }
 
-    // Mark side-effects applied for all group members
-    for (const j of groupJobs) j.sideEffectsApplied = true;
+    // Mark side-effects applied per-job (only if not already marked false by a failed side-effect above)
+    for (const j of groupJobs) {
+      if (j.sideEffectsApplied !== false) j.sideEffectsApplied = true;
+    }
 
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
@@ -447,13 +488,14 @@ export function registerAsyncAgents(
       terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
 
       // Track reviewer completion for review loop enforcement
+      let processResultSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
         try {
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
           const findings = countFindings(output);
           // -1 means invalid JSON output — treat conservatively as having findings
           recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
-        } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
         // If agent uses a custom model, we pass its context window via the config.
@@ -489,10 +531,10 @@ export function registerAsyncAgents(
           } else {
             markTestsFailed(jobCwd(job));
           }
-        } catch (e: any) { console.debug(`[async-agents] markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; console.debug(`[async-agents] markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
 
-      job.sideEffectsApplied = true;
+      if (processResultSideEffectsOk) job.sideEffectsApplied = true;
 
       // Clean up result file — for grouped jobs, defer to deliverGroupResults
       if (!job.groupId) {
@@ -979,10 +1021,11 @@ export function registerAsyncAgents(
       job.status = "failed";
       job.updatedAt = Date.now();
       // Record killed reviewer as having 0 findings — prevents permanent commit block
+      let killSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
-      job.sideEffectsApplied = true;
+      if (killSideEffectsOk) job.sideEffectsApplied = true;
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
