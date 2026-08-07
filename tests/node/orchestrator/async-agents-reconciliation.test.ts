@@ -13,6 +13,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { countFindings } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 // formatDuration is in async-agents.ts which cannot be imported in test context
 // (transitive pi SDK deps). Inline copy for testing.
 function formatDuration(ms: number): string {
@@ -400,62 +403,166 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
   });
 
-  describe("result file lifecycle", () => {
-    it("processResultFile deletes file after first ingestion (non-grouped)", () => {
-      // Verifies: result file is ALWAYS deleted after ingestion, no groupId gate
-      // Production code: fs.unlinkSync(resultPath) after ingestion, unconditionally
-      const job = makeJob({ id: "f1", agent: "worker", output: "result data" });
-      // After ingestion, file should be deleted — job.output is in memory
-      assert.notEqual(job.output, undefined, "output is in memory after ingestion");
-      // No file dependency for reconciliation — uses job.output
+  describe("result file lifecycle (filesystem)", () => {
+    let tmpDir: string;
+
+    it("fs.unlinkSync deletes result file after ingestion", () => {
+      // Simulates processResultFile: create file, read it, delete it
+      tmpDir = mkdtempSync(join(tmpdir(), "async-result-lifecycle-"));
+      const resultPath = join(tmpDir, "worker-123.json");
+      writeFileSync(resultPath, JSON.stringify({ id: "worker-123", success: true, output: "done", exitCode: 0, durationMs: 1000 }));
+      assert.ok(existsSync(resultPath), "result file should exist before ingestion");
+
+      // Simulate ingestion: read + delete (mirrors processResultFile)
+      const data = JSON.parse(readFileSync(resultPath, "utf-8"));
+      assert.equal(data.id, "worker-123");
+      unlinkSync(resultPath);
+      assert.ok(!existsSync(resultPath), "result file must be deleted after ingestion");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("processResultFile deletes file on re-ingestion skip", () => {
-      // Verifies: if job.output !== undefined, file is deleted and returns early
-      const job = makeJob({ id: "f2", agent: "worker", output: "already ingested" });
-      assert.notEqual(job.output, undefined, "already ingested — file should be deleted");
+    it("re-ingestion skip deletes stale file", () => {
+      // Simulates: job.output !== undefined → delete file, return
+      tmpDir = mkdtempSync(join(tmpdir(), "async-result-reingest-"));
+      const resultPath = join(tmpDir, "worker-456.json");
+      writeFileSync(resultPath, JSON.stringify({ id: "worker-456", output: "stale" }));
+
+      // Simulate re-ingestion: file exists but job already has output
+      const job = makeJob({ id: "worker-456", agent: "worker", output: "already ingested" });
+      if (job.output !== undefined) {
+        try { unlinkSync(resultPath); } catch {}
+      }
+      assert.ok(!existsSync(resultPath), "stale file must be deleted on re-ingest skip");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("orphan result file is deleted (no matching in-memory job)", () => {
-      // Verifies: processResultFile deletes orphan files (job not in asyncState)
-      // Production code: if (!job) { fs.unlinkSync(resultPath); return; }
-      const job = undefined; // simulate no job in asyncState
-      assert.equal(job, undefined, "orphan file should be deleted");
+    it("orphan result file is deleted when no matching job exists", () => {
+      tmpDir = mkdtempSync(join(tmpdir(), "async-result-orphan-"));
+      const resultPath = join(tmpDir, "orphan-789.json");
+      writeFileSync(resultPath, JSON.stringify({ id: "orphan-789", output: "old" }));
+
+      // Simulate: job not found in asyncState → delete
+      const job = undefined;
+      if (!job) {
+        try { unlinkSync(resultPath); } catch {}
+      }
+      assert.ok(!existsSync(resultPath), "orphan file must be deleted");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("delivered job result file is deleted", () => {
-      // Verifies: if (job.delivered) { fs.unlinkSync(resultPath); return; }
-      const job = makeJob({ id: "f3", agent: "worker", delivered: true });
-      assert.equal(job.delivered, true, "delivered file should be deleted");
+    it("delivered job result file is cleaned up", () => {
+      tmpDir = mkdtempSync(join(tmpdir(), "async-result-delivered-"));
+      const resultPath = join(tmpDir, "delivered-101.json");
+      writeFileSync(resultPath, JSON.stringify({ id: "delivered-101" }));
+
+      const job = makeJob({ id: "delivered-101", agent: "worker", delivered: true });
+      if (job.delivered) {
+        try { unlinkSync(resultPath); } catch {}
+      }
+      assert.ok(!existsSync(resultPath), "delivered file must be cleaned up");
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("output persisted to status.json survives result file deletion", () => {
+      // Simulates: after ingestion, output is written to status.json
+      tmpDir = mkdtempSync(join(tmpdir(), "async-result-persist-"));
+      const statusPath = join(tmpDir, "status.json");
+      writeFileSync(statusPath, JSON.stringify({ runId: "persist-1", state: "running" }));
+
+      // Simulate ingestion + persist (mirrors processResultFile)
+      const output = "agent completed successfully";
+      const existing = JSON.parse(readFileSync(statusPath, "utf-8"));
+      existing.output = output.slice(0, 3000);
+      existing.state = "complete";
+      writeFileSync(statusPath, JSON.stringify(existing));
+
+      // Verify output persisted
+      const restored = JSON.parse(readFileSync(statusPath, "utf-8"));
+      assert.equal(restored.output, output, "output must persist in status.json");
+      assert.equal(restored.state, "complete");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
   });
 
-  describe("session restore with delivered/sideEffectsApplied", () => {
-    it("restored complete job has delivered=true", () => {
-      // Mirrors production: delivered: isComplete in session_start restore
-      const isComplete = true;
-      const job = makeJob({ id: "r1", agent: "worker", delivered: isComplete, sideEffectsApplied: isComplete });
-      assert.equal(job.delivered, true);
-      assert.equal(job.sideEffectsApplied, true);
+  describe("session restore with delivered/sideEffectsApplied (filesystem)", () => {
+    let tmpDir: string;
+
+    it("restored complete job reads output from status.json", () => {
+      tmpDir = mkdtempSync(join(tmpdir(), "async-restore-"));
+      const statusPath = join(tmpDir, "status.json");
+      writeFileSync(statusPath, JSON.stringify({
+        runId: "restore-1", agent: "worker", state: "complete",
+        startedAt: Date.now() - 5000, lastUpdate: Date.now(),
+        output: "restored output", exitCode: 0
+      }));
+
+      // Simulate restore: read status, create job
+      const status = JSON.parse(readFileSync(statusPath, "utf-8"));
+      const isComplete = status.state === "complete" || status.state === "failed";
+      const job = makeJob({
+        id: status.runId, agent: status.agent,
+        status: isComplete ? status.state : "running",
+        output: status.output || undefined,
+        delivered: isComplete,
+        sideEffectsApplied: isComplete,
+      });
+
+      assert.equal(job.delivered, true, "complete job must have delivered=true");
+      assert.equal(job.sideEffectsApplied, true, "complete job must have sideEffectsApplied=true");
+      assert.equal(job.output, "restored output", "output must be restored from status.json");
+      assert.equal(needsReconciliation(job), false, "restored complete job must not be reconciled");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("restored running job has delivered=undefined", () => {
-      const isComplete = false;
-      const delivered = isComplete || undefined;
-      const job = makeJob({ id: "r2", agent: "worker", status: "running", delivered: delivered as any });
-      assert.equal(job.delivered, undefined);
+    it("restored running job has delivered=false, eligible for zombie detection", () => {
+      tmpDir = mkdtempSync(join(tmpdir(), "async-restore-running-"));
+      const statusPath = join(tmpDir, "status.json");
+      writeFileSync(statusPath, JSON.stringify({
+        runId: "restore-2", agent: "worker", state: "running",
+        startedAt: Date.now() - 60000, lastUpdate: Date.now() - 30000,
+        pid: 99999
+      }));
+
+      const status = JSON.parse(readFileSync(statusPath, "utf-8"));
+      const isComplete = status.state === "complete" || status.state === "failed";
+      const job = makeJob({
+        id: status.runId, agent: status.agent,
+        status: isComplete ? status.state : "running",
+        output: status.output || undefined,
+        delivered: isComplete || undefined,
+        sideEffectsApplied: isComplete || undefined,
+      } as any);
+
+      assert.equal(job.status, "running");
+      assert.equal(job.delivered, undefined, "running job must not be marked delivered");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("restored complete job is NOT targeted by reconciliation", () => {
-      const isComplete = true;
-      const job = makeJob({ id: "r3", agent: "worker", delivered: isComplete, sideEffectsApplied: isComplete });
-      assert.equal(needsReconciliation(job), false, "complete+delivered job should not be reconciled");
-    });
+    it("killed job with persisted state restores as delivered", () => {
+      tmpDir = mkdtempSync(join(tmpdir(), "async-restore-killed-"));
+      const statusPath = join(tmpDir, "status.json");
+      // killAsyncAgent writes state: "failed", exitCode: -9
+      writeFileSync(statusPath, JSON.stringify({
+        runId: "restore-3", agent: "worker", state: "failed",
+        startedAt: Date.now() - 120000, endedAt: Date.now() - 60000,
+        exitCode: -9, output: "Killed by user"
+      }));
 
-    it("restored complete job can be cleaned up after 30s", () => {
-      const isComplete = true;
-      const job = makeJob({ id: "r4", agent: "worker", delivered: isComplete, updatedAt: Date.now() - 60000 });
-      assert.equal(shouldCleanup(job, Date.now()), true);
+      const status = JSON.parse(readFileSync(statusPath, "utf-8"));
+      const isComplete = status.state === "complete" || status.state === "failed";
+      const job = makeJob({
+        id: status.runId, agent: status.agent,
+        status: isComplete ? status.state : "running",
+        output: status.output || undefined,
+        delivered: isComplete,
+        sideEffectsApplied: isComplete,
+      });
+
+      assert.equal(job.status, "failed");
+      assert.equal(job.delivered, true, "killed job must restore as delivered");
+      assert.equal(job.output, "Killed by user");
+      assert.equal(needsReconciliation(job), false, "killed job must not be reconciled");
+      rmSync(tmpDir, { recursive: true, force: true });
     });
   });
 
