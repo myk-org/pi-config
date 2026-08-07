@@ -18,16 +18,14 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import {
   SETTINGS_KEYS,
   type SettingsKeyDef,
   getSetting,
   clearSettingsCache,
 } from "./project-settings.js";
-import { resolveRepoRoot } from "./utils.js";
+import { discoverAgents } from "./agents.js";
 import {
   CATEGORIES,
   detectSource,
@@ -109,21 +107,8 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
 // ── Available agent names (for agent_overrides) ─────────────────────
 
 function getAvailableAgentNames(cwd: string): string[] {
-  const root = resolveRepoRoot(cwd);
-  const dirs = [
-    join(root, "agents"),               // package/built-in agents
-    join(homedir(), ".pi", "agent", "agents"), // user-level agents
-    join(root, ".pi", "agents"),         // project-level agents
-  ];
-  const agents = new Set<string>();
-  for (const dir of dirs) {
-    try {
-      for (const f of readdirSync(dir)) {
-        if (f.endsWith(".md")) agents.add(f.replace(/\.md$/, ""));
-      }
-    } catch {}
-  }
-  return [...agents].sort();
+  const { agents } = discoverAgents(cwd, "both");
+  return agents.map((a) => a.name).sort();
 }
 
 // ── Known CLI/ACPX provider names (for acpx_agents / cli_agents) ──
