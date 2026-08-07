@@ -1068,6 +1068,8 @@ export function registerAsyncAgents(
         }
         // Only restore running/queued jobs with alive processes
         if (isAlive || status.state === "running") {
+          // No result file = already processed and delivered — mark as delivered
+          const hasResultFile = fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${id}.json`));
           const job: AsyncJob = {
             id,
             agent: status.agent || "unknown",
@@ -1079,8 +1081,8 @@ export function registerAsyncAgents(
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
             output: status.output || undefined,
-            delivered: isComplete,
-            sideEffectsApplied: isComplete,
+            delivered: isComplete || !hasResultFile,
+            sideEffectsApplied: isComplete || !hasResultFile,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,
