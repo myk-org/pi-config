@@ -173,11 +173,14 @@ export function createCachedStore<T>(
         const raw = JSON.parse(readFileSync(legacyPath, "utf-8")) as T;
         store.write(raw);
         unlinkSync(legacyPath);
-      } catch {
-        // Migration failed (corrupt/unreadable legacy file) — stop retrying this process.
+      } catch (err: unknown) {
+        // Only mark permanent failures (corrupt JSON) — transient I/O errors should retry.
+        // SyntaxError = JSON.parse failed on corrupt content → permanent, won't self-heal.
+        // Other errors (EACCES, ENOENT race, disk full) → transient, may succeed next call.
+        if (err instanceof SyntaxError) {
+          migrationFailed.add(cacheKey);
+        }
         // Silent: extensions must not use console.* per AGENTS.md policy.
-        // The legacy file remains on disk for manual inspection or next process restart.
-        migrationFailed.add(cacheKey);
       }
     }
   }
