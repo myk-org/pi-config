@@ -434,6 +434,14 @@ describe("readSettingsFile / writeSettingsFile", () => {
     const content = readFileSync(jsoncPath, "utf-8");
     assert.ok(!content.includes("// user comments"), "comments should be stripped");
   });
+
+  it("throws on write to invalid path", () => {
+    // writeSettingsFile wraps writeFileSync+renameSync in try/catch and re-throws
+    // The callers (saveChange/deleteFromScope) catch this and return false
+    assert.throws(() => {
+      writeSettingsFile("/nonexistent/deeply/nested/impossible/path/settings.json", { dco: true });
+    });
+  });
 });
 
 // ── getFilePathForScope ─────────────────────────────────────────────
