@@ -322,6 +322,8 @@ export class AgentOverridesSubmenu implements Component {
   private pickerSubmenu: PickerSubmenu | null;
   private providerItems: SelectItem[];
   private modelItems: SelectItem[];
+  private searchInput: Input;
+  private filteredAgents: string[];
 
   constructor(
     label: string,
@@ -345,6 +347,8 @@ export class AgentOverridesSubmenu implements Component {
     this.pickerSubmenu = null;
     this.providerItems = providerItems;
     this.modelItems = modelItems;
+    this.searchInput = new Input();
+    this.filteredAgents = availableAgents;
   }
 
   render(width: number): string[] {
@@ -354,8 +358,15 @@ export class AgentOverridesSubmenu implements Component {
     lines.push("");
 
     if (this.mode === "list") {
-      for (let i = 0; i < this.agentNames.length; i++) {
-        const agent = this.agentNames[i];
+      // Search input
+      const searchLines = this.searchInput.render(Math.max(10, width - 6));
+      for (const sl of searchLines) {
+        lines.push(truncateToWidth(`  ${t.fg("dim", "🔍")} ${sl}`, width));
+      }
+      lines.push("");
+
+      for (let i = 0; i < this.filteredAgents.length; i++) {
+        const agent = this.filteredAgents[i];
         const override = this.overrides[agent];
         const cursor = i === this.selectedIndex ? t.fg("accent", "❯") : " ";
         const name = i === this.selectedIndex ? t.fg("accent", agent) : t.fg("text", agent);
@@ -373,12 +384,12 @@ export class AgentOverridesSubmenu implements Component {
         lines.push(truncateToWidth(`  ${cursor} ${name}${t.fg("dim", ":")} ${info}`, width));
       }
 
-      if (this.agentNames.length === 0) {
-        lines.push(truncateToWidth(`  ${t.fg("dim", "(no agents found)")}`, width));
+      if (this.filteredAgents.length === 0) {
+        lines.push(truncateToWidth(`  ${t.fg("dim", this.agentNames.length === 0 ? "(no agents found)" : "(no matches)")}`, width));
       }
 
       lines.push("");
-      lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Enter edit agent · d delete override · Esc save & close")}`, width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", "Type to filter · ↑↓ navigate · Enter edit · d delete · Esc close")}`, width));
 
     } else if (this.mode === "edit-agent") {
       const agent = this.editingAgent;
@@ -499,13 +510,21 @@ export class AgentOverridesSubmenu implements Component {
       return;
     }
 
-    // list mode — Esc saves current state (including empty overrides)
+    // list mode
     if (matchesKey(data, Key.escape)) {
-      this.done(JSON.stringify(this.overrides));
+      if (this.searchInput.getValue()) {
+        // Clear search first
+        this.searchInput.setValue("");
+        this.filteredAgents = this.agentNames;
+        this.selectedIndex = 0;
+      } else {
+        // Save & close
+        this.done(JSON.stringify(this.overrides));
+      }
       return;
     }
     if (matchesKey(data, Key.enter)) {
-      const agent = this.agentNames[this.selectedIndex];
+      const agent = this.filteredAgents[this.selectedIndex];
       if (agent) {
         this.editingAgent = agent;
         this.editFieldIndex = 0;
@@ -513,18 +532,34 @@ export class AgentOverridesSubmenu implements Component {
       }
       return;
     }
-    if (matchesKey(data, Key.up) && this.selectedIndex > 0) {
-      this.selectedIndex--;
+    if (matchesKey(data, Key.up)) {
+      if (this.filteredAgents.length > 0) {
+        this.selectedIndex = this.selectedIndex === 0 ? this.filteredAgents.length - 1 : this.selectedIndex - 1;
+      }
       return;
     }
-    if (matchesKey(data, Key.down) && this.selectedIndex < this.agentNames.length - 1) {
-      this.selectedIndex++;
+    if (matchesKey(data, Key.down)) {
+      if (this.filteredAgents.length > 0) {
+        this.selectedIndex = this.selectedIndex === this.filteredAgents.length - 1 ? 0 : this.selectedIndex + 1;
+      }
       return;
     }
     if (data === "d") {
-      const agent = this.agentNames[this.selectedIndex];
+      const agent = this.filteredAgents[this.selectedIndex];
       if (agent) delete this.overrides[agent];
+      return;
     }
+    // All other keys go to search input
+    this.searchInput.handleInput(data);
+    const query = this.searchInput.getValue().trim();
+    if (!query) {
+      this.filteredAgents = this.agentNames;
+    } else {
+      this.filteredAgents = this.agentNames.filter((name) =>
+        name.toLowerCase().includes(query.toLowerCase()),
+      );
+    }
+    this.selectedIndex = 0;
   }
 
   private applyOverride(agent: string, field: "provider" | "model", val: string): void {
