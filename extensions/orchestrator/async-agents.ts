@@ -490,8 +490,11 @@ export function registerAsyncAgents(
         try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
         return;
       }
-      // Skip if already ingested (grouped jobs stay on disk until group delivers)
-      if (job.output !== undefined) return;
+      // Skip if already ingested — delete file to prevent re-scan every 3s
+      if (job.output !== undefined) {
+        try { fs.unlinkSync(resultPath); } catch {}
+        return;
+      }
 
       // Update job state immediately (before group check)
       job.status = data.success ? "complete" : "failed";
