@@ -450,10 +450,10 @@ class SettingsOverlay implements Component {
       return;
     }
 
-    // D-key delete: only when no search active and no submenu open
-    if (data === "d" || data === "D") {
+    // Delete key: remove setting from current scope (no conflict with search/typing)
+    if (matchesKey(data, Key.delete)) {
       const state = getSettingsListState(this.settingsList);
-      if (!state.hasActiveSearch && !state.hasActiveSubmenu) {
+      if (!state.hasActiveSubmenu) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
           const filePath = getFilePathForScope(this.editScope, this.cwd);
@@ -468,7 +468,6 @@ class SettingsOverlay implements Component {
           return;
         }
       }
-      // Fall through to SettingsList (search input consumes the keystroke)
     }
 
     // Forward all input to SettingsList (handles navigation, enter, space, escape, search)
@@ -530,7 +529,7 @@ class SettingsOverlay implements Component {
     const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
     lines.push(truncateToWidth(legend, width));
     lines.push(truncateToWidth(
-      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · D delete · Esc close`),
+      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · Del remove · Esc close`),
       width,
     ));
 
