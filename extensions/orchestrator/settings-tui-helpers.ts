@@ -13,6 +13,9 @@ import {
   getGlobalSettingsPath,
 } from "./project-settings.js";
 
+/** Sentinel value displayed for empty strings in the TUI. Centralized to prevent divergence. */
+export const EMPTY_VALUE_SENTINEL = "(empty)";
+
 const LOG_PREFIX = "[settings-tui]";
 const loggedErrors = new Set<string>();
 function logWarn(msg: string): void {
@@ -170,9 +173,9 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
     case "number":
       return String(value);
     case "string":
-      return value === "" ? "(empty)" : String(value);
+      return value === "" ? EMPTY_VALUE_SENTINEL : String(value);
     case "agent_list":
-      if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "(empty)";
+      if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : EMPTY_VALUE_SENTINEL;
       return String(value);
     case "agent_overrides":
       if (typeof value === "object" && value !== null) {
@@ -212,10 +215,10 @@ export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef
     }
 
     case "string":
-      return rawValue === "(empty)" ? "" : rawValue;
+      return rawValue === EMPTY_VALUE_SENTINEL ? "" : rawValue;
 
     case "agent_list":
-      if (!rawValue || rawValue === "(empty)") return [];
+      if (!rawValue || rawValue === EMPTY_VALUE_SENTINEL) return [];
       return rawValue.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
     default:
@@ -265,7 +268,7 @@ export function isSecretNoChange(val: string | undefined, scopeHasValue: boolean
   if (scopeHasValue) return false; // value exists in scope — user is editing, not creating
   // Treat undefined, empty, whitespace-only, and the literal "(empty)" as no-change.
   // "(empty)" is the display placeholder that parseRawValue converts to "".
-  return val === undefined || val?.trim() === "" || val?.trim() === "(empty)";
+  return val === undefined || val?.trim() === "" || val?.trim() === EMPTY_VALUE_SENTINEL;
 }
 
 /** Resolve the prefill value for a secret key from the current scope's file only. */

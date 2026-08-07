@@ -16,6 +16,7 @@ import {
   resolveSecretPrefill,
   sourceGlyph,
   filterModelsByProvider,
+  EMPTY_VALUE_SENTINEL,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -128,7 +129,7 @@ describe("formatValue", () => {
   });
 
   it("formats empty string as (empty)", () => {
-    assert.equal(formatValue("image_model", "", SETTINGS_KEYS.image_model), "(empty)");
+    assert.equal(formatValue("image_model", "", SETTINGS_KEYS.image_model), EMPTY_VALUE_SENTINEL);
   });
 
   it("formats non-empty string", () => {
@@ -140,7 +141,7 @@ describe("formatValue", () => {
   });
 
   it("formats empty agent_list", () => {
-    assert.equal(formatValue("acpx_agents", [], SETTINGS_KEYS.acpx_agents), "(empty)");
+    assert.equal(formatValue("acpx_agents", [], SETTINGS_KEYS.acpx_agents), EMPTY_VALUE_SENTINEL);
   });
 
   it("formats agent_overrides with entries", () => {
@@ -169,7 +170,7 @@ describe("formatValue", () => {
 
   it("does not mask empty secret values", () => {
     const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
-    assert.equal(formatValue("coms_net_auth_token", "", tokenDef), "(empty)");
+    assert.equal(formatValue("coms_net_auth_token", "", tokenDef), EMPTY_VALUE_SENTINEL);
   });
 
   it("does not mask non-secret string keys", () => {
@@ -205,7 +206,7 @@ describe("formatValue", () => {
     assert.equal(isSecretNoChange(" ", false), true);
     assert.equal(isSecretNoChange("\t", false), true);
     assert.equal(isSecretNoChange(" \t\n ", false), true);
-    assert.equal(isSecretNoChange("(empty)", false), true);
+    assert.equal(isSecretNoChange(EMPTY_VALUE_SENTINEL, false), true);
     // Real input = change
     assert.equal(isSecretNoChange("real-token", false), false);
     assert.equal(isSecretNoChange(" token ", false), false);
@@ -262,7 +263,7 @@ describe("parseRawValue", () => {
   });
 
   it("parses empty string to empty", () => {
-    assert.equal(parseRawValue("image_model", "(empty)", SETTINGS_KEYS.image_model), "");
+    assert.equal(parseRawValue("image_model", EMPTY_VALUE_SENTINEL, SETTINGS_KEYS.image_model), "");
   });
 
   it("parses agent_list comma-separated", () => {
@@ -271,7 +272,7 @@ describe("parseRawValue", () => {
 
   it("parses empty agent_list", () => {
     assert.deepEqual(parseRawValue("acpx_agents", "", SETTINGS_KEYS.acpx_agents), []);
-    assert.deepEqual(parseRawValue("acpx_agents", "(empty)", SETTINGS_KEYS.acpx_agents), []);
+    assert.deepEqual(parseRawValue("acpx_agents", EMPTY_VALUE_SENTINEL, SETTINGS_KEYS.acpx_agents), []);
   });
 
   it("round-trips bool values", () => {
@@ -681,7 +682,7 @@ describe("resolveSecretPrefill", () => {
     // Empty submit should be treated as no-change
     assert.equal(isSecretNoChange("", info.scopeValue !== null), true);
     assert.equal(isSecretNoChange(undefined, info.scopeValue !== null), true);
-    assert.equal(isSecretNoChange("(empty)", info.scopeValue !== null), true);
+    assert.equal(isSecretNoChange(EMPTY_VALUE_SENTINEL, info.scopeValue !== null), true);
     // Real input should be a change
     assert.equal(isSecretNoChange("new-token", info.scopeValue !== null), false);
   });

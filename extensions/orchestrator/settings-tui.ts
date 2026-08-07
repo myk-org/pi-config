@@ -297,41 +297,43 @@ function getSettingsListState(list: SettingsList): {
 
 // ── Save a single change ────────────────────────────────────────
 
-function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): boolean {
+type SaveResult = { ok: true } | { ok: false; reason: "corrupt" | "write_error"; error?: unknown };
+
+function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): SaveResult {
   const filePath = getFilePathForScope(scope, cwd);
   const current = readSettingsFile(filePath);
-  if (current === null) return false;
+  if (current === null) return { ok: false, reason: "corrupt" };
   if (value === undefined) {
-    if (!(key in current)) return true;
+    if (!(key in current)) return { ok: true };
     delete current[key];
   } else {
     current[key] = value;
   }
-  if (Object.keys(current).length === 0 && !existsSync(filePath)) return true;
+  if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true };
   try {
     writeSettingsFile(filePath, current);
-  } catch {
-    return false;
+  } catch (e) {
+    return { ok: false, reason: "write_error", error: e };
   }
   clearSettingsCache();
-  return true;
+  return { ok: true };
 }
 
 // ── Delete a key from the current scope ─────────────────────────
 
-function deleteFromScope(key: string, scope: "project" | "global", cwd: string): boolean {
+function deleteFromScope(key: string, scope: "project" | "global", cwd: string): SaveResult {
   const filePath = getFilePathForScope(scope, cwd);
   const current = readSettingsFile(filePath);
-  if (current === null) return false;
-  if (!(key in current)) return true;
+  if (current === null) return { ok: false, reason: "corrupt" };
+  if (!(key in current)) return { ok: true };
   delete current[key];
   try {
     writeSettingsFile(filePath, current);
-  } catch {
-    return false;
+  } catch (e) {
+    return { ok: false, reason: "write_error", error: e };
   }
   clearSettingsCache();
-  return true;
+  return { ok: true };
 }
 
 // ── Parse value for agent_overrides ─────────────────────────────
@@ -402,8 +404,12 @@ class SettingsOverlay implements Component {
         }
 
         const filePath = getFilePathForScope(this.editScope, this.cwd);
-        if (!saveChange(id, parsed, this.editScope, this.cwd)) {
-          this.notify(`Failed to save: settings file is corrupt (${filePath})`, "error");
+        const result = saveChange(id, parsed, this.editScope, this.cwd);
+        if (!result.ok) {
+          const msg = result.reason === "corrupt"
+            ? `Failed to save: settings file is corrupt (${filePath})`
+            : `Failed to write settings: ${(result.error as any)?.message || "unknown error"}`;
+          this.notify(msg, "error");
           return;
         }
         if (filePath.endsWith(".jsonc")) {
@@ -465,8 +471,12 @@ class SettingsOverlay implements Component {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
           const filePath = getFilePathForScope(this.editScope, this.cwd);
-          if (!deleteFromScope(selectedItem.id, this.editScope, this.cwd)) {
-            this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
+          const delResult = deleteFromScope(selectedItem.id, this.editScope, this.cwd);
+          if (!delResult.ok) {
+            const msg = delResult.reason === "corrupt"
+              ? `Failed to delete: settings file is corrupt (${filePath})`
+              : `Failed to delete: ${(delResult.error as any)?.message || "unknown error"}`;
+            this.notify(msg, "error");
           } else {
             this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
             refreshItem(selectedItem, this.cwd, this.theme);
