@@ -371,6 +371,17 @@ class SettingsOverlay implements Component {
           this.notify("Note: comments were stripped from .jsonc file", "info");
         }
 
+        // When provider changes, auto-clear the paired model to prevent stale cross-provider model
+        if (id === "agent_provider") {
+          saveChange("agent_model", "", this.editScope, this.cwd);
+          const modelItem = this.currentItems.find((i) => i.id === "agent_model");
+          if (modelItem) refreshItem(modelItem, this.cwd, this.theme);
+        } else if (id === "internal_operations_provider") {
+          saveChange("internal_operations_model", "", this.editScope, this.cwd);
+          const modelItem = this.currentItems.find((i) => i.id === "internal_operations_model");
+          if (modelItem) refreshItem(modelItem, this.cwd, this.theme);
+        }
+
         // Update label + value in-place (SettingsList stores items by reference, no render cache)
         const item = this.currentItems.find((i) => i.id === id);
         if (item) refreshItem(item, this.cwd, this.theme);

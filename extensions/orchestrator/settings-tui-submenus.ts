@@ -541,6 +541,20 @@ export class AgentOverridesSubmenu implements Component {
     } else {
       this.overrides[agent]![field] = trimmed;
     }
+
+    // Ensure provider/model consistency
+    if (this.overrides[agent]) {
+      if (field === "provider" && trimmed !== "") {
+        // Provider changed — clear model to prevent stale cross-provider model
+        this.overrides[agent]!.model = null;
+      }
+      if (field === "provider" && this.overrides[agent]!.model === undefined) {
+        this.overrides[agent]!.model = null;
+      }
+      if (field === "model" && this.overrides[agent]!.provider === undefined) {
+        this.overrides[agent]!.provider = null;
+      }
+    }
   }
 
   invalidate(): void {}
