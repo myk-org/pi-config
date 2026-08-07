@@ -435,11 +435,12 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.ok(!content.includes("// user comments"), "comments should be stripped");
   });
 
-  it("throws on write to invalid path", () => {
+  it("throws on write to read-only path", () => {
     // writeSettingsFile wraps writeFileSync+renameSync in try/catch and re-throws
     // The callers (saveChange/deleteFromScope) catch this and return false
+    // Use /proc as a path that exists but is not writable
     assert.throws(() => {
-      writeSettingsFile("/nonexistent/deeply/nested/impossible/path/settings.json", { dco: true });
+      writeSettingsFile("/proc/settings-tui-test.json", { dco: true });
     });
   });
 });
