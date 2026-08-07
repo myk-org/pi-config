@@ -352,15 +352,20 @@ export function registerAsyncAgents(
             } else {
               pi.events.emit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
             }
-            pi.sendMessage({
-              customType: "async-agent-result",
-              content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`,
-              display: true,
-            }, { triggerTurn: true, deliverAs: "followUp" });
-            if (job.onComplete) {
-              try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+            try {
+              pi.sendMessage({
+                customType: "async-agent-result",
+                content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`,
+                display: true,
+              }, { triggerTurn: true, deliverAs: "followUp" });
+              if (job.onComplete) {
+                try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+              }
+              job.delivered = true;
+            } catch (e: any) {
+              asyncLog(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
+              // delivered stays false — will retry on next poll
             }
-            job.delivered = true;
             // Persist delivered state so restore skips this job
             try {
               const sp = path.join(job.workerDir, "status.json");
@@ -618,7 +623,7 @@ export function registerAsyncAgents(
           } else {
             markTestsFailed(jobCwd(job));
           }
-        } catch (e: any) { processResultSideEffectsOk = false; console.debug(`[async-agents] markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; asyncLog(`markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
 
       if (processResultSideEffectsOk) job.sideEffectsApplied = true;
