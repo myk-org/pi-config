@@ -1147,6 +1147,19 @@ export function registerAsyncAgents(
       killed.push(label);
       job.status = "failed";
       job.updatedAt = Date.now();
+      job.durationMs = Date.now() - job.startedAt;
+      // Persist killed state to disk — prevents stale re-delivery on reload
+      try {
+        const statusPath = path.join(job.workerDir, "status.json");
+        const existing = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
+        existing.state = "failed";
+        existing.exitCode = -9;
+        existing.endedAt = Date.now();
+        existing.output = "Killed by user";
+        fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
+      } catch (e: any) { asyncLog(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
+      // Delete result file if it exists — prevent re-ingestion on reload
+      try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch {}
       // Record killed reviewer as having 0 findings — prevents permanent commit block
       let killSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
