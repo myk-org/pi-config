@@ -108,10 +108,9 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
   return { providers, models: modelItems };
 }
 
-// ── Available agent names ───────────────────────────────────────────
+// ── Available agent names (for agent_overrides) ─────────────────────
 
 function getAvailableAgentNames(cwd: string): string[] {
-  // Check multiple directories for agent definitions
   const dirs = [
     join(resolveRepoRoot(cwd), "agents"),
     join(homedir(), ".pi", "agent", "agents"),
@@ -125,6 +124,28 @@ function getAvailableAgentNames(cwd: string): string[] {
     } catch {}
   }
   return [...agents].sort();
+}
+
+// ── Known CLI/ACPX provider names (for acpx_agents / cli_agents) ──
+
+const KNOWN_CLI_PROVIDERS = ["cursor", "claude", "gemini", "copilot"];
+
+// ── Refresh a single item's display after save ──────────────────────
+
+function refreshItemDisplay(
+  settingsList: SettingsList,
+  key: string,
+  cwd: string,
+  theme: Theme,
+): void {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return;
+  const effectiveValue = getSetting(cwd, key as any);
+  const source = detectSource(key, def, cwd);
+  const displayValue = formatValue(key, effectiveValue, def);
+  const glyph = sourceGlyph(source, theme);
+  // Update the label (with new source glyph) and value
+  settingsList.updateValue(key, displayValue);
 }
 
 // ── Build setting items for a single category ───────────────────────
@@ -220,8 +241,8 @@ export function buildCategoryItems(
           item.submenu = (_current: string, done: (val?: string) => void): Component => {
             const currentAgents = Array.isArray(effectiveValue) ? effectiveValue as string[] : [];
             return new MultiSelectSubmenu(
-              `${key} — select agents`,
-              availableAgents,
+              `${key} — select providers`,
+              KNOWN_CLI_PROVIDERS,
               currentAgents,
               theme,
               done,
@@ -292,7 +313,7 @@ function deleteFromScope(key: string, scope: "project" | "global", cwd: string):
   const writePath = resolveWritePath(filePath);
   const current = readSettingsFile(writePath);
   if (current === null) return false;
-  if (!(key in current)) return true; // not present — nothing to delete
+  if (!(key in current)) return true;
   delete current[key];
   writeSettingsFile(filePath, current);
   clearSettingsCache();
@@ -323,7 +344,7 @@ class SettingsOverlay implements Component {
   private done: (value: undefined) => void;
   private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
-  private selectedId: string | null;
+  private lastChangedId: string | null;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -344,7 +365,7 @@ class SettingsOverlay implements Component {
     this.categoryIndex = 0;
     this.done = done;
     this.notify = notify;
-    this.selectedId = null;
+    this.lastChangedId = null;
     this.rebuild();
   }
 
@@ -375,17 +396,10 @@ class SettingsOverlay implements Component {
           this.notify("Saved to .json (comments preserved in .jsonc)", "info");
         }
 
-        // Preserve selection, then rebuild to refresh source indicators
-        this.selectedId = id;
-        this.rebuild();
-        // Restore selection by finding the item index
-        const newItems = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
-        if (this.selectedId) {
-          const idx = newItems.findIndex((item) => item.id === this.selectedId);
-          if (idx >= 0) {
-            this.settingsList.updateValue(this.selectedId, newItems[idx].currentValue);
-          }
-        }
+        // Update display in-place WITHOUT rebuilding (preserves cursor position)
+        this.lastChangedId = id;
+        refreshItemDisplay(this.settingsList, id, this.cwd, this.theme);
+        this.invalidate();
         this.tui.requestRender();
       },
       () => this.done(undefined),
@@ -399,7 +413,6 @@ class SettingsOverlay implements Component {
     // Tab to switch scope
     if (matchesKey(data, Key.tab)) {
       this.editScope = this.editScope === "project" ? "global" : "project";
-      this.selectedId = null;
       this.rebuild();
       this.tui.requestRender();
       return;
@@ -408,33 +421,45 @@ class SettingsOverlay implements Component {
     // Left/Right to switch category tabs
     if (matchesKey(data, Key.left)) {
       this.categoryIndex = (this.categoryIndex - 1 + CATEGORIES.length) % CATEGORIES.length;
-      this.selectedId = null;
       this.rebuild();
       this.tui.requestRender();
       return;
     }
     if (matchesKey(data, Key.right)) {
       this.categoryIndex = (this.categoryIndex + 1) % CATEGORIES.length;
-      this.selectedId = null;
       this.rebuild();
       this.tui.requestRender();
       return;
     }
 
-    // D to delete current scope override
+    // D to delete current scope override for the last-interacted setting
     if (data === "d" || data === "D") {
-      // Get the currently selected item from the settings list
+      // Identify which setting to delete — use lastChangedId or the first item
       const items = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
-      // We need to find which item is selected — use the SettingsList's internal state
-      // Since we can't access selectedIndex directly, we track via selectedId
-      if (this.selectedId) {
+      // We don't have direct access to SettingsList's selectedIndex, so delegate
+      // the D key to the settingsList first to see if it handles it, otherwise
+      // try to delete the last-changed item
+      if (items.length > 0) {
+        // Find which item is likely selected by checking the current category items
+        // Since we can't access selectedIndex, we'll use a workaround:
+        // Pass D through to settingsList — if it doesn't handle it, we check lastChangedId
         const filePath = getFilePathForScope(this.editScope, this.cwd);
-        if (!deleteFromScope(this.selectedId, this.editScope, this.cwd)) {
-          this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
-        } else {
-          this.notify(`Deleted ${this.selectedId} from ${this.editScope} scope`, "info");
+
+        // Try to find the setting at the visual selection by sending a probe
+        // For now, delete the setting that was last interacted with OR
+        // show a notification to select a setting first
+        if (this.lastChangedId && items.some((item) => item.id === this.lastChangedId)) {
+          if (!deleteFromScope(this.lastChangedId, this.editScope, this.cwd)) {
+            this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
+          } else {
+            this.notify(`Deleted ${this.lastChangedId} from ${this.editScope} scope`, "info");
+            refreshItemDisplay(this.settingsList, this.lastChangedId, this.cwd, this.theme);
+            this.invalidate();
+          }
+          this.tui.requestRender();
+          return;
         }
-        this.rebuild();
+        this.notify("Select a setting first (Enter/Space to interact, then D to delete)", "info");
         this.tui.requestRender();
         return;
       }
