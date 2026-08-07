@@ -1164,7 +1164,8 @@ export function registerAsyncAgents(
         // Non-grouped killed job — deliver immediately so AI knows it was killed
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
-        const output = (job.output || "Killed by user").slice(0, 3000);
+        const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
+        const output = rawOutput.slice(0, 3000);
         try {
           pi.sendMessage({
             customType: "async-agent-result",

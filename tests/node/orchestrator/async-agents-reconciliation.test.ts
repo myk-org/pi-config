@@ -377,7 +377,7 @@ describe("async-agents reconciliation (issue #734)", () => {
       assert.equal(needsSideEffects(job), true);
     });
 
-    it("side-effect success sets sideEffectsApplied and stops retries", () => {
+    it("side-effect success sets sideEffectsApplied, stops retries", () => {
       const job = makeJob({ id: "retry-1", agent: "code-reviewer-docs" });
       let ok = true;
       if (ok) job.sideEffectsApplied = true;
@@ -502,7 +502,7 @@ describe("async-agents reconciliation (issue #734)", () => {
   });
 
   describe("phantom agent detection", () => {
-    it("job with no status file and missing worker dir is a phantom", () => {
+    it("job without status file, missing worker dir, is a phantom", () => {
       // No status file = readAsyncStatus returns null
       // Missing worker dir = fs.existsSync(job.workerDir) returns false
       // → mark failed immediately
@@ -511,7 +511,7 @@ describe("async-agents reconciliation (issue #734)", () => {
       // Production code: if (!status && !fs.existsSync(job.workerDir)) → failed
     });
 
-    it("job with status file but no PID is a phantom", () => {
+    it("job with status file, no PID, is a phantom", () => {
       // Status exists, state is "running", but pid is null/undefined
       // → mark failed immediately
       const status = { state: "running", pid: null };
@@ -519,7 +519,7 @@ describe("async-agents reconciliation (issue #734)", () => {
       assert.equal(!status.pid, true, "no PID = phantom");
     });
 
-    it("job with status file and valid PID is NOT a phantom", () => {
+    it("job with status file, valid PID, is NOT a phantom", () => {
       // Status exists with a PID — check /proc/{pid} to determine alive/dead
       const status = { state: "running", pid: 12345 };
       assert.equal(!!status.pid, true, "has PID — not an immediate phantom");
