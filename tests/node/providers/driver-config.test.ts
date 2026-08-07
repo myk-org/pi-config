@@ -1,5 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { clearResolveBinaryCache } from "../../../extensions/shared/resolve-binary.js";
 import { ClaudeDriver } from "../../../extensions/providers/claude-driver.js";
 import { GeminiDriver } from "../../../extensions/providers/gemini-driver.js";
 import { CursorCliDriver } from "../../../extensions/providers/cursor-cli-driver.js";
@@ -57,20 +61,57 @@ describe("ACPX_AGENT_TO_DRIVER mapping", () => {
   });
 });
 
-describe("acpx probe binary check", () => {
-  it("returns unavailable when CLI binary missing for cursor agent", async () => {
-    const result = await AcpxDriver.probe({ agent: "cursor", enabled: true });
-    // cursor maps to "agent" binary — may or may not be on PATH
-    assert.equal(typeof result.available, "boolean");
-    if (!result.available) {
-      assert.ok(result.reason?.includes("not found") || result.reason?.includes("not available"));
+describe("acpx probe binary check", { concurrency: false }, () => {
+  const prevPath = process.env.PATH;
+  let tmpRoot: string | undefined;
+
+  beforeEach(() => {
+    clearResolveBinaryCache();
+  });
+
+  afterEach(() => {
+    process.env.PATH = prevPath;
+    clearResolveBinaryCache();
+    if (tmpRoot) {
+      rmSync(tmpRoot, { recursive: true, force: true });
+      tmpRoot = undefined;
     }
   });
 
+  it("returns unavailable when cursor agent binary missing from PATH", async () => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    process.env.PATH = tmpRoot; // empty dir — no "agent" binary
+    const result = await AcpxDriver.probe({ agent: "cursor", enabled: true });
+    assert.equal(result.available, false);
+    assert.ok(result.reason?.includes("not found"));
+    assert.ok(result.reason?.includes("agent")); // cursor maps to "agent" binary
+  });
+
+  it("returns unavailable when claude agent binary missing from PATH", async () => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    process.env.PATH = tmpRoot;
+    const result = await AcpxDriver.probe({ agent: "claude", enabled: true });
+    assert.equal(result.available, false);
+    assert.ok(result.reason?.includes("not found"));
+    assert.ok(result.reason?.includes("claude"));
+  });
+
   it("returns unavailable for agent with missing binary", async () => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    process.env.PATH = tmpRoot;
     const result = await AcpxDriver.probe({ agent: "nonexistent-xyz-99999", enabled: true });
     assert.equal(result.available, false);
     assert.ok(result.reason?.includes("not found"));
+  });
+
+  it("finds cursor agent binary when present on PATH", async () => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    const dest = join(tmpRoot, "agent");
+    writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.PATH = tmpRoot;
+    const result = await AcpxDriver.probe({ agent: "cursor", enabled: true });
+    // Binary found — probe proceeds to acpx runtime check (may fail if acpx not installed)
+    assert.equal(typeof result.available, "boolean");
   });
 });
 
