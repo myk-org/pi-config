@@ -430,3 +430,36 @@ describe("createCachedStore legacy migration", () => {
     assert.equal(existsSync(join(dir, "state.json")), true);
   });
 });
+
+describe("createCachedStore corrupt legacy migration", () => {
+  it("handles corrupt legacy JSON without throwing", () => {
+    const dir = join(tmpDir, "migrate-corrupt-legacy");
+    mkdirSync(dir, { recursive: true });
+    // Write corrupt legacy file
+    writeFileSync(join(dir, "state.json"), "not valid json{{{");
+
+    // Should not throw — migration fails silently, returns empty store
+    const store = createCachedStore<{ value: number }>(dir, "state.jsonl", "state.json");
+    assert.equal(store.read(), null);
+    // Legacy file should still exist (migration failed)
+    assert.equal(existsSync(join(dir, "state.json")), true);
+  });
+
+  it("does not retry migration after failure in same process", () => {
+    const dir = join(tmpDir, "migrate-no-retry");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), "corrupt");
+
+    // First call — migration fails
+    createCachedStore<{ value: number }>(dir, "state.jsonl", "state.json");
+
+    // Fix the legacy file
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ value: 42 }) + "\n");
+
+    // Second call — should NOT retry migration (migrationFailed flag set)
+    const store = createCachedStore<{ value: number }>(dir, "state.jsonl", "state.json");
+    assert.equal(store.read(), null); // Still null — migration was not retried
+    // Legacy file still exists
+    assert.equal(existsSync(join(dir, "state.json")), true);
+  });
+});

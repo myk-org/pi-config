@@ -297,11 +297,11 @@ export class JsonlAppendLog<T extends object> {
       this.truncateIfNeeded();
     });
     if (!locked) {
-      // Lock failed — append-only without truncation to prevent event loss.
-      // seq may duplicate with concurrent writers, but event data is preserved.
-      this.seq++;
-      const entry = { seq: this.seq, ts: new Date().toISOString(), ...data };
-      appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+      // Lock failed — skip this telemetry event rather than appending unlocked.
+      // An unlocked append can race with truncateIfNeeded's read+rename in another
+      // process, causing the append to be silently lost anyway. Dropping one event
+      // under extreme lock contention is acceptable for best-effort telemetry.
+      // The lock failure itself indicates heavy contention (50 retries exhausted).
     }
   }
 
