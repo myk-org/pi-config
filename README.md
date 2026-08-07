@@ -614,7 +614,7 @@ PI_PIDIFF_ENABLE=false pi
 | `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
 | `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx-cursor / cli-cursor models) |
-| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro` | Claude CLI auth (for acpx-claude models) |
+| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro` | Claude CLI auth (for acpx-claude / cli-claude models) |
 | `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
 | `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
 | `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
