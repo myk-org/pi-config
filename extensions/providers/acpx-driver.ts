@@ -387,11 +387,9 @@ export const AcpxDriver: ProviderDriver<AcpxConfig> = {
   probe: async (config: AcpxConfig): Promise<ProviderProbeResult> => {
     // Check that the underlying CLI binary is installed (e.g. cursor, claude, gemini)
     const binaryName = config.agent === "cursor" ? "agent" : config.agent;
-    fileLog(LOG_DOMAIN, "info", LOG_DOMAIN,
-      `probe: agent=${config.agent}, binaryName=${binaryName}`);
     const binary = resolveBinary(binaryName);
-    fileLog(LOG_DOMAIN, "info", LOG_DOMAIN,
-      `probe: agent=${config.agent}, binary=${binary || "NOT FOUND"}`);
+    fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+      `probe: agent=${config.agent}, binary=${binaryName}, found=${!!binary}`);
     if (!binary) {
       return {
         available: false,
