@@ -388,12 +388,14 @@ export function registerAsyncAgents(
               }
             }
             // Persist delivered state so restore skips this job
-            try {
-              const sp = path.join(job.workerDir, "status.json");
-              const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
-              ex.delivered = true;
-              fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
-            } catch {}
+            if (job.delivered) {
+              try {
+                const sp = path.join(job.workerDir, "status.json");
+                const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+                ex.delivered = true;
+                fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+              } catch {}
+            }
           } else if (job.fireAndForget) {
             if (job.onComplete) {
               try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
@@ -735,12 +737,14 @@ export function registerAsyncAgents(
       if (sendSucceeded) {
         job.delivered = true;
         // Persist delivered state so restore skips this job
-        try {
-          const sp = path.join(job.workerDir, "status.json");
-          const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
-          ex.delivered = true;
-          fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
-        } catch {}
+        if (job.delivered) {
+          try {
+            const sp = path.join(job.workerDir, "status.json");
+            const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+            ex.delivered = true;
+            fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+          } catch {}
+        }
       }
       // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
