@@ -242,6 +242,8 @@ export function buildCategoryItems(
               availableAgents,
               theme,
               done,
+              pmInfo.providers,
+              pmInfo.models,
             );
           };
           break;

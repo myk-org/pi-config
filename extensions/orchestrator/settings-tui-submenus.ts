@@ -315,10 +315,13 @@ export class AgentOverridesSubmenu implements Component {
   private done: (value?: string) => void;
   private label: string;
   private theme: Theme;
-  private mode: "list" | "edit-agent" | "edit-field";
+  private mode: "list" | "edit-agent" | "edit-field" | "edit-picker";
   private editingAgent: string;
   private editFieldIndex: number; // 0=provider, 1=model
   private editInput: Input;
+  private pickerSubmenu: PickerSubmenu | null;
+  private providerItems: SelectItem[];
+  private modelItems: SelectItem[];
 
   constructor(
     label: string,
@@ -326,6 +329,8 @@ export class AgentOverridesSubmenu implements Component {
     availableAgents: string[],
     theme: Theme,
     done: (value?: string) => void,
+    providerItems: SelectItem[],
+    modelItems: SelectItem[],
   ) {
     this.label = label;
     this.overrides = JSON.parse(JSON.stringify(currentOverrides || {}));
@@ -337,6 +342,9 @@ export class AgentOverridesSubmenu implements Component {
     this.editingAgent = "";
     this.editFieldIndex = 0;
     this.editInput = new Input();
+    this.pickerSubmenu = null;
+    this.providerItems = providerItems;
+    this.modelItems = modelItems;
   }
 
   render(width: number): string[] {
@@ -395,6 +403,9 @@ export class AgentOverridesSubmenu implements Component {
       lines.push("");
       lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ select field · Enter edit · d delete both · Esc back")}`, width));
 
+    } else if (this.mode === "edit-picker" && this.pickerSubmenu) {
+      return this.pickerSubmenu.render(width);
+
     } else {
       // edit-field mode
       const field = this.editFieldIndex === 0 ? "provider" : "model";
@@ -413,6 +424,11 @@ export class AgentOverridesSubmenu implements Component {
   }
 
   handleInput(data: string): void {
+    if (this.mode === "edit-picker" && this.pickerSubmenu) {
+      this.pickerSubmenu.handleInput(data);
+      return;
+    }
+
     if (this.mode === "edit-field") {
       if (matchesKey(data, Key.escape)) {
         this.mode = "edit-agent";
@@ -437,15 +453,34 @@ export class AgentOverridesSubmenu implements Component {
       }
       if (matchesKey(data, Key.enter)) {
         const field = this.editFieldIndex === 0 ? "provider" : "model";
-        const current = this.overrides[this.editingAgent]?.[field];
-        this.editInput = new Input();
-        this.editInput.setValue(current === null ? "null" : current ?? "");
-        this.editInput.onSubmit = (val: string) => {
-          this.applyOverride(this.editingAgent, field, val);
-          this.mode = "edit-agent";
-        };
-        this.editInput.onEscape = () => { this.mode = "edit-agent"; };
-        this.mode = "edit-field";
+        const items = this.editFieldIndex === 0 ? this.providerItems : this.modelItems;
+        if (items.length > 0) {
+          // Use fuzzy picker for provider/model
+          this.pickerSubmenu = new PickerSubmenu(
+            `Select ${field} for ${this.editingAgent}`,
+            items,
+            this.theme,
+            (val?: string) => {
+              if (val !== undefined) {
+                this.applyOverride(this.editingAgent, field, val);
+              }
+              this.pickerSubmenu = null;
+              this.mode = "edit-agent";
+            },
+          );
+          this.mode = "edit-picker";
+        } else {
+          // Fallback to text input if no items available
+          const current = this.overrides[this.editingAgent]?.[field];
+          this.editInput = new Input();
+          this.editInput.setValue(current === null ? "null" : current ?? "");
+          this.editInput.onSubmit = (val: string) => {
+            this.applyOverride(this.editingAgent, field, val);
+            this.mode = "edit-agent";
+          };
+          this.editInput.onEscape = () => { this.mode = "edit-agent"; };
+          this.mode = "edit-field";
+        }
         return;
       }
       if (data === "d") {
