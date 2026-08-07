@@ -241,21 +241,15 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
   return null;
 }
 
-/** Resolve the actual file path for writing — .jsonc redirects to .json to preserve user comments. */
-export function resolveWritePath(filePath: string): string {
-  return filePath.endsWith(".jsonc") ? filePath.replace(/\.jsonc$/, ".json") : filePath;
-}
-
 export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
-  // Redirect .jsonc → .json to preserve user comments in the .jsonc file.
-  // TUI writes to .json; .jsonc remains as the user's commented reference.
-  const writePath = resolveWritePath(filePath);
-  const dir = dirname(writePath);
+  // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
+  // since the example.jsonc is the reference."
+  const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const content = JSON.stringify(data, null, 2) + "\n";
-  const tmpPath = `${writePath}.${process.pid}.${Date.now().toString(36)}`;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-  renameSync(tmpPath, writePath);
+  renameSync(tmpPath, filePath);
 }
 
 // ── Secret submit guard (extracted for testability) ────────────────

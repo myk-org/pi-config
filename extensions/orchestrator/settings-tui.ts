@@ -36,7 +36,6 @@ import {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
-  resolveWritePath,
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
@@ -66,7 +65,6 @@ export {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
-  resolveWritePath,
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
@@ -141,7 +139,7 @@ function refreshItem(item: SettingItem, cwd: string, theme: Theme): void {
   const source = detectSource(item.id, def, cwd);
   const displayValue = formatValue(item.id, effectiveValue, def);
   const glyph = sourceGlyph(source, theme);
-  // Mutate in-place — SettingsList holds a reference to the same items array
+  // Mutate in-place — SettingsList stores items array by reference (verified in pi-tui source)
   item.label = `${glyph} ${item.id}`;
   item.currentValue = displayValue;
 }
@@ -285,12 +283,11 @@ export function buildSettingItems(
   return all;
 }
 
-// ── Save a single change ────────────────────────────────────────────
+// ── Save a single change ────────────────────────────────────────
 
 function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): boolean {
   const filePath = getFilePathForScope(scope, cwd);
-  const writePath = resolveWritePath(filePath);
-  const current = readSettingsFile(writePath);
+  const current = readSettingsFile(filePath);
   if (current === null) return false;
   if (value === undefined) {
     if (!(key in current)) return true;
@@ -298,18 +295,17 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
   } else {
     current[key] = value;
   }
-  if (Object.keys(current).length === 0 && !existsSync(writePath)) return true;
+  if (Object.keys(current).length === 0 && !existsSync(filePath)) return true;
   writeSettingsFile(filePath, current);
   clearSettingsCache();
   return true;
 }
 
-// ── Delete a key from the current scope ─────────────────────────────
+// ── Delete a key from the current scope ─────────────────────────
 
 function deleteFromScope(key: string, scope: "project" | "global", cwd: string): boolean {
   const filePath = getFilePathForScope(scope, cwd);
-  const writePath = resolveWritePath(filePath);
-  const current = readSettingsFile(writePath);
+  const current = readSettingsFile(filePath);
   if (current === null) return false;
   if (!(key in current)) return true;
   delete current[key];
@@ -318,7 +314,7 @@ function deleteFromScope(key: string, scope: "project" | "global", cwd: string):
   return true;
 }
 
-// ── Parse value for agent_overrides ─────────────────────────────────
+// ── Parse value for agent_overrides ─────────────────────────────
 
 function parseOverridesValue(rawValue: string): Record<string, { provider?: string | null; model?: string | null }> {
   try {
@@ -330,7 +326,7 @@ function parseOverridesValue(rawValue: string): Record<string, { provider?: stri
   return {};
 }
 
-// ── Settings overlay component ──────────────────────────────────────
+// ── Settings overlay component ──────────────────────────────────
 
 class SettingsOverlay implements Component {
   private tui: TUI;
@@ -394,15 +390,13 @@ class SettingsOverlay implements Component {
           return;
         }
         if (filePath.endsWith(".jsonc")) {
-          this.notify("Saved to .json (comments preserved in .jsonc)", "info");
+          this.notify("Note: comments were stripped from .jsonc file", "info");
         }
 
-        // Update label + value in-place (mutates the items array that SettingsList holds)
+        // Update label + value in-place (SettingsList stores items by reference, no render cache)
         const item = this.currentItems.find((i) => i.id === id);
-        if (item) {
-          refreshItem(item, this.cwd, this.theme);
-        }
-        this.settingsList.invalidate();
+        if (item) refreshItem(item, this.cwd, this.theme);
+        // SettingsOverlay render cache must be cleared; SettingsList has no render cache
         this.invalidate();
         this.tui.requestRender();
       },
@@ -436,7 +430,7 @@ class SettingsOverlay implements Component {
       return;
     }
 
-    // Track selection index from navigation keys
+    // Track selection from navigation (mirrors SettingsList internal selectedIndex)
     if (matchesKey(data, Key.up) || data === "k") {
       if (this.currentItems.length > 0) {
         this.trackedIndex = this.trackedIndex === 0 ? this.currentItems.length - 1 : this.trackedIndex - 1;
@@ -456,9 +450,7 @@ class SettingsOverlay implements Component {
           this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
         } else {
           this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
-          // Refresh item in-place
           refreshItem(selectedItem, this.cwd, this.theme);
-          this.settingsList.invalidate();
         }
         this.invalidate();
         this.tui.requestRender();
@@ -466,6 +458,7 @@ class SettingsOverlay implements Component {
       }
     }
 
+    // Forward all other input to SettingsList (handles enter, space, escape, search)
     this.settingsList.handleInput?.(data);
     this.invalidate();
     this.tui.requestRender();
@@ -539,7 +532,7 @@ class SettingsOverlay implements Component {
   }
 }
 
-// ── Main command handler ────────────────────────────────────────────
+// ── Main command handler ────────────────────────────────────────
 
 async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: string): Promise<void> {
   if (!ctx.hasUI) return;
@@ -559,7 +552,7 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
   );
 }
 
-// ── Registration ────────────────────────────────────────────────────
+// ── Registration ────────────────────────────────────────────
 
 export function registerSettingsTui(pi: ExtensionAPI): void {
   registerSettingsTuiCommand(pi, async (args, ctx) => {
