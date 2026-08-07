@@ -249,12 +249,14 @@ export function registerAsyncAgents(
       }
 
       // Fallback: check for result files the watcher may have missed
-      try {
-        const files = fs.readdirSync(ASYNC_RESULTS_DIR).filter(f => f.endsWith(".json"));
-        for (const file of files) {
-          processResultFile(path.join(ASYNC_RESULTS_DIR, file));
-        }
-      } catch (e: any) { console.debug("[async-agents] result file scan failed:", e?.message || e); }
+      if (fs.existsSync(ASYNC_RESULTS_DIR)) {
+        try {
+          const files = fs.readdirSync(ASYNC_RESULTS_DIR).filter(f => f.endsWith(".json"));
+          for (const file of files) {
+            processResultFile(path.join(ASYNC_RESULTS_DIR, file));
+          }
+        } catch { /* directory may have been cleaned up between existsSync and readdirSync — safe to skip */ }
+      }
 
       // Reconciliation pass — retry side-effects + delivery for done-but-undelivered jobs
       for (const [id, job] of asyncState.jobs.entries()) {
