@@ -308,7 +308,11 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
     current[key] = value;
   }
   if (Object.keys(current).length === 0 && !existsSync(filePath)) return true;
-  writeSettingsFile(filePath, current);
+  try {
+    writeSettingsFile(filePath, current);
+  } catch {
+    return false;
+  }
   clearSettingsCache();
   return true;
 }
@@ -321,7 +325,11 @@ function deleteFromScope(key: string, scope: "project" | "global", cwd: string):
   if (current === null) return false;
   if (!(key in current)) return true;
   delete current[key];
-  writeSettingsFile(filePath, current);
+  try {
+    writeSettingsFile(filePath, current);
+  } catch {
+    return false;
+  }
   clearSettingsCache();
   return true;
 }
