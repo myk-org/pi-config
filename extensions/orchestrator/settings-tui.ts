@@ -301,19 +301,6 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
   return true;
 }
 
-// ── Delete a key from the current scope ─────────────────────────
-
-function deleteFromScope(key: string, scope: "project" | "global", cwd: string): boolean {
-  const filePath = getFilePathForScope(scope, cwd);
-  const current = readSettingsFile(filePath);
-  if (current === null) return false;
-  if (!(key in current)) return true;
-  delete current[key];
-  writeSettingsFile(filePath, current);
-  clearSettingsCache();
-  return true;
-}
-
 // ── Parse value for agent_overrides ─────────────────────────────
 
 function parseOverridesValue(rawValue: string): Record<string, { provider?: string | null; model?: string | null }> {
@@ -339,7 +326,6 @@ class SettingsOverlay implements Component {
   private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
   private currentItems: SettingItem[];
-  private trackedIndex: number;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -361,13 +347,11 @@ class SettingsOverlay implements Component {
     this.done = done;
     this.notify = notify;
     this.currentItems = [];
-    this.trackedIndex = 0;
     this.rebuild();
   }
 
   private rebuild(): void {
     this.currentItems = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
-    this.trackedIndex = 0;
 
     this.settingsList = new SettingsList(
       this.currentItems,
@@ -430,35 +414,7 @@ class SettingsOverlay implements Component {
       return;
     }
 
-    // Track selection from navigation (mirrors SettingsList internal selectedIndex)
-    if (matchesKey(data, Key.up) || data === "k") {
-      if (this.currentItems.length > 0) {
-        this.trackedIndex = this.trackedIndex === 0 ? this.currentItems.length - 1 : this.trackedIndex - 1;
-      }
-    } else if (matchesKey(data, Key.down) || data === "j") {
-      if (this.currentItems.length > 0) {
-        this.trackedIndex = this.trackedIndex === this.currentItems.length - 1 ? 0 : this.trackedIndex + 1;
-      }
-    }
-
-    // D to delete current scope override for the selected setting
-    if (data === "d" || data === "D") {
-      const selectedItem = this.currentItems[this.trackedIndex];
-      if (selectedItem) {
-        const filePath = getFilePathForScope(this.editScope, this.cwd);
-        if (!deleteFromScope(selectedItem.id, this.editScope, this.cwd)) {
-          this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
-        } else {
-          this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
-          refreshItem(selectedItem, this.cwd, this.theme);
-        }
-        this.invalidate();
-        this.tui.requestRender();
-        return;
-      }
-    }
-
-    // Forward all other input to SettingsList (handles enter, space, escape, search)
+    // Forward all input to SettingsList (handles navigation, enter, space, escape, search)
     this.settingsList.handleInput?.(data);
     this.invalidate();
     this.tui.requestRender();
@@ -517,7 +473,7 @@ class SettingsOverlay implements Component {
     const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
     lines.push(truncateToWidth(legend, width));
     lines.push(truncateToWidth(
-      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · D delete · Esc close`),
+      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · Esc close`),
       width,
     ));
 

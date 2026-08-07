@@ -25,7 +25,11 @@ Inventory a project’s code-tier memories:
 uv run myk-pi-tools memory status
 
 # Or raw scores:
-jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key' .pi/memory/memory-scores.json
+# Preferred: use the CLI
+uv run myk-pi-tools memory status
+
+# Or raw scores (last valid line from JSONL):
+tail -n 1 .pi/memory/memory-scores.json | jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key'
 ```
 
 ## Injected tier (LLM)
