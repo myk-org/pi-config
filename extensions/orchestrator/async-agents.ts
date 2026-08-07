@@ -185,13 +185,50 @@ export function registerAsyncAgents(
       for (const job of asyncState.jobs.values()) {
         if (job.status === "complete" || job.status === "failed") continue;
         const status = readAsyncStatus(job.workerDir);
-        if (status) {
+        if (!status) {
+          // No status file — process never started or died before writing status.
+          // Check if workerDir still exists; if not, the job is definitely dead.
+          if (!fs.existsSync(job.workerDir)) {
+            job.status = "failed";
+            job.output = "Agent process died without writing status";
+            job.durationMs = Date.now() - job.startedAt;
+            job.updatedAt = Date.now();
+            job.sideEffectsApplied = true;
+            asyncLog(`phantom: ${job.id} — no status file, worker dir missing`);
+            if (job.agent.startsWith("code-reviewer-")) {
+              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+            }
+            if (job.groupId) {
+              const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+              const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+              if (pending.length === 0) deliverGroupResults(groupJobs);
+            }
+          }
+          continue;
+        }
+        {
           job.status = status.state;
           job.updatedAt = status.lastUpdate ?? Date.now();
           if (status.exitCode !== undefined) job.exitCode = status.exitCode;
 
           // Check if process is actually alive — clean up zombies
-          if (job.status === "running" && status.pid) {
+          if (job.status === "running" && !status.pid) {
+            // Status file exists but no PID — process died before recording PID
+            job.status = "failed";
+            job.output = "Agent process died before recording PID";
+            job.durationMs = Date.now() - job.startedAt;
+            job.updatedAt = Date.now();
+            job.sideEffectsApplied = true;
+            asyncLog(`phantom: ${job.id} — status file exists but no PID`);
+            if (job.agent.startsWith("code-reviewer-")) {
+              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+            }
+            if (job.groupId) {
+              const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+              const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+              if (pending.length === 0) deliverGroupResults(groupJobs);
+            }
+          } else if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
               // Process exited — check if it wrote a result file first
               const resultFilePath = path.join(ASYNC_RESULTS_DIR, `${job.id}.json`);
@@ -247,31 +284,6 @@ export function registerAsyncAgents(
           }
         }
 
-        // Timeout-based fallback: if a job has been running for too long without
-        // producing results, mark it as failed. Catches cases where:
-        // - status.json was never written (no PID to check)
-        // - process died silently without updating status
-        // - subagent framework manages the process lifecycle
-        const MAX_RUNNING_MS = 30 * 60 * 1000; // 30 minutes
-        if ((job.status === "running" || job.status === "queued")
-            && Date.now() - job.startedAt > MAX_RUNNING_MS) {
-          job.status = "failed";
-          job.output = `Agent timed out after ${formatDuration(Date.now() - job.startedAt)} without producing results`;
-          job.durationMs = Date.now() - job.startedAt;
-          job.updatedAt = Date.now();
-          job.sideEffectsApplied = true; // no side-effects to apply for timed-out jobs
-          asyncLog(`timeout: ${job.id} ran for ${formatDuration(Date.now() - job.startedAt)}`);
-          // Record timed-out reviewer as having 0 findings
-          if (job.agent.startsWith("code-reviewer-")) {
-            try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for timed-out ${job.agent}: ${e?.message}`); }
-          }
-          // Check if this completes a group
-          if (job.groupId) {
-            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
-            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-            if (pending.length === 0) deliverGroupResults(groupJobs);
-          }
-        }
       }
 
       // Fallback: check for result files the watcher may have missed

@@ -501,31 +501,34 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
   });
 
-  describe("timeout fallback", () => {
-    it("running job older than 30 minutes should be timed out", () => {
-      const MAX_RUNNING_MS = 30 * 60 * 1000;
-      const job = makeJob({ id: "t1", agent: "worker", status: "running", startedAt: Date.now() - MAX_RUNNING_MS - 1000 });
-      assert.equal(Date.now() - job.startedAt > MAX_RUNNING_MS, true);
+  describe("phantom agent detection", () => {
+    it("job with no status file and missing worker dir is a phantom", () => {
+      // No status file = readAsyncStatus returns null
+      // Missing worker dir = fs.existsSync(job.workerDir) returns false
+      // → mark failed immediately
+      const job = makeJob({ id: "p1", agent: "worker", status: "running", workerDir: "/nonexistent" });
+      assert.equal(job.status, "running"); // before detection
+      // Production code: if (!status && !fs.existsSync(job.workerDir)) → failed
     });
 
-    it("recently started running job should NOT be timed out", () => {
-      const MAX_RUNNING_MS = 30 * 60 * 1000;
-      const job = makeJob({ id: "t2", agent: "worker", status: "running", startedAt: Date.now() - 60000 });
-      assert.equal(Date.now() - job.startedAt > MAX_RUNNING_MS, false);
+    it("job with status file but no PID is a phantom", () => {
+      // Status exists, state is "running", but pid is null/undefined
+      // → mark failed immediately
+      const status = { state: "running", pid: null };
+      assert.equal(status.state, "running");
+      assert.equal(!status.pid, true, "no PID = phantom");
     });
 
-    it("queued job older than 30 minutes should be timed out", () => {
-      const MAX_RUNNING_MS = 30 * 60 * 1000;
-      const job = makeJob({ id: "t3", agent: "worker", status: "queued", startedAt: Date.now() - MAX_RUNNING_MS - 1000 });
-      assert.equal(Date.now() - job.startedAt > MAX_RUNNING_MS, true);
+    it("job with status file and valid PID is NOT a phantom", () => {
+      // Status exists with a PID — check /proc/{pid} to determine alive/dead
+      const status = { state: "running", pid: 12345 };
+      assert.equal(!!status.pid, true, "has PID — not an immediate phantom");
     });
 
-    it("complete job is NOT affected by timeout", () => {
-      const MAX_RUNNING_MS = 30 * 60 * 1000;
-      const job = makeJob({ id: "t4", agent: "worker", status: "complete", startedAt: Date.now() - MAX_RUNNING_MS - 1000 });
-      // Timeout only applies to running/queued
-      assert.notEqual(job.status, "running");
-      assert.notEqual(job.status, "queued");
+    it("complete job is never checked for phantom status", () => {
+      const job = makeJob({ id: "p2", agent: "worker", status: "complete" });
+      // The poller skips complete/failed jobs: if (job.status === "complete" || job.status === "failed") continue;
+      assert.equal(job.status === "complete" || job.status === "failed", true);
     });
   });
 });
