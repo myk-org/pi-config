@@ -710,8 +710,11 @@ export function registerAsyncAgents(
         const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
         const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
         if (wasAlreadyDelivered(job.id)) {
-          sendSucceeded = true;
+          // Already delivered in previous lifecycle — skip send AND onComplete
+          job.delivered = true;
           asyncLog(`processResultFile: skipping already-delivered result for ${job.id}`);
+          updateAsyncWidget();
+          return;
         } else {
           try {
             pi.sendMessage({
@@ -981,6 +984,7 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
+    deliveredResultIds.clear();
 
     // Preserve cwd-based early log path before PROJECT_TMP_DIR update
     const previousEarlyLogPath = EARLY_LOG_PATH;
