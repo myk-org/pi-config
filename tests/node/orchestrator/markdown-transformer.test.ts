@@ -236,8 +236,8 @@ describe("transformComsHeaders", () => {
 
   it("preserves backticks in cwd using longer code span delimiters", () => {
     const result = transformComsHeaders("[from peer @ /path/with`backtick]");
-    assert.ok(result.includes("/path/with`backtick"), "backtick should be preserved in output");
-    assert.ok(!result.includes("'backtick"), "should not replace backtick with apostrophe");
+    // inlineCode() should use `` (double backtick) delimiter for content containing a single backtick
+    assert.equal(result, "📨 **peer** ``@ /path/with`backtick``");
   });
 });
 
