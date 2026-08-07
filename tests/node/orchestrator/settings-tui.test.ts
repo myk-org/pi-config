@@ -15,6 +15,7 @@ import {
   isSecretNoChange,
   resolveSecretPrefill,
   sourceGlyph,
+  filterModelsByProvider,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -417,14 +418,20 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.deepEqual(result, data);
   });
 
-  it("writes directly to .jsonc file (comments lost per spec)", () => {
+  it("writes data to .jsonc file", () => {
     const jsoncPath = join(tempDir, "pi-config-settings.jsonc");
     writeFileSync(jsoncPath, '// user comments\n{"dco": true}');
     writeSettingsFile(jsoncPath, { dco: true, use_worktrees: true });
     const content = readFileSync(jsoncPath, "utf-8");
     assert.ok(content.includes('"use_worktrees": true'), "should have new data");
     assert.ok(content.includes('"dco": true'), "should preserve existing keys");
-    // Comments are lost on write — acceptable per issue spec
+  });
+
+  it("strips comments from .jsonc on write (per spec)", () => {
+    const jsoncPath = join(tempDir, "pi-config-settings-comments.jsonc");
+    writeFileSync(jsoncPath, '// user comments\n{"dco": true}');
+    writeSettingsFile(jsoncPath, { dco: true });
+    const content = readFileSync(jsoncPath, "utf-8");
     assert.ok(!content.includes("// user comments"), "comments should be stripped");
   });
 });
@@ -705,5 +712,45 @@ describe("sourceGlyph", () => {
 
   it("returns themed ? for unknown source", () => {
     assert.equal(sourceGlyph("X", mockTheme), "[dim:?]");
+  });
+});
+
+// ── filterModelsByProvider ──────────────────────────────────────────
+
+describe("filterModelsByProvider", () => {
+  it("returns all models when no provider specified", () => {
+    const models = [
+      { value: "model-a", label: "model-a", description: "provider-1" },
+      { value: "model-b", label: "model-b", description: "provider-2" },
+    ];
+    const result = filterModelsByProvider(models);
+    assert.equal(result.length, 2);
+  });
+
+  it("returns all models when provider is empty string", () => {
+    const models = [
+      { value: "model-a", label: "model-a", description: "provider-1" },
+    ];
+    const result = filterModelsByProvider(models, "");
+    assert.equal(result.length, 1);
+  });
+
+  it("filters models by provider", () => {
+    const models = [
+      { value: "model-a", label: "model-a", description: "provider-1" },
+      { value: "model-b", label: "model-b", description: "provider-2" },
+      { value: "model-c", label: "model-c", description: "provider-1" },
+    ];
+    const result = filterModelsByProvider(models, "provider-1");
+    assert.equal(result.length, 2);
+    assert.ok(result.every((m) => m.description === "provider-1"));
+  });
+
+  it("returns empty array when no models match provider", () => {
+    const models = [
+      { value: "model-a", label: "model-a", description: "provider-1" },
+    ];
+    const result = filterModelsByProvider(models, "unknown");
+    assert.equal(result.length, 0);
   });
 });

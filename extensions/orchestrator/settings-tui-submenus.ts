@@ -421,7 +421,8 @@ export class AgentOverridesSubmenu implements Component {
       // edit-field mode
       const field = this.editFieldIndex === 0 ? "provider" : "model";
       lines.push(truncateToWidth(`  ${t.fg("text", `Set ${field} for:`)} ${t.fg("accent", this.editingAgent)}`, width));
-      lines.push(truncateToWidth(`  ${t.fg("dim", 'Enter value (empty to clear, "null" to use parent model)')}`, width));
+      const fieldName = this.editFieldIndex === 0 ? "provider" : "model";
+      lines.push(truncateToWidth(`  ${t.fg("dim", `Enter ${fieldName} (empty to clear, "null" to use parent)`)}`, width));
       lines.push("");
       const inputLines = this.editInput.render(Math.max(10, width - 4));
       for (const line of inputLines) {
@@ -579,15 +580,9 @@ export class AgentOverridesSubmenu implements Component {
 
     // Ensure provider/model consistency
     if (this.overrides[agent]) {
-      if (field === "provider" && trimmed !== "") {
-        // Provider changed — clear model to prevent stale cross-provider model
+      if (field === "provider" && trimmed !== "" && trimmed !== "null") {
+        // Provider changed to a real value — clear model to prevent stale cross-provider model
         this.overrides[agent]!.model = null;
-      }
-      if (field === "provider" && this.overrides[agent]!.model === undefined) {
-        this.overrides[agent]!.model = null;
-      }
-      if (field === "model" && this.overrides[agent]!.provider === undefined) {
-        this.overrides[agent]!.provider = null;
       }
     }
   }

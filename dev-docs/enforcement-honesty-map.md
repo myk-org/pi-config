@@ -29,7 +29,7 @@ uv run myk-pi-tools memory status
 uv run myk-pi-tools memory status
 
 # Or raw scores (last valid line from JSONL):
-tail -n 1 .pi/memory/memory-scores.json | jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key'
+jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key' .pi/memory/memory-scores.json
 ```
 
 ## Injected tier (LLM)

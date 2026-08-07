@@ -450,10 +450,10 @@ class SettingsOverlay implements Component {
       return;
     }
 
-    // Delete key: remove setting from current scope (no conflict with search/typing)
+    // Delete key: remove setting from current scope (skip when search active or submenu open)
     if (matchesKey(data, Key.delete)) {
       const state = getSettingsListState(this.settingsList);
-      if (!state.hasActiveSubmenu) {
+      if (!state.hasActiveSubmenu && !state.hasActiveSearch) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
           const filePath = getFilePathForScope(this.editScope, this.cwd);

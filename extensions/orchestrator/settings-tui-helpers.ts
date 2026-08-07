@@ -3,7 +3,7 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join as joinPath } from "node:path";
 import stripJsonComments from "strip-json-comments";
@@ -248,8 +248,14 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const content = JSON.stringify(data, null, 2) + "\n";
   const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
-  writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-  renameSync(tmpPath, filePath);
+  try {
+    writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    renameSync(tmpPath, filePath);
+  } catch (e: any) {
+    // Clean up temp file on failure
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
+    throw e;
+  }
 }
 
 // ── Secret submit guard (extracted for testability) ────────────────
