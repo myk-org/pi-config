@@ -54,6 +54,7 @@ pi-config/
 │   │   ├── github-autocomplete.ts   # GitHub issue # autocomplete provider
 │   │   ├── git-helpers.ts           # Git utility functions
 │   │   ├── icons.ts                 # Shared Nerd Font icon constants
+│   │   ├── markdown-transformer.ts  # Display-only markdown transforms (memory badges, coms headers, review findings, settings, task/async status)
 │   │   ├── parse-model-override.ts  # Parse provider/model-id override strings for subagent model param
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
 │   │   ├── resolve-agent-model.ts   # Resolve effective model/provider for an agent (priority chain)

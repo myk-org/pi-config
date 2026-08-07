@@ -34,6 +34,7 @@ import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
+import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -98,6 +99,7 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerSessionSearch(pi);
+  registerMarkdownTransformer(pi);
 
   // ── list_models tool — LLM-callable model discovery ──
   pi.registerTool({
