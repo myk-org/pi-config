@@ -1160,9 +1160,27 @@ export function registerAsyncAgents(
         if (pending.length === 0) {
           deliverGroupResults(groupJobs);
         }
+      } else if (asyncState.lastCtx && !job.fireAndForget) {
+        // Non-grouped killed job — deliver immediately so AI knows it was killed
+        const displayName = job.name || job.agent;
+        const duration = job.durationMs || (Date.now() - job.startedAt);
+        const output = (job.output || "Killed by user").slice(0, 3000);
+        try {
+          pi.sendMessage({
+            customType: "async-agent-result",
+            content: `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`,
+            display: true,
+          }, { triggerTurn: true, deliverAs: "followUp" });
+          job.delivered = true;
+        } catch (e: any) {
+          asyncLog(`kill delivery failed for ${job.id}: ${e?.message}`);
+          // delivered stays false — reconciliation will retry
+        }
+      } else if (job.fireAndForget) {
+        job.delivered = true;
       }
-      // Delay cleanup — skip auto-delete for undelivered group members (let reaper handle them)
-      if (!job.groupId || job.delivered) {
+      // Delay cleanup — only for delivered jobs
+      if (job.delivered) {
         setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
       }
     }
