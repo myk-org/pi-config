@@ -137,17 +137,17 @@ export function registerAsyncAgents(
   };
 
   // Track job IDs that have already been delivered in this session (including previous lifecycles).
-  // Populated from session entries on session_start to prevent re-delivery after reload.
+  // Populated from status.json delivered flags on session_start to prevent re-delivery after reload.
   const deliveredResultIds = new Set<string>();
 
-  /** Check if a message was already delivered in a previous session lifecycle. */
-  function wasAlreadyDelivered(content: string): boolean {
-    return deliveredResultIds.has(djb2Hash(content).toString(36));
+  /** Check if a job result was already delivered in a previous session lifecycle. */
+  function wasAlreadyDelivered(jobId: string): boolean {
+    return deliveredResultIds.has(jobId);
   }
 
-  /** Record a message as delivered so it won't be re-sent after reload. */
-  function recordDelivered(content: string): void {
-    deliveredResultIds.add(djb2Hash(content).toString(36));
+  /** Record a job result as delivered so it won't be re-sent after reload. */
+  function recordDelivered(jobId: string): void {
+    deliveredResultIds.add(jobId);
   }
 
   let lastWidgetKey = "";
@@ -367,7 +367,7 @@ export function registerAsyncAgents(
               pi.events.emit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
             }
             const msgContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
-            if (wasAlreadyDelivered(msgContent)) {
+            if (wasAlreadyDelivered(job.id)) {
               job.delivered = true;
               asyncLog(`reconcile: skipping already-delivered result for ${job.id}`);
             } else {
@@ -381,7 +381,7 @@ export function registerAsyncAgents(
                   try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
                 }
                 job.delivered = true;
-                recordDelivered(msgContent);
+                recordDelivered(job.id);
               } catch (e: any) {
                 asyncLog(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
                 // delivered stays false — will retry on next poll
@@ -709,7 +709,7 @@ export function registerAsyncAgents(
         const maxOutput = 3000 - autoCompleteError.length;
         const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
         const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
-        if (wasAlreadyDelivered(pContent)) {
+        if (wasAlreadyDelivered(job.id)) {
           sendSucceeded = true;
           asyncLog(`processResultFile: skipping already-delivered result for ${job.id}`);
         } else {
@@ -720,7 +720,7 @@ export function registerAsyncAgents(
               display: true,
             }, { triggerTurn: true, deliverAs: "followUp" });
             sendSucceeded = true;
-            recordDelivered(pContent);
+            recordDelivered(job.id);
           } catch (e: any) {
             asyncLog(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
             // sendSucceeded stays false — delivered won't be set, reconciliation retries
@@ -982,25 +982,6 @@ export function registerAsyncAgents(
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
 
-    // Scan session entries for already-delivered async results to prevent re-delivery after reload
-    try {
-      const entries = ctx.sessionManager.getEntries();
-      for (const entry of entries) {
-        if ((entry as any).type === "custom_message" && (entry as any).customType === "async-agent-result") {
-          // Extract job IDs from the content — format: "## Async Agent Result: <name>"
-          // The content may contain multiple results (grouped delivery)
-          const content = (entry as any).content || "";
-          // Mark all async results in this session as already delivered
-          // We use a hash of the content to deduplicate (job IDs aren't in the message)
-          const hash = djb2Hash(content).toString(36);
-          deliveredResultIds.add(hash);
-        }
-      }
-      if (deliveredResultIds.size > 0) {
-        asyncLog(`session_start: found ${deliveredResultIds.size} previously delivered async results`);
-      }
-    } catch (e: any) { asyncLog(`session entry scan failed: ${e?.message}`); }
-
     // Preserve cwd-based early log path before PROJECT_TMP_DIR update
     const previousEarlyLogPath = EARLY_LOG_PATH;
 
@@ -1008,6 +989,26 @@ export function registerAsyncAgents(
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
     // Export as env var so prompts/CLI commands can reference it
     process.env.PROJECT_TMP_DIR = PROJECT_TMP_DIR;
+
+    // Scan worker directories for jobs with delivered=true in status.json
+    // This is more reliable than content hashing — uses job IDs directly
+    try {
+      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
+        const jobDir = path.join(PROJECT_TMP_DIR, entry);
+        try {
+          if (!fs.statSync(jobDir).isDirectory()) continue;
+          const statusPath = path.join(jobDir, "status.json");
+          if (!fs.existsSync(statusPath)) continue;
+          const status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+          if (status.delivered && status.runId) {
+            deliveredResultIds.add(status.runId);
+          }
+        } catch {}
+      }
+      if (deliveredResultIds.size > 0) {
+        asyncLog(`session_start: found ${deliveredResultIds.size} previously delivered job IDs`);
+      }
+    } catch (e: any) { asyncLog(`delivered job scan failed: ${e?.message}`); }
 
     ASYNC_DEBUG = !!getSetting(ctx.cwd, "async_debug");
     EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
@@ -1270,7 +1271,7 @@ export function registerAsyncAgents(
         const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
         const output = rawOutput.slice(0, 3000);
         const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
-        if (wasAlreadyDelivered(killContent)) {
+        if (wasAlreadyDelivered(job.id)) {
           job.delivered = true;
           asyncLog(`kill: skipping already-delivered result for ${job.id}`);
         } else {
@@ -1281,7 +1282,7 @@ export function registerAsyncAgents(
               display: true,
             }, { triggerTurn: true, deliverAs: "followUp" });
             job.delivered = true;
-            recordDelivered(killContent);
+            recordDelivered(job.id);
           } catch (e: any) {
             asyncLog(`kill delivery failed for ${job.id}: ${e?.message}`);
             // delivered stays false — reconciliation will retry
