@@ -56,6 +56,7 @@ export interface AsyncJob {
   exitCode?: number | null;
   durationMs?: number;
   delivered?: boolean;
+  sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
   onComplete?: () => void;
   groupId?: string;
@@ -207,6 +208,10 @@ export function registerAsyncAgents(
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
                     try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
+                  if (job.agent === "test-automator" || job.agent === "test-runner") {
+                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { asyncLog(`markTests failed for ${job.agent}: ${e?.message}`); }
+                  }
+                  job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
                 } catch {
                   job.status = "failed";
@@ -216,6 +221,7 @@ export function registerAsyncAgents(
                   if (job.agent.startsWith("code-reviewer-")) {
                     try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
+                  job.sideEffectsApplied = true;
                 }
               } else {
                 job.status = "failed";
@@ -226,6 +232,7 @@ export function registerAsyncAgents(
                 if (job.agent.startsWith("code-reviewer-")) {
                   try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
+                job.sideEffectsApplied = true;
               }
               // Check if this completes a group — deliver remaining siblings' results
               if (job.groupId) {
@@ -246,11 +253,36 @@ export function registerAsyncAgents(
         }
       } catch (e: any) { console.debug("[async-agents] result file scan failed:", e?.message || e); }
 
-      // Remove completed/failed jobs older than 30s (skip undelivered group members)
+      // Reconciliation pass — retry side-effects + delivery for done-but-undelivered jobs
+      for (const [id, job] of asyncState.jobs.entries()) {
+        if ((job.status === "complete" || job.status === "failed") && !job.delivered) {
+          // Side-effects: ensure they fired
+          if (!job.sideEffectsApplied) {
+            if (job.agent.startsWith("code-reviewer-")) {
+              const findings = countFindings(typeof job.output === "string" ? job.output : "");
+              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { asyncLog(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+            }
+            if (job.agent === "test-automator" || job.agent === "test-runner") {
+              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { asyncLog(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
+            }
+            job.sideEffectsApplied = true;
+          }
+          // Delivery: retry for groups where all members are done
+          if (job.groupId) {
+            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+            if (pending.length === 0) {
+              deliverGroupResults(groupJobs);
+            }
+          }
+        }
+      }
+
+      // Remove completed/failed jobs older than 30s — require delivered before cleanup
       for (const [id, job] of asyncState.jobs.entries()) {
         if ((job.status === "complete" || job.status === "failed")
             && Date.now() - job.updatedAt > 30000
-            && (job.delivered || !job.groupId)) {
+            && job.delivered) {
           asyncState.jobs.delete(id);
         }
       }
@@ -316,6 +348,9 @@ export function registerAsyncAgents(
         }
       } catch (e: any) { asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); }
     }
+
+    // Mark side-effects applied for all group members
+    for (const j of groupJobs) j.sideEffectsApplied = true;
 
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
@@ -456,6 +491,8 @@ export function registerAsyncAgents(
           }
         } catch (e: any) { console.debug(`[async-agents] markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
+
+      job.sideEffectsApplied = true;
 
       // Clean up result file — for grouped jobs, defer to deliverGroupResults
       if (!job.groupId) {
@@ -945,6 +982,7 @@ export function registerAsyncAgents(
       if (job.agent.startsWith("code-reviewer-")) {
         try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
+      job.sideEffectsApplied = true;
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
