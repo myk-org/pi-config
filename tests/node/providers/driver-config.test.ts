@@ -70,7 +70,11 @@ describe("acpx probe binary check", { concurrency: false }, () => {
   });
 
   afterEach(() => {
-    process.env.PATH = prevPath;
+    if (prevPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = prevPath;
+    }
     clearResolveBinaryCache();
     if (tmpRoot) {
       rmSync(tmpRoot, { recursive: true, force: true });
