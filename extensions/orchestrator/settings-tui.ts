@@ -1,9 +1,9 @@
 /**
  * Settings TUI — interactive editor for pi-config settings.
  *
- * /pi-config-settings [scope] opens a fullscreen overlay with box-drawing borders,
+ * /pi-config-settings [scope] opens a fullscreen overlay with category tabs,
  * themed header/footer, colored source glyphs, and fuzzy-searchable pickers.
- * Matches the async-status / cron overlay design pattern.
+ * Left/Right arrows switch categories. Tab switches project/global scope.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ModelRegistry, Theme } from "@earendil-works/pi-coding-agent";
@@ -20,6 +20,7 @@ import {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   SETTINGS_KEYS,
   type SettingsKeyDef,
@@ -110,163 +111,189 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
 // ── Available agent names ───────────────────────────────────────────
 
 function getAvailableAgentNames(cwd: string): string[] {
-  const agentsDir = join(resolveRepoRoot(cwd), "agents");
-  try {
-    return readdirSync(agentsDir)
-      .filter((f) => f.endsWith(".md"))
-      .map((f) => f.replace(/\.md$/, ""))
-      .sort();
-  } catch {
-    return [];
+  // Check multiple directories for agent definitions
+  const dirs = [
+    join(resolveRepoRoot(cwd), "agents"),
+    join(homedir(), ".pi", "agent", "agents"),
+  ];
+  const agents = new Set<string>();
+  for (const dir of dirs) {
+    try {
+      for (const f of readdirSync(dir)) {
+        if (f.endsWith(".md")) agents.add(f.replace(/\.md$/, ""));
+      }
+    } catch {}
   }
+  return [...agents].sort();
 }
 
-// ── Build setting items ─────────────────────────────────────────────
+// ── Build setting items for a single category ───────────────────────
 
+export function buildCategoryItems(
+  categoryIndex: number,
+  cwd: string,
+  editScope: "project" | "global",
+  theme: Theme,
+  modelRegistry?: ModelRegistry,
+): SettingItem[] {
+  const category = CATEGORIES[categoryIndex];
+  if (!category) return [];
+
+  const items: SettingItem[] = [];
+  const pmInfo = getProviderModelInfo(modelRegistry);
+  const availableAgents = getAvailableAgentNames(cwd);
+
+  for (const key of category.keys) {
+    const def = SETTINGS_KEYS[key];
+    if (!def) continue;
+
+    const effectiveValue = getSetting(cwd, key as any);
+    const source = detectSource(key, def, cwd);
+    const displayValue = formatValue(key, effectiveValue, def);
+    const glyph = sourceGlyph(source, theme);
+
+    const item: SettingItem = {
+      id: key,
+      label: `${glyph} ${key}`,
+      currentValue: displayValue,
+      description: def.env ? `env: ${def.env}` : undefined,
+    };
+
+    // Configure interaction based on type and key
+    const isProviderKey = key === "agent_provider" || key === "internal_operations_provider";
+    const isModelKey = key === "agent_model" || key === "internal_operations_model";
+
+    if (isProviderKey && pmInfo.providers.length > 0) {
+      item.submenu = (_current: string, done: (val?: string) => void): Component => {
+        return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done);
+      };
+    } else if (isModelKey && pmInfo.models.length > 0) {
+      item.submenu = (_current: string, done: (val?: string) => void): Component => {
+        return new PickerSubmenu(`Select model for ${key}`, pmInfo.models, theme, done);
+      };
+    } else {
+      switch (def.type) {
+        case "bool":
+        case "bool_enable":
+          item.values = ["true", "false"];
+          break;
+
+        case "bool_or_string":
+          item.submenu = (current: string, done: (val?: string) => void): Component => {
+            return new InputSubmenu(
+              `${key} (bool or custom string)`,
+              current === "true" || current === "false" ? current : current,
+              'Enter "true", "false", or a custom string',
+              theme,
+              done,
+            );
+          };
+          break;
+
+        case "string": {
+          const SECRET_PATTERN = /token|secret|password|auth/i;
+          const isSecret = SECRET_PATTERN.test(key);
+          const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
+          item.submenu = (current: string, done: (val?: string) => void): Component => {
+            const prefill = secretInfo ? secretInfo.prefill : current;
+            const hint = secretInfo ? secretInfo.hint : "Enter new value (empty to clear)";
+            return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
+              if (isSecret && secretInfo && isSecretNoChange(val, secretInfo.scopeValue !== null)) {
+                done(undefined);
+                return;
+              }
+              done(val);
+            });
+          };
+          break;
+        }
+
+        case "int":
+        case "port":
+        case "number":
+          item.submenu = (current: string, done: (val?: string) => void): Component => {
+            return new NumberInputSubmenu(key, current, def, theme, done);
+          };
+          break;
+
+        case "agent_list":
+          item.submenu = (_current: string, done: (val?: string) => void): Component => {
+            const currentAgents = Array.isArray(effectiveValue) ? effectiveValue as string[] : [];
+            return new MultiSelectSubmenu(
+              `${key} — select agents`,
+              availableAgents,
+              currentAgents,
+              theme,
+              done,
+            );
+          };
+          break;
+
+        case "agent_overrides":
+          item.submenu = (_current: string, done: (val?: string) => void): Component => {
+            const currentOverrides = (typeof effectiveValue === "object" && effectiveValue !== null && !Array.isArray(effectiveValue))
+              ? effectiveValue as Record<string, { provider?: string | null; model?: string | null }>
+              : {};
+            return new AgentOverridesSubmenu(
+              "Agent overrides — per-agent provider/model",
+              currentOverrides,
+              availableAgents,
+              theme,
+              done,
+            );
+          };
+          break;
+      }
+    }
+
+    items.push(item);
+  }
+
+  return items;
+}
+
+// Keep legacy buildSettingItems for backward compat / tests
 export function buildSettingItems(
   cwd: string,
   editScope: "project" | "global",
   theme: Theme,
   modelRegistry?: ModelRegistry,
 ): SettingItem[] {
-  const items: SettingItem[] = [];
-  const pmInfo = getProviderModelInfo(modelRegistry);
-  const availableAgents = getAvailableAgentNames(cwd);
-
-  for (const category of CATEGORIES) {
-    // Category separator — themed like borderSegment
-    items.push({
-      id: `__category_${category.label}`,
-      label: `${theme.fg("border", "──")} ${theme.fg("muted", category.label)} ${theme.fg("border", "──")}`,
-      currentValue: "",
-    });
-
-    for (const key of category.keys) {
-      const def = SETTINGS_KEYS[key];
-      if (!def) continue;
-
-      const effectiveValue = getSetting(cwd, key as any);
-      const source = detectSource(key, def, cwd);
-      const displayValue = formatValue(key, effectiveValue, def);
-      const glyph = sourceGlyph(source, theme);
-
-      const item: SettingItem = {
-        id: key,
-        label: `${glyph} ${key}`,
-        currentValue: displayValue,
-        description: def.env ? `env: ${def.env}` : undefined,
-      };
-
-      // Configure interaction based on type and key
-      const isProviderKey = key === "agent_provider" || key === "internal_operations_provider";
-      const isModelKey = key === "agent_model" || key === "internal_operations_model";
-
-      if (isProviderKey && pmInfo.providers.length > 0) {
-        item.submenu = (_current: string, done: (val?: string) => void): Component => {
-          return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done);
-        };
-      } else if (isModelKey && pmInfo.models.length > 0) {
-        item.submenu = (_current: string, done: (val?: string) => void): Component => {
-          return new PickerSubmenu(`Select model for ${key}`, pmInfo.models, theme, done);
-        };
-      } else {
-        switch (def.type) {
-          case "bool":
-          case "bool_enable":
-            item.values = ["true", "false"];
-            break;
-
-          case "bool_or_string":
-            item.submenu = (current: string, done: (val?: string) => void): Component => {
-              return new InputSubmenu(
-                `${key} (bool or custom string)`,
-                current === "true" || current === "false" ? current : current,
-                'Enter "true", "false", or a custom string',
-                theme,
-                done,
-              );
-            };
-            break;
-
-          case "string": {
-            const SECRET_PATTERN = /token|secret|password|auth/i;
-            const isSecret = SECRET_PATTERN.test(key);
-            const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
-            item.submenu = (current: string, done: (val?: string) => void): Component => {
-              const prefill = secretInfo ? secretInfo.prefill : current;
-              const hint = secretInfo ? secretInfo.hint : "Enter new value (empty to clear)";
-              return new InputSubmenu(key, prefill, hint, theme, (val?: string) => {
-                if (isSecret && secretInfo && isSecretNoChange(val, secretInfo.scopeValue !== null)) {
-                  done(undefined);
-                  return;
-                }
-                done(val);
-              });
-            };
-            break;
-          }
-
-          case "int":
-          case "port":
-          case "number":
-            item.submenu = (current: string, done: (val?: string) => void): Component => {
-              return new NumberInputSubmenu(key, current, def, theme, done);
-            };
-            break;
-
-          case "agent_list":
-            item.submenu = (_current: string, done: (val?: string) => void): Component => {
-              const currentAgents = Array.isArray(effectiveValue) ? effectiveValue as string[] : [];
-              return new MultiSelectSubmenu(
-                `${key} — select agents`,
-                availableAgents,
-                currentAgents,
-                theme,
-                done,
-              );
-            };
-            break;
-
-          case "agent_overrides":
-            item.submenu = (_current: string, done: (val?: string) => void): Component => {
-              const currentOverrides = (typeof effectiveValue === "object" && effectiveValue !== null && !Array.isArray(effectiveValue))
-                ? effectiveValue as Record<string, { provider?: string | null; model?: string | null }>
-                : {};
-              return new AgentOverridesSubmenu(
-                "Agent overrides — per-agent provider/model",
-                currentOverrides,
-                availableAgents,
-                theme,
-                done,
-              );
-            };
-            break;
-        }
-      }
-
-      items.push(item);
-    }
+  const all: SettingItem[] = [];
+  for (let i = 0; i < CATEGORIES.length; i++) {
+    all.push(...buildCategoryItems(i, cwd, editScope, theme, modelRegistry));
   }
-
-  return items;
+  return all;
 }
 
 // ── Save a single change ────────────────────────────────────────────
 
 function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): boolean {
   const filePath = getFilePathForScope(scope, cwd);
-  // Read from the .json write target (not .jsonc) so TUI-saved values accumulate correctly.
   const writePath = resolveWritePath(filePath);
   const current = readSettingsFile(writePath);
-  if (current === null) return false; // corrupt file — refuse to clobber
+  if (current === null) return false;
   if (value === undefined) {
-    if (!(key in current)) return true; // key not present — nothing to clear
-    delete current[key]; // clear/unset the key
+    if (!(key in current)) return true;
+    delete current[key];
   } else {
     current[key] = value;
   }
-  // Skip write if result would be empty and file doesn't exist yet
   if (Object.keys(current).length === 0 && !existsSync(writePath)) return true;
+  writeSettingsFile(filePath, current);
+  clearSettingsCache();
+  return true;
+}
+
+// ── Delete a key from the current scope ─────────────────────────────
+
+function deleteFromScope(key: string, scope: "project" | "global", cwd: string): boolean {
+  const filePath = getFilePathForScope(scope, cwd);
+  const writePath = resolveWritePath(filePath);
+  const current = readSettingsFile(writePath);
+  if (current === null) return false;
+  if (!(key in current)) return true; // not present — nothing to delete
+  delete current[key];
   writeSettingsFile(filePath, current);
   clearSettingsCache();
   return true;
@@ -292,9 +319,11 @@ class SettingsOverlay implements Component {
   private cwd: string;
   private modelRegistry: ModelRegistry | undefined;
   private editScope: "project" | "global";
+  private categoryIndex: number;
   private done: (value: undefined) => void;
   private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
+  private selectedId: string | null;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -312,20 +341,21 @@ class SettingsOverlay implements Component {
     this.cwd = cwd;
     this.modelRegistry = modelRegistry;
     this.editScope = initialScope;
+    this.categoryIndex = 0;
     this.done = done;
     this.notify = notify;
+    this.selectedId = null;
     this.rebuild();
   }
 
   private rebuild(): void {
-    const items = buildSettingItems(this.cwd, this.editScope, this.theme, this.modelRegistry);
+    const items = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
 
     this.settingsList = new SettingsList(
       items,
       20,
       getSettingsListTheme(),
       (id: string, newValue: string) => {
-        if (id.startsWith("__category_")) return;
         const def = SETTINGS_KEYS[id];
         if (!def) return;
 
@@ -336,7 +366,6 @@ class SettingsOverlay implements Component {
           parsed = parseRawValue(id, newValue, def);
         }
 
-        // Save immediately to the current scope
         const filePath = getFilePathForScope(this.editScope, this.cwd);
         if (!saveChange(id, parsed, this.editScope, this.cwd)) {
           this.notify(`Failed to save: settings file is corrupt (${filePath})`, "error");
@@ -345,7 +374,18 @@ class SettingsOverlay implements Component {
         if (filePath.endsWith(".jsonc")) {
           this.notify("Saved to .json (comments preserved in .jsonc)", "info");
         }
+
+        // Preserve selection, then rebuild to refresh source indicators
+        this.selectedId = id;
         this.rebuild();
+        // Restore selection by finding the item index
+        const newItems = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
+        if (this.selectedId) {
+          const idx = newItems.findIndex((item) => item.id === this.selectedId);
+          if (idx >= 0) {
+            this.settingsList.updateValue(this.selectedId, newItems[idx].currentValue);
+          }
+        }
         this.tui.requestRender();
       },
       () => this.done(undefined),
@@ -359,9 +399,45 @@ class SettingsOverlay implements Component {
     // Tab to switch scope
     if (matchesKey(data, Key.tab)) {
       this.editScope = this.editScope === "project" ? "global" : "project";
+      this.selectedId = null;
       this.rebuild();
       this.tui.requestRender();
       return;
+    }
+
+    // Left/Right to switch category tabs
+    if (matchesKey(data, Key.left)) {
+      this.categoryIndex = (this.categoryIndex - 1 + CATEGORIES.length) % CATEGORIES.length;
+      this.selectedId = null;
+      this.rebuild();
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.right)) {
+      this.categoryIndex = (this.categoryIndex + 1) % CATEGORIES.length;
+      this.selectedId = null;
+      this.rebuild();
+      this.tui.requestRender();
+      return;
+    }
+
+    // D to delete current scope override
+    if (data === "d" || data === "D") {
+      // Get the currently selected item from the settings list
+      const items = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
+      // We need to find which item is selected — use the SettingsList's internal state
+      // Since we can't access selectedIndex directly, we track via selectedId
+      if (this.selectedId) {
+        const filePath = getFilePathForScope(this.editScope, this.cwd);
+        if (!deleteFromScope(this.selectedId, this.editScope, this.cwd)) {
+          this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
+        } else {
+          this.notify(`Deleted ${this.selectedId} from ${this.editScope} scope`, "info");
+        }
+        this.rebuild();
+        this.tui.requestRender();
+        return;
+      }
     }
 
     this.settingsList.handleInput?.(data);
@@ -377,19 +453,24 @@ class SettingsOverlay implements Component {
     const innerWidth = Math.max(0, width - 2);
     const lines: string[] = [];
 
-    // Count non-category items
-    const allKeys = CATEGORIES.flatMap((c) => c.keys);
-    const keyCount = allKeys.length;
+    const currentCategory = CATEGORIES[this.categoryIndex];
     const scopeLabel = this.editScope === "project" ? "Project" : "Global";
 
-    // ── Header line ──
+    // ── Header: category tabs ──
+    const tabs: string[] = [];
+    for (let i = 0; i < CATEGORIES.length; i++) {
+      const cat = CATEGORIES[i];
+      if (i === this.categoryIndex) {
+        tabs.push(theme.fg("accent", theme.bold(` ${cat.label} `)));
+      } else {
+        tabs.push(theme.fg("dim", ` ${cat.label} `));
+      }
+    }
     const headerLeft = theme.fg("accent", theme.bold("Settings"));
-    const headerRight = theme.fg("muted", `${keyCount} keys`);
-    const headerPad = Math.max(1, width - visibleWidth(headerLeft) - visibleWidth(headerRight) - 4);
-    lines.push(truncateToWidth(`  ${headerLeft}${" ".repeat(headerPad)}${headerRight}  `, width));
+    lines.push(truncateToWidth(`  ${headerLeft}  ${tabs.join(theme.fg("border", "│"))}`, width));
 
     // ── Top border with title ──
-    const borderTitle = `${scopeLabel} scope`;
+    const borderTitle = `${currentCategory.label} · ${scopeLabel} · ${currentCategory.keys.length} keys`;
     lines.push(
       theme.fg("border", "╭") +
       borderSegment(theme, innerWidth, borderTitle) +
@@ -398,7 +479,7 @@ class SettingsOverlay implements Component {
 
     // ── Settings list body ──
     const divider = theme.fg("border", "│");
-    const bodyHeight = Math.max(6, rows - 5);
+    const bodyHeight = Math.max(6, rows - 6);
     const settingsLines = this.settingsList.render(innerWidth);
 
     for (let i = 0; i < bodyHeight; i++) {
@@ -417,7 +498,7 @@ class SettingsOverlay implements Component {
     const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
     lines.push(truncateToWidth(legend, width));
     lines.push(truncateToWidth(
-      theme.fg("dim", `  Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · / search · Esc close`),
+      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · D delete · Esc close`),
       width,
     ));
 
