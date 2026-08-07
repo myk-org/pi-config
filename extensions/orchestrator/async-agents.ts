@@ -925,19 +925,20 @@ export function registerAsyncAgents(
         if (resultDir === ASYNC_RESULTS_DIR) continue; // skip our own
         try {
           if (!fs.statSync(resultDir).isDirectory()) continue;
-          // Extract PID and starttime from directory name: async-results-pid-{pid}-{starttime}
-          const match = entry.match(/^async-results-pid-(\d+)-(\d+)$/);
-          if (!match) {
-            // Can't parse — clean up stale files inside but keep directory
-            continue;
-          }
+          // Extract PID and starttime from directory name
+          // Format: async-results-pid-{pid}-{starttime} (current) or async-results-pid-{pid} (legacy)
+          const match = entry.match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
+          if (!match) continue;
           const dirPid = parseInt(match[1], 10);
-          const dirStartTime = match[2];
+          const dirStartTime = match[2]; // undefined for legacy PID-only format
           let parentAlive = false;
           try {
             const stat = fs.readFileSync(`/proc/${dirPid}/stat`, "utf-8");
             const currentStartTime = parseProcStartTime(stat);
-            if (currentStartTime && currentStartTime === dirStartTime) parentAlive = true;
+            if (currentStartTime) {
+              // With starttime: must match exactly. Without: PID alive = keep (conservative)
+              parentAlive = dirStartTime ? currentStartTime === dirStartTime : true;
+            }
           } catch {} // /proc not found = dead
           if (!parentAlive) {
             // Parent dead — clean up entire result directory
