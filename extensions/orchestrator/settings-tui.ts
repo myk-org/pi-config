@@ -130,24 +130,20 @@ function getAvailableAgentNames(cwd: string): string[] {
 
 // ── Known CLI/ACPX provider names (for acpx_agents / cli_agents) ──
 
-const KNOWN_CLI_PROVIDERS = ["cursor", "claude", "gemini", "copilot"];
+const KNOWN_CLI_PROVIDERS = ["cursor", "claude", "gemini"];
 
-// ── Refresh a single item's display after save ──────────────────────
+// ── Refresh a single item's label + value in-place ──────────────────
 
-function refreshItemDisplay(
-  settingsList: SettingsList,
-  key: string,
-  cwd: string,
-  theme: Theme,
-): void {
-  const def = SETTINGS_KEYS[key];
+function refreshItem(item: SettingItem, cwd: string, theme: Theme): void {
+  const def = SETTINGS_KEYS[item.id];
   if (!def) return;
-  const effectiveValue = getSetting(cwd, key as any);
-  const source = detectSource(key, def, cwd);
-  const displayValue = formatValue(key, effectiveValue, def);
+  const effectiveValue = getSetting(cwd, item.id as any);
+  const source = detectSource(item.id, def, cwd);
+  const displayValue = formatValue(item.id, effectiveValue, def);
   const glyph = sourceGlyph(source, theme);
-  // Update the label (with new source glyph) and value
-  settingsList.updateValue(key, displayValue);
+  // Mutate in-place — SettingsList holds a reference to the same items array
+  item.label = `${glyph} ${item.id}`;
+  item.currentValue = displayValue;
 }
 
 // ── Build setting items for a single category ───────────────────────
@@ -346,7 +342,8 @@ class SettingsOverlay implements Component {
   private done: (value: undefined) => void;
   private notify: (msg: string, level: "info" | "error") => void;
   private settingsList!: SettingsList;
-  private lastChangedId: string | null;
+  private currentItems: SettingItem[];
+  private trackedIndex: number;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -367,15 +364,17 @@ class SettingsOverlay implements Component {
     this.categoryIndex = 0;
     this.done = done;
     this.notify = notify;
-    this.lastChangedId = null;
+    this.currentItems = [];
+    this.trackedIndex = 0;
     this.rebuild();
   }
 
   private rebuild(): void {
-    const items = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
+    this.currentItems = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
+    this.trackedIndex = 0;
 
     this.settingsList = new SettingsList(
-      items,
+      this.currentItems,
       20,
       getSettingsListTheme(),
       (id: string, newValue: string) => {
@@ -398,9 +397,12 @@ class SettingsOverlay implements Component {
           this.notify("Saved to .json (comments preserved in .jsonc)", "info");
         }
 
-        // Update display in-place WITHOUT rebuilding (preserves cursor position)
-        this.lastChangedId = id;
-        refreshItemDisplay(this.settingsList, id, this.cwd, this.theme);
+        // Update label + value in-place (mutates the items array that SettingsList holds)
+        const item = this.currentItems.find((i) => i.id === id);
+        if (item) {
+          refreshItem(item, this.cwd, this.theme);
+        }
+        this.settingsList.invalidate();
         this.invalidate();
         this.tui.requestRender();
       },
@@ -434,34 +436,31 @@ class SettingsOverlay implements Component {
       return;
     }
 
-    // D to delete current scope override for the last-interacted setting
-    if (data === "d" || data === "D") {
-      // Identify which setting to delete — use lastChangedId or the first item
-      const items = buildCategoryItems(this.categoryIndex, this.cwd, this.editScope, this.theme, this.modelRegistry);
-      // We don't have direct access to SettingsList's selectedIndex, so delegate
-      // the D key to the settingsList first to see if it handles it, otherwise
-      // try to delete the last-changed item
-      if (items.length > 0) {
-        // Find which item is likely selected by checking the current category items
-        // Since we can't access selectedIndex, we'll use a workaround:
-        // Pass D through to settingsList — if it doesn't handle it, we check lastChangedId
-        const filePath = getFilePathForScope(this.editScope, this.cwd);
+    // Track selection index from navigation keys
+    if (matchesKey(data, Key.up) || data === "k") {
+      if (this.currentItems.length > 0) {
+        this.trackedIndex = this.trackedIndex === 0 ? this.currentItems.length - 1 : this.trackedIndex - 1;
+      }
+    } else if (matchesKey(data, Key.down) || data === "j") {
+      if (this.currentItems.length > 0) {
+        this.trackedIndex = this.trackedIndex === this.currentItems.length - 1 ? 0 : this.trackedIndex + 1;
+      }
+    }
 
-        // Try to find the setting at the visual selection by sending a probe
-        // For now, delete the setting that was last interacted with OR
-        // show a notification to select a setting first
-        if (this.lastChangedId && items.some((item) => item.id === this.lastChangedId)) {
-          if (!deleteFromScope(this.lastChangedId, this.editScope, this.cwd)) {
-            this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
-          } else {
-            this.notify(`Deleted ${this.lastChangedId} from ${this.editScope} scope`, "info");
-            refreshItemDisplay(this.settingsList, this.lastChangedId, this.cwd, this.theme);
-            this.invalidate();
-          }
-          this.tui.requestRender();
-          return;
+    // D to delete current scope override for the selected setting
+    if (data === "d" || data === "D") {
+      const selectedItem = this.currentItems[this.trackedIndex];
+      if (selectedItem) {
+        const filePath = getFilePathForScope(this.editScope, this.cwd);
+        if (!deleteFromScope(selectedItem.id, this.editScope, this.cwd)) {
+          this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
+        } else {
+          this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
+          // Refresh item in-place
+          refreshItem(selectedItem, this.cwd, this.theme);
+          this.settingsList.invalidate();
         }
-        this.notify("Select a setting first (Enter/Space to interact, then D to delete)", "info");
+        this.invalidate();
         this.tui.requestRender();
         return;
       }
