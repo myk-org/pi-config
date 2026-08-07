@@ -277,6 +277,24 @@ export function buildSettingItems(
   return all;
 }
 
+// ── Safe SettingsList state access ──────────────────────────────────
+// SettingsList fields are TypeScript-private (compile-time only) — accessible at runtime.
+
+function getSettingsListState(list: SettingsList): {
+  hasActiveSearch: boolean;
+  hasActiveSubmenu: boolean;
+  selectedIndex: number;
+  displayItems: SettingItem[];
+} {
+  const raw = list as any;
+  const searchInput = raw.searchInput;
+  const hasActiveSearch = !!(searchInput && searchInput.getValue && searchInput.getValue().length > 0);
+  const hasActiveSubmenu = !!raw.submenuComponent;
+  const selectedIndex: number = raw.selectedIndex ?? 0;
+  const displayItems: SettingItem[] = raw.searchEnabled ? (raw.filteredItems ?? raw.items) : (raw.items ?? []);
+  return { hasActiveSearch, hasActiveSubmenu, selectedIndex, displayItems };
+}
+
 // ── Save a single change ────────────────────────────────────────
 
 function saveChange(key: string, value: unknown, scope: "project" | "global", cwd: string): boolean {
@@ -290,6 +308,19 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
     current[key] = value;
   }
   if (Object.keys(current).length === 0 && !existsSync(filePath)) return true;
+  writeSettingsFile(filePath, current);
+  clearSettingsCache();
+  return true;
+}
+
+// ── Delete a key from the current scope ─────────────────────────
+
+function deleteFromScope(key: string, scope: "project" | "global", cwd: string): boolean {
+  const filePath = getFilePathForScope(scope, cwd);
+  const current = readSettingsFile(filePath);
+  if (current === null) return false;
+  if (!(key in current)) return true;
+  delete current[key];
   writeSettingsFile(filePath, current);
   clearSettingsCache();
   return true;
@@ -419,6 +450,27 @@ class SettingsOverlay implements Component {
       return;
     }
 
+    // D-key delete: only when no search active and no submenu open
+    if (data === "d" || data === "D") {
+      const state = getSettingsListState(this.settingsList);
+      if (!state.hasActiveSearch && !state.hasActiveSubmenu) {
+        const selectedItem = state.displayItems[state.selectedIndex];
+        if (selectedItem) {
+          const filePath = getFilePathForScope(this.editScope, this.cwd);
+          if (!deleteFromScope(selectedItem.id, this.editScope, this.cwd)) {
+            this.notify(`Failed to delete: settings file is corrupt (${filePath})`, "error");
+          } else {
+            this.notify(`Deleted ${selectedItem.id} from ${this.editScope} scope`, "info");
+            refreshItem(selectedItem, this.cwd, this.theme);
+          }
+          this.invalidate();
+          this.tui.requestRender();
+          return;
+        }
+      }
+      // Fall through to SettingsList (search input consumes the keystroke)
+    }
+
     // Forward all input to SettingsList (handles navigation, enter, space, escape, search)
     this.settingsList.handleInput?.(data);
     this.invalidate();
@@ -478,7 +530,7 @@ class SettingsOverlay implements Component {
     const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
     lines.push(truncateToWidth(legend, width));
     lines.push(truncateToWidth(
-      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · Esc close`),
+      theme.fg("dim", `  ←→ category · Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · D delete · Esc close`),
       width,
     ));
 
