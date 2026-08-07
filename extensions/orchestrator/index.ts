@@ -34,6 +34,7 @@ import { registerPreferenceExtractor } from "./preference-extractor.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
+import { registerSettingsTui } from "./settings-tui.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
@@ -99,6 +100,7 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerSessionSearch(pi);
+  registerSettingsTui(pi);
   registerMarkdownTransformer(pi);
 
   // ── list_models tool — LLM-callable model discovery ──

@@ -41,6 +41,9 @@ pi-config/
 │   │   ├── async-status-parse.ts    # Pure output.log JSONL → display line parser
 │   │   ├── cron-status-ui.ts        # /cron list + list-all overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
+│   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (uses overlay-dashboard)
+│   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O)
+│   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, multi-select, overrides)
 │   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + internal ops provider settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files

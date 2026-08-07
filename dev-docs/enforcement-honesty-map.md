@@ -25,6 +25,10 @@ Inventory a project’s code-tier memories:
 uv run myk-pi-tools memory status
 
 # Or raw scores:
+# Preferred: use the CLI
+uv run myk-pi-tools memory status
+
+# Or raw scores (JSONL — last valid line):
 jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key' .pi/memory/memory-scores.jsonl
 ```
 

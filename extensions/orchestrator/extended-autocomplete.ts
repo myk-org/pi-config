@@ -316,6 +316,12 @@ function registerCompletions(
       }
       return null;
     },
+    "pi-config-settings": (prefix: string) => {
+      return filter([
+        { value: "project", label: "project", description: "Edit project-level settings" },
+        { value: "global", label: "global", description: "Edit global settings" },
+      ], prefix);
+    },
 
   };
 
@@ -348,6 +354,7 @@ function setupPromptTemplateInterceptor(
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
     "review-local", "release", "review-handler", "cron", "create-skill", "create-coms-feature-manager",
+    "pi-config-settings",
   ]);
 
   // /external-ai-models-refresh command — clears cache and re-fetches

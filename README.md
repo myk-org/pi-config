@@ -36,7 +36,7 @@ Single extension that provides:
 | **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges ([@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks)) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Inter-agent communication** | P2P (`/coms`) and networked (`/coms-net`) agent communication — on-demand activation via slash commands |
-| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net` — with autocomplete argument hints |
+| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net`, `/pi-config-settings` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
@@ -77,6 +77,7 @@ Single extension that provides:
 | `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
 | `/cron add\|list\|list-all\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). `/cron list` and `/cron list-all` open overlay UI (view / remove; list-all = all sessions). Tasks run while pi is active, survive `/reload`, and stop on exit |
 | `/async-kill [name\|id\|all]` | Kill async agents (overlay picker or by name/id) |
+| `/pi-config-settings [project\|global]` | Interactive TUI settings editor — browse all pi-config settings with scope indicators, smart pickers for providers/models, and immediate save |
 | `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |

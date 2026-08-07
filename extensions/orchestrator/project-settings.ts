@@ -104,7 +104,7 @@ interface ProjectSettings {
 }
 
 /** Key definition from settings-keys.json — single source of truth for env names + defaults. */
-interface SettingsKeyDef {
+export interface SettingsKeyDef {
   type: string;
   env?: string;
   default: unknown;
@@ -117,7 +117,7 @@ interface SettingsKeyDef {
 const SETTINGS_FILENAMES = ["pi-config-settings.jsonc", "pi-config-settings.json"];
 
 /** Find the first existing settings file in a directory (.jsonc preferred over .json). */
-function findSettingsFile(dir: string): string | null {
+export function findSettingsFile(dir: string): string | null {
   for (const name of SETTINGS_FILENAMES) {
     const p = join(dir, name);
     if (existsSync(p)) return p;
@@ -125,7 +125,7 @@ function findSettingsFile(dir: string): string | null {
   return null;
 }
 
-const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
+export const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"), "utf-8"),
 );
 
@@ -179,12 +179,12 @@ for (const key of PROJECT_SETTINGS_KEYS) {
   }
 }
 
-function getSettingsPath(cwd: string): string {
+export function getSettingsPath(cwd: string): string {
   const piDir = join(resolveRepoRoot(cwd), ".pi");
   return findSettingsFile(piDir) ?? join(piDir, SETTINGS_FILENAMES[0]);
 }
 
-function parseSettingsFile(filePath: string): ProjectSettings {
+export function parseSettingsFile(filePath: string): ProjectSettings {
   if (!existsSync(filePath)) return {};
   try {
     const raw = JSON.parse(stripJsonComments(readFileSync(filePath, "utf-8")));
@@ -297,7 +297,7 @@ function parseSettingsFile(filePath: string): ProjectSettings {
   }
 }
 
-function loadProjectSettings(cwd: string): ProjectSettings {
+export function loadProjectSettings(cwd: string): ProjectSettings {
   return parseSettingsFile(getSettingsPath(cwd));
 }
 
@@ -310,9 +310,13 @@ export function setGlobalSettingsPath(path: string | null): void {
   clearSettingsCache();
 }
 
-function loadGlobalSettings(): ProjectSettings {
-  const globalPath = globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
-  return parseSettingsFile(globalPath);
+/** Resolved global settings file path (honors test override). */
+export function getGlobalSettingsPath(): string {
+  return globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+}
+
+export function loadGlobalSettings(): ProjectSettings {
+  return parseSettingsFile(getGlobalSettingsPath());
 }
 
 function projectSettingsFileHasKey(cwd: string, key: string): boolean {
@@ -425,7 +429,7 @@ function getSettings(cwd: string): ProjectSettings {
       cachedMtime = existsSync(settingsPath) ? statSync(settingsPath).mtimeMs : 0;
     } catch { cachedMtime = 0; }
     try {
-      const globalPath = globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+      const globalPath = getGlobalSettingsPath();
       cachedGlobalMtime = existsSync(globalPath) ? statSync(globalPath).mtimeMs : 0;
     } catch { cachedGlobalMtime = 0; }
     lastMtimeCheck = now;
@@ -435,7 +439,7 @@ function getSettings(cwd: string): ProjectSettings {
   if (now - lastMtimeCheck < MTIME_CHECK_INTERVAL_MS) return cachedSettings;
   lastMtimeCheck = now;
   const settingsPath = getSettingsPath(cwd);
-  const globalPath = globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+  const globalPath = getGlobalSettingsPath();
   let mtime = 0;
   let globalMtime = 0;
   try { if (existsSync(settingsPath)) mtime = statSync(settingsPath).mtimeMs; } catch {}
