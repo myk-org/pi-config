@@ -984,6 +984,8 @@ export function registerAsyncAgents(
             updatedAt: status.lastUpdate || Date.now(),
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
+            delivered: isComplete,
+            sideEffectsApplied: isComplete,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,
