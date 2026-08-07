@@ -11,7 +11,7 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 
 ## Code tier (mechanical)
 
-- Memory entries with `trigger` + `action` (and optional `verifier`) in `.pi/memory/memory-scores.json`
+- Memory entries with `trigger` + `action` (and optional `verifier`) in `.pi/memory/memory-scores.jsonl`
 - Topic marker `*(enforced)*` (display only; scores hold the binding)
 - Trigger types: `bash_contains`, `bash_regex`, `tool_name`, `file_modified`
 - Actions: `block`, `warn`, `run_after <cmd>`
@@ -25,7 +25,7 @@ Inventory a project’s code-tier memories:
 uv run myk-pi-tools memory status
 
 # Or raw scores:
-jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key' .pi/memory/memory-scores.json
+jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .value.verifier) | .key' .pi/memory/memory-scores.jsonl
 ```
 
 ## Injected tier (LLM)

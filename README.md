@@ -238,7 +238,7 @@ After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewe
 6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
 
 When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
-(`tests_passed: true` in `pi-config-review-state.json`), OR after `review_loop_max_cycles` total cycles (default `3`,
+(`tests_passed: true` in `pi-config-review-state.jsonl`), OR after `review_loop_max_cycles` total cycles (default `3`,
 valid integers `1`-`10`; env: digit string `"1"`-`"10"` only (after trim)) — whichever comes first. Each cycle
 always completes fix/explain (5a) before the cap check; the cap only blocks re-dispatch
 (step 2 / all 6 agents, including test-automator), not responding to findings.

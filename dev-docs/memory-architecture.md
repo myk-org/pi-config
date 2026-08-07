@@ -7,7 +7,7 @@ Scored, prioritized, topic-organized memory system. Architecture inspired by [Op
 `memory-scoring.ts`: Stability formula
 `cue_weight × exp(-Δt / half_life) × ln(1 + evidence_count)` across 6 categories with decay half-lives
 (preference=90d, lesson=60d, done=14d). Lifecycle: active → provisional → candidate → dropped.
-Per-category budget caps, pinned/forgotten overrides. Storage: `.pi/memory/memory-scores.json`.
+Per-category budget caps, pinned/forgotten overrides. Storage: `.pi/memory/memory-scores.jsonl`.
 
 ## Layer 2 — Situation Reports
 
@@ -35,7 +35,7 @@ cold topics auto-archived after 2× half-life without reinforcement.
 ## Layer 4 — Vector Embeddings
 
 `memory-embeddings.ts`: Model `Xenova/bge-small-en-v1.5` (384 dims, local ONNX).
-Storage: `.pi/memory/embeddings.json`. Embeds on write with dedup
+Storage: `.pi/memory/embeddings.jsonl`. Embeds on write with dedup
 (≥0.90 similarity → reinforce instead of add), hybrid keyword+vector search, keyword-only fallback. No API keys.
 
 ## Memory Tools
@@ -92,7 +92,7 @@ Action types: `block` (prevent), `run_after` (execute command after), `warn` (ap
 Verifier format: `tool_called <tool> before <command>` (checks tool ordering within a turn).
 
 Entries are added via `memory_add` with optional `trigger`, `action`, `verifier` parameters.
-Stored in the same `memory-scores.json` — no separate storage system.
+Stored in the same `memory-scores.jsonl` — no separate storage system.
 
 ## Memory Injection Position
 
@@ -123,7 +123,7 @@ skills, enforcement, or proposed project rules.
 
 Optional `ScoredEntry` fields: `sourceSession`, `derivedFrom`, `informs`.
 Set via `memory_add` / `memory_edit`, preference extractor (`sourceSession` when
-session id is available), or dream sidecar `.pi/memory/provenance-pending.json`
+session id is available), or dream sidecar `.pi/memory/provenance-pending.jsonl`
 merged by `mergeProvenancePending` on dream `onComplete`.
 Preserved across `rebuild()`. Not injected into situation reports; surfaced in
 `memory_search` / `memory_reflect`.

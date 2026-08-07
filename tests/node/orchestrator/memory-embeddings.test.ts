@@ -87,7 +87,7 @@ describe("embeddings cache invalidation", () => {
 
   it("clears entries when store has different pooling", async () => {
     // Write a store with old "cls" pooling and some fake entries
-    const storePath = join(cwd, ".pi", "memory", "embeddings.json");
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
     const oldStore = {
       model: "Xenova/bge-small-en-v1.5",
       dim: 384,
@@ -97,7 +97,7 @@ describe("embeddings cache invalidation", () => {
         "def456": [0.4, 0.5, 0.6],
       },
     };
-    writeFileSync(storePath, JSON.stringify(oldStore), "utf-8");
+    writeFileSync(storePath, JSON.stringify(oldStore) + "\n", "utf-8");
 
     // Import embedEntry which triggers loadStore internally
     const { embedEntry } = await import("../../../extensions/orchestrator/memory-embeddings.js");
@@ -106,8 +106,10 @@ describe("embeddings cache invalidation", () => {
     // The model may not be available in test, but loadStore runs before model check
     await embedEntry(cwd, "test entry", "lesson");
 
-    // Read the store back — entries should be cleared, pooling should be "mean"
-    const updatedStore = JSON.parse(readFileSync(storePath, "utf-8"));
+    // Read the store back — last valid JSONL line has the updated state
+    const raw = readFileSync(storePath, "utf-8");
+    const lines = raw.split("\n").filter(Boolean);
+    const updatedStore = JSON.parse(lines[lines.length - 1]);
     assert.equal(updatedStore.pooling, "mean");
     // Old entries should be gone (cleared by invalidation)
     assert.ok(!updatedStore.entries["abc123"], "Old CLS entry should be cleared");
@@ -115,7 +117,7 @@ describe("embeddings cache invalidation", () => {
   });
 
   it("preserves entries when pooling matches", async () => {
-    const storePath = join(cwd, ".pi", "memory", "embeddings.json");
+    const storePath = join(cwd, ".pi", "memory", "embeddings.jsonl");
     const store = {
       model: "Xenova/bge-small-en-v1.5",
       dim: 384,
@@ -124,12 +126,14 @@ describe("embeddings cache invalidation", () => {
         "abc123": [0.1, 0.2, 0.3],
       },
     };
-    writeFileSync(storePath, JSON.stringify(store), "utf-8");
+    writeFileSync(storePath, JSON.stringify(store) + "\n", "utf-8");
 
     const { embedEntry } = await import("../../../extensions/orchestrator/memory-embeddings.js");
     await embedEntry(cwd, "test entry", "lesson");
 
-    const updatedStore = JSON.parse(readFileSync(storePath, "utf-8"));
+    const raw = readFileSync(storePath, "utf-8");
+    const lines = raw.split("\n").filter(Boolean);
+    const updatedStore = JSON.parse(lines[lines.length - 1]);
     assert.equal(updatedStore.pooling, "mean");
     // Existing entry should still be there
     assert.ok(updatedStore.entries["abc123"], "Existing mean entry should be preserved");

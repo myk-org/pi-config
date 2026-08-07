@@ -53,7 +53,7 @@ export interface ActionResult {
 
 /**
  * Load all active memory entries that have enforcement fields.
- * Reads from the existing memory-scores.json — no separate storage.
+ * Reads from the existing memory-scores.jsonl — no separate storage.
  */
 export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
   // Load ALL entries with trigger+action, not just active/provisional.
