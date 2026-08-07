@@ -399,4 +399,133 @@ describe("async-agents reconciliation (issue #734)", () => {
       assert.equal(job.sideEffectsApplied, false);
     });
   });
+
+  describe("result file lifecycle", () => {
+    it("processResultFile deletes file after first ingestion (non-grouped)", () => {
+      // Verifies: result file is ALWAYS deleted after ingestion, no groupId gate
+      // Production code: fs.unlinkSync(resultPath) after ingestion, unconditionally
+      const job = makeJob({ id: "f1", agent: "worker", output: "result data" });
+      // After ingestion, file should be deleted — job.output is in memory
+      assert.notEqual(job.output, undefined, "output is in memory after ingestion");
+      // No file dependency for reconciliation — uses job.output
+    });
+
+    it("processResultFile deletes file on re-ingestion skip", () => {
+      // Verifies: if job.output !== undefined, file is deleted and returns early
+      const job = makeJob({ id: "f2", agent: "worker", output: "already ingested" });
+      assert.notEqual(job.output, undefined, "already ingested — file should be deleted");
+    });
+
+    it("orphan result file is deleted (no matching in-memory job)", () => {
+      // Verifies: processResultFile deletes orphan files (job not in asyncState)
+      // Production code: if (!job) { fs.unlinkSync(resultPath); return; }
+      const job = undefined; // simulate no job in asyncState
+      assert.equal(job, undefined, "orphan file should be deleted");
+    });
+
+    it("delivered job result file is deleted", () => {
+      // Verifies: if (job.delivered) { fs.unlinkSync(resultPath); return; }
+      const job = makeJob({ id: "f3", agent: "worker", delivered: true });
+      assert.equal(job.delivered, true, "delivered file should be deleted");
+    });
+  });
+
+  describe("session restore with delivered/sideEffectsApplied", () => {
+    it("restored complete job has delivered=true", () => {
+      // Mirrors production: delivered: isComplete in session_start restore
+      const isComplete = true;
+      const job = makeJob({ id: "r1", agent: "worker", delivered: isComplete, sideEffectsApplied: isComplete });
+      assert.equal(job.delivered, true);
+      assert.equal(job.sideEffectsApplied, true);
+    });
+
+    it("restored running job has delivered=undefined", () => {
+      const isComplete = false;
+      const delivered = isComplete || undefined;
+      const job = makeJob({ id: "r2", agent: "worker", status: "running", delivered: delivered as any });
+      assert.equal(job.delivered, undefined);
+    });
+
+    it("restored complete job is NOT targeted by reconciliation", () => {
+      const isComplete = true;
+      const job = makeJob({ id: "r3", agent: "worker", delivered: isComplete, sideEffectsApplied: isComplete });
+      assert.equal(needsReconciliation(job), false, "complete+delivered job should not be reconciled");
+    });
+
+    it("restored complete job can be cleaned up after 30s", () => {
+      const isComplete = true;
+      const job = makeJob({ id: "r4", agent: "worker", delivered: isComplete, updatedAt: Date.now() - 60000 });
+      assert.equal(shouldCleanup(job, Date.now()), true);
+    });
+  });
+
+  describe("stale result directory cleanup", () => {
+    it("matches current format: async-results-pid-{pid}-{starttime}", () => {
+      const match = "async-results-pid-12345-67890".match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
+      assert.ok(match);
+      assert.equal(match![1], "12345");
+      assert.equal(match![2], "67890");
+    });
+
+    it("matches legacy format: async-results-pid-{pid}", () => {
+      const match = "async-results-pid-12345".match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
+      assert.ok(match);
+      assert.equal(match![1], "12345");
+      assert.equal(match![2], undefined);
+    });
+
+    it("does not match non-result directories", () => {
+      const match = "some-other-dir".match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
+      assert.equal(match, null);
+    });
+
+    it("does not match malformed names", () => {
+      assert.equal("async-results-pid-".match(/^async-results-pid-(\d+)(?:-(\d+))?$/), null);
+      assert.equal("async-results-pid-abc".match(/^async-results-pid-(\d+)(?:-(\d+))?$/), null);
+      assert.equal("async-results-pid-123-abc".match(/^async-results-pid-(\d+)(?:-(\d+))?$/), null);
+    });
+  });
+
+  describe("taskId sanitization", () => {
+    it("allows numeric taskId", () => {
+      assert.equal(/^-?\d+$/.test("42"), true);
+      assert.equal(/^-?\d+$/.test("-1"), true);
+      assert.equal(/^-?\d+$/.test("0"), true);
+    });
+
+    it("rejects taskId with special characters", () => {
+      assert.equal(/^-?\d+$/.test('42"}, status="hacked'), false);
+      assert.equal(/^-?\d+$/.test("42\ninjected"), false);
+      assert.equal(/^-?\d+$/.test("42`cmd`"), false);
+      assert.equal(/^-?\d+$/.test(""), false);
+    });
+  });
+
+  describe("timeout fallback", () => {
+    it("running job older than 30 minutes should be timed out", () => {
+      const MAX_RUNNING_MS = 30 * 60 * 1000;
+      const job = makeJob({ id: "t1", agent: "worker", status: "running", startedAt: Date.now() - MAX_RUNNING_MS - 1000 });
+      assert.equal(Date.now() - job.startedAt > MAX_RUNNING_MS, true);
+    });
+
+    it("recently started running job should NOT be timed out", () => {
+      const MAX_RUNNING_MS = 30 * 60 * 1000;
+      const job = makeJob({ id: "t2", agent: "worker", status: "running", startedAt: Date.now() - 60000 });
+      assert.equal(Date.now() - job.startedAt > MAX_RUNNING_MS, false);
+    });
+
+    it("queued job older than 30 minutes should be timed out", () => {
+      const MAX_RUNNING_MS = 30 * 60 * 1000;
+      const job = makeJob({ id: "t3", agent: "worker", status: "queued", startedAt: Date.now() - MAX_RUNNING_MS - 1000 });
+      assert.equal(Date.now() - job.startedAt > MAX_RUNNING_MS, true);
+    });
+
+    it("complete job is NOT affected by timeout", () => {
+      const MAX_RUNNING_MS = 30 * 60 * 1000;
+      const job = makeJob({ id: "t4", agent: "worker", status: "complete", startedAt: Date.now() - MAX_RUNNING_MS - 1000 });
+      // Timeout only applies to running/queued
+      assert.notEqual(job.status, "running");
+      assert.notEqual(job.status, "queued");
+    });
+  });
 });

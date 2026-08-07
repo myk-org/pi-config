@@ -279,9 +279,16 @@ export function registerAsyncAgents(
         try {
           const files = fs.readdirSync(ASYNC_RESULTS_DIR).filter(f => f.endsWith(".json"));
           for (const file of files) {
-            processResultFile(path.join(ASYNC_RESULTS_DIR, file));
+            try {
+              processResultFile(path.join(ASYNC_RESULTS_DIR, file));
+            } catch (e: any) { asyncLog(`processResultFile error for ${file}: ${e?.message}`); }
           }
-        } catch { /* directory may have been cleaned up between existsSync and readdirSync — safe to skip */ }
+        } catch (e: any) {
+          // ENOENT = directory removed between existsSync and readdirSync — expected race
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+            asyncLog(`result file scan error: ${e?.message}`);
+          }
+        }
       }
 
       // Reconciliation pass — retry side-effects + delivery for done-but-undelivered jobs
@@ -319,8 +326,9 @@ export function registerAsyncAgents(
                   .then((completed) => asyncLog(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
                   .catch((e: any) => asyncLog(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
               } catch (e: any) {
-                autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
-                asyncLog(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`);
+                const safeTaskId = /^-?\d+$/.test(job.taskId!) ? job.taskId : "(invalid)";
+                autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${safeTaskId}: ${e?.message}. Run TaskUpdate(taskId="${safeTaskId}", status="completed") manually.`;
+                asyncLog(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
               }
             }
             // Enforce same output-length budget as processResultFile
@@ -494,7 +502,10 @@ export function registerAsyncAgents(
     // Clean up any remaining result files (most already deleted by processResultFile)
     for (const j of groupJobs) {
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-      try { fs.unlinkSync(rp); } catch { /* already deleted by processResultFile — expected */ }
+      try { fs.unlinkSync(rp); } catch (e: any) {
+        // ENOENT = already deleted by processResultFile — expected
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") asyncLog(`unlink failed ${rp}: ${e?.message}`);
+      }
     }
     } finally {
       if (gid) groupDeliveryInProgress.delete(gid);
@@ -518,7 +529,9 @@ export function registerAsyncAgents(
       }
       // Skip if already ingested — delete file to prevent re-scan every 3s
       if (job.output !== undefined) {
-        try { fs.unlinkSync(resultPath); } catch {}
+        try { fs.unlinkSync(resultPath); } catch (e: any) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") asyncLog(`re-ingest unlink failed ${resultPath}: ${e?.message}`);
+        }
         return;
       }
 
