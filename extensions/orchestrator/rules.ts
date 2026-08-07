@@ -15,7 +15,22 @@ import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
 import { getSetting } from "./project-settings.js";
 import { substituteRulePlaceholders } from "./rule-placeholders.js";
+import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir } from "./utils.js";
+
+/** Per-cwd telemetry log cache — avoids re-creating on every call. */
+const telemetryLogCache = new Map<string, JsonlAppendLog<Record<string, unknown>>>();
+
+function getTelemetryLog(cwd: string): JsonlAppendLog<Record<string, unknown>> {
+  const dataDir = getProjectDataDir(cwd);
+  const cached = telemetryLogCache.get(dataDir);
+  if (cached) return cached;
+  const log = new JsonlAppendLog<Record<string, unknown>>(
+    path.join(dataDir, "memory-telemetry.jsonl"),
+  );
+  telemetryLogCache.set(dataDir, log);
+  return log;
+}
 
 /** Social closer gate — skip expensive vector search for trivial messages */
 const SOCIAL_CLOSERS = new Set([
@@ -41,7 +56,8 @@ let lastTaskFocusUserMsgId: string | null = null;
 let taskFocusPending = false;
 let taskFocusPendingMsgId: string | null = null;
 
-/** Log what memories were auto-injected for retrieval telemetry */
+/** Log what memories were auto-injected for retrieval telemetry.
+ *  Uses JsonlAppendLog — seq/ts added automatically, size-based truncation built-in. */
 function logMemoryInjection(
   cwd: string,
   prompt: string,
@@ -49,36 +65,26 @@ function logMemoryInjection(
   queryClass?: string,
 ): void {
   try {
-    const telemetryPath = path.join(getProjectDataDir(cwd), "memory-telemetry.jsonl");
-    const entry = JSON.stringify({
-      ts: new Date().toISOString(),
+    getTelemetryLog(cwd).append({
+      event: "inject",
       prompt: prompt.slice(0, 200),
       queryClass: queryClass ?? "general",
       injected: injected.map(m => ({ text: m.text.slice(0, 100), category: m.category, similarity: m.similarity })),
     });
-    fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
-    // Cap file at 500KB
-    const stat = fs.statSync(telemetryPath);
-    if (stat.size > 512000) {
-      const lines = fs.readFileSync(telemetryPath, "utf-8").split("\n").filter(Boolean);
-      fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
-    }
   } catch (e: any) { console.debug("[rules] telemetry write failed:", e?.message?.slice(0, 100)); }
 }
 
-/** Log whether injected memories were referenced in the LLM response */
+/** Log whether injected memories were referenced in the LLM response.
+ *  Uses JsonlAppendLog — seq/ts added automatically. */
 function logMemoryUsage(cwd: string, injected: { text: string; category: string; similarity: number }[], used: { text: string; category: string; similarity: number }[]): void {
   try {
-    const telemetryPath = path.join(getProjectDataDir(cwd), "memory-telemetry.jsonl");
-    const entry = JSON.stringify({
-      ts: new Date().toISOString(),
+    getTelemetryLog(cwd).append({
       event: "usage",
       injectedCount: injected.length,
       usedCount: used.length,
       usageRate: injected.length > 0 ? +(used.length / injected.length).toFixed(2) : 0,
       used: used.map(m => ({ text: m.text.slice(0, 100), category: m.category })),
     });
-    fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
   } catch (e: any) { console.debug("[rules] telemetry usage write failed:", e?.message?.slice(0, 100)); }
 }
 
@@ -260,21 +266,13 @@ export function registerRules(
               `- **${r.timestamp.split("T")[0]}** (${r.sessionId.slice(0, 8)}): ${r.snippet.replace(/[`$]/g, "")}`
             ).join("\n") +
             "\n\n";
-          // Telemetry — log session injections (same safeguards as logMemoryInjection)
+          // Telemetry — log session injections via JsonlAppendLog
           try {
-            const telemetryPath = path.join(getProjectDataDir(ctx.cwd), "memory-telemetry.jsonl");
-            const entry = JSON.stringify({
-              ts: new Date().toISOString(),
+            getTelemetryLog(ctx.cwd).append({
               event: "session-inject",
               prompt: event.prompt.slice(0, 200),
               sessionCount: sessionResults.length,
             });
-            fs.appendFileSync(telemetryPath, entry + "\n", "utf-8");
-            const stat = fs.statSync(telemetryPath);
-            if (stat.size > 512000) {
-              const lines = fs.readFileSync(telemetryPath, "utf-8").split("\n").filter(Boolean);
-              fs.writeFileSync(telemetryPath, lines.slice(-200).join("\n") + "\n", "utf-8");
-            }
           } catch (e: any) { console.debug("[rules] session telemetry write failed:", e?.message?.slice(0, 100)); }
         }
       } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }

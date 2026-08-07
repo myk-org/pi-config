@@ -26,7 +26,7 @@ dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime"
 Package dep range is `">=0.12.0 <1"` (latest within acpx 0.x; see issue #651).
 Not `^0.8.0` (that stays on 0.8.x under 0.x caret rules).
 
-**Native createProvider (pi ≥ 0.81):** `acpx-*` registers via
+**Native createProvider (pi ≥ 0.84.0):** `acpx-*` registers via
 `extensions/shared/create-runtime-provider.ts` (same helper as `cli-*`):
 ambient `resolve`/`check` succeed when `isAcpxAgentConfigured` (`agents.has`);
 `/login acpx-<agent>` stores an optional `configured` marker (not required for ambient

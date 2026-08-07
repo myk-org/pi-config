@@ -15,7 +15,7 @@ Single extension that provides:
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes); optional `model` param for model override |
 | **`list_models`** | List available models and providers for subagent model override |
 | **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
-| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.81): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
+| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`/async-kill` command** | Kill async agents (overlay picker or by name/id) |
@@ -239,7 +239,7 @@ After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewe
 6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
 
 When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
-(`tests_passed: true` in `pi-config-review-state.json`), OR after `review_loop_max_cycles` total cycles (default `3`,
+(`tests_passed: true` in `pi-config-review-state.jsonl`), OR after `review_loop_max_cycles` total cycles (default `3`,
 valid integers `1`-`10`; env: digit string `"1"`-`"10"` only (after trim)) — whichever comes first. Each cycle
 always completes fix/explain (5a) before the cap check; the cap only blocks re-dispatch
 (step 2 / all 6 agents, including test-automator), not responding to findings.
@@ -778,7 +778,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.81.0**)
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.84.0**)
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

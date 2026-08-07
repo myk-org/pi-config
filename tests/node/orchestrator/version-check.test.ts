@@ -39,7 +39,7 @@ describe("compareSemver", () => {
 });
 
 describe("MIN_PI_VERSION", () => {
-  it("requires 0.81.0 for createProvider providers", () => {
-    assert.strictEqual(MIN_PI_VERSION, "0.81.0");
+  it("requires 0.84.0 for registerMarkdownTransformer", () => {
+    assert.strictEqual(MIN_PI_VERSION, "0.84.0");
   });
 });

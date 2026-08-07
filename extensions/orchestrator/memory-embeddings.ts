@@ -3,15 +3,17 @@
  *
  * Embeds memory entries and search queries using Xenova/bge-small-en-v1.5 via
  * @huggingface/transformers (in-process ONNX, no Python, no subprocess).
- * Stores embeddings in .pi/memory/embeddings.json.
+ * Stores embeddings in .pi/memory/embeddings.jsonl (JSONL persistence, issue #724).
+ * Legacy embeddings.json auto-migrated on first access.
  *
  * Falls back gracefully when the model is unavailable — callers always get a
  * result (possibly empty) and never throw.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
 
 const EMBEDDING_DIM = 384;
 export const EMBEDDING_POOLING = "mean";
@@ -31,41 +33,41 @@ interface EmbeddingStore {
   entries: Record<string, number[]>; // text hash → vector
 }
 
+const STORE_FILENAME_JSONL = "embeddings.jsonl";
+const LEGACY_STORE_FILENAME = "embeddings.json";
+
+function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
+  return createCachedStore<EmbeddingStore>(
+    join(cwd, ".pi", "memory"), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 30 },
+  );
+}
+
 function getStorePath(cwd: string): string {
-  return join(cwd, ".pi", "memory", "embeddings.json");
+  return join(cwd, ".pi", "memory", STORE_FILENAME_JSONL);
 }
 
 function loadStore(cwd: string): EmbeddingStore {
-  const storePath = getStorePath(cwd);
-  if (existsSync(storePath)) {
-    try {
-      const store = JSON.parse(readFileSync(storePath, "utf-8")) as EmbeddingStore;
-      // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
-      if (store.pooling !== EMBEDDING_POOLING) {
-        console.debug(`[memory-embeddings] pooling changed (${store.pooling ?? "cls"} → ${EMBEDDING_POOLING}), clearing ${Object.keys(store.entries).length} cached embeddings`);
-        store.entries = {};
-        store.pooling = EMBEDDING_POOLING;
-        queryCache.clear();
-        saveStore(cwd, store);
-      }
-      return store;
-    } catch {
-      // Corrupted file — start fresh
+  const store = getEmbeddingStore(cwd);
+  const data = store.read();
+  if (data !== null) {
+    // Invalidate cache when pooling strategy changes — CLS and mean vectors are incompatible
+    if (data.pooling !== EMBEDDING_POOLING) {
+      // pooling strategy changed — clear incompatible cached embeddings
+      data.entries = {};
+      data.pooling = EMBEDDING_POOLING;
+      queryCache.clear();
+      saveStore(cwd, data);
     }
+    return data;
   }
   return { model: "Xenova/bge-small-en-v1.5", dim: EMBEDDING_DIM, pooling: EMBEDDING_POOLING, entries: {} };
 }
 
 function saveStore(cwd: string, store: EmbeddingStore): void {
   try {
-    const dir = join(cwd, ".pi", "memory");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const target = getStorePath(cwd);
-    const tmp = target + ".tmp";
-    writeFileSync(tmp, JSON.stringify(store), "utf-8");
-    renameSync(tmp, target);
-  } catch (err: any) {
-    console.debug("[memory-embeddings] save failed:", err?.message?.slice(0, 100));
+    getEmbeddingStore(cwd).write(store);
+  } catch {
+    // save failed — non-fatal, embeddings will be recomputed on next access
   }
 }
 
@@ -92,8 +94,8 @@ async function getPipeline(): Promise<any> {
       });
       pipelineInstance = extractor;
       return extractor;
-    } catch (err: any) {
-      console.debug("[memory-embeddings] model init failed:", err?.message?.slice(0, 100));
+    } catch {
+      // model init failed — vector search will be unavailable
       // Don't permanently disable — allow retry on next call
       return null;
     } finally {
@@ -123,8 +125,8 @@ async function embed(texts: string[]): Promise<number[][] | null> {
       vectors.push(Array.from(result[i].data as Float32Array));
     }
     return vectors;
-  } catch (err: any) {
-    console.debug("[memory-embeddings] embed failed:", err?.message?.slice(0, 100));
+  } catch {
+    // embed failed — return null, caller handles gracefully
     return null;
   }
 }
@@ -189,8 +191,8 @@ export async function embedEntry(cwd: string, text: string, category?: string): 
 
     store.entries[hash] = vectors[0];
     saveStore(cwd, store);
-  } catch (err: any) {
-    console.debug("[memory-embeddings] embedEntry failed:", err?.message?.slice(0, 100));
+  } catch {
+    // embedEntry failed — non-fatal
   }
 }
 
@@ -205,8 +207,8 @@ export function removeEmbedding(cwd: string, text: string, category?: string): v
       delete store.entries[hash];
       saveStore(cwd, store);
     }
-  } catch (err: any) {
-    console.debug("[memory-embeddings] removeEmbedding failed:", err?.message?.slice(0, 100));
+  } catch {
+    // removeEmbedding failed — non-fatal, stale embedding is harmless
   }
 }
 

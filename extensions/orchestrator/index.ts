@@ -35,6 +35,7 @@ import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
 import { registerSettingsTui } from "./settings-tui.js";
+import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -100,6 +101,7 @@ export default function (pi: ExtensionAPI) {
   registerMemoryTools(pi);
   registerSessionSearch(pi);
   registerSettingsTui(pi);
+  registerMarkdownTransformer(pi);
 
   // ── list_models tool — LLM-callable model discovery ──
   pi.registerTool({

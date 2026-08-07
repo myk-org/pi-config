@@ -9,8 +9,9 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -175,33 +176,33 @@ export function entryHash(text: string): string {
 }
 
 // ── Scores File I/O ────────────────────────────────────────────────────────
+// Persistence: append-only JSONL via JsonlStateStore (issue #724).
+// Legacy memory-scores.json is auto-migrated on first access.
 
-const SCORES_FILENAME = "memory-scores.json";
+const SCORES_FILENAME_JSONL = "memory-scores.jsonl";
+const LEGACY_SCORES_FILENAME = "memory-scores.json";
+
+function getScoresStore(cwd: string): JsonlStateStore<ScoresFile> {
+  return createCachedStore<ScoresFile>(
+    join(cwd, ".pi", "memory"), SCORES_FILENAME_JSONL, LEGACY_SCORES_FILENAME, { compactThreshold: 50 },
+  );
+}
 
 export function getScoresPath(cwd: string): string {
-  return join(cwd, ".pi", "memory", SCORES_FILENAME);
+  return join(cwd, ".pi", "memory", SCORES_FILENAME_JSONL);
 }
 
 export function loadScores(cwd: string): ScoresFile {
-  const path = getScoresPath(cwd);
-  if (!existsSync(path)) {
+  const store = getScoresStore(cwd);
+  const data = store.read();
+  if (data === null) {
     return { entries: {}, lastRebuild: new Date().toISOString() };
   }
-  try {
-    const raw = readFileSync(path, "utf-8");
-    return JSON.parse(raw) as ScoresFile;
-  } catch {
-    return { entries: {}, lastRebuild: new Date().toISOString() };
-  }
+  return data;
 }
 
 export function saveScores(cwd: string, scores: ScoresFile): void {
-  const path = getScoresPath(cwd);
-  const dir = dirname(path);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(path, JSON.stringify(scores, null, 2) + "\n", "utf-8");
+  getScoresStore(cwd).write(scores);
 }
 
 // ── Internal Types ─────────────────────────────────────────────────────────

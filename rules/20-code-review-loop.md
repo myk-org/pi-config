@@ -33,7 +33,7 @@ If disabled:
 
 One **cycle** = call all 6 reviewers (in parallel) → fix/explain findings → end of cycle.
 
-**The cycle count IS the `cycle` field in `pi-config-review-state.json`** — the same counter shown by
+**The cycle count IS the `cycle` field in `pi-config-review-state.jsonl`** — the same counter shown by
 `/review-status` and the review UI status card. It increments each time reviewers are (re-)dispatched
 for a fresh pass. Step 5's branches below MUST compare against that same counter — do not track cycles
 mentally or separately.
@@ -71,7 +71,7 @@ cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no
 5. Has findings OR tests failed?
    ── Neither? ↓ status: clean, tests_passed: true
    ── Findings and/or tests failed? → ALWAYS run 5a first: fix code OR explain why not, for EACH finding;
-      fix code for failing tests. Then check state.cycle (from `pi-config-review-state.json`):
+      fix code for failing tests. Then check state.cycle (from `pi-config-review-state.jsonl`):
         · cycle < {{REVIEW_LOOP_MAX_CYCLES}}? → go to 2 (re-run all 6 with prior findings + responses)
         · cycle >= {{REVIEW_LOOP_MAX_CYCLES}}? → **STOP** (terminal): report the two-outcome result
           (see "Cycle Definition & Max Cycles" above). Do NOT proceed to step 6.
@@ -171,7 +171,7 @@ Minor test/config-only fixes skip re-review (go to step 5); substantive code cha
 
 ## Test Tracking
 
-Test results are tracked in `pi-config-review-state.json` via the `tests_passed` field.
+Test results are tracked in `pi-config-review-state.jsonl` via the `tests_passed` field.
 This is **code-enforced** — commit/push is blocked unless `tests_passed: true` (when `review_loop_enforcement` is enabled).
 
 **How `tests_passed` gets set:**
@@ -231,7 +231,7 @@ For automated review flows (autorabbit, autoqodo), use **two-stage order** inste
 
 **The `review_loop_max_cycles` cap is shared across both stages — one total budget, not one per stage.**
 Stage 1 and Stage 2 both draw from and increment the same `cycle` counter in
-`pi-config-review-state.json`. Cap check, 5a-before-cap, and two-outcome reporting follow
+`pi-config-review-state.jsonl`. Cap check, 5a-before-cap, and two-outcome reporting follow
 "Cycle Definition & Max Cycles" above. Stage-specific stops: if Stage 1 is **not clean** when the cap is hit, stop entirely — do not proceed
 to Stage 2 (covers both **Not fixed** and **Fixed** (verification blocked)). If hit during Stage 2,
 stop looping Stage 2.
