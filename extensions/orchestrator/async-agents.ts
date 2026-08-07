@@ -136,6 +136,20 @@ export function registerAsyncAgents(
     lastCtx: null,
   };
 
+  // Track job IDs that have already been delivered in this session (including previous lifecycles).
+  // Populated from session entries on session_start to prevent re-delivery after reload.
+  const deliveredResultIds = new Set<string>();
+
+  /** Check if a message was already delivered in a previous session lifecycle. */
+  function wasAlreadyDelivered(content: string): boolean {
+    return deliveredResultIds.has(djb2Hash(content).toString(36));
+  }
+
+  /** Record a message as delivered so it won't be re-sent after reload. */
+  function recordDelivered(content: string): void {
+    deliveredResultIds.add(djb2Hash(content).toString(36));
+  }
+
   let lastWidgetKey = "";
   function updateAsyncWidget() {
     if (!asyncState.lastCtx?.hasUI) return;
@@ -352,19 +366,26 @@ export function registerAsyncAgents(
             } else {
               pi.events.emit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
             }
-            try {
-              pi.sendMessage({
-                customType: "async-agent-result",
-                content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`,
-                display: true,
-              }, { triggerTurn: true, deliverAs: "followUp" });
-              if (job.onComplete) {
-                try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-              }
+            const msgContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
+            if (wasAlreadyDelivered(msgContent)) {
               job.delivered = true;
-            } catch (e: any) {
-              asyncLog(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
-              // delivered stays false — will retry on next poll
+              asyncLog(`reconcile: skipping already-delivered result for ${job.id}`);
+            } else {
+              try {
+                pi.sendMessage({
+                  customType: "async-agent-result",
+                  content: msgContent,
+                  display: true,
+                }, { triggerTurn: true, deliverAs: "followUp" });
+                if (job.onComplete) {
+                  try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+                }
+                job.delivered = true;
+                recordDelivered(msgContent);
+              } catch (e: any) {
+                asyncLog(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
+                // delivered stays false — will retry on next poll
+              }
             }
             // Persist delivered state so restore skips this job
             try {
@@ -685,16 +706,23 @@ export function registerAsyncAgents(
         }
         const maxOutput = 3000 - autoCompleteError.length;
         const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
-        try {
-          pi.sendMessage({
-            customType: "async-agent-result",
-            content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
-            display: true,
-          }, { triggerTurn: true, deliverAs: "followUp" });
+        const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
+        if (wasAlreadyDelivered(pContent)) {
           sendSucceeded = true;
-        } catch (e: any) {
-          asyncLog(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
-          // sendSucceeded stays false — delivered won't be set, reconciliation retries
+          asyncLog(`processResultFile: skipping already-delivered result for ${job.id}`);
+        } else {
+          try {
+            pi.sendMessage({
+              customType: "async-agent-result",
+              content: pContent,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            sendSucceeded = true;
+            recordDelivered(pContent);
+          } catch (e: any) {
+            asyncLog(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
+            // sendSucceeded stays false — delivered won't be set, reconciliation retries
+          }
         }
       } else if (job.fireAndForget) {
         sendSucceeded = true; // fire-and-forget doesn't need sendMessage
@@ -949,6 +977,26 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
+
+    // Scan session entries for already-delivered async results to prevent re-delivery after reload
+    try {
+      const entries = ctx.sessionManager.getEntries();
+      for (const entry of entries) {
+        if ((entry as any).type === "custom_message" && (entry as any).customType === "async-agent-result") {
+          // Extract job IDs from the content — format: "## Async Agent Result: <name>"
+          // The content may contain multiple results (grouped delivery)
+          const content = (entry as any).content || "";
+          // Mark all async results in this session as already delivered
+          // We use a hash of the content to deduplicate (job IDs aren't in the message)
+          const hash = djb2Hash(content).toString(36);
+          deliveredResultIds.add(hash);
+        }
+      }
+      if (deliveredResultIds.size > 0) {
+        asyncLog(`session_start: found ${deliveredResultIds.size} previously delivered async results`);
+      }
+    } catch (e: any) { asyncLog(`session entry scan failed: ${e?.message}`); }
+
     // Preserve cwd-based early log path before PROJECT_TMP_DIR update
     const previousEarlyLogPath = EARLY_LOG_PATH;
 
@@ -1217,16 +1265,23 @@ export function registerAsyncAgents(
         const duration = job.durationMs || (Date.now() - job.startedAt);
         const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
         const output = rawOutput.slice(0, 3000);
-        try {
-          pi.sendMessage({
-            customType: "async-agent-result",
-            content: `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`,
-            display: true,
-          }, { triggerTurn: true, deliverAs: "followUp" });
+        const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
+        if (wasAlreadyDelivered(killContent)) {
           job.delivered = true;
-        } catch (e: any) {
-          asyncLog(`kill delivery failed for ${job.id}: ${e?.message}`);
-          // delivered stays false — reconciliation will retry
+          asyncLog(`kill: skipping already-delivered result for ${job.id}`);
+        } else {
+          try {
+            pi.sendMessage({
+              customType: "async-agent-result",
+              content: killContent,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            job.delivered = true;
+            recordDelivered(killContent);
+          } catch (e: any) {
+            asyncLog(`kill delivery failed for ${job.id}: ${e?.message}`);
+            // delivered stays false — reconciliation will retry
+          }
         }
       } else if (job.fireAndForget) {
         job.delivered = true;
