@@ -56,6 +56,7 @@ export interface AsyncJob {
   exitCode?: number | null;
   durationMs?: number;
   delivered?: boolean;
+  sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
   onComplete?: () => void;
   groupId?: string;
@@ -135,6 +136,20 @@ export function registerAsyncAgents(
     lastCtx: null,
   };
 
+  // Track job IDs that have already been delivered in this session (including previous lifecycles).
+  // Populated from status.json delivered flags on session_start to prevent re-delivery after reload.
+  const deliveredResultIds = new Set<string>();
+
+  /** Check if a job result was already delivered in a previous session lifecycle. */
+  function wasAlreadyDelivered(jobId: string): boolean {
+    return deliveredResultIds.has(jobId);
+  }
+
+  /** Record a job result as delivered so it won't be re-sent after reload. */
+  function recordDelivered(jobId: string): void {
+    deliveredResultIds.add(jobId);
+  }
+
   let lastWidgetKey = "";
   function updateAsyncWidget() {
     if (!asyncState.lastCtx?.hasUI) return;
@@ -184,13 +199,50 @@ export function registerAsyncAgents(
       for (const job of asyncState.jobs.values()) {
         if (job.status === "complete" || job.status === "failed") continue;
         const status = readAsyncStatus(job.workerDir);
-        if (status) {
+        if (!status) {
+          // No status file — process never started or died before writing status.
+          // Check if workerDir still exists; if not, the job is definitely dead.
+          if (!fs.existsSync(job.workerDir)) {
+            job.status = "failed";
+            job.output = "Agent process died without writing status";
+            job.durationMs = Date.now() - job.startedAt;
+            job.updatedAt = Date.now();
+            job.sideEffectsApplied = true;
+            asyncLog(`phantom: ${job.id} — no status file, worker dir missing`);
+            if (job.agent.startsWith("code-reviewer-")) {
+              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+            }
+            if (job.groupId) {
+              const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+              const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+              if (pending.length === 0) deliverGroupResults(groupJobs);
+            }
+          }
+          continue;
+        }
+        {
           job.status = status.state;
           job.updatedAt = status.lastUpdate ?? Date.now();
           if (status.exitCode !== undefined) job.exitCode = status.exitCode;
 
           // Check if process is actually alive — clean up zombies
-          if (job.status === "running" && status.pid) {
+          if (job.status === "running" && !status.pid) {
+            // Status file exists but no PID — process died before recording PID
+            job.status = "failed";
+            job.output = "Agent process died before recording PID";
+            job.durationMs = Date.now() - job.startedAt;
+            job.updatedAt = Date.now();
+            job.sideEffectsApplied = true;
+            asyncLog(`phantom: ${job.id} — status file exists but no PID`);
+            if (job.agent.startsWith("code-reviewer-")) {
+              try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+            }
+            if (job.groupId) {
+              const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+              const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+              if (pending.length === 0) deliverGroupResults(groupJobs);
+            }
+          } else if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
               // Process exited — check if it wrote a result file first
               const resultFilePath = path.join(ASYNC_RESULTS_DIR, `${job.id}.json`);
@@ -203,19 +255,26 @@ export function registerAsyncAgents(
                   job.exitCode = data.exitCode;
                   job.durationMs = data.durationMs;
                   job.updatedAt = Date.now();
+                  let zombieSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
+                  if (job.agent === "test-automator" || job.agent === "test-runner") {
+                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { zombieSideEffectsOk = false; asyncLog(`markTests failed for ${job.agent}: ${e?.message}`); }
+                  }
+                  if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
                 } catch {
                   job.status = "failed";
                   job.output = "Process exited before result could be read";
                   job.durationMs = Date.now() - job.startedAt;
                   job.updatedAt = Date.now();
+                  let catchSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { catchSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
+                  if (catchSideEffectsOk) job.sideEffectsApplied = true;
                 }
               } else {
                 job.status = "failed";
@@ -223,9 +282,11 @@ export function registerAsyncAgents(
                 job.durationMs = Date.now() - job.startedAt;
                 job.updatedAt = Date.now();
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
+                let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { noFileSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
+                if (noFileSideEffectsOk) job.sideEffectsApplied = true;
               }
               // Check if this completes a group — deliver remaining siblings' results
               if (job.groupId) {
@@ -236,21 +297,119 @@ export function registerAsyncAgents(
             }
           }
         }
+
       }
 
       // Fallback: check for result files the watcher may have missed
-      try {
-        const files = fs.readdirSync(ASYNC_RESULTS_DIR).filter(f => f.endsWith(".json"));
-        for (const file of files) {
-          processResultFile(path.join(ASYNC_RESULTS_DIR, file));
+      if (fs.existsSync(ASYNC_RESULTS_DIR)) {
+        try {
+          const files = fs.readdirSync(ASYNC_RESULTS_DIR).filter(f => f.endsWith(".json"));
+          for (const file of files) {
+            try {
+              processResultFile(path.join(ASYNC_RESULTS_DIR, file));
+            } catch (e: any) { asyncLog(`processResultFile error for ${file}: ${e?.message}`); }
+          }
+        } catch (e: any) {
+          // ENOENT = directory removed between existsSync and readdirSync — expected race
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+            asyncLog(`result file scan error: ${e?.message}`);
+          }
         }
-      } catch (e: any) { console.debug("[async-agents] result file scan failed:", e?.message || e); }
+      }
 
-      // Remove completed/failed jobs older than 30s (skip undelivered group members)
+      // Reconciliation pass — retry side-effects + delivery for done-but-undelivered jobs
+      for (const [id, job] of asyncState.jobs.entries()) {
+        if ((job.status === "complete" || job.status === "failed") && !job.delivered) {
+          // Side-effects: ensure they fired (only mark applied when ALL succeed)
+          if (!job.sideEffectsApplied) {
+            let sideEffectsOk = true;
+            if (job.agent.startsWith("code-reviewer-")) {
+              const findings = countFindings(typeof job.output === "string" ? job.output : "");
+              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; asyncLog(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+            }
+            if (job.agent === "test-automator" || job.agent === "test-runner") {
+              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { sideEffectsOk = false; asyncLog(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
+            }
+            if (sideEffectsOk) job.sideEffectsApplied = true;
+          }
+          // Delivery: retry for groups where all members are done
+          if (job.groupId) {
+            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+            if (pending.length === 0) {
+              deliverGroupResults(groupJobs);
+            }
+          // Delivery: retry for non-grouped jobs (zombie-ingest path may skip delivery)
+          } else if (asyncState.lastCtx && !job.fireAndForget) {
+            const displayName = job.name || job.agent;
+            const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
+            const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
+            // Auto-complete linked task (with logging, matching processResultFile behavior)
+            let autoCompleteError = "";
+            if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
+              try {
+                autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId)
+                  .then((completed) => asyncLog(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
+                  .catch((e: any) => asyncLog(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
+              } catch (e: any) {
+                const safeTaskId = /^-?\d+$/.test(job.taskId!) ? job.taskId : "(invalid)";
+                autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${safeTaskId}: ${e?.message}. Run TaskUpdate(taskId="${safeTaskId}", status="completed") manually.`;
+                asyncLog(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
+              }
+            }
+            // Enforce same output-length budget as processResultFile
+            const maxOutput = 3000 - autoCompleteError.length;
+            const output = (job.output || "").slice(0, Math.max(maxOutput, 500));
+            // Emit lifecycle events
+            if (job.status === "complete") {
+              pi.events.emit("subagents:completed", { id: job.id, result: job.output || "" });
+            } else {
+              pi.events.emit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
+            }
+            const msgContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
+            if (wasAlreadyDelivered(job.id)) {
+              job.delivered = true;
+              asyncLog(`reconcile: skipping already-delivered result for ${job.id}`);
+            } else {
+              try {
+                pi.sendMessage({
+                  customType: "async-agent-result",
+                  content: msgContent,
+                  display: true,
+                }, { triggerTurn: true, deliverAs: "followUp" });
+                if (job.onComplete) {
+                  try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+                }
+                job.delivered = true;
+                recordDelivered(job.id);
+              } catch (e: any) {
+                asyncLog(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
+                // delivered stays false — will retry on next poll
+              }
+            }
+            // Persist delivered state so restore skips this job
+            if (job.delivered) {
+              try {
+                const sp = path.join(job.workerDir, "status.json");
+                const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+                ex.delivered = true;
+                fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+              } catch {}
+            }
+          } else if (job.fireAndForget) {
+            if (job.onComplete) {
+              try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+            }
+            job.delivered = true;
+          }
+        }
+      }
+
+      // Remove completed/failed jobs older than 30s — require delivered before cleanup
       for (const [id, job] of asyncState.jobs.entries()) {
         if ((job.status === "complete" || job.status === "failed")
             && Date.now() - job.updatedAt > 30000
-            && (job.delivered || !job.groupId)) {
+            && job.delivered) {
           asyncState.jobs.delete(id);
         }
       }
@@ -302,7 +461,7 @@ export function registerAsyncAgents(
         const findings = countFindings(output);
         // -1 means invalid JSON output — treat conservatively as having findings
         recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
-      } catch (e: any) { asyncLog(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); }
+      } catch (e: any) { j.sideEffectsApplied = false; asyncLog(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); continue; }
     }
 
     // Track test agent completions for grouped test-automator/test-runner
@@ -314,7 +473,12 @@ export function registerAsyncAgents(
         } else if (j.status === "failed") {
           markTestsFailed(jobCwd(j));
         }
-      } catch (e: any) { asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); }
+      } catch (e: any) { j.sideEffectsApplied = false; asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); continue; }
+    }
+
+    // Mark side-effects applied per-job (only if not already marked false by a failed side-effect above)
+    for (const j of groupJobs) {
+      if (j.sideEffectsApplied !== false) j.sideEffectsApplied = true;
     }
 
     // Skip delivery if ALL jobs in group are fire-and-forget
@@ -343,6 +507,7 @@ export function registerAsyncAgents(
     }
 
     const sections: string[] = [];
+    const deliverableJobs: AsyncJob[] = [];
     for (const j of groupJobs) {
       if (j.fireAndForget) { j.delivered = true; continue; }
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
@@ -361,21 +526,42 @@ export function registerAsyncAgents(
       }
       const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
       sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
-      j.delivered = true;
+      deliverableJobs.push(j);
     }
 
     if (sections.length > 0) {
-      pi.sendMessage({
-        customType: "async-agent-result",
-        content: sections.join("\n\n---\n\n"),
-        display: true,
-      }, { triggerTurn: true, deliverAs: "followUp" });
+      try {
+        pi.sendMessage({
+          customType: "async-agent-result",
+          content: sections.join("\n\n---\n\n"),
+          display: true,
+        }, { triggerTurn: true, deliverAs: "followUp" });
+        // Only mark delivered AFTER sendMessage succeeds
+        for (const j of deliverableJobs) {
+          j.delivered = true;
+          // Persist delivered state so restore skips this job
+          try {
+            const sp = path.join(j.workerDir, "status.json");
+            const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+            ex.delivered = true;
+            fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+          } catch {}
+        }
+      } catch (e: any) {
+        asyncLog(`deliverGroupResults: sendMessage failed: ${e?.message}`);
+        // delivered stays false — reconciliation will retry on next poll
+      }
+    } else {
+      // No sections to deliver (all fire-and-forget) — already marked above
     }
 
-    // Clean up result files for group members now that delivery succeeded
+    // Clean up any remaining result files (most already deleted by processResultFile)
     for (const j of groupJobs) {
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-      try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
+      try { fs.unlinkSync(rp); } catch (e: any) {
+        // ENOENT = already deleted by processResultFile — expected
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") asyncLog(`unlink failed ${rp}: ${e?.message}`);
+      }
     }
     } finally {
       if (gid) groupDeliveryInProgress.delete(gid);
@@ -397,8 +583,13 @@ export function registerAsyncAgents(
         try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
         return;
       }
-      // Skip if already ingested (grouped jobs stay on disk until group delivers)
-      if (job.output !== undefined) return;
+      // Skip if already ingested — delete file to prevent re-scan every 3s
+      if (job.output !== undefined) {
+        try { fs.unlinkSync(resultPath); } catch (e: any) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") asyncLog(`re-ingest unlink failed ${resultPath}: ${e?.message}`);
+        }
+        return;
+      }
 
       // Update job state immediately (before group check)
       job.status = data.success ? "complete" : "failed";
@@ -412,13 +603,14 @@ export function registerAsyncAgents(
       terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
 
       // Track reviewer completion for review loop enforcement
+      let processResultSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
         try {
           const output = typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? "");
           const findings = countFindings(output);
           // -1 means invalid JSON output — treat conservatively as having findings
           recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
-        } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
         // If agent uses a custom model, we pass its context window via the config.
@@ -454,13 +646,27 @@ export function registerAsyncAgents(
           } else {
             markTestsFailed(jobCwd(job));
           }
-        } catch (e: any) { console.debug(`[async-agents] markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; asyncLog(`markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
 
-      // Clean up result file — for grouped jobs, defer to deliverGroupResults
-      if (!job.groupId) {
-        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
-      }
+      if (processResultSideEffectsOk) job.sideEffectsApplied = true;
+
+      // Always delete result file after ingestion — data is in memory (job.output).
+      // Reconciliation uses in-memory data, not the file. Leaving files on disk
+      // causes the poller's readdirSync to re-ingest them every 3s.
+      try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
+
+      // Persist output summary to status.json so session restore can recover it
+      // (result file is now deleted, but output must survive restart)
+      try {
+        const statusPath = path.join(job.workerDir, "status.json");
+        const existing = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+        existing.output = (data.output || "").slice(0, 3000);
+        existing.state = job.status;
+        existing.exitCode = job.exitCode;
+        existing.durationMs = job.durationMs;
+        fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
+      } catch (e: any) { asyncLog(`status.json output persist failed for ${job.id}: ${e?.message}`); }
 
       // Group-aware delivery: hold results until ALL jobs in the group are done
       if (job.groupId) {
@@ -486,6 +692,7 @@ export function registerAsyncAgents(
       }
 
       // Non-grouped job: deliver immediately (existing behavior)
+      let sendSucceeded = false;
       if (asyncState.lastCtx && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         let autoCompleteError = "";
@@ -501,18 +708,47 @@ export function registerAsyncAgents(
         }
         const maxOutput = 3000 - autoCompleteError.length;
         const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
-        pi.sendMessage({
-          customType: "async-agent-result",
-          content: `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`,
-          display: true,
-        }, { triggerTurn: true, deliverAs: "followUp" });
+        const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
+        if (wasAlreadyDelivered(job.id)) {
+          // Already delivered in previous lifecycle — skip send AND onComplete
+          job.delivered = true;
+          asyncLog(`processResultFile: skipping already-delivered result for ${job.id}`);
+          updateAsyncWidget();
+          return;
+        } else {
+          try {
+            pi.sendMessage({
+              customType: "async-agent-result",
+              content: pContent,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            sendSucceeded = true;
+            recordDelivered(job.id);
+          } catch (e: any) {
+            asyncLog(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
+            // sendSucceeded stays false — delivered won't be set, reconciliation retries
+          }
+        }
+      } else if (job.fireAndForget) {
+        sendSucceeded = true; // fire-and-forget doesn't need sendMessage
       }
 
       // Invoke onComplete callback if registered (e.g., dreaming → rebuildAndOrganize)
       if (job.onComplete) {
         try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
       }
-      job.delivered = true;
+      if (sendSucceeded) {
+        job.delivered = true;
+        // Persist delivered state so restore skips this job
+        if (job.delivered) {
+          try {
+            const sp = path.join(job.workerDir, "status.json");
+            const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+            ex.delivered = true;
+            fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+          } catch {}
+        }
+      }
       // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
     } catch (e: any) {
@@ -748,6 +984,8 @@ export function registerAsyncAgents(
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
+    deliveredResultIds.clear();
+
     // Preserve cwd-based early log path before PROJECT_TMP_DIR update
     const previousEarlyLogPath = EARLY_LOG_PATH;
 
@@ -755,6 +993,26 @@ export function registerAsyncAgents(
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
     // Export as env var so prompts/CLI commands can reference it
     process.env.PROJECT_TMP_DIR = PROJECT_TMP_DIR;
+
+    // Scan worker directories for jobs with delivered=true in status.json
+    // This is more reliable than content hashing — uses job IDs directly
+    try {
+      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
+        const jobDir = path.join(PROJECT_TMP_DIR, entry);
+        try {
+          if (!fs.statSync(jobDir).isDirectory()) continue;
+          const statusPath = path.join(jobDir, "status.json");
+          if (!fs.existsSync(statusPath)) continue;
+          const status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+          if (status.delivered && status.runId) {
+            deliveredResultIds.add(status.runId);
+          }
+        } catch {}
+      }
+      if (deliveredResultIds.size > 0) {
+        asyncLog(`session_start: found ${deliveredResultIds.size} previously delivered job IDs`);
+      }
+    } catch (e: any) { asyncLog(`delivered job scan failed: ${e?.message}`); }
 
     ASYNC_DEBUG = !!getSetting(ctx.cwd, "async_debug");
     EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
@@ -811,6 +1069,38 @@ export function registerAsyncAgents(
       }
     } catch (e: any) { console.debug("[async-agents] zombie cleanup failed:", e?.message?.slice(0, 100)); }
 
+    // Clean up stale result directories from dead sessions
+    try {
+      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
+        if (!entry.startsWith("async-results-pid-")) continue;
+        const resultDir = path.join(PROJECT_TMP_DIR, entry);
+        if (resultDir === ASYNC_RESULTS_DIR) continue; // skip our own
+        try {
+          if (!fs.statSync(resultDir).isDirectory()) continue;
+          // Extract PID and starttime from directory name
+          // Format: async-results-pid-{pid}-{starttime} (current) or async-results-pid-{pid} (legacy)
+          const match = entry.match(/^async-results-pid-(\d+)(?:-(\d+))?$/);
+          if (!match) continue;
+          const dirPid = parseInt(match[1], 10);
+          const dirStartTime = match[2]; // undefined for legacy PID-only format
+          let parentAlive = false;
+          try {
+            const stat = fs.readFileSync(`/proc/${dirPid}/stat`, "utf-8");
+            const currentStartTime = parseProcStartTime(stat);
+            if (currentStartTime) {
+              // With starttime: must match exactly. Without: PID alive = keep (conservative)
+              parentAlive = dirStartTime ? currentStartTime === dirStartTime : true;
+            }
+          } catch {} // /proc not found = dead
+          if (!parentAlive) {
+            // Parent dead — clean up entire result directory
+            try { fs.rmSync(resultDir, { recursive: true, force: true }); } catch {}
+            asyncLog(`cleaned stale result dir: ${entry}`);
+          }
+        } catch {} // skip unreadable dirs
+      }
+    } catch (e: any) { asyncLog(`stale result dir cleanup failed: ${e?.message?.slice(0, 100)}`); }
+
     asyncLog(`session_start: resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
 
     // Restore jobs from status files in PROJECT_TMP_DIR that belong to this session
@@ -832,8 +1122,16 @@ export function registerAsyncAgents(
         if (!id || asyncState.jobs.has(id)) continue;
         const isAlive = status.pid ? (() => { try { process.kill(status.pid, 0); return true; } catch { return false; } })() : false;
         const isComplete = status.state === "complete" || status.state === "failed";
-        // Always restore — poller's zombie check will mark dead ones as failed
-        if (isAlive || isComplete || status.state === "running") {
+        // Skip completed/failed jobs — they were already delivered. Clean up worker dir.
+        if (isComplete) {
+          try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
+          asyncLog(`cleaned completed worker dir on restore: ${entry} (state=${status.state})`);
+          continue;
+        }
+        // Only restore running/queued jobs with alive processes
+        if (isAlive || status.state === "running") {
+          // No result file = already processed and delivered — mark as delivered
+          const hasResultFile = fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${id}.json`));
           const job: AsyncJob = {
             id,
             agent: status.agent || "unknown",
@@ -844,6 +1142,9 @@ export function registerAsyncAgents(
             updatedAt: status.lastUpdate || Date.now(),
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
+            output: status.output || undefined,
+            delivered: isComplete || !hasResultFile,
+            sideEffectsApplied: isComplete || !hasResultFile,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,
@@ -941,10 +1242,25 @@ export function registerAsyncAgents(
       killed.push(label);
       job.status = "failed";
       job.updatedAt = Date.now();
+      job.durationMs = Date.now() - job.startedAt;
+      // Persist killed state to disk — prevents stale re-delivery on reload
+      try {
+        const statusPath = path.join(job.workerDir, "status.json");
+        const existing = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
+        existing.state = "failed";
+        existing.exitCode = -9;
+        existing.endedAt = Date.now();
+        existing.output = "Killed by user";
+        fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
+      } catch (e: any) { asyncLog(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
+      // Delete result file if it exists — prevent re-ingestion on reload
+      try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch {}
       // Record killed reviewer as having 0 findings — prevents permanent commit block
+      let killSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
+      if (killSideEffectsOk) job.sideEffectsApplied = true;
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
@@ -952,9 +1268,35 @@ export function registerAsyncAgents(
         if (pending.length === 0) {
           deliverGroupResults(groupJobs);
         }
+      } else if (asyncState.lastCtx && !job.fireAndForget) {
+        // Non-grouped killed job — deliver immediately so AI knows it was killed
+        const displayName = job.name || job.agent;
+        const duration = job.durationMs || (Date.now() - job.startedAt);
+        const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
+        const output = rawOutput.slice(0, 3000);
+        const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
+        if (wasAlreadyDelivered(job.id)) {
+          job.delivered = true;
+          asyncLog(`kill: skipping already-delivered result for ${job.id}`);
+        } else {
+          try {
+            pi.sendMessage({
+              customType: "async-agent-result",
+              content: killContent,
+              display: true,
+            }, { triggerTurn: true, deliverAs: "followUp" });
+            job.delivered = true;
+            recordDelivered(job.id);
+          } catch (e: any) {
+            asyncLog(`kill delivery failed for ${job.id}: ${e?.message}`);
+            // delivered stays false — reconciliation will retry
+          }
+        }
+      } else if (job.fireAndForget) {
+        job.delivered = true;
       }
-      // Delay cleanup — skip auto-delete for undelivered group members (let reaper handle them)
-      if (!job.groupId || job.delivered) {
+      // Delay cleanup — only for delivered jobs
+      if (job.delivered) {
         setTimeout(() => { asyncState.jobs.delete(job.id); updateAsyncWidget(); }, 5000);
       }
     }
