@@ -38,6 +38,42 @@ describe("built-in drivers", () => {
   });
 });
 
+describe("ACPX_AGENT_TO_DRIVER mapping", () => {
+  it("maps cursor to acpx", async () => {
+    const { ACPX_AGENT_TO_DRIVER } = await import("../../../extensions/providers/built-in-drivers.js");
+    assert.equal(ACPX_AGENT_TO_DRIVER.cursor, "acpx");
+  });
+  it("maps claude to acpx", async () => {
+    const { ACPX_AGENT_TO_DRIVER } = await import("../../../extensions/providers/built-in-drivers.js");
+    assert.equal(ACPX_AGENT_TO_DRIVER.claude, "acpx");
+  });
+  it("maps gemini to acpx", async () => {
+    const { ACPX_AGENT_TO_DRIVER } = await import("../../../extensions/providers/built-in-drivers.js");
+    assert.equal(ACPX_AGENT_TO_DRIVER.gemini, "acpx");
+  });
+  it("does not map unknown agents", async () => {
+    const { ACPX_AGENT_TO_DRIVER } = await import("../../../extensions/providers/built-in-drivers.js");
+    assert.equal(ACPX_AGENT_TO_DRIVER.unknown, undefined);
+  });
+});
+
+describe("acpx probe binary check", () => {
+  it("returns unavailable when CLI binary missing for cursor agent", async () => {
+    const result = await AcpxDriver.probe({ agent: "cursor", enabled: true });
+    // cursor maps to "agent" binary — may or may not be on PATH
+    assert.equal(typeof result.available, "boolean");
+    if (!result.available) {
+      assert.ok(result.reason?.includes("not found") || result.reason?.includes("not available"));
+    }
+  });
+
+  it("returns unavailable for agent with missing binary", async () => {
+    const result = await AcpxDriver.probe({ agent: "nonexistent-xyz-99999", enabled: true });
+    assert.equal(result.available, false);
+    assert.ok(result.reason?.includes("not found"));
+  });
+});
+
 describe("driver probe lifecycle", () => {
   const MISSING = "nonexistent-binary-xyz-12345";
 

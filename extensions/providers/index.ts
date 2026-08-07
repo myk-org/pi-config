@@ -412,7 +412,12 @@ export default async function (pi: ExtensionAPI) {
 
     const acpxResults = await Promise.allSettled(
       acpxAgentList.map(async (agent) => {
-        const driverKind = ACPX_AGENT_TO_DRIVER[agent] || "acpx";
+        const driverKind = ACPX_AGENT_TO_DRIVER[agent];
+        if (!driverKind) {
+          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
+            `acpx-${agent}: no driver mapping in ACPX_AGENT_TO_DRIVER`);
+          return null;
+        }
         // Only proceed if the driver is registered
         if (!registry.getDriver(driverKind)) {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,

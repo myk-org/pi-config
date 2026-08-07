@@ -47,6 +47,6 @@ export const CLI_AGENT_TO_DRIVER: Record<string, string> = {
 
 export const ACPX_AGENT_TO_DRIVER: Record<string, string> = {
   cursor: "acpx",
-  // Add more as they're implemented:
-  // copilot: "acpx",
+  claude: "acpx",
+  gemini: "acpx",
 };

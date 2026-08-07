@@ -24,7 +24,7 @@ import {
   pathDelimiterFor,
   resolveBinary,
   resolveBinaryForPlatform,
-} from "../../../extensions/cli-provider/shared/discover-cache.js";
+} from "../../../extensions/shared/resolve-binary.js";
 
 describe("resolveBinary", { concurrency: false }, () => {
   const prevPath = process.env.PATH;

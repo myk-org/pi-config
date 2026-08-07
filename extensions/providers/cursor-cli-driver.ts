@@ -29,7 +29,7 @@ import type {
   TurnResult,
 } from "../shared/provider-driver.js";
 import { makeManagedSnapshot, buildInitialSnapshot } from "../shared/managed-refresh.js";
-import { resolveBinary } from "../cli-provider/shared/discover-cache.js";
+import { resolveBinary } from "../shared/resolve-binary.js";
 import { discoverCliModelsDetailed } from "../cli-provider/discover.js";
 import { runCliAgent } from "../cli-provider/runner.js";
 import {
