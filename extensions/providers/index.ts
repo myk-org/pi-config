@@ -437,8 +437,6 @@ export default async function (pi: ExtensionAPI) {
 
         const discovery = (async () => {
           try {
-            fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-              `acpx-${agent}: starting driver create (driver=${driverKind})`);
             const instance = await registry.createInstance(
               `acpx-${agent}`,
               { driver: driverKind, config: { agent }, enabled: true },
@@ -449,8 +447,6 @@ export default async function (pi: ExtensionAPI) {
                 `acpx-${agent}: completed after timeout — cleaning up`);
               return { agent, instance };
             }
-            fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-              `acpx-${agent}: driver created successfully`);
             acpxInstances.set(agent, instance);
             return { agent, instance };
           } catch (err) {

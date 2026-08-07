@@ -388,8 +388,6 @@ export const AcpxDriver: ProviderDriver<AcpxConfig> = {
     // Check that the underlying CLI binary is installed (e.g. cursor, claude, gemini)
     const binaryName = config.agent === "cursor" ? "agent" : config.agent;
     const binary = resolveBinary(binaryName);
-    fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-      `probe: agent=${config.agent}, binary=${binaryName}, found=${!!binary}`);
     if (!binary) {
       return {
         available: false,
