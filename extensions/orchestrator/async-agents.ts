@@ -915,6 +915,37 @@ export function registerAsyncAgents(
       }
     } catch (e: any) { console.debug("[async-agents] zombie cleanup failed:", e?.message?.slice(0, 100)); }
 
+    // Clean up stale result directories from dead sessions
+    try {
+      for (const entry of fs.readdirSync(PROJECT_TMP_DIR)) {
+        if (!entry.startsWith("async-results-pid-")) continue;
+        const resultDir = path.join(PROJECT_TMP_DIR, entry);
+        if (resultDir === ASYNC_RESULTS_DIR) continue; // skip our own
+        try {
+          if (!fs.statSync(resultDir).isDirectory()) continue;
+          // Extract PID and starttime from directory name: async-results-pid-{pid}-{starttime}
+          const match = entry.match(/^async-results-pid-(\d+)-(\d+)$/);
+          if (!match) {
+            // Can't parse — clean up stale files inside but keep directory
+            continue;
+          }
+          const dirPid = parseInt(match[1], 10);
+          const dirStartTime = match[2];
+          let parentAlive = false;
+          try {
+            const stat = fs.readFileSync(`/proc/${dirPid}/stat`, "utf-8");
+            const currentStartTime = parseProcStartTime(stat);
+            if (currentStartTime && currentStartTime === dirStartTime) parentAlive = true;
+          } catch {} // /proc not found = dead
+          if (!parentAlive) {
+            // Parent dead — clean up entire result directory
+            try { fs.rmSync(resultDir, { recursive: true, force: true }); } catch {}
+            asyncLog(`cleaned stale result dir: ${entry}`);
+          }
+        } catch {} // skip unreadable dirs
+      }
+    } catch (e: any) { asyncLog(`stale result dir cleanup failed: ${e?.message?.slice(0, 100)}`); }
+
     asyncLog(`session_start: resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
 
     // Restore jobs from status files in PROJECT_TMP_DIR that belong to this session
