@@ -361,6 +361,13 @@ export function registerAsyncAgents(
               try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
             }
             job.delivered = true;
+            // Persist delivered state so restore skips this job
+            try {
+              const sp = path.join(job.workerDir, "status.json");
+              const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+              ex.delivered = true;
+              fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+            } catch {}
           } else if (job.fireAndForget) {
             if (job.onComplete) {
               try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
@@ -502,7 +509,16 @@ export function registerAsyncAgents(
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
         // Only mark delivered AFTER sendMessage succeeds
-        for (const j of deliverableJobs) j.delivered = true;
+        for (const j of deliverableJobs) {
+          j.delivered = true;
+          // Persist delivered state so restore skips this job
+          try {
+            const sp = path.join(j.workerDir, "status.json");
+            const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+            ex.delivered = true;
+            fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+          } catch {}
+        }
       } catch (e: any) {
         asyncLog(`deliverGroupResults: sendMessage failed: ${e?.message}`);
         // delivered stays false — reconciliation will retry on next poll
@@ -683,7 +699,16 @@ export function registerAsyncAgents(
       if (job.onComplete) {
         try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
       }
-      if (sendSucceeded) job.delivered = true;
+      if (sendSucceeded) {
+        job.delivered = true;
+        // Persist delivered state so restore skips this job
+        try {
+          const sp = path.join(job.workerDir, "status.json");
+          const ex = fs.existsSync(sp) ? JSON.parse(fs.readFileSync(sp, "utf-8")) : {};
+          ex.delivered = true;
+          fs.writeFileSync(sp, JSON.stringify(ex), { mode: 0o600 });
+        } catch {}
+      }
       // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
     } catch (e: any) {
@@ -1035,8 +1060,14 @@ export function registerAsyncAgents(
         if (!id || asyncState.jobs.has(id)) continue;
         const isAlive = status.pid ? (() => { try { process.kill(status.pid, 0); return true; } catch { return false; } })() : false;
         const isComplete = status.state === "complete" || status.state === "failed";
-        // Always restore — poller's zombie check will mark dead ones as failed
-        if (isAlive || isComplete || status.state === "running") {
+        // Skip completed/failed jobs — they were already delivered. Clean up worker dir.
+        if (isComplete) {
+          try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
+          asyncLog(`cleaned completed worker dir on restore: ${entry} (state=${status.state})`);
+          continue;
+        }
+        // Only restore running/queued jobs with alive processes
+        if (isAlive || status.state === "running") {
           const job: AsyncJob = {
             id,
             agent: status.agent || "unknown",
