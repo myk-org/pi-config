@@ -465,11 +465,10 @@ export function registerAsyncAgents(
       // No sections to deliver (all fire-and-forget) — already marked above
     }
 
-    // Clean up result files only for delivered group members
+    // Clean up any remaining result files (most already deleted by processResultFile)
     for (const j of groupJobs) {
-      if (!j.delivered) continue;
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-      try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
+      try { fs.unlinkSync(rp); } catch { /* already deleted by processResultFile — expected */ }
     }
     } finally {
       if (gid) groupDeliveryInProgress.delete(gid);
@@ -554,10 +553,10 @@ export function registerAsyncAgents(
 
       if (processResultSideEffectsOk) job.sideEffectsApplied = true;
 
-      // Clean up result file — for grouped jobs, defer to deliverGroupResults
-      if (!job.groupId) {
-        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
-      }
+      // Always delete result file after ingestion — data is in memory (job.output).
+      // Reconciliation uses in-memory data, not the file. Leaving files on disk
+      // causes the poller's readdirSync to re-ingest them every 3s.
+      try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
 
       // Group-aware delivery: hold results until ALL jobs in the group are done
       if (job.groupId) {
