@@ -600,6 +600,18 @@ export function registerAsyncAgents(
       // causes the poller's readdirSync to re-ingest them every 3s.
       try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
 
+      // Persist output summary to status.json so session restore can recover it
+      // (result file is now deleted, but output must survive restart)
+      try {
+        const statusPath = path.join(job.workerDir, "status.json");
+        const existing = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+        existing.output = (data.output || "").slice(0, 3000);
+        existing.state = job.status;
+        existing.exitCode = job.exitCode;
+        existing.durationMs = job.durationMs;
+        fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
+      } catch (e: any) { asyncLog(`status.json output persist failed for ${job.id}: ${e?.message}`); }
+
       // Group-aware delivery: hold results until ALL jobs in the group are done
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
@@ -1023,6 +1035,7 @@ export function registerAsyncAgents(
             updatedAt: status.lastUpdate || Date.now(),
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
+            output: status.output || undefined,
             delivered: isComplete,
             sideEffectsApplied: isComplete,
             fireAndForget: marker.fireAndForget || false,
