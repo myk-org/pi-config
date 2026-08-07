@@ -413,7 +413,9 @@ class SettingsOverlay implements Component {
       theme.fg("border", "╯"),
     );
 
-    // ── Footer hints ──
+    // ── Footer legend + hints ──
+    const legend = `  ${theme.fg("success", "P")}=${theme.fg("dim", "project")}  ${theme.fg("accent", "G")}=${theme.fg("dim", "global")}  ${theme.fg("warning", "E")}=${theme.fg("dim", "env")}  ${theme.fg("dim", "D")}=${theme.fg("dim", "default")}`;
+    lines.push(truncateToWidth(legend, width));
     lines.push(truncateToWidth(
       theme.fg("dim", `  Tab: ${scopeLabel === "Project" ? "Global" : "Project"} scope · ↑↓ navigate · Enter edit · / search · Esc close`),
       width,
