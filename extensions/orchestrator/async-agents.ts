@@ -246,6 +246,32 @@ export function registerAsyncAgents(
             }
           }
         }
+
+        // Timeout-based fallback: if a job has been running for too long without
+        // producing results, mark it as failed. Catches cases where:
+        // - status.json was never written (no PID to check)
+        // - process died silently without updating status
+        // - subagent framework manages the process lifecycle
+        const MAX_RUNNING_MS = 30 * 60 * 1000; // 30 minutes
+        if ((job.status === "running" || job.status === "queued")
+            && Date.now() - job.startedAt > MAX_RUNNING_MS) {
+          job.status = "failed";
+          job.output = `Agent timed out after ${formatDuration(Date.now() - job.startedAt)} without producing results`;
+          job.durationMs = Date.now() - job.startedAt;
+          job.updatedAt = Date.now();
+          job.sideEffectsApplied = true; // no side-effects to apply for timed-out jobs
+          asyncLog(`timeout: ${job.id} ran for ${formatDuration(Date.now() - job.startedAt)}`);
+          // Record timed-out reviewer as having 0 findings
+          if (job.agent.startsWith("code-reviewer-")) {
+            try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { asyncLog(`recordReviewerResult failed for timed-out ${job.agent}: ${e?.message}`); }
+          }
+          // Check if this completes a group
+          if (job.groupId) {
+            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+            if (pending.length === 0) deliverGroupResults(groupJobs);
+          }
+        }
       }
 
       // Fallback: check for result files the watcher may have missed
