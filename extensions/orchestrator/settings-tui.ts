@@ -545,6 +545,9 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
   const cwd = ctx.cwd;
   const modelRegistry = ctx.modelRegistry;
 
+  // Clear cached settings so TUI always shows fresh values
+  clearSettingsCache();
+
   await ctx.ui.custom<undefined>(
     (tui, theme, _kb, done) =>
       new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done, (msg, level) => ctx.ui.notify(msg, level)),
