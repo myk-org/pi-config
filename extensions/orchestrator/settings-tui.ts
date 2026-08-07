@@ -111,9 +111,11 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
 // ── Available agent names (for agent_overrides) ─────────────────────
 
 function getAvailableAgentNames(cwd: string): string[] {
+  const root = resolveRepoRoot(cwd);
   const dirs = [
-    join(resolveRepoRoot(cwd), "agents"),
-    join(homedir(), ".pi", "agent", "agents"),
+    join(root, "agents"),               // package/built-in agents
+    join(homedir(), ".pi", "agent", "agents"), // user-level agents
+    join(root, ".pi", "agents"),         // project-level agents
   ];
   const agents = new Set<string>();
   for (const dir of dirs) {
