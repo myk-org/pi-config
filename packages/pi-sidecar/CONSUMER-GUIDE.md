@@ -148,7 +148,7 @@ npx pi-sidecar-start --help
 | `SIDECAR_HOST` | `127.0.0.1` | Bind address |
 | `SIDECAR_URL` | `http://127.0.0.1:9100` | Python client base URL |
 | `CLI_AGENTS` | (none) | Comma-separated CLI agents: `cursor,claude,gemini` |
-| `ACPX_AGENTS` | (none) | Comma-separated ACPX agents: `cursor` |
+| `ACPX_AGENTS` | (none) | Comma-separated ACPX agents: `cursor,claude,gemini` |
 | `GEMINI_API_KEY` | (none) | Google AI API key (native provider) |
 | `GOOGLE_API_KEY` | (none) | Alternative Google API key |
 | `GOOGLE_CLOUD_PROJECT` | (none) | GCP project for Vertex AI Claude |

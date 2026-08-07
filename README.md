@@ -706,6 +706,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.agents":"$HOME/.agents":rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
   -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
+  -v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro \
   -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
   -v "$HOME/screenshots":"$HOME/screenshots":ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
