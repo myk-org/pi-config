@@ -491,13 +491,9 @@ export class AgentOverridesSubmenu implements Component {
       return;
     }
 
-    // list mode
+    // list mode — Esc saves current state (including empty overrides)
     if (matchesKey(data, Key.escape)) {
-      if (Object.keys(this.overrides).length === 0) {
-        this.done(undefined);
-      } else {
-        this.done(JSON.stringify(this.overrides));
-      }
+      this.done(JSON.stringify(this.overrides));
       return;
     }
     if (matchesKey(data, Key.enter)) {
