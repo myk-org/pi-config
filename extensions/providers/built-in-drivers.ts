@@ -39,14 +39,14 @@ export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
  * Drivers use kinds like "cursor-cli", "acpx", "claude-cli".
  * This map resolves the mapping.
  */
-export const CLI_AGENT_TO_DRIVER: Record<string, string> = {
+export const CLI_AGENT_TO_DRIVER: Record<string, string> = Object.assign(Object.create(null), {
   claude: "claude-cli",
   gemini: "gemini-cli",
   cursor: "cursor-cli",
-};
+});
 
-export const ACPX_AGENT_TO_DRIVER: Record<string, string> = {
+export const ACPX_AGENT_TO_DRIVER: Record<string, string> = Object.assign(Object.create(null), {
   cursor: "acpx",
-  // Add more as they're implemented:
-  // copilot: "acpx",
-};
+  claude: "acpx",
+  gemini: "acpx",
+});

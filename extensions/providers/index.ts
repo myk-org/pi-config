@@ -339,8 +339,8 @@ export default async function (pi: ExtensionAPI) {
 
     const cliResults = await Promise.allSettled(
       cliAgentList.map(async (agent) => {
-        const driverKind = CLI_AGENT_TO_DRIVER[agent];
-        if (!driverKind) {
+        const driverKind = Object.hasOwn(CLI_AGENT_TO_DRIVER, agent) ? CLI_AGENT_TO_DRIVER[agent] : undefined;
+        if (typeof driverKind !== "string" || driverKind.length === 0) {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
             `cli-${agent}: no driver registered`);
           return null;
@@ -412,7 +412,12 @@ export default async function (pi: ExtensionAPI) {
 
     const acpxResults = await Promise.allSettled(
       acpxAgentList.map(async (agent) => {
-        const driverKind = ACPX_AGENT_TO_DRIVER[agent] || "acpx";
+        const driverKind = Object.hasOwn(ACPX_AGENT_TO_DRIVER, agent) ? ACPX_AGENT_TO_DRIVER[agent] : undefined;
+        if (typeof driverKind !== "string" || driverKind.length === 0) {
+          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
+            `acpx-${agent}: no driver mapping in ACPX_AGENT_TO_DRIVER`);
+          return null;
+        }
         // Only proceed if the driver is registered
         if (!registry.getDriver(driverKind)) {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
@@ -437,7 +442,11 @@ export default async function (pi: ExtensionAPI) {
               { driver: driverKind, config: { agent }, enabled: true },
               projectCwd,
             );
-            if (timedOut) return { agent, instance };
+            if (timedOut) {
+              fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
+                `acpx-${agent}: completed after timeout — cleaning up`);
+              return { agent, instance };
+            }
             acpxInstances.set(agent, instance);
             return { agent, instance };
           } catch (err) {

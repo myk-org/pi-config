@@ -392,6 +392,12 @@ After register, `filterModels` hides models when unavailable: PATH cleared while
 agent state remains → restore PATH; after `session_shutdown` (AgentState cleared)
 → `/reload` or restart (PATH alone is not enough). See `dev-docs/cli-provider.md`.
 
+**ACPX provider agents (optional `acpx_agents`):** ACPX wraps CLI agents via the
+ACP runtime. Supported agents: `cursor`, `claude`, `gemini`. Enable with
+`acpx_agents` in settings (e.g. `["cursor","claude","gemini"]`). Each ACPX agent
+requires the underlying CLI binary on PATH (`agent` for cursor, `claude` for claude,
+`gemini` for gemini) — missing binary → `acpx-*` not registered.
+
 **CLI specialist agents (Cursor / Claude / Gemini):** On container start, `entrypoint.sh`
 symlinks package `agents/*.md` into the mounted project:
 
@@ -607,7 +613,8 @@ PI_PIDIFF_ENABLE=false pi
 | `-v "<PATH_TO_MCPL_CONFIG>":"$HOME/.config/mcpl/mcp.json":ro` | MCP server config for `mcpl` |
 | `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
-| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx cursor models) |
+| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx-cursor / cli-cursor models) |
+| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro` | Claude CLI auth (for acpx-claude / cli-claude models) |
 | `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
 | `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
 | `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
@@ -699,6 +706,7 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.agents":"$HOME/.agents":rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
   -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \
+  -v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro \
   -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
   -v "$HOME/screenshots":"$HOME/screenshots":ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \

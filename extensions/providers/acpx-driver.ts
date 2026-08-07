@@ -35,6 +35,7 @@ import { loadAcpxRuntime, type AcpxRuntimeModule } from "../acpx-provider/load-r
 import { modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
 import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { resolveBinary } from "../shared/resolve-binary.js";
 
 const LOG_DOMAIN = "acpx-driver";
 const DRIVER_KIND = "acpx";
@@ -378,12 +379,21 @@ export const AcpxDriver: ProviderDriver<AcpxConfig> = {
   driverKind: DRIVER_KIND,
   metadata: {
     displayName: "ACPX",
-    supportsMultipleInstances: false,
+    supportsMultipleInstances: true,
   },
   configSchema: acpxConfigSchema,
   defaultConfig: () => ({ agent: "cursor", enabled: true }),
 
-  probe: async (_config: AcpxConfig): Promise<ProviderProbeResult> => {
+  probe: async (config: AcpxConfig): Promise<ProviderProbeResult> => {
+    // Check that the underlying CLI binary is installed (e.g. cursor, claude, gemini)
+    const binaryName = config.agent === "cursor" ? "agent" : config.agent;
+    const binary = resolveBinary(binaryName);
+    if (!binary) {
+      return {
+        available: false,
+        reason: `CLI binary '${binaryName}' for acpx agent '${config.agent}' not found on PATH`,
+      };
+    }
     try {
       await loadAcpxRuntime();
       return { available: true };

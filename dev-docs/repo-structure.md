@@ -99,6 +99,7 @@ pi-config/
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/tmp/ lockfiles)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── shared/                      # Shared extension utilities
+│   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
 │   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
 │   │   ├── provider-driver.ts       # ProviderDriver SPI interfaces (t3code-inspired driver architecture)
 │   │   ├── provider-errors.ts       # Tagged error hierarchy for provider system
