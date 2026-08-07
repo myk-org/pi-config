@@ -315,8 +315,9 @@ export class AgentOverridesSubmenu implements Component {
   private done: (value?: string) => void;
   private label: string;
   private theme: Theme;
-  private mode: "list" | "edit-provider" | "edit-model";
+  private mode: "list" | "edit-agent" | "edit-field";
   private editingAgent: string;
+  private editFieldIndex: number; // 0=provider, 1=model
   private editInput: Input;
 
   constructor(
@@ -334,6 +335,7 @@ export class AgentOverridesSubmenu implements Component {
     this.theme = theme;
     this.mode = "list";
     this.editingAgent = "";
+    this.editFieldIndex = 0;
     this.editInput = new Input();
   }
 
@@ -368,9 +370,34 @@ export class AgentOverridesSubmenu implements Component {
       }
 
       lines.push("");
-      lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · p provider · m model · d delete · Enter/Esc save")}`, width));
+      lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Enter edit agent · d delete override · Esc save & close")}`, width));
+
+    } else if (this.mode === "edit-agent") {
+      const agent = this.editingAgent;
+      const override = this.overrides[agent] || {};
+      const providerVal = override.provider === null ? "null (use parent)" : override.provider || "(not set)";
+      const modelVal = override.model === null ? "null (use parent)" : override.model || "(not set)";
+
+      lines.push(truncateToWidth(`  ${t.fg("text", "Agent:")} ${t.fg("accent", agent)}`, width));
+      lines.push("");
+
+      const fields = [
+        { label: "Provider", value: providerVal },
+        { label: "Model", value: modelVal },
+      ];
+      for (let i = 0; i < fields.length; i++) {
+        const cursor = i === this.editFieldIndex ? t.fg("accent", "❯") : " ";
+        const label = i === this.editFieldIndex ? t.fg("accent", fields[i].label) : t.fg("text", fields[i].label);
+        const value = t.fg("muted", fields[i].value);
+        lines.push(truncateToWidth(`  ${cursor} ${label}${t.fg("dim", ":")} ${value}`, width));
+      }
+
+      lines.push("");
+      lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ select field · Enter edit · d delete both · Esc back")}`, width));
+
     } else {
-      const field = this.mode === "edit-provider" ? "provider" : "model";
+      // edit-field mode
+      const field = this.editFieldIndex === 0 ? "provider" : "model";
       lines.push(truncateToWidth(`  ${t.fg("text", `Set ${field} for:`)} ${t.fg("accent", this.editingAgent)}`, width));
       lines.push(truncateToWidth(`  ${t.fg("dim", 'Enter value (empty to clear, "null" to use parent model)')}`, width));
       lines.push("");
@@ -386,21 +413,64 @@ export class AgentOverridesSubmenu implements Component {
   }
 
   handleInput(data: string): void {
-    if (this.mode !== "list") {
+    if (this.mode === "edit-field") {
       if (matchesKey(data, Key.escape)) {
-        this.mode = "list";
+        this.mode = "edit-agent";
         return;
       }
       this.editInput.handleInput(data);
       return;
     }
 
-    if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) {
-      // Return undefined for empty overrides so saveChange deletes the key
+    if (this.mode === "edit-agent") {
+      if (matchesKey(data, Key.escape)) {
+        this.mode = "list";
+        return;
+      }
+      if (matchesKey(data, Key.up)) {
+        this.editFieldIndex = 0;
+        return;
+      }
+      if (matchesKey(data, Key.down)) {
+        this.editFieldIndex = 1;
+        return;
+      }
+      if (matchesKey(data, Key.enter)) {
+        const field = this.editFieldIndex === 0 ? "provider" : "model";
+        const current = this.overrides[this.editingAgent]?.[field];
+        this.editInput = new Input();
+        this.editInput.setValue(current === null ? "null" : current ?? "");
+        this.editInput.onSubmit = (val: string) => {
+          this.applyOverride(this.editingAgent, field, val);
+          this.mode = "edit-agent";
+        };
+        this.editInput.onEscape = () => { this.mode = "edit-agent"; };
+        this.mode = "edit-field";
+        return;
+      }
+      if (data === "d") {
+        delete this.overrides[this.editingAgent];
+        this.mode = "list";
+        return;
+      }
+      return;
+    }
+
+    // list mode
+    if (matchesKey(data, Key.escape)) {
       if (Object.keys(this.overrides).length === 0) {
         this.done(undefined);
       } else {
         this.done(JSON.stringify(this.overrides));
+      }
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      const agent = this.agentNames[this.selectedIndex];
+      if (agent) {
+        this.editingAgent = agent;
+        this.editFieldIndex = 0;
+        this.mode = "edit-agent";
       }
       return;
     }
@@ -412,40 +482,9 @@ export class AgentOverridesSubmenu implements Component {
       this.selectedIndex++;
       return;
     }
-
-    const agent = this.agentNames[this.selectedIndex];
-    if (!agent) return;
-
-    if (data === "p") {
-      this.editingAgent = agent;
-      this.mode = "edit-provider";
-      const current = this.overrides[agent]?.provider;
-      this.editInput = new Input();
-      this.editInput.setValue(current === null ? "null" : current ?? "");
-      this.editInput.onSubmit = (val: string) => {
-        this.applyOverride(agent, "provider", val);
-        this.mode = "list";
-      };
-      this.editInput.onEscape = () => { this.mode = "list"; };
-      return;
-    }
-
-    if (data === "m") {
-      this.editingAgent = agent;
-      this.mode = "edit-model";
-      const current = this.overrides[agent]?.model;
-      this.editInput = new Input();
-      this.editInput.setValue(current === null ? "null" : current ?? "");
-      this.editInput.onSubmit = (val: string) => {
-        this.applyOverride(agent, "model", val);
-        this.mode = "list";
-      };
-      this.editInput.onEscape = () => { this.mode = "list"; };
-      return;
-    }
-
     if (data === "d") {
-      delete this.overrides[agent];
+      const agent = this.agentNames[this.selectedIndex];
+      if (agent) delete this.overrides[agent];
     }
   }
 
