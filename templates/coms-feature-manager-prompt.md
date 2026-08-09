@@ -16,9 +16,9 @@ You do NOT write code. You review, direct the coder, and verify everything works
 
 - **Sole owner** of feature quality and completeness
 - You do NOT write, edit, or commit code — manager and reviewer only
-- Communicate with coder peer via `coms_send` (P2P) or `coms_net_send` (networked).
+- Communicate with coder peer via `coms_send`.
   After sending, **end your turn** — the response auto-delivers as a followUp in a new turn.
-  Discover peers via `coms_list` (P2P) or `coms_net_list` (networked).
+  Discover peers via `coms_list`.
   Use the same transport for discovery and sending.
 - **Use structured tasks** when delegating work — pass `tasks` parameter in `coms_send` so the coder's task widget tracks deliverables
 - Gate PR creation — coder CANNOT push/create PR without your explicit approval
@@ -89,7 +89,7 @@ Use `ask_user` to wait for confirmation.
 
 After the user confirms:
 
-1. Run `coms_list` and/or `coms_net_list`
+1. Run `coms_list`
 2. Verify ALL expected peers are connected by name
 3. If any are missing → tell the user which ones and repeat the command
 4. Once all peers are confirmed → proceed to Getting Started
@@ -100,7 +100,7 @@ After the user confirms:
 
 ### Scenario 1: Late Join — Coder Already Working
 
-1. **Discover peer**: `coms_list` or `coms_net_list`
+1. **Discover peer**: `coms_list`
 2. **Request status report** (include standing rules block from below):
    - Issue/PR number, branch, what's implemented, `git diff origin/main --stat`
    - Open review comments, test results
@@ -264,8 +264,6 @@ Send verification tasks via the active coms transport with structured `tasks`,
 then await the returned `msg_id` using the matching tool:
 
 - P2P: `coms_send` → response auto-delivers as followUp
-- Networked: `coms_net_send` → response auto-delivers as followUp
-
 Tasks to delegate:
 
 - Run through all E2E scenarios (happy + unhappy paths)

@@ -2,31 +2,37 @@
   "dco": {
     "type": "bool",
     "env": "PI_DCO",
-    "default": false
+    "default": false,
+    "group": "Git"
   },
   "commit_trailer": {
     "type": "bool_or_string",
     "env": "PI_COMMIT_TRAILER",
-    "default": false
+    "default": false,
+    "group": "Git"
   },
   "use_worktrees": {
     "type": "bool",
     "env": "PI_USE_WORKTREES",
-    "default": false
+    "default": false,
+    "group": "Git"
   },
   "allow_push_to_protected_branches": {
     "type": "bool",
     "env": "PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES",
-    "default": false
+    "default": false,
+    "group": "Git"
   },
   "comment_signature": {
     "type": "bool",
-    "default": false
+    "default": false,
+    "group": "Git"
   },
   "review_loop_enforcement": {
     "type": "bool",
     "env": "PI_REVIEW_LOOP_ENFORCEMENT",
-    "default": false
+    "default": false,
+    "group": "Review"
   },
   "review_loop_max_cycles": {
     "type": "int",
@@ -34,187 +40,242 @@
     "default": 3,
     "min": 1,
     "max": 10,
-    "strict_digits": true
+    "strict_digits": true,
+    "group": "Review"
   },
   "dream_interval_hours": {
     "type": "number",
     "env": "PI_DREAM_INTERVAL_HOURS",
-    "default": 3
+    "default": 3,
+    "group": "Memory"
   },
   "orchestrator_edit_write_block": {
     "type": "bool",
-    "default": false
+    "default": false,
+    "group": "Enforcement"
   },
   "pidash_enable": {
     "type": "bool_enable",
     "env": "PI_PIDASH_ENABLE",
-    "default": true
+    "default": true,
+    "group": "Dashboard"
   },
   "pidiff_enable": {
     "type": "bool_enable",
     "env": "PI_PIDIFF_ENABLE",
-    "default": true
+    "default": true,
+    "group": "Dashboard"
   },
   "pidash_port": {
     "type": "port",
     "env": "PI_PIDASH_PORT",
     "default": 19190,
-    "min": 1
+    "min": 1,
+    "group": "Dashboard"
   },
   "image_model": {
     "type": "string",
     "env": "PI_IMAGE_MODEL",
-    "default": ""
+    "default": "",
+    "group": "Provider"
   },
   "internal_operations_provider": {
     "type": "string",
     "env": "PI_INTERNAL_OPERATIONS_PROVIDER",
-    "default": ""
+    "default": "",
+    "group": "Provider"
   },
   "internal_operations_model": {
     "type": "string",
     "env": "PI_INTERNAL_OPERATIONS_MODEL",
-    "default": ""
+    "default": "",
+    "group": "Provider"
   },
   "acpx_agents": {
     "type": "agent_list",
     "env": "ACPX_AGENTS",
     "default": [],
-    "per_key_resolution": true
+    "per_key_resolution": true,
+    "group": "Provider"
   },
   "cli_agents": {
     "type": "agent_list",
     "env": "CLI_AGENTS",
     "default": [],
-    "per_key_resolution": true
+    "per_key_resolution": true,
+    "group": "Provider"
   },
   "agent_provider": {
     "type": "string",
-    "default": ""
+    "default": "",
+    "group": "Provider"
   },
   "agent_model": {
     "type": "string",
-    "default": ""
+    "default": "",
+    "group": "Provider"
   },
   "agent_overrides": {
     "type": "agent_overrides",
-    "default": {}
+    "default": {},
+    "group": "Provider"
   },
   "vertex_claude_1m": {
     "type": "bool",
     "env": "VERTEX_CLAUDE_1M",
-    "default": false
+    "default": false,
+    "group": "Provider"
   },
   "sidecar_log_level": {
     "type": "string",
     "env": "PI_SIDECAR_LOG_LEVEL",
-    "default": "info"
-  },
-  "async_debug": {
-    "type": "bool",
-    "env": "PI_ASYNC_DEBUG",
-    "default": false
+    "default": "info",
+    "group": "Logging"
   },
   "enforcement_allowed_commands": {
     "type": "string",
     "env": "PI_ENFORCEMENT_ALLOWED_COMMANDS",
-    "default": ""
+    "default": "",
+    "group": "Enforcement"
   },
   "coms_max_hops": {
     "type": "int",
     "env": "PI_COMS_MAX_HOPS",
     "default": 5,
     "min": 1,
-    "max": 50
+    "max": 50,
+    "group": "Coms"
   },
   "coms_timeout_ms": {
     "type": "int",
     "env": "PI_COMS_TIMEOUT_MS",
     "default": 1800000,
-    "min": 1000
-  },
-  "coms_ping_interval_ms": {
-    "type": "int",
-    "env": "PI_COMS_PING_INTERVAL_MS",
-    "default": 10000,
-    "min": 1000
+    "min": 1000,
+    "group": "Coms"
   },
   "coms_dir": {
     "type": "string",
     "env": "PI_COMS_DIR",
-    "default": ""
+    "default": "",
+    "group": "Coms"
   },
-  "coms_net_port": {
-    "type": "port",
-    "env": "PI_COMS_NET_PORT",
-    "default": 0
+  "coms_task_heartbeat_ms": {
+    "type": "int",
+    "env": "PI_COMS_TASK_HEARTBEAT_MS",
+    "default": 300000,
+    "min": 10000,
+    "group": "Coms"
   },
-  "coms_net_host": {
+  "log_pitasks": {
     "type": "string",
-    "env": "PI_COMS_NET_HOST",
-    "default": "127.0.0.1"
+    "env": "PI_LOG_PITASKS",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_auth_token": {
+  "log_pidash": {
     "type": "string",
-    "env": "PI_COMS_NET_AUTH_TOKEN",
-    "default": ""
+    "env": "PI_LOG_PIDASH",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_public_url": {
+  "log_pidiff": {
     "type": "string",
-    "env": "PI_COMS_NET_PUBLIC_URL",
-    "default": ""
+    "env": "PI_LOG_PIDIFF",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_server_url": {
+  "log_coms": {
     "type": "string",
-    "env": "PI_COMS_NET_SERVER_URL",
-    "default": ""
+    "env": "PI_LOG_COMS",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_max_hops": {
-    "type": "int",
-    "env": "PI_COMS_NET_MAX_HOPS",
-    "default": 5,
-    "min": 1,
-    "max": 50
+  "log_cli_provider": {
+    "type": "string",
+    "env": "PI_LOG_CLI_PROVIDER",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_message_ttl_ms": {
-    "type": "int",
-    "env": "PI_COMS_NET_MESSAGE_TTL_MS",
-    "default": 1800000,
-    "min": 1000
+  "log_providers": {
+    "type": "string",
+    "env": "PI_LOG_PROVIDERS",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_max_inbox": {
-    "type": "int",
-    "env": "PI_COMS_NET_MAX_INBOX",
-    "default": 100,
-    "min": 1,
-    "max": 10000
+  "log_dreaming": {
+    "type": "string",
+    "env": "PI_LOG_DREAMING",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_heartbeat_ms": {
-    "type": "int",
-    "env": "PI_COMS_NET_HEARTBEAT_MS",
-    "default": 10000,
-    "min": 1000
+  "log_acpx_provider": {
+    "type": "string",
+    "env": "PI_LOG_ACPX_PROVIDER",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_stale_after_ms": {
-    "type": "int",
-    "env": "PI_COMS_NET_STALE_AFTER_MS",
-    "default": 30000,
-    "min": 1000
+  "log_subagent": {
+    "type": "string",
+    "env": "PI_LOG_SUBAGENT",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_offline_after_ms": {
-    "type": "int",
-    "env": "PI_COMS_NET_OFFLINE_AFTER_MS",
-    "default": 60000,
-    "min": 1000
+  "log_orchestrator": {
+    "type": "string",
+    "env": "PI_LOG_ORCHESTRATOR",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_log_heartbeat": {
-    "type": "bool",
-    "env": "PI_COMS_NET_LOG_HEARTBEAT",
-    "default": false
+  "log_async_agents": {
+    "type": "string",
+    "env": "PI_LOG_ASYNC_AGENTS",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   },
-  "coms_net_log_quiet": {
-    "type": "bool",
-    "env": "PI_COMS_NET_LOG_QUIET",
-    "default": false
+  "log_enforcement": {
+    "type": "string",
+    "env": "PI_LOG_ENFORCEMENT",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
+  },
+  "log_rules": {
+    "type": "string",
+    "env": "PI_LOG_RULES",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
+  },
+  "log_memory": {
+    "type": "string",
+    "env": "PI_LOG_MEMORY",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
+  },
+  "log_settings_tui": {
+    "type": "string",
+    "env": "PI_LOG_SETTINGS_TUI",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
+  },
+  "log_cron": {
+    "type": "string",
+    "env": "PI_LOG_CRON",
+    "default": "info",
+    "enum": ["off", "debug", "info", "warn", "error"],
+    "group": "Logging"
   }
 }

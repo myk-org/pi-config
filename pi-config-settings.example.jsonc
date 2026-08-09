@@ -88,11 +88,6 @@
   // Pi-sidecar log level: debug, info, warn, error
   "sidecar_log_level": "info",
 
-  // ── Debug ─────────────────────────────────────────────────────────────────
-
-  // Enable debug logging for async agents
-  "async_debug": false,
-
   // ── Enforcement ───────────────────────────────────────────────────────────
 
   // Colon-separated command allowlist for enforcement. Empty = allow all
@@ -106,50 +101,7 @@
   // P2P coms message response timeout in milliseconds
   "coms_timeout_ms": 1800000,
 
-  // P2P coms peer ping interval in milliseconds
-  "coms_ping_interval_ms": 10000,
-
   // P2P coms data directory. Empty = ~/.pi/coms
   "coms_dir": "",
 
-  // ── Coms-Net (Networked) ──────────────────────────────────────────────────
-
-  // Coms-net server listen port. 0 = OS picks a random free port
-  "coms_net_port": 0,
-
-  // Coms-net server bind host (use 0.0.0.0 for LAN access — requires auth token)
-  "coms_net_host": "127.0.0.1",
-
-  // Coms-net auth token for remote access. Empty = auto-generated for loopback
-  "coms_net_auth_token": "",
-
-  // Coms-net public URL for remote peers to connect to
-  "coms_net_public_url": "",
-
-  // Remote coms-net server URL to connect to (client mode)
-  "coms_net_server_url": "",
-
-  // Max message relay hops for coms-net (1-50)
-  "coms_net_max_hops": 5,
-
-  // Coms-net message time-to-live in milliseconds
-  "coms_net_message_ttl_ms": 1800000,
-
-  // Max queued messages per agent (1-10000)
-  "coms_net_max_inbox": 100,
-
-  // Coms-net heartbeat interval in milliseconds
-  "coms_net_heartbeat_ms": 10000,
-
-  // Coms-net stale peer threshold in milliseconds
-  "coms_net_stale_after_ms": 30000,
-
-  // Coms-net offline peer threshold in milliseconds
-  "coms_net_offline_after_ms": 60000,
-
-  // Log coms-net heartbeat traffic (very noisy)
-  "coms_net_log_heartbeat": false,
-
-  // Suppress all coms-net logs except startup/shutdown
-  "coms_net_log_quiet": false
 }

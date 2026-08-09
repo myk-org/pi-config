@@ -20,6 +20,7 @@
     "extensions/image-gen/",
     "extensions/pidash/*.ts",
     "extensions/pidiff/*.ts",
+    "extensions/pitasks/",
     "agents/",
     "rules/",
     "prompts/",

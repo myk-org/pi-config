@@ -11,6 +11,7 @@ import {
   autoCompleteTask,
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
+import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 
 function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string; status: string; subject: string }>): string {
   const tasksDir = join(dir, ".pi", "tasks");
@@ -39,7 +40,7 @@ describe("autoCompleteTask", () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Test task" },
     ]);
-    const result = await autoCompleteTask("1", tmp);
+    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, true);
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "completed");
@@ -49,7 +50,7 @@ describe("autoCompleteTask", () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "in_progress", subject: "Test task" },
     ]);
-    const result = await autoCompleteTask("1", tmp);
+    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, true);
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "completed");
@@ -59,7 +60,7 @@ describe("autoCompleteTask", () => {
     writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "completed", subject: "Test task" },
     ]);
-    const result = await autoCompleteTask("1", tmp);
+    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
@@ -67,17 +68,17 @@ describe("autoCompleteTask", () => {
     writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Test task" },
     ]);
-    const result = await autoCompleteTask("99", tmp);
+    const result = await autoCompleteTask("99", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
   it("returns false for empty taskId", async () => {
-    const result = await autoCompleteTask("", tmp);
+    const result = await autoCompleteTask("", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
   it("returns false for taskId '-1'", async () => {
-    const result = await autoCompleteTask("-1", tmp);
+    const result = await autoCompleteTask("-1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
@@ -85,7 +86,7 @@ describe("autoCompleteTask", () => {
     const storePath = writeTaskStore(tmp, "tasks-sess1.json", [
       { id: "1", status: "pending", subject: "Session task" },
     ]);
-    const result = await autoCompleteTask("1", tmp, "sess1");
+    const result = await autoCompleteTask("1", tmp, "sess1", (p) => new TaskStore(p));
     assert.equal(result, true);
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "completed");
@@ -98,14 +99,14 @@ describe("autoCompleteTask", () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Fallback task" },
     ]);
-    const result = await autoCompleteTask("1", tmp, "sess1");
+    const result = await autoCompleteTask("1", tmp, "sess1", (p) => new TaskStore(p));
     assert.equal(result, true);
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "completed");
   });
 
   it("returns false when no store files exist", async () => {
-    const result = await autoCompleteTask("1", tmp);
+    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 });
@@ -125,7 +126,7 @@ describe("autoMarkInProgress", () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Test task" },
     ]);
-    const result = await autoMarkInProgress("1", tmp);
+    const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, true);
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "in_progress");
@@ -135,7 +136,7 @@ describe("autoMarkInProgress", () => {
     writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "in_progress", subject: "Test task" },
     ]);
-    const result = await autoMarkInProgress("1", tmp);
+    const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
@@ -143,17 +144,17 @@ describe("autoMarkInProgress", () => {
     writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "completed", subject: "Test task" },
     ]);
-    const result = await autoMarkInProgress("1", tmp);
+    const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
   it("returns false for empty taskId", async () => {
-    const result = await autoMarkInProgress("", tmp);
+    const result = await autoMarkInProgress("", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
   it("returns false for taskId '-1'", async () => {
-    const result = await autoMarkInProgress("-1", tmp);
+    const result = await autoMarkInProgress("-1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
@@ -161,14 +162,14 @@ describe("autoMarkInProgress", () => {
     const storePath = writeTaskStore(tmp, "tasks-sess2.json", [
       { id: "1", status: "pending", subject: "Session task" },
     ]);
-    const result = await autoMarkInProgress("1", tmp, "sess2");
+    const result = await autoMarkInProgress("1", tmp, "sess2", (p) => new TaskStore(p));
     assert.equal(result, true);
     const tasks = readTaskStore(storePath);
     assert.equal(tasks[0].status, "in_progress");
   });
 
   it("returns false when no store files exist", async () => {
-    const result = await autoMarkInProgress("1", tmp);
+    const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 });
@@ -187,7 +188,7 @@ describe("autoCompleteTask call-site guard (subagent-tool pattern)", () => {
   async function simulateSubagentCompletion(chainTaskId: string | undefined, cwd: string): Promise<boolean> {
     // Replicate the guard from subagent-tool.ts[870-873]
     if (chainTaskId && chainTaskId !== "-1") {
-      return autoCompleteTask(chainTaskId, cwd).catch(() => false);
+      return autoCompleteTask(chainTaskId, cwd, undefined, (p) => new TaskStore(p)).catch(() => false);
     }
     return false;
   }
@@ -242,7 +243,7 @@ describe("autoCompleteTask error handling", () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(join(tasksDir, "tasks.json"), "not valid json at all");
-    const result = await autoCompleteTask("1", tmp);
+    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
@@ -258,7 +259,7 @@ describe("autoCompleteTask error handling", () => {
     writeFileSync(globalPath, JSON.stringify({
       tasks: [{ id: "1", status: "pending", subject: "Global task" }],
     }));
-    const result = await autoCompleteTask("1", tmp, "s1");
+    const result = await autoCompleteTask("1", tmp, "s1", (p) => new TaskStore(p));
     assert.equal(result, false);
     // Verify global store was NOT mutated
     const globalTasks = readTaskStore(globalPath);
@@ -281,7 +282,7 @@ describe("autoMarkInProgress error handling", () => {
     const tasksDir = join(tmp, ".pi", "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(join(tasksDir, "tasks.json"), "not valid json at all");
-    const result = await autoMarkInProgress("1", tmp);
+    const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
     assert.equal(result, false);
   });
 
@@ -297,7 +298,7 @@ describe("autoMarkInProgress error handling", () => {
     writeFileSync(globalPath, JSON.stringify({
       tasks: [{ id: "1", status: "pending", subject: "Global task" }],
     }));
-    const result = await autoMarkInProgress("1", tmp, "s2");
+    const result = await autoMarkInProgress("1", tmp, "s2", (p) => new TaskStore(p));
     assert.equal(result, false);
     // Verify global store was NOT mutated
     const globalTasks = readTaskStore(globalPath);
@@ -316,7 +317,7 @@ describe("autoMarkInProgress error handling", () => {
     writeFileSync(globalPath, JSON.stringify({
       tasks: [{ id: "1", status: "pending", subject: "Global pending" }],
     }));
-    const result = await autoMarkInProgress("1", tmp, "s3");
+    const result = await autoMarkInProgress("1", tmp, "s3", (p) => new TaskStore(p));
     assert.equal(result, false);
     // Global NOT mutated
     const globalTasks = readTaskStore(globalPath);

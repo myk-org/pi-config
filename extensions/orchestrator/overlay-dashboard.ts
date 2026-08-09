@@ -109,6 +109,8 @@ export class OverlayListDashboard<
 > implements Component {
   private closed = false;
   private ticker: ReturnType<typeof setInterval>;
+  private cachedWidth: number | undefined;
+  private cachedLines: string[] | undefined;
 
   constructor(
     private tui: TUI,
@@ -169,7 +171,8 @@ export class OverlayListDashboard<
         this.selection.index =
           (this.selection.index - 1 + items.length) % items.length;
         this.selection.id = items[this.selection.index]?.id;
-        this.tui.requestRender();
+        this.invalidate();
+        this.tui.requestRender(true);
       }
       return;
     }
@@ -181,7 +184,8 @@ export class OverlayListDashboard<
       if (items.length > 0) {
         this.selection.index = (this.selection.index + 1) % items.length;
         this.selection.id = items[this.selection.index]?.id;
-        this.tui.requestRender();
+        this.invalidate();
+        this.tui.requestRender(true);
       }
       return;
     }
@@ -193,12 +197,15 @@ export class OverlayListDashboard<
           this.close(null);
           return;
         }
-        this.tui.requestRender();
+        this.invalidate();
+        this.tui.requestRender(true);
       }
     }
   }
 
   render(width: number): string[] {
+    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+
     const theme = this.theme;
     const items = this.items();
     reconcileSelection(this.selection, items);
@@ -243,6 +250,8 @@ export class OverlayListDashboard<
       truncateToWidth(theme.fg("dim", `  ${this.spec.footerHints}`), width),
     );
 
+    this.cachedLines = lines;
+    this.cachedWidth = width;
     return lines;
   }
 
@@ -290,7 +299,10 @@ export class OverlayListDashboard<
     return out;
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.cachedWidth = undefined;
+    this.cachedLines = undefined;
+  }
 }
 
 export class OverlayScrollDetail implements Component {

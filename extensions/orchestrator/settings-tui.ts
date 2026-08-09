@@ -6,6 +6,7 @@
  * Left/Right arrows switch categories. Tab switches project/global scope.
  */
 
+import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI, ExtensionCommandContext, ModelRegistry, Theme } from "@earendil-works/pi-coding-agent";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import {
@@ -51,9 +52,14 @@ import {
   PickerSubmenu,
   MultiSelectSubmenu,
   AgentOverridesSubmenu,
+  SelectSubmenu,
 } from "./settings-tui-submenus.js";
+import settingsSchema from "../../settings-keys.json" with { type: "json" };
 
 // Re-export helpers for external consumers
+const log = createLogger("settings_tui");
+log.debug("settings-tui module loaded");
+
 export {
   CATEGORIES,
   type CategoryDef,
@@ -200,6 +206,16 @@ export function buildCategoryItems(
           break;
 
         case "string": {
+          const schemaDef = settingsSchema[key as keyof typeof settingsSchema] as any;
+          const enumValues: string[] | undefined = schemaDef?.enum;
+
+          if (enumValues && enumValues.length > 0) {
+            item.submenu = (current: string, done: (val?: string) => void): Component => {
+              return new SelectSubmenu(key, enumValues, current, theme, done);
+            };
+            break;
+          }
+
           const SECRET_PATTERN = /token|secret|password|auth/i;
           const isSecret = SECRET_PATTERN.test(key);
           const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
@@ -412,6 +428,7 @@ class SettingsOverlay implements Component {
           this.notify(msg, "error");
           return;
         }
+        log.info("settings_changed", id, String(parsed).slice(0, 60));
         if (filePath.endsWith(".jsonc")) {
           this.notify("Note: comments were stripped from .jsonc file", "info");
         }
@@ -565,6 +582,7 @@ class SettingsOverlay implements Component {
 // ── Main command handler ────────────────────────────────────────
 
 async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: string): Promise<void> {
+  log.info("settings_opened");
   if (!ctx.hasUI) return;
   if (ctx.mode !== "tui") {
     ctx.ui.notify("/pi-config-settings requires TUI mode", "error");

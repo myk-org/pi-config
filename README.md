@@ -33,10 +33,10 @@ Single extension that provides:
 | **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
 | **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules. Dreaming-safe via *(enforced)* marker |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
-| **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges ([@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks)) |
+| **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
-| **Inter-agent communication** | P2P (`/coms`) and networked (`/coms-net`) agent communication — on-demand activation via slash commands |
-| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/coms-net`, `/pi-config-settings` — with autocomplete argument hints |
+| **Inter-agent communication** | P2P (`/coms`) agent communication — on-demand activation via slash command |
+| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
@@ -82,9 +82,8 @@ Single extension that provides:
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
 | `/coms start\|stop\|status` | P2P local agent communication (Unix socket) |
-| `/coms-net start\|connect\|disconnect\|stop\|status` | Networked agent communication (HTTP/SSE hub) |
 
-### Inter-Agent Communication (coms & coms-net)
+### Inter-Agent Communication (coms)
 
 Two systems for Pi agents to communicate with each other, activated on-demand via slash commands:
 
@@ -95,18 +94,6 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 /coms stop
 /coms status
 ```
-
-**Networked (`/coms-net`)** — HTTP/SSE hub for communication across machines. Server auto-starts on localhost.
-
-```text
-/coms-net start --name dev --purpose "Development agent"
-/coms-net connect
-/coms-net disconnect
-/coms-net stop
-/coms-net status
-```
-
-For LAN/remote access, set `coms_net_auth_token` and `coms_net_host` in `.pi/pi-config-settings.json` (or via env vars `PI_COMS_NET_AUTH_TOKEN` / `PI_COMS_NET_HOST`).
 
 **Tools available once activated:**
 

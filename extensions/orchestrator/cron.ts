@@ -11,6 +11,9 @@
  * Prompt tasks run as async agents with triggerTurn: true.
  */
 
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("cron");
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -84,7 +87,7 @@ function saveCrons(tasks: CronTask[]): void {
   try {
     CRON_IGNORE_WATCH_UNTIL = Date.now() + 400;
     fs.writeFileSync(CRON_FILE, JSON.stringify(tasks), { mode: 0o600 });
-  } catch (e: any) { console.debug("[cron] save crons failed:", e?.message || e); }
+  } catch (e: any) { log.debug("save crons failed:", e?.message || e); }
 }
 
 function loadCrons(): CronTask[] {
@@ -137,7 +140,7 @@ function cleanupOrphanedCronFiles(): void {
         // If kill(pid, 0) succeeds but /proc is unreadable — skip (can't verify)
       }
     }
-  } catch (e: any) { console.debug("[cron] cleanup orphaned cron files failed:", e?.message || e); }
+  } catch (e: any) { log.debug("cleanup orphaned cron files failed:", e?.message || e); }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -217,6 +220,7 @@ function registerCronTool(pi: ExtensionAPI, state: CronInternals): void {
         state.tasks.set(task.id, task);
         state.startTask(task);
         saveCrons([...state.tasks.values()]);
+        log.info("cron_add", task.description);
 
         state.updateCronStatus();
         return {
@@ -266,7 +270,7 @@ function registerCronTool(pi: ExtensionAPI, state: CronInternals): void {
             });
             sections.push(`**${label}:**\n${lines.join("\n")}`);
           }
-        } catch (e: any) { console.debug("[cron] list-all scan failed:", e?.message || e); }
+        } catch (e: any) { log.debug("list-all scan failed:", e?.message || e); }
         if (sections.length === 0) {
           return { content: [{ type: "text", text: "No scheduled tasks in any session." }] };
         }
@@ -284,6 +288,7 @@ function registerCronTool(pi: ExtensionAPI, state: CronInternals): void {
         state.stopTask(id);
         state.tasks.delete(id);
         saveCrons([...state.tasks.values()]);
+        log.info("cron_remove", id);
         state.updateCronStatus();
         return {
           content: [{ type: "text", text: `Cron #${id} removed: ${task.description}` }],
@@ -353,7 +358,7 @@ function listAllCronViews(state: CronInternals) {
       }
     }
   } catch (e: any) {
-    console.debug("[cron] list-all scan failed:", e?.message || e);
+    log.debug("list-all scan failed:", e?.message || e);
   }
   return views;
 }
@@ -383,7 +388,7 @@ function removeCronByOverlayId(state: CronInternals, overlayId: string): boolean
     fs.writeFileSync(view.cronFile, JSON.stringify(next), { mode: 0o600 });
     return true;
   } catch (e: any) {
-    console.debug("[cron] remote remove failed:", e?.message || e);
+    log.debug("remote remove failed:", e?.message || e);
     return false;
   }
 }
@@ -523,6 +528,7 @@ export function registerCron(
   }
 
   function executeCronTask(task: CronTask) {
+    log.info("cron_execute", task.id);
     task.lastRun = Date.now();
     saveCrons([...tasks.values()]);
 
@@ -541,7 +547,7 @@ export function registerCron(
         mustAsync: true,
       });
       if (dispatch.action === "skip") {
-        console.debug(`[cron] ${dispatch.note} (task #${task.id})`);
+        log.error("cron_error", task.id, dispatch.note);
         try {
           state.lastCtx?.ui?.notify?.(
             `Cron #${task.id} skipped: set internal_operations_provider/internal_operations_model for acpx`,
@@ -677,13 +683,13 @@ export function registerCron(
           try {
             syncTasksFromDisk();
           } catch (e: any) {
-            console.debug("[cron] sync from disk failed:", e?.message || e);
+            log.debug("sync from disk failed:", e?.message || e);
           }
         }, 150);
       });
       cronFileWatcher.unref?.();
     } catch (e: any) {
-      console.debug("[cron] watch setup failed:", e?.message || e);
+      log.debug("watch setup failed:", e?.message || e);
     }
   });
 

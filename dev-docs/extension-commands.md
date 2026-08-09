@@ -21,7 +21,6 @@ the extension source files under `extensions/`. Each command uses
 | `/pi-config-settings [project\|global]` | `settings-tui.ts` + `settings-tui-helpers.ts` | Interactive settings editor: fullscreen overlay with scope toggle (Tab), fuzzy provider/model pickers, agent multi-select, auth token masking |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
 | `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (start/stop/status) |
-| `/coms-net` | `coms/coms-net-wrapper.ts` | Networked agent communication (start/connect/disconnect/stop/status) |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ## Adding an Extension Command

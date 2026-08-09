@@ -5,7 +5,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { cliProviderLog } from "../../shared/file-logger.js";
+import { fileLog } from "../../shared/file-logger.js";
 import type { CliProviderDef, DiscoveredCliModel } from "../types.js";
 import { resolveBinary } from "../shared/discover-cache.js";
 
@@ -48,8 +48,10 @@ function discoverCursorModels(): DiscoveredCliModel[] {
   const out = `${r.stdout || ""}\n${r.stderr || ""}`;
   const models = parseAgentListModels(out);
   if (models.length === 0) {
-    cliProviderLog(
+    fileLog(
+      "cli-provider",
       "warn",
+      "cli-provider",
       `cursor: --list-models failed (status=${r.status}): ${out.slice(0, 200)}`,
     );
   }

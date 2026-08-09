@@ -1,88 +1,91 @@
 /**
- * Task lifecycle helpers — auto-complete / mark in_progress via pi-tasks TaskStore.
- * Kept separate from async-agents.ts so unit tests can import without loading
- * @earendil-works/pi-coding-agent (unavailable in the tsx test harness).
+ * Task lifecycle helpers — auto-complete / mark in_progress via owned taskStore.
+ * Uses the exported store instance from extensions/pitasks when available.
+ * Falls back to _storeFactory for unit testing.
  */
 
-import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 
-let TaskStoreClass: any = null;
-const taskStoreReady: Promise<void> = (async () => {
-  const candidates = [
-    "@tintinweb/pi-tasks/dist/task-store.js",
-    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
-  ];
-  for (const candidate of candidates) {
-    try {
-      const mod = await import(candidate);
-      if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; }
-    } catch { continue; }
-  }
-  if (!TaskStoreClass) {
-    throw new Error("[task-lifecycle] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
-  }
-})();
-
-/** Auto-complete a task via pi-tasks TaskStore (in-process, no AI involvement). */
-export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
-  if (!taskId || taskId === "-1") return false;
-  await taskStoreReady;
-
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const candidates: string[] = [];
-  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  candidates.push(path.join(tasksDir, "tasks.json"));
-
-  for (const storePath of candidates) {
-    try {
-      const factory = _storeFactory ?? ((p: string) => new TaskStoreClass(p));
-      const store = factory(storePath);
-      const task = store.get(taskId);
-      if (task) {
-        // Task found in this store — do not fall through to later candidates
-        if (task.status !== "completed") {
-          store.update(taskId, { status: "completed" });
-          return true;
-        }
-        return false;
-      }
-    } catch (e: any) {
-      console.debug(`[task-lifecycle] autoCompleteTask failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
-      continue;
-    }
-  }
-  return false;
+/** Get the shared task store instance (lazy import to avoid circular deps). */
+async function getStore(): Promise<any> {
+  // Don't cache — pitasks reassigns taskStore during session upgrade/switch.
+  // Always read the latest export.
+  try {
+    const mod = await import("../pitasks/index.js");
+    return mod.taskStore ?? null;
+  } catch { return null; }
 }
 
-/** Auto-mark a task in_progress via pi-tasks TaskStore (in-process, no AI involvement). */
+/** Auto-complete a task (in-process, no AI involvement). */
+export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
+  if (!taskId || taskId === "-1") return false;
+
+  // TEST-ONLY: _storeFactory constructs file paths for unit test isolation.
+  // Production code NEVER passes this — it falls through to getStore() below.
+  if (_storeFactory) {
+    const tasksDir = path.join(cwd, ".pi", "tasks");
+    const candidates: string[] = [];
+    if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+    candidates.push(path.join(tasksDir, "tasks.json"));
+    for (const storePath of candidates) {
+      try {
+        const store = _storeFactory(storePath);
+        const task = store.get(taskId);
+        if (task) {
+          if (task.status !== "completed") { store.update(taskId, { status: "completed" }); return true; }
+          return false;
+        }
+      } catch { continue; }
+    }
+    return false;
+  }
+
+  const store = await getStore();
+  if (!store) return false;
+  try {
+    const task = store.get(taskId);
+    if (!task) return false;
+    if (task.status !== "completed") { store.update(taskId, { status: "completed" }); return true; }
+    return false;
+  } catch (e: any) {
+    console.debug(`[task-lifecycle] autoCompleteTask failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
+    return false;
+  }
+}
+
+/** Auto-mark a task in_progress (in-process, no AI involvement). */
 export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?: string, _storeFactory?: (path: string) => any): Promise<boolean> {
   if (!taskId || taskId === "-1") return false;
-  await taskStoreReady;
 
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const candidates: string[] = [];
-  if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  candidates.push(path.join(tasksDir, "tasks.json"));
-
-  for (const storePath of candidates) {
-    try {
-      const factory = _storeFactory ?? ((p: string) => new TaskStoreClass(p));
-      const store = factory(storePath);
-      const task = store.get(taskId);
-      if (task) {
-        // Task found in this store — do not fall through to later candidates
-        if (task.status === "pending") {
-          store.update(taskId, { status: "in_progress" });
-          return true;
+  // TEST-ONLY: _storeFactory constructs file paths for unit test isolation.
+  // Production code NEVER passes this — it falls through to getStore() below.
+  if (_storeFactory) {
+    const tasksDir = path.join(cwd, ".pi", "tasks");
+    const candidates: string[] = [];
+    if (sessionId) candidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
+    candidates.push(path.join(tasksDir, "tasks.json"));
+    for (const storePath of candidates) {
+      try {
+        const store = _storeFactory(storePath);
+        const task = store.get(taskId);
+        if (task) {
+          if (task.status === "pending") { store.update(taskId, { status: "in_progress" }); return true; }
+          return false;
         }
-        return false;
-      }
-    } catch (e: any) {
-      console.debug(`[task-lifecycle] autoMarkInProgress failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
-      continue;
+      } catch { continue; }
     }
+    return false;
   }
-  return false;
+
+  const store = await getStore();
+  if (!store) return false;
+  try {
+    const task = store.get(taskId);
+    if (!task) return false;
+    if (task.status === "pending") { store.update(taskId, { status: "in_progress" }); return true; }
+    return false;
+  } catch (e: any) {
+    console.debug(`[task-lifecycle] autoMarkInProgress failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
+    return false;
+  }
 }

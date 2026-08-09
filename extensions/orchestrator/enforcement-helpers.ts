@@ -3,10 +3,14 @@
  * Extracted to allow testing without SDK dependencies.
  */
 
+import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
 import { DANGEROUS, getCurrentBranch, hasGitSub } from "./git-helpers.js";
+
+const enfLog = createLogger("enforcement");
+enfLog.debug("enforcement-helpers module loaded");
 
 export type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
 

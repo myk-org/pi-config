@@ -11,10 +11,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createLogger } from "../shared/logger.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import type { CliSessionKey, CliSessionRecord } from "./types.js";
+
+const sessionLog = createLogger("cli_provider");
+sessionLog.debug("cli-provider sessions module loaded");
 
 export type { CliSessionKey, CliSessionRecord } from "./types.js";
 

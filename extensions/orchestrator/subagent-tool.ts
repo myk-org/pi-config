@@ -16,6 +16,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createLogger } from "../shared/logger.js";
 import {
   getMarkdownTheme,
   withFileMutationQueue,
@@ -29,20 +30,13 @@ import {
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 
-// Import TaskStore for taskId validation (bypasses raw file reads)
-let TaskStoreClass: any = null;
-(async () => {
-  const candidates = [
-    "@tintinweb/pi-tasks/dist/task-store.js",
-    pathToFileURL(path.join(os.homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-tasks/dist/task-store.js")).href,
-  ];
-  for (const c of candidates) {
-    try { const mod = await import(c); if (mod.TaskStore) { TaskStoreClass = mod.TaskStore; break; } } catch { continue; }
-  }
-  if (!TaskStoreClass) {
-    throw new Error("[subagent] FATAL: TaskStore not found — @tintinweb/pi-tasks is required but failed to load");
-  }
-})();
+// Task store access via shared instance from extensions/pitasks
+let _taskStore: any = null;
+async function getTaskStore(): Promise<any> {
+  if (_taskStore) return _taskStore;
+  try { const mod = await import("../pitasks/index.js"); _taskStore = mod.taskStore; } catch { /* ignore */ }
+  return _taskStore;
+}
 import {
   decideAsyncLlmDispatch,
   supportsAsyncLlm,
@@ -69,10 +63,16 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
-const MAX_SYNC_SECONDS = 30;
+const MAX_SYNC_SECONDS = 60;
+const log = createLogger("subagent");
 const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
   `Estimated time ${seconds}s meets or exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
+
+let syncPenalty = 0;
+let lastSyncAgent = "";
+let lastSyncEstimate = 0;
+let lastSyncActual = 0;
 
 /** Agents that MUST be dispatched with async: true. Sync calls are rejected.
  *  Keep in sync with rules/20-code-review-loop.md when changing this list. */
@@ -474,13 +474,14 @@ export async function runSingleAgent(
     args.push(`Task: ${task}`);
     let aborted = false;
 
+    log.info("sync_spawn_start", agentName, "cwd", cwd);
     const exitCode = await new Promise<number>((resolve) => {
       const inv = getPiInvocation(args);
       const proc = spawn(inv.command, inv.args, {
         cwd: cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName, PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "" },
+        env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName, PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "", __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "", __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "" },
       });
       let buf = "";
 
@@ -528,10 +529,14 @@ export async function runSingleAgent(
         cur.stderr += d.toString();
       });
       proc.on("close", (c) => {
+        log.info("sync_proc_close", agentName, "code", c);
         if (buf.trim()) processLine(buf);
         resolve(c ?? 0);
       });
-      proc.on("error", () => resolve(1));
+      proc.on("error", (err) => {
+        log.error("sync_proc_error", agentName, err?.message);
+        resolve(1);
+      });
 
       if (signal) {
         const kill = () => {
@@ -546,6 +551,7 @@ export async function runSingleAgent(
       }
     });
 
+    log.info("sync_proc_resolved", agentName, "exitCode", exitCode, "elapsed", Date.now() - startTime);
     cur.exitCode = exitCode;
     cur.durationMs = Date.now() - startTime;
 
@@ -563,32 +569,21 @@ export async function runSingleAgent(
   }
 }
 
-/** Validate that a taskId references an existing task in the pi-tasks store. */
-function validateTaskId(taskId: string, cwd: string, sessionId?: string): string | null {
+/** Validate that a taskId references an existing task in the pitasks store. */
+function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): string | null {
   if (taskId === "-1") return null;
-
-  const tasksDir = path.join(cwd, ".pi", "tasks");
-  const paths: string[] = [];
-  if (sessionId) paths.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-  paths.push(path.join(tasksDir, "tasks.json"));
-
-  for (const p of paths) {
-    try {
-      if (TaskStoreClass) {
-        const store = new TaskStoreClass(p);
-        if (store.get(taskId)) return null;
-      } else {
-        // Fallback: raw file read when TaskStore hasn't loaded yet (async init race)
-        const data = JSON.parse(fs.readFileSync(p, "utf-8"));
-        if ((data.tasks || []).some((t: any) => t.id === taskId)) return null;
-      }
-    } catch (e: any) {
-      // Only continue silently for missing files; report other errors
-      if (e?.code === "ENOENT" || e?.message?.includes("ENOENT")) continue;
-      return `Task store error for ${path.basename(p)}: ${e?.message || e}. Fix the task store or pass taskId: "-1".`;
+  try {
+    // Ensure store is loaded (async init may not have completed)
+    if (!_taskStore) {
+      getTaskStore().catch(() => {});
     }
-  }
-
+    const store = _taskStore;
+    if (!store) {
+      // Store not loaded yet (async init) — fail open, skip validation
+      return null;
+    }
+    if (store.get(taskId)) return null;
+  } catch { return null; }
   return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
 }
 
@@ -766,6 +761,10 @@ export function registerSubagentTool(
         };
       }
     }
+    if (syncPenalty > 0) {
+      log.info("sync_penalty_reset", "async used");
+      syncPenalty = 0;
+    }
     const result = spawnAsyncAgent(params.agent, params.task, params.cwd, agents, {
       fireAndForget: params.fireAndForget,
       name: params.name,
@@ -840,6 +839,17 @@ export function registerSubagentTool(
     }
     // chain runs sequentially — sum all steps
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
+    if (syncPenalty > 0) {
+      const adjustedTotal = totalChainSeconds + syncPenalty;
+      if (adjustedTotal >= MAX_SYNC_SECONDS) {
+        log.info("sync_penalty_rejected_chain", "penalty", syncPenalty, "adjusted", adjustedTotal);
+        return {
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Chain total ${totalChainSeconds}s + penalty ${syncPenalty}s = ${adjustedTotal}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          details: mkd("chain")([]),
+          isError: true,
+        };
+      }
+    }
     if (totalChainSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
@@ -965,6 +975,17 @@ export function registerSubagentTool(
     }
     // parallel runs concurrently — use longest task
     const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
+    if (syncPenalty > 0) {
+      const adjustedMax = maxParallelSeconds + syncPenalty;
+      if (adjustedMax >= MAX_SYNC_SECONDS) {
+        log.info("sync_penalty_rejected_parallel", "penalty", syncPenalty, "adjusted", adjustedMax);
+        return {
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Max parallel estimate ${maxParallelSeconds}s + penalty ${syncPenalty}s = ${adjustedMax}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          details: mkd("parallel")([]),
+          isError: true,
+        };
+      }
+    }
     if (maxParallelSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
@@ -1127,6 +1148,17 @@ export function registerSubagentTool(
         isError: true,
       };
     }
+    if (syncPenalty > 0) {
+      const adjustedEstimate = (params.estimatedSeconds ?? 0) + syncPenalty;
+      if (adjustedEstimate >= MAX_SYNC_SECONDS) {
+        log.info("sync_penalty_rejected", params.agent, "estimate", params.estimatedSeconds, "penalty", syncPenalty, "adjusted", adjustedEstimate);
+        return {
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Your estimate ${params.estimatedSeconds}s + penalty ${syncPenalty}s = ${adjustedEstimate}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          details: mkd("single")([]),
+          isError: true,
+        };
+      }
+    }
     if (params.estimatedSeconds >= MAX_SYNC_SECONDS && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
@@ -1142,6 +1174,8 @@ export function registerSubagentTool(
     if (syncTaskId && syncTaskId !== "-1") {
       await autoMarkInProgress(syncTaskId, params.cwd, sessionId).catch(() => {});
     }
+    log.info("sync_execute_start", params.agent, "taskId", syncTaskId ?? "none");
+    const syncStartTime = Date.now();
     const r = await runSingleAgent(
       agents,
       params.agent,
@@ -1156,6 +1190,15 @@ export function registerSubagentTool(
       params.persistSession,
       explicit,
     );
+    const actualSeconds = Math.round((Date.now() - syncStartTime) / 1000);
+    if (actualSeconds > MAX_SYNC_SECONDS && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
+      syncPenalty = actualSeconds - (params.estimatedSeconds ?? 0);
+      lastSyncAgent = params.agent;
+      lastSyncEstimate = params.estimatedSeconds ?? 0;
+      lastSyncActual = actualSeconds;
+      log.info("sync_penalty_set", params.agent, "estimate", params.estimatedSeconds, "actual", actualSeconds, "penalty", syncPenalty);
+    }
+    log.info("sync_execute_done", params.agent, "exitCode", r.exitCode, "stopReason", r.stopReason, "elapsed", Date.now() - syncStartTime);
     activeAgents.delete(label);
     updateWorking();
     const err =
@@ -1177,6 +1220,7 @@ export function registerSubagentTool(
     if (syncTaskId && syncTaskId !== "-1") {
       await autoCompleteTask(syncTaskId, params.cwd, sessionId).catch(() => {});
     }
+    log.info("sync_execute_returning", params.agent);
     return {
       content: [
         { type: "text" as const, text: getFinalOutput(r.messages) || "(no output)" },

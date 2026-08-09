@@ -14,6 +14,11 @@
  * @module cli-provider (shim)
  */
 
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("cli_provider");
+log.debug("cli-provider shim module loaded");
+
 // Re-export discovery APIs (consumed by pi-sidecar via jiti)
 export {
   discoverCliModels,

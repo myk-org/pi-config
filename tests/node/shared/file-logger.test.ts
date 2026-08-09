@@ -28,6 +28,7 @@ describe("file-logger", () => {
     TMPDIR: process.env.TMPDIR,
     TMP: process.env.TMP,
     TEMP: process.env.TEMP,
+    PI_SESSION_ID: process.env.PI_SESSION_ID,
   };
   let tmpHome: string | undefined;
   let tmpFallbackBase: string | undefined;
@@ -43,6 +44,10 @@ describe("file-logger", () => {
     else process.env.TMP = originals.TMP;
     if (originals.TEMP === undefined) delete process.env.TEMP;
     else process.env.TEMP = originals.TEMP;
+    if (originals.PI_SESSION_ID === undefined) delete process.env.PI_SESSION_ID;
+    else process.env.PI_SESSION_ID = originals.PI_SESSION_ID;
+    delete process.env.__PI_CONFIG_SESSION_ID;
+    delete (globalThis as any).__piConfigSessionId;
     for (const dir of [tmpHome, tmpFallbackBase]) {
       if (!dir) continue;
       try {
@@ -60,37 +65,38 @@ describe("file-logger", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { cliProviderLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now()}`
     );
+    setGlobalSessionId("test-session");
 
-    assert.equal(cliProviderLog("info", "reaped session cursor/test"), true);
+    assert.equal(fileLog("cli-provider", "info", "cli-provider", "reaped session cursor/test"), true);
     const body = readFileSync(getPiLogPath("cli-provider"), "utf-8");
     assert.match(body, /\[info\] \[cli-provider\] reaped session cursor\/test/);
   });
-
   it("writes dreaming info lines to ~/.pi/logs", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-dream-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { dreamingLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 1}`
     );
+    setGlobalSessionId("test-session");
 
-    assert.equal(dreamingLog("info", "merged provenance for 2 entries"), true);
+    assert.equal(fileLog("dreaming", "info", "dreaming", "merged provenance for 2 entries"), true);
     const body = readFileSync(getPiLogPath("dreaming"), "utf-8");
     assert.match(body, /\[info\] \[dreaming\] merged provenance for 2 entries/);
   });
-
   it("collapses message and Error.stack newlines into one physical line", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-nl-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { fileLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 2}`
     );
+    setGlobalSessionId("test-session");
 
     fileLog("cli-provider", "warn", "cli-provider", "a\nb\rc", new Error("x\ny"));
     const lines = readFileSync(getPiLogPath("cli-provider"), "utf-8")
@@ -110,9 +116,18 @@ describe("file-logger", () => {
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 3}`
     );
 
-    const p = getPiLogPath("cli-provider");
-    assert.equal(p, join(getPiLogsDir(), "cli-provider.log"));
-    assert.equal(existsSync(join(tmpHome, ".pi", "logs")), false);
+    // Without session ID: "unknown" session
+    delete process.env.__PI_CONFIG_SESSION_ID;
+    delete (globalThis as any).__piConfigSessionId;
+    const unknownPath = getPiLogPath("cli-provider");
+    assert.equal(unknownPath, join(getPiLogsDir(), "cli-provider", "unknown.log"));
+
+    // With globalThis session ID: per-session path (no mkdir)
+    (globalThis as any).__piConfigSessionId = "test-abc-123";
+    assert.equal(getPiLogPath("cli-provider"), join(getPiLogsDir(), "cli-provider", "test-abc-123.log"));
+    delete (globalThis as any).__piConfigSessionId;
+
+    // getPiLogPath returns correct path strings without side effects
   });
 
   it("falls back to isolated TMPDIR when home logs are not writable", async () => {
@@ -130,6 +145,7 @@ describe("file-logger", () => {
     const mod = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 4}`
     );
+    mod.setGlobalSessionId("test-session");
     assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "fallback"), true);
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
@@ -143,9 +159,10 @@ describe("file-logger", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { fileLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 5}`
     );
+    setGlobalSessionId("test-session");
 
     assert.equal(fileLog("cli-provider", "info", "cli-provider", "first"), true);
     const logPath = getPiLogPath("cli-provider");

@@ -160,17 +160,17 @@ describe("formatValue", () => {
 
   it("masks secret-like string keys", () => {
     const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
-    assert.equal(formatValue("coms_net_auth_token", "my-super-secret-token", tokenDef), "••••oken");
+    assert.equal(formatValue("coms_dir", "my-super-secret-token", tokenDef), "••••oken");
   });
 
   it("masks short secret values fully", () => {
     const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
-    assert.equal(formatValue("coms_net_auth_token", "abc", tokenDef), "••••••••");
+    assert.equal(formatValue("coms_dir", "abc", tokenDef), "••••••••");
   });
 
   it("does not mask empty secret values", () => {
     const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
-    assert.equal(formatValue("coms_net_auth_token", "", tokenDef), EMPTY_VALUE_SENTINEL);
+    assert.equal(formatValue("coms_dir", "", tokenDef), EMPTY_VALUE_SENTINEL);
   });
 
   it("does not mask non-secret string keys", () => {
@@ -180,11 +180,11 @@ describe("formatValue", () => {
   it("reads secret value from scope file that contains it", () => {
     const projectDir = mkdtempSync(join(tmpdir(), "settings-secret-scope-"));
     const settingsPath = join(projectDir, "settings.json");
-    writeFileSync(settingsPath, JSON.stringify({ coms_net_auth_token: "real-token-value" }));
+    writeFileSync(settingsPath, JSON.stringify({ coms_dir: "real-token-value" }));
 
     const data = readSettingsFile(settingsPath);
     assert.ok(data !== null);
-    assert.equal(data!["coms_net_auth_token"], "real-token-value");
+    assert.equal(data!["coms_dir"], "real-token-value");
 
     rmSync(projectDir, { recursive: true, force: true });
   });
@@ -194,7 +194,7 @@ describe("formatValue", () => {
     const otherPath = join(projectDir, "other.json");
     const otherData = readSettingsFile(otherPath);
     assert.deepEqual(otherData, {});
-    assert.equal(otherData!["coms_net_auth_token"], undefined);
+    assert.equal(otherData!["coms_dir"], undefined);
 
     rmSync(projectDir, { recursive: true, force: true });
   });
@@ -646,15 +646,15 @@ describe("resolveSecretPrefill", () => {
   });
 
   it("returns scope value but empty prefill when secret exists in project scope", () => {
-    writeFileSync(join(tempDir, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "project-token" }));
-    const result = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    writeFileSync(join(tempDir, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: "project-token" }));
+    const result = resolveSecretPrefill("coms_dir", "project", tempDir);
     assert.equal(result.scopeValue, "project-token");
     assert.equal(result.prefill, "", "prefill must be empty to avoid exposing secret on screen");
     assert.ok(result.hint.length > 0, "hint should be non-empty");
   });
 
   it("returns null scope value when secret not in project scope", () => {
-    const result = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    const result = resolveSecretPrefill("coms_dir", "project", tempDir);
     assert.equal(result.scopeValue, null);
     assert.equal(result.prefill, "");
     assert.ok(result.hint.length > 0, "hint should be non-empty");
@@ -662,22 +662,22 @@ describe("resolveSecretPrefill", () => {
 
   it("does not leak global secret into project scope prefill", () => {
     // Secret set in global, NOT in project
-    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "global-token" }));
-    const result = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ coms_dir: "global-token" }));
+    const result = resolveSecretPrefill("coms_dir", "project", tempDir);
     assert.equal(result.scopeValue, null, "should not see global token in project scope");
     assert.equal(result.prefill, "");
   });
 
   it("returns global scope value but empty prefill when editing global scope", () => {
-    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "global-token" }));
-    const result = resolveSecretPrefill("coms_net_auth_token", "global", tempDir);
+    writeFileSync(join(globalDir, "pi-config-settings.json"), JSON.stringify({ coms_dir: "global-token" }));
+    const result = resolveSecretPrefill("coms_dir", "global", tempDir);
     assert.equal(result.scopeValue, "global-token");
     assert.equal(result.prefill, "", "prefill must be empty to avoid exposing secret on screen");
   });
 
   it("end-to-end: secret not in scope + empty submit = no change", () => {
     // Compose resolveSecretPrefill + isSecretNoChange like buildSettingItems does
-    const info = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    const info = resolveSecretPrefill("coms_dir", "project", tempDir);
     assert.equal(info.scopeValue, null);
     // Empty submit should be treated as no-change
     assert.equal(isSecretNoChange("", info.scopeValue !== null), true);
@@ -688,8 +688,8 @@ describe("resolveSecretPrefill", () => {
   });
 
   it("end-to-end: secret in scope + empty submit = allowed change", () => {
-    writeFileSync(join(tempDir, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_net_auth_token: "existing" }));
-    const info = resolveSecretPrefill("coms_net_auth_token", "project", tempDir);
+    writeFileSync(join(tempDir, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: "existing" }));
+    const info = resolveSecretPrefill("coms_dir", "project", tempDir);
     assert.equal(info.scopeValue, "existing");
     // Empty submit when scope HAS value = user wants to clear
     assert.equal(isSecretNoChange("", info.scopeValue !== null), false);

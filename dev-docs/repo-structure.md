@@ -80,13 +80,10 @@ pi-config/
 │   │   ├── subagent-tool.ts         # Subagent tool + runSingleAgent (async-only enforcement for reviewers)
 │   │   └── utils.ts                 # Shared utilities (getProjectTmpDir, tryGetSystemPromptOptions, etc.)
 │   ├── coms/                        # Inter-agent communication extension (standalone)
-│   │   ├── index.ts                 # Entry point — registers coms and coms-net
+│   │   ├── index.ts                 # Entry point — registers coms
 │   │   ├── coms-wrapper.ts          # P2P agent communication wrapper (on-demand /coms command)
-│   │   ├── coms-net-wrapper.ts      # Networked agent communication wrapper (on-demand /coms-net command, auto-manages hub server)
 │   │   ├── coms-shared.ts           # Shared utilities: proxy factory, flag parser, state persistence, response formatting, list rendering
 │   │   ├── coms-p2p.ts              # P2P implementation (forked from disler/pi-vs-claude-code)
-│   │   ├── coms-net.ts              # Networked implementation (forked from disler/pi-vs-claude-code)
-│   │   ├── coms-net-server.ts       # Hub server (forked from disler/pi-vs-claude-code)
 │   │   └── themeMap.ts              # Theme utilities (forked from disler/pi-vs-claude-code)
 │   ├── pidash/                      # Live web dashboard extension (standalone)
 │   │   ├── index.ts                 # Entry point

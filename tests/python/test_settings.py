@@ -162,16 +162,6 @@ def test_int_env_accepts_valid_integer(
     assert get_setting("coms_max_hops", cwd=_isolated_settings) == 15
 
 
-def test_port_0_accepted(_isolated_settings: Path) -> None:
-    pi_dir = _isolated_settings / ".pi"
-    pi_dir.mkdir()
-    (pi_dir / "pi-config-settings.json").write_text(
-        json.dumps({"coms_net_port": 0}),
-        encoding="utf-8",
-    )
-    assert get_setting("coms_net_port", cwd=_isolated_settings) == 0
-
-
 def test_empty_string_stored_for_string_settings(_isolated_settings: Path) -> None:
     pi_dir = _isolated_settings / ".pi"
     pi_dir.mkdir()

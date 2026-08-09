@@ -4,7 +4,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatComsResponseText, formatQueueStr, renderQueuePart } from "../../../extensions/coms/coms-shared.js";
+import { formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, buildInboundContent, formatQueueStr, renderQueuePart, sanitizeComsName, createDeferredProxy, type DeferredUpstream } from "../../../extensions/coms/coms-shared.js";
 
 describe("formatComsResponseText", () => {
 	it("formats error response without queue", () => {
@@ -48,9 +48,29 @@ describe("formatComsResponseText", () => {
 		const result = formatComsResponseText("peer-x", "done", null, ids);
 		assert.equal(result, "[coms response from peer-x (5 more queued: a, b, c, d, e)] done");
 	});
+
+	it("includes arrow with selfName when provided", () => {
+		const result = formatComsResponseText("manager", "task done", null, [], "coder-async");
+		assert.equal(result, "[coms response from manager → coder-async] task done");
+	});
+
+	it("includes arrow with selfName in error response", () => {
+		const result = formatComsResponseText("worker", null, "timeout", [], "orchestrator");
+		assert.equal(result, "[coms response from worker → orchestrator] Error: timeout");
+	});
+
+	it("includes arrow before queue note", () => {
+		const result = formatComsResponseText("peer-a", "ok", null, ["id-1"], "coder");
+		assert.equal(result, "[coms response from peer-a → coder (1 more queued: id-1)] ok");
+	});
+
+	it("omits arrow when selfName is undefined", () => {
+		const result = formatComsResponseText("peer-b", "ok", null, []);
+		assert.equal(result, "[coms response from peer-b] ok");
+	});
 });
 
-describe("formatQueueStr (used by coms_list/coms_net_list text output)", () => {
+describe("formatQueueStr (used by coms_list text output)", () => {
 	it("returns empty string for 0", () => {
 		assert.equal(formatQueueStr(0), "");
 	});
@@ -72,7 +92,7 @@ describe("formatQueueStr (used by coms_list/coms_net_list text output)", () => {
 	});
 
 	it("produces correct list output line with queue depth", () => {
-		// Simulates the text output format used by coms_list and coms_net_list
+		// Simulates the text output format used by coms_list
 		const name = "peer2";
 		const model = "opus";
 		const ctxStr = " 42%";
@@ -104,4 +124,209 @@ describe("renderQueuePart", () => {
 		const result = renderQueuePart(2, mockTheme);
 		assert.equal(result, " 📨2");
 	});
+});
+
+describe("sanitizeComsName", () => {
+	it("passes through clean names unchanged", () => {
+		assert.equal(sanitizeComsName("coder-async"), "coder-async");
+	});
+
+	it("strips newlines", () => {
+		assert.equal(sanitizeComsName("name\ninjection"), "nameinjection");
+	});
+
+	it("strips carriage returns", () => {
+		assert.equal(sanitizeComsName("name\rinjection"), "nameinjection");
+	});
+
+	it("strips tabs", () => {
+		assert.equal(sanitizeComsName("name\tinjection"), "nameinjection");
+	});
+
+	it("strips brackets", () => {
+		assert.equal(sanitizeComsName("name[bad]"), "namebad");
+	});
+
+	it("strips C0 control characters", () => {
+		assert.equal(sanitizeComsName("name\x00\x01\x1fend"), "nameend");
+	});
+
+	it("strips C1 control characters", () => {
+		assert.equal(sanitizeComsName("name\x7f\x80\x9fend"), "nameend");
+	});
+
+	it("replaces spaces with hyphens", () => {
+		assert.equal(sanitizeComsName("my agent"), "my-agent");
+	});
+
+	it("collapses multiple spaces into single hyphen", () => {
+		assert.equal(sanitizeComsName("my   agent   name"), "my-agent-name");
+	});
+
+	it("trims leading and trailing whitespace", () => {
+		assert.equal(sanitizeComsName("  coder  "), "coder");
+	});
+
+	it("returns ? for empty string", () => {
+		assert.equal(sanitizeComsName(""), "?");
+	});
+
+	it("returns ? for string of only control chars", () => {
+		assert.equal(sanitizeComsName("\n\r\t"), "?");
+	});
+});
+
+describe("formatComsInboundType", () => {
+	it("formats basic inbound header", () => {
+		assert.equal(formatComsInboundType("manager", "coder", "/home/user"), "from manager → coder @ /home/user");
+	});
+
+	it("sanitizes sender name with control chars", () => {
+		const result = formatComsInboundType("bad\nname", "self", "/cwd");
+		assert.ok(!result.includes("\n"));
+		assert.equal(result, "from badname → self @ /cwd");
+	});
+
+	it("sanitizes sender cwd with control chars", () => {
+		const result = formatComsInboundType("peer", "self", "/path\x00inject");
+		assert.ok(!result.includes("\x00"));
+	});
+
+	it("handles empty sender name", () => {
+		const result = formatComsInboundType("", "self", "/cwd");
+		assert.equal(result, "from ? → self @ /cwd");
+	});
+});
+
+describe("formatComsResponseType", () => {
+	it("formats basic response type", () => {
+		assert.equal(formatComsResponseType("peer-a"), "coms response from peer-a");
+	});
+
+	it("includes self name", () => {
+		assert.equal(formatComsResponseType("peer-a", "coder"), "coms response from peer-a → coder");
+	});
+
+	it("includes queued IDs", () => {
+		assert.equal(formatComsResponseType("peer-a", undefined, ["id-1"]), "coms response from peer-a (1 more queued: id-1)");
+	});
+});
+
+describe("formatComsResponseBody", () => {
+	it("formats error", () => {
+		assert.equal(formatComsResponseBody(null, "timeout"), "Error: timeout");
+	});
+
+	it("formats string response", () => {
+		assert.equal(formatComsResponseBody("done", null), "done");
+	});
+
+	it("formats object response", () => {
+		const result = formatComsResponseBody({ ok: true }, null);
+		assert.ok(result.includes('"ok": true'));
+	});
+
+	it("handles undefined response", () => {
+		assert.equal(formatComsResponseBody(undefined, null), "(no response)");
+	});
+
+	it("handles null response", () => {
+		assert.equal(formatComsResponseBody(null, null), "(no response)");
+	});
+});
+
+describe("buildInboundContent", () => {
+	it("includes header when provided", () => {
+		const result = buildInboundContent("[from peer @ /cwd]", "hello");
+		assert.ok(result.startsWith("[from peer @ /cwd]"));
+		assert.ok(result.includes("hello"));
+	});
+
+	it("omits header when empty string", () => {
+		const result = buildInboundContent("", "hello");
+		assert.equal(result, "hello");
+	});
+
+	it("includes tasks section", () => {
+		const result = buildInboundContent("", "prompt", [{ subject: "Task 1", description: "Do thing" }]);
+		assert.ok(result.includes("**Task 1**"));
+		assert.ok(result.includes("Do thing"));
+	});
+});
+
+describe("createDeferredProxy registerCommand", () => {
+	function makeState(active = false): DeferredUpstream {
+		return {
+			capturedSessionStart: null,
+			capturedSessionShutdown: null,
+			flagValues: new Map(),
+			active,
+		};
+	}
+
+	function makePi() {
+		const commands = new Map<string, any>();
+		return {
+			commands,
+			registerCommand: (name: string, def: any) => { commands.set(name, def); },
+			registerTool: () => {},
+			registerFlag: () => {},
+			getFlag: () => undefined,
+			on: () => {},
+			appendEntry: () => {},
+		};
+	}
+
+	it("swallows wrapper-owned /coms", () => {
+		const pi = makePi();
+		const state = makeState(true);
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
+		proxy.registerCommand("coms", { description: "upstream", handler: async () => {} });
+		assert.equal(pi.commands.has("coms"), false);
+	});
+
+	it("registers /coms-queue on real pi", () => {
+		const pi = makePi();
+		const state = makeState(false);
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
+		let called = false;
+		proxy.registerCommand("coms-queue", {
+			description: "queue",
+			handler: async () => { called = true; },
+		});
+		assert.ok(pi.commands.has("coms-queue"));
+		assert.equal(pi.commands.get("coms-queue").description, "queue");
+		assert.equal(called, false);
+	});
+
+	it("gates /coms-queue when inactive", async () => {
+		const pi = makePi();
+		const state = makeState(false);
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
+		let called = false;
+		const notifies: string[] = [];
+		proxy.registerCommand("coms-queue", {
+			description: "queue",
+			handler: async () => { called = true; },
+		});
+		await pi.commands.get("coms-queue").handler("", {
+			ui: { notify: (msg: string) => { notifies.push(msg); } },
+		});
+		assert.equal(called, false);
+		assert.ok(notifies.some(m => m.includes("coms not active")));
+	});
+
+	it("forwards /coms-queue when active", async () => {
+		const pi = makePi();
+		const state = makeState(true);
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "test-key");
+		let called = false;
+		proxy.registerCommand("coms-queue", {
+			description: "queue",
+			handler: async () => { called = true; },
+		});
+		await pi.commands.get("coms-queue").handler("", { ui: { notify: () => {} } });
+		assert.equal(called, true);
+	});
+
 });

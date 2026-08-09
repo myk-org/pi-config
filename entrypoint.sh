@@ -31,7 +31,6 @@ register_pi_pkg() {
     fi
 }
 register_pi_pkg pi-web-access pi-web-access
-register_pi_pkg pi-tasks @tintinweb/pi-tasks
 
 
 

@@ -170,7 +170,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
             return False
 
     pi_web = _is_pi_pkg_installed("pi-web-access")
-    pi_tasks = _is_pi_pkg_installed("pi-tasks")
 
     step1 = Step(
         "📦",
@@ -199,25 +198,11 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 install_cmd="pi install npm:pi-web-access",
             ),
             Tool(
-                "pi-tasks",
-                "Task tracking for multi-step workflows",
-                installed=pi_tasks,
-                disabled=pi_dis,
-                install_cmd="pi install npm:@tintinweb/pi-tasks",
-            ),
-            Tool(
                 "myk-pi-tools",
                 "CLI utilities for pi-config (reviews, releases, memory)",
                 installed=bool(shutil.which("myk-pi-tools")),
                 disabled="requires uv" if not has["uv"] else pi_dis,
                 install_cmd='uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git"',
-            ),
-            Tool(
-                "bun",
-                "JavaScript runtime — required by coms-net server",
-                installed=bool(shutil.which("bun")),
-                disabled="",
-                install_cmd="curl -fsSL https://bun.sh/install | bash",
             ),
         ],
     )
