@@ -72,6 +72,8 @@ This outputs JSON to stdout. Parse the result:
 
 - If `rate_limited` is `false` — notify user "Not rate limited" and exit
 - If `rate_limited` is `true` — read `wait_seconds` and proceed to Phase 3
+  - If `fallback` is `true`, the wait time is **estimated** from the comment timestamp
+    (1-hour window), not parsed from the comment body. Warn the user that timing is approximate.
 
 ### Phase 3: Wait and Trigger Review
 

@@ -87,16 +87,67 @@ def test_invalid_repo() -> None:
     assert run_retry("bad-format", 1) == 1
 
 
-def test_unparseable_wait(capsys: pytest.CaptureFixture[str]) -> None:
-    """Rate limited but can't parse wait time -> exit 1."""
+def test_unparseable_wait_fallback(capsys: pytest.CaptureFixture[str]) -> None:
+    """Rate limited but can't parse wait time -> fallback from updated_at, exit 0."""
     bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
-    with patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, "2025-01-01T00:00:00Z", "")):
+    from datetime import datetime, timedelta
+
+    # Comment posted 45 min ago -> remaining ~900s
+    ts = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    with (
+        patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")),
+        patch(f"{_MODULE}._post_review_trigger", return_value=99),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True),
+        patch(f"{_MODULE}.time") as mock_time,
+    ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
-        assert run_retry("owner/repo", 1) == 1
+        assert run_retry("owner/repo", 1) == 0
+        mock_time.sleep.assert_called_once()
+        slept = mock_time.sleep.call_args[0][0]
+        assert 850 <= slept <= 950  # ~900s remaining
     captured = capsys.readouterr()
     assert "Could not parse wait time" in captured.err
-    assert captured.out == ""
+    assert '"triggered"' in captured.out
+
+
+def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
+    """No-wait-time body 90 min old -> wait_seconds = 0, trigger immediately."""
+    bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
+    from datetime import datetime, timedelta
+
+    ts = (datetime.now(UTC) - timedelta(minutes=90)).isoformat()
+    with (
+        patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")),
+        patch(f"{_MODULE}._post_review_trigger", return_value=99),
+        patch(f"{_MODULE}._find_trigger_reply", return_value=True),
+        patch(f"{_MODULE}.time") as mock_time,
+    ):
+        from myk_pi_tools.coderabbit.rate_limit import run_retry
+
+        assert run_retry("owner/repo", 1) == 0
+        mock_time.sleep.assert_not_called()
+    captured = capsys.readouterr()
+    assert '"triggered"' in captured.out
+
+
+def test_run_check_unparseable_fallback(capsys: pytest.CaptureFixture[str]) -> None:
+    """run_check with no-wait-time body -> JSON with fallback: true, exit 0."""
+    bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
+    from datetime import datetime, timedelta
+
+    ts = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    with patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")):
+        from myk_pi_tools.coderabbit.rate_limit import run_check
+
+        assert run_check("owner/repo", 1) == 0
+    import json as _json
+
+    out = capsys.readouterr().out
+    result = _json.loads(out)
+    assert result["rate_limited"] is True
+    assert result["fallback"] is True
+    assert 850 <= result["wait_seconds"] <= 950
 
 
 def test_bad_timestamp_falls_back(capsys: pytest.CaptureFixture[str]) -> None:
@@ -157,3 +208,126 @@ def test_run_check_includes_updated_at(capsys: pytest.CaptureFixture[str]) -> No
     assert result["updated_at"] == "2025-01-01T00:00:00Z"
     assert "wait_seconds" in result
     assert "comment_id" in result
+
+
+class TestParseWaitSeconds:
+    """Tests for _parse_wait_seconds with various duration formats."""
+
+    def test_legacy_minutes_and_seconds(self) -> None:
+        """Legacy format: 'Please wait **2 minutes and 30 seconds**' -> 150."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Please wait **2 minutes and 30 seconds** before trying again."
+        assert _parse_wait_seconds(body) == 150
+
+    def test_please_wait_for(self) -> None:
+        """'Please wait for' phrasing with duration."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Please wait for **45 minutes** before trying again."
+        assert _parse_wait_seconds(body) == 2700
+
+    def test_please_wait_for_plain(self) -> None:
+        """'Please wait for' without bold markers."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Please wait for 45 minutes before trying again."
+        assert _parse_wait_seconds(body) == 2700
+
+    def test_minutes_only(self) -> None:
+        """New format: '**58 minutes**' -> 3480."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **58 minutes**"
+        assert _parse_wait_seconds(body) == 3480
+
+    def test_hours_only(self) -> None:
+        """Hours only: '**2 hours**' -> 7200."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **2 hours**"
+        assert _parse_wait_seconds(body) == 7200
+
+    def test_seconds_only(self) -> None:
+        """Seconds only: '**90 seconds**' -> 90."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **90 seconds**"
+        assert _parse_wait_seconds(body) == 90
+
+    def test_hours_and_minutes(self) -> None:
+        """Combined: '**1 hour and 30 minutes**' -> 5400."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **1 hour and 30 minutes**"
+        assert _parse_wait_seconds(body) == 5400
+
+    def test_compound_without_and(self) -> None:
+        """Compound duration without 'and' separator."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **1 hour 30 minutes**"
+        assert _parse_wait_seconds(body) == 5400
+
+    def test_compound_with_comma(self) -> None:
+        """Compound duration with comma separator."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **1 hour, 30 minutes**"
+        assert _parse_wait_seconds(body) == 5400
+
+    def test_three_part_compound(self) -> None:
+        """Three-part compound duration."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **2 hours 5 minutes 10 seconds**"
+        assert _parse_wait_seconds(body) == 7510
+
+    def test_no_duration_returns_none(self) -> None:
+        """No parseable duration -> None."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "No wait time information here."
+        assert _parse_wait_seconds(body) is None
+
+    def test_mixed_durations_anchored(self) -> None:
+        """Duration near 'Next review available in' is preferred over stray body text."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Some text mentioning 2 hours ago. **Next review available in:** **58 minutes**"
+        assert _parse_wait_seconds(body) == 3480
+
+    def test_anchored_with_trailing_text(self) -> None:
+        """Anchored parsing works when duration is followed by newline + unrelated text."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **58 minutes**\n\nAdditional details: cooldown lasts 2 hours."
+        assert _parse_wait_seconds(body) == 3480
+
+    def test_context_phrase_without_tokens_returns_none(self) -> None:
+        """Context phrase found but no duration tokens → None, not body-wide match."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** soon. Mentioning 2 hours elsewhere."
+        assert _parse_wait_seconds(body) is None
+
+    def test_body_wide_scan_no_context_phrase(self) -> None:
+        """No context phrase → body-wide scan picks up duration tokens."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Rate limited. Retry after 45 minutes."
+        assert _parse_wait_seconds(body) == 2700
+
+    def test_same_line_trailing_duration_ignored(self) -> None:
+        """Only the duration immediately after the phrase is parsed, not trailing text."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:** **58 minutes** then 2 hours later"
+        assert _parse_wait_seconds(body) == 3480
+
+    def test_duration_on_next_line(self) -> None:
+        """Duration on line after phrase is still parsed."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "**Next review available in:**\n**58 minutes**"
+        assert _parse_wait_seconds(body) == 3480
