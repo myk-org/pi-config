@@ -37,89 +37,20 @@ export interface CategoryDef {
   keys: string[];
 }
 
-export const CATEGORIES: CategoryDef[] = [
-  {
-    label: "Git",
-    keys: [
-      "dco",
-      "commit_trailer",
-      "use_worktrees",
-      "allow_push_to_protected_branches",
-      "comment_signature",
-    ],
-  },
-  {
-    label: "Review",
-    keys: [
-      "review_loop_enforcement",
-      "review_loop_max_cycles",
-    ],
-  },
-  {
-    label: "Memory",
-    keys: [
-      "dream_interval_hours",
-    ],
-  },
-  {
-    label: "Dashboard",
-    keys: [
-      "pidash_enable",
-      "pidiff_enable",
-      "pidash_port",
-    ],
-  },
-  {
-    label: "Provider",
-    keys: [
-      "agent_provider",
-      "agent_model",
-      "internal_operations_provider",
-      "internal_operations_model",
-      "image_model",
-      "vertex_claude_1m",
-      "acpx_agents",
-      "cli_agents",
-      "agent_overrides",
-    ],
-  },
-  {
-    label: "Coms (P2P)",
-    keys: [
-      "coms_max_hops",
-      "coms_timeout_ms",
-      "coms_ping_interval_ms",
-      "coms_dir",
-    ],
-  },
-  {
-    label: "Coms (Net)",
-    keys: [
-      "coms_net_port",
-      "coms_net_host",
-      "coms_net_auth_token",
-      "coms_net_public_url",
-      "coms_net_server_url",
-      "coms_net_max_hops",
-      "coms_net_message_ttl_ms",
-      "coms_net_max_inbox",
-      "coms_net_heartbeat_ms",
-      "coms_net_stale_after_ms",
-      "coms_net_offline_after_ms",
-      "coms_net_log_heartbeat",
-      "coms_net_log_quiet",
-    ],
-  },
-  {
-    label: "Debug",
-    keys: [
-      "orchestrator_edit_write_block",
-      "async_debug",
-      "sidecar_log_level",
-      "enforcement_allowed_commands",
-    ],
-  },
-];
+import settingsSchema from "../../settings-keys.json" with { type: "json" };
+
+// Build CATEGORIES dynamically from schema `group` field.
+// Preserves insertion order from settings-keys.json — groups appear
+// in the order their first key is declared.
+export const CATEGORIES: CategoryDef[] = (() => {
+  const groupMap = new Map<string, string[]>();
+  for (const [key, def] of Object.entries(settingsSchema)) {
+    const group = (def as any).group || "Other";
+    if (!groupMap.has(group)) groupMap.set(group, []);
+    groupMap.get(group)!.push(key);
+  }
+  return [...groupMap.entries()].map(([label, keys]) => ({ label, keys }));
+})();
 
 // ── Source detection ─────────────────────────────────────────────────
 

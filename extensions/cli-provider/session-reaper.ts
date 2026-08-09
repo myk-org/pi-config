@@ -5,8 +5,10 @@
  */
 
 import { unlinkSync } from "node:fs";
-import { cliProviderLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { listCliSessions } from "./sessions.js";
+
+const log = createLogger("cli_provider");
 
 export const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 export const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
@@ -51,16 +53,12 @@ export function reapStaleCliSessions(options?: ReapOptions): number {
     try {
       unlinkSync(path);
       reaped += 1;
-      cliProviderLog(
-        "info",
-        `reaped session ${record.agent}/${record.model} ` +
+      log.info(`reaped session ${record.agent}/${record.model} ` +
           `(status=${record.status}, piSessionId=${record.piSessionId}, ` +
           `lastSeen=${record.lastSeenAt})`,
       );
     } catch (err) {
-      cliProviderLog(
-        "error",
-        `failed to reap session ${record.agent}/${record.model} at ${path}`,
+      log.error(`failed to reap session ${record.agent}/${record.model} at ${path}`,
         err,
       );
     }

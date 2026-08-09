@@ -9,11 +9,15 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
+import { createLogger } from "../shared/logger.js";
 import { join } from "node:path";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
+
+const memLog = createLogger("memory");
+memLog.debug("memory-scoring module loaded");
 
 export type MemoryCategory = "preference" | "lesson" | "pattern" | "decision" | "done" | "mistake";
 export type CueType = "explicit" | "structural" | "behavioral" | "recurrence";

@@ -6,6 +6,9 @@
  * retrieval telemetry, and vector-based contextual memory injection.
  */
 
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("rules");
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -50,12 +53,6 @@ function isSocialCloser(text: string): boolean {
 /** Track last injected memories for usage detection in turn_end */
 let lastInjectedMemories: { text: string; category: string; similarity: number }[] = [];
 
-// Track the user message ID that last triggered task-focus enforcement.
-// Don't re-fire for the same user message (prevents loops from followUp turns).
-let lastTaskFocusUserMsgId: string | null = null;
-let taskFocusPending = false;
-let taskFocusPendingMsgId: string | null = null;
-
 /** Log what memories were auto-injected for retrieval telemetry.
  *  Uses JsonlAppendLog — seq/ts added automatically, size-based truncation built-in. */
 function logMemoryInjection(
@@ -71,7 +68,7 @@ function logMemoryInjection(
       queryClass: queryClass ?? "general",
       injected: injected.map(m => ({ text: m.text.slice(0, 100), category: m.category, similarity: m.similarity })),
     });
-  } catch (e: any) { console.debug("[rules] telemetry write failed:", e?.message?.slice(0, 100)); }
+  } catch (e: any) { log.debug("telemetry write failed:", e?.message?.slice(0, 100)); }
 }
 
 /** Log whether injected memories were referenced in the LLM response.
@@ -85,7 +82,7 @@ function logMemoryUsage(cwd: string, injected: { text: string; category: string;
       usageRate: injected.length > 0 ? +(used.length / injected.length).toFixed(2) : 0,
       used: used.map(m => ({ text: m.text.slice(0, 100), category: m.category })),
     });
-  } catch (e: any) { console.debug("[rules] telemetry usage write failed:", e?.message?.slice(0, 100)); }
+  } catch (e: any) { log.debug("telemetry usage write failed:", e?.message?.slice(0, 100)); }
 }
 
 export function registerRules(
@@ -99,13 +96,10 @@ export function registerRules(
   // Run full rebuild on session start (once per session, not every turn)
   pi.on("session_start", async (_event, ctx) => {
     rebuildDone = false;
-    lastTaskFocusUserMsgId = null;
-    taskFocusPending = false;
-    taskFocusPendingMsgId = null;
     try {
       rebuildAndOrganize(ctx.cwd);
       rebuildDone = true;
-    } catch (e: any) { console.debug("[rules] rebuildAndOrganize on session_start failed:", e?.message || e); }
+    } catch (e: any) { log.debug("rebuildAndOrganize on session_start failed:", e?.message || e); }
 
     // Bootstrap vector embeddings — embed missing entries only (orchestrator only)
     // Skips model init entirely if all entries are already embedded
@@ -118,7 +112,7 @@ export function registerRules(
           // embedMissing checks store first — only inits model if entries are actually missing
           await embedMissing(ctx.cwd, entries);
         }
-      } catch (e: any) { console.debug("[rules] embedding bootstrap failed:", e?.message?.slice(0, 100)); }
+      } catch (e: any) { log.debug("embedding bootstrap failed:", e?.message?.slice(0, 100)); }
     }
   });
 
@@ -128,7 +122,7 @@ export function registerRules(
       try {
         rebuildAndOrganize(ctx.cwd);
         rebuildDone = true;
-      } catch (e: any) { console.debug("[rules] rebuildAndOrganize on agent_start failed:", e?.message || e); }
+      } catch (e: any) { log.debug("rebuildAndOrganize on agent_start failed:", e?.message || e); }
     }
     let extra = "";
 
@@ -152,7 +146,7 @@ export function registerRules(
             ruleCandidates.set(f, existing);
           }
         } catch (e: any) {
-          if (e?.code !== "ENOENT") console.debug("[rules] failed to read", dir, e?.message?.slice(0, 100));
+          if (e?.code !== "ENOENT") log.debug("failed to read", dir, e?.message?.slice(0, 100));
         }
       }
 
@@ -166,7 +160,7 @@ export function registerRules(
             try {
               const stat = fs.statSync(candidates[i]);
               if (stat.size > 128 * 1024) {
-                console.debug(`[rules] ${fileName} skipped (${Math.round(stat.size / 1024)}KB > 128KB limit)`);
+                log.debug(`${fileName} skipped (${Math.round(stat.size / 1024)}KB > 128KB limit)`);
                 loaded = true; // Mark as loaded to prevent lower-precedence fallback
                 break;
               }
@@ -174,11 +168,11 @@ export function registerRules(
               loaded = true;
               break;
             } catch (e: any) {
-              console.debug(`[rules] ${fileName} failed from ${candidates[i]}:`, e?.message?.slice(0, 100));
+              log.debug(`${fileName} failed from ${candidates[i]}:`, e?.message?.slice(0, 100));
             }
           }
           if (!loaded) {
-            console.debug(`[rules] ${fileName}: all candidates failed, skipping`);
+            log.debug(`${fileName}: all candidates failed, skipping`);
           }
         }
         if (ruleContents.length > 0) {
@@ -241,6 +235,7 @@ export function registerRules(
           const results = await vectorSearch(ctx.cwd, event.prompt, searchPool, topK);
           const relevant = results.filter(r => r.similarity > 0.65);
           if (relevant.length > 0) {
+            log.info("context_injected", "contextual_memories");
             contextMemories = "\n# Contextually Relevant Memories\n\n" +
               "These memories were automatically retrieved based on your current message:\n\n" +
               relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
@@ -248,9 +243,10 @@ export function registerRules(
             // Retrieval telemetry — track what was injected
             logMemoryInjection(ctx.cwd, event.prompt, relevant, queryClass);
             lastInjectedMemories = relevant;
+            log.info("memory_injected", relevant.length);
           }
         }
-      } catch (e: any) { console.debug("[rules] vector search auto-inject failed:", e?.message?.slice(0, 100)); }
+      } catch (e: any) { log.debug("vector search auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
     // Auto-inject relevant session history (keyword search, zero LLM cost)
@@ -260,6 +256,7 @@ export function registerRules(
         const { searchSessions } = await import("./session-search.js");
         const sessionResults = searchSessions(ctx.cwd, event.prompt, 3);
         if (sessionResults.length > 0) {
+          log.info("context_injected", "session_history");
           sessionContext = "\n# Relevant Past Sessions\n\n" +
             "Automatically retrieved from past conversation summaries:\n\n" +
             sessionResults.map(r =>
@@ -273,49 +270,9 @@ export function registerRules(
               prompt: event.prompt.slice(0, 200),
               sessionCount: sessionResults.length,
             });
-          } catch (e: any) { console.debug("[rules] session telemetry write failed:", e?.message?.slice(0, 100)); }
+          } catch (e: any) { log.debug("session telemetry write failed:", e?.message?.slice(0, 100)); }
         }
-      } catch (e: any) { console.debug("[rules] session history auto-inject failed:", e?.message?.slice(0, 100)); }
-    }
-
-    // Task-focus reminder — compose with FRESH task data (flag set at turn_end)
-    if (taskFocusPending) {
-      taskFocusPending = false;
-      try {
-        const tasksDir = path.join(ctx.cwd, ".pi", "tasks");
-        const sessionId = ctx.sessionManager?.getSessionId?.();
-        const taskCandidates: string[] = [];
-        if (sessionId) taskCandidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-        taskCandidates.push(path.join(tasksDir, "tasks.json"));
-        // Session-first fallback: prefer session-scoped store, only fall back
-        // to tasks.json when the session store doesn't exist or has no active tasks.
-        // This matches the semantics used by readTaskSummary() and task lifecycle functions.
-        let allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
-        for (const taskFile of taskCandidates) {
-          try {
-            if (!fs.existsSync(taskFile)) continue;
-            const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
-            const tasks = data.tasks || [];
-            const active = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
-            if (active.length > 0) {
-              allActiveTasks = active;
-              break; // Use the first store that has active tasks
-            }
-          } catch { continue; }
-        }
-        if (allActiveTasks.length > 0) {
-          const summary = allActiveTasks
-            .slice(0, 3)
-            .map((t) => `#${t.id} [${t.status}] ${t.subject}`)
-            .join(", ");
-          pi.sendMessage({
-            customType: "task-focus-enforcement",
-            content: `⚠️ You have active tasks — resume your workflow now:\n${summary}${allActiveTasks.length > 3 ? ` (+${allActiveTasks.length - 3} more)` : ""}`,
-            display: true,
-          }, { triggerTurn: false, deliverAs: "nextTurn" });
-          lastTaskFocusUserMsgId = taskFocusPendingMsgId;
-        }
-      } catch (e: any) { console.debug("[rules] task-focus reminder failed:", e?.message?.slice(0, 100)); }
+      } catch (e: any) { log.debug("session history auto-inject failed:", e?.message?.slice(0, 100)); }
     }
 
     if (!extra && !memories && !contextMemories && !sessionContext) return;
@@ -330,6 +287,7 @@ export function registerRules(
   // This catches cases where the user's prompt doesn't mention deployment
   // but the AI just modified files that have deployment-related memories.
   pi.on("turn_end", async (_event, ctx) => {
+    log.info("turn_end_enter");
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
     // Retrieval telemetry — detect if injected memories were used in the response
@@ -347,45 +305,7 @@ export function registerRules(
         }
         lastInjectedMemories = [];
       }
-    } catch (e: any) { console.debug("[rules] telemetry usage detection failed:", e?.message?.slice(0, 100)); }
-
-    // Task-focus enforcement: if this turn had no tool calls but tasks are active,
-    // the LLM likely answered a side question and forgot to resume work.
-    // Set a flag here; the actual reminder is composed at before_agent_start
-    // with fresh task data (avoids stale/deleted tasks in the message).
-    try {
-      const turnToolResults = (_event as any).toolResults;
-      const hadToolCalls = turnToolResults && Array.isArray(turnToolResults) && turnToolResults.length > 0;
-      let userTriggered = false;
-      let triggeringMsgId: string | null = null;
-      try {
-        const branch = ctx.sessionManager.getBranch();
-        for (let i = branch.length - 1; i >= 0; i--) {
-          const entry = branch[i];
-          if (entry.type === "message" && (entry as any).message?.role === "assistant") continue;
-          if (entry.type === "custom_message") {
-            userTriggered = false;
-            break;
-          }
-          if (entry.type === "message" && (entry as any).message?.role === "user") {
-            const msgId = (entry as any).id;
-            if (msgId && msgId === lastTaskFocusUserMsgId) {
-              userTriggered = false;
-            } else {
-              userTriggered = true;
-              triggeringMsgId = msgId ?? null;
-            }
-            break;
-          }
-          continue;
-        }
-      } catch { /* best-effort */ }
-
-      if (!hadToolCalls && userTriggered) {
-        taskFocusPending = true;
-        taskFocusPendingMsgId = triggeringMsgId;
-      }
-    } catch (e: any) { console.debug("[rules] task-focus enforcement failed:", e?.message?.slice(0, 100)); }
+    } catch (e: any) { log.debug("telemetry usage detection failed:", e?.message?.slice(0, 100)); }
 
     // Semantic enforcement: check verifier rules against this turn's tool calls
     try {
@@ -409,7 +329,7 @@ export function registerRules(
           }
         }
       }
-    } catch (e: any) { console.debug("[rules] semantic enforcement failed:", e?.message?.slice(0, 100)); }
+    } catch (e: any) { log.debug("semantic enforcement failed:", e?.message?.slice(0, 100)); }
 
     // Check what files were modified in this turn by looking at tool results
     const toolResults = (_event as any).toolResults;
@@ -452,8 +372,9 @@ export function registerRules(
         }, { triggerTurn: false, deliverAs: "followUp" });
       }
     } catch (e: any) {
-      console.debug("[rules] turn_end memory reminder failed:", e?.message?.slice(0, 100));
+      log.debug("turn_end memory reminder failed:", e?.message?.slice(0, 100));
     }
+    log.info("turn_end_exit");
   });
 }
 
@@ -474,6 +395,6 @@ function loadMemoriesWithScoring(
       }
       return result + "\n";
     }
-  } catch (e: any) { console.debug("[rules] situation report failed:", e?.message || e); }
+  } catch (e: any) { log.debug("situation report failed:", e?.message || e); }
   return "";
 }

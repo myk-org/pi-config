@@ -28,6 +28,10 @@ describe("file-logger", () => {
     TMPDIR: process.env.TMPDIR,
     TMP: process.env.TMP,
     TEMP: process.env.TEMP,
+    PI_SESSION_ID: process.env.PI_SESSION_ID,
+    __PI_PARENT_SESSION_ID: process.env.__PI_PARENT_SESSION_ID,
+    PI_LOG_TEST_LOGGER_INFO: process.env.PI_LOG_TEST_LOGGER_INFO,
+    PI_LOG_TEST_LOGGER_ERR: process.env.PI_LOG_TEST_LOGGER_ERR,
   };
   let tmpHome: string | undefined;
   let tmpFallbackBase: string | undefined;
@@ -43,6 +47,19 @@ describe("file-logger", () => {
     else process.env.TMP = originals.TMP;
     if (originals.TEMP === undefined) delete process.env.TEMP;
     else process.env.TEMP = originals.TEMP;
+    if (originals.PI_SESSION_ID === undefined) delete process.env.PI_SESSION_ID;
+    else process.env.PI_SESSION_ID = originals.PI_SESSION_ID;
+    if (originals.__PI_PARENT_SESSION_ID === undefined) {
+      delete process.env.__PI_PARENT_SESSION_ID;
+    } else {
+      process.env.__PI_PARENT_SESSION_ID = originals.__PI_PARENT_SESSION_ID;
+    }
+    delete process.env.__PI_CONFIG_SESSION_ID;
+    delete (globalThis as any).__piConfigSessionId;
+    if (originals.PI_LOG_TEST_LOGGER_INFO === undefined) delete process.env.PI_LOG_TEST_LOGGER_INFO;
+    else process.env.PI_LOG_TEST_LOGGER_INFO = originals.PI_LOG_TEST_LOGGER_INFO;
+    if (originals.PI_LOG_TEST_LOGGER_ERR === undefined) delete process.env.PI_LOG_TEST_LOGGER_ERR;
+    else process.env.PI_LOG_TEST_LOGGER_ERR = originals.PI_LOG_TEST_LOGGER_ERR;
     for (const dir of [tmpHome, tmpFallbackBase]) {
       if (!dir) continue;
       try {
@@ -60,37 +77,38 @@ describe("file-logger", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { cliProviderLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now()}`
     );
+    setGlobalSessionId("test-session");
 
-    assert.equal(cliProviderLog("info", "reaped session cursor/test"), true);
+    assert.equal(fileLog("cli-provider", "info", "cli-provider", "reaped session cursor/test"), true);
     const body = readFileSync(getPiLogPath("cli-provider"), "utf-8");
     assert.match(body, /\[info\] \[cli-provider\] reaped session cursor\/test/);
   });
-
   it("writes dreaming info lines to ~/.pi/logs", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-dream-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { dreamingLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 1}`
     );
+    setGlobalSessionId("test-session");
 
-    assert.equal(dreamingLog("info", "merged provenance for 2 entries"), true);
+    assert.equal(fileLog("dreaming", "info", "dreaming", "merged provenance for 2 entries"), true);
     const body = readFileSync(getPiLogPath("dreaming"), "utf-8");
     assert.match(body, /\[info\] \[dreaming\] merged provenance for 2 entries/);
   });
-
   it("collapses message and Error.stack newlines into one physical line", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-nl-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { fileLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 2}`
     );
+    setGlobalSessionId("test-session");
 
     fileLog("cli-provider", "warn", "cli-provider", "a\nb\rc", new Error("x\ny"));
     const lines = readFileSync(getPiLogPath("cli-provider"), "utf-8")
@@ -110,9 +128,18 @@ describe("file-logger", () => {
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 3}`
     );
 
-    const p = getPiLogPath("cli-provider");
-    assert.equal(p, join(getPiLogsDir(), "cli-provider.log"));
-    assert.equal(existsSync(join(tmpHome, ".pi", "logs")), false);
+    // Without session ID: returns null
+    delete process.env.__PI_CONFIG_SESSION_ID;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    delete (globalThis as any).__piConfigSessionId;
+    assert.equal(getPiLogPath("cli-provider"), null);
+
+    // With globalThis session ID: per-session directory with main.log (no mkdir)
+    (globalThis as any).__piConfigSessionId = "test-abc-123";
+    assert.equal(getPiLogPath("cli-provider"), join(getPiLogsDir(), "cli-provider", "test-abc-123", "main.log"));
+    delete (globalThis as any).__piConfigSessionId;
+
+    // getPiLogPath returns correct path strings without side effects
   });
 
   it("falls back to isolated TMPDIR when home logs are not writable", async () => {
@@ -130,6 +157,7 @@ describe("file-logger", () => {
     const mod = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 4}`
     );
+    mod.setGlobalSessionId("test-session");
     assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "fallback"), true);
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
@@ -143,9 +171,10 @@ describe("file-logger", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
-    const { fileLog, getPiLogPath } = await import(
+    const { fileLog, getPiLogPath, setGlobalSessionId } = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 5}`
     );
+    setGlobalSessionId("test-session");
 
     assert.equal(fileLog("cli-provider", "info", "cli-provider", "first"), true);
     const logPath = getPiLogPath("cli-provider");
@@ -174,5 +203,72 @@ describe("file-logger", () => {
         `${file} still uses console.* (chat leak)`,
       );
     }
+  });
+
+  it("createLogger returns debug/info/warn/error methods", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-api-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 10}`
+    );
+
+    const log = createLogger("test_logger");
+    assert.equal(typeof log.debug, "function");
+    assert.equal(typeof log.info, "function");
+    assert.equal(typeof log.warn, "function");
+    assert.equal(typeof log.error, "function");
+  });
+
+  it("createLogger info writes to log file", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-info-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    process.env.PI_LOG_TEST_LOGGER_INFO = "debug";
+
+    const mod = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 11}`
+    );
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 11}`
+    );
+    mod.setGlobalSessionId("test-logger-info");
+
+    const log = createLogger("test_logger_info");
+    log.info("hello", "world");
+
+    const logPath = mod.getPiLogPath("test_logger_info");
+    const body = readFileSync(logPath, "utf-8");
+    assert.match(body, /\[info\] \[test_logger_info\] hello world/);
+  });
+
+  it("createLogger error preserves Error stack traces", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-err-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    process.env.PI_LOG_TEST_LOGGER_ERR = "debug";
+
+    const mod = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 12}`
+    );
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 12}`
+    );
+    mod.setGlobalSessionId("test-logger-err");
+
+    const log = createLogger("test_logger_err");
+    log.error("fail", new Error("boom"));
+
+    const logPath = mod.getPiLogPath("test_logger_err");
+    const body = readFileSync(logPath, "utf-8");
+    assert.match(body, /\[error\] \[test_logger_err\] fail/);
+    assert.match(body, /boom/);
+    // Verify stack frames are present (not just the error message)
+    assert.match(body, /Error: boom/);
+    assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
   });
 });

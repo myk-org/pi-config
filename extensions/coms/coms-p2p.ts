@@ -19,7 +19,8 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -27,20 +28,22 @@ import * as os from "node:os";
 import * as crypto from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { createLogger } from "../shared/logger.js";
+import { setLogFilePrefix } from "../shared/file-logger.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
 let MAX_HOPS = 5;
+
 let TIMEOUT_MS = 1_800_000;
-let PING_INTERVAL_MS = 10_000;
 const KEEPALIVE_INTERVAL_MS = 30_000;
 const LINE_CAP_BYTES = 64 * 1024;
 
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type EnvelopeType = "prompt" | "response" | "ping";
+type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence";
 
 interface Envelope {
 	type: EnvelopeType;
@@ -66,10 +69,44 @@ interface ResponseEnvelope extends Envelope {
 	response: any;
 	error?: string | null;
 	queued_msg_ids?: string[];
+	your_pending?: Array<{ msg_id: string; preview: string }>;
 }
 
 interface PingEnvelope extends Envelope {
 	type: "ping";
+}
+
+interface TaskUpdateEnvelope extends Envelope {
+	type: "task_update";
+	task_id: string;
+	subject: string;
+	status: string;
+	sender_name: string;
+}
+
+interface QueueManageEnvelope extends Envelope {
+	type: "queue_manage";
+	action: "delete" | "edit" | "clear" | "prioritize";
+	target_msg_id?: string;
+	new_content?: string;
+	sender_name: string;
+}
+
+interface TaskManageEnvelope extends Envelope {
+	type: "task_manage";
+	action: "create" | "update" | "delete" | "list" | "get";
+	sender_name: string;
+	subject?: string;
+	description?: string;
+	metadata?: Record<string, any>;
+	task_id?: string;
+	fields?: any;
+}
+
+interface PresenceEnvelope extends Envelope {
+	type: "presence";
+	status: "leaving";
+	sender_name: string;
 }
 
 interface AgentCard {
@@ -89,7 +126,7 @@ interface Pong {
 }
 
 interface RegistryEntry {
-	session_id: string;
+	coms_session_id: string;
 	name: string;
 	purpose: string;
 	model: string;
@@ -106,6 +143,7 @@ interface RegistryEntry {
 	context_used_pct?: number;
 	queue_depth?: number;
 	heartbeat_at?: string;
+	pi_session_id?: string;
 }
 
 interface PendingReply {
@@ -129,6 +167,8 @@ interface InboundContext {
 	tasks?: Array<{ subject: string; description: string }> | null;
 	response_schema?: object | null;
 	fulfilled: boolean;
+	/** How many times this inbound was re-injected due to mixed-turn conflict */
+	mixedTurnRetries?: number;
 }
 
 function makeEndpoint(sessionId: string): string {
@@ -243,7 +283,7 @@ function registryFilePath(project: string, sessionId: string): string {
 function writeRegistryAtomic(entry: RegistryEntry, project: string): string {
 	const dir = projectAgentsDir(project);
 	fs.mkdirSync(dir, { recursive: true });
-	const final = registryFilePath(project, entry.session_id);
+	const final = registryFilePath(project, entry.coms_session_id);
 	const tmp = `${final}.tmp`;
 	fs.writeFileSync(tmp, JSON.stringify(entry, null, 2));
 	fs.renameSync(tmp, final);
@@ -265,7 +305,7 @@ function readAllRegistryEntries(project: string): RegistryEntry[] {
 		try {
 			const raw = fs.readFileSync(path.join(dir, f), "utf-8");
 			const parsed = JSON.parse(raw) as RegistryEntry;
-			if (parsed && typeof parsed.session_id === "string") {
+			if (parsed && typeof parsed.coms_session_id === "string") {
 				out.push(parsed);
 			}
 		} catch {
@@ -309,14 +349,21 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 
 	// Phase 1: Sync pre-filter (fast — no I/O)
 	const candidates: RegistryEntry[] = [];
+	const youngEntries: RegistryEntry[] = [];
 	for (const entry of entries) {
 		if (!entry.endpoint || typeof entry.endpoint !== "string") {
-			removeRegistryEntry(project, entry.session_id);
+			removeRegistryEntry(project, entry.coms_session_id);
 			continue;
 		}
 		// On Windows, endpoints are named pipes — fs.existsSync doesn't apply
 		if (process.platform !== "win32" && !fs.existsSync(entry.endpoint)) {
-			removeRegistryEntry(project, entry.session_id);
+			removeRegistryEntry(project, entry.coms_session_id);
+			continue;
+		}
+		// Skip entries younger than 30s — recently booted peers get grace period
+		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
+		if (!isNaN(entryAge) && entryAge < 30000) {
+			youngEntries.push(entry);
 			continue;
 		}
 		// Check heartbeat/started_at structural validity (malformed = remove, missing = remove)
@@ -327,18 +374,18 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		if (lastSeen) {
 			const lastSeenMs = new Date(lastSeen).getTime();
 			if (isNaN(lastSeenMs)) {
-				removeRegistryEntry(project, entry.session_id);
+				removeRegistryEntry(project, entry.coms_session_id);
 				continue;
 			}
 		} else {
-			removeRegistryEntry(project, entry.session_id);
+			removeRegistryEntry(project, entry.coms_session_id);
 			continue;
 		}
 		candidates.push(entry);
 	}
 
 	// Phase 2: Parallel socket probes (capped at 10 concurrent to avoid EMFILE)
-	if (candidates.length === 0) return [];
+	if (candidates.length === 0) return youngEntries;
 	const PROBE_CONCURRENCY = 10;
 	const results: ("in_use" | "stale")[] = [];
 	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
@@ -350,16 +397,15 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	for (let i = 0; i < candidates.length; i++) {
 		if (results[i] === "stale") {
 			const entry = candidates[i];
-			removeRegistryEntry(project, entry.session_id);
-			if (entry.endpoint.startsWith(socketsDir + path.sep) || entry.endpoint.startsWith(socketsDir + "/")) {
-				try { fs.unlinkSync(entry.endpoint); } catch { /* best-effort */ }
-				try { fs.unlinkSync(`${entry.endpoint}.ping`); } catch { /* best-effort */ }
-			}
+			removeRegistryEntry(project, entry.coms_session_id);
+			// Do NOT delete socket files — they belong to the peer process.
+			// Only the owning peer should manage its own socket.
+			// If the peer is alive, it will self-heal its registry.
 		} else {
 			live.push(candidates[i]);
 		}
 	}
-	return live;
+	return [...live, ...youngEntries];
 }
 
 async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
@@ -394,7 +440,7 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 			try { sock.destroy(); } catch { /* ignore */ }
 			resolve(verdict);
 		};
-		const timer = setTimeout(() => finish("stale"), 250);
+		const timer = setTimeout(() => finish("stale"), 1000);
 		sock.once("connect", () => {
 			clearTimeout(timer);
 			finish("in_use");
@@ -533,6 +579,7 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 // ━━ Default export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export default function (pi: ExtensionAPI) {
+	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	// ━━ Register identity CLI flags so pi's parser accepts them. ━━━━━━━━━
 	// Without these, pi 0.73+ rejects the invocation with "Unknown options:
 	// --name, --project, ..." before this extension's hooks ever fire.
@@ -565,7 +612,7 @@ export default function (pi: ExtensionAPI) {
 
 	// State containers — shared across all hooks for this extension instance.
 	let identity: {
-		session_id: string;
+		coms_session_id: string;
 		name: string;
 		purpose: string;
 		color: string;
@@ -575,26 +622,53 @@ export default function (pi: ExtensionAPI) {
 		model: string;
 		endpoint: string;
 		registryFile: string;
+		pi_session_id: string;
 	} | null = null;
+	const log = createLogger("coms");
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
+	let welcomeShown = false;
+	const knownPeerSessions: Map<string, string> = new Map(); // session_id → name
+	const accumulatedResponses: Map<string, string[]> = new Map();
 	const pendingReplies: Map<string, PendingReply> = new Map();
+	/** Track pending (unresponded) outbound msg_ids per target name. */
+	const pendingOutbound: Map<string, Set<string>> = new Map();
 	const inboundQueue: Map<string, InboundContext> = new Map();
 	let server: net.Server | null = null;
-	let pingTimer: NodeJS.Timeout | null = null;
+	let fsWatcher: fs.FSWatcher | null = null;
 	let pingWorker: Worker | null = null;
 	let pingWorkerReady = false;
-	let cardUpdateTimer: NodeJS.Timeout | null = null;
 	let keepaliveTimer: NodeJS.Timeout | null = null;
 	let includeExplicit = false;
 	let displayProject: string | null = null;
 	let currentCtx: ExtensionContext | null = null;
 	let currentInbound: InboundContext | null = null;
+	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
+	/** True when the agent is running a turn NOT triggered by a coms inbound.
+	 *  Set on agent_start, cleared on agent_end. Only true for user-initiated turns. */
+	let agentRunningUserTurn = false;
+	/** True when currentInbound was set while the agent was running a user turn (#731). */
+	let inboundSetDuringUserTurn = false;
+	const comsSendCalledThisTurn: Set<string> = new Set();
 
 	function getPendingInboundCount(): number {
 		let count = 0;
 		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== currentInbound) count++;
 		return count;
+	}
+
+	/** Get pending messages from a specific sender still in our queue. */
+	function getSenderPending(senderSession: string, excludeMsgId: string): Array<{ msg_id: string; preview: string }> {
+		const result: Array<{ msg_id: string; preview: string }> = [];
+		for (const ib of inboundQueue.values()) {
+			if (ib.sender_session === senderSession && !ib.fulfilled && ib.msg_id !== excludeMsgId) {
+				result.push({ msg_id: ib.msg_id, preview: ib.prompt.slice(0, 80) });
+			}
+		}
+		// Re-verify: filter out any entries removed between scan and return
+		const filtered = result.filter(r => { const ib = inboundQueue.get(r.msg_id); return ib && !ib.fulfilled; });
+		log.debug("getSenderPending", "sender", senderSession, "found", filtered.length);
+		return filtered;
 	}
 
 	let lastPoolSnapshot = "";
@@ -653,26 +727,21 @@ export default function (pi: ExtensionAPI) {
 		if (processingInbound) {
 			ackOk(socket, env.msg_id);
 
-			try {
-				pi.appendEntry("coms-log", {
-					event: "inbound_queued",
-					msg_id: env.msg_id,
-					sender: env.sender_session,
-					hops: env.hops,
-					queue_depth: getPendingInboundCount(),
-				});
-			} catch { /* best-effort */ }
+			log.debug("inbound_queued", env.msg_id, "from", env.sender_name, "depth", getPendingInboundCount());
 			return;
 		}
 
 		// 4. Not busy — inject immediately.
+		// If the agent is already running (user turn), this inbound arrives
+		// mid-turn via followUp — mark as mixed turn for agent_end (#731).
+		inboundSetDuringUserTurn = agentRunningUserTurn;
 		currentInbound = inbound;
 		processingInbound = true;
 		try {
 			pi.sendMessage(
 				{
-					customType: "coms-inbound",
-					content: buildInboundContent(`[from ${env.sender_name} @ ${env.sender_cwd}]`, env.prompt, env.tasks),
+					customType: formatComsInboundType(env.sender_name, sanitizeComsName(identity?.name ?? "?"), env.sender_cwd),
+					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd),
 					display: true,
 					details: {
 						msg_id: env.msg_id,
@@ -683,6 +752,8 @@ export default function (pi: ExtensionAPI) {
 				{ deliverAs: "followUp", triggerTurn: true },
 			);
 		} catch (err) {
+			const errIb = inboundQueue.get(env.msg_id);
+			if (errIb) errIb.fulfilled = true;
 			inboundQueue.delete(env.msg_id);
 			maybeRefreshWidget();
 			currentInbound = null;
@@ -694,20 +765,16 @@ export default function (pi: ExtensionAPI) {
 		// 5. Ack + audit log
 		ackOk(socket, env.msg_id);
 
-		try {
-			pi.appendEntry("coms-log", {
-				event: "inbound_prompt",
-				msg_id: env.msg_id,
-				sender: env.sender_session,
-				hops: env.hops,
-			});
-		} catch {
-			// best-effort
-		}
+		log.debug("inbound_prompt", env.msg_id, "from", env.sender_name, "hops", env.hops);
 	}
 
 	function handleResponse(socket: net.Socket, env: ResponseEnvelope): void {
 		const pending = pendingReplies.get(env.msg_id);
+		// Clean up pending outbound tracking
+		if (pending?.target_name) {
+			const set = pendingOutbound.get(pending.target_name);
+			if (set) { set.delete(env.msg_id); if (set.size === 0) pendingOutbound.delete(pending.target_name); }
+		}
 		if (pending) {
 			if (pending.timer) {
 				try { clearTimeout(pending.timer); } catch { /* ignore */ }
@@ -718,17 +785,31 @@ export default function (pi: ExtensionAPI) {
 			try {
 				pending.resolve(pending.result);
 			} catch (e: any) {
-				try { pi.appendEntry("coms-log", { event: "resolve_failed", msg_id: env.msg_id, reason: e?.message ?? String(e) }); } catch { /* best-effort */ }
+				log.error("resolve_failed", env.msg_id, e?.message);
+			}
+			log.debug("handleResponse", env.msg_id, "from", env.sender_session.slice(-8), "error", env.error ?? "none");
+
+			// Skip display for bundled responses — primary already displayed
+			if (env.error === "bundled") {
+				setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
+				return;
 			}
 
 			// Auto-deliver response as followUp so the LLM sees it without polling
 			const targetName = pending.target_name ?? "peer";
-			const responseText = formatComsResponseText(targetName, env.response, env.error ?? null, queuedMsgIds);
+			const selfName = sanitizeComsName(identity?.name ?? "?");
+			const responseType = formatComsResponseType(targetName, selfName, queuedMsgIds);
+			let responseBody = formatComsResponseBody(env.response, env.error ?? null);
+			const yourPending = Array.isArray(env.your_pending) ? env.your_pending : [];
+			if (yourPending.length > 0) {
+				responseBody += `\n\nPeer still has ${yourPending.length} of your messages queued:\n` +
+					yourPending.filter((p: any) => p && typeof p === "object").map((p: any, i: number) => `  ${i + 1}. [${p.msg_id ?? "?"}] "${p.preview ?? ""}…"`).join("\n");
+			}
 			try {
 				pi.sendMessage(
 					{
-						customType: "coms-response",
-						content: responseText,
+						customType: responseType,
+						content: responseBody,
 						display: true,
 						details: {
 							msg_id: env.msg_id,
@@ -744,11 +825,7 @@ export default function (pi: ExtensionAPI) {
 			// Clean up immediately since response was delivered
 			setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
 		} else {
-			try {
-				pi.appendEntry("coms-log", { event: "orphan_response", msg_id: env.msg_id });
-			} catch {
-				// best-effort
-			}
+			log.warn("orphan_response", env.msg_id);
 		}
 		ackOk(socket, env.msg_id);
 	}
@@ -831,6 +908,7 @@ export default function (pi: ExtensionAPI) {
 				nack(socket, mid, "malformed envelope");
 				return;
 			}
+			log.debug("envelope_received", parsed.type, parsed.msg_id?.slice(-8) ?? "?");
 			try {
 				if (parsed.type === "prompt") {
 					handlePrompt(socket, parsed as PromptEnvelope);
@@ -838,6 +916,14 @@ export default function (pi: ExtensionAPI) {
 					handleResponse(socket, parsed as ResponseEnvelope);
 				} else if (parsed.type === "ping") {
 					handlePing(socket, parsed as PingEnvelope);
+				} else if (parsed.type === "task_update") {
+					handleTaskUpdate(socket, parsed as TaskUpdateEnvelope);
+				} else if (parsed.type === "queue_manage") {
+					handleQueueManage(socket, parsed as QueueManageEnvelope);
+				} else if (parsed.type === "task_manage") {
+					handleTaskManage(socket, parsed as TaskManageEnvelope);
+				} else if (parsed.type === "presence") {
+					handlePresence(socket, parsed as PresenceEnvelope);
 				} else {
 					nack(socket, parsed.msg_id, "unknown type");
 				}
@@ -852,27 +938,231 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// ━━ presence handler ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	function handlePresence(socket: net.Socket, env: PresenceEnvelope): void {
+		ackOk(socket, env.msg_id);
+		if (env.status === "leaving" && env.sender_name) {
+			for (const [sid, card] of peerCards.entries()) {
+				if (card.name === env.sender_name) {
+					peerCards.delete(sid);
+					// Also clean up knownPeerSessions and fire notification
+					if (knownPeerSessions.has(sid)) {
+						knownPeerSessions.delete(sid);
+						log.debug("presence_leaving_received", "from", env.sender_name);
+						try {
+							pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false });
+						} catch {}
+					}
+					break;
+				}
+			}
+			maybeRefreshWidget();
+		}
+
+		log.debug("presence", env.status, "from", env.sender_name);
+	}
+
+	// ━━ task_update handler ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	function handleTaskUpdate(socket: net.Socket, env: TaskUpdateEnvelope): void {
+		ackOk(socket, env.msg_id);
+		log.debug("task_update_in", env.task_id, env.status, "from", env.sender_name);
+	}
+
+	// ━━ queue_manage handler ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// Only the message OWNER (sender_session match) can manage their messages.
+	function handleQueueManage(socket: net.Socket, env: QueueManageEnvelope): void {
+		const action = env.action;
+		let affected = 0;
+		let error: string | null = null;
+
+		/** Check if an inbound is eligible (pending, not processing, owned by sender). */
+		const isOwned = (ib: InboundContext): boolean =>
+			!ib.fulfilled
+			&& !(currentInbound && ib.msg_id === currentInbound.msg_id)
+			&& ib.sender_session === env.sender_session;
+
+		/** Fulfill and remove a queued inbound, sending error response. */
+		const dropInbound = (ib: InboundContext): void => {
+			ib.fulfilled = true;
+			inboundQueue.delete(ib.msg_id);
+			if (identity) {
+				sendEnvelope(ib.sender_endpoint, {
+					type: "response", msg_id: ib.msg_id,
+					sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+					hops: 0, timestamp: nowIso(),
+					response: null, error: "queue_cleared",
+					queued_msg_ids: [],
+				}).catch(() => { /* best-effort */ });
+			}
+		};
+
+		if (action === "delete" && env.target_msg_id) {
+			const ib = inboundQueue.get(env.target_msg_id);
+			if (!ib) { error = "not_found"; }
+			else if (!isOwned(ib)) { error = "not_owned"; }
+			else { dropInbound(ib); affected++; }
+		} else if (action === "edit" && env.target_msg_id && typeof env.new_content === "string") {
+			const ib = inboundQueue.get(env.target_msg_id);
+			if (!ib) { error = "not_found"; }
+			else if (!isOwned(ib)) { error = "not_owned"; }
+			else { ib.prompt = env.new_content; affected++; }
+		} else if (action === "clear") {
+			for (const ib of [...inboundQueue.values()]) {
+				if (isOwned(ib)) { dropInbound(ib); affected++; }
+			}
+		} else if (action === "prioritize" && env.target_msg_id) {
+			const ib = inboundQueue.get(env.target_msg_id);
+			if (!ib) { error = "not_found"; }
+			else if (!isOwned(ib)) { error = "not_owned"; }
+			else {
+				inboundQueue.delete(ib.msg_id);
+				const entries = [...inboundQueue.entries()];
+				inboundQueue.clear();
+				inboundQueue.set(ib.msg_id, ib);
+				for (const [k, v] of entries) inboundQueue.set(k, v);
+				affected++;
+			}
+		} else {
+			error = "invalid_action";
+		}
+
+		// Send ack with result — includes error and affected count
+		try {
+			socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n");
+		} catch { /* ignore */ }
+
+		maybeRefreshWidget();
+		log.debug("queue_manage", action, "target", env.target_msg_id, "affected", affected, "error", error);
+	}
+
+	// ━━ task_manage handler — remote task operations from peers ━━━━━━━━━━━
+	async function handleTaskManage(socket: net.Socket, env: TaskManageEnvelope): Promise<void> {
+		ackOk(socket, env.msg_id);
+		let result: any = null;
+		let error: string | null = null;
+
+		try {
+			const { createTask, getTask, listTasks, updateTask, deleteTask } = await import("../pitasks/index.js");
+			switch (env.action) {
+				case "create":
+					if (env.subject) result = createTask(env.subject, env.description ?? "", env.metadata);
+					else error = "missing subject";
+					break;
+				case "get":
+					if (env.task_id) result = getTask(env.task_id);
+					else error = "missing task_id";
+					break;
+				case "list":
+					result = listTasks();
+					break;
+				case "update":
+					if (env.task_id && env.fields) {
+						const t = getTask(env.task_id);
+						if (t?.metadata?.coms_origin?.sender_session === env.sender_session) {
+							result = updateTask(env.task_id, env.fields);
+						} else {
+							error = "ownership_denied — can only update tasks you created";
+						}
+					} else error = "missing task_id or fields";
+					break;
+				case "delete":
+					if (env.task_id) {
+						const t = getTask(env.task_id);
+						if (t?.metadata?.coms_origin?.sender_session === env.sender_session) {
+							result = deleteTask(env.task_id);
+						} else {
+							error = "ownership_denied — can only delete tasks you created";
+						}
+					} else error = "missing task_id";
+					break;
+				default:
+					error = `unknown action: ${env.action}`;
+			}
+		} catch (e: any) {
+			error = e?.message ?? String(e);
+		}
+
+		// Send response back to sender
+		if (identity) {
+			try {
+				await sendEnvelope(env.sender_endpoint, {
+					type: "response",
+					msg_id: env.msg_id,
+					sender_session: identity.coms_session_id,
+					sender_endpoint: identity.endpoint,
+					hops: 0,
+					timestamp: nowIso(),
+					response: result,
+					error,
+					queued_msg_ids: [],
+				});
+			} catch { /* best-effort */ }
+		}
+		log.debug("task_manage", env.action, "from", env.sender_name, "error", error);
+	}
+
+	// ━━ tool_result: send task heartbeat to coms originator (#731) ━━━━━━━━
+	pi.on("tool_result", async (event: any, ctx) => {
+		if (!identity) return;
+		const toolName = event?.toolName as string;
+		if (toolName !== "TaskUpdate") return;
+		const input = event?.input || {};
+		const taskId = input.taskId as string;
+		const newStatus = input.status as string;
+		if (!taskId || !newStatus) return;
+
+		// Look up the task to check for coms_origin metadata
+		try {
+			const { getComsOriginTask } = await import("./coms-shared.js");
+			const task = await getComsOriginTask(taskId);
+			if (!task?.coms_origin) return;
+			const origin = task.coms_origin;
+			if (!origin.sender_endpoint) return;
+
+			const env: TaskUpdateEnvelope = {
+				type: "task_update",
+				msg_id: ulid(),
+				sender_session: identity.coms_session_id,
+				sender_endpoint: identity.endpoint,
+				hops: 0,
+				timestamp: nowIso(),
+				task_id: taskId,
+				subject: task.subject ?? "",
+				status: newStatus,
+				sender_name: identity.name,
+			};
+			await sendEnvelope(origin.sender_endpoint, env);
+			log.debug("task_update_out", taskId, newStatus, "to", origin.sender_name);
+		} catch { /* best-effort — don't block tool_result */ }
+	});
+
+	// ━━ task heartbeat keepalive timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	let taskHeartbeatTimer: NodeJS.Timeout | null = null;
+
 	// ━━ session_start ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
 		currentCtx = ctx;
 		shuttingDown = false;
 		peerCards.clear();
+		welcomeShown = false;
+		knownPeerSessions.clear();
+		accumulatedResponses.clear();
 
 		// 1. Resolve identity from CLI flags > frontmatter > defaults.
 		const flags = readCliFlags(pi);
 		const fm = readFrontmatterFromArgv(process.argv);
 		const project = flags.project || "default";
 		const explicit = flags.explicit === true;
-		const session_id = ulid();
+		const comsSessionId = (globalThis as any).__piConfigSessionId || ulid();
 
-		const defaultName = `agent-${session_id.slice(-6)}`;
+		const defaultName = `agent-${comsSessionId.slice(-6)}`;
 		const name = flags.name || fm.name || defaultName;
 		const purpose = flags.purpose || fm.description || "";
 
 		// Color: validate at every level; fall through invalid hex to next.
 		// Order: --color CLI flag > frontmatter color > deterministic fallback.
-		let color = fallbackColor(session_id);
+		let color = fallbackColor(comsSessionId);
 		if (fm.color && isValidHex(fm.color)) {
 			color = fm.color;
 		}
@@ -886,9 +1176,9 @@ export default function (pi: ExtensionAPI) {
 		COMS_DIR = getSetting(cwd, "coms_dir") || path.join(os.homedir(), ".pi", "coms");
 		MAX_HOPS = getSetting(cwd, "coms_max_hops");
 		TIMEOUT_MS = getSetting(cwd, "coms_timeout_ms");
-		PING_INTERVAL_MS = getSetting(cwd, "coms_ping_interval_ms");
+		const TASK_HEARTBEAT_MS: number = getSetting(cwd, "coms_task_heartbeat_ms") ?? 300_000;
 
-		const endpoint = makeEndpoint(session_id);
+		const endpoint = makeEndpoint(comsSessionId);
 		const model = ctx.model?.id ?? "unknown";
 
 		// 2. Ensure storage dirs exist.
@@ -906,7 +1196,7 @@ export default function (pi: ExtensionAPI) {
 		// 2b. Reject duplicate names — each peer must have a unique name in the project.
 		const existingEntries = readAllRegistryEntries(project);
 		for (const existing of existingEntries) {
-			if (existing.name === name && existing.session_id !== session_id) {
+			if (existing.name === name && existing.coms_session_id !== comsSessionId) {
 				// Verify the existing peer is actually alive via .ping endpoint.
 				if (typeof existing.endpoint === "string" && existing.endpoint) {
 					const pingEp = `${existing.endpoint}.ping`;
@@ -932,14 +1222,14 @@ export default function (pi: ExtensionAPI) {
 
 					if (!hasPing && !hasMain) {
 						// No socket files at all — definitely dead
-						removeRegistryEntry(project, existing.session_id);
+						removeRegistryEntry(project, existing.coms_session_id);
 					} else {
 						// Probe(s) returned stale — remove registry, peer is dead
-						removeRegistryEntry(project, existing.session_id);
+						removeRegistryEntry(project, existing.coms_session_id);
 					}
 				} else {
 					// No valid endpoint — remove stale entry
-					removeRegistryEntry(project, existing.session_id);
+					removeRegistryEntry(project, existing.coms_session_id);
 				}
 			}
 		}
@@ -961,17 +1251,18 @@ export default function (pi: ExtensionAPI) {
 					pingWorkerReady = true;
 					updatePingWorkerCard(); // Push initial card immediately
 				}
-				if (msg.type === "error") console.debug("[coms] ping worker error:", msg.message);
+				if (msg.type === "error") log.warn("ping_worker_error", msg.message);
 			});
 			pingWorker.on("error", () => { pingWorkerReady = false; });
 			pingWorker.on("exit", () => { pingWorkerReady = false; pingWorker = null; });
 		} catch (err) {
-			console.debug("[coms] ping worker failed to start:", err instanceof Error ? err.message : String(err));
+			log.warn("ping_worker_start_failed", err instanceof Error ? err.message : String(err));
 		}
 
 		// 4. Build + write registry entry atomically.
+		const piSessionId = (globalThis as any).__piConfigSessionId || "";
 		const entry: RegistryEntry = {
-			session_id,
+			coms_session_id: comsSessionId,
 			name,
 			purpose,
 			model,
@@ -982,6 +1273,7 @@ export default function (pi: ExtensionAPI) {
 			started_at: nowIso(),
 			explicit,
 			version: 1,
+			pi_session_id: piSessionId,
 		};
 		let registryFile: string;
 		try {
@@ -993,7 +1285,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		identity = {
-			session_id,
+			coms_session_id: comsSessionId,
 			name,
 			purpose,
 			color,
@@ -1003,16 +1295,14 @@ export default function (pi: ExtensionAPI) {
 			model,
 			endpoint,
 			registryFile,
+			pi_session_id: piSessionId,
 		};
 		includeExplicit = false;
 		displayProject = project;
 
 		// 5. Audit log: boot.
-		try {
-			pi.appendEntry("coms-log", { event: "boot", session_id, name, project });
-		} catch {
-			// best-effort
-		}
+		setLogFilePrefix("coms", identity.name);
+		log.info("boot", name, project);
 
 		// 6. Surface presence in the UI + install the live pool widget.
 		try {
@@ -1026,33 +1316,202 @@ export default function (pi: ExtensionAPI) {
 			// hasUI may be false in some contexts — non-fatal.
 		}
 
-		// 7. Start ping + keepalive cycles (skip in one-shot modes).
+		// 7. Start timers (skip in one-shot modes).
 		if (ctx.mode !== "print" && ctx.mode !== "json") {
-		pingTimer = setInterval(() => { refreshPool().catch(() => {}); }, PING_INTERVAL_MS);
-		try { (pingTimer as any).unref?.(); } catch { /* ignore */ }
-		// Update ping worker card periodically
-		cardUpdateTimer = setInterval(updatePingWorkerCard, 5000);
-		try { (cardUpdateTimer as any).unref?.(); } catch { /* ignore */ }
+
+		// Seed peerCards from existing registry entries
+		const existingPeers = readAllRegistryEntries(project);
+		for (const entry of existingPeers) {
+			if (entry.coms_session_id === identity.coms_session_id) continue;
+			if (entry.explicit && !includeExplicit) continue;
+			peerCards.set(entry.coms_session_id, {
+				name: entry.name,
+				purpose: entry.purpose,
+				model: entry.model,
+				color: entry.color,
+				context_used_pct: entry.context_used_pct ?? 0,
+				queue_depth: entry.queue_depth ?? 0,
+				tasks_summary: null,
+				staleCount: 0,
+			});
+			knownPeerSessions.set(entry.coms_session_id, entry.name);
+		}
+		log.info("boot_seed", "peers", peerCards.size);
+		if (peerCards.size > 0) {
+			maybeRefreshWidget();
+		}
+
+		// Show welcome if peers found on boot
+		if (peerCards.size > 0 && identity && !welcomeShown) {
+			welcomeShown = true;
+			const peerList = [...peerCards.values()]
+				.map(card => `● ${card.name} (${card.model})${card.purpose ? ` — ${card.purpose}` : ""}`)
+				.join("\n");
+			const welcomeMsg = `📡 Connected to coms · You are "${identity.name}" on project "${identity.project}"
+
+## How to reply
+- Your assistant text IS your reply — auto-captured when your turn ends
+
+## Available tools
+- coms_list — see connected peers
+- coms_send — send a message to a peer
+- coms_get — check status of a sent message
+- coms_queue_delete / coms_queue_edit / coms_queue_clear / coms_queue_prioritize — manage queued messages
+- coms_task_create — create a task on a peer's task list without sending a message
+- coms_task_delete — delete a task you created on a peer's task list
+- coms_task_list — list tasks on a peer's task list without sending a message
+- coms_task_get — get a specific task from a peer's task list
+- coms_task_update — update a task you created on a peer's task list
+
+## Task handling
+- Tasks may appear in your task widget at any time — check TaskList when prompted to work
+- When you receive a message to start working, check TaskList first for assigned tasks
+- Work through tasks in order using TaskUpdate to mark progress
+- Report completion back to the sender when all tasks are done
+- If a task is too large, break it into subtasks
+- The last task in your list will always be "Report completion to sender" — it's blocked by all other tasks. When all tasks are done, use coms_send to report back.
+
+## Connected peers
+${peerList}
+Do not respond to this message.`;
+
+			log.info("welcome_shown", "peers", peerCards.size);
+			try {
+				pi.sendMessage({
+					customType: "coms-welcome",
+					content: welcomeMsg,
+					display: true,
+				}, { triggerTurn: true });
+			} catch {}
+		}
+
+		// Watch registry directory for peer changes (fs.watch)
+		const agentsDir = projectAgentsDir(project);
+		try {
+			fsWatcher = fs.watch(agentsDir, (eventType, filename) => {
+				log.debug("fs_watch_event", eventType, filename);
+				if (!filename || !filename.endsWith(".json") || filename.endsWith(".tmp")) return;
+				if (!identity || shuttingDown) return;
+				const filePath = path.join(agentsDir, filename);
+				const sessionId = filename.replace(".json", "");
+				if (sessionId === identity.coms_session_id) return;
+
+				if (eventType === "rename") {
+					if (fs.existsSync(filePath)) {
+						try {
+							const entry = JSON.parse(fs.readFileSync(filePath, "utf-8")) as RegistryEntry;
+							if (entry && entry.coms_session_id && entry.endpoint) {
+								if (peerCards.has(entry.coms_session_id)) {
+									// Existing peer — update card (heartbeat via atomic rename)
+									const existing = peerCards.get(entry.coms_session_id)!;
+									existing.context_used_pct = entry.context_used_pct ?? existing.context_used_pct;
+									existing.queue_depth = entry.queue_depth ?? existing.queue_depth;
+									existing.model = entry.model ?? existing.model;
+									existing.staleCount = 0;
+									log.debug("fs_watch_heartbeat_rename", entry.name, "ctx", entry.context_used_pct);
+								} else {
+									// New peer
+									const card: AgentCard & { staleCount: number } = {
+										name: entry.name, purpose: entry.purpose, model: entry.model,
+										color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
+										queue_depth: entry.queue_depth ?? 0, tasks_summary: null, staleCount: 0,
+									};
+									peerCards.set(entry.coms_session_id, card);
+									log.info("fs_watch_peer_added", entry.name, entry.coms_session_id);
+									maybeRefreshWidget();
+									if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
+										knownPeerSessions.set(entry.coms_session_id, entry.name);
+										try { pi.sendMessage({ customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+									}
+								}
+							}
+						} catch {}
+					} else {
+						if (peerCards.has(sessionId)) {
+							const card = peerCards.get(sessionId);
+							peerCards.delete(sessionId);
+							log.info("fs_watch_peer_removed", card?.name ?? sessionId);
+							maybeRefreshWidget();
+							if (knownPeerSessions.has(sessionId)) {
+								const name = knownPeerSessions.get(sessionId) ?? sessionId;
+								knownPeerSessions.delete(sessionId);
+								const sameNameStillExists = [...peerCards.values()].some(c => c.name === name);
+								if (!sameNameStillExists) {
+									try { pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+								}
+							}
+						}
+					}
+				} else if (eventType === "change") {
+					try {
+						const entry = JSON.parse(fs.readFileSync(filePath, "utf-8")) as RegistryEntry;
+						if (entry && entry.coms_session_id && peerCards.has(entry.coms_session_id)) {
+							const existing = peerCards.get(entry.coms_session_id)!;
+							existing.context_used_pct = entry.context_used_pct ?? existing.context_used_pct;
+							existing.queue_depth = entry.queue_depth ?? existing.queue_depth;
+							existing.staleCount = 0;
+							existing.model = entry.model ?? existing.model;
+							log.debug("fs_watch_heartbeat", entry.name, "ctx", entry.context_used_pct);
+						} else if (entry && entry.coms_session_id && !peerCards.has(entry.coms_session_id)) {
+							const card: AgentCard & { staleCount: number } = {
+								name: entry.name, purpose: entry.purpose, model: entry.model,
+								color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
+								queue_depth: entry.queue_depth ?? 0, tasks_summary: null, staleCount: 0,
+							};
+							peerCards.set(entry.coms_session_id, card);
+							log.info("fs_watch_peer_added_via_change", entry.name, entry.coms_session_id);
+							maybeRefreshWidget();
+							if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
+								knownPeerSessions.set(entry.coms_session_id, entry.name);
+								try { pi.sendMessage({ customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+							}
+						}
+					} catch {}
+				}
+			});
+			log.info("fs_watch_started", agentsDir);
+		} catch (err) {
+			log.error("fs_watch_failed", err instanceof Error ? err.message : String(err));
+		}
+
+		// Start task heartbeat keepalive timer (#731)
+		if (taskHeartbeatTimer) { try { clearInterval(taskHeartbeatTimer); } catch { /* ignore */ } }
+		taskHeartbeatTimer = setInterval(async () => {
+			if (!identity || shuttingDown) return;
+			try {
+				const { getComsOriginTasks } = await import("./coms-shared.js");
+				const tasks = await getComsOriginTasks();
+				for (const task of tasks) {
+					if (!task.coms_origin.sender_endpoint) continue;
+					try {
+						await sendEnvelope(task.coms_origin.sender_endpoint, {
+							type: "task_update",
+							msg_id: ulid(),
+							sender_session: identity.coms_session_id,
+							sender_endpoint: identity.endpoint,
+							hops: 0,
+							timestamp: nowIso(),
+							task_id: task.taskId,
+							subject: task.subject,
+							status: task.status,
+							sender_name: identity.name,
+						});
+					} catch {}
+				}
+			} catch {}
+		}, TASK_HEARTBEAT_MS);
+		try { (taskHeartbeatTimer as any).unref?.(); } catch {}
+
+		// Keepalive — write registry heartbeat + socket self-heal
 		keepaliveTimer = setInterval(async () => {
 			if (!identity) return;
 			if (shuttingDown) return;
 			try {
-				// Socket self-heal: if our socket file was deleted (e.g., by pruneStaleRegistry
-				// timeout), the net.Server is orphaned — listening on an inode with no filesystem
-				// entry. Re-bind the server and ping worker on the same endpoint path.
 				if (!shuttingDown && process.platform !== "win32" && !fs.existsSync(identity.endpoint)) {
 					try {
-						pi.appendEntry("coms-log", { event: "self_heal_socket", session_id: identity.session_id, reason: "socket file missing" });
-						// Close old server
-						if (server) {
-							try { server.close(); } catch { /* ignore */ }
-							server = null;
-						}
-						// Re-bind new server on same endpoint
+						log.warn("self_heal_socket_missing", identity.coms_session_id, identity.endpoint);
+						if (server) { try { server.close(); } catch {} server = null; }
 						server = await bindEndpoint(identity.endpoint, connHandler);
-						// Restart ping worker — terminate old one and remove its
-						// event handlers to prevent late exit/error from clobbering
-						// the new worker's state.
 						if (pingWorker) {
 							const oldWorker = pingWorker;
 							oldWorker.removeAllListeners();
@@ -1065,26 +1524,20 @@ export default function (pi: ExtensionAPI) {
 						try {
 							pingWorker = createPingWorker(pingEndpoint);
 							pingWorker.on("message", (msg: any) => {
-								if (msg.type === "ready") {
-									pingWorkerReady = true;
-									updatePingWorkerCard();
-								}
-								if (msg.type === "error") console.debug("[coms] ping worker error:", msg.message);
+								if (msg.type === "ready") { pingWorkerReady = true; updatePingWorkerCard(); }
+								if (msg.type === "error") log.warn("ping_worker_error", msg.message);
 							});
 							pingWorker.on("error", () => { pingWorkerReady = false; });
 							pingWorker.on("exit", () => { pingWorkerReady = false; pingWorker = null; });
-						} catch { /* best-effort */ }
+						} catch {}
 					} catch (err) {
-						pi.appendEntry("coms-log", { event: "self_heal_socket_failed", session_id: identity.session_id, reason: err instanceof Error ? err.message : String(err) });
+						log.error("self_heal_socket_failed", identity.coms_session_id, err instanceof Error ? err.message : String(err));
 					}
 				}
-
 				const ctx = currentCtx;
-				// Detect missing-registry BEFORE writing so the self_heal audit only
-				// fires when something actually went wrong (file unlinked under us).
 				const missingBeforeWrite = !fs.existsSync(identity.registryFile);
 				const live: RegistryEntry = {
-					session_id: identity.session_id,
+					coms_session_id: identity.coms_session_id,
 					name: identity.name,
 					purpose: identity.purpose,
 					model: ctx?.model?.id ?? identity.model,
@@ -1098,58 +1551,68 @@ export default function (pi: ExtensionAPI) {
 					context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
 					queue_depth: getPendingInboundCount(),
 					heartbeat_at: nowIso(),
+					pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
 				};
-				// Unconditional atomic write: handles BOTH the live-status refresh
-				// (file present → overwrite with fresh values) AND self-heal (file
-				// missing → re-create entry). The atomic write also bumps mtime.
 				writeRegistryAtomic(live, identity.project);
 				if (missingBeforeWrite) {
-					pi.appendEntry("coms-log", { event: "self_heal", session_id: identity.session_id, reason: "registry file missing" });
-					// Edge case: if the file was unlinked again between our write and
-					// this check, re-write once to be safe.
+					log.warn("self_heal_registry", identity.coms_session_id);
 					if (!fs.existsSync(identity.registryFile)) {
 						writeRegistryAtomic(live, identity.project);
 					}
 				}
-			} catch { /* best-effort */ }
+				updatePingWorkerCard();
+			} catch {}
 		}, KEEPALIVE_INTERVAL_MS);
-		try { (keepaliveTimer as any).unref?.(); } catch { /* ignore */ }
+		try { (keepaliveTimer as any).unref?.(); } catch {}
 
-		// Kick one ping cycle immediately so the widget populates fast.
-		refreshPool().catch(() => {});
+		// Stale peer detection — runs every 60s, confirms with socket probe
+		const STALE_THRESHOLD_MS = 90_000;
+		const staleCheckTimer = setInterval(async () => {
+			if (!identity || shuttingDown) return;
+			for (const [sid, card] of peerCards.entries()) {
+				if (sid === identity.coms_session_id) continue;
+				const regFile = registryFilePath(identity.project, sid);
+				try {
+					const stat = fs.statSync(regFile);
+					const age = Date.now() - stat.mtimeMs;
+					if (age > STALE_THRESHOLD_MS) {
+						log.debug("stale_check", card.name, "age", Math.round(age / 1000), "s");
+						const entries = readAllRegistryEntries(identity.project);
+						const entry = entries.find(e => e.coms_session_id === sid);
+						if (entry?.endpoint) {
+							const alive = await probeAlive(entry.endpoint);
+							if (!alive) {
+								log.info("stale_confirmed_dead", card.name, sid);
+								peerCards.delete(sid);
+								if (knownPeerSessions.has(sid)) {
+									const name = knownPeerSessions.get(sid) ?? sid;
+									knownPeerSessions.delete(sid);
+									const sameNameStillExists = [...peerCards.values()].some(c => c.name === name);
+									if (!sameNameStillExists) {
+										try { pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+									}
+								}
+								removeRegistryEntry(identity.project, sid);
+								maybeRefreshWidget();
+							} else {
+								log.debug("stale_but_alive", card.name, "resetting staleCount");
+								card.staleCount = 0;
+							}
+						}
+					}
+				} catch {}
+			}
+		}, 60_000);
+		log.debug("stale_check_timer_started", "interval", 60000, "threshold", STALE_THRESHOLD_MS);
+		try { (staleCheckTimer as any).unref?.(); } catch {}
+
 		} // end mode guard for timers
 	});
 
 	// ━━ Helpers used by tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-	async function pingPeer(endpoint: string): Promise<AgentCard | null> {
-		if (!identity) return null;
-		const env: PingEnvelope = {
-			type: "ping",
-			msg_id: ulid(),
-			sender_session: identity.session_id,
-			sender_endpoint: identity.endpoint,
-			hops: 0,
-			timestamp: nowIso(),
-		};
-		try {
-			const resp = await sendEnvelope(endpoint, env);
-			if (resp && resp.type === "pong" && resp.agent_card) {
-				return resp.agent_card as AgentCard;
-			}
-		} catch {
-			// ignore — peer unreachable
-		}
-		return null;
-	}
-
 	// ━━ Pool widget rendering ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	function renderPool(width: number, theme: Theme): string[] {
-		const projectFilter = displayProject ?? identity?.project ?? "default";
-		const registryEntries = projectFilter === "*"
-			? readAllRegistryEntriesAcrossProjects()
-			: readAllRegistryEntries(projectFilter);
-
 		interface Row {
 			name: string;
 			model: string;
@@ -1162,11 +1625,9 @@ export default function (pi: ExtensionAPI) {
 			queue_depth: number;
 		}
 		const rows: Row[] = [];
-		const seenSessions = new Set<string>();
 
 		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
-			seenSessions.add(sid);
+			if (identity && sid === identity.coms_session_id) continue;
 			rows.push({
 				name: card.name,
 				model: card.model,
@@ -1177,25 +1638,6 @@ export default function (pi: ExtensionAPI) {
 				stale: (card.staleCount ?? 0) >= 3,
 				tasks: card.tasks_summary,
 				queue_depth: card.queue_depth ?? 0,
-			});
-		}
-
-		// Registry-only entries that aren't yet in peerCards → pending
-		const seenNames = new Set(rows.map((r) => r.name));
-		for (const entry of registryEntries) {
-			if (identity && entry.session_id === identity.session_id) continue;
-			if (!includeExplicit && entry.explicit) continue;
-			if (seenSessions.has(entry.session_id)) continue;
-			if (seenNames.has(entry.name)) continue;
-			rows.push({
-				name: entry.name,
-				model: entry.model,
-				color: entry.color,
-				purpose: entry.purpose,
-				pct: null,
-				pending: true,
-				stale: false,
-				queue_depth: 0,
 			});
 		}
 
@@ -1296,94 +1738,6 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// ━━ Ping cycle ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	async function refreshPool(): Promise<void> {
-		if (!identity) return;
-		const projectFilter = displayProject ?? identity.project;
-		const live = projectFilter === "*"
-			? await pruneDeadEntriesAllProjects()
-			: await pruneDeadEntries(projectFilter);
-
-		const peers = live.filter((e) =>
-			e.session_id !== identity!.session_id && (includeExplicit || !e.explicit),
-		);
-
-		const results = await Promise.allSettled(peers.map(async (peer) => {
-			const pingEnv: PingEnvelope = {
-				type: "ping",
-				msg_id: ulid(),
-				sender_session: identity!.session_id,
-				sender_endpoint: identity!.endpoint,
-				hops: 0,
-				timestamp: nowIso(),
-			};
-			// Try dedicated ping socket first (immune to event-loop blocks), fall back to main
-			const pingEndpoint = `${peer.endpoint}.ping`;
-			let reply: any;
-			try {
-				reply = await sendEnvelope(pingEndpoint, pingEnv);
-			} catch {
-				reply = await sendEnvelope(peer.endpoint, pingEnv);
-			}
-			return { peer, pong: reply as Pong };
-		}));
-
-		const seenSessions = new Set<string>();
-		let changed = false;
-
-		for (const r of results) {
-			if (r.status === "fulfilled" && r.value.pong && r.value.pong.agent_card) {
-				const { peer, pong } = r.value;
-				seenSessions.add(peer.session_id);
-				const prev = peerCards.get(peer.session_id);
-				const next = { ...pong.agent_card, staleCount: 0 };
-				if (!prev || JSON.stringify({ ...prev, staleCount: 0 }) !== JSON.stringify(next)) {
-					peerCards.set(peer.session_id, next);
-					changed = true;
-				}
-			}
-		}
-
-		for (const [sid, card] of peerCards.entries()) {
-			if (identity && sid === identity.session_id) continue;
-			if (!seenSessions.has(sid)) {
-				card.staleCount = (card.staleCount ?? 0) + 1;
-				if (card.staleCount > 6) {
-					peerCards.delete(sid);
-				}
-				changed = true;
-			}
-		}
-
-		// Dedup peerCards by name — when a peer reloads, it gets a new session_id.
-		// Both old (stale) and new (alive) entries exist briefly. Keep the one with
-		// lower staleCount (fresher). This prevents brief duplicate display in the widget.
-		const nameToSid = new Map<string, string>();
-		for (const [sid, card] of peerCards.entries()) {
-			const existing = nameToSid.get(card.name);
-			if (existing) {
-				const prevCard = peerCards.get(existing)!;
-				// Only dedup when one is clearly stale (reload artifact).
-				// If both are alive (staleCount 0), keep both — they're distinct peers.
-				if (card.staleCount === 0 && prevCard.staleCount === 0) {
-					// Both alive — keep both, skip dedup
-				} else if (card.staleCount < prevCard.staleCount) {
-					peerCards.delete(existing);
-					nameToSid.set(card.name, sid);
-					changed = true;
-				} else {
-					peerCards.delete(sid);
-					changed = true;
-				}
-			} else {
-				nameToSid.set(card.name, sid);
-			}
-		}
-
-		if (changed && currentCtx?.hasUI) {
-			installPoolWidget(currentCtx);
-		}
-	}
-
 	function listProjects(): string[] {
 		const root = path.join(COMS_DIR, "projects");
 		try {
@@ -1400,11 +1754,11 @@ export default function (pi: ExtensionAPI) {
 		if (identity) {
 			const localEntries = await pruneDeadEntries(identity.project);
 			// Try session_id match first (always unambiguous)
-			const bySession = localEntries.find((e) => e.session_id === target);
-			if (bySession) return bySession;
+			const bySession = localEntries.find((e) => e.coms_session_id === target);
+			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
 			// Name match — warn if ambiguous
 			const byName = localEntries.filter((e) => e.name === target);
-			if (byName.length === 1) return byName[0];
+			if (byName.length === 1) { log.debug("resolveTarget", target, "→", byName[0].name, "by_name"); return byName[0]; }
 			if (byName.length > 1) {
 				// Ambiguous — sort deterministically: freshest heartbeat first, session_id tiebreaker
 				byName.sort((a, b) => {
@@ -1413,24 +1767,16 @@ export default function (pi: ExtensionAPI) {
 					const ha = isNaN(haRaw) ? 0 : haRaw;
 					const hb = isNaN(hbRaw) ? 0 : hbRaw;
 					if (hb !== ha) return hb - ha; // freshest first
-					return a.session_id.localeCompare(b.session_id); // stable tiebreak
+					return a.coms_session_id.localeCompare(b.coms_session_id); // stable tiebreak
 				});
-				try {
-					pi.appendEntry("coms-log", {
-						event: "ambiguous_target",
-						target,
-						matches: byName.length,
-						selected_session: byName[0].session_id,
-						selected_heartbeat: byName[0].heartbeat_at ?? null,
-					});
-				} catch { /* best-effort */ }
+				log.warn("ambiguous_target", target, "matches", byName.length, "selected", byName[0].coms_session_id);
 				return byName[0];
 			}
 		}
 		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
 			const entries = await pruneDeadEntries(proj);
-			const bySession = entries.find((e) => e.session_id === target);
+			const bySession = entries.find((e) => e.coms_session_id === target);
 			if (bySession) return bySession;
 		}
 		// Fall back to name match across projects.
@@ -1439,6 +1785,7 @@ export default function (pi: ExtensionAPI) {
 			const byName = entries.find((e) => e.name === target);
 			if (byName) return byName;
 		}
+		log.debug("resolveTarget", target, "→ not_found");
 		return null;
 	}
 
@@ -1459,34 +1806,21 @@ export default function (pi: ExtensionAPI) {
 			const projectFilter = params.project ?? identity?.project ?? "default";
 			const projects = projectFilter === "*" ? listProjects() : [projectFilter];
 
-			const collected: { entry: RegistryEntry; project: string }[] = [];
-			for (const proj of projects) {
-				for (const entry of await pruneDeadEntries(proj)) {
-					if (entry.explicit && !includeExp) continue;
-					if (identity && entry.session_id === identity.session_id) continue;
-					collected.push({ entry, project: proj });
-				}
-			}
-
-			// Ping each peer in parallel for live context usage.
-			const pongs = await Promise.allSettled(collected.map((c) => pingPeer(c.entry.endpoint)));
-
-			const agents = collected.map((c, i) => {
-				const r = pongs[i];
-				const pong = r.status === "fulfilled" ? r.value : null;
-				return {
-					name: c.entry.name,
-					session_id: c.entry.session_id,
-					purpose: c.entry.purpose,
-					model: c.entry.model,
-					cwd: c.entry.cwd,
-					project: c.project,
-					alive: pong != null,
-					context_used_pct: pong ? pong.context_used_pct : null,
-					queue_depth: pong ? pong.queue_depth : 0,
-					color: c.entry.color,
-				};
-			});
+			// Read from peerCards — no pinging needed
+			const agents = [...peerCards.entries()]
+				.filter(([sid]) => identity && sid !== identity.coms_session_id)
+				.map(([sid, card]) => ({
+					name: card.name,
+					session_id: sid,
+					purpose: card.purpose,
+					model: card.model,
+					cwd: "",
+					project: identity?.project ?? "default",
+					alive: true,
+					context_used_pct: card.context_used_pct,
+					queue_depth: card.queue_depth ?? 0,
+					color: card.color,
+				}));
 
 			const lines = agents.length === 0
 				? "No peer agents found."
@@ -1544,6 +1878,7 @@ export default function (pi: ExtensionAPI) {
 				subject: Type.String({ description: "Brief task title" }),
 				description: Type.String({ description: "Detailed task description" }),
 			}), { description: "Optional structured tasks to create in the peer's task list." })),
+			clearPrevious: Type.Optional(Type.Boolean({ description: "If true, clear all your prior pending messages on the receiver before delivering this one." })),
 		}),
 		async execute(_callId, params) {
 			if (!identity) {
@@ -1553,6 +1888,18 @@ export default function (pi: ExtensionAPI) {
 			if (!target) {
 				throw new Error(`coms: no live agent matching "${params.target}"`);
 			}
+			// Block coms_send to the sender when processing their inbound — auto-capture handles the reply
+			if (processingInbound && currentInbound && !currentInbound.fulfilled && target.coms_session_id === currentInbound.sender_session) {
+				log.info("coms_send_blocked", "to", target.name, "auto-capture will reply");
+				return {
+					content: [{ type: "text" as const, text: `coms_send blocked: you are responding to ${target.name}'s inbound message. Your assistant text will be auto-captured and sent back. Do NOT use coms_send to reply.` }],
+					details: { blocked: true, reason: "processing_inbound", target: target.name },
+				};
+			}
+			// Clear sender's prior pending messages on the receiver before delivering
+			if (params.clearPrevious) {
+				try { await sendQueueManage(target, "clear"); } catch { /* best-effort */ }
+			}
 			const hops = currentInbound ? currentInbound.hops + 1 : 0;
 			if (hops >= MAX_HOPS) {
 				throw new Error(`coms: hop limit reached (${hops} >= ${MAX_HOPS})`);
@@ -1561,7 +1908,7 @@ export default function (pi: ExtensionAPI) {
 			const env: PromptEnvelope = {
 				type: "prompt",
 				msg_id,
-				sender_session: identity.session_id,
+				sender_session: identity.coms_session_id,
 				sender_endpoint: identity.endpoint,
 				sender_name: identity.name,
 				sender_cwd: identity.cwd,
@@ -1575,6 +1922,22 @@ export default function (pi: ExtensionAPI) {
 
 			// Send the envelope synchronously and wait for the receiver's ack.
 			await sendEnvelope(target.endpoint, env);
+			comsSendCalledThisTurn.add(target.coms_session_id);
+
+			// Auto-create tasks on the target's task store (sender-side, instant)
+			if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
+				try {
+					const count = createComsInboundTasks(
+						params.tasks,
+						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
+						target.pi_session_id || target.coms_session_id,
+						target.cwd,
+					);
+					if (count > 0) {
+						log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
+					}
+				} catch { /* best-effort */ }
+			}
 
 			// Register a pending entry whose promise the receiver-side handleResponse
 			// (or the timeout below) will settle.
@@ -1596,27 +1959,36 @@ export default function (pi: ExtensionAPI) {
 				if (entry.result) return;
 				entry.result = { error: "timeout" };
 				try { entry.resolve(entry.result); } catch { /* ignore */ }
-				// Clean up timed-out entry
+				// Clean up timed-out entry from both maps
+				const pSet = pendingOutbound.get(target.name);
+				if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
 				setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
 			}, TIMEOUT_MS);
 			// Don't keep the event loop alive solely for this timer.
 			try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
 			pendingReplies.set(msg_id, entry);
 
-			try {
-				pi.appendEntry("coms-log", {
-					event: "outbound_prompt",
-					msg_id,
-					target: target.name,
-					hops,
-				});
-			} catch {
-				// best-effort
-			}
+			log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
+
+			// Track pending outbound
+			const targetKey = target.name;
+			if (!pendingOutbound.has(targetKey)) pendingOutbound.set(targetKey, new Set());
+			pendingOutbound.get(targetKey)!.add(msg_id);
+
+			// Peer status from peerCards
+			const peerCard = peerCards.get(target.coms_session_id);
+			const peer_queue_depth = peerCard?.queue_depth ?? 0;
+			const peer_status = currentInbound && !currentInbound.fulfilled ? "processing" : "idle";
+
+			// Warn if pending messages exist
+			const pendingCount = (pendingOutbound.get(targetKey)?.size ?? 1) - 1; // exclude this one
+			const pendingWarn = pendingCount > 0 && !params.clearPrevious
+				? `\n⚠️ You have ${pendingCount} pending message(s) to ${targetKey} that haven't been answered yet. Wait for responses or use clearPrevious:true to replace them.`
+				: "";
 
 			return {
-				content: [{ type: "text" as const, text: `coms_send → ${target.name}\nmsg_id ${msg_id}\nhops ${hops}` }],
-				details: { msg_id, target: target.name, target_session: target.session_id, hops },
+				content: [{ type: "text" as const, text: `coms_send → ${target.name}\nmsg_id ${msg_id}\nhops ${hops}${pendingWarn}` }],
+				details: { msg_id, target: target.name, target_session: target.coms_session_id, hops, peer_queue_depth, peer_status },
 			};
 		},
 		renderCall(args, theme) {
@@ -1693,9 +2065,328 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ━━ coms queue management tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+	/** Send a queue_manage envelope to a peer. Only affects messages owned by this session. */
+	async function sendQueueManage(target: { name: string; endpoint: string }, action: string, targetMsgId?: string, newContent?: string): Promise<{ affected?: number; error?: string | null }> {
+		if (!identity) throw new Error("coms not initialised");
+		const ack = await sendEnvelope(target.endpoint, {
+			type: "queue_manage",
+			msg_id: ulid(),
+			sender_session: identity.coms_session_id,
+			sender_endpoint: identity.endpoint,
+			hops: 0,
+			timestamp: nowIso(),
+			action,
+			target_msg_id: targetMsgId,
+			new_content: newContent,
+			sender_name: identity.name,
+		});
+		return { affected: ack?.affected, error: ack?.error };
+	}
+
+	pi.registerTool({
+		name: "coms_queue_delete",
+		label: "Coms Queue Delete",
+		description: "Delete your message from a peer's queue. Only works on your own pending messages.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			msg_id: Type.String({ description: "The msg_id to delete from the peer's queue." }),
+		}),
+		async execute(_callId, params) {
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+			const result = await sendQueueManage(target, "delete", params.msg_id);
+			if (result.error) throw new Error(`coms_queue_delete failed: ${result.error}`);
+			return { content: [{ type: "text" as const, text: `coms_queue_delete → ${target.name}\nmsg_id: ${params.msg_id}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_queue_edit",
+		label: "Coms Queue Edit",
+		description: "Replace the content of your queued message on a peer. Only works on your own pending messages.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			msg_id: Type.String({ description: "The msg_id to edit." }),
+			new_content: Type.String({ description: "New prompt content to replace the existing message." }),
+		}),
+		async execute(_callId, params) {
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+			const result = await sendQueueManage(target, "edit", params.msg_id, params.new_content);
+			if (result.error) throw new Error(`coms_queue_edit failed: ${result.error}`);
+			return { content: [{ type: "text" as const, text: `coms_queue_edit → ${target.name}\nmsg_id: ${params.msg_id}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_queue_clear",
+		label: "Coms Queue Clear",
+		description: "Delete ALL your pending messages from a peer's queue. Only affects your own messages.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+		}),
+		async execute(_callId, params) {
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+			await sendQueueManage(target, "clear");
+			return { content: [{ type: "text" as const, text: `coms_queue_clear → ${target.name}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_queue_prioritize",
+		label: "Coms Queue Prioritize",
+		description: "Move your message to the front of a peer's queue. Only works on your own pending messages.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			msg_id: Type.String({ description: "The msg_id to prioritize." }),
+		}),
+		async execute(_callId, params) {
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+			const result = await sendQueueManage(target, "prioritize", params.msg_id);
+			if (result.error) throw new Error(`coms_queue_prioritize failed: ${result.error}`);
+			return { content: [{ type: "text" as const, text: `coms_queue_prioritize → ${target.name}\nmsg_id: ${params.msg_id}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_task_create",
+		label: "Coms Task Create",
+		description: "Create a task on a peer's task list without sending a message. The task appears in the peer's task widget immediately.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			subject: Type.String({ description: "Brief task title." }),
+			description: Type.String({ description: "Detailed task description." }),
+			activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress (e.g., 'Running tests')" })),
+			agentType: Type.Optional(Type.String({ description: "Agent type for subagent execution (e.g., 'general-purpose', 'Explore'). Tasks with agentType can be started via TaskExecute." })),
+			metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
+		}),
+		async execute(_callId, params) {
+			if (!identity) throw new Error("coms not initialised");
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+
+			try {
+				const { createTaskForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const meta: Record<string, any> = params.metadata ?? {};
+				if (params.agentType) meta.agentType = params.agentType;
+				meta.coms_origin = {
+					sender_session: identity.coms_session_id,
+					sender_name: identity.name,
+					sender_endpoint: identity.endpoint,
+				};
+				createTaskForSession(targetPiSessionId, params.subject, params.description, meta, target.cwd, params.activeForm);
+				log.info("coms_task_create", params.subject, "on", target.name);
+			} catch (e: any) {
+				throw new Error(`Failed to create task on ${target.name}: ${e?.message}`);
+			}
+
+			return {
+				content: [{ type: "text" as const, text: `Task created on ${target.name}: ${params.subject}` }],
+				details: { target: target.name, subject: params.subject },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_task_delete",
+		label: "Coms Task Delete",
+		description: "Delete a task from a peer's task list. Only works on tasks you created (coms_origin match).",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			task_id: Type.String({ description: "Task ID to delete." }),
+		}),
+		async execute(_callId, params) {
+			if (!identity) throw new Error("coms not initialised");
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+
+			try {
+				const { getTaskForSession, deleteTaskForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				if (!task) throw new Error(`Task #${params.task_id} not found`);
+				if (task.metadata?.coms_origin?.sender_session !== identity.coms_session_id) {
+					throw new Error(`Ownership denied — can only delete tasks you created`);
+				}
+				deleteTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				log.info("coms_task_delete", params.task_id, "on", target.name);
+			} catch (e: any) {
+				throw new Error(`Failed to delete task on ${target.name}: ${e?.message}`);
+			}
+
+			return {
+				content: [{ type: "text" as const, text: `Task #${params.task_id} deleted from ${target.name}` }],
+				details: { target: target.name, task_id: params.task_id },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_task_list",
+		label: "Coms Task List",
+		description: "List tasks on a peer's task list without sending a message.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+		}),
+		async execute(_callId, params) {
+			if (!identity) throw new Error("coms not initialised");
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+
+			try {
+				const { listTasksForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const tasks = listTasksForSession(targetPiSessionId, target.cwd);
+				log.debug("coms_task_list", target.name, "tasks", tasks?.length ?? 0);
+
+				if (!tasks || tasks.length === 0) {
+					return {
+						content: [{ type: "text" as const, text: "No tasks found" }],
+						details: undefined,
+					};
+				}
+
+				const sorted = [...tasks].sort((a: any, b: any) => {
+					const statusOrder: Record<string, number> = { pending: 0, in_progress: 1, completed: 2 };
+					const so = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
+					if (so !== 0) return so;
+					return Number(a.id) - Number(b.id);
+				});
+				const lines = sorted.map((t: any) => {
+					let line = `#${t.id} [${t.status}] ${t.subject}`;
+					if (t.owner) line += ` (${t.owner})`;
+					if (t.blockedBy?.length > 0) {
+						const openBlockers = t.blockedBy.filter((bid: string) => {
+							const blocker = tasks.find((bt: any) => bt.id === bid);
+							return blocker && blocker.status !== "completed";
+						});
+						if (openBlockers.length > 0) line += ` [blocked by ${openBlockers.map((id: string) => "#" + id).join(", ")}]`;
+					}
+					return line;
+				});
+				return {
+					content: [{ type: "text" as const, text: lines.join("\n") }],
+					details: undefined,
+				};
+			} catch (e: any) {
+				throw new Error(`Failed to list tasks on ${target.name}: ${e?.message}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_task_get",
+		label: "Coms Task Get",
+		description: "Get a specific task from a peer's task list without sending a message.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			task_id: Type.String({ description: "Task ID to retrieve." }),
+		}),
+		async execute(_callId, params) {
+			if (!identity) throw new Error("coms not initialised");
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+
+			try {
+				const { getTaskForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
+
+				log.debug("coms_task_get", target.name, "task", params.task_id);
+
+				// Match local TaskGet format
+				const desc = task.description || "(no description)";
+				const lines: string[] = [`Task #${task.id}: ${task.subject}`, `Status: ${task.status}`];
+				if (task.owner) lines.push(`Owner: ${task.owner}`);
+				lines.push(`Description: ${desc}`);
+				if (task.blockedBy?.length > 0) {
+					const { listTasksForSession } = require("../pitasks/index.js");
+					const allTasks = listTasksForSession(targetPiSessionId, target.cwd);
+					const openBlockers = task.blockedBy.filter((bid: string) => {
+						const blocker = allTasks.find((bt: any) => bt.id === bid);
+						return blocker && blocker.status !== "completed";
+					});
+					if (openBlockers.length > 0) lines.push(`Blocked by: ${openBlockers.map((id: string) => "#" + id).join(", ")}`);
+				}
+				if (task.blocks?.length > 0) lines.push(`Blocks: ${task.blocks.map((id: string) => "#" + id).join(", ")}`);
+
+				return {
+					content: [{ type: "text" as const, text: lines.join("\n") }],
+					details: undefined,
+				};
+			} catch (e: any) {
+				throw new Error(`Failed to get task from ${target.name}: ${e?.message}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_task_update",
+		label: "Coms Task Update",
+		description: "Update a task on a peer's task list. Only works on tasks you created (coms_origin match).",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			task_id: Type.String({ description: "The ID of the task to update" }),
+			status: Type.Optional(Type.Unsafe({ type: "string", enum: ["pending", "in_progress", "completed", "deleted"], description: "New status for the task" })),
+			subject: Type.Optional(Type.String({ description: "New subject for the task" })),
+			description: Type.Optional(Type.String({ description: "New description for the task" })),
+			activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
+			owner: Type.Optional(Type.String({ description: "New owner for the task" })),
+			metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Metadata keys to merge into the task. Set a key to null to delete it." })),
+			addBlocks: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that this task blocks" })),
+			addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+		}),
+		async execute(_callId, params) {
+			if (!identity) throw new Error("coms not initialised");
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+
+			try {
+				const { getTaskForSession, updateTaskForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
+				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
+				if (task.metadata?.coms_origin?.sender_session !== identity.coms_session_id) {
+					throw new Error(`Ownership denied — can only update tasks you created`);
+				}
+
+				const { target: _t, task_id: _tid, ...fields } = params;
+				const result = updateTaskForSession(targetPiSessionId, params.task_id, fields, target.cwd);
+				log.info("coms_task_update", params.task_id, "on", target.name, "fields", Object.keys(fields).join(","));
+
+				const changedFields = result?.changedFields ?? [];
+				const warnings = result?.warnings ?? [];
+				let msg = `Updated task #${params.task_id} ${changedFields.join(", ")}`;
+				if (warnings.length > 0) msg += ` (warning: ${warnings.join("; ")})`;
+				return {
+					content: [{ type: "text" as const, text: msg }],
+					details: undefined,
+				};
+			} catch (e: any) {
+				throw new Error(`Failed to update task on ${target.name}: ${e?.message}`);
+			}
+		},
+	});
+
+	// ━━ Track agent running state for mixed-turn detection (#731) ━━━━━━━━━
+	// Only mark as "user turn" if NO coms inbound is active (processingInbound false).
+	// When processingInbound is true, the agent is running a coms followUp — not a user turn.
+	pi.on("agent_start" as any, () => {
+		agentRunningUserTurn = !processingInbound;
+		comsSendCalledThisTurn.clear();
+		log.debug("agent_start", "userTurn", agentRunningUserTurn, "processingInbound", processingInbound, "currentInbound", currentInbound?.msg_id ?? "null");
+	});
+
 	// ━━ agent_end: capture turn output and dispatch response back ━━━━━━━━
 
 	pi.on("agent_end", async (_event, ctx) => {
+		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "identity", !!identity, "processingInbound", processingInbound);
 		if (!currentInbound || !identity) {
 			// Drain any orphaned inbounds — can't send responses without identity,
 			// but must clear the queue to prevent permanent buildup
@@ -1706,10 +2397,213 @@ export default function (pi: ExtensionAPI) {
 				}
 				currentInbound = null;
 			}
+			agentRunningUserTurn = false;
+			inboundSetDuringUserTurn = false;
 			processingInbound = false;
+			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
 			return;
 		}
 		const inbound = currentInbound;
+		currentInbound = null;
+		agentRunningUserTurn = false;
+
+		// Skip auto-capture if LLM already replied via coms_send to the same peer
+		if (comsSendCalledThisTurn.has(inbound.sender_session)) {
+			log.info("agent_end_skip_autocapture", inbound.msg_id, "coms_send called this turn", "sender", inbound.sender_name);
+			inbound.fulfilled = true;
+			inboundQueue.delete(inbound.msg_id);
+			maybeRefreshWidget();
+			// Continue FIFO drain
+			const next = [...inboundQueue.values()].find((i) => !i.fulfilled);
+			if (next) {
+				currentInbound = next;
+				try {
+					pi.sendMessage(
+						{
+							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+							display: true,
+							details: {
+								msg_id: next.msg_id,
+								sender_session: next.sender_session,
+								response_schema: next.response_schema ?? null,
+							},
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+				} catch {
+					currentInbound = null;
+					processingInbound = false;
+				}
+			} else {
+				processingInbound = false;
+			}
+			return;
+		}
+
+		// ── Mixed-turn detection (#731) ──────────────────────────────────────
+		// If the inbound was set while the agent was running a user turn
+		// (not a coms followUp), the assistant's response is for the user.
+		// Re-inject the inbound for a dedicated turn.
+		const hasMixedTurn = inboundSetDuringUserTurn;
+		inboundSetDuringUserTurn = false;
+
+		const MAX_MIXED_RETRIES = 2;
+		if (hasMixedTurn) {
+			const retries = inbound.mixedTurnRetries ?? 0;
+			if (retries < MAX_MIXED_RETRIES) {
+				// Re-inject the inbound for a clean dedicated turn.
+				inbound.mixedTurnRetries = retries + 1;
+				log.info("mixed_turn_reinject", inbound.msg_id, "retry", inbound.mixedTurnRetries, "from", inbound.sender_name);
+				try {
+					pi.sendMessage(
+						{
+							customType: formatComsInboundType(inbound.sender_name, sanitizeComsName(identity?.name ?? "?"), inbound.sender_cwd),
+							content: buildInboundContent(
+								`[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
+								`This is a re-injection — please reply to this peer message now.]`,
+								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd),
+							display: true,
+							details: {
+								msg_id: inbound.msg_id,
+								sender_session: inbound.sender_session,
+								response_schema: inbound.response_schema ?? null,
+							},
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+				} catch (err: any) {
+					// Re-injection failed — send error response to peer, then FIFO drain remaining
+					log.error("mixed_turn_reinject_failed", inbound.msg_id, err?.message);
+					inbound.fulfilled = true;
+					inboundQueue.delete(inbound.msg_id);
+					maybeRefreshWidget();
+					currentInbound = null;
+					const queuedIds: string[] = [];
+					for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+					try {
+						await sendEnvelope(inbound.sender_endpoint, {
+							type: "response", msg_id: inbound.msg_id,
+							sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+							hops: 0, timestamp: nowIso(),
+							response: null, error: "mixed_turn_conflict",
+							queued_msg_ids: queuedIds,
+						});
+					} catch { /* best-effort */ }
+					// FIFO drain: inject next or drain all remaining with error responses
+					const next = [...inboundQueue.values()].find((i) => !i.fulfilled);
+					if (next) {
+						currentInbound = next;
+						try {
+							pi.sendMessage(
+								{
+									customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
+									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+									display: true,
+									details: {
+										msg_id: next.msg_id,
+										sender_session: next.sender_session,
+										response_schema: next.response_schema ?? null,
+									},
+								},
+								{ deliverAs: "followUp", triggerTurn: true },
+							);
+						} catch (drainErr: any) {
+							log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
+							const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
+							for (let idx = 0; idx < remaining.length; idx++) {
+								const orphan = remaining[idx];
+								try {
+									await sendEnvelope(orphan.sender_endpoint, {
+										type: "response", msg_id: orphan.msg_id,
+										sender_session: identity!.coms_session_id, sender_endpoint: identity!.endpoint,
+										hops: 0, timestamp: nowIso(),
+										response: null, error: "injection_failed",
+										queued_msg_ids: remaining.slice(idx + 1).map(r => r.msg_id),
+									});
+								} catch (e: any) {
+									log.error("orphan_cleanup_failed", orphan.msg_id, e?.message);
+								}
+								orphan.fulfilled = true;
+								inboundQueue.delete(orphan.msg_id);
+							}
+							currentInbound = null;
+							processingInbound = false;
+						}
+					} else {
+						processingInbound = false;
+					}
+					return;
+				}
+				// Re-injection succeeded — restore currentInbound for next agent_end
+				currentInbound = inbound;
+				return;
+			}
+
+			// Max retries exhausted — send error response to peer.
+			log.warn("mixed_turn_exhausted", inbound.msg_id, "from", inbound.sender_name, "retries", retries);
+			const queuedIds: string[] = [];
+			for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+			try {
+				await sendEnvelope(inbound.sender_endpoint, {
+					type: "response", msg_id: inbound.msg_id,
+					sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+					hops: 0, timestamp: nowIso(),
+					response: null, error: "mixed_turn_conflict",
+					queued_msg_ids: queuedIds,
+				});
+			} catch { /* best-effort */ }
+			inbound.fulfilled = true;
+			inboundQueue.delete(inbound.msg_id);
+			maybeRefreshWidget();
+			currentInbound = null;
+
+			// Continue FIFO drain after mixed-turn exhaustion
+			const next = [...inboundQueue.values()].find((i) => !i.fulfilled);
+			if (next) {
+				currentInbound = next;
+				try {
+					pi.sendMessage(
+						{
+							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+							display: true,
+							details: {
+								msg_id: next.msg_id,
+								sender_session: next.sender_session,
+								response_schema: next.response_schema ?? null,
+							},
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+				} catch (drainErr: any) {
+					log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
+					const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
+					for (let idx = 0; idx < remaining.length; idx++) {
+						const orphan = remaining[idx];
+						try {
+							await sendEnvelope(orphan.sender_endpoint, {
+								type: "response", msg_id: orphan.msg_id,
+								sender_session: identity!.coms_session_id, sender_endpoint: identity!.endpoint,
+								hops: 0, timestamp: nowIso(),
+								response: null, error: "injection_failed",
+								queued_msg_ids: remaining.slice(idx + 1).map(r => r.msg_id),
+							});
+						} catch (e: any) {
+							log.error("orphan_cleanup_failed", orphan.msg_id, e?.message);
+						}
+						orphan.fulfilled = true;
+						inboundQueue.delete(orphan.msg_id);
+					}
+					currentInbound = null;
+					processingInbound = false;
+				}
+			} else {
+				processingInbound = false;
+			}
+			return;
+		}
+		// ── End mixed-turn detection ─────────────────────────────────────────
 
 		// Walk the session branch for the most recent assistant message text.
 		let lastAssistantText = "";
@@ -1727,7 +2621,83 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		let payload: any = lastAssistantText;
+		// Check if sender has more pending messages — accumulate response if so
+		const bundledIds = new Set(bundledInbounds.map(bi => bi.msg_id));
+		const morePending = [...inboundQueue.values()].some(i =>
+			!i.fulfilled && i.sender_session === inbound.sender_session && i.msg_id !== inbound.msg_id
+			&& !bundledIds.has(i.msg_id)
+		);
+
+		if (morePending) {
+			// Accumulate response, fulfill silently, let FIFO drain continue with next from same sender
+			if (!accumulatedResponses.has(inbound.sender_session)) {
+				accumulatedResponses.set(inbound.sender_session, []);
+			}
+			accumulatedResponses.get(inbound.sender_session)!.push(lastAssistantText);
+			log.debug("agent_end_accumulate", inbound.msg_id, "from", inbound.sender_name, "accumulated", accumulatedResponses.get(inbound.sender_session)!.length);
+
+			inbound.fulfilled = true;
+			inboundQueue.delete(inbound.msg_id);
+
+			// Also fulfill bundled inbounds silently
+			for (const bi of bundledInbounds) {
+				bi.fulfilled = true;
+				inboundQueue.delete(bi.msg_id);
+			}
+			bundledInbounds = [];
+
+			maybeRefreshWidget();
+
+			// FIFO drain — pick next from same sender (or any sender)
+			const allPending = [...inboundQueue.values()].filter((i) => !i.fulfilled);
+			if (allPending.length > 0) {
+				const firstSender = allPending[0].sender_session;
+				const senderPending = allPending.filter(i => i.sender_session === firstSender);
+
+				if (senderPending.length === 1) {
+					currentInbound = senderPending[0];
+					bundledInbounds = [];
+					log.debug("agent_end_fifo_next", senderPending[0].msg_id, "from", senderPending[0].sender_name);
+					try {
+						pi.sendMessage({
+							customType: formatComsInboundType(senderPending[0].sender_name, sanitizeComsName(identity?.name ?? "?"), senderPending[0].sender_cwd),
+							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd),
+							display: true,
+							details: { msg_id: senderPending[0].msg_id, sender_session: senderPending[0].sender_session, response_schema: senderPending[0].response_schema ?? null },
+						}, { deliverAs: "followUp", triggerTurn: true });
+					} catch { currentInbound = null; bundledInbounds = []; processingInbound = false; }
+				} else {
+					const primary = senderPending[0];
+					currentInbound = primary;
+					bundledInbounds = senderPending.slice(1);
+					const bundledContent = senderPending.map((ib, idx) =>
+						`--- Message ${idx + 1} of ${senderPending.length} [${ib.msg_id}] ---\n${ib.prompt}`
+					).join("\n\n");
+					const header = `[BUNDLED: ${senderPending.length} messages from ${primary.sender_name}. Later messages may override earlier ones. Read ALL before acting.]`;
+					log.debug("agent_end_fifo_bundle", senderPending.length, "from", primary.sender_name);
+					try {
+						pi.sendMessage({
+							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd),
+							content: buildInboundContent(header, bundledContent, null, primary.sender_name, primary.sender_cwd),
+							display: true,
+							details: { msg_id: primary.msg_id, sender_session: primary.sender_session, response_schema: primary.response_schema ?? null, bundled_msg_ids: senderPending.map(i => i.msg_id) },
+						}, { deliverAs: "followUp", triggerTurn: true });
+					} catch { currentInbound = null; bundledInbounds = []; processingInbound = false; }
+				}
+			} else {
+				processingInbound = false;
+			}
+			return;
+		}
+
+		// No more pending from this sender — build combined response
+		const accumulated = accumulatedResponses.get(inbound.sender_session) ?? [];
+		accumulated.push(lastAssistantText);
+		accumulatedResponses.delete(inbound.sender_session);
+		const combinedPayload = accumulated.length > 1 ? accumulated.join("\n\n---\n\n") : accumulated[0] || lastAssistantText;
+		log.debug("agent_end_combined_response", inbound.msg_id, "parts", accumulated.length);
+
+		let payload: any = combinedPayload;
 		let error: string | null = null;
 		if (inbound.response_schema && typeof inbound.response_schema === "object") {
 			try {
@@ -1741,11 +2711,11 @@ export default function (pi: ExtensionAPI) {
 		// Use inline count instead of getPendingInboundCount() — `inbound` (local param)
 		// differs from `currentInbound` (module-scoped, already null at this point).
 		const queuedIds: string[] = [];
-		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
+		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound && !bundledIds.has(i.msg_id)) queuedIds.push(i.msg_id);
 		const respEnv: ResponseEnvelope = {
 			type: "response",
 			msg_id: inbound.msg_id,
-			sender_session: identity.session_id,
+			sender_session: identity.coms_session_id,
 			sender_endpoint: identity.endpoint,
 			hops: 0,
 			timestamp: nowIso(),
@@ -1753,77 +2723,118 @@ export default function (pi: ExtensionAPI) {
 			error,
 			queued_msg_ids: queuedIds,
 		};
+		// Compute your_pending at the last moment before send
+		respEnv.your_pending = getSenderPending(inbound.sender_session, inbound.msg_id).filter(p => !bundledIds.has(p.msg_id));
 
 		try {
 			await sendEnvelope(inbound.sender_endpoint, respEnv);
-			try {
-				pi.appendEntry("coms-log", {
-					event: "outbound_response",
-					msg_id: inbound.msg_id,
-					error,
-				});
-			} catch { /* best-effort */ }
+			log.debug("outbound_response", inbound.msg_id, "error", error);
 		} catch (e: any) {
-			try {
-				pi.appendEntry("coms-log", {
-					event: "outbound_response_failed",
-					msg_id: inbound.msg_id,
-					reason: e?.message ?? String(e),
-				});
-			} catch { /* best-effort */ }
+			log.error("outbound_response_failed", inbound.msg_id, e?.message);
 		}
 
 		inbound.fulfilled = true;
 		inboundQueue.delete(inbound.msg_id);
-		maybeRefreshWidget();
-		currentInbound = null;
 
-		// FIFO drain: pick the next queued (oldest unfulfilled) inbound
-		const next = [...inboundQueue.values()].find((i) => !i.fulfilled);
-		if (next) {
-			currentInbound = next;
-			try {
-				pi.sendMessage(
-					{
-						customType: "coms-inbound",
-						content: buildInboundContent(`[from ${next.sender_name} @ ${next.sender_cwd}]`, next.prompt, next.tasks),
-						display: true,
-						details: {
-							msg_id: next.msg_id,
-							sender_session: next.sender_session,
-							response_schema: next.response_schema ?? null,
+		// Fulfill bundled inbounds — fire-and-forget responses, don't block agent_end
+		for (const bi of bundledInbounds) {
+			const biMsgId = bi.msg_id;
+			const biEndpoint = bi.sender_endpoint;
+			// Fire-and-forget — don't await, don't block
+			if (identity) {
+				sendEnvelope(biEndpoint, {
+					type: "response",
+					msg_id: biMsgId,
+					sender_session: identity.coms_session_id,
+					sender_endpoint: identity.endpoint,
+					hops: 0,
+					timestamp: nowIso(),
+					response: null,
+					error: "bundled",
+					queued_msg_ids: [],
+				}).catch(() => { /* best-effort */ });
+			}
+			bi.fulfilled = true;
+			inboundQueue.delete(bi.msg_id);
+		}
+		bundledInbounds = [];
+
+		maybeRefreshWidget();
+
+		// FIFO drain: collect ALL pending from the same sender and bundle them
+		const allPending = [...inboundQueue.values()].filter((i) => !i.fulfilled);
+		if (allPending.length > 0) {
+			// Group by sender — process first sender's messages together
+			const firstSender = allPending[0].sender_session;
+			const senderPending = allPending.filter(i => i.sender_session === firstSender);
+
+			if (senderPending.length === 1) {
+				// Single message — inject normally
+				const next = senderPending[0];
+				currentInbound = next;
+				bundledInbounds = [];
+				try {
+					pi.sendMessage(
+						{
+							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+							display: true,
+							details: {
+								msg_id: next.msg_id,
+								sender_session: next.sender_session,
+								response_schema: next.response_schema ?? null,
+							},
 						},
-					},
-					{ deliverAs: "followUp", triggerTurn: true },
-				);
-			} catch (err: any) {
-				// Failed to inject — drain ALL remaining queued messages with error responses
-				try { pi.appendEntry("coms-log", { event: "fifo_drain_failed", msg_id: next.msg_id, reason: err?.message ?? String(err) }); } catch { /* best-effort */ }
-				const remaining = [next, ...[...inboundQueue.values()].filter(i => !i.fulfilled && i.msg_id !== next.msg_id)];
-				for (let idx = 0; idx < remaining.length; idx++) {
-					const orphan = remaining[idx];
-					try {
-						await sendEnvelope(orphan.sender_endpoint, {
-							type: "response",
-							msg_id: orphan.msg_id,
-							sender_session: identity!.session_id,
-							sender_endpoint: identity!.endpoint,
-							hops: 0,
-							timestamp: nowIso(),
-							response: null,
-							error: "injection_failed",
-							queued_msg_ids: remaining.slice(idx + 1).map(r => r.msg_id),
-						});
-					} catch (e: any) {
-						try { pi.appendEntry("coms-log", { event: "orphan_cleanup_failed", msg_id: orphan.msg_id, reason: e?.message ?? String(e) }); } catch { /* best-effort */ }
-					}
-					orphan.fulfilled = true;
-					inboundQueue.delete(orphan.msg_id);
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+				} catch (err: any) {
+					log.error("fifo_drain_failed", next.msg_id, err?.message);
+					next.fulfilled = true;
+					inboundQueue.delete(next.msg_id);
+					currentInbound = null;
+					bundledInbounds = [];
+					processingInbound = false;
 				}
-				currentInbound = null;
-				processingInbound = false;
+			} else {
+				// Multiple messages from same sender — bundle them
+				const primary = senderPending[0];
+				currentInbound = primary;
+				bundledInbounds = senderPending.slice(1);
+
+				const bundledContent = senderPending.map((ib, idx) =>
+					`--- Message ${idx + 1} of ${senderPending.length} [${ib.msg_id}] ---\n${ib.prompt}`
+				).join("\n\n");
+
+				const header = `[BUNDLED: ${senderPending.length} messages from ${primary.sender_name}. Later messages may override earlier ones. Read ALL before acting.]`;
+
+				try {
+					pi.sendMessage(
+						{
+							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd),
+							content: buildInboundContent(header, bundledContent, null, primary.sender_name, primary.sender_cwd),
+							display: true,
+							details: {
+								msg_id: primary.msg_id,
+								sender_session: primary.sender_session,
+								response_schema: primary.response_schema ?? null,
+								bundled_msg_ids: senderPending.map(i => i.msg_id),
+							},
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+				} catch (err: any) {
+					log.error("fifo_bundle_failed", primary.msg_id, err?.message);
+					for (const ib of senderPending) {
+						ib.fulfilled = true;
+						inboundQueue.delete(ib.msg_id);
+					}
+					currentInbound = null;
+					bundledInbounds = [];
+					processingInbound = false;
+				}
 			}
 		} else {
+			bundledInbounds = [];
 			processingInbound = false;
 		}
 	});
@@ -1842,7 +2853,129 @@ export default function (pi: ExtensionAPI) {
 				displayProject = projectMatch[1];
 				try { ctx.ui.notify(`coms: displaying project ${displayProject}`, "info"); } catch { /* ignore */ }
 			}
-			await refreshPool();
+			maybeRefreshWidget();
+		},
+	});
+
+	// ━━ /coms-queue command — view and kill queued messages ━━━━━━━━━━━━━━━
+	pi.registerCommand("coms-queue", {
+		description: "View and manage queued coms inbound messages",
+		handler: async (_args, ctx) => {
+			interface QueueItem {
+				id: string;
+				msg_id: string;
+				sender_name: string;
+				prompt: string;
+				status: string;
+				receivedAt: number;
+			}
+
+			const getItems = (): QueueItem[] => {
+				const items: QueueItem[] = [];
+				const now = Date.now();
+				if (currentInbound && !currentInbound.fulfilled) {
+					items.push({
+						id: currentInbound.msg_id,
+						msg_id: currentInbound.msg_id,
+						sender_name: currentInbound.sender_name,
+						prompt: currentInbound.prompt,
+						status: "processing",
+						receivedAt: now,
+					});
+				}
+				for (const ib of inboundQueue.values()) {
+					if (ib.fulfilled) continue;
+					if (currentInbound && ib.msg_id === currentInbound.msg_id) continue;
+					items.push({
+						id: ib.msg_id,
+						msg_id: ib.msg_id,
+						sender_name: ib.sender_name,
+						prompt: ib.prompt,
+						status: "pending",
+						receivedAt: now,
+					});
+				}
+				return items;
+			};
+
+			const killItem = async (msgId: string) => {
+				const ib = inboundQueue.get(msgId);
+				if (!ib || ib.fulfilled) return;
+				ib.fulfilled = true;
+				inboundQueue.delete(msgId);
+				if (currentInbound?.msg_id === msgId) {
+					currentInbound = null;
+				}
+				maybeRefreshWidget();
+				// Send error response to sender
+				if (identity) {
+					try {
+						await sendEnvelope(ib.sender_endpoint, {
+							type: "response", msg_id: ib.msg_id,
+							sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+							hops: 0, timestamp: nowIso(),
+							response: null, error: "killed_by_user",
+							queued_msg_ids: [],
+						});
+					} catch { /* best-effort */ }
+				}
+				log.info("queue_kill", msgId, "sender", ib.sender_name);
+			};
+
+			const fmtAge = (ms: number): string => {
+				if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+				if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+				return `${Math.round(ms / 3_600_000)}h`;
+			};
+
+			await openListDetailOverlay(ctx, {
+				emptyMessage: "No queued coms messages.",
+				listSpec: {
+					title: "Coms Queue",
+					countLabel: (items) => `${items.length} message${items.length === 1 ? "" : "s"}`,
+					borderTitle: (items) => {
+						const processing = items.filter(i => i.status === "processing").length;
+						return `queue · ${processing} processing / ${items.length}`;
+					},
+					footerHints: "↑↓/jk select · Enter view · x kill · Esc close",
+					listItems: getItems,
+					rowParts: (item, theme) => {
+						const shortId = item.msg_id.length > 8 ? item.msg_id.slice(-8) : item.msg_id;
+						const preview = item.prompt.length > 40 ? `${item.prompt.slice(0, 40)}…` : item.prompt;
+						const statusColor = item.status === "processing" ? "warning" : "dim";
+						return {
+							glyph: item.status === "processing" ? theme.fg("warning", "■") : theme.fg("dim", "○"),
+							title: item.sender_name,
+							idLabel: theme.fg("dim", shortId),
+							rightParts: [
+								theme.fg("dim", preview),
+								theme.fg(statusColor, item.status),
+							],
+						};
+					},
+					onX: (item) => { void killItem(item.id); },
+				},
+				createDetail: (item, tui, theme, done) => {
+					return new OverlayScrollDetail(tui, theme, {
+						followTail: false,
+						emptyBody: "(no prompt)",
+						footerHints: "↑↓/jk scroll · x kill · Esc back",
+						onX: () => {
+							void killItem(item.id);
+							return true;
+						},
+						getHeader: (t) => {
+							const shortId = item.msg_id.length > 8 ? item.msg_id.slice(-8) : item.msg_id;
+							return (
+								t.fg("accent", t.bold(item.sender_name)) +
+								t.fg("dim", ` · ${shortId}`) +
+								t.fg("muted", ` · ${item.status}`)
+							);
+						},
+						getBodyLines: () => item.prompt.split("\n"),
+					}, done);
+				},
+			});
 		},
 	});
 
@@ -1851,29 +2984,56 @@ export default function (pi: ExtensionAPI) {
 	async function cleanShutdown(): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		if (pingTimer) { try { clearInterval(pingTimer); } catch { /* ignore */ } pingTimer = null; }
+		const ident = identity; // snapshot before nulling
+		identity = null; // null identity so old handlers from previous reload cycles exit via !identity check
+		if (fsWatcher) { try { fsWatcher.close(); } catch { /* ignore */ } fsWatcher = null; }
 		if (keepaliveTimer) { try { clearInterval(keepaliveTimer); } catch { /* ignore */ } keepaliveTimer = null; }
+		if (taskHeartbeatTimer) { try { clearInterval(taskHeartbeatTimer); } catch { /* ignore */ } taskHeartbeatTimer = null; }
+		// Broadcast "leaving" presence to all known peers (fire-and-forget)
+		if (ident) {
+			for (const [, card] of peerCards) {
+				// Find endpoint for this peer from registry
+				const entries = readAllRegistryEntries(ident.project);
+				const peerEntry = entries.find(e => e.name === card.name && e.coms_session_id !== ident!.coms_session_id);
+				if (peerEntry?.endpoint) {
+					log.info("shutdown_leaving_broadcast", "to", card.name, peerEntry.endpoint);
+					try {
+						const sock = net.createConnection({ path: peerEntry.endpoint });
+						sock.once("connect", () => {
+							try {
+								sock.write(JSON.stringify({
+									type: "presence",
+									status: "leaving",
+									sender_name: ident!.name,
+									msg_id: ulid(),
+									sender_session: ident!.coms_session_id,
+									sender_endpoint: ident!.endpoint,
+									hops: 0,
+									timestamp: nowIso(),
+								}) + "\n");
+							} catch { /* ignore */ }
+							setTimeout(() => { try { sock.destroy(); } catch {} }, 200);
+						});
+						sock.once("error", () => { try { sock.destroy(); } catch {} });
+					} catch { /* ignore */ }
+				}
+			}
+		}
 		if (server) {
 			try { server.close(); } catch { /* ignore */ }
 			server = null;
-		}
-		if (cardUpdateTimer) {
-			clearInterval(cardUpdateTimer);
-			cardUpdateTimer = null;
 		}
 		if (pingWorker) {
 			try { pingWorker.postMessage({ type: "shutdown" }); } catch {}
 			pingWorker = null;
 			pingWorkerReady = false;
 		}
-		if (identity) {
+		if (ident) {
 			if (process.platform !== "win32") {
-				try { fs.unlinkSync(identity.endpoint); } catch { /* ignore */ }
+				try { fs.unlinkSync(ident.endpoint); } catch { /* ignore */ }
 			}
-			try { removeRegistryEntry(identity.project, identity.session_id); } catch { /* ignore */ }
-			try {
-				pi.appendEntry("coms-log", { event: "shutdown", session_id: identity.session_id });
-			} catch { /* best-effort */ }
+			try { removeRegistryEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
+			log.info("shutdown", ident.coms_session_id);
 		}
 		if (currentCtx?.hasUI) {
 			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }

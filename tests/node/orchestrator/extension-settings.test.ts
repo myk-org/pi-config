@@ -572,16 +572,6 @@ describe("JSONC and file discovery", () => {
 		delete process.env.PI_COMS_MAX_HOPS;
 	});
 
-	it("port 0 accepted for coms_net_port", () => {
-		mkdirSync(join(tmp, ".pi"), { recursive: true });
-		writeFileSync(
-			join(tmp, ".pi", "pi-config-settings.json"),
-			JSON.stringify({ coms_net_port: 0 }),
-		);
-		clearSettingsCache();
-		assert.equal(getSetting(tmp, "coms_net_port"), 0);
-	});
-
 	it("Empty string stored for string settings", () => {
 		mkdirSync(join(tmp, ".pi"), { recursive: true });
 		writeFileSync(

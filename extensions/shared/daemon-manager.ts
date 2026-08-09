@@ -14,14 +14,6 @@ import { fileURLToPath } from "node:url";
 
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
-// ── Logging ─────────────────────────────────────────────────────────
-
-export function createLogger(logPath: string, prefix: string) {
-  return (msg: string) => {
-    try { fs.appendFileSync(logPath, `${new Date().toISOString()} [${prefix}] ${msg}\n`); } catch {}
-  };
-}
-
 // ── Health check ────────────────────────────────────────────────────
 
 export function checkHealth(port: number): Promise<boolean> {

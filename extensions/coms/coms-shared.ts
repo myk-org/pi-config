@@ -1,5 +1,5 @@
 /**
- * coms-shared.ts — Shared utilities for coms and coms-net wrappers.
+ * coms-shared.ts — Shared utilities for coms wrapper.
  *
  * Handles reload resilience: when coms is active and the user runs /reload,
  * session_shutdown fires (upstream cleans up the old socket/connection),
@@ -73,7 +73,7 @@ export interface DeferredUpstream {
     flagValues: Map<string, any>;
     /** Whether the upstream extension is active */
     active: boolean;
-    /** Extra persisted state (e.g., serverStartedByUs for coms-net) */
+    /** Extra persisted state */
     extra?: Record<string, any>;
 }
 
@@ -101,11 +101,33 @@ export function createDeferredProxy(
                 case 'getFlag':
                     return (name: string) => state.flagValues.get(name);
                 case 'registerCommand':
-                    return () => {};
+                    // Upstream /coms is owned by the wrapper — swallow it.
+                    // Pass through utility commands (e.g. /coms-queue) so they
+                    // are always available on the real pi, with an active-gate in the handler.
+                    return (name: string, def: any) => {
+                        if (name === 'coms') return;
+                        const origHandler = def?.handler;
+                        if (typeof origHandler === 'function') {
+                            def.handler = async (args: string, ctx: any) => {
+                                if (!state.active) {
+                                    try {
+                                        ctx.ui.notify(
+                                            name.includes('net')
+                                                ? '📡 coms not active — no queue. Run /coms start first.'
+                                                : '📡 coms not active — no queue. Run /coms start first.',
+                                            'info',
+                                        );
+                                    } catch { /* ignore */ }
+                                    return;
+                                }
+                                return origHandler(args, ctx);
+                            };
+                        }
+                        return target.registerCommand(name, def);
+                    };
                 case 'registerTool':
                     return (tool: any) => {
                         // Inject anti-loop warning into coms_send description
-                        // (upstream coms_net_send has this but coms_send doesn't)
                         if (tool.name === "coms_send" && tool.description && !tool.description.includes("DO NOT")) {
                             tool.description +=
                                 "\n\n\u26a0\ufe0f  DO NOT call this tool to REPLY to an inbound message. " +
@@ -199,12 +221,12 @@ export function persistState(pi: ExtensionAPI, persistKey: string, state: Deferr
 
 /**
  * Prune stale coms registry entries on startup — removes entries with dead PIDs.
- * Call from session_start in both coms.ts and coms-net.ts.
+ * Call from session_start in coms.ts.
  */
 let _pruned = false;
 /**
  * Prune stale coms registry entries — non-blocking.
- * Runs once per session (coms + coms-net both call this).
+ * Runs once per session.
  */
 export function pruneStaleRegistry(comsDir?: string): void {
     if (_pruned) return;
@@ -316,7 +338,7 @@ export function pruneStaleRegistry(comsDir?: string): void {
     });
 }
 
-// ━━ Shared helpers (used by both coms-p2p.ts and coms-net.ts) ━━━━━━━━━━━━━━
+// ━━ Shared helpers (used by coms-p2p.ts) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export const FALLBACK_PALETTE = [
 	"#72F1B8", "#36F9F6", "#FF7EDB", "#FEDE5D",
@@ -429,40 +451,48 @@ export function readFrontmatterFromArgv(argv: string[]): { name?: string; descri
 	}
 }
 
-export function readTaskSummary(cwd: string, sessionId?: string): { total: number; completed: number; in_progress: number } | null {
+export function readTaskSummary(_cwd: string, _sessionId?: string): { total: number; completed: number; in_progress: number } | null {
 	try {
-		const tasksDir = path.join(cwd, ".pi", "tasks");
-		if (!fs.existsSync(tasksDir)) return null;
-		const candidates = sessionId
-			? [`tasks-${sessionId}.json`, "tasks.json"]
-			: ["tasks.json"];
-		for (const candidate of candidates) {
-			const filePath = path.join(tasksDir, candidate);
-			if (!fs.existsSync(filePath)) continue;
-			try {
-				const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-				if (!Array.isArray(data.tasks) || data.tasks.length === 0) continue;
-				let total = 0, completed = 0, in_progress = 0;
-				for (const t of data.tasks) {
-					total++;
-					if (t.status === "completed") completed++;
-					else if (t.status === "in_progress") in_progress++;
-				}
-				return { total, completed, in_progress };
-			} catch { /* skip corrupt file */ }
+		const { listTasks } = require("../pitasks/index.js");
+		const tasks = listTasks();
+		if (!tasks || tasks.length === 0) return null;
+		let total = 0, completed = 0, in_progress = 0;
+		for (const t of tasks) {
+			total++;
+			if (t.status === "completed") completed++;
+			else if (t.status === "in_progress") in_progress++;
 		}
-		return null;
+		return { total, completed, in_progress };
 	} catch { return null; }
+}
+
+/** Build the customType string for coms inbound display (shown as the header by pi).
+ *  Sanitizes all inputs since senderName/senderCwd come from untrusted peers. */
+export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string): string {
+	const safeSender = sanitizeComsName(senderName);
+	const safeSelf = sanitizeComsName(selfName);
+	const safeCwd = senderCwd.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "").trim() || "?";
+	return `from ${safeSender} → ${safeSelf} @ ${safeCwd}`;
 }
 
 export function buildInboundContent(
 	header: string,
 	prompt: string,
 	tasks?: Array<{ subject: string; description: string }> | null,
+	senderName?: string,
+	senderCwd?: string,
 ): string {
-	let content = `${header}\n\n${prompt}`;
+	// Sanitize peer-controlled values — strip control chars and limit length
+	const safeName = senderName ? senderName.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 100) : undefined;
+	const safeCwd = senderCwd ? senderCwd.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200) : undefined;
+	// Machine-readable prefix so the LLM can distinguish coms messages from user input
+	const fromTag = safeName ? `[from ${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
+	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
+	if (safeName) {
+		content += `\n\nReply to me via coms_send(target="${safeName}")`;
+	}
 	if (tasks && tasks.length > 0) {
-		content += `\n\n## Assigned Tasks\n\nThe sender has assigned you these tasks. Use TaskCreate to add them to your task list, then work through them:\n\n`;
+		content += `\n\n## Assigned Tasks\n\nThese tasks have been added to your task list. Work through them in order:\n\n`;
 		for (const task of tasks) {
 			content += `- **${task.subject}**: ${task.description}\n`;
 		}
@@ -477,13 +507,47 @@ export interface TasksSummary {
 }
 
 /** Format the auto-delivered coms response text, including queued message IDs when > 0. */
-export function formatComsResponseText(targetName: string, response: any, error: string | null, queuedMsgIds: string[]): string {
+/** Build the customType string for coms response display (shown as the header by pi). */
+export function formatComsResponseType(targetName: string, selfName?: string, queuedMsgIds?: string[]): string {
+	const safeTarget = sanitizeComsName(targetName);
+	const arrow = selfName ? ` → ${sanitizeComsName(selfName)}` : "";
+	const ids = (queuedMsgIds ?? []).length <= 5
+		? (queuedMsgIds ?? []).join(", ")
+		: `${(queuedMsgIds ?? []).slice(0, 5).join(", ")} and ${(queuedMsgIds ?? []).length - 5} more`;
+	const queueNote = (queuedMsgIds ?? []).length > 0 ? ` (${(queuedMsgIds ?? []).length} more queued: ${ids})` : "";
+	return `coms response from ${safeTarget}${arrow}${queueNote}`;
+}
+
+/** Format the coms response content body (without the header — header is in customType). */
+export function formatComsResponseBody(response: any, error: string | null): string {
+	if (error) return `Error: ${error}`;
+	if (typeof response === "string") return response;
+	if (response === undefined || response === null) return "(no response)";
+	return JSON.stringify(response, null, 2) ?? String(response);
+}
+
+/**
+ * Format the full auto-delivered coms response text, including queued message IDs.
+ * @deprecated Use formatComsResponseType + formatComsResponseBody instead for customType display.
+ */
+export function formatComsResponseText(targetName: string, response: any, error: string | null, queuedMsgIds: string[], selfName?: string): string {
 	const ids = queuedMsgIds.length <= 5 ? queuedMsgIds.join(", ") : `${queuedMsgIds.slice(0, 5).join(", ")} and ${queuedMsgIds.length - 5} more`;
 	const queueNote = queuedMsgIds.length > 0 ? ` (${queuedMsgIds.length} more queued: ${ids})` : "";
-	if (error) return `[coms response from ${targetName}${queueNote}] Error: ${error}`;
+	const arrow = selfName ? ` → ${selfName}` : "";
+	if (error) return `[coms response from ${targetName}${arrow}${queueNote}] Error: ${error}`;
 	return typeof response === "string"
-		? `[coms response from ${targetName}${queueNote}] ${response}`
-		: `[coms response from ${targetName}${queueNote}] ${JSON.stringify(response, null, 2)}`;
+		? `[coms response from ${targetName}${arrow}${queueNote}] ${response}`
+		: `[coms response from ${targetName}${arrow}${queueNote}] ${JSON.stringify(response, null, 2)}`;
+}
+
+/** Sanitize a coms identity name for safe embedding in header strings.
+ *  Strips all control characters (C0/C1), brackets; replaces whitespace with hyphens. */
+export function sanitizeComsName(name: string): string {
+	return name
+		.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "") // strip C0/C1 control chars + brackets
+		.trim()
+		.replace(/\s+/g, "-")                        // whitespace → hyphens (keep as single token)
+		|| "?";
 }
 
 /** Return " 📨N" suffix string for queue depth, or "" when zero/absent. */
@@ -507,4 +571,140 @@ export function renderTasksPart(tasks: TasksSummary | null | undefined, theme: a
 	if (in_progress > 0) parts.push(theme.fg("accent", `${in_progress}◼`));
 	if (pending > 0) parts.push(theme.fg("dim", `${pending}◻`));
 	return theme.fg("dim", " ") + parts.join(theme.fg("dim", " "));
+}
+
+/** Minimal branch entry shape needed by detectMixedTurn. */
+export interface BranchEntry {
+	type: string;
+	message?: { role: string };
+	customType?: string;
+	details?: { msg_id?: string };
+}
+
+/**
+ * Detect whether a user message appeared in the current turn alongside
+ * a coms inbound injection — indicating the assistant's response may be
+ * directed at the user, not the peer (#731).
+ *
+ * Walks the branch backwards: skips trailing assistant messages, then
+ * checks if a user message appears before reaching the specific coms
+ * inbound injection (identified by customType + msg_id).
+ *
+ * @param branch       The session branch array (oldest → newest).
+ * @param inboundMsgId The msg_id of the currently-processing inbound.
+ * @param inboundCustomType  The customType of the coms inbound injection
+ *                           ("coms-inbound" for p2p).
+ * @returns true if a user message was found between the last assistant
+ *          message and the coms inbound injection (mixed turn).
+ */
+export function detectMixedTurn(
+	branch: ReadonlyArray<BranchEntry>,
+	inboundMsgId: string,
+	inboundCustomType: string,
+): boolean {
+	let passedAssistant = false;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "message" && entry.message?.role === "assistant") {
+			passedAssistant = true;
+			continue;
+		}
+		if (!passedAssistant) continue; // still in trailing tool results etc.
+		if (entry.type === "custom_message" && entry.customType === inboundCustomType
+			&& entry.details?.msg_id === inboundMsgId) {
+			// Reached the coms inbound injection for this message — no user message in between.
+			return false;
+		}
+		if (entry.type === "message" && entry.message?.role === "user") {
+			return true;
+		}
+	}
+	return false;
+}
+
+// ── Task store integration (direct import from owned pitasks) ──────────
+
+export interface ComsOrigin {
+	sender_session: string;
+	sender_name: string;
+	sender_endpoint?: string;
+}
+
+/** Max tasks accepted from a single inbound message to prevent abuse. */
+const MAX_INBOUND_TASKS = 20;
+/** Max length for task subject/description fields. */
+const MAX_TASK_FIELD_LEN = 2000;
+
+/**
+ * Auto-create tasks on a peer's task store via owned TaskStore API.
+ * Runs on the SENDER side — uses createTaskForSession with the target's session ID.
+ * TaskStore handles locking, file format, everything.
+ */
+export function createComsInboundTasks(
+	tasks: Array<{ subject: string; description: string }>,
+	origin: ComsOrigin,
+	targetSessionId: string,
+	targetCwd?: string,
+): number {
+	if (!tasks || tasks.length === 0 || !targetSessionId) return 0;
+
+	let createTaskForSession: any;
+	try {
+		createTaskForSession = require("../pitasks/index.js").createTaskForSession;
+	} catch { return 0; }
+	if (!createTaskForSession) return 0;
+
+	let created = 0;
+	const capped = tasks.slice(0, MAX_INBOUND_TASKS);
+	for (const task of capped) {
+		const subject = typeof task.subject === "string" ? task.subject.slice(0, MAX_TASK_FIELD_LEN) : "";
+		const description = typeof task.description === "string" ? task.description.slice(0, MAX_TASK_FIELD_LEN) : "";
+		if (!subject) continue;
+		try {
+			createTaskForSession(targetSessionId, subject, description, {
+				coms_origin: {
+					sender_session: origin.sender_session,
+					sender_name: origin.sender_name,
+					sender_endpoint: origin.sender_endpoint ?? null,
+				},
+			}, targetCwd);
+			created++;
+		} catch { /* best-effort */ }
+	}
+	return created;
+}
+
+/**
+ * Look up a task by ID and return it if it has coms_origin metadata.
+ */
+export async function getComsOriginTask(
+	taskId: string,
+): Promise<{ subject: string; coms_origin: ComsOrigin } | null> {
+	if (!taskId || taskId === "-1") return null;
+	try {
+		const { getTask } = await import("../pitasks/index.js");
+		const task = getTask(taskId);
+		if (task?.metadata?.coms_origin) {
+			return { subject: task.subject, coms_origin: task.metadata.coms_origin };
+		}
+	} catch { /* ignore */ }
+	return null;
+}
+
+/**
+ * Get all tasks with coms_origin metadata (for keepalive heartbeat).
+ */
+export async function getComsOriginTasks(): Promise<Array<{ taskId: string; subject: string; status: string; coms_origin: ComsOrigin }>> {
+	try {
+		const { listTasks } = await import("../pitasks/index.js");
+		const tasks = listTasks();
+		return tasks
+			.filter((t: any) => t.metadata?.coms_origin && t.status !== "deleted")
+			.map((t: any) => ({
+				taskId: t.id,
+				subject: t.subject,
+				status: t.status,
+				coms_origin: t.metadata.coms_origin,
+			}));
+	} catch { return []; }
 }

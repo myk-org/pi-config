@@ -5,6 +5,7 @@
  * review state tracking and gitignore checks.
  */
 
+import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -46,6 +47,8 @@ import {
   getCachedBranch,
 } from "./enforcement-helpers.js";
 
+const log = createLogger("enforcement");
+
 export { isBumpVersionBranch, getCachedBranch };
 
 type EnforcementResult = { block: true; reason: string } | { autofix: true; modifiedCommand: string; reason: string } | undefined;
@@ -76,7 +79,7 @@ function writeRepeatState(state: { lastCmd: string; count: number }): void {
   if (!REPEAT_FILE) return;
   try {
     writeFileSync(REPEAT_FILE, JSON.stringify(state));
-  } catch (e: any) { console.debug("[enforcement] write repeat state failed:", e?.message || e); }
+  } catch (e: any) { log.debug("enforcement: write repeat state failed:", e?.message || e); }
 }
 
 
@@ -387,6 +390,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         const matches = matchToolCall(blockEntries, toolName, input);
         if (matches.length > 0) {
           const rule = matches[0].rule;
+          log.info("enforcement_block", toolName, rule.text);
           return { block: true, reason: `⛔ ENFORCEMENT [${rule.entry.class}]: ${rule.text}` };
         }
       }
@@ -399,7 +403,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         const toolUsed = isToolCallEventType("edit", event) ? "edit" : "write";
         return {
           block: true,
-          reason: `⛔ Orchestrator cannot use ${toolUsed} directly. Delegate to a subagent (e.g. worker, python-expert, ts-expert) via the subagent tool.`,
+          reason: `⛔ Orchestrator cannot use ${toolUsed} directly. Delegate to the appropriate specialist subagent via the subagent tool.`,
         };
       }
     }
@@ -561,9 +565,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     try {
       entries = loadEnforcedEntries(ctx.cwd);
     } catch (e: any) {
-      console.debug("[enforcement] loadEnforcedEntries failed:", e?.message?.slice(0, 100));
+      log.debug("enforcement: loadEnforcedEntries failed:", e?.message?.slice(0, 100));
       return;
     }
+    log.info("enforcement_loaded", entries.length);
     if (entries.length === 0) return;
 
 
@@ -576,7 +581,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const details = (event as any).details;
       const results = Array.isArray(details?.results) ? details.results : [];
       if (!Array.isArray(details?.results) && details?.results) {
-        console.debug(`[enforcement] subagent details.results is ${typeof details.results} (expected array), skipping bash extraction`);
+        log.debug(`enforcement: subagent details.results is ${typeof details.results} (expected array), skipping bash extraction`);
       }
       const nonBlockEntries = entries.filter(e => e.action !== "block");
       const seen = new Set<string>();
@@ -655,6 +660,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
 
       if (rule.action === "warn") {
+        log.warn("enforcement_warn", toolName, rule.text);
         appendMessages.push({
           type: "text",
           text: `\n⚠️ ENFORCEMENT WARNING: ${rule.text}`,

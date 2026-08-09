@@ -58,9 +58,6 @@ COPY --from=uv /uvx /usr/local/bin/uvx
 RUN curl -fsSL https://go.dev/dl/go1.24.4.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 ENV PATH="/usr/local/go/bin:$PATH"
 
-# Install Bun (required by coms-net-server)
-RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
-
 # Install kubectl and oc (OpenShift CLI)
 RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
   chmod +x /usr/local/bin/kubectl && \
@@ -77,9 +74,9 @@ RUN DOCKER_VERSION=$(curl -fsSL https://download.docker.com/linux/static/stable/
 # Copy docker-safe wrapper
 COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli, pi-tasks (pi itself is installed at runtime in entrypoint.sh)
+# Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli @tintinweb/pi-tasks
+  npm install -g acpx agent-browser pi-web-access @google/gemini-cli
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)

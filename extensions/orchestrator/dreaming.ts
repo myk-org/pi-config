@@ -10,6 +10,9 @@
  * Users toggle with /dream-auto on|off.
  */
 
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("dreaming");
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -24,7 +27,7 @@ import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
 import { getProjectTmpDir } from "./utils.js";
-import { dreamingLog } from "../shared/file-logger.js";
+import { fileLog } from "../shared/file-logger.js";
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
 const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
@@ -79,7 +82,7 @@ export function registerDreaming(
       mustAsync: true,
     });
     if (dreamDispatch.action === "skip") {
-      dreamingLog("warn", dreamDispatch.note || "dream skipped (no async LLM path)");
+      fileLog("dreaming", "warn", "dreaming", dreamDispatch.note || "dream skipped (no async LLM path)");
       try {
         lastCtx?.ui?.notify?.(
           "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions",
@@ -94,6 +97,7 @@ export function registerDreaming(
     }
 
     dreamInFlight = true;
+    log.info("dream start", cwd);
     updateDreamStatus();
     currentDreamId = "";  // Reset until we get the ID from spawnAsyncAgent
     const { agents } = discoverAgents(cwd, "user");
@@ -175,23 +179,24 @@ export function registerDreaming(
         parentProvider: dreamProvider,
         onComplete: () => {
           dreamInFlight = false;
+          log.info("dream complete", cwd);
           updateDreamStatus();
           // File log only — console.* leaks into the chat text box.
           try {
             rebuildAndOrganize(cwd);
           } catch (err) {
-            dreamingLog("error", "rebuildAndOrganize failed", err);
+            fileLog("dreaming", "error", "dreaming", "rebuildAndOrganize failed", err);
           }
           try {
             const n = mergeProvenancePending(cwd);
-            if (n > 0) dreamingLog("info", `merged provenance for ${n} entries`);
+            if (n > 0) fileLog("dreaming", "info", "dreaming", `merged provenance for ${n} entries`);
           } catch (err) {
-            dreamingLog("error", "provenance merge failed", err);
+            fileLog("dreaming", "error", "dreaming", "provenance merge failed", err);
           }
           try {
             runPromotionPass(cwd);
           } catch (err) {
-            dreamingLog("error", "promotion pass failed", err);
+            fileLog("dreaming", "error", "dreaming", "promotion pass failed", err);
           }
         },
       },
@@ -211,8 +216,10 @@ export function registerDreaming(
         if (dreamInFlight && currentDreamId === dreamId) {
           dreamInFlight = false;
           updateDreamStatus();
-          dreamingLog(
+          fileLog(
+            "dreaming",
             "warn",
+            "dreaming",
             "fallback: reset dreamInFlight after 30 min (onComplete never fired)",
           );
         }
@@ -251,7 +258,7 @@ export function registerDreaming(
           try {
             rebuildAndOrganize(lastCwd);
           } catch (err) {
-            dreamingLog("error", "rebuildAndOrganize failed", err);
+            fileLog("dreaming", "error", "dreaming", "rebuildAndOrganize failed", err);
           }
         }
       }, REBUILD_INTERVAL_MS);
@@ -344,7 +351,7 @@ export function registerDreaming(
     try {
       runDreamAsync(lastCwd);
     } catch (err) {
-      dreamingLog("error", "shutdown dream failed", err);
+      fileLog("dreaming", "error", "dreaming", "shutdown dream failed", err);
     }
   });
 }

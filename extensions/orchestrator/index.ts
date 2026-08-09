@@ -37,44 +37,21 @@ import { registerSessionSearch } from "./session-search.js";
 import { registerSettingsTui } from "./settings-tui.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
+import { createLogger } from "../shared/logger.js";
+import { setGlobalSessionId } from "../shared/file-logger.js";
 
 const IN_CONTAINER = isRunningInContainer();
 ensureGitSshTimeout();
 
-// Shared command handler registry — pidash uses this to execute commands from the browser
-export const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void>>();
-
-// Latest ExtensionCommandContext captured from any command handler.
-// Commands provide the full context (switchSession, newSession, etc.)
-// while session_start only provides basic ExtensionContext.
-export let latestCommandCtx: any = null;
+const log = createLogger("orchestrator");
 
 export default function (pi: ExtensionAPI) {
-  // Wrap registerCommand to capture all handler functions AND command context.
-  // Any command the user runs upgrades latestCommandCtx to a real ExtensionCommandContext
-  // which has switchSession()/newSession() methods.
-  const originalRegisterCommand = pi.registerCommand.bind(pi);
-  pi.registerCommand = (name: string, options: any) => {
-    if (options?.handler) {
-      const origHandler = options.handler;
-      options.handler = async (args: string, ctx: any) => {
-        latestCommandCtx = ctx;
-        pi.events.emit("pidash:command-ctx", ctx);
-        return origHandler(args, ctx);
-      };
-      commandHandlerRegistry.set(name, options.handler);
-      // Notify pidash extension about new command handler
-      pi.events.emit("pidash:register-command", { name, handler: options.handler });
-    }
-    return originalRegisterCommand(name, options);
-  };
-
-  // Replay all registered command handlers when pidash requests them
-  // (handles extension load order — pidash may load after orchestrator)
-  pi.events.on("pidash:request-commands", () => {
-    for (const [name, handler] of commandHandlerRegistry) {
-      pi.events.emit("pidash:register-command", { name, handler });
-    }
+  // Set global session ID FIRST so all fileLog callers get per-session files.
+  pi.on("session_start", (_event, ctx) => {
+    const reason = (_event as any)?.reason ?? "unknown";
+    const sid = ctx.sessionManager?.getSessionId?.();
+    log.info("session_start", reason, sid ?? "?");
+    if (sid) setGlobalSessionId(sid);
   });
 
   // Extended autocomplete must register FIRST — it wraps registerCommand

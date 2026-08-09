@@ -2,6 +2,7 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
+import { createLogger } from "../shared/logger.js";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -22,6 +23,8 @@ import {
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
+const log = createLogger("async_agents");
+
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { setSlot } from "./status-bar.js";
@@ -121,13 +124,6 @@ export function registerAsyncAgents(
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
-  let ASYNC_DEBUG = !!getSetting(process.cwd(), "async_debug");
-  let EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
-  let DEBUG_LOG_PATH = EARLY_LOG_PATH; // Starts with early log, moved to project dir on session_start
-  function asyncLog(msg: string) {
-    if (!ASYNC_DEBUG || !DEBUG_LOG_PATH) return;
-    try { fs.appendFileSync(DEBUG_LOG_PATH, `${new Date().toISOString()} ${msg}\n`); } catch {}
-  }
 
   const asyncState: AsyncState = {
     jobs: new Map(),
@@ -208,7 +204,7 @@ export function registerAsyncAgents(
             job.durationMs = Date.now() - job.startedAt;
             job.updatedAt = Date.now();
             job.sideEffectsApplied = true;
-            asyncLog(`phantom: ${job.id} — no status file, worker dir missing`);
+            log.debug(`phantom: ${job.id} — no status file, worker dir missing`);
             if (job.agent.startsWith("code-reviewer-")) {
               try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
             }
@@ -216,6 +212,26 @@ export function registerAsyncAgents(
               const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
               const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
               if (pending.length === 0) deliverGroupResults(groupJobs);
+            }
+          } else {
+            // Worker dir exists but no status file — check timeout
+            const elapsed = Date.now() - job.startedAt;
+            if (elapsed > 30000) {
+              job.status = "failed";
+              job.output = "Agent process timed out — no status file after 30s";
+              job.durationMs = elapsed;
+              job.updatedAt = Date.now();
+              job.sideEffectsApplied = true;
+              log.debug(`phantom-timeout: ${job.id} — no status file after ${Math.round(elapsed / 1000)}s`);
+              if (job.agent.startsWith("code-reviewer-")) {
+                try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+              }
+              if (job.groupId) {
+                const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+                const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+                if (pending.length === 0) deliverGroupResults(groupJobs);
+              }
+              updateAsyncWidget();
             }
           }
           continue;
@@ -233,7 +249,7 @@ export function registerAsyncAgents(
             job.durationMs = Date.now() - job.startedAt;
             job.updatedAt = Date.now();
             job.sideEffectsApplied = true;
-            asyncLog(`phantom: ${job.id} — status file exists but no PID`);
+            log.debug(`phantom: ${job.id} — status file exists but no PID`);
             if (job.agent.startsWith("code-reviewer-")) {
               try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
             }
@@ -258,10 +274,10 @@ export function registerAsyncAgents(
                   let zombieSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
-                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (job.agent === "test-automator" || job.agent === "test-runner") {
-                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { zombieSideEffectsOk = false; asyncLog(`markTests failed for ${job.agent}: ${e?.message}`); }
+                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { zombieSideEffectsOk = false; log.error(`markTests failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
@@ -272,7 +288,7 @@ export function registerAsyncAgents(
                   job.updatedAt = Date.now();
                   let catchSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
-                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { catchSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                    try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { catchSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
                   if (catchSideEffectsOk) job.sideEffectsApplied = true;
                 }
@@ -284,7 +300,7 @@ export function registerAsyncAgents(
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
                 let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {
-                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { noFileSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+                  try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { noFileSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                 }
                 if (noFileSideEffectsOk) job.sideEffectsApplied = true;
               }
@@ -307,12 +323,12 @@ export function registerAsyncAgents(
           for (const file of files) {
             try {
               processResultFile(path.join(ASYNC_RESULTS_DIR, file));
-            } catch (e: any) { asyncLog(`processResultFile error for ${file}: ${e?.message}`); }
+            } catch (e: any) { log.error(`processResultFile error for ${file}: ${e?.message}`); }
           }
         } catch (e: any) {
           // ENOENT = directory removed between existsSync and readdirSync — expected race
           if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-            asyncLog(`result file scan error: ${e?.message}`);
+            log.error(`result file scan error: ${e?.message}`);
           }
         }
       }
@@ -325,10 +341,10 @@ export function registerAsyncAgents(
             let sideEffectsOk = true;
             if (job.agent.startsWith("code-reviewer-")) {
               const findings = countFindings(typeof job.output === "string" ? job.output : "");
-              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; asyncLog(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+              try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
             }
             if (job.agent === "test-automator" || job.agent === "test-runner") {
-              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { sideEffectsOk = false; asyncLog(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
+              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
             }
             if (sideEffectsOk) job.sideEffectsApplied = true;
           }
@@ -349,12 +365,12 @@ export function registerAsyncAgents(
             if (job.taskId && job.taskId !== "-1" && job.status === "complete" && job.cwd) {
               try {
                 autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId)
-                  .then((completed) => asyncLog(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
-                  .catch((e: any) => asyncLog(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
+                  .then((completed) => log.info(`reconcile: auto-completed task #${job.taskId}: ${completed}`))
+                  .catch((e: any) => log.error(`reconcile: auto-complete failed for task #${job.taskId}: ${e?.message}`));
               } catch (e: any) {
                 const safeTaskId = /^-?\d+$/.test(job.taskId!) ? job.taskId : "(invalid)";
                 autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${safeTaskId}: ${e?.message}. Run TaskUpdate(taskId="${safeTaskId}", status="completed") manually.`;
-                asyncLog(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
+                log.error(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
               }
             }
             // Enforce same output-length budget as processResultFile
@@ -369,7 +385,7 @@ export function registerAsyncAgents(
             const msgContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
             if (wasAlreadyDelivered(job.id)) {
               job.delivered = true;
-              asyncLog(`reconcile: skipping already-delivered result for ${job.id}`);
+              log.debug(`reconcile: skipping already-delivered result for ${job.id}`);
             } else {
               try {
                 pi.sendMessage({
@@ -378,12 +394,12 @@ export function registerAsyncAgents(
                   display: true,
                 }, { triggerTurn: true, deliverAs: "followUp" });
                 if (job.onComplete) {
-                  try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+                  try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
                 }
                 job.delivered = true;
                 recordDelivered(job.id);
               } catch (e: any) {
-                asyncLog(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
+                log.error(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
                 // delivered stays false — will retry on next poll
               }
             }
@@ -398,7 +414,7 @@ export function registerAsyncAgents(
             }
           } else if (job.fireAndForget) {
             if (job.onComplete) {
-              try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+              try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
             }
             job.delivered = true;
           }
@@ -447,8 +463,8 @@ export function registerAsyncAgents(
         j.exitCode = data.exitCode;
         j.durationMs = data.durationMs;
         if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
-        asyncLog(`deliverGroupResults: late-ingested result for ${j.id}`);
-      } catch (e: any) { asyncLog(`deliverGroupResults: late-ingest failed for ${j.id}: ${e?.message}`); }
+        log.debug(`deliverGroupResults: late-ingested result for ${j.id}`);
+      } catch (e: any) { log.error(`deliverGroupResults: late-ingest failed for ${j.id}: ${e?.message}`); }
     }
 
     // Track reviewer completions for ALL code-reviewer jobs in the group.
@@ -461,7 +477,7 @@ export function registerAsyncAgents(
         const findings = countFindings(output);
         // -1 means invalid JSON output — treat conservatively as having findings
         recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
-      } catch (e: any) { j.sideEffectsApplied = false; asyncLog(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); continue; }
+      } catch (e: any) { j.sideEffectsApplied = false; log.error(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); continue; }
     }
 
     // Track test agent completions for grouped test-automator/test-runner
@@ -473,7 +489,7 @@ export function registerAsyncAgents(
         } else if (j.status === "failed") {
           markTestsFailed(jobCwd(j));
         }
-      } catch (e: any) { j.sideEffectsApplied = false; asyncLog(`markTests failed for ${j.agent}: ${e?.message}`); continue; }
+      } catch (e: any) { j.sideEffectsApplied = false; log.error(`markTests failed for ${j.agent}: ${e?.message}`); continue; }
     }
 
     // Mark side-effects applied per-job (only if not already marked false by a failed side-effect above)
@@ -485,19 +501,19 @@ export function registerAsyncAgents(
     if (groupJobs.every(j => j.fireAndForget)) {
       for (const j of groupJobs) {
         if (j.onComplete) {
-          try { j.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${j.id}: ${e?.message}`); }
+          try { j.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${j.id}: ${e?.message}`); }
         }
         j.delivered = true;
       }
       // Clean up result files for fire-and-forget groups
       for (const j of groupJobs) {
         const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
-        try { fs.unlinkSync(rp); } catch (e: any) { asyncLog(`unlink failed ${rp}: ${e?.message}`); }
+        try { fs.unlinkSync(rp); } catch (e: any) { log.debug(`unlink failed ${rp}: ${e?.message}`); }
       }
       return;
     }
 
-    // Emit lifecycle events for pi-tasks RPC bridge (one per job)
+    // Emit lifecycle events for pitasks RPC bridge (one per job)
     for (const j of groupJobs) {
       if (j.status === "complete") {
         pi.events.emit("subagents:completed", { id: j.id, result: j.output || "" });
@@ -518,10 +534,10 @@ export function registerAsyncAgents(
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
         try {
           const completed = await autoCompleteTask(j.taskId, j.projectCwd || j.cwd, j.sessionId);
-          asyncLog(`auto-completed task #${j.taskId}: ${completed}`);
+          log.info(`auto-completed task #${j.taskId}: ${completed}`);
         } catch (e: any) {
           autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${j.taskId}: ${e?.message}. Run TaskUpdate(taskId="${j.taskId}", status="completed") manually.`;
-          asyncLog(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
+          log.error(`auto-complete failed for task #${j.taskId}: ${e?.message}`);
         }
       }
       const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
@@ -548,7 +564,7 @@ export function registerAsyncAgents(
           } catch {}
         }
       } catch (e: any) {
-        asyncLog(`deliverGroupResults: sendMessage failed: ${e?.message}`);
+        log.error(`deliverGroupResults: sendMessage failed: ${e?.message}`);
         // delivered stays false — reconciliation will retry on next poll
       }
     } else {
@@ -560,7 +576,7 @@ export function registerAsyncAgents(
       const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
       try { fs.unlinkSync(rp); } catch (e: any) {
         // ENOENT = already deleted by processResultFile — expected
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") asyncLog(`unlink failed ${rp}: ${e?.message}`);
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") log.debug(`unlink failed ${rp}: ${e?.message}`);
       }
     }
     } finally {
@@ -569,24 +585,28 @@ export function registerAsyncAgents(
   }
 
   async function processResultFile(resultPath: string) {
+    if (!fs.existsSync(resultPath)) {
+      log.debug(`processResultFile: file already deleted: ${path.basename(resultPath)}`);
+      return;
+    }
     try {
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
-      asyncLog(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
+      log.debug(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
       if (!job) {
         // Orphan result file — job not in current session. Clean up to prevent re-delivery on reload.
-        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`orphan cleanup failed: ${resultPath}: ${e?.message}`); }
+        try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`orphan cleanup failed: ${resultPath}: ${e?.message}`); }
         return;
       }
       if (job.delivered) {
         // Already delivered — clean up stale file
-        try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
+        try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
         return;
       }
       // Skip if already ingested — delete file to prevent re-scan every 3s
       if (job.output !== undefined) {
         try { fs.unlinkSync(resultPath); } catch (e: any) {
-          if ((e as NodeJS.ErrnoException).code !== "ENOENT") asyncLog(`re-ingest unlink failed ${resultPath}: ${e?.message}`);
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") log.debug(`re-ingest unlink failed ${resultPath}: ${e?.message}`);
         }
         return;
       }
@@ -610,7 +630,7 @@ export function registerAsyncAgents(
           const findings = countFindings(output);
           // -1 means invalid JSON output — treat conservatively as having findings
           recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings);
-        } catch (e: any) { processResultSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
         // Clear reviewer session if context usage > 80% to prevent overflow on next cycle
         // Use model context window from the agent's effective model.
         // If agent uses a custom model, we pass its context window via the config.
@@ -629,7 +649,7 @@ export function registerAsyncAgents(
               for (const f of files) {
                 if (f.includes(sessId)) {
                   fs.unlinkSync(path.join(sessPath, f));
-                  asyncLog(`Cleared session for ${job.agent} (context ${Math.round(pct)}%)`);
+                  log.info(`Cleared session for ${job.agent} (context ${Math.round(pct)}%)`);
                   break;
                 }
               }
@@ -646,7 +666,7 @@ export function registerAsyncAgents(
           } else {
             markTestsFailed(jobCwd(job));
           }
-        } catch (e: any) { processResultSideEffectsOk = false; asyncLog(`markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
+        } catch (e: any) { processResultSideEffectsOk = false; log.error(`markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
 
       if (processResultSideEffectsOk) job.sideEffectsApplied = true;
@@ -654,7 +674,7 @@ export function registerAsyncAgents(
       // Always delete result file after ingestion — data is in memory (job.output).
       // Reconciliation uses in-memory data, not the file. Leaving files on disk
       // causes the poller's readdirSync to re-ingest them every 3s.
-      try { fs.unlinkSync(resultPath); } catch (e: any) { asyncLog(`unlink failed ${resultPath}: ${e?.message}`); }
+      try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`unlink failed ${resultPath}: ${e?.message}`); }
 
       // Persist output summary to status.json so session restore can recover it
       // (result file is now deleted, but output must survive restart)
@@ -666,13 +686,13 @@ export function registerAsyncAgents(
         existing.exitCode = job.exitCode;
         existing.durationMs = job.durationMs;
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
-      } catch (e: any) { asyncLog(`status.json output persist failed for ${job.id}: ${e?.message}`); }
+      } catch (e: any) { log.error(`status.json output persist failed for ${job.id}: ${e?.message}`); }
 
       // Group-aware delivery: hold results until ALL jobs in the group are done
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
         const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
-        asyncLog(`group ${job.groupId}: ${groupJobs.length} total, ${pending.length} pending`);
+        log.info(`group ${job.groupId}: ${groupJobs.length} total, ${pending.length} pending`);
         if (pending.length > 0) {
           // Not all group members done yet — hold delivery
           updateAsyncWidget();
@@ -684,7 +704,7 @@ export function registerAsyncAgents(
         return;
       }
 
-      // Emit lifecycle events for pi-tasks RPC bridge
+      // Emit lifecycle events for pitasks RPC bridge
       if (data.success) {
         pi.events.emit("subagents:completed", { id: job.id, result: data.output || "" });
       } else {
@@ -700,10 +720,10 @@ export function registerAsyncAgents(
         if (job.taskId && job.taskId !== "-1" && data.success && job.cwd) {
           try {
             const completed = await autoCompleteTask(job.taskId, job.projectCwd || job.cwd, job.sessionId);
-            asyncLog(`auto-completed task #${job.taskId}: ${completed}`);
+            log.info(`auto-completed task #${job.taskId}: ${completed}`);
           } catch (e: any) {
             autoCompleteError = `\n\n⚠️ Failed to auto-complete task #${job.taskId}: ${e?.message}. Run TaskUpdate(taskId="${job.taskId}", status="completed") manually.`;
-            asyncLog(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
+            log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
           }
         }
         const maxOutput = 3000 - autoCompleteError.length;
@@ -712,7 +732,7 @@ export function registerAsyncAgents(
         if (wasAlreadyDelivered(job.id)) {
           // Already delivered in previous lifecycle — skip send AND onComplete
           job.delivered = true;
-          asyncLog(`processResultFile: skipping already-delivered result for ${job.id}`);
+          log.debug(`processResultFile: skipping already-delivered result for ${job.id}`);
           updateAsyncWidget();
           return;
         } else {
@@ -725,7 +745,7 @@ export function registerAsyncAgents(
             sendSucceeded = true;
             recordDelivered(job.id);
           } catch (e: any) {
-            asyncLog(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
+            log.error(`processResultFile: sendMessage failed for ${job.id}: ${e?.message}`);
             // sendSucceeded stays false — delivered won't be set, reconciliation retries
           }
         }
@@ -735,7 +755,7 @@ export function registerAsyncAgents(
 
       // Invoke onComplete callback if registered (e.g., dreaming → rebuildAndOrganize)
       if (job.onComplete) {
-        try { job.onComplete(); } catch (e: any) { asyncLog(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+        try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
       }
       if (sendSucceeded) {
         job.delivered = true;
@@ -752,7 +772,7 @@ export function registerAsyncAgents(
       // Result file already deleted above (non-grouped path)
       updateAsyncWidget();
     } catch (e: any) {
-      asyncLog(`processResultFile ERROR: ${e.message}`);
+      log.error(`processResultFile ERROR: ${e.message}`);
     }
   }
 
@@ -886,7 +906,7 @@ export function registerAsyncAgents(
       const candidate = path.join(piPkgDir, "node_modules/jiti/lib/jiti-cli.mjs");
       if (fs.existsSync(candidate)) jitiCliPath = candidate;
     } catch (e: any) {
-      asyncLog(`jiti strategy 1 (require.resolve) failed: ${e?.message || e}`);
+      log.debug(`jiti strategy 1 (require.resolve) failed: ${e?.message || e}`);
     }
     // Strategy 2: resolve from the pi binary (works for global npm installs)
     if (!jitiCliPath) {
@@ -900,7 +920,7 @@ export function registerAsyncAgents(
           if (fs.existsSync(candidate)) jitiCliPath = candidate;
         }
       } catch (e: any) {
-        asyncLog(`jiti strategy 2 (process.argv) failed: ${e?.message || e}`);
+        log.debug(`jiti strategy 2 (process.argv) failed: ${e?.message || e}`);
       }
     }
 
@@ -914,6 +934,8 @@ export function registerAsyncAgents(
       PI_SUBAGENT_CHILD: "1",
       PI_AGENT_NAME: agentName,
       PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "",
+      __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "",
+      __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "",
     };
     if (agentName.startsWith("code-reviewer-") || agentName === "test-automator" || agentName === "test-runner") {
       try {
@@ -966,6 +988,50 @@ export function registerAsyncAgents(
       env: spawnEnv,
     });
 
+    proc.once("error", (err) => {
+      log.info(`spawn-error: ${job.id} — ${err.message}`);
+      if (job.status === "complete" || job.status === "failed") return;
+      job.status = "failed";
+      job.output = `Spawn error: ${err.message}`;
+      job.durationMs = Date.now() - job.startedAt;
+      job.updatedAt = Date.now();
+      job.sideEffectsApplied = true;
+      if (job.agent.startsWith("code-reviewer-")) {
+        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+      }
+      if (job.groupId) {
+        const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+        const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+        if (pending.length === 0) deliverGroupResults(groupJobs);
+      }
+      updateAsyncWidget();
+    });
+
+    proc.once("exit", (code, signal) => {
+      if (job.status === "complete" || job.status === "failed") return;
+      if (code !== 0) {
+        // Give 2s for result file to be written by async-runner
+        setTimeout(() => {
+          if (job.status === "complete" || job.status === "failed") return;
+          log.info(`spawn-exit: ${job.id} — code=${code} signal=${signal}`);
+          job.status = "failed";
+          job.output = `Process exited with code ${code} signal ${signal}`;
+          job.durationMs = Date.now() - job.startedAt;
+          job.updatedAt = Date.now();
+          job.sideEffectsApplied = true;
+          if (job.agent.startsWith("code-reviewer-")) {
+            try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+          }
+          if (job.groupId) {
+            const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
+            const pending = groupJobs.filter(j => j.status !== "complete" && j.status !== "failed");
+            if (pending.length === 0) deliverGroupResults(groupJobs);
+          }
+          updateAsyncWidget();
+        }, 2000).unref();
+      }
+    });
+
     // addReviewerPending already called above (before piArgs construction)
 
     updateAsyncWidget();
@@ -985,9 +1051,6 @@ export function registerAsyncAgents(
   pi.on("session_start", (_event, ctx) => {
     asyncState.lastCtx = ctx;
     deliveredResultIds.clear();
-
-    // Preserve cwd-based early log path before PROJECT_TMP_DIR update
-    const previousEarlyLogPath = EARLY_LOG_PATH;
 
     // Set project-scoped dir first (getProjectTmpDir creates it if missing)
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
@@ -1010,33 +1073,12 @@ export function registerAsyncAgents(
         } catch {}
       }
       if (deliveredResultIds.size > 0) {
-        asyncLog(`session_start: found ${deliveredResultIds.size} previously delivered job IDs`);
+        log.info(`session_start: found ${deliveredResultIds.size} previously delivered job IDs`);
       }
-    } catch (e: any) { asyncLog(`delivered job scan failed: ${e?.message}`); }
-
-    ASYNC_DEBUG = !!getSetting(ctx.cwd, "async_debug");
-    EARLY_LOG_PATH = ASYNC_DEBUG ? path.join(PROJECT_TMP_DIR, `early-debug-${process.pid}.log`) : "";
-    if (!DEBUG_LOG_PATH) DEBUG_LOG_PATH = EARLY_LOG_PATH;
+    } catch (e: any) { log.error(`delivered job scan failed: ${e?.message}`); }
 
     // Set results dir — PID-scoped under project dir
     ASYNC_RESULTS_DIR = path.join(PROJECT_TMP_DIR, sessionResultsDirName());
-    const projectLogPath = path.join(PROJECT_TMP_DIR, "debug.log");
-    // Move early startup logs to project dir (may still live under previous cwd tmp)
-    const earlyLogToMigrate =
-      previousEarlyLogPath && fs.existsSync(previousEarlyLogPath)
-        ? previousEarlyLogPath
-        : EARLY_LOG_PATH && fs.existsSync(EARLY_LOG_PATH)
-          ? EARLY_LOG_PATH
-          : "";
-    if (earlyLogToMigrate) {
-      try {
-        fs.appendFileSync(projectLogPath, fs.readFileSync(earlyLogToMigrate, "utf-8"));
-        fs.unlinkSync(earlyLogToMigrate);
-      } catch (err) {
-        asyncLog(`early-log migrate failed: ${err}`);
-      }
-    }
-    DEBUG_LOG_PATH = projectLogPath;
 
     // Zombie cleanup: scan project dir for dead agents
     try {
@@ -1095,13 +1137,13 @@ export function registerAsyncAgents(
           if (!parentAlive) {
             // Parent dead — clean up entire result directory
             try { fs.rmSync(resultDir, { recursive: true, force: true }); } catch {}
-            asyncLog(`cleaned stale result dir: ${entry}`);
+            log.info(`cleaned stale result dir: ${entry}`);
           }
         } catch {} // skip unreadable dirs
       }
-    } catch (e: any) { asyncLog(`stale result dir cleanup failed: ${e?.message?.slice(0, 100)}`); }
+    } catch (e: any) { log.error(`stale result dir cleanup failed: ${e?.message?.slice(0, 100)}`); }
 
-    asyncLog(`session_start: resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
+    log.info(`session_start: resultsDir=${path.basename(ASYNC_RESULTS_DIR)}`);
 
     // Restore jobs from status files in PROJECT_TMP_DIR that belong to this session
     try {
@@ -1125,7 +1167,7 @@ export function registerAsyncAgents(
         // Skip completed/failed jobs — they were already delivered. Clean up worker dir.
         if (isComplete) {
           try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
-          asyncLog(`cleaned completed worker dir on restore: ${entry} (state=${status.state})`);
+          log.debug(`cleaned completed worker dir on restore: ${entry} (state=${status.state})`);
           continue;
         }
         // Only restore running/queued jobs with alive processes
@@ -1153,7 +1195,7 @@ export function registerAsyncAgents(
             model: status.model || marker.model || undefined,
           };
           asyncState.jobs.set(id, job);
-          asyncLog(`restored job: ${id} state=${job.status}`);
+          log.info(`restored job: ${id} state=${job.status}`);
         }
       }
     } catch (e: any) { console.debug("[async-agents] job restore failed:", e?.message || e); }
@@ -1173,7 +1215,7 @@ export function registerAsyncAgents(
 
   // Clean up on shutdown
   pi.on("session_shutdown", () => {
-    asyncLog(`shutdown: jobs=${asyncState.jobs.size}`);
+    log.info(`shutdown: jobs=${asyncState.jobs.size}`);
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
   });
@@ -1252,13 +1294,13 @@ export function registerAsyncAgents(
         existing.endedAt = Date.now();
         existing.output = "Killed by user";
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
-      } catch (e: any) { asyncLog(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
+      } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
       // Delete result file if it exists — prevent re-ingestion on reload
       try { fs.unlinkSync(path.join(ASYNC_RESULTS_DIR, `${job.id}.json`)); } catch {}
       // Record killed reviewer as having 0 findings — prevents permanent commit block
       let killSideEffectsOk = true;
       if (job.agent.startsWith("code-reviewer-")) {
-        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; asyncLog(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
+        try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
       if (killSideEffectsOk) job.sideEffectsApplied = true;
       // Check if this completes a group — deliver remaining siblings' results
@@ -1277,7 +1319,7 @@ export function registerAsyncAgents(
         const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
         if (wasAlreadyDelivered(job.id)) {
           job.delivered = true;
-          asyncLog(`kill: skipping already-delivered result for ${job.id}`);
+          log.debug(`kill: skipping already-delivered result for ${job.id}`);
         } else {
           try {
             pi.sendMessage({
@@ -1288,7 +1330,7 @@ export function registerAsyncAgents(
             job.delivered = true;
             recordDelivered(job.id);
           } catch (e: any) {
-            asyncLog(`kill delivery failed for ${job.id}: ${e?.message}`);
+            log.error(`kill delivery failed for ${job.id}: ${e?.message}`);
             // delivered stays false — reconciliation will retry
           }
         }
@@ -1352,7 +1394,7 @@ export function registerAsyncAgents(
   });
 
   // ── pi-subagents RPC compatibility bridge ──────────────────────────────
-  // Implements the subagents:rpc:* protocol so pi-tasks' TaskExecute
+  // Implements the subagents:rpc:* protocol so pitasks' TaskExecute
   // can spawn our agents. Protocol version 2 matches @tintinweb/pi-subagents.
 
   const RPC_PROTOCOL_VERSION = 2;
@@ -1382,7 +1424,7 @@ export function registerAsyncAgents(
     return { version: RPC_PROTOCOL_VERSION };
   });
 
-  // Spawn — create an async agent from pi-tasks' TaskExecute
+  // Spawn — create an async agent from pitasks' TaskExecute
   handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(
     "subagents:rpc:spawn", ({ type, prompt, options }) => {
       const ctx = asyncState.lastCtx;
@@ -1401,7 +1443,7 @@ export function registerAsyncAgents(
 
       const result = spawnAsyncAgent(agentName, prompt, cwd, agents, {
         name: options?.description || agentName,
-        taskId: "-1",  // pi-tasks manages its own task linkage via agentTaskMap
+        taskId: "-1",  // pitasks manages its own task linkage via agentTaskMap
         fireAndForget: false,
       });
 
@@ -1418,7 +1460,7 @@ export function registerAsyncAgents(
     },
   );
 
-  // Emit subagents:ready so pi-tasks can discover us
+  // Emit subagents:ready so pitasks can discover us
   pi.on("session_start", () => {
     pi.events.emit("subagents:ready", {});
   });

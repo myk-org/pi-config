@@ -7,12 +7,8 @@
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
  *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
  *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES,
- *    PI_ASYNC_DEBUG, PI_ENFORCEMENT_ALLOWED_COMMANDS, VERTEX_CLAUDE_1M, PI_SIDECAR_LOG_LEVEL,
- *    PI_COMS_MAX_HOPS, PI_COMS_TIMEOUT_MS, PI_COMS_PING_INTERVAL_MS, PI_COMS_DIR,
- *    PI_COMS_NET_PORT, PI_COMS_NET_HOST, PI_COMS_NET_AUTH_TOKEN, PI_COMS_NET_PUBLIC_URL,
- *    PI_COMS_NET_SERVER_URL, PI_COMS_NET_MAX_HOPS, PI_COMS_NET_MESSAGE_TTL_MS, PI_COMS_NET_MAX_INBOX,
- *    PI_COMS_NET_HEARTBEAT_MS, PI_COMS_NET_STALE_AFTER_MS, PI_COMS_NET_OFFLINE_AFTER_MS,
- *    PI_COMS_NET_LOG_HEARTBEAT, PI_COMS_NET_LOG_QUIET)
+ *    PI_ENFORCEMENT_ALLOWED_COMMANDS, VERTEX_CLAUDE_1M, PI_SIDECAR_LOG_LEVEL,
+ *    PI_COMS_MAX_HOPS, PI_COMS_TIMEOUT_MS, PI_COMS_DIR)
  * 4. Default (dream_interval_hours defaults to 3; acpx_agents/cli_agents to []; pidash_enable/pidiff_enable to true; pidash_port to 19190;
  *    review_loop_max_cycles to 3)
  *
@@ -63,44 +59,16 @@ interface ProjectSettings {
   vertex_claude_1m?: boolean;
   /** Log level for pi-sidecar (debug, info, warn, error). */
   sidecar_log_level?: string;
-  /** Enable debug logging for async agents. */
-  async_debug?: boolean;
   /** Colon-separated command allowlist for enforcement. Empty = allow all. */
   enforcement_allowed_commands?: string;
   /** Max hops for P2P coms message relay. */
   coms_max_hops?: number;
   /** P2P coms message response timeout in ms. */
   coms_timeout_ms?: number;
-  /** P2P coms peer ping interval in ms. */
-  coms_ping_interval_ms?: number;
   /** P2P coms data directory. Empty = ~/.pi/coms. */
   coms_dir?: string;
-  /** Coms-net server listen port. 0 = random. */
-  coms_net_port?: number;
-  /** Coms-net server bind host. */
-  coms_net_host?: string;
-  /** Coms-net auth token. */
-  coms_net_auth_token?: string;
-  /** Coms-net public URL for remote access. */
-  coms_net_public_url?: string;
-  /** Coms-net remote server URL to connect to. */
-  coms_net_server_url?: string;
-  /** Coms-net max message relay hops. */
-  coms_net_max_hops?: number;
-  /** Coms-net message TTL in ms. */
-  coms_net_message_ttl_ms?: number;
-  /** Coms-net max queued messages per agent. */
-  coms_net_max_inbox?: number;
-  /** Coms-net heartbeat interval in ms. */
-  coms_net_heartbeat_ms?: number;
-  /** Coms-net stale peer threshold in ms. */
-  coms_net_stale_after_ms?: number;
-  /** Coms-net offline peer threshold in ms. */
-  coms_net_offline_after_ms?: number;
-  /** Log coms-net heartbeat noise. */
-  coms_net_log_heartbeat?: boolean;
-  /** Suppress coms-net logs except startup/shutdown. */
-  coms_net_log_quiet?: boolean;
+  /** Coms task heartbeat interval in ms. */
+  coms_task_heartbeat_ms?: number;
 }
 
 /** Key definition from settings-keys.json — single source of truth for env names + defaults. */
@@ -153,25 +121,11 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "agent_overrides",
   "vertex_claude_1m",
   "sidecar_log_level",
-  "async_debug",
   "enforcement_allowed_commands",
   "coms_max_hops",
   "coms_timeout_ms",
-  "coms_ping_interval_ms",
   "coms_dir",
-  "coms_net_port",
-  "coms_net_host",
-  "coms_net_auth_token",
-  "coms_net_public_url",
-  "coms_net_server_url",
-  "coms_net_max_hops",
-  "coms_net_message_ttl_ms",
-  "coms_net_max_inbox",
-  "coms_net_heartbeat_ms",
-  "coms_net_stale_after_ms",
-  "coms_net_offline_after_ms",
-  "coms_net_log_heartbeat",
-  "coms_net_log_quiet",
+  "coms_task_heartbeat_ms",
 ];
 for (const key of PROJECT_SETTINGS_KEYS) {
   if (!(key in SETTINGS_KEYS)) {
@@ -482,25 +436,11 @@ export function getSetting(cwd: string, key: "agent_model"): string;
 export function getSetting(cwd: string, key: "agent_overrides"): Record<string, { provider?: string | null; model?: string | null }>;
 export function getSetting(cwd: string, key: "vertex_claude_1m"): boolean;
 export function getSetting(cwd: string, key: "sidecar_log_level"): string;
-export function getSetting(cwd: string, key: "async_debug"): boolean;
 export function getSetting(cwd: string, key: "enforcement_allowed_commands"): string;
 export function getSetting(cwd: string, key: "coms_max_hops"): number;
 export function getSetting(cwd: string, key: "coms_timeout_ms"): number;
-export function getSetting(cwd: string, key: "coms_ping_interval_ms"): number;
 export function getSetting(cwd: string, key: "coms_dir"): string;
-export function getSetting(cwd: string, key: "coms_net_port"): number;
-export function getSetting(cwd: string, key: "coms_net_host"): string;
-export function getSetting(cwd: string, key: "coms_net_auth_token"): string;
-export function getSetting(cwd: string, key: "coms_net_public_url"): string;
-export function getSetting(cwd: string, key: "coms_net_server_url"): string;
-export function getSetting(cwd: string, key: "coms_net_max_hops"): number;
-export function getSetting(cwd: string, key: "coms_net_message_ttl_ms"): number;
-export function getSetting(cwd: string, key: "coms_net_max_inbox"): number;
-export function getSetting(cwd: string, key: "coms_net_heartbeat_ms"): number;
-export function getSetting(cwd: string, key: "coms_net_stale_after_ms"): number;
-export function getSetting(cwd: string, key: "coms_net_offline_after_ms"): number;
-export function getSetting(cwd: string, key: "coms_net_log_heartbeat"): boolean;
-export function getSetting(cwd: string, key: "coms_net_log_quiet"): boolean;
+export function getSetting(cwd: string, key: "coms_task_heartbeat_ms"): number;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
   const def = SETTINGS_KEYS[key];

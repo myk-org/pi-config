@@ -12,6 +12,7 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
+import { createLogger } from "../shared/logger.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -61,7 +62,7 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
           await embedMissing(cwd, topicEntries);
           state.embeddingsMigrated = true; // Only mark done on success
         } catch {
-          console.debug("[memory] embedding migration failed, will retry next search");
+          log.debug("memory: embedding migration failed, will retry next search");
         }
       }
       const scores = loadScores(cwd);
@@ -159,6 +160,7 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
         return `- [${r.category}] ${r.text}${pin} — score: ${typeof r.score === "number" ? r.score.toFixed(2) : r.score}, evidence: ${r.evidenceCount}${sim}${prov}`;
       });
 
+      log.info("memory_search", params.query, results.length);
       const text = `Found ${results.length} memories matching "${params.query}":\n\n${lines.join("\n")}`;
       return { content: [{ type: "text", text }] };
     },
@@ -188,6 +190,7 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
       const reinforced = reinforce(ctx.cwd, entryLine);
 
       if (reinforced) {
+        log.info("memory_reinforce", params.entryText.slice(0, 60));
         const scores = loadScores(ctx.cwd);
         const hash = entryHash(entryLine);
         const entry = scores.entries[hash];
@@ -199,7 +202,7 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
               (promo.details.length ? ` (${promo.details.join("; ")})` : "");
           }
         } catch (e: any) {
-          console.debug("[memory] promote-after-reinforce failed:", e?.message || e);
+          log.debug("memory: promote-after-reinforce failed:", e?.message || e);
         }
         return {
           content: [{
@@ -410,7 +413,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
           }
         }
       } catch (err) {
-        console.debug(`[memory] memory_add: vector dedup skipped: ${err}`);
+        log.debug(`memory: memory_add: vector dedup skipped: ${err}`);
       }
 
       // Exact match check (fast O(n) string comparison after expensive vector check)
@@ -522,6 +525,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       // Embed the new entry for future similarity searches
       await embedEntry(cwd, text, category);
 
+      log.info("memory_add", category, text.slice(0, 60));
       const pin = isPinned ? " (pinned)" : "";
       return {
         content: [{ type: "text", text: `Added: [${category}] ${text}${pin}` }],
@@ -602,6 +606,7 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
         saveScores(cwd, scores);
       }
 
+      log.info("memory_remove", category, text.slice(0, 60));
       return {
         content: [{ type: "text", text: `Removed: [${category}] ${text}` }],
       };
@@ -865,6 +870,8 @@ function registerMemoryConsolidate(pi: ExtensionAPI): void {
 }
 
 // ── registerMemoryTools (entry point) ───────────────────────────────
+
+const log = createLogger("memory");
 
 export function registerMemoryTools(pi: ExtensionAPI): void {
   // Only register in the orchestrator, not subagents

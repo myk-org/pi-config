@@ -5,10 +5,12 @@
  * IMPORTANT: These IDs are CLI `--model` values, NOT acpx model ids.
  */
 
-import { cliProviderLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { CLI_PROVIDERS, isCliAgentName, type CliAgentName } from "./providers.js";
 import type { DiscoveredCliModel } from "./types.js";
 import { modelIdToDisplayName, resolveBinary } from "./shared/discover-cache.js";
+
+const log = createLogger("cli_provider");
 
 export type { DiscoveredCliModel } from "./types.js";
 export { modelIdToDisplayName } from "./shared/discover-cache.js";
@@ -33,9 +35,7 @@ export async function discoverCliModelsDetailed(
 ): Promise<DiscoveredCliModel[]> {
   if (!isCliAgentName(agent)) return [];
   if (!isCliBinaryAvailable(agent)) {
-    cliProviderLog(
-      "warn",
-      `${agent}: binary not found (${CLI_PROVIDERS[agent].binary})`,
+    log.warn(`${agent}: binary not found (${CLI_PROVIDERS[agent].binary})`,
     );
     return [];
   }
@@ -44,13 +44,13 @@ export async function discoverCliModelsDetailed(
   try {
     discovered = CLI_PROVIDERS[agent].discoverModels();
   } catch (err) {
-    cliProviderLog("error", `${agent}: discovery error`, err);
+    log.error(`${agent}: discovery error`, err);
   }
 
   if (discovered.length > 0) {
-    cliProviderLog("info", `${agent}: discovered ${discovered.length} model(s)`);
+    log.info(`${agent}: discovered ${discovered.length} model(s)`);
   } else {
-    cliProviderLog("warn", `${agent}: discovery returned no models`);
+    log.warn(`${agent}: discovery returned no models`);
   }
   return discovered;
 }

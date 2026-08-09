@@ -306,6 +306,62 @@ export class MultiSelectSubmenu implements Component {
   invalidate(): void {}
 }
 
+// ── Select submenu (enum values) ────────────────────────────────────
+
+export class SelectSubmenu implements Component {
+  private options: string[];
+  private selectedIndex: number;
+  private label: string;
+  private done: (value?: string) => void;
+  private theme: Theme;
+
+  constructor(label: string, options: string[], currentValue: string, theme: Theme, done: (value?: string) => void) {
+    this.label = label;
+    this.options = options;
+    this.selectedIndex = Math.max(0, options.indexOf(currentValue));
+    this.done = done;
+    this.theme = theme;
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const lines: string[] = [];
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
+    lines.push("");
+
+    for (let i = 0; i < this.options.length; i++) {
+      const opt = this.options[i];
+      const cursor = i === this.selectedIndex ? t.fg("accent", "❯") : " ";
+      const label = i === this.selectedIndex ? t.fg("accent", opt) : t.fg("text", opt);
+      lines.push(truncateToWidth(`  ${cursor} ${label}`, width));
+    }
+
+    lines.push("");
+    lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Enter select · Esc cancel")}`, width));
+    return lines;
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape)) {
+      this.done(undefined);
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.done(this.options[this.selectedIndex]);
+      return;
+    }
+    if (matchesKey(data, Key.up) && this.selectedIndex > 0) {
+      this.selectedIndex--;
+      return;
+    }
+    if (matchesKey(data, Key.down) && this.selectedIndex < this.options.length - 1) {
+      this.selectedIndex++;
+    }
+  }
+
+  invalidate(): void {}
+}
+
 // ── Agent overrides editor ──────────────────────────────────────────
 
 export class AgentOverridesSubmenu implements Component {

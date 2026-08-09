@@ -26,6 +26,7 @@ import type {
   SimpleStreamOptions,
   StreamOptions,
 } from "@earendil-works/pi-ai";
+import { createLogger } from "../shared/logger.js";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
@@ -265,6 +266,9 @@ async function registerAcpxAgent(
 // ---------------------------------------------------------------------------
 // Extension Entry Point
 // ---------------------------------------------------------------------------
+
+const log = createLogger("providers");
+log.debug("providers module loaded");
 
 export default async function (pi: ExtensionAPI) {
   // pi --help / --version — skip discovery

@@ -15,7 +15,6 @@ import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import {
-  createLogger,
   checkHealth,
   ensureUiBuilt,
   spawnDaemon,
@@ -26,16 +25,16 @@ import {
   readLockfile,
   removeLockfile,
 } from "../shared/daemon-manager.js";
+import { createLogger } from "../shared/logger.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 
 const RECONNECT_INTERVAL_MS = 5000;
 const ICON_DIFF = "";
 
-const log = createLogger(
-  path.join(process.env.HOME || "/tmp", ".pi", "pidiff-debug.log"),
-  "ext",
-);
+const log = createLogger("pidiff");
+/** String logger for daemon-manager / ws-client APIs that take `(msg: string) => void`. */
+const debugLog = (msg: string) => log.debug(msg);
 
 function isGitRepo(cwd: string): boolean {
   try { execFileSync("git", ["rev-parse", "--git-dir"], { cwd, stdio: "ignore" }); return true; } catch { return false; }
@@ -62,16 +61,16 @@ function isPortFree(port: number): Promise<boolean> {
 async function resolveSpawnPort(preferred: number | null | undefined): Promise<number> {
   if (!preferred) {
     const port = await findFreePort();
-    log(`allocated new port: ${port}`);
+    log.debug(`allocated new port: ${port}`);
     return port;
   }
   if (await isPortFree(preferred)) {
-    log(`reusing lockfile port: ${preferred}`);
+    log.debug(`reusing lockfile port: ${preferred}`);
     return preferred;
   }
-  log(`lockfile port ${preferred} in use, allocating new port`);
+  log.debug(`lockfile port ${preferred} in use, allocating new port`);
   const port = await findFreePort();
-  log(`allocated new port: ${port}`);
+  log.debug(`allocated new port: ${port}`);
   return port;
 }
 
@@ -123,21 +122,21 @@ export function registerPidiff(pi: ExtensionAPI): void {
   }
 
   function doSpawn(port: number, cwd: string): void {
-    ensureUiBuilt(import.meta.url, "pidiff-ui", log);
+    ensureUiBuilt(import.meta.url, "pidiff-ui", debugLog);
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
       env: { PI_PIDIFF_PORT: String(port), PI_PIDIFF_CWD: cwd },
-      log,
+      log: debugLog,
     });
   }
 
   async function connect(ctx: any) {
-    log(`connect() called, connected=${connected}, connecting=${connecting}`);
+    log.debug(`connect() called, connected=${connected}, connecting=${connecting}`);
     if (connected || connecting || shuttingDown) return;
     connecting = true;
     lastCtx = ctx;
-    if (!lockDir) { log("connect: lockDir not set (session_start not fired yet)"); connecting = false; return; }
+    if (!lockDir) { log.debug("connect: lockDir not set (session_start not fired yet)"); connecting = false; return; }
 
     // Try to discover port from lockfile
     let port = activePort;
@@ -150,12 +149,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
     let running = false;
     if (port) {
       running = await checkHealth(port);
-      log(`lockfile port=${port}, healthy=${running}`);
+      log.debug(`lockfile port=${port}, healthy=${running}`);
     }
 
     if (!running) {
       if (spawning) {
-        log("daemon already spawning, waiting...");
+        log.debug("daemon already spawning, waiting...");
         connecting = false;
         return;
       }
@@ -166,7 +165,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
       } catch {
         // Another session is already spawning — wait for lockfile to appear
-        log("another session is spawning pidiff, waiting for lockfile...");
+        log.debug("another session is spawning pidiff, waiting for lockfile...");
         for (let i = 0; i < 30; i++) {
           await new Promise(r => setTimeout(r, 1000));
           const lock = readLockfile(lockDir);
@@ -183,12 +182,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
       spawning = true;
       try {
-        log("spawning daemon...");
+        log.debug("spawning daemon...");
         // Reuse lockfile port if available — keeps URL stable across reload/restart
         port = await resolveSpawnPort(port);
         doSpawn(port, ctx.cwd);
-        writeLockfile(lockDir, port, null, log);
-        const ready = await waitForDaemon(port, 60, log);
+        writeLockfile(lockDir, port, null, debugLog);
+        const ready = await waitForDaemon(port, 60, debugLog);
         if (!ready) { connecting = false; return; }
       } finally {
         spawning = false;
@@ -201,11 +200,11 @@ export function registerPidiff(pi: ExtensionAPI): void {
     try {
       const _require = createRequire(import.meta.url);
       const WebSocket = _require("ws");
-      log(`connecting WebSocket to port ${activePort}...`);
+      log.debug(`connecting WebSocket to port ${activePort}...`);
       const wsClient = new WebSocket(`ws://127.0.0.1:${activePort}/ws/pi`);
 
       wsClient.on("open", () => {
-        log("WebSocket connected");
+        log.debug("WebSocket connected");
         ws = wsClient;
         connected = true;
         connecting = false;
@@ -224,14 +223,14 @@ export function registerPidiff(pi: ExtensionAPI): void {
           }));
         } catch {
           // ctx may be stale if session was replaced during WebSocket connect
-          log("skipped registration — ctx is stale");
+          log.debug("skipped registration — ctx is stale");
         }
 
         // Keepalive + dead connection detection
         if (cleanupHeartbeat) cleanupHeartbeat();
         cleanupHeartbeat = setupHeartbeat({
           ws: wsClient,
-          log,
+          log: debugLog,
           onDead: () => {
             connected = false; ws = null;
             if (!shuttingDown && lastCtx) setTimeout(() => connect(lastCtx), 1000);
@@ -243,7 +242,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         try {
           const parsed = JSON.parse(data.toString());
           if (parsed.type === "publish-review" && parsed.comments?.length > 0) {
-            log(`review received: ${parsed.comments.length} comments`);
+            log.debug(`review received: ${parsed.comments.length} comments`);
             const review = {
               source: "pidiff",
               type: "code-review",
@@ -262,20 +261,20 @@ export function registerPidiff(pi: ExtensionAPI): void {
             const message = `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review, null, 2)}\n\`\`\`\n\nPlease address these review comments.`;
             pi.sendUserMessage(message, { deliverAs: "followUp" });
           }
-        } catch (e: any) { log(`message handler error: ${e.message}`); }
+        } catch (e: any) { log.debug(`message handler error: ${e.message}`); }
       });
 
       wsClient.on("close", () => {
-        log("WebSocket closed");
+        log.debug("WebSocket closed");
         connected = false; ws = null; connecting = false;
         if (!shuttingDown) {
           setTimeout(() => { if (lastCtx && !shuttingDown) connect(lastCtx); }, RECONNECT_INTERVAL_MS);
         }
       });
 
-      wsClient.on("error", (e: Error) => { log(`WebSocket error: ${e.message}`); });
+      wsClient.on("error", (e: Error) => { log.debug(`WebSocket error: ${e.message}`); });
     } catch (e: any) {
-      log(`connect error: ${e.message}`);
+      log.debug(`connect error: ${e.message}`);
       connecting = false;
     }
   }
@@ -300,8 +299,8 @@ export function registerPidiff(pi: ExtensionAPI): void {
         if (ws) { try { ws.close(); } catch {} ws = null; }
         connected = false;
         const pidFile = path.join(lockDir, "pidiff.pid");
-        killDaemonByPid(pidFile, log);
-        removeLockfile(lockDir, log);
+        killDaemonByPid(pidFile, debugLog);
+        removeLockfile(lockDir, debugLog);
         activePort = 0;
         if (ctx.hasUI) { ctx.ui.setStatus("8-diff", undefined); ctx.ui.notify("pidiff server stopped", "info"); }
         return;
@@ -318,9 +317,9 @@ export function registerPidiff(pi: ExtensionAPI): void {
         // Reuse lockfile port to keep URL stable — fall back if taken
         const port = await resolveSpawnPort(lock?.port);
         doSpawn(port, ctx.cwd);
-        writeLockfile(lockDir, port, null, log);
+        writeLockfile(lockDir, port, null, debugLog);
         if (ctx.hasUI) ctx.ui.notify("Starting pidiff server...", "info");
-        if (await waitForDaemon(port, 60, log)) {
+        if (await waitForDaemon(port, 60, debugLog)) {
           activePort = port;
           connect(ctx);
           if (ctx.hasUI) ctx.ui.notify(`pidiff started at http://localhost:${activePort}`, "info");
@@ -337,15 +336,15 @@ export function registerPidiff(pi: ExtensionAPI): void {
         // Reuse existing port to keep URL stable (read before removeLockfile)
         const lock = readLockfile(lockDir);
         const preferredPort = activePort || lock?.port || 0;
-        killDaemonByPid(pidFile, log);
-        removeLockfile(lockDir, log);
+        killDaemonByPid(pidFile, debugLog);
+        removeLockfile(lockDir, debugLog);
         await new Promise(r => setTimeout(r, 1000));
         // Verify preferred port is free after kill — fall back if taken by another process
         const port = await resolveSpawnPort(preferredPort || null);
         doSpawn(port, ctx.cwd);
-        writeLockfile(lockDir, port, null, log);
+        writeLockfile(lockDir, port, null, debugLog);
         if (ctx.hasUI) ctx.ui.notify("Restarting pidiff server...", "info");
-        if (await waitForDaemon(port, 60, log)) {
+        if (await waitForDaemon(port, 60, debugLog)) {
           activePort = port;
           connect(ctx);
           if (ctx.hasUI) ctx.ui.notify(`pidiff restarted at http://localhost:${activePort}`, "info");

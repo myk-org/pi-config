@@ -239,6 +239,21 @@ describe("transformComsHeaders", () => {
     // inlineCode() should use `` (double backtick) delimiter for content containing a single backtick
     assert.equal(result, "📨 **peer** ``@ /path/with`backtick``");
   });
+
+  it("transforms arrow format with self name", () => {
+    const result = transformComsHeaders("[from manager → coder-async @ /home/user/project]");
+    assert.equal(result, "📨 **manager** → **coder\\-async** `@ /home/user/project`");
+  });
+
+  it("transforms arrow format without self name (legacy)", () => {
+    const result = transformComsHeaders("[from manager @ /home/user/project]");
+    assert.equal(result, "📨 **manager** `@ /home/user/project`");
+  });
+
+  it("escapes markdown in self name", () => {
+    const result = transformComsHeaders("[from peer → self_name @ /cwd]");
+    assert.ok(result.includes("self\\_name"));
+  });
 });
 
 // ── transformReviewFindings ──
