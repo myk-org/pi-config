@@ -199,33 +199,65 @@ describe("file-logger", () => {
     }
   });
 
-  it("createLogger writes logs and preserves Error stacks", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-"));
+  it("createLogger returns debug/info/warn/error methods", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-api-"));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
 
-    const mod = await import(
-      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 10}`
-    );
     const { createLogger } = await import(
       `../../../extensions/shared/logger.ts?t=${Date.now() + 10}`
     );
-    mod.setGlobalSessionId("test-logger-session");
 
     const log = createLogger("test_logger");
     assert.equal(typeof log.debug, "function");
     assert.equal(typeof log.info, "function");
     assert.equal(typeof log.warn, "function");
     assert.equal(typeof log.error, "function");
+  });
 
+  it("createLogger info writes to log file", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-info-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+
+    const mod = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 11}`
+    );
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 11}`
+    );
+    mod.setGlobalSessionId("test-logger-info");
+
+    const log = createLogger("test_logger_info");
     log.info("hello", "world");
+
+    const logPath = mod.getPiLogPath("test_logger_info");
+    const body = readFileSync(logPath, "utf-8");
+    assert.match(body, /\[info\] \[test_logger_info\] hello world/);
+  });
+
+  it("createLogger error preserves Error stack traces", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-err-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+
+    const mod = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 12}`
+    );
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 12}`
+    );
+    mod.setGlobalSessionId("test-logger-err");
+
+    const log = createLogger("test_logger_err");
     log.error("fail", new Error("boom"));
 
-    const logPath = mod.getPiLogPath("test_logger");
+    const logPath = mod.getPiLogPath("test_logger_err");
     const body = readFileSync(logPath, "utf-8");
-    assert.match(body, /\[info\] \[test_logger\] hello world/);
-    assert.match(body, /\[error\] \[test_logger\] fail/);
+    assert.match(body, /\[error\] \[test_logger_err\] fail/);
     assert.match(body, /boom/);
   });
 });
