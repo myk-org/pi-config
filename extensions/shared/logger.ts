@@ -20,15 +20,26 @@ export interface Logger {
 }
 
 function fmt(args: any[]): string {
-  return args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+  return args.map(a => {
+    if (typeof a === "string") return a;
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(" ");
 }
 
 export function createLogger(name: string, prefix?: string): Logger {
   const pfx = prefix ?? name;
+  const emit = (level: FileLogLevel, args: any[]) => {
+    const last = args[args.length - 1];
+    if (last instanceof Error && args.length > 1) {
+      fileLog(name, level, pfx, fmt(args.slice(0, -1)), last);
+    } else {
+      fileLog(name, level, pfx, fmt(args));
+    }
+  };
   return {
-    debug(...args: any[]) { fileLog(name, "debug", pfx, fmt(args)); },
-    info(...args: any[]) { fileLog(name, "info", pfx, fmt(args)); },
-    warn(...args: any[]) { fileLog(name, "warn", pfx, fmt(args)); },
-    error(...args: any[]) { fileLog(name, "error", pfx, fmt(args)); },
+    debug(...args: any[]) { emit("debug", args); },
+    info(...args: any[]) { emit("info", args); },
+    warn(...args: any[]) { emit("warn", args); },
+    error(...args: any[]) { emit("error", args); },
   };
 }

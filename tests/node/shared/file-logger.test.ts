@@ -29,6 +29,7 @@ describe("file-logger", () => {
     TMP: process.env.TMP,
     TEMP: process.env.TEMP,
     PI_SESSION_ID: process.env.PI_SESSION_ID,
+    __PI_PARENT_SESSION_ID: process.env.__PI_PARENT_SESSION_ID,
   };
   let tmpHome: string | undefined;
   let tmpFallbackBase: string | undefined;
@@ -46,6 +47,11 @@ describe("file-logger", () => {
     else process.env.TEMP = originals.TEMP;
     if (originals.PI_SESSION_ID === undefined) delete process.env.PI_SESSION_ID;
     else process.env.PI_SESSION_ID = originals.PI_SESSION_ID;
+    if (originals.__PI_PARENT_SESSION_ID === undefined) {
+      delete process.env.__PI_PARENT_SESSION_ID;
+    } else {
+      process.env.__PI_PARENT_SESSION_ID = originals.__PI_PARENT_SESSION_ID;
+    }
     delete process.env.__PI_CONFIG_SESSION_ID;
     delete (globalThis as any).__piConfigSessionId;
     for (const dir of [tmpHome, tmpFallbackBase]) {
@@ -116,15 +122,15 @@ describe("file-logger", () => {
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 3}`
     );
 
-    // Without session ID: "unknown" session
+    // Without session ID: returns null
     delete process.env.__PI_CONFIG_SESSION_ID;
+    delete process.env.__PI_PARENT_SESSION_ID;
     delete (globalThis as any).__piConfigSessionId;
-    const unknownPath = getPiLogPath("cli-provider");
-    assert.equal(unknownPath, join(getPiLogsDir(), "cli-provider", "unknown.log"));
+    assert.equal(getPiLogPath("cli-provider"), null);
 
-    // With globalThis session ID: per-session path (no mkdir)
+    // With globalThis session ID: per-session directory with main.log (no mkdir)
     (globalThis as any).__piConfigSessionId = "test-abc-123";
-    assert.equal(getPiLogPath("cli-provider"), join(getPiLogsDir(), "cli-provider", "test-abc-123.log"));
+    assert.equal(getPiLogPath("cli-provider"), join(getPiLogsDir(), "cli-provider", "test-abc-123", "main.log"));
     delete (globalThis as any).__piConfigSessionId;
 
     // getPiLogPath returns correct path strings without side effects

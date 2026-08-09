@@ -33,7 +33,9 @@ export function setGlobalSessionId(id: string): void {
     try {
       const logPath = getPiLogPath(name);
       if (logPath) appendLine(logPath, line);
-    } catch {}
+    } catch (e) {
+      recordWriteError(e);
+    }
   }
   pendingLogLines = [];
 }
@@ -59,19 +61,21 @@ export function getPiLogsDir(): string {
 export function getPiLogPath(name: string): string | null {
   const sid = (globalThis as any).__piConfigSessionId;
   if (!sid) return null;
-  const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const safeSid = sid.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+$/, "_");
   const prefix = logFilePrefixes.get(name);
 
   const parentSid = process.env.__PI_PARENT_SESSION_ID;
   if (parentSid && parentSid !== sid) {
     // Subagent: nest under parent session
-    const filename = prefix ? `${prefix}-${sid}.log` : `${sid}.log`;
-    return path.join(getPiLogsDir(), safe, parentSid, filename);
+    const safeParentSid = parentSid.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filename = prefix ? `${prefix}-${safeSid}.log` : `${safeSid}.log`;
+    return path.join(getPiLogsDir(), safe, safeParentSid, filename);
   }
 
   // Parent: use <name>/<sid>/main.log (or <prefix>-main.log)
   const filename = prefix ? `${prefix}-main.log` : "main.log";
-  return path.join(getPiLogsDir(), safe, sid, filename);
+  return path.join(getPiLogsDir(), safe, safeSid, filename);
 }
 
 const logFilePrefixes: Map<string, string> = new Map();
@@ -79,9 +83,10 @@ const logFilePrefixes: Map<string, string> = new Map();
 export function setLogFilePrefix(name: string, prefix: string): void {
   const sid = (globalThis as any).__piConfigSessionId;
   if (sid) {
-    const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const oldPath = path.join(getPiLogsDir(), safe, sid, "main.log");
-    const newPath = path.join(getPiLogsDir(), safe, sid, `${prefix}-main.log`);
+    const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+$/, "_");
+    const safeSid = sid.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const oldPath = path.join(getPiLogsDir(), safe, safeSid, "main.log");
+    const newPath = path.join(getPiLogsDir(), safe, safeSid, `${prefix}-main.log`);
     try {
       if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
         fs.renameSync(oldPath, newPath);
@@ -123,7 +128,7 @@ function appendLine(filePath: string, line: string): void {
  * Returns true on success.
  * On primary-path failure, tries os.tmpdir()/pi-logs/<name>.log once.
  */
-const LEVEL_ORDER: Record<string, number> = { off: -1, debug: 0, info: 1, warn: 2, error: 3 };
+const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), { off: -1, debug: 0, info: 1, warn: 2, error: 3 });
 
 let _cachedGetSetting: ((cwd: string, key: string) => any) | null | false = null;
 

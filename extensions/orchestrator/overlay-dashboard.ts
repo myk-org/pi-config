@@ -120,7 +120,7 @@ export class OverlayListDashboard<
     private selection: OverlaySelection<TId>,
     private done: (value: TId | null) => void,
   ) {
-    this.ticker = setInterval(() => this.tui.requestRender(), 1000);
+    this.ticker = setInterval(() => { this.invalidate(); this.tui.requestRender(); }, 1000);
   }
 
   private items(): TItem[] {

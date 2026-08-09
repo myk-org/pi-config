@@ -803,7 +803,7 @@ export default function (pi: ExtensionAPI) {
 			const yourPending = Array.isArray(env.your_pending) ? env.your_pending : [];
 			if (yourPending.length > 0) {
 				responseBody += `\n\nPeer still has ${yourPending.length} of your messages queued:\n` +
-					yourPending.map((p, i) => `  ${i + 1}. [${p.msg_id}] "${p.preview}…"`).join("\n");
+					yourPending.filter((p: any) => p && typeof p === "object").map((p: any, i: number) => `  ${i + 1}. [${p.msg_id ?? "?"}] "${p.preview ?? ""}…"`).join("\n");
 			}
 			try {
 				pi.sendMessage(
@@ -1022,6 +1022,8 @@ export default function (pi: ExtensionAPI) {
 				for (const [k, v] of entries) inboundQueue.set(k, v);
 				affected++;
 			}
+		} else {
+			error = "invalid_action";
 		}
 
 		// Send ack with result — includes error and affected count
@@ -1957,7 +1959,9 @@ Do not respond to this message.`;
 				if (entry.result) return;
 				entry.result = { error: "timeout" };
 				try { entry.resolve(entry.result); } catch { /* ignore */ }
-				// Clean up timed-out entry
+				// Clean up timed-out entry from both maps
+				const pSet = pendingOutbound.get(target.name);
+				if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
 				setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
 			}, TIMEOUT_MS);
 			// Don't keep the event loop alive solely for this timer.

@@ -117,6 +117,7 @@ export function registerPidash(
   let shuttingDown = false;
   let spawning = false;
   let lastCtx: any = null;
+  let lastCmdCtx: any = null;  // Command context with switchSession — updated by /pidash handler
   let cleanupHeartbeat: (() => void) | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
@@ -298,7 +299,7 @@ export function registerPidash(
 
         if (parsed.command === "switch-session" && parsed.sessionFile) {
           log.debug(`switch-session: ${parsed.sessionFile}`);
-          const ctx = lastCtx;
+          const ctx = lastCmdCtx ?? lastCtx;
           if (ctx?.switchSession) {
             try {
               await ctx.switchSession(parsed.sessionFile, {
@@ -344,6 +345,7 @@ export function registerPidash(
 
   /** Handle /pidash command (start|stop|restart|status). */
   async function handlePidashCommand(args: string, ctx: any): Promise<void> {
+    lastCmdCtx = ctx;
     // Guard: pidash daemon connections only in TUI mode
     if (ctx.mode !== "tui") {
       if (ctx.hasUI) ctx.ui.notify("pidash is only available in TUI mode.", "info");

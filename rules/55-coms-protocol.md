@@ -76,7 +76,11 @@ This clears all YOUR pending (unprocessed) messages from the peer's queue before
 - `msg_id` is returned by `coms_send` — track it to manage later
 - Use `clearPrevious` when sending corrections — it's the most common pattern
 
-**Note:** `coms_queue_edit` has a race window — if the peer dequeues the message before the edit arrives, the original content is delivered. This is inherent to async queues.
+**Note:** Queue management operations (`coms_queue_edit`, `coms_queue_delete`,
+`coms_queue_prioritize`) are fire-and-forget — they receive transport-level
+acknowledgement but do not confirm whether the target actually applied the change.
+A dequeue race, not-found `msg_id`, or ownership mismatch can cause silent no-ops.
+Callers should not assume success without verifying via subsequent responses.
 
 ## Structured Task Delegation
 
