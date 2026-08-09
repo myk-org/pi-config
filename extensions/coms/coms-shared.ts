@@ -482,11 +482,14 @@ export function buildInboundContent(
 	senderName?: string,
 	senderCwd?: string,
 ): string {
+	// Sanitize peer-controlled values — strip control chars and limit length
+	const safeName = senderName ? senderName.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 100) : undefined;
+	const safeCwd = senderCwd ? senderCwd.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200) : undefined;
 	// Machine-readable prefix so the LLM can distinguish coms messages from user input
-	const fromTag = senderName ? `[from ${senderName}${senderCwd ? ` @ ${senderCwd}` : ''}] ` : '';
+	const fromTag = safeName ? `[from ${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
 	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
-	if (senderName) {
-		content += `\n\nReply to me via coms_send(target="${senderName}")`;
+	if (safeName) {
+		content += `\n\nReply to me via coms_send(target="${safeName}")`;
 	}
 	if (tasks && tasks.length > 0) {
 		content += `\n\n## Assigned Tasks\n\nThese tasks have been added to your task list. Work through them in order:\n\n`;
