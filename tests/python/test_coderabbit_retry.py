@@ -94,21 +94,27 @@ _UNPARSEABLE_BODY = "<!-- This is an auto-generated comment: rate limited by cod
 def _unparseable_wait_fallback_patches() -> Any:
     """Shared patches for unparseable-wait fallback tests (45-min-old comment)."""
     from datetime import datetime, timedelta
+    from unittest.mock import MagicMock
 
-    # Comment posted 45 min ago -> remaining ~900s
-    ts = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    # Freeze wall clock so remaining wait is exactly 900s (3600 - 45*60).
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    ts = (now - timedelta(minutes=45)).isoformat()
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
     return (
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, _UNPARSEABLE_BODY, ts, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True),
         patch(f"{_MODULE}.time"),
+        patch(f"{_MODULE}.datetime", mock_datetime),
     )
 
 
 def test_unparseable_wait_fallback_warns(capsys: pytest.CaptureFixture[str]) -> None:
     """Unparseable wait time -> warn on stderr."""
-    summary, trigger, find_reply, mock_time = _unparseable_wait_fallback_patches()
-    with summary, trigger, find_reply as mock_find_reply, mock_time:
+    summary, trigger, find_reply, mock_time, mock_dt = _unparseable_wait_fallback_patches()
+    with summary, trigger, find_reply as mock_find_reply, mock_time, mock_dt:
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
@@ -117,24 +123,24 @@ def test_unparseable_wait_fallback_warns(capsys: pytest.CaptureFixture[str]) -> 
 
 
 def test_unparseable_wait_fallback_triggers(capsys: pytest.CaptureFixture[str]) -> None:
-    """Unparseable wait time -> trigger with ~900s waited_seconds."""
+    """Unparseable wait time -> trigger with 900s waited_seconds."""
     import json as _json
 
-    summary, trigger, find_reply, mock_time = _unparseable_wait_fallback_patches()
-    with summary, trigger, find_reply as mock_find_reply, mock_time:
+    summary, trigger, find_reply, mock_time, mock_dt = _unparseable_wait_fallback_patches()
+    with summary, trigger, find_reply as mock_find_reply, mock_time, mock_dt:
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
         mock_find_reply.assert_called_once_with("owner/repo", 1, 99)
     result = _json.loads(capsys.readouterr().out)
     assert result["status"] == "triggered"
-    assert 850 <= result["waited_seconds"] <= 950  # ~900s remaining
+    assert result["waited_seconds"] == 900
 
 
 def test_unparseable_wait_fallback_waits_remaining(capsys: pytest.CaptureFixture[str]) -> None:
     """Unparseable wait time with remaining cooldown -> wait message on stderr."""
-    summary, trigger, find_reply, mock_time = _unparseable_wait_fallback_patches()
-    with summary, trigger, find_reply as mock_find_reply, mock_time:
+    summary, trigger, find_reply, mock_time, mock_dt = _unparseable_wait_fallback_patches()
+    with summary, trigger, find_reply as mock_find_reply, mock_time, mock_dt:
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
@@ -145,13 +151,19 @@ def test_unparseable_wait_fallback_waits_remaining(capsys: pytest.CaptureFixture
 def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
     """No-wait-time body 90 min old -> wait_seconds = 0, trigger immediately."""
     from datetime import datetime, timedelta
+    from unittest.mock import MagicMock
 
-    ts = (datetime.now(UTC) - timedelta(minutes=90)).isoformat()
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    ts = (now - timedelta(minutes=90)).isoformat()
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
     with (
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, _UNPARSEABLE_BODY, ts, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True) as mock_find_reply,
         patch(f"{_MODULE}.time"),
+        patch(f"{_MODULE}.datetime", mock_datetime),
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
@@ -166,9 +178,17 @@ def test_run_check_unparseable_fallback(capsys: pytest.CaptureFixture[str]) -> N
     """run_check with no-wait-time body -> JSON with fallback: true, exit 0."""
     bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
     from datetime import datetime, timedelta
+    from unittest.mock import MagicMock
 
-    ts = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
-    with patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")):
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    ts = (now - timedelta(minutes=45)).isoformat()
+    mock_datetime = MagicMock()
+    mock_datetime.now.return_value = now
+    mock_datetime.fromisoformat = datetime.fromisoformat
+    with (
+        patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")),
+        patch(f"{_MODULE}.datetime", mock_datetime),
+    ):
         from myk_pi_tools.coderabbit.rate_limit import run_check
 
         assert run_check("owner/repo", 1) == 0
@@ -178,7 +198,7 @@ def test_run_check_unparseable_fallback(capsys: pytest.CaptureFixture[str]) -> N
     result = _json.loads(out)
     assert result["rate_limited"] is True
     assert result["fallback"] is True
-    assert 850 <= result["wait_seconds"] <= 950
+    assert result["wait_seconds"] == 900
 
 
 def test_bad_timestamp_falls_back(capsys: pytest.CaptureFixture[str]) -> None:
