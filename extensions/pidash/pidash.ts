@@ -123,6 +123,7 @@ export function registerPidash(
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
   let execCtx: any = null;
+  const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
   // ── Extracted inner functions ──────────────────────────────────────
 
@@ -792,12 +793,18 @@ export function registerPidash(
     const arg = spaceIdx > 0 ? text.slice(spaceIdx + 1).trim() : "";
 
     log.debug(`browser command: /${cmdName} ${arg.slice(0, 80)}`);
-    log.debug("browser command", cmdName);
 
-    // Let pi dispatch the command natively — this gives the handler fresh ctx
-    // instead of stale execCtx captured from a previous cycle.
-    // Return undefined so pi's own command dispatch handles it.
-    return;
+    const handler = commandHandlerRegistry.get(cmdName);
+    if (handler) {
+      try {
+        const ctx = lastCmdCtx ?? execCtx ?? lastCtx;
+        await handler(arg, ctx);
+      } catch (e: any) {
+        log.error(`command /${cmdName} error:`, e);
+      }
+      return { action: "handled" as const };
+    }
+    // Unknown command — let pi's native dispatch handle it
   }
 
   // ── Wire everything up ─────────────────────────────────────────────
@@ -843,6 +850,7 @@ export function registerPidash(
     },
     handler: (args, ctx) => handlePidashCommand(args, ctx),
   });
+  commandHandlerRegistry.set("pidash", (args, ctx) => handlePidashCommand(args, ctx));
 
   pi.on("input", async (event, _ctx) => { if (shuttingDown) return; return handleBrowserInput(event, _ctx); });
 

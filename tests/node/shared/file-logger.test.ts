@@ -198,4 +198,34 @@ describe("file-logger", () => {
       );
     }
   });
+
+  it("createLogger writes logs and preserves Error stacks", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+
+    const mod = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 10}`
+    );
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 10}`
+    );
+    mod.setGlobalSessionId("test-logger-session");
+
+    const log = createLogger("test_logger");
+    assert.equal(typeof log.debug, "function");
+    assert.equal(typeof log.info, "function");
+    assert.equal(typeof log.warn, "function");
+    assert.equal(typeof log.error, "function");
+
+    log.info("hello", "world");
+    log.error("fail", new Error("boom"));
+
+    const logPath = mod.getPiLogPath("test_logger");
+    const body = readFileSync(logPath, "utf-8");
+    assert.match(body, /\[info\] \[test_logger\] hello world/);
+    assert.match(body, /\[error\] \[test_logger\] fail/);
+    assert.match(body, /boom/);
+  });
 });
