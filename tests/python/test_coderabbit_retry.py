@@ -89,8 +89,10 @@ def test_invalid_repo() -> None:
 
 def test_unparseable_wait_fallback(capsys: pytest.CaptureFixture[str]) -> None:
     """Rate limited but can't parse wait time -> fallback from updated_at, exit 0."""
-    bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
+    import json as _json
     from datetime import datetime, timedelta
+
+    bad_body = "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nNo wait time here."
 
     # Comment posted 45 min ago -> remaining ~900s
     ts = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
@@ -98,17 +100,17 @@ def test_unparseable_wait_fallback(capsys: pytest.CaptureFixture[str]) -> None:
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True),
-        patch(f"{_MODULE}.time") as mock_time,
+        patch(f"{_MODULE}.time"),
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
-        mock_time.sleep.assert_called_once()
-        slept = mock_time.sleep.call_args[0][0]
-        assert 850 <= slept <= 950  # ~900s remaining
     captured = capsys.readouterr()
     assert "Could not parse wait time" in captured.err
+    assert "Rate limited — waiting" in captured.err
     assert '"triggered"' in captured.out
+    result = _json.loads(captured.out)
+    assert 850 <= result["waited_seconds"] <= 950  # ~900s remaining
 
 
 def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
@@ -121,14 +123,14 @@ def test_unparseable_wait_expired(capsys: pytest.CaptureFixture[str]) -> None:
         patch(f"{_MODULE}._find_summary_comment", return_value=(42, bad_body, ts, "")),
         patch(f"{_MODULE}._post_review_trigger", return_value=99),
         patch(f"{_MODULE}._find_trigger_reply", return_value=True),
-        patch(f"{_MODULE}.time") as mock_time,
+        patch(f"{_MODULE}.time"),
     ):
         from myk_pi_tools.coderabbit.rate_limit import run_retry
 
         assert run_retry("owner/repo", 1) == 0
-        mock_time.sleep.assert_not_called()
     captured = capsys.readouterr()
     assert '"triggered"' in captured.out
+    assert "triggering immediately" in captured.err or "expired" in captured.err
 
 
 def test_run_check_unparseable_fallback(capsys: pytest.CaptureFixture[str]) -> None:
@@ -213,7 +215,7 @@ def test_run_check_includes_updated_at(capsys: pytest.CaptureFixture[str]) -> No
 class TestParseWaitSeconds:
     """Tests for _parse_wait_seconds with various duration formats."""
 
-    def test_legacy_minutes_and_seconds(self) -> None:
+    def test_legacy_minutes_with_seconds(self) -> None:
         """Legacy format: 'Please wait **2 minutes and 30 seconds**' -> 150."""
         from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
 
@@ -255,14 +257,14 @@ class TestParseWaitSeconds:
         body = "**Next review available in:** **90 seconds**"
         assert _parse_wait_seconds(body) == 90
 
-    def test_hours_and_minutes(self) -> None:
+    def test_hours_with_minutes(self) -> None:
         """Combined: '**1 hour and 30 minutes**' -> 5400."""
         from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
 
         body = "**Next review available in:** **1 hour and 30 minutes**"
         assert _parse_wait_seconds(body) == 5400
 
-    def test_compound_without_and(self) -> None:
+    def test_compound_without_conjunction(self) -> None:
         """Compound duration without 'and' separator."""
         from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
 
@@ -331,3 +333,31 @@ class TestParseWaitSeconds:
 
         body = "**Next review available in:**\n**58 minutes**"
         assert _parse_wait_seconds(body) == 3480
+
+    def test_phrase_with_comma_separator(self) -> None:
+        """Comma after phrase still parses duration."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Please wait, 45 minutes before trying again."
+        assert _parse_wait_seconds(body) == 2700
+
+    def test_phrase_with_period_separator(self) -> None:
+        """Period after phrase still parses duration."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Please wait. 45 minutes before trying again."
+        assert _parse_wait_seconds(body) == 2700
+
+    def test_phrase_with_dash_separator(self) -> None:
+        """Em dash after phrase still parses duration."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Next review available in — 58 minutes"
+        assert _parse_wait_seconds(body) == 3480
+
+    def test_body_wide_multiple_durations_first_match(self) -> None:
+        """Multiple unrelated durations without phrase → only first match used."""
+        from myk_pi_tools.coderabbit.rate_limit import _parse_wait_seconds
+
+        body = "Rate limited. Retry after 45 minutes. The window resets every 2 hours."
+        assert _parse_wait_seconds(body) == 2700

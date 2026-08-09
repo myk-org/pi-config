@@ -42,18 +42,23 @@ _RATE_LIMIT_PHRASE_RE = re.compile(
 )
 # Match duration tokens near known CodeRabbit rate-limit phrases.
 # Captures one contiguous duration expression (e.g. "58 minutes", "1 hour and 30 minutes").
-# Allows optional bold (**), colon, whitespace, and newline between phrase and duration.
+# Allows optional bold (**), punctuation, whitespace, and newline between phrase and duration.
 # Two \*{0,2} groups cover markdown like "**Next review available in:** **58 minutes**"
 # (closing bold after colon, then opening bold before the duration).
 _DURATION_CONTEXT_RE = re.compile(
     r"(?:next review available in|please wait)"
     r"(?:\s+(?:for|about|approximately))?"
-    r"[:\s]*\*{0,2}\s*\*{0,2}\s*"
+    r"[,.:;\s\-\u2013\u2014]*\*{0,2}\s*\*{0,2}\s*"
     r"((?:\d+\s*(?:hours?|minutes?|seconds?)(?:\s*,?\s*(?:and\s+)?)?)+)"
     r"\s*\*{0,2}",
     re.IGNORECASE | re.MULTILINE,
 )
 _DURATION_TOKEN_RE = re.compile(r"(\d+)\s*(hours?|minutes?|seconds?)", re.IGNORECASE)
+# First contiguous duration expression in a body (no phrase prefix).
+_FIRST_DURATION_RE = re.compile(
+    r"((?:\d+\s*(?:hours?|minutes?|seconds?)(?:\s*,?\s*(?:and\s+)?)?)+)",
+    re.IGNORECASE,
+)
 
 DEFAULT_RATE_LIMIT_WINDOW = 3600  # 1 hour fallback when no wait time is parseable
 _POLL_INTERVAL = 60  # seconds between polls
@@ -90,7 +95,8 @@ def _parse_wait_seconds(body: str) -> int | None:
     2. Look for durations anchored to known phrases ("Next review available in",
        "please wait"). If a phrase is found, only tokens within that scope are
        used; an empty anchored match returns None (triggers timestamp fallback).
-    3. If no rate-limit phrase is present, fall back to a body-wide token scan.
+    3. If no rate-limit phrase is present, use the first contiguous duration
+       expression (not a body-wide sum of all tokens).
 
     Returns total seconds or None if nothing parseable.
     """
@@ -112,8 +118,11 @@ def _parse_wait_seconds(body: str) -> int | None:
     if _RATE_LIMIT_PHRASE_RE.search(body):
         return None
 
-    # No context phrase — last resort body-wide scan for duration tokens
-    return _sum_duration_tokens(body)
+    # No context phrase — first contiguous duration expression only
+    first_match = _FIRST_DURATION_RE.search(body)
+    if first_match:
+        return _sum_duration_tokens(first_match.group(1))
+    return None
 
 
 def _post_coderabbit_comment(owner_repo: str, pr_number: int, command: str) -> int | None:
