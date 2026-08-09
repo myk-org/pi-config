@@ -30,6 +30,8 @@ describe("file-logger", () => {
     TEMP: process.env.TEMP,
     PI_SESSION_ID: process.env.PI_SESSION_ID,
     __PI_PARENT_SESSION_ID: process.env.__PI_PARENT_SESSION_ID,
+    PI_LOG_TEST_LOGGER_INFO: process.env.PI_LOG_TEST_LOGGER_INFO,
+    PI_LOG_TEST_LOGGER_ERR: process.env.PI_LOG_TEST_LOGGER_ERR,
   };
   let tmpHome: string | undefined;
   let tmpFallbackBase: string | undefined;
@@ -54,8 +56,10 @@ describe("file-logger", () => {
     }
     delete process.env.__PI_CONFIG_SESSION_ID;
     delete (globalThis as any).__piConfigSessionId;
-    delete process.env.PI_LOG_TEST_LOGGER_INFO;
-    delete process.env.PI_LOG_TEST_LOGGER_ERR;
+    if (originals.PI_LOG_TEST_LOGGER_INFO === undefined) delete process.env.PI_LOG_TEST_LOGGER_INFO;
+    else process.env.PI_LOG_TEST_LOGGER_INFO = originals.PI_LOG_TEST_LOGGER_INFO;
+    if (originals.PI_LOG_TEST_LOGGER_ERR === undefined) delete process.env.PI_LOG_TEST_LOGGER_ERR;
+    else process.env.PI_LOG_TEST_LOGGER_ERR = originals.PI_LOG_TEST_LOGGER_ERR;
     for (const dir of [tmpHome, tmpFallbackBase]) {
       if (!dir) continue;
       try {
@@ -265,5 +269,6 @@ describe("file-logger", () => {
     assert.match(body, /boom/);
     // Verify stack frames are present (not just the error message)
     assert.match(body, /Error: boom/);
+    assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
   });
 });
