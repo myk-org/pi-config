@@ -54,6 +54,8 @@ describe("file-logger", () => {
     }
     delete process.env.__PI_CONFIG_SESSION_ID;
     delete (globalThis as any).__piConfigSessionId;
+    delete process.env.PI_LOG_TEST_LOGGER_INFO;
+    delete process.env.PI_LOG_TEST_LOGGER_ERR;
     for (const dir of [tmpHome, tmpFallbackBase]) {
       if (!dir) continue;
       try {
@@ -221,6 +223,7 @@ describe("file-logger", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
+    process.env.PI_LOG_TEST_LOGGER_INFO = "debug";
 
     const mod = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 11}`
@@ -243,6 +246,7 @@ describe("file-logger", () => {
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
+    process.env.PI_LOG_TEST_LOGGER_ERR = "debug";
 
     const mod = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 12}`
@@ -259,5 +263,7 @@ describe("file-logger", () => {
     const body = readFileSync(logPath, "utf-8");
     assert.match(body, /\[error\] \[test_logger_err\] fail/);
     assert.match(body, /boom/);
+    // Verify stack frames are present (not just the error message)
+    assert.match(body, /Error: boom/);
   });
 });
