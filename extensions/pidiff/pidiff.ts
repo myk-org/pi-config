@@ -166,21 +166,24 @@ export function registerPidiff(pi: ExtensionAPI): void {
       } catch {
         // Another session is already spawning — check if spawner is still alive
         try {
-          const lockAge = Date.now() - fs.statSync(spawnLock).mtimeMs;
-          if (lockAge > getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms")) {
-            log.info("stale_spawn_lock_age", "age_s", Math.round(lockAge / 1000), "removing");
-            try { fs.unlinkSync(spawnLock); } catch {}
-            connecting = false;
-            setTimeout(() => connect(ctx), 500);
-            return;
-          }
           const spawnerPid = parseInt(fs.readFileSync(spawnLock, "utf-8").trim(), 10);
           if (spawnerPid && !isNaN(spawnerPid)) {
             try {
               process.kill(spawnerPid, 0); // throws if dead
+              // Spawner is alive — skip age check, go straight to wait
             } catch {
               // Spawner is dead — clean up stale lockfile and retry
               log.info("stale_spawn_lock", "pid", spawnerPid, "dead, removing lockfile");
+              try { fs.unlinkSync(spawnLock); } catch {}
+              connecting = false;
+              setTimeout(() => connect(ctx), 500);
+              return;
+            }
+          } else {
+            // No valid PID in lockfile — check age as fallback
+            const lockAge = Date.now() - fs.statSync(spawnLock).mtimeMs;
+            if (lockAge > getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms")) {
+              log.info("stale_spawn_lock_age", "age_s", Math.round(lockAge / 1000), "removing");
               try { fs.unlinkSync(spawnLock); } catch {}
               connecting = false;
               setTimeout(() => connect(ctx), 500);

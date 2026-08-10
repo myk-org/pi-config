@@ -48,6 +48,12 @@
   // Pidash web dashboard port (1-65535)
   "pidash_port": 19190,
 
+  // Stale pidiff spawn lock timeout (ms)
+  "pidiff_stale_lock_timeout_ms": 60000,
+
+  // Pidiff daemon startup timeout (s)
+  "pidiff_daemon_startup_timeout_s": 60,
+
   // ── Image Generation ──────────────────────────────────────────────────────
 
   // Gemini model for image generation (requires GEMINI_API_KEY env var)
@@ -69,6 +75,17 @@
 
   // Per-agent provider/model overrides. null = use parent model (skip global agent_provider/agent_model)
   "agent_overrides": {},
+
+  // ── Subagent ──────────────────────────────────────────────────────────────
+
+  // Max sync agent seconds before requiring async
+  "sync_agent_max_seconds": 60,
+
+  // Async agent poll interval (ms)
+  "async_poll_interval_ms": 3000,
+
+  // Async phantom timeout (ms)
+  "async_phantom_timeout_ms": 30000,
 
   // ── External Agents ───────────────────────────────────────────────────────
 
@@ -93,6 +110,17 @@
   // Colon-separated command allowlist for enforcement. Empty = allow all
   "enforcement_allowed_commands": "",
 
+  // Max sleep seconds in loop context before blocking
+  "enforcement_loop_sleep_threshold_s": 60,
+
+  // Max standalone sleep seconds before blocking
+  "enforcement_sleep_threshold_s": 60,
+
+  // ── Tasks ─────────────────────────────────────────────────────────────────
+
+  // Turns without task tool usage before reminder
+  "task_reminder_cadence_turns": 4,
+
   // ── Coms (P2P) ────────────────────────────────────────────────────────────
 
   // Max message relay hops for P2P coms (1-50)
@@ -103,5 +131,11 @@
 
   // P2P coms data directory. Empty = ~/.pi/coms
   "coms_dir": "",
+
+  // Grace period for new registry entries (ms)
+  "coms_entry_grace_period_ms": 30000,
+
+  // Probe timeout for stale peer sockets (ms)
+  "coms_probe_timeout_ms": 1000,
 
 }

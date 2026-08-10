@@ -217,9 +217,9 @@ export function registerAsyncAgents(
           } else {
             // Worker dir exists but no status file — check timeout
             const elapsed = Date.now() - job.startedAt;
-            if (elapsed > getSetting(process.cwd(), "async_phantom_timeout_ms")) {
+            if (elapsed > getSetting(jobCwd(job), "async_phantom_timeout_ms")) {
               job.status = "failed";
-              job.output = "Agent process timed out — no status file after 30s";
+              job.output = `Agent process timed out — no status file after ${Math.round(elapsed / 1000)}s`;
               job.durationMs = elapsed;
               job.updatedAt = Date.now();
               job.sideEffectsApplied = true;
@@ -300,7 +300,7 @@ export function registerAsyncAgents(
                 job.output = "Process exited without producing results";
                 job.durationMs = Date.now() - job.startedAt;
                 job.updatedAt = Date.now();
-                log.debug("poller_zombie_no_result", job.id);
+                log.debug("poller_zombie_no_result", job.id, "agent", job.agent, "pid", status?.pid, "elapsed_ms", Date.now() - job.startedAt);
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
                 let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {

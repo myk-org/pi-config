@@ -33,6 +33,7 @@ import { setLogFilePrefix } from "../shared/file-logger.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+const log = createLogger("coms");
 let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
 let MAX_HOPS = 5;
 
@@ -363,6 +364,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		// Skip entries younger than 30s — recently booted peers get grace period
 		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
 		if (!isNaN(entryAge) && entryAge < getSetting(process.cwd(), "coms_entry_grace_period_ms")) {
+			log.debug("prune_skip_grace", entry.name, "age_ms", entryAge);
 			youngEntries.push(entry);
 			continue;
 		}
@@ -385,12 +387,15 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	}
 
 	// Phase 2: Parallel socket probes (capped at 10 concurrent to avoid EMFILE)
-	if (candidates.length === 0) return youngEntries;
+	if (candidates.length === 0) {
+		log.debug("prune_complete", "checked", entries.length);
+		return youngEntries;
+	}
 	const PROBE_CONCURRENCY = 10;
 	const results: ("in_use" | "stale")[] = [];
 	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
 		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
-		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint)));
+		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint, entry.name)));
 		results.push(...batchResults.map(r => r.status === "fulfilled" ? r.value : "in_use" as const));
 	}
 	const live: RegistryEntry[] = [];
@@ -405,6 +410,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 			live.push(candidates[i]);
 		}
 	}
+	log.debug("prune_complete", "checked", entries.length);
 	return [...live, ...youngEntries];
 }
 
@@ -430,7 +436,7 @@ async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
 
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
+function probeStaleSocket(endpoint: string, name?: string): Promise<"in_use" | "stale"> {
 	return new Promise((resolve) => {
 		const sock = net.createConnection({ path: endpoint });
 		let settled = false;
@@ -441,6 +447,7 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 			resolve(verdict);
 		};
 		const timer = setTimeout(() => finish("stale"), getSetting(process.cwd(), "coms_probe_timeout_ms"));
+		log.debug("probe_stale", name ?? endpoint, "timeout_ms", getSetting(process.cwd(), "coms_probe_timeout_ms"));
 		sock.once("connect", () => {
 			clearTimeout(timer);
 			finish("in_use");
@@ -624,7 +631,6 @@ export default function (pi: ExtensionAPI) {
 		registryFile: string;
 		pi_session_id: string;
 	} | null = null;
-	const log = createLogger("coms");
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
 	let welcomeShown = false;
 	const knownPeerSessions: Map<string, string> = new Map(); // session_id → name
