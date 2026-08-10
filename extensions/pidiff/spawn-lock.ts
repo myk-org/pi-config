@@ -44,10 +44,10 @@ export function evaluateSpawnLock(
       if (!isAlive) {
         result = { action: "recover", reason: `PID ${spawnerPid} is dead` };
       } else {
-        // PID alive — check for PID reuse (lock age > 2x timeout)
+        // PID alive — check for PID reuse (lock age > timeout)
         const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs;
-        if (lockAge > effectiveTimeout * 2) {
-          result = { action: "recover_pid_reuse", reason: `PID ${spawnerPid} alive but lock age ${Math.round(lockAge / 1000)}s > 2x timeout` };
+        if (lockAge > effectiveTimeout) {
+          result = { action: "recover_pid_reuse", reason: `PID ${spawnerPid} alive but lock age ${Math.round(lockAge / 1000)}s > timeout (likely PID reuse)` };
         } else {
           result = { action: "wait", reason: `PID ${spawnerPid} alive, lock age ${Math.round(lockAge / 1000)}s within threshold` };
         }

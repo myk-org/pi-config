@@ -83,11 +83,11 @@ describe("pidiff stale lock detection", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-"));
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, String(process.pid));
-    // Set mtime to 3s ago to exceed 2x the 1s floor
-    const threeSecsAgo = new Date(Date.now() - 3000);
-    utimesSync(lockPath, threeSecsAgo, threeSecsAgo);
+    // Set mtime to 2s ago to exceed the 1s floor
+    const twoSecsAgo = new Date(Date.now() - 2000);
+    utimesSync(lockPath, twoSecsAgo, twoSecsAgo);
 
-    const result = evaluateSpawnLock(lockPath, 500); // floor 1s, 2x = 2s, lock 3s old → recover_pid_reuse
+    const result = evaluateSpawnLock(lockPath, 500); // floor 1s, lock 2s old → recover_pid_reuse
     assert.equal(result.action, "recover_pid_reuse");
     assert.match(result.reason, /alive but lock age/);
   });
