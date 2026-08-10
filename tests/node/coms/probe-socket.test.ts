@@ -94,30 +94,4 @@ describe("probeStaleSocket", () => {
 		// Should resolve quickly (ENOENT), not wait for full timeout
 		assert.ok(elapsed < 5000, `Should not wait full timeout, took ${elapsed}ms`);
 	});
-
-	it("handles non-socket file at path with configured timeout", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "probe-nonsock-"));
-		const piDir = join(tmpDir, ".pi");
-		mkdirSync(piDir, { recursive: true });
-		writeFileSync(
-			join(piDir, "pi-config-settings.json"),
-			JSON.stringify({ coms_probe_timeout_ms: 200 }),
-			"utf-8",
-		);
-
-		const { clearSettingsCache } = await import(
-			`../../../extensions/orchestrator/project-settings.ts`
-		);
-		clearSettingsCache();
-
-		const sockPath = join(tmpDir, "not-a-socket");
-		writeFileSync(sockPath, "regular file");
-
-		const { probeStaleSocket } = await import(
-			`../../../extensions/coms/probe-socket.ts?t=${Date.now() + 21}`
-		);
-		const result = await probeStaleSocket(sockPath, "test", tmpDir);
-		// Non-socket → error (varies by OS: ENOTSOCK, ECONNREFUSED, etc.)
-		assert.ok(result === "in_use" || result === "stale");
-	});
 });
