@@ -51,11 +51,13 @@ describe("pidiff stale lock detection", () => {
 	it("lockfile age calculation works correctly", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-age-"));
 		const lockPath = join(tmpDir, "pidiff.spawning");
+		const beforeWrite = Date.now();
 		writeFileSync(lockPath, String(process.pid));
 
-		const lockAge = Date.now() - statSync(lockPath).mtimeMs;
-		// Just-created file should be < 1000ms old
-		assert.ok(lockAge < 1000, `Lock age should be < 1000ms, got ${lockAge}`);
+		const mtime = statSync(lockPath).mtimeMs;
+		const lockAge = Date.now() - mtime;
+		// mtime should be between beforeWrite and now (no timing threshold)
+		assert.ok(mtime >= beforeWrite - 1000, `mtime should be >= beforeWrite - 1s`);
 		assert.ok(lockAge >= 0, `Lock age should be >= 0, got ${lockAge}`);
 	});
 });
