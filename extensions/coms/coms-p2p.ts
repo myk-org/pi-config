@@ -362,7 +362,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		}
 		// Skip entries younger than 30s — recently booted peers get grace period
 		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
-		if (!isNaN(entryAge) && entryAge < 30000) {
+		if (!isNaN(entryAge) && entryAge < getSetting(process.cwd(), "coms_entry_grace_period_ms")) {
 			youngEntries.push(entry);
 			continue;
 		}
@@ -440,7 +440,7 @@ function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
 			try { sock.destroy(); } catch { /* ignore */ }
 			resolve(verdict);
 		};
-		const timer = setTimeout(() => finish("stale"), 1000);
+		const timer = setTimeout(() => finish("stale"), getSetting(process.cwd(), "coms_probe_timeout_ms"));
 		sock.once("connect", () => {
 			clearTimeout(timer);
 			finish("in_use");

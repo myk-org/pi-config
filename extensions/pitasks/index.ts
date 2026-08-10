@@ -12,6 +12,7 @@ import { TaskWidget } from "./task-widget.js";
 import { AutoClearManager } from "./task-auto-clear.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
+import { getSetting } from "../orchestrator/project-settings.js";
 
 const log = createLogger("pitasks");
 
@@ -167,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 		cadence.turnsSinceTaskTool++;
 		log.debug("reminder_check", "turnsSinceTaskTool", cadence.turnsSinceTaskTool, "reminderFired", cadence.reminderFired, "store_path", store.filePath);
 		if ((globalThis as any).__pitasks_active_instance !== instanceId) return;
-		if (cadence.turnsSinceTaskTool >= 4 && !cadence.reminderFired) {
+		if (cadence.turnsSinceTaskTool >= getSetting(process.cwd(), "task_reminder_cadence_turns") && !cadence.reminderFired) {
 			const now = Date.now();
 			const lastReminder = (globalThis as any).__pitasks_last_reminder ?? 0;
 			if (now - lastReminder < 30000) {

@@ -166,7 +166,7 @@ export function buildCategoryItems(
       id: key,
       label: `${glyph} ${key}`,
       currentValue: displayValue,
-      description: def.env ? `env: ${def.env}` : undefined,
+      description: [def.description, def.env ? `env: ${def.env}` : ""].filter(Boolean).join(" · "),
     };
 
     // Configure interaction based on type and key

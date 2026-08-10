@@ -1,40 +1,47 @@
 {
   "dco": {
+    "description": "Auto-inject --signoff flag for DCO compliance on git commit",
     "type": "bool",
     "env": "PI_DCO",
     "default": false,
     "group": "Git"
   },
   "commit_trailer": {
+    "description": "Commit trailer type (e.g. Assisted-by, Co-authored-by) \u2014 comma-separated for random selection",
     "type": "bool_or_string",
     "env": "PI_COMMIT_TRAILER",
     "default": false,
     "group": "Git"
   },
   "use_worktrees": {
+    "description": "Block git checkout/switch \u2014 force git worktree for branch operations",
     "type": "bool",
     "env": "PI_USE_WORKTREES",
     "default": false,
     "group": "Git"
   },
   "allow_push_to_protected_branches": {
+    "description": "Allow commits and pushes to protected branches (main, master, etc.)",
     "type": "bool",
     "env": "PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES",
     "default": false,
     "group": "Git"
   },
   "comment_signature": {
+    "description": "Add Assisted-by: PI (model) signature to GitHub comments",
     "type": "bool",
     "default": false,
     "group": "Git"
   },
   "review_loop_enforcement": {
+    "description": "Enforce code review loop before commits",
     "type": "bool",
     "env": "PI_REVIEW_LOOP_ENFORCEMENT",
     "default": false,
     "group": "Review"
   },
   "review_loop_max_cycles": {
+    "description": "Maximum review cycles before stopping",
     "type": "int",
     "env": "PI_REVIEW_LOOP_MAX_CYCLES",
     "default": 3,
@@ -44,29 +51,52 @@
     "group": "Review"
   },
   "dream_interval_hours": {
+    "description": "Hours between automatic memory dreaming",
     "type": "number",
     "env": "PI_DREAM_INTERVAL_HOURS",
     "default": 3,
     "group": "Memory"
   },
   "orchestrator_edit_write_block": {
+    "description": "Block orchestrator edit/write \u2014 force delegation to specialist subagents",
     "type": "bool",
     "default": false,
     "group": "Enforcement"
   },
   "pidash_enable": {
+    "description": "Enable pidash browser dashboard",
     "type": "bool_enable",
     "env": "PI_PIDASH_ENABLE",
     "default": true,
     "group": "Dashboard"
   },
   "pidiff_enable": {
+    "description": "Enable pidiff visual diff server",
     "type": "bool_enable",
     "env": "PI_PIDIFF_ENABLE",
     "default": true,
     "group": "Dashboard"
   },
+  "pidiff_stale_lock_timeout_ms": {
+    "description": "Timeout for stale pidiff spawning lockfile (ms)",
+    "type": "int",
+    "env": "PI_PIDIFF_STALE_LOCK_TIMEOUT_MS",
+    "default": 60000,
+    "min": 10000,
+    "max": 300000,
+    "group": "Pidiff"
+  },
+  "pidiff_daemon_startup_timeout_s": {
+    "description": "Timeout waiting for pidiff daemon startup (s)",
+    "type": "int",
+    "env": "PI_PIDIFF_DAEMON_STARTUP_TIMEOUT_S",
+    "default": 60,
+    "min": 10,
+    "max": 300,
+    "group": "Pidiff"
+  },
   "pidash_port": {
+    "description": "Port for pidash server",
     "type": "port",
     "env": "PI_PIDASH_PORT",
     "default": 19190,
@@ -74,24 +104,28 @@
     "group": "Dashboard"
   },
   "image_model": {
+    "description": "Gemini model ID for generate_image tool (empty = disabled)",
     "type": "string",
     "env": "PI_IMAGE_MODEL",
     "default": "",
     "group": "Provider"
   },
   "internal_operations_provider": {
+    "description": "Provider for internal ops like dreaming (empty = use session model)",
     "type": "string",
     "env": "PI_INTERNAL_OPERATIONS_PROVIDER",
     "default": "",
     "group": "Provider"
   },
   "internal_operations_model": {
+    "description": "Model for internal ops like dreaming (empty = use session model)",
     "type": "string",
     "env": "PI_INTERNAL_OPERATIONS_MODEL",
     "default": "",
     "group": "Provider"
   },
   "acpx_agents": {
+    "description": "ACPX agent configurations for external AI agents",
     "type": "agent_list",
     "env": "ACPX_AGENTS",
     "default": [],
@@ -99,6 +133,7 @@
     "group": "Provider"
   },
   "cli_agents": {
+    "description": "CLI agent configurations for native AI agents",
     "type": "agent_list",
     "env": "CLI_AGENTS",
     "default": [],
@@ -106,39 +141,91 @@
     "group": "Provider"
   },
   "agent_provider": {
+    "description": "Default provider for subagents (empty = inherit from parent)",
     "type": "string",
     "default": "",
     "group": "Provider"
   },
   "agent_model": {
+    "description": "Default model for subagents (empty = inherit from parent)",
     "type": "string",
     "default": "",
     "group": "Provider"
   },
   "agent_overrides": {
+    "description": "Per-agent model/provider overrides",
     "type": "agent_overrides",
     "default": {},
     "group": "Provider"
   },
+  "sync_agent_max_seconds": {
+    "description": "Max seconds for sync subagent execution before requiring async",
+    "type": "int",
+    "env": "PI_SYNC_AGENT_MAX_SECONDS",
+    "default": 60,
+    "min": 10,
+    "max": 300,
+    "group": "Subagent"
+  },
+  "async_poll_interval_ms": {
+    "description": "Polling interval for async agent status checks (ms)",
+    "type": "int",
+    "env": "PI_ASYNC_POLL_INTERVAL_MS",
+    "default": 3000,
+    "min": 500,
+    "max": 30000,
+    "group": "Subagent"
+  },
+  "async_phantom_timeout_ms": {
+    "description": "Timeout before marking async agent as phantom/dead (ms)",
+    "type": "int",
+    "env": "PI_ASYNC_PHANTOM_TIMEOUT_MS",
+    "default": 30000,
+    "min": 5000,
+    "max": 120000,
+    "group": "Subagent"
+  },
   "vertex_claude_1m": {
+    "description": "Register Vertex AI Claude models with 1M token context window",
     "type": "bool",
     "env": "VERTEX_CLAUDE_1M",
     "default": false,
     "group": "Provider"
   },
   "sidecar_log_level": {
+    "description": "Log level for pi-sidecar server",
     "type": "string",
     "env": "PI_SIDECAR_LOG_LEVEL",
     "default": "info",
     "group": "Logging"
   },
   "enforcement_allowed_commands": {
+    "description": "Comma-separated bash commands exempt from orchestrator enforcement blocking",
     "type": "string",
     "env": "PI_ENFORCEMENT_ALLOWED_COMMANDS",
     "default": "",
     "group": "Enforcement"
   },
+  "enforcement_loop_sleep_threshold_s": {
+    "description": "Max sleep duration in loops before blocking (s)",
+    "type": "int",
+    "env": "PI_ENFORCEMENT_LOOP_SLEEP_THRESHOLD_S",
+    "default": 60,
+    "min": 1,
+    "max": 300,
+    "group": "Enforcement"
+  },
+  "enforcement_sleep_threshold_s": {
+    "description": "Max standalone sleep duration before blocking (s)",
+    "type": "int",
+    "env": "PI_ENFORCEMENT_SLEEP_THRESHOLD_S",
+    "default": 60,
+    "min": 1,
+    "max": 300,
+    "group": "Enforcement"
+  },
   "coms_max_hops": {
+    "description": "Maximum message relay hops between peers",
     "type": "int",
     "env": "PI_COMS_MAX_HOPS",
     "default": 5,
@@ -147,6 +234,7 @@
     "group": "Coms"
   },
   "coms_timeout_ms": {
+    "description": "Coms session inactivity timeout before cleanup (ms)",
     "type": "int",
     "env": "PI_COMS_TIMEOUT_MS",
     "default": 1800000,
@@ -154,128 +242,269 @@
     "group": "Coms"
   },
   "coms_dir": {
+    "description": "Override default coms registry directory (empty = auto)",
     "type": "string",
     "env": "PI_COMS_DIR",
     "default": "",
     "group": "Coms"
   },
   "coms_task_heartbeat_ms": {
+    "description": "Interval for coms task heartbeat checks (ms)",
     "type": "int",
     "env": "PI_COMS_TASK_HEARTBEAT_MS",
     "default": 300000,
     "min": 10000,
     "group": "Coms"
   },
+  "coms_entry_grace_period_ms": {
+    "description": "Grace period for new registry entries before stale check (ms)",
+    "type": "int",
+    "env": "PI_COMS_ENTRY_GRACE_PERIOD_MS",
+    "default": 30000,
+    "min": 5000,
+    "max": 120000,
+    "group": "Coms"
+  },
+  "coms_probe_timeout_ms": {
+    "description": "Timeout for probing stale peer sockets (ms)",
+    "type": "int",
+    "env": "PI_COMS_PROBE_TIMEOUT_MS",
+    "default": 1000,
+    "min": 100,
+    "max": 10000,
+    "group": "Coms"
+  },
+  "task_reminder_cadence_turns": {
+    "description": "Turns without task tool usage before showing reminder",
+    "type": "int",
+    "env": "PI_TASK_REMINDER_CADENCE_TURNS",
+    "default": 4,
+    "min": 1,
+    "max": 20,
+    "group": "Tasks"
+  },
   "log_pitasks": {
+    "description": "Log level for pitasks module",
     "type": "string",
     "env": "PI_LOG_PITASKS",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_pidash": {
+    "description": "Log level for pidash module",
     "type": "string",
     "env": "PI_LOG_PIDASH",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_pidiff": {
+    "description": "Log level for pidiff module",
     "type": "string",
     "env": "PI_LOG_PIDIFF",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_coms": {
+    "description": "Log level for coms module",
     "type": "string",
     "env": "PI_LOG_COMS",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_cli_provider": {
+    "description": "Log level for cli-provider module",
     "type": "string",
     "env": "PI_LOG_CLI_PROVIDER",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_providers": {
+    "description": "Log level for providers module",
     "type": "string",
     "env": "PI_LOG_PROVIDERS",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_dreaming": {
+    "description": "Log level for dreaming module",
     "type": "string",
     "env": "PI_LOG_DREAMING",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_acpx_provider": {
+    "description": "Log level for acpx-provider module",
     "type": "string",
     "env": "PI_LOG_ACPX_PROVIDER",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_subagent": {
+    "description": "Log level for subagent module",
     "type": "string",
     "env": "PI_LOG_SUBAGENT",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_orchestrator": {
+    "description": "Log level for orchestrator module",
     "type": "string",
     "env": "PI_LOG_ORCHESTRATOR",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_async_agents": {
+    "description": "Log level for async-agents module",
     "type": "string",
     "env": "PI_LOG_ASYNC_AGENTS",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_enforcement": {
+    "description": "Log level for enforcement module",
     "type": "string",
     "env": "PI_LOG_ENFORCEMENT",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_rules": {
+    "description": "Log level for rules module",
     "type": "string",
     "env": "PI_LOG_RULES",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_memory": {
+    "description": "Log level for memory module",
     "type": "string",
     "env": "PI_LOG_MEMORY",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_settings_tui": {
+    "description": "Log level for settings-tui module",
     "type": "string",
     "env": "PI_LOG_SETTINGS_TUI",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   },
   "log_cron": {
+    "description": "Log level for cron module",
     "type": "string",
     "env": "PI_LOG_CRON",
     "default": "info",
-    "enum": ["off", "debug", "info", "warn", "error"],
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
     "group": "Logging"
   }
 }

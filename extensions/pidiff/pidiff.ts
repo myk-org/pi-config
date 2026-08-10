@@ -164,7 +164,38 @@ export function registerPidiff(pi: ExtensionAPI): void {
       try {
         fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
       } catch {
-        // Another session is already spawning — wait for lockfile to appear
+        // Another session is already spawning — check if spawner is still alive
+        try {
+          const lockAge = Date.now() - fs.statSync(spawnLock).mtimeMs;
+          if (lockAge > getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms")) {
+            log.info("stale_spawn_lock_age", "age_s", Math.round(lockAge / 1000), "removing");
+            try { fs.unlinkSync(spawnLock); } catch {}
+            connecting = false;
+            setTimeout(() => connect(ctx), 500);
+            return;
+          }
+          const spawnerPid = parseInt(fs.readFileSync(spawnLock, "utf-8").trim(), 10);
+          if (spawnerPid && !isNaN(spawnerPid)) {
+            try {
+              process.kill(spawnerPid, 0); // throws if dead
+            } catch {
+              // Spawner is dead — clean up stale lockfile and retry
+              log.info("stale_spawn_lock", "pid", spawnerPid, "dead, removing lockfile");
+              try { fs.unlinkSync(spawnLock); } catch {}
+              connecting = false;
+              setTimeout(() => connect(ctx), 500);
+              return;
+            }
+          }
+        } catch {
+          // Can't read/stat lockfile — remove and retry
+          log.warn("spawn_lock_unreadable", "removing");
+          try { fs.unlinkSync(spawnLock); } catch {}
+          connecting = false;
+          setTimeout(() => connect(ctx), 500);
+          return;
+        }
+        // Spawner is alive — wait for it
         log.debug("another session is spawning pidiff, waiting for lockfile...");
         for (let i = 0; i < 30; i++) {
           await new Promise(r => setTimeout(r, 1000));
@@ -187,7 +218,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         port = await resolveSpawnPort(port);
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, debugLog);
-        const ready = await waitForDaemon(port, 60, debugLog);
+        const ready = await waitForDaemon(port, getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"), debugLog);
         if (!ready) { connecting = false; return; }
       } finally {
         spawning = false;
@@ -319,7 +350,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, debugLog);
         if (ctx.hasUI) ctx.ui.notify("Starting pidiff server...", "info");
-        if (await waitForDaemon(port, 60, debugLog)) {
+        if (await waitForDaemon(port, getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"), debugLog)) {
           activePort = port;
           connect(ctx);
           if (ctx.hasUI) ctx.ui.notify(`pidiff started at http://localhost:${activePort}`, "info");
@@ -344,7 +375,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, debugLog);
         if (ctx.hasUI) ctx.ui.notify("Restarting pidiff server...", "info");
-        if (await waitForDaemon(port, 60, debugLog)) {
+        if (await waitForDaemon(port, getSetting(process.cwd(), "pidiff_daemon_startup_timeout_s"), debugLog)) {
           activePort = port;
           connect(ctx);
           if (ctx.hasUI) ctx.ui.notify(`pidiff restarted at http://localhost:${activePort}`, "info");

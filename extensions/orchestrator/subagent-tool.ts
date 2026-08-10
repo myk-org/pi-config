@@ -63,10 +63,10 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
-const MAX_SYNC_SECONDS = 60;
+// Resolved per-call from settings
 const log = createLogger("subagent");
 const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
-  `Estimated time ${seconds}s meets or exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
+  `Estimated time ${seconds}s meets or exceeds ${getSetting(process.cwd(), "sync_agent_max_seconds")}s sync limit. Use async: true instead.`;
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
 let syncPenalty = 0;
@@ -841,16 +841,16 @@ export function registerSubagentTool(
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
     if (syncPenalty > 0) {
       const adjustedTotal = totalChainSeconds + syncPenalty;
-      if (adjustedTotal >= MAX_SYNC_SECONDS) {
+      if (adjustedTotal >= getSetting(process.cwd(), "sync_agent_max_seconds")) {
         log.info("sync_penalty_rejected_chain", "penalty", syncPenalty, "adjusted", adjustedTotal);
         return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Chain total ${totalChainSeconds}s + penalty ${syncPenalty}s = ${adjustedTotal}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Chain total ${totalChainSeconds}s + penalty ${syncPenalty}s = ${adjustedTotal}s — exceeds ${getSetting(process.cwd(), "sync_agent_max_seconds")}s limit. Use async: true.` }],
           details: mkd("chain")([]),
           isError: true,
         };
       }
     }
-    if (totalChainSeconds >= MAX_SYNC_SECONDS && asyncOk) {
+    if (totalChainSeconds >= getSetting(process.cwd(), "sync_agent_max_seconds") && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
         details: mkd("chain")([]),
@@ -977,16 +977,16 @@ export function registerSubagentTool(
     const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
     if (syncPenalty > 0) {
       const adjustedMax = maxParallelSeconds + syncPenalty;
-      if (adjustedMax >= MAX_SYNC_SECONDS) {
+      if (adjustedMax >= getSetting(process.cwd(), "sync_agent_max_seconds")) {
         log.info("sync_penalty_rejected_parallel", "penalty", syncPenalty, "adjusted", adjustedMax);
         return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Max parallel estimate ${maxParallelSeconds}s + penalty ${syncPenalty}s = ${adjustedMax}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Max parallel estimate ${maxParallelSeconds}s + penalty ${syncPenalty}s = ${adjustedMax}s — exceeds ${getSetting(process.cwd(), "sync_agent_max_seconds")}s limit. Use async: true.` }],
           details: mkd("parallel")([]),
           isError: true,
         };
       }
     }
-    if (maxParallelSeconds >= MAX_SYNC_SECONDS && asyncOk) {
+    if (maxParallelSeconds >= getSetting(process.cwd(), "sync_agent_max_seconds") && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
         details: mkd("parallel")([]),
@@ -1150,16 +1150,16 @@ export function registerSubagentTool(
     }
     if (syncPenalty > 0) {
       const adjustedEstimate = (params.estimatedSeconds ?? 0) + syncPenalty;
-      if (adjustedEstimate >= MAX_SYNC_SECONDS) {
+      if (adjustedEstimate >= getSetting(process.cwd(), "sync_agent_max_seconds")) {
         log.info("sync_penalty_rejected", params.agent, "estimate", params.estimatedSeconds, "penalty", syncPenalty, "adjusted", adjustedEstimate);
         return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Your estimate ${params.estimatedSeconds}s + penalty ${syncPenalty}s = ${adjustedEstimate}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Your estimate ${params.estimatedSeconds}s + penalty ${syncPenalty}s = ${adjustedEstimate}s — exceeds ${getSetting(process.cwd(), "sync_agent_max_seconds")}s limit. Use async: true.` }],
           details: mkd("single")([]),
           isError: true,
         };
       }
     }
-    if (params.estimatedSeconds >= MAX_SYNC_SECONDS && asyncOk) {
+    if (params.estimatedSeconds >= getSetting(process.cwd(), "sync_agent_max_seconds") && asyncOk) {
       return {
         content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
         details: mkd("single")([]),
@@ -1191,7 +1191,7 @@ export function registerSubagentTool(
       explicit,
     );
     const actualSeconds = Math.round((Date.now() - syncStartTime) / 1000);
-    if (actualSeconds > MAX_SYNC_SECONDS && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
+    if (actualSeconds > getSetting(process.cwd(), "sync_agent_max_seconds") && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
       syncPenalty = actualSeconds - (params.estimatedSeconds ?? 0);
       lastSyncAgent = params.agent;
       lastSyncEstimate = params.estimatedSeconds ?? 0;
