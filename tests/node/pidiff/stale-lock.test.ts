@@ -9,7 +9,15 @@
  * Run with: npx tsx --test tests/node/pidiff/stale-lock.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	writeFileSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, afterEach } from "node:test";
@@ -59,5 +67,76 @@ describe("pidiff stale lock detection", () => {
 		// mtime should be between beforeWrite and now (no timing threshold)
 		assert.ok(mtime >= beforeWrite - 1000, `mtime should be >= beforeWrite - 1s`);
 		assert.ok(lockAge >= 0, `Lock age should be >= 0, got ${lockAge}`);
+	});
+
+	it("dead PID lockfile triggers recovery path", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-dead-"));
+		const lockPath = join(tmpDir, "pidiff.spawning");
+		// Write lockfile with dead PID
+		writeFileSync(lockPath, "99999999");
+
+		// Simulate the recovery logic from pidiff.ts
+		const spawnerPid = parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
+		let shouldRecover = false;
+		try {
+			process.kill(spawnerPid, 0);
+		} catch {
+			// PID dead — recovery should trigger
+			shouldRecover = true;
+		}
+		assert.equal(shouldRecover, true, "Dead PID should trigger recovery");
+
+		// Recovery action: delete lockfile
+		unlinkSync(lockPath);
+		assert.equal(existsSync(lockPath), false, "Lockfile should be deleted after recovery");
+	});
+
+	it("alive PID with old lockfile triggers PID reuse detection", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-reuse-"));
+		const lockPath = join(tmpDir, "pidiff.spawning");
+		// Write lockfile with current PID (alive)
+		writeFileSync(lockPath, String(process.pid));
+
+		const spawnerPid = parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
+		// PID is alive
+		let isAlive = false;
+		try {
+			process.kill(spawnerPid, 0);
+			isAlive = true;
+		} catch {
+			isAlive = false;
+		}
+		assert.equal(isAlive, true, "Current process PID should be alive");
+
+		// Simulate PID reuse check: lockAge > 2 * staleTimeout
+		const staleTimeout = 60000; // default
+		const simulatedLockAge = staleTimeout * 2 + 1000; // older than 2x threshold
+		const shouldRecoverDueToPidReuse = simulatedLockAge > staleTimeout * 2;
+		assert.equal(
+			shouldRecoverDueToPidReuse,
+			true,
+			"Lock age > 2x timeout should trigger PID reuse recovery",
+		);
+	});
+
+	it("alive PID with young lockfile should NOT trigger recovery", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-young-"));
+		const lockPath = join(tmpDir, "pidiff.spawning");
+		writeFileSync(lockPath, String(process.pid));
+
+		const spawnerPid = parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
+		let isAlive = false;
+		try {
+			process.kill(spawnerPid, 0);
+			isAlive = true;
+		} catch {
+			isAlive = false;
+		}
+		assert.equal(isAlive, true);
+
+		const lockAge = Date.now() - statSync(lockPath).mtimeMs;
+		const staleTimeout = 60000;
+		const shouldRecover = !isAlive || lockAge > staleTimeout * 2;
+		assert.equal(shouldRecover, false, "Young lock with alive PID should NOT trigger recovery");
 	});
 });

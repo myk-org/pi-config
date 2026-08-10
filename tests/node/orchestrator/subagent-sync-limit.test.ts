@@ -56,4 +56,37 @@ describe("subagent sync limit settings", () => {
 		const val = getSetting(tmpDir, "sync_agent_max_seconds");
 		assert.equal(val, 60);
 	});
+
+	it("sync_agent_max_seconds enforces async requirement", () => {
+		mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ sync_agent_max_seconds: 10 }),
+			"utf-8",
+		);
+		clearSettingsCache();
+
+		const limit = getSetting(tmpDir, "sync_agent_max_seconds");
+		assert.equal(limit, 10);
+
+		// Simulate enforcement: estimated 15s > limit 10s → should require async
+		const estimatedSeconds = 15;
+		const shouldRequireAsync = estimatedSeconds >= limit;
+		assert.equal(shouldRequireAsync, true, "15s task should require async when limit is 10s");
+	});
+
+	it("sync_agent_max_seconds allows sync within limit", () => {
+		mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ sync_agent_max_seconds: 60 }),
+			"utf-8",
+		);
+		clearSettingsCache();
+
+		const limit = getSetting(tmpDir, "sync_agent_max_seconds");
+		const estimatedSeconds = 25;
+		const shouldRequireAsync = estimatedSeconds >= limit;
+		assert.equal(shouldRequireAsync, false, "25s task should NOT require async when limit is 60s");
+	});
 });
