@@ -28,6 +28,10 @@ import {
 import { createLogger } from "../shared/logger.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { evaluateSpawnLock } from "./spawn-lock.js";
+
+/** Re-export for callers/tests that import from pidiff. */
+export { evaluateSpawnLock } from "./spawn-lock.js";
 
 const RECONNECT_INTERVAL_MS = 5000;
 const ICON_DIFF = "";
@@ -165,44 +169,9 @@ export function registerPidiff(pi: ExtensionAPI): void {
         fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
       } catch {
         // Another session is already spawning — check if spawner is still alive
-        try {
-          const spawnerPid = parseInt(fs.readFileSync(spawnLock, "utf-8").trim(), 10);
-          if (spawnerPid && !isNaN(spawnerPid)) {
-            try {
-              process.kill(spawnerPid, 0); // throws if dead
-              // Spawner appears alive — but check lock age for PID reuse
-              const lockAge = Date.now() - fs.statSync(spawnLock).mtimeMs;
-              if (lockAge > getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms") * 2) {
-                // Lock is very old despite PID alive — likely PID reuse
-                log.info("stale_spawn_lock_pid_reuse", "pid", spawnerPid, "age_s", Math.round(lockAge / 1000), "removing");
-                try { fs.unlinkSync(spawnLock); } catch {}
-                connecting = false;
-                setTimeout(() => connect(ctx), 500);
-                return;
-              }
-              // Spawner genuinely alive — go to wait
-            } catch {
-              // Spawner is dead — clean up stale lockfile and retry
-              log.info("stale_spawn_lock", "pid", spawnerPid, "dead, removing lockfile");
-              try { fs.unlinkSync(spawnLock); } catch {}
-              connecting = false;
-              setTimeout(() => connect(ctx), 500);
-              return;
-            }
-          } else {
-            // No valid PID in lockfile — check age as fallback
-            const lockAge = Date.now() - fs.statSync(spawnLock).mtimeMs;
-            if (lockAge > getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms")) {
-              log.info("stale_spawn_lock_age", "age_s", Math.round(lockAge / 1000), "removing");
-              try { fs.unlinkSync(spawnLock); } catch {}
-              connecting = false;
-              setTimeout(() => connect(ctx), 500);
-              return;
-            }
-          }
-        } catch {
-          // Can't read/stat lockfile — remove and retry
-          log.warn("spawn_lock_unreadable", "removing");
+        const lockDecision = evaluateSpawnLock(spawnLock, getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms"));
+        if (lockDecision.action === "recover" || lockDecision.action === "recover_pid_reuse") {
+          log.info("stale_spawn_lock", lockDecision.reason);
           try { fs.unlinkSync(spawnLock); } catch {}
           connecting = false;
           setTimeout(() => connect(ctx), 500);
