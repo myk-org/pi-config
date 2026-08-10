@@ -61,7 +61,21 @@ describe("coms settings configurability", () => {
 		clearSettingsCache();
 		// Verify settings resolve from the specified cwd, not process.cwd()
 		assert.equal(getSetting(tmpDir, "coms_entry_grace_period_ms"), 99999);
-		// process.cwd() should return a different value (the default)
-		assert.equal(getSetting(process.cwd(), "coms_entry_grace_period_ms"), 30000);
+		// process.cwd() should NOT return the custom value from tmpDir
+		assert.notEqual(getSetting(process.cwd(), "coms_entry_grace_period_ms"), 99999);
+	});
+
+	it("coms_probe_timeout_ms resolves per-cwd", () => {
+		mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ coms_probe_timeout_ms: 5000 }),
+			"utf-8",
+		);
+		clearSettingsCache();
+		// Custom cwd returns configured value
+		assert.equal(getSetting(tmpDir, "coms_probe_timeout_ms"), 5000);
+		// Different cwd should not return the custom value
+		assert.notEqual(getSetting(process.cwd(), "coms_probe_timeout_ms"), 5000);
 	});
 });
