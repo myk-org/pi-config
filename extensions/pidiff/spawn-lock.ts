@@ -16,6 +16,7 @@ export function evaluateSpawnLock(
   staleTimeoutMs: number,
 ): { action: "wait" | "recover" | "recover_pid_reuse"; reason: string } {
   log.debug("evaluate_spawn_lock", "lockPath", lockPath, "staleTimeoutMs", staleTimeoutMs);
+  const effectiveTimeout = Math.max(staleTimeoutMs, 1000); // Floor at 1s to prevent thrashing
   let result: { action: "wait" | "recover" | "recover_pid_reuse"; reason: string };
 
   try {
@@ -25,7 +26,7 @@ export function evaluateSpawnLock(
     if (!spawnerPid || isNaN(spawnerPid)) {
       // No valid PID — check age
       const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs;
-      if (lockAge > staleTimeoutMs) {
+      if (lockAge > effectiveTimeout) {
         result = { action: "recover", reason: `no valid PID, age ${Math.round(lockAge / 1000)}s > timeout` };
       } else {
         result = { action: "wait", reason: "no valid PID but lock is young" };
@@ -35,8 +36,9 @@ export function evaluateSpawnLock(
       try {
         process.kill(spawnerPid, 0);
         isAlive = true;
-      } catch {
-        isAlive = false;
+      } catch (e: any) {
+        // EPERM = process exists but we can't signal it — treat as alive
+        isAlive = e?.code === "EPERM";
       }
 
       if (!isAlive) {
@@ -44,7 +46,7 @@ export function evaluateSpawnLock(
       } else {
         // PID alive — check for PID reuse (lock age > 2x timeout)
         const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs;
-        if (lockAge > staleTimeoutMs * 2) {
+        if (lockAge > effectiveTimeout * 2) {
           result = { action: "recover_pid_reuse", reason: `PID ${spawnerPid} alive but lock age ${Math.round(lockAge / 1000)}s > 2x timeout` };
         } else {
           result = { action: "wait", reason: `PID ${spawnerPid} alive, lock age ${Math.round(lockAge / 1000)}s within threshold` };
