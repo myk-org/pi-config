@@ -839,6 +839,9 @@ export function registerSubagentTool(
     }
     // chain runs sequentially — sum all steps
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
+    if (!params.chain || params.chain.length === 0) {
+      return { content: [{ type: "text" as const, text: "Error: chain array is empty — at least one step is required." }] };
+    }
     const chainCwd = params.chain[0].cwd;
     if (syncPenalty > 0) {
       const adjustedTotal = totalChainSeconds + syncPenalty;

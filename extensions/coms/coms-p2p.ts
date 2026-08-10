@@ -363,6 +363,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		}
 		// Skip entries younger than 30s — recently booted peers get grace period
 		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
+		// Use process.cwd() — coms settings are global, not per-project
 		if (!isNaN(entryAge) && entryAge < getSetting(process.cwd(), "coms_entry_grace_period_ms")) {
 			log.debug("prune_skip_grace", entry.name, "age_ms", entryAge);
 			youngEntries.push(entry);
@@ -446,6 +447,7 @@ function probeStaleSocket(endpoint: string, name?: string): Promise<"in_use" | "
 			try { sock.destroy(); } catch { /* ignore */ }
 			resolve(verdict);
 		};
+		// Use process.cwd() — coms settings are global, not per-project
 		const timer = setTimeout(() => finish("stale"), getSetting(process.cwd(), "coms_probe_timeout_ms"));
 		log.debug("probe_stale", name ?? endpoint, "timeout_ms", getSetting(process.cwd(), "coms_probe_timeout_ms"));
 		sock.once("connect", () => {

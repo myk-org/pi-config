@@ -170,7 +170,17 @@ export function registerPidiff(pi: ExtensionAPI): void {
           if (spawnerPid && !isNaN(spawnerPid)) {
             try {
               process.kill(spawnerPid, 0); // throws if dead
-              // Spawner is alive — skip age check, go straight to wait
+              // Spawner appears alive — but check lock age for PID reuse
+              const lockAge = Date.now() - fs.statSync(spawnLock).mtimeMs;
+              if (lockAge > getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms") * 2) {
+                // Lock is very old despite PID alive — likely PID reuse
+                log.info("stale_spawn_lock_pid_reuse", "pid", spawnerPid, "age_s", Math.round(lockAge / 1000), "removing");
+                try { fs.unlinkSync(spawnLock); } catch {}
+                connecting = false;
+                setTimeout(() => connect(ctx), 500);
+                return;
+              }
+              // Spawner genuinely alive — go to wait
             } catch {
               // Spawner is dead — clean up stale lockfile and retry
               log.info("stale_spawn_lock", "pid", spawnerPid, "dead, removing lockfile");
