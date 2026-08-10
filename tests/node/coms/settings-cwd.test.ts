@@ -18,7 +18,7 @@ import {
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
 
-describe("coms settings cwd resolution", () => {
+describe("coms settings configurability", () => {
 	let tmpDir: string;
 	let globalTmp: string;
 

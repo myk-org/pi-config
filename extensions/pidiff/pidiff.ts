@@ -169,7 +169,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
       } catch {
         // Another session is already spawning — check if spawner is still alive
-        const lockDecision = evaluateSpawnLock(spawnLock, getSetting(process.cwd(), "pidiff_stale_lock_timeout_ms"));
+        const lockDecision = evaluateSpawnLock(spawnLock, getSetting(ctx.cwd, "pidiff_stale_lock_timeout_ms"));
         if (lockDecision.action === "recover" || lockDecision.action === "recover_pid_reuse") {
           log.info("stale_spawn_lock", lockDecision.reason);
           try { fs.unlinkSync(spawnLock); } catch {}

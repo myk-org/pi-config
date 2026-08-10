@@ -1,8 +1,11 @@
 /**
  * Spawn-lock evaluation for pidiff daemon startup races.
- * Kept dependency-free so unit tests can import without pi-tui / ExtensionAPI.
+ * No pi-tui / ExtensionAPI deps — unit tests can import directly.
  */
 import * as fs from "node:fs";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("pidiff");
 
 /**
  * Evaluate a stale spawn lockfile and decide the recovery action.
@@ -12,39 +15,46 @@ export function evaluateSpawnLock(
   lockPath: string,
   staleTimeoutMs: number,
 ): { action: "wait" | "recover" | "recover_pid_reuse"; reason: string } {
+  log.debug("evaluate_spawn_lock", "lockPath", lockPath, "staleTimeoutMs", staleTimeoutMs);
+  let result: { action: "wait" | "recover" | "recover_pid_reuse"; reason: string };
+
   try {
     const content = fs.readFileSync(lockPath, "utf-8").trim();
-    const spawnerPid = parseInt(content, 10);
+    const spawnerPid = /^\d+$/.test(content) ? parseInt(content, 10) : NaN;
 
     if (!spawnerPid || isNaN(spawnerPid)) {
       // No valid PID — check age
       const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs;
       if (lockAge > staleTimeoutMs) {
-        return { action: "recover", reason: `no valid PID, age ${Math.round(lockAge / 1000)}s > timeout` };
+        result = { action: "recover", reason: `no valid PID, age ${Math.round(lockAge / 1000)}s > timeout` };
+      } else {
+        result = { action: "wait", reason: "no valid PID but lock is young" };
       }
-      return { action: "wait", reason: "no valid PID but lock is young" };
-    }
+    } else {
+      let isAlive = false;
+      try {
+        process.kill(spawnerPid, 0);
+        isAlive = true;
+      } catch {
+        isAlive = false;
+      }
 
-    let isAlive = false;
-    try {
-      process.kill(spawnerPid, 0);
-      isAlive = true;
-    } catch {
-      isAlive = false;
+      if (!isAlive) {
+        result = { action: "recover", reason: `PID ${spawnerPid} is dead` };
+      } else {
+        // PID alive — check for PID reuse (lock age > 2x timeout)
+        const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (lockAge > staleTimeoutMs * 2) {
+          result = { action: "recover_pid_reuse", reason: `PID ${spawnerPid} alive but lock age ${Math.round(lockAge / 1000)}s > 2x timeout` };
+        } else {
+          result = { action: "wait", reason: `PID ${spawnerPid} alive, lock age ${Math.round(lockAge / 1000)}s within threshold` };
+        }
+      }
     }
-
-    if (!isAlive) {
-      return { action: "recover", reason: `PID ${spawnerPid} is dead` };
-    }
-
-    // PID alive — check for PID reuse (lock age > 2x timeout)
-    const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs;
-    if (lockAge > staleTimeoutMs * 2) {
-      return { action: "recover_pid_reuse", reason: `PID ${spawnerPid} alive but lock age ${Math.round(lockAge / 1000)}s > 2x timeout` };
-    }
-
-    return { action: "wait", reason: `PID ${spawnerPid} alive, lock age ${Math.round(lockAge / 1000)}s within threshold` };
   } catch {
-    return { action: "recover", reason: "cannot read/stat lockfile" };
+    result = { action: "recover", reason: "cannot read/stat lockfile" };
   }
+
+  log.debug("evaluate_spawn_lock", result.action, result.reason);
+  return result;
 }

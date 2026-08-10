@@ -55,8 +55,8 @@ describe("pidiff stale lock detection", () => {
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, "not-a-pid");
 
-    // Lock with invalid PID and stale timeout of 0 → should recover
-    const result = evaluateSpawnLock(lockPath, 0);
+    // Lock with invalid PID and negative timeout → should recover (avoids lockAge=0 race)
+    const result = evaluateSpawnLock(lockPath, -1);
     assert.equal(result.action, "recover");
     assert.match(result.reason, /no valid PID/);
   });
@@ -81,8 +81,8 @@ describe("pidiff stale lock detection", () => {
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, String(process.pid));
 
-    // Use timeout of 0ms so any lock age > 0 triggers PID reuse
-    const result = evaluateSpawnLock(lockPath, 0);
+    // Use negative timeout so any lock age triggers PID reuse (avoids lockAge=0 race)
+    const result = evaluateSpawnLock(lockPath, -1);
     assert.equal(result.action, "recover_pid_reuse");
     assert.match(result.reason, /alive but lock age/);
   });
