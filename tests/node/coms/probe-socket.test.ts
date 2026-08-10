@@ -9,8 +9,13 @@ describe("probeStaleSocket", () => {
 	let tmpDir: string | undefined;
 	let server: net.Server | undefined;
 
-	afterEach(() => {
-		if (server) { try { server.close(); } catch {} server = undefined; }
+	afterEach(async () => {
+		if (server) {
+			await new Promise<void>((resolve) => {
+				server!.close(() => resolve());
+			}).catch(() => {});
+			server = undefined;
+		}
 		if (tmpDir) { try { rmSync(tmpDir, { recursive: true, force: true }); } catch {} tmpDir = undefined; }
 	});
 
