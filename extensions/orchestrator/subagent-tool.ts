@@ -43,6 +43,7 @@ import {
 } from "./async-capability.js";
 import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { getSetting } from "./project-settings.js";
+import { checkSyncLimit } from "./sync-limit.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
@@ -55,7 +56,7 @@ const SETTINGS_KEYS_FOR_SUBAGENT = JSON.parse(
   ),
 );
 
-export { resolveAgentModelProvider, parseModelOverride };
+export { resolveAgentModelProvider, parseModelOverride, checkSyncLimit };
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -63,10 +64,12 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
-const MAX_SYNC_SECONDS = 60;
+// Resolved per-call from settings
 const log = createLogger("subagent");
-const SYNC_TIME_EXCEEDED_ERROR = (seconds: number) =>
-  `Estimated time ${seconds}s meets or exceeds ${MAX_SYNC_SECONDS}s sync limit. Use async: true instead.`;
+const SYNC_TIME_EXCEEDED_ERROR = (seconds: number, limit: number, cwd: string) => {
+  log.info("sync_time_exceeded", "seconds", seconds, "limit", limit, "cwd", cwd);
+  return `Estimated time ${seconds}s meets or exceeds ${limit}s sync limit. Use async: true instead.`;
+};
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
 let syncPenalty = 0;
@@ -839,20 +842,25 @@ export function registerSubagentTool(
     }
     // chain runs sequentially — sum all steps
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
+    if (!params.chain || params.chain.length === 0) {
+      return { content: [{ type: "text" as const, text: "Error: chain array is empty — at least one step is required." }] };
+    }
+    const chainCwd = params.chain[0].cwd;
+    const { limit: chainLimit } = checkSyncLimit(0, chainCwd);
     if (syncPenalty > 0) {
       const adjustedTotal = totalChainSeconds + syncPenalty;
-      if (adjustedTotal >= MAX_SYNC_SECONDS) {
+      if (adjustedTotal >= chainLimit) {
         log.info("sync_penalty_rejected_chain", "penalty", syncPenalty, "adjusted", adjustedTotal);
         return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Chain total ${totalChainSeconds}s + penalty ${syncPenalty}s = ${adjustedTotal}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Chain total ${totalChainSeconds}s + penalty ${syncPenalty}s = ${adjustedTotal}s — exceeds ${chainLimit}s limit. Use async: true.` }],
           details: mkd("chain")([]),
           isError: true,
         };
       }
     }
-    if (totalChainSeconds >= MAX_SYNC_SECONDS && asyncOk) {
+    if (totalChainSeconds >= chainLimit && asyncOk) {
       return {
-        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds) }],
+        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(totalChainSeconds, chainLimit, chainCwd) }],
         details: mkd("chain")([]),
         isError: true,
       };
@@ -975,20 +983,22 @@ export function registerSubagentTool(
     }
     // parallel runs concurrently — use longest task
     const maxParallelSeconds = Math.max(...params.tasks.map((t: any) => t.estimatedSeconds!));
+    const parallelCwd = params.tasks[0]?.cwd ?? process.cwd();
+    const { limit: parallelLimit } = checkSyncLimit(0, parallelCwd);
     if (syncPenalty > 0) {
       const adjustedMax = maxParallelSeconds + syncPenalty;
-      if (adjustedMax >= MAX_SYNC_SECONDS) {
+      if (adjustedMax >= parallelLimit) {
         log.info("sync_penalty_rejected_parallel", "penalty", syncPenalty, "adjusted", adjustedMax);
         return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Max parallel estimate ${maxParallelSeconds}s + penalty ${syncPenalty}s = ${adjustedMax}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Max parallel estimate ${maxParallelSeconds}s + penalty ${syncPenalty}s = ${adjustedMax}s — exceeds ${parallelLimit}s limit. Use async: true.` }],
           details: mkd("parallel")([]),
           isError: true,
         };
       }
     }
-    if (maxParallelSeconds >= MAX_SYNC_SECONDS && asyncOk) {
+    if (maxParallelSeconds >= parallelLimit && asyncOk) {
       return {
-        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds) }],
+        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(maxParallelSeconds, parallelLimit, parallelCwd) }],
         details: mkd("parallel")([]),
         isError: true,
       };
@@ -1148,20 +1158,21 @@ export function registerSubagentTool(
         isError: true,
       };
     }
+    const { limit: singleLimit } = checkSyncLimit(0, params.cwd);
     if (syncPenalty > 0) {
       const adjustedEstimate = (params.estimatedSeconds ?? 0) + syncPenalty;
-      if (adjustedEstimate >= MAX_SYNC_SECONDS) {
+      if (adjustedEstimate >= singleLimit) {
         log.info("sync_penalty_rejected", params.agent, "estimate", params.estimatedSeconds, "penalty", syncPenalty, "adjusted", adjustedEstimate);
         return {
-          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Your estimate ${params.estimatedSeconds}s + penalty ${syncPenalty}s = ${adjustedEstimate}s — exceeds ${MAX_SYNC_SECONDS}s limit. Use async: true.` }],
+          content: [{ type: "text" as const, text: `Rejected: your last sync agent '${lastSyncAgent}' estimated ${lastSyncEstimate}s but took ${lastSyncActual}s. Penalty: ${syncPenalty}s. Your estimate ${params.estimatedSeconds}s + penalty ${syncPenalty}s = ${adjustedEstimate}s — exceeds ${singleLimit}s limit. Use async: true.` }],
           details: mkd("single")([]),
           isError: true,
         };
       }
     }
-    if (params.estimatedSeconds >= MAX_SYNC_SECONDS && asyncOk) {
+    if (params.estimatedSeconds >= singleLimit && asyncOk) {
       return {
-        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds) }],
+        content: [{ type: "text" as const, text: SYNC_TIME_EXCEEDED_ERROR(params.estimatedSeconds, singleLimit, params.cwd) }],
         details: mkd("single")([]),
         isError: true,
       };
@@ -1191,7 +1202,7 @@ export function registerSubagentTool(
       explicit,
     );
     const actualSeconds = Math.round((Date.now() - syncStartTime) / 1000);
-    if (actualSeconds > MAX_SYNC_SECONDS && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
+    if (actualSeconds > checkSyncLimit(0, params.cwd).limit && actualSeconds - (params.estimatedSeconds ?? 0) > 30) {
       syncPenalty = actualSeconds - (params.estimatedSeconds ?? 0);
       lastSyncAgent = params.agent;
       lastSyncEstimate = params.estimatedSeconds ?? 0;

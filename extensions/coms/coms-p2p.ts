@@ -30,9 +30,11 @@ import { Worker } from "node:worker_threads";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
+import { probeStaleSocket } from "./probe-socket.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+const log = createLogger("coms");
 let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
 let MAX_HOPS = 5;
 
@@ -343,7 +345,7 @@ function removeRegistryEntry(project: string, sessionId: string): void {
 	}
 }
 
-async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
+async function pruneDeadEntries(project: string, cwd = process.cwd()): Promise<RegistryEntry[]> {
 	const entries = readAllRegistryEntries(project);
 	const socketsDir = path.join(COMS_DIR, "sockets");
 
@@ -362,7 +364,8 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		}
 		// Skip entries younger than 30s — recently booted peers get grace period
 		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
-		if (!isNaN(entryAge) && entryAge < 30000) {
+		if (!isNaN(entryAge) && entryAge < getSetting(cwd, "coms_entry_grace_period_ms")) {
+			log.debug("prune_skip_grace", entry.name, "age_ms", entryAge);
 			youngEntries.push(entry);
 			continue;
 		}
@@ -385,12 +388,15 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	}
 
 	// Phase 2: Parallel socket probes (capped at 10 concurrent to avoid EMFILE)
-	if (candidates.length === 0) return youngEntries;
+	if (candidates.length === 0) {
+		log.debug("prune_complete", "checked", entries.length);
+		return youngEntries;
+	}
 	const PROBE_CONCURRENCY = 10;
 	const results: ("in_use" | "stale")[] = [];
 	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
 		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
-		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint)));
+		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint, entry.name, cwd)));
 		results.push(...batchResults.map(r => r.status === "fulfilled" ? r.value : "in_use" as const));
 	}
 	const live: RegistryEntry[] = [];
@@ -405,6 +411,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 			live.push(candidates[i]);
 		}
 	}
+	log.debug("prune_complete", "checked", entries.length);
 	return [...live, ...youngEntries];
 }
 
@@ -423,39 +430,12 @@ async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
 		} catch {
 			continue;
 		}
-		out.push(...await pruneDeadEntries(p));
+		out.push(...await pruneDeadEntries(p, process.cwd()));
 	}
 	return out;
 }
 
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function probeStaleSocket(endpoint: string): Promise<"in_use" | "stale"> {
-	return new Promise((resolve) => {
-		const sock = net.createConnection({ path: endpoint });
-		let settled = false;
-		const finish = (verdict: "in_use" | "stale") => {
-			if (settled) return;
-			settled = true;
-			try { sock.destroy(); } catch { /* ignore */ }
-			resolve(verdict);
-		};
-		const timer = setTimeout(() => finish("stale"), 1000);
-		sock.once("connect", () => {
-			clearTimeout(timer);
-			finish("in_use");
-		});
-		sock.once("error", (err: any) => {
-			clearTimeout(timer);
-			if (err && (err.code === "ECONNREFUSED" || err.code === "ENOENT")) {
-				finish("stale");
-			} else {
-				// Transient errors (EMFILE, EACCES, etc.) — treat as live to avoid false pruning
-				finish("in_use");
-			}
-		});
-	});
-}
 
 /**
  * Strict liveness probe — only returns "alive" on actual successful TCP connect.
@@ -624,7 +604,6 @@ export default function (pi: ExtensionAPI) {
 		registryFile: string;
 		pi_session_id: string;
 	} | null = null;
-	const log = createLogger("coms");
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
 	let welcomeShown = false;
 	const knownPeerSessions: Map<string, string> = new Map(); // session_id → name
@@ -1752,7 +1731,7 @@ Do not respond to this message.`;
 	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
-			const localEntries = await pruneDeadEntries(identity.project);
+			const localEntries = await pruneDeadEntries(identity.project, process.cwd());
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.coms_session_id === target);
 			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
@@ -1775,13 +1754,13 @@ Do not respond to this message.`;
 		}
 		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
-			const entries = await pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj, process.cwd());
 			const bySession = entries.find((e) => e.coms_session_id === target);
 			if (bySession) return bySession;
 		}
 		// Fall back to name match across projects.
 		for (const proj of listProjects()) {
-			const entries = await pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj, process.cwd());
 			const byName = entries.find((e) => e.name === target);
 			if (byName) return byName;
 		}

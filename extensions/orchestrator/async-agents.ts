@@ -42,7 +42,7 @@ const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
 
 
 
-const ASYNC_POLL_INTERVAL_MS = 3000;
+// Resolved per-call from settings
 
 // ── Interfaces ───────────────────────────────────────────────────────────
 
@@ -195,6 +195,7 @@ export function registerAsyncAgents(
       for (const job of asyncState.jobs.values()) {
         if (job.status === "complete" || job.status === "failed") continue;
         const status = readAsyncStatus(job.workerDir);
+        log.debug("poller_check", job.id, "workerDir exists", fs.existsSync(job.workerDir), "pid", status?.pid);
         if (!status) {
           // No status file — process never started or died before writing status.
           // Check if workerDir still exists; if not, the job is definitely dead.
@@ -216,9 +217,9 @@ export function registerAsyncAgents(
           } else {
             // Worker dir exists but no status file — check timeout
             const elapsed = Date.now() - job.startedAt;
-            if (elapsed > 30000) {
+            if (elapsed > getSetting(jobCwd(job), "async_phantom_timeout_ms")) {
               job.status = "failed";
-              job.output = "Agent process timed out — no status file after 30s";
+              job.output = `Agent process timed out — no status file after ${Math.round(elapsed / 1000)}s`;
               job.durationMs = elapsed;
               job.updatedAt = Date.now();
               job.sideEffectsApplied = true;
@@ -261,6 +262,7 @@ export function registerAsyncAgents(
           } else if (job.status === "running" && status.pid) {
             try { process.kill(status.pid, 0); } catch {
               // Process exited — check if it wrote a result file first
+              log.debug("poller_zombie", job.id, "pid", status.pid, "checking result file");
               const resultFilePath = path.join(ASYNC_RESULTS_DIR, `${job.id}.json`);
               if (fs.existsSync(resultFilePath)) {
                 // Result file exists — ingest it so output/durationMs are populated
@@ -271,6 +273,7 @@ export function registerAsyncAgents(
                   job.exitCode = data.exitCode;
                   job.durationMs = data.durationMs;
                   job.updatedAt = Date.now();
+                  log.debug("poller_zombie_ingest", job.id, "status", job.status, "output_len", job.output?.length);
                   let zombieSideEffectsOk = true;
                   if (job.agent.startsWith("code-reviewer-")) {
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
@@ -297,6 +300,7 @@ export function registerAsyncAgents(
                 job.output = "Process exited without producing results";
                 job.durationMs = Date.now() - job.startedAt;
                 job.updatedAt = Date.now();
+                log.debug("poller_zombie_no_result", job.id, "agent", job.agent, "pid", status?.pid, "elapsed_ms", Date.now() - job.startedAt);
                 // Record killed reviewer as having 0 findings — prevents permanent commit block
                 let noFileSideEffectsOk = true;
                 if (job.agent.startsWith("code-reviewer-")) {
@@ -387,6 +391,7 @@ export function registerAsyncAgents(
               job.delivered = true;
               log.debug(`reconcile: skipping already-delivered result for ${job.id}`);
             } else {
+              log.debug("reconcile_deliver", job.id, "hasCtx", !!asyncState.lastCtx);
               try {
                 pi.sendMessage({
                   customType: "async-agent-result",
@@ -398,6 +403,7 @@ export function registerAsyncAgents(
                 }
                 job.delivered = true;
                 recordDelivered(job.id);
+                log.debug("reconcile_deliver_ok", job.id);
               } catch (e: any) {
                 log.error(`reconcile: sendMessage failed for ${job.id}: ${e?.message}`);
                 // delivered stays false — will retry on next poll
@@ -430,7 +436,7 @@ export function registerAsyncAgents(
         }
       }
       updateAsyncWidget();
-    }, ASYNC_POLL_INTERVAL_MS);
+    }, getSetting(process.cwd(), "async_poll_interval_ms"));
     if (asyncState.poller.unref) asyncState.poller.unref();
   }
 
@@ -600,6 +606,7 @@ export function registerAsyncAgents(
       }
       if (job.delivered) {
         // Already delivered — clean up stale file
+        log.debug("processResultFile_skip_delivered", job.id);
         try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`stale cleanup failed: ${resultPath}: ${e?.message}`); }
         return;
       }
@@ -787,6 +794,7 @@ export function registerAsyncAgents(
       asyncState.watcher = fs.watch(ASYNC_RESULTS_DIR, (ev, file) => {
         if (ev !== "rename" || !file) return;
         const fileName = file.toString();
+        log.debug("watcher_event", ev, fileName);
         if (!fileName.endsWith(".json")) return;
         const resultPath = path.join(ASYNC_RESULTS_DIR, fileName);
         setTimeout(() => processResultFile(resultPath), 100);
@@ -1171,6 +1179,7 @@ export function registerAsyncAgents(
           continue;
         }
         // Only restore running/queued jobs with alive processes
+        log.debug("restore_check", id, "isAlive", isAlive, "state", status.state);
         if (isAlive || status.state === "running") {
           // No result file = already processed and delivered — mark as delivered
           const hasResultFile = fs.existsSync(path.join(ASYNC_RESULTS_DIR, `${id}.json`));
@@ -1185,8 +1194,8 @@ export function registerAsyncAgents(
             exitCode: status.exitCode,
             durationMs: status.endedAt ? status.endedAt - status.startedAt : undefined,
             output: status.output || undefined,
-            delivered: isComplete || !hasResultFile,
-            sideEffectsApplied: isComplete || !hasResultFile,
+            delivered: isComplete,
+            sideEffectsApplied: isComplete,
             fireAndForget: marker.fireAndForget || false,
             taskId: marker.taskId || undefined,
             cwd: marker.cwd || undefined,

@@ -494,14 +494,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // On acpx, do not push async (unsupported); foreground waits are allowed.
     const hasLoop = /\b(while|for|until)\b/.test(command);
     const sleepMatch = command.match(/\bsleep\s+(\d+)/);
-    if (parentSupportsAsyncLlm && hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 5) {
+    if (parentSupportsAsyncLlm && hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > getSetting(ctx.cwd, "enforcement_loop_sleep_threshold_s")) {
       return {
         block: true,
         reason: `⚠️ Polling loop with sleep ${sleepMatch[1]}s blocked. Use subagent with async: true for polling/monitoring tasks instead of blocking the session.`,
       };
     }
 
-    if (parentSupportsAsyncLlm && !hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > 30) {
+    if (parentSupportsAsyncLlm && !hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > getSetting(ctx.cwd, "enforcement_sleep_threshold_s")) {
       return {
         block: true,
         reason: `⚠️ sleep ${sleepMatch[1]}s blocked — too long. Use subagent with async: true instead of blocking the session.`,

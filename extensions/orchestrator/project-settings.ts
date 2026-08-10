@@ -61,6 +61,18 @@ interface ProjectSettings {
   sidecar_log_level?: string;
   /** Colon-separated command allowlist for enforcement. Empty = allow all. */
   enforcement_allowed_commands?: string;
+  /** Enforcement: max sleep seconds allowed in loop context. */
+  enforcement_loop_sleep_threshold_s?: number;
+  /** Enforcement: max sleep seconds allowed standalone. */
+  enforcement_sleep_threshold_s?: number;
+  /** Subagent: max sync agent duration in seconds. */
+  sync_agent_max_seconds?: number;
+  /** Subagent: async poller interval in ms. */
+  async_poll_interval_ms?: number;
+  /** Subagent: async phantom timeout in ms. */
+  async_phantom_timeout_ms?: number;
+  /** Tasks: reminder cadence in turns. */
+  task_reminder_cadence_turns?: number;
   /** Max hops for P2P coms message relay. */
   coms_max_hops?: number;
   /** P2P coms message response timeout in ms. */
@@ -69,10 +81,19 @@ interface ProjectSettings {
   coms_dir?: string;
   /** Coms task heartbeat interval in ms. */
   coms_task_heartbeat_ms?: number;
+  /** Coms: entry grace period in ms. */
+  coms_entry_grace_period_ms?: number;
+  /** Coms: probe timeout in ms. */
+  coms_probe_timeout_ms?: number;
+  /** Pidiff: stale lock timeout in ms. */
+  pidiff_stale_lock_timeout_ms?: number;
+  /** Pidiff: daemon startup timeout in seconds. */
+  pidiff_daemon_startup_timeout_s?: number;
 }
 
 /** Key definition from settings-keys.json — single source of truth for env names + defaults. */
 export interface SettingsKeyDef {
+  description: string;
   type: string;
   env?: string;
   default: unknown;
@@ -122,10 +143,20 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "vertex_claude_1m",
   "sidecar_log_level",
   "enforcement_allowed_commands",
+  "enforcement_loop_sleep_threshold_s",
+  "enforcement_sleep_threshold_s",
+  "sync_agent_max_seconds",
+  "async_poll_interval_ms",
+  "async_phantom_timeout_ms",
+  "task_reminder_cadence_turns",
   "coms_max_hops",
   "coms_timeout_ms",
   "coms_dir",
   "coms_task_heartbeat_ms",
+  "coms_entry_grace_period_ms",
+  "coms_probe_timeout_ms",
+  "pidiff_stale_lock_timeout_ms",
+  "pidiff_daemon_startup_timeout_s",
 ];
 for (const key of PROJECT_SETTINGS_KEYS) {
   if (!(key in SETTINGS_KEYS)) {
@@ -437,10 +468,20 @@ export function getSetting(cwd: string, key: "agent_overrides"): Record<string, 
 export function getSetting(cwd: string, key: "vertex_claude_1m"): boolean;
 export function getSetting(cwd: string, key: "sidecar_log_level"): string;
 export function getSetting(cwd: string, key: "enforcement_allowed_commands"): string;
+export function getSetting(cwd: string, key: "enforcement_loop_sleep_threshold_s"): number;
+export function getSetting(cwd: string, key: "enforcement_sleep_threshold_s"): number;
+export function getSetting(cwd: string, key: "sync_agent_max_seconds"): number;
+export function getSetting(cwd: string, key: "async_poll_interval_ms"): number;
+export function getSetting(cwd: string, key: "async_phantom_timeout_ms"): number;
+export function getSetting(cwd: string, key: "task_reminder_cadence_turns"): number;
 export function getSetting(cwd: string, key: "coms_max_hops"): number;
 export function getSetting(cwd: string, key: "coms_timeout_ms"): number;
 export function getSetting(cwd: string, key: "coms_dir"): string;
 export function getSetting(cwd: string, key: "coms_task_heartbeat_ms"): number;
+export function getSetting(cwd: string, key: "coms_entry_grace_period_ms"): number;
+export function getSetting(cwd: string, key: "coms_probe_timeout_ms"): number;
+export function getSetting(cwd: string, key: "pidiff_stale_lock_timeout_ms"): number;
+export function getSetting(cwd: string, key: "pidiff_daemon_startup_timeout_s"): number;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
   const def = SETTINGS_KEYS[key];
