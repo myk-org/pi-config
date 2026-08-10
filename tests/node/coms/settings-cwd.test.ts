@@ -61,7 +61,11 @@ describe("coms settings configurability", () => {
 		clearSettingsCache();
 		// Verify settings resolve from the specified cwd, not process.cwd()
 		assert.equal(getSetting(tmpDir, "coms_entry_grace_period_ms"), 99999);
-		// process.cwd() should NOT return the custom value from tmpDir
+	});
+
+	it("coms_entry_grace_period_ms does not bleed to other cwds", () => {
+		// tmpDir has custom setting from previous test — verify process.cwd() is independent
+		clearSettingsCache();
 		assert.notEqual(getSetting(process.cwd(), "coms_entry_grace_period_ms"), 99999);
 	});
 
@@ -75,7 +79,10 @@ describe("coms settings configurability", () => {
 		clearSettingsCache();
 		// Custom cwd returns configured value
 		assert.equal(getSetting(tmpDir, "coms_probe_timeout_ms"), 5000);
-		// Different cwd should not return the custom value
+	});
+
+	it("coms_probe_timeout_ms does not bleed to other cwds", () => {
+		clearSettingsCache();
 		assert.notEqual(getSetting(process.cwd(), "coms_probe_timeout_ms"), 5000);
 	});
 });
