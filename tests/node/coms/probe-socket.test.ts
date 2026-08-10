@@ -94,4 +94,61 @@ describe("probeStaleSocket", () => {
 		// Should resolve quickly (ENOENT), not wait for full timeout
 		assert.ok(elapsed < 5000, `Should not wait full timeout, took ${elapsed}ms`);
 	});
+
+	it("returns 'in_use' for active socket with custom timeout", async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "probe-active-timeout-"));
+		const piDir = join(tmpDir, ".pi");
+		mkdirSync(piDir, { recursive: true });
+		writeFileSync(
+			join(piDir, "pi-config-settings.json"),
+			JSON.stringify({ coms_probe_timeout_ms: 200 }),
+			"utf-8",
+		);
+
+		const { clearSettingsCache } = await import(
+			`../../../extensions/orchestrator/project-settings.ts`
+		);
+		clearSettingsCache();
+
+		const sockPath = join(tmpDir, "active.sock");
+		server = net.createServer(() => {});
+		await new Promise<void>((resolve) => {
+			server!.listen(sockPath, () => resolve());
+		});
+
+		const { probeStaleSocket } = await import(
+			`../../../extensions/coms/probe-socket.ts?t=${Date.now() + 20}`
+		);
+		const result = await probeStaleSocket(sockPath, "test", tmpDir);
+		assert.equal(result, "in_use");
+	});
+
+	it("handles non-socket file at path with configured timeout", async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "probe-nonsock-"));
+		const piDir = join(tmpDir, ".pi");
+		mkdirSync(piDir, { recursive: true });
+		writeFileSync(
+			join(piDir, "pi-config-settings.json"),
+			JSON.stringify({ coms_probe_timeout_ms: 200 }),
+			"utf-8",
+		);
+
+		const { clearSettingsCache } = await import(
+			`../../../extensions/orchestrator/project-settings.ts`
+		);
+		clearSettingsCache();
+
+		const sockPath = join(tmpDir, "not-a-socket");
+		writeFileSync(sockPath, "regular file");
+
+		const { probeStaleSocket } = await import(
+			`../../../extensions/coms/probe-socket.ts?t=${Date.now() + 21}`
+		);
+		const start = Date.now();
+		const result = await probeStaleSocket(sockPath, "test", tmpDir);
+		const elapsed = Date.now() - start;
+		// Non-socket → error (varies by OS) → should resolve within configured timeout
+		assert.ok(result === "in_use" || result === "stale");
+		assert.ok(elapsed < 1000, `Should resolve within timeout, took ${elapsed}ms`);
+	});
 });
