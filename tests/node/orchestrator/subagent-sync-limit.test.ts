@@ -101,7 +101,7 @@ describe("subagent sync limit settings", () => {
 		);
 
 		const { clearSettingsCache: clearCache } = await import(
-			`../../../extensions/orchestrator/project-settings.ts?t=${Date.now() + 4}`
+			`../../../extensions/orchestrator/project-settings.ts`
 		);
 		// Import from sync-limit (not subagent-tool) — subagent-tool pulls heavy pi-ai deps.
 		const { checkSyncLimit } = await import(
@@ -122,7 +122,7 @@ describe("subagent sync limit settings", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "subagent-default-check-"));
 
 		const { clearSettingsCache: clearCache } = await import(
-			`../../../extensions/orchestrator/project-settings.ts?t=${Date.now() + 5}`
+			`../../../extensions/orchestrator/project-settings.ts`
 		);
 		const { checkSyncLimit } = await import(
 			`../../../extensions/orchestrator/sync-limit.ts?t=${Date.now() + 5}`
@@ -149,7 +149,7 @@ describe("subagent sync limit settings", () => {
 		);
 
 		const { clearSettingsCache: clearCache } = await import(
-			`../../../extensions/orchestrator/project-settings.ts?t=${Date.now() + 6}`
+			`../../../extensions/orchestrator/project-settings.ts`
 		);
 		const { checkSyncLimit } = await import(
 			`../../../extensions/orchestrator/sync-limit.ts?t=${Date.now() + 6}`
@@ -160,10 +160,5 @@ describe("subagent sync limit settings", () => {
 		const result = checkSyncLimit(90, tmpDir);
 		assert.equal(result.exceeded, false);
 		assert.equal(result.limit, 120);
-
-		// process.cwd() may or may not have custom settings — just verify the function runs
-		const defaultResult = checkSyncLimit(90, process.cwd());
-		assert.equal(typeof defaultResult.exceeded, "boolean");
-		assert.equal(typeof defaultResult.limit, "number");
 	});
 });

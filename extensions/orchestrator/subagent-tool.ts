@@ -68,6 +68,7 @@ const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the w
 const log = createLogger("subagent");
 const SYNC_TIME_EXCEEDED_ERROR = (seconds: number, cwd: string) => {
   const { limit } = checkSyncLimit(seconds, cwd);
+  log.info("sync_time_exceeded", "seconds", seconds, "limit", limit, "cwd", cwd);
   return `Estimated time ${seconds}s meets or exceeds ${limit}s sync limit. Use async: true instead.`;
 };
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
