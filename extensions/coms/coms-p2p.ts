@@ -344,7 +344,7 @@ function removeRegistryEntry(project: string, sessionId: string): void {
 	}
 }
 
-async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
+async function pruneDeadEntries(project: string, cwd = process.cwd()): Promise<RegistryEntry[]> {
 	const entries = readAllRegistryEntries(project);
 	const socketsDir = path.join(COMS_DIR, "sockets");
 
@@ -363,8 +363,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 		}
 		// Skip entries younger than 30s — recently booted peers get grace period
 		const entryAge = Date.now() - new Date(entry.heartbeat_at ?? entry.started_at ?? "").getTime();
-		// Use process.cwd() — coms settings are global, not per-project
-		if (!isNaN(entryAge) && entryAge < getSetting(process.cwd(), "coms_entry_grace_period_ms")) {
+		if (!isNaN(entryAge) && entryAge < getSetting(cwd, "coms_entry_grace_period_ms")) {
 			log.debug("prune_skip_grace", entry.name, "age_ms", entryAge);
 			youngEntries.push(entry);
 			continue;
@@ -396,7 +395,7 @@ async function pruneDeadEntries(project: string): Promise<RegistryEntry[]> {
 	const results: ("in_use" | "stale")[] = [];
 	for (let start = 0; start < candidates.length; start += PROBE_CONCURRENCY) {
 		const batch = candidates.slice(start, start + PROBE_CONCURRENCY);
-		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint, entry.name)));
+		const batchResults = await Promise.allSettled(batch.map(entry => probeStaleSocket(entry.endpoint, entry.name, cwd)));
 		results.push(...batchResults.map(r => r.status === "fulfilled" ? r.value : "in_use" as const));
 	}
 	const live: RegistryEntry[] = [];
@@ -430,14 +429,14 @@ async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
 		} catch {
 			continue;
 		}
-		out.push(...await pruneDeadEntries(p));
+		out.push(...await pruneDeadEntries(p, process.cwd()));
 	}
 	return out;
 }
 
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function probeStaleSocket(endpoint: string, name?: string): Promise<"in_use" | "stale"> {
+function probeStaleSocket(endpoint: string, name?: string, cwd = process.cwd()): Promise<"in_use" | "stale"> {
 	return new Promise((resolve) => {
 		const sock = net.createConnection({ path: endpoint });
 		let settled = false;
@@ -447,9 +446,8 @@ function probeStaleSocket(endpoint: string, name?: string): Promise<"in_use" | "
 			try { sock.destroy(); } catch { /* ignore */ }
 			resolve(verdict);
 		};
-		// Use process.cwd() — coms settings are global, not per-project
-		const timer = setTimeout(() => finish("stale"), getSetting(process.cwd(), "coms_probe_timeout_ms"));
-		log.debug("probe_stale", name ?? endpoint, "timeout_ms", getSetting(process.cwd(), "coms_probe_timeout_ms"));
+		const timer = setTimeout(() => finish("stale"), getSetting(cwd, "coms_probe_timeout_ms"));
+		log.debug("probe_stale", name ?? endpoint, "timeout_ms", getSetting(cwd, "coms_probe_timeout_ms"));
 		sock.once("connect", () => {
 			clearTimeout(timer);
 			finish("in_use");
@@ -1760,7 +1758,7 @@ Do not respond to this message.`;
 	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
-			const localEntries = await pruneDeadEntries(identity.project);
+			const localEntries = await pruneDeadEntries(identity.project, process.cwd());
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.coms_session_id === target);
 			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
@@ -1783,13 +1781,13 @@ Do not respond to this message.`;
 		}
 		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
-			const entries = await pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj, process.cwd());
 			const bySession = entries.find((e) => e.coms_session_id === target);
 			if (bySession) return bySession;
 		}
 		// Fall back to name match across projects.
 		for (const proj of listProjects()) {
-			const entries = await pruneDeadEntries(proj);
+			const entries = await pruneDeadEntries(proj, process.cwd());
 			const byName = entries.find((e) => e.name === target);
 			if (byName) return byName;
 		}

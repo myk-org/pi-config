@@ -1,9 +1,8 @@
 /**
  * Coms settings resolution via project-settings.
  *
- * process.cwd() usage in coms is intentional for global settings; these
- * tests prove the coms timeout keys resolve correctly through getSetting
- * (project cwd / empty project → defaults).
+ * Tests prove coms timeout keys resolve correctly through getSetting
+ * from a provided cwd (project settings / empty project → defaults).
  *
  * Run with: npx tsx --test tests/node/coms/settings-cwd.test.ts
  */
@@ -50,5 +49,19 @@ describe("coms settings configurability", () => {
 	it("coms_probe_timeout_ms defaults to 1000", () => {
 		clearSettingsCache();
 		assert.equal(getSetting(tmpDir, "coms_probe_timeout_ms"), 1000);
+	});
+
+	it("coms settings resolve from provided cwd, not process.cwd()", () => {
+		mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".pi", "pi-config-settings.json"),
+			JSON.stringify({ coms_entry_grace_period_ms: 99999 }),
+			"utf-8",
+		);
+		clearSettingsCache();
+		// Verify settings resolve from the specified cwd, not process.cwd()
+		assert.equal(getSetting(tmpDir, "coms_entry_grace_period_ms"), 99999);
+		// process.cwd() should return a different value (the default)
+		assert.equal(getSetting(process.cwd(), "coms_entry_grace_period_ms"), 30000);
 	});
 });
