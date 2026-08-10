@@ -43,6 +43,7 @@ import {
 } from "./async-capability.js";
 import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
 import { getSetting } from "./project-settings.js";
+import { checkSyncLimit } from "./sync-limit.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
@@ -55,7 +56,7 @@ const SETTINGS_KEYS_FOR_SUBAGENT = JSON.parse(
   ),
 );
 
-export { resolveAgentModelProvider, parseModelOverride };
+export { resolveAgentModelProvider, parseModelOverride, checkSyncLimit };
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -65,8 +66,10 @@ const COLLAPSED_ITEM_COUNT = 10;
 const MISSING_CWD_ERROR = "Missing required parameter: cwd. Always specify the working directory for subagent tasks.";
 // Resolved per-call from settings
 const log = createLogger("subagent");
-const SYNC_TIME_EXCEEDED_ERROR = (seconds: number, cwd: string) =>
-  `Estimated time ${seconds}s meets or exceeds ${getSetting(cwd, "sync_agent_max_seconds")}s sync limit. Use async: true instead.`;
+const SYNC_TIME_EXCEEDED_ERROR = (seconds: number, cwd: string) => {
+  const { limit } = checkSyncLimit(seconds, cwd);
+  return `Estimated time ${seconds}s meets or exceeds ${limit}s sync limit. Use async: true instead.`;
+};
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
 let syncPenalty = 0;

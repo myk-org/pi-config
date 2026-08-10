@@ -89,4 +89,81 @@ describe("subagent sync limit settings", () => {
 		const shouldRequireAsync = estimatedSeconds >= limit;
 		assert.equal(shouldRequireAsync, false, "25s task should NOT require async when limit is 60s");
 	});
+
+	it("checkSyncLimit enforces configured limit", async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "subagent-check-"));
+		const piDir = join(tmpDir, ".pi");
+		mkdirSync(piDir, { recursive: true });
+		writeFileSync(
+			join(piDir, "pi-config-settings.json"),
+			JSON.stringify({ sync_agent_max_seconds: 10 }),
+			"utf-8",
+		);
+
+		const { clearSettingsCache: clearCache } = await import(
+			`../../../extensions/orchestrator/project-settings.ts?t=${Date.now() + 4}`
+		);
+		// Import from sync-limit (not subagent-tool) — subagent-tool pulls heavy pi-ai deps.
+		const { checkSyncLimit } = await import(
+			`../../../extensions/orchestrator/sync-limit.ts?t=${Date.now() + 4}`
+		);
+		clearCache();
+
+		const over = checkSyncLimit(15, tmpDir);
+		assert.equal(over.exceeded, true);
+		assert.equal(over.limit, 10);
+
+		const under = checkSyncLimit(5, tmpDir);
+		assert.equal(under.exceeded, false);
+		assert.equal(under.limit, 10);
+	});
+
+	it("checkSyncLimit uses default 60s limit", async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "subagent-default-check-"));
+
+		const { clearSettingsCache: clearCache } = await import(
+			`../../../extensions/orchestrator/project-settings.ts?t=${Date.now() + 5}`
+		);
+		const { checkSyncLimit } = await import(
+			`../../../extensions/orchestrator/sync-limit.ts?t=${Date.now() + 5}`
+		);
+		clearCache();
+
+		const result = checkSyncLimit(30, tmpDir);
+		assert.equal(result.exceeded, false);
+		assert.equal(result.limit, 60);
+
+		const over = checkSyncLimit(60, tmpDir);
+		assert.equal(over.exceeded, true);
+		assert.equal(over.limit, 60);
+	});
+
+	it("checkSyncLimit respects per-project settings", async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "subagent-per-project-"));
+		const piDir = join(tmpDir, ".pi");
+		mkdirSync(piDir, { recursive: true });
+		writeFileSync(
+			join(piDir, "pi-config-settings.json"),
+			JSON.stringify({ sync_agent_max_seconds: 120 }),
+			"utf-8",
+		);
+
+		const { clearSettingsCache: clearCache } = await import(
+			`../../../extensions/orchestrator/project-settings.ts?t=${Date.now() + 6}`
+		);
+		const { checkSyncLimit } = await import(
+			`../../../extensions/orchestrator/sync-limit.ts?t=${Date.now() + 6}`
+		);
+		clearCache();
+
+		// 90s should be allowed with 120s limit
+		const result = checkSyncLimit(90, tmpDir);
+		assert.equal(result.exceeded, false);
+		assert.equal(result.limit, 120);
+
+		// process.cwd() may or may not have custom settings — just verify the function runs
+		const defaultResult = checkSyncLimit(90, process.cwd());
+		assert.equal(typeof defaultResult.exceeded, "boolean");
+		assert.equal(typeof defaultResult.limit, "number");
+	});
 });
