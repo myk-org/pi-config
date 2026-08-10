@@ -30,6 +30,7 @@ import { Worker } from "node:worker_threads";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
+import { probeStaleSocket } from "./probe-socket.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -435,34 +436,6 @@ async function pruneDeadEntriesAllProjects(): Promise<RegistryEntry[]> {
 }
 
 // ━━ Transport ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function probeStaleSocket(endpoint: string, name?: string, cwd = process.cwd()): Promise<"in_use" | "stale"> {
-	return new Promise((resolve) => {
-		const sock = net.createConnection({ path: endpoint });
-		let settled = false;
-		const finish = (verdict: "in_use" | "stale") => {
-			if (settled) return;
-			settled = true;
-			try { sock.destroy(); } catch { /* ignore */ }
-			resolve(verdict);
-		};
-		const timer = setTimeout(() => finish("stale"), getSetting(cwd, "coms_probe_timeout_ms"));
-		log.debug("probe_stale", name ?? endpoint, "timeout_ms", getSetting(cwd, "coms_probe_timeout_ms"));
-		sock.once("connect", () => {
-			clearTimeout(timer);
-			finish("in_use");
-		});
-		sock.once("error", (err: any) => {
-			clearTimeout(timer);
-			if (err && (err.code === "ECONNREFUSED" || err.code === "ENOENT")) {
-				finish("stale");
-			} else {
-				// Transient errors (EMFILE, EACCES, etc.) — treat as live to avoid false pruning
-				finish("in_use");
-			}
-		});
-	});
-}
 
 /**
  * Strict liveness probe — only returns "alive" on actual successful TCP connect.
