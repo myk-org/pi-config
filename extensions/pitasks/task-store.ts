@@ -63,11 +63,29 @@ function normalizeTask(t: any): Task {
 	const now = Date.now();
 	return {
 		...t,
-		metadata: t.metadata && typeof t.metadata === "object" && !Array.isArray(t.metadata) ? t.metadata : {},
+		createdBy: t.createdBy && typeof t.createdBy === "object" ? t.createdBy :
+			(t.metadata?.coms_origin ? { type: "coms" as const, origin: t.metadata.coms_origin.sender_name || "", session: t.metadata.coms_origin.sender_session || "", project: "" } :
+			{ type: "local" as const, origin: "system", session: "", project: "" }),
+		metadata: (() => {
+			const m = t.metadata && typeof t.metadata === "object" && !Array.isArray(t.metadata) ? { ...t.metadata } : {};
+			delete m.coms_origin;
+			return m;
+		})(),
 		blocks: Array.isArray(t.blocks) ? t.blocks : [],
 		blockedBy: Array.isArray(t.blockedBy) ? t.blockedBy : [],
 		createdAt: typeof t.createdAt === "number" ? t.createdAt : now,
 		updatedAt: typeof t.updatedAt === "number" ? t.updatedAt : now,
+		statusHistory: t.statusHistory && typeof t.statusHistory === "object" ? {
+			pending_at: typeof t.statusHistory.pending_at === "number" ? new Date(t.statusHistory.pending_at).toISOString() : (t.statusHistory.pending_at || new Date(typeof t.createdAt === "number" ? t.createdAt : now).toISOString()),
+			in_progress_at: typeof t.statusHistory.in_progress_at === "number" ? new Date(t.statusHistory.in_progress_at).toISOString() : (t.statusHistory.in_progress_at || null),
+			completed_at: typeof t.statusHistory.completed_at === "number" ? new Date(t.statusHistory.completed_at).toISOString() : (t.statusHistory.completed_at || null),
+			deleted_at: typeof t.statusHistory.deleted_at === "number" ? new Date(t.statusHistory.deleted_at).toISOString() : (t.statusHistory.deleted_at || null),
+		} : {
+			pending_at: new Date(typeof t.createdAt === "number" ? t.createdAt : now).toISOString(),
+			in_progress_at: null,
+			completed_at: null,
+			deleted_at: null,
+		},
 	};
 }
 
@@ -163,7 +181,7 @@ export class TaskStore {
 		}
 	}
 
-	create(subject: string, description: string, activeForm?: string, metadata?: Record<string, any>): Task {
+	create(subject: string, description: string, createdBy: Task["createdBy"], activeForm?: string, metadata?: Record<string, any>): Task {
 		return this.withLock(() => {
 			const now = Date.now();
 			const task: Task = {
@@ -173,14 +191,53 @@ export class TaskStore {
 				status: "pending",
 				activeForm,
 				owner: undefined,
+				createdBy,
 				metadata: metadata ?? {},
 				blocks: [],
 				blockedBy: [],
 				createdAt: now,
 				updatedAt: now,
+				statusHistory: {
+					pending_at: new Date(now).toISOString(),
+					in_progress_at: null,
+					completed_at: null,
+					deleted_at: null,
+				},
 			};
 			this.tasks.set(task.id, task);
 			return task;
+		});
+	}
+
+	createTasks(tasks: Array<{ subject: string; description: string; createdBy: Task["createdBy"]; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>): Task[] {
+		return this.withLock(() => {
+			const now = Date.now();
+			const created: Task[] = [];
+			for (const t of tasks) {
+				const task: Task = {
+					id: String(this.nextId++),
+					subject: t.subject,
+					description: t.description,
+					status: "pending",
+					activeForm: t.activeForm,
+					owner: undefined,
+					createdBy: t.createdBy,
+					metadata: t.metadata ?? {},
+					blocks: [],
+					blockedBy: t.blockedBy ?? [],
+					createdAt: now,
+					updatedAt: now,
+					statusHistory: {
+						pending_at: new Date(now).toISOString(),
+						in_progress_at: null,
+						completed_at: null,
+						deleted_at: null,
+					},
+				};
+				this.tasks.set(task.id, task);
+				created.push(task);
+			}
+			return created;
 		});
 	}
 
@@ -219,7 +276,15 @@ export class TaskStore {
 				return { task: undefined, changedFields: ["deleted"], warnings: [] };
 			}
 
-			if (fields.status !== undefined) { task.status = fields.status as TaskStatus; changedFields.push("status"); }
+			if (fields.status !== undefined) {
+				task.status = fields.status as TaskStatus;
+				changedFields.push("status");
+				const now = Date.now();
+				const isoNow = new Date(now).toISOString();
+				if (fields.status === "in_progress") task.statusHistory.in_progress_at = isoNow;
+				if (fields.status === "completed") task.statusHistory.completed_at = isoNow;
+				if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
+			}
 			if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
 			if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
 			if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
@@ -262,6 +327,70 @@ export class TaskStore {
 		});
 	}
 
+	updateTasks(updates: Array<{ id: string; fields: Record<string, any> }>): Array<{ id: string; success: boolean; changedFields?: string[] }> {
+		return this.withLock(() => {
+			const results: Array<{ id: string; success: boolean; changedFields?: string[] }> = [];
+			for (const { id, fields } of updates) {
+				const task = this.tasks.get(id);
+				if (!task) { results.push({ id, success: false }); continue; }
+				const changedFields: string[] = [];
+
+				if (fields.status === "deleted") {
+					this.tasks.delete(id);
+					for (const t of this.tasks.values()) {
+						t.blocks = t.blocks.filter(bid => bid !== id);
+						t.blockedBy = t.blockedBy.filter(bid => bid !== id);
+					}
+					results.push({ id, success: true, changedFields: ["deleted"] });
+					continue;
+				}
+
+				if (fields.status !== undefined) {
+					task.status = fields.status as TaskStatus;
+					changedFields.push("status");
+					const isoNow = new Date().toISOString();
+					if (fields.status === "in_progress") task.statusHistory.in_progress_at = isoNow;
+					if (fields.status === "completed") task.statusHistory.completed_at = isoNow;
+					if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
+				}
+				if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
+				if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
+				if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
+				if (fields.owner !== undefined) { task.owner = fields.owner; changedFields.push("owner"); }
+
+				if (fields.metadata !== undefined) {
+					for (const [key, value] of Object.entries(fields.metadata)) {
+						if (value === null) delete task.metadata[key];
+						else task.metadata[key] = value;
+					}
+					changedFields.push("metadata");
+				}
+
+				if (fields.addBlocks?.length) {
+					for (const targetId of fields.addBlocks) {
+						if (!task.blocks.includes(targetId)) task.blocks.push(targetId);
+						const target = this.tasks.get(targetId);
+						if (target && !target.blockedBy.includes(id)) { target.blockedBy.push(id); target.updatedAt = Date.now(); }
+					}
+					changedFields.push("blocks");
+				}
+
+				if (fields.addBlockedBy?.length) {
+					for (const targetId of fields.addBlockedBy) {
+						if (!task.blockedBy.includes(targetId)) task.blockedBy.push(targetId);
+						const target = this.tasks.get(targetId);
+						if (target && !target.blocks.includes(id)) { target.blocks.push(id); target.updatedAt = Date.now(); }
+					}
+					changedFields.push("blockedBy");
+				}
+
+				task.updatedAt = Date.now();
+				results.push({ id, success: true, changedFields });
+			}
+			return results;
+		});
+	}
+
 	delete(id: string): boolean {
 		return this.withLock(() => {
 			if (!this.tasks.has(id)) return false;
@@ -271,6 +400,25 @@ export class TaskStore {
 				t.blockedBy = t.blockedBy.filter(bid => bid !== id);
 			}
 			return true;
+		});
+	}
+
+	deleteTasks(ids: string[]): number {
+		return this.withLock(() => {
+			let count = 0;
+			for (const id of ids) {
+				if (this.tasks.has(id)) {
+					this.tasks.delete(id);
+					count++;
+				}
+			}
+			if (count > 0) {
+				for (const t of this.tasks.values()) {
+					t.blocks = t.blocks.filter(bid => !ids.includes(bid));
+					t.blockedBy = t.blockedBy.filter(bid => !ids.includes(bid));
+				}
+			}
+			return count;
 		});
 	}
 

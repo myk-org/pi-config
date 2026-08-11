@@ -45,6 +45,8 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef(false);
+  const messageCacheRef = useRef(new Map<string, { messages: any[]; model: string; tokens: any }>());
+  const MAX_CACHED_SESSIONS = 5;
 
   const {
     messages, setMessages, addMsg,
@@ -72,10 +74,28 @@ export function App() {
   }, []);
 
   const watchSession = useCallback((s: SessionInfo) => {
+    if (s.sessionId === session?.sessionId) return;
+    // Save current session messages to cache before switching
+    if (session?.sessionId && messages.length > 0) {
+      messageCacheRef.current.set(session.sessionId, { messages: [...messages], model, tokens });
+      // Evict oldest if over limit
+      if (messageCacheRef.current.size > MAX_CACHED_SESSIONS) {
+        const oldest = messageCacheRef.current.keys().next().value;
+        if (oldest) messageCacheRef.current.delete(oldest);
+      }
+    }
     setSession(s);
-    setMessages([{ id: nextId(), role: "system", text: `Watching session — ${s.cwd}`, timestamp: Date.now() }]);
-    setModel(s.model || "");
-    setTokens(null);
+    // Check cache for instant restore
+    const cached = messageCacheRef.current.get(s.sessionId);
+    if (cached) {
+      setMessages(cached.messages);
+      setModel(cached.model || s.model || "");
+      setTokens(cached.tokens);
+    } else {
+      setMessages([{ id: nextId(), role: "system", text: `Watching session — ${s.cwd}`, timestamp: Date.now() }]);
+      setModel(s.model || "");
+      setTokens(null);
+    }
     setStreaming(false);
     setQueuedCount(0);
     setSearchQuery("");
@@ -86,7 +106,11 @@ export function App() {
     send({ type: "pidash-command", sessionId: s.sessionId, command: "list-commands" });
     // Auto-collapse sidebar on mobile
     if (typeof window !== 'undefined' && window.innerWidth <= 768) setSidebarCollapsed(true);
-  }, [send, setMessages, setModel, setTokens, setStreaming, setQueuedCount, resetHandlerState]);
+  }, [send, session, messages, model, tokens, setMessages, setModel, setTokens, setStreaming, setQueuedCount, resetHandlerState]);
+
+  const renameSession = useCallback((sessionId: string, name: string) => {
+    send({ type: "pidash-command", command: "rename-session", sessionId, name });
+  }, [send]);
 
   // Persist UI state to localStorage
   useEffect(() => {
@@ -172,6 +196,7 @@ export function App() {
             activeSessionId={session?.sessionId ?? null}
             connected={connected}
             onSelect={watchSession}
+            onRename={renameSession}
             collapsed={false}
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}

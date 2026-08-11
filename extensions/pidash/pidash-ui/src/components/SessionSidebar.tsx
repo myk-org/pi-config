@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings } from "lucide-react";
+import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
 import { ScrollArea } from "@ui/scroll-area";
@@ -23,6 +23,7 @@ interface Props {
   collapsed: boolean;
   onToggle: () => void;
   onSettings?: () => void;
+  onRename?: (sessionId: string, name: string) => void;
   notifications?: {
     permission: NotificationPermission;
     supported: boolean;
@@ -48,8 +49,10 @@ function saveCollapsedProjects(projects: Set<string>): void {
   try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...projects])); } catch {}
 }
 
-export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, onSettings, notifications }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, onSettings, onRename, notifications }: Props) {
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
 
   // Wrap setter to persist to localStorage
   const setCollapsedProjects = (update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
@@ -152,7 +155,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                   <div
                     key={s.sessionId}
                     className={cn(
-                      "pl-7 pr-3 py-2 cursor-pointer transition-colors border-b border-border/50",
+                      "group/session pl-7 pr-3 py-2 cursor-pointer transition-colors border-b border-border/50",
                       isActive && "bg-accent border-l-3 border-l-primary",
                       !isActive && "hover:bg-accent/30",
                       !s.active && "opacity-35",
@@ -167,7 +170,37 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
                         </span>
                       )}
-                      <span className="truncate">{s.name || s.model || "—"}</span>
+                      {editingSessionId === s.sessionId ? (
+                        <input
+                          className="bg-transparent border-b border-primary outline-none text-xs w-full"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && editName.trim()) {
+                              onRename?.(s.sessionId, editName.trim());
+                              setEditingSessionId(null);
+                            }
+                            if (e.key === "Escape") setEditingSessionId(null);
+                          }}
+                          onBlur={() => setEditingSessionId(null)}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <>
+                          <span className="truncate">{s.name || s.model || "—"}</span>
+                          {onRename && (
+                            <Pencil
+                              className="h-3 w-3 flex-shrink-0 opacity-0 group-hover/session:opacity-100 text-muted-foreground hover:text-primary cursor-pointer transition-opacity"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingSessionId(s.sessionId);
+                                setEditName(s.name || s.model || "");
+                              }}
+                            />
+                          )}
+                        </>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">
                       {s.branch && (

@@ -244,6 +244,20 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         </>
       )}
 
+      {/* Coms identity */}
+      {session.comsName && (
+        <>
+          <span className="text-border">|</span>
+          <span
+            className="cursor-default"
+            title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || undefined}
+          >
+            📡 Coms: {session.comsName}
+          </span>
+        </>
+      )}
+
+
       {/* Cron tasks — visible when active, pinned to far right alongside async */}
       <div className="relative inline-block ml-auto">
         <Popover>

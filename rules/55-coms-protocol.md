@@ -25,7 +25,7 @@ Use `coms_list` to see connected peers.
 | Edit queued msg | `coms_queue_edit` |
 | Prioritize queued msg | `coms_queue_prioritize` |
 | View local queue | `/coms-queue` |
-| Create task on peer | `coms_task_create` |
+| Create task on peer | `coms_tasks_create` |
 | Delete task on peer | `coms_task_delete` |
 | List peer's tasks | `coms_task_list` |
 | Get peer's task | `coms_task_get` |
@@ -95,7 +95,7 @@ coms_send(target="coder", prompt="Implement these features", tasks=[
 
 ### Recommended Pattern
 
-1. Create tasks silently on the peer via `coms_task_create` (no message sent)
+1. Create tasks silently on the peer via `coms_tasks_create` (no message sent)
    - Always add a final "Report completion to sender" task, blocked by all other tasks
 2. Send ONE message: `coms_send(target="peer", prompt="You have tasks to work on. Check TaskList and start.")`
 3. Monitor progress via `coms_task_list` / `coms_task_get` (no message sent)
@@ -107,7 +107,7 @@ Manage tasks on peer sessions directly — no message sent, no peer notification
 
 | Tool | Description |
 |------|-------------|
-| `coms_task_create` | Create a task on peer's session (with coms_origin tracking) |
+| `coms_tasks_create` | Create a task on peer's session (with coms_origin tracking) |
 | `coms_task_update` | Update a task YOU created on peer's session |
 | `coms_task_delete` | Delete a task YOU created on peer's session |
 | `coms_task_list` | List all tasks on peer's session |

@@ -17,4 +17,7 @@ export interface SessionInfo {
   diffPort?: number | null;
   working?: boolean;
   name?: string;
+  comsName?: string;
+  comsPurpose?: string;
+  comsProject?: string;
 }

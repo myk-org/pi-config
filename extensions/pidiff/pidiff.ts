@@ -293,6 +293,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
   }
 
   // /pidiff command
+  let pidiffCmdHandler: any;
   pi.registerCommand("pidiff", {
     description: "Manage pidiff server — /pidiff start|stop|restart|status",
     getArgumentCompletions: (prefix: string) => {
@@ -304,7 +305,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
       ];
       return items.filter(i => i.value.startsWith(prefix.toLowerCase()));
     },
-    handler: async (args, ctx) => {
+    handler: pidiffCmdHandler = async (args: any, ctx: any) => {
       lastCtx = ctx;
       const cmd = (args || "").trim().toLowerCase();
 
@@ -376,6 +377,13 @@ export function registerPidiff(pi: ExtensionAPI): void {
       if (ctx.hasUI) ctx.ui.notify(msg, "info");
     },
   });
+
+  // Expose handler to pidash for browser command dispatch
+  try {
+    const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "pidiff", handler: pidiffCmdHandler });
+    registerWithPidash();
+    pi.events.on("pidash:request-commands", registerWithPidash);
+  } catch {}
 
   // Session lifecycle
   pi.on("session_start", async (_event, ctx) => {

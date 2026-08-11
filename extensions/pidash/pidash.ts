@@ -123,7 +123,44 @@ export function registerPidash(
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
   let execCtx: any = null;
+  let comsIdentityName: string | undefined;
+  let comsIdentityPurpose: string | undefined;
+  let comsIdentityProject: string | undefined;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
+
+  // Listen for coms identity — coms ext emits this after boot
+  pi.events.on("pidash:coms-identity", (data: any) => {
+    comsIdentityName = data?.name;
+    comsIdentityPurpose = data?.purpose;
+    comsIdentityProject = data?.project;
+    log.debug("coms_identity_received", comsIdentityName);
+    if (ws && connected) {
+      try { ws.send(JSON.stringify({ type: "update_info", comsName: comsIdentityName, comsPurpose: comsIdentityPurpose, comsProject: comsIdentityProject })); } catch {}
+    }
+  });
+
+  // ── Command handler bridge via pi.events ──────────────────────────
+  // TODO: Remove once pidash uses PiClient/RemoteSession (#732) — native
+  // command dispatch via RemoteSession.submit() eliminates this.
+  pi.events.on("pidash:register-command", (data: unknown) => {
+    const d = data as { name: string; handler: (args: string, ctx: any) => Promise<void> };
+    if (typeof d?.name === "string" && typeof d?.handler === "function") {
+      commandHandlerRegistry.set(d.name, d.handler);
+      log.debug("registered command handler", d.name);
+    }
+  });
+
+  // Request existing commands (handles load order — orchestrator loaded first)
+  // TODO: Remove once pidash uses PiClient/RemoteSession (#732)
+  pi.events.emit("pidash:request-commands");
+
+  // Capture command context from orchestrator
+  // TODO: Remove once pidash uses PiClient/RemoteSession (#732)
+  pi.events.on("pidash:command-ctx", (ctx: unknown) => {
+    if (ctx && typeof (ctx as any)?.switchSession === "function") {
+      lastCmdCtx = ctx as any;
+    }
+  });
 
   // ── Extracted inner functions ──────────────────────────────────────
 
@@ -332,6 +369,22 @@ export function registerPidash(
           pi.events.emit("pidash:cron-kill", parsed.target);
         }
 
+        if (parsed.command === "rename-session") {
+          log.debug("rename-session full parsed", JSON.stringify(parsed));
+          const newName = parsed.name ?? parsed.newName ?? "";
+          if (newName !== undefined) {
+            try {
+              (pi as any).setSessionName?.(newName);
+              sessionNamed = true;
+              log.debug(`session renamed: ${newName}`);
+              // Also send update_info to ensure sidebar updates immediately
+              if (ws && connected) {
+                try { ws.send(JSON.stringify({ type: "update_info", name: newName })); } catch {}
+              }
+            } catch (e: any) { log.debug(`rename-session error: ${e.message}`); }
+          }
+        }
+
         if (parsed.command === "list-commands") {
           try {
             const cmds = (pi as any).getCommands?.() || [];
@@ -495,6 +548,10 @@ export function registerPidash(
           sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
           thinkingLevel: thinking,
           diffPort,
+          name: (pi as any).getSessionName?.() || undefined,
+          comsName: comsIdentityName || (pi as any).getFlag?.("cname") || undefined,
+          comsPurpose: comsIdentityPurpose || (pi as any).getFlag?.("purpose") || undefined,
+          comsProject: comsIdentityProject || undefined,
         });
         log.debug(`sending register: ${reg}`);
         wsClient.send(reg);
@@ -597,6 +654,7 @@ export function registerPidash(
       // Keep only role and essential content
       if (type === "message_end" && payload.message) {
         const m = payload.message;
+        const isStreamed = ["user", "assistant", "toolResult"].includes(m.role);
         payload = {
           type,
           message: {
@@ -606,6 +664,7 @@ export function registerPidash(
             provider: m.provider,
             customType: m.customType,
             display: m.display,
+            ...(isStreamed ? {} : { content: m.content }),
           },
           timestamp: payload.timestamp,
         };
@@ -727,6 +786,15 @@ export function registerPidash(
       }
     });
 
+    // Forward coms peer join/leave events to browser
+    pi.events.on("pidash:coms-peer-event", (data: unknown) => {
+      const d = data as { customType?: string; content?: string };
+      if (!d?.customType) return;
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "coms_peer_event", customType: d.customType, content: d.content || "" })); } catch {}
+      }
+    });
+
   }
 
   /** Periodically send git status updates to the daemon. */
@@ -749,8 +817,10 @@ export function registerPidash(
 
   /** Handle session_start event — connect or notify session switch. */
   function handleSessionStart(event: any, ctx: any): void {
+    sessionNamed = false;
     execCtx = ctx;
     log.debug("execCtx created from session_start");
+
     log.debug("session_start", (event as any)?.reason);
 
     // Auto-capture command context: silently run /pidash status.
@@ -797,14 +867,22 @@ export function registerPidash(
     const handler = commandHandlerRegistry.get(cmdName);
     if (handler) {
       try {
-        const ctx = lastCmdCtx ?? execCtx ?? lastCtx;
+        const rawCtx = lastCmdCtx ?? execCtx ?? lastCtx;
+        const ctx = rawCtx?.ui ? { ...rawCtx, ui: { ...rawCtx.ui, notify: (msg: string, level?: string) => {
+          if (ws && connected) { try { ws.send(JSON.stringify({ type: "notification", level: level || "info", message: String(msg) })); } catch {} }
+          return rawCtx.ui.notify(msg, level);
+        } } } : rawCtx;
         await handler(arg, ctx);
       } catch (e: any) {
         log.error(`command /${cmdName} error:`, e);
       }
       return { action: "handled" as const };
     }
-    // Unknown command — let pi's native dispatch handle it
+    // Unknown command from browser — send error notification
+    if (ws && connected) {
+      try { ws.send(JSON.stringify({ type: "notification", level: "warning", message: `Unknown command: /${cmdName}` })); } catch {}
+    }
+    return { action: "handled" as const };
   }
 
   // ── Wire everything up ─────────────────────────────────────────────
@@ -853,6 +931,29 @@ export function registerPidash(
   commandHandlerRegistry.set("pidash", (args, ctx) => handlePidashCommand(args, ctx));
 
   pi.on("input", async (event, _ctx) => { if (shuttingDown) return; return handleBrowserInput(event, _ctx); });
+
+  // Auto-name session from first user prompt if no name set
+  let sessionNamed = false;
+  pi.on("agent_end" as any, () => {
+    if (sessionNamed || shuttingDown) return;
+    const currentName = (pi as any).getSessionName?.();
+    if (currentName) { sessionNamed = true; return; }
+    try {
+      const entries = lastCtx?.sessionManager?.getEntries?.() || [];
+      const firstUser = entries.find((e: any) => e.type === "message" && e.message?.role === "user");
+      if (firstUser) {
+        const content = firstUser.message.content;
+        const text = typeof content === "string" ? content :
+          Array.isArray(content) ? content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ") : "";
+        if (text) {
+          const name = text.slice(0, 60).replace(/\n/g, " ").trim();
+          (pi as any).setSessionName?.(name);
+          sessionNamed = true;
+          log.debug("auto_session_name", name);
+        }
+      }
+    } catch (e: any) { log.debug("auto_session_name_error", e?.message); }
+  });
 
   pi.on("session_shutdown", (event) => {
     // Forward shutdown reason to pidash dashboard

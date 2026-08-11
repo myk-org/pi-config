@@ -54,6 +54,38 @@ export default function (pi: ExtensionAPI) {
     if (sid) setGlobalSessionId(sid);
   });
 
+  // ── Pidash command handler bridge ──────────────────────────────────
+  // TODO: Remove once pidash uses PiClient/RemoteSession (#732) — native
+  // command dispatch via RemoteSession.submit() eliminates the need for
+  // this event-based handler forwarding.
+  const originalRegisterCommand = pi.registerCommand.bind(pi);
+  let latestCommandCtx: any = null;
+  const commandHandlerRegistry = new Map<string, Function>();
+
+  pi.registerCommand = (name: string, options: any) => {
+    if (options?.handler) {
+      const origHandler = options.handler;
+      options.handler = async (args: string, ctx: any) => {
+        latestCommandCtx = ctx;
+        pi.events.emit("pidash:command-ctx", ctx);
+        return origHandler(args, ctx);
+      };
+      commandHandlerRegistry.set(name, options.handler);
+      // Notify pidash extension about new command handler
+      pi.events.emit("pidash:register-command", { name, handler: options.handler });
+    }
+    return originalRegisterCommand(name, options);
+  };
+
+  // Replay all registered command handlers when pidash requests them
+  // (handles extension load order — pidash may load after orchestrator)
+  // TODO: Remove once pidash uses PiClient/RemoteSession (#732)
+  pi.events.on("pidash:request-commands", () => {
+    for (const [name, handler] of commandHandlerRegistry) {
+      pi.events.emit("pidash:register-command", { name, handler });
+    }
+  });
+
   // Extended autocomplete must register FIRST — it wraps registerCommand
   // to inject getArgumentCompletions before other modules register their commands.
   registerExtendedAutocomplete(pi);

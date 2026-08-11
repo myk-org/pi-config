@@ -377,6 +377,22 @@ export function useMessageHandler(
           }
           break;
 
+        case "coms_peer_event": {
+          const content = (ev as any).content || "";
+          addMsg("system", typeof content === "string" ? content : JSON.stringify(content));
+          break;
+        }
+
+        case "replay_start":
+          setMessages([]);
+          break;
+        case "replay_end":
+          break;
+
+        case "notification":
+          addMsg("system", `⚠️ ${(ev as any).message || "notification"}`);
+          break;
+
         case "commands-list":
           if ((ev as any).commands) setAvailableCommands((ev as any).commands);
           break;

@@ -661,13 +661,14 @@ export function createComsInboundTasks(
 		const description = typeof task.description === "string" ? task.description.slice(0, MAX_TASK_FIELD_LEN) : "";
 		if (!subject) continue;
 		try {
-			createTaskForSession(targetSessionId, subject, description, {
-				coms_origin: {
-					sender_session: origin.sender_session,
-					sender_name: origin.sender_name,
-					sender_endpoint: origin.sender_endpoint ?? null,
-				},
-			}, targetCwd);
+			const createdBy = {
+				type: "coms" as const,
+				origin: origin.sender_name,
+				session: origin.sender_session,
+				project: "",
+			};
+			const meta = origin.sender_endpoint ? { sender_endpoint: origin.sender_endpoint } : undefined;
+			createTaskForSession(targetSessionId, subject, description, createdBy, meta, targetCwd);
 			created++;
 		} catch { /* best-effort */ }
 	}
@@ -675,36 +676,47 @@ export function createComsInboundTasks(
 }
 
 /**
- * Look up a task by ID and return it if it has coms_origin metadata.
+ * Look up a task by ID and return it if created by a coms peer.
  */
 export async function getComsOriginTask(
 	taskId: string,
-): Promise<{ subject: string; coms_origin: ComsOrigin } | null> {
+): Promise<{ subject: string; createdBy: { session: string; name: string; endpoint?: string } } | null> {
 	if (!taskId || taskId === "-1") return null;
 	try {
 		const { getTask } = await import("../pitasks/index.js");
 		const task = getTask(taskId);
-		if (task?.metadata?.coms_origin) {
-			return { subject: task.subject, coms_origin: task.metadata.coms_origin };
+		if (task?.createdBy?.type === "coms") {
+			return {
+				subject: task.subject,
+				createdBy: {
+					session: task.createdBy.session,
+					name: task.createdBy.origin,
+					endpoint: task.metadata?.sender_endpoint,
+				},
+			};
 		}
 	} catch { /* ignore */ }
 	return null;
 }
 
 /**
- * Get all tasks with coms_origin metadata (for keepalive heartbeat).
+ * Get all tasks created by coms peers (for keepalive heartbeat).
  */
-export async function getComsOriginTasks(): Promise<Array<{ taskId: string; subject: string; status: string; coms_origin: ComsOrigin }>> {
+export async function getComsOriginTasks(): Promise<Array<{ taskId: string; subject: string; status: string; createdBy: { session: string; name: string; endpoint?: string } }>> {
 	try {
 		const { listTasks } = await import("../pitasks/index.js");
 		const tasks = listTasks();
 		return tasks
-			.filter((t: any) => t.metadata?.coms_origin && t.status !== "deleted")
+			.filter((t: any) => t.createdBy?.type === "coms" && t.status !== "deleted")
 			.map((t: any) => ({
 				taskId: t.id,
 				subject: t.subject,
 				status: t.status,
-				coms_origin: t.metadata.coms_origin,
+				createdBy: {
+					session: t.createdBy.session,
+					name: t.createdBy.origin,
+					endpoint: t.metadata?.sender_endpoint,
+				},
 			}));
 	} catch { return []; }
 }

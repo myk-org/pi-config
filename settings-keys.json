@@ -274,15 +274,6 @@
     "max": 10000,
     "group": "Coms"
   },
-  "task_reminder_cadence_turns": {
-    "description": "Turns without task tool usage before showing reminder",
-    "type": "int",
-    "env": "PI_TASK_REMINDER_CADENCE_TURNS",
-    "default": 4,
-    "min": 1,
-    "max": 20,
-    "group": "Tasks"
-  },
   "log_pitasks": {
     "description": "Log level for pitasks module",
     "type": "string",
@@ -506,5 +497,53 @@
       "error"
     ],
     "group": "Logging"
+  },
+  "task_auto_clear_enabled": {
+    "description": "Enable automatic removal of completed tasks",
+    "type": "bool",
+    "env": "PI_TASK_AUTO_CLEAR_ENABLED",
+    "default": true,
+    "group": "Tasks"
+  },
+  "task_auto_clear_minutes": {
+    "description": "Minutes before completed tasks are automatically removed",
+    "type": "int",
+    "env": "PI_TASK_AUTO_CLEAR_MINUTES",
+    "default": 10,
+    "min": 1,
+    "max": 1440,
+    "group": "Tasks"
+  },
+  "task_reminder_enabled": {
+    "description": "Enable periodic task reminders when no task is in progress",
+    "type": "bool",
+    "env": "PI_TASK_REMINDER_ENABLED",
+    "default": true,
+    "group": "Tasks"
+  },
+  "task_reminder_interval_minutes": {
+    "description": "Minutes between task reminders when no task is in progress",
+    "type": "int",
+    "env": "PI_TASK_REMINDER_INTERVAL_MINUTES",
+    "default": 10,
+    "min": 1,
+    "max": 60,
+    "group": "Tasks"
+  },
+  "task_stale_in_progress_enabled": {
+    "description": "Enable reminders for tasks stuck in progress too long",
+    "type": "bool",
+    "env": "PI_TASK_STALE_IN_PROGRESS_ENABLED",
+    "default": true,
+    "group": "Tasks"
+  },
+  "task_stale_in_progress_minutes": {
+    "description": "Minutes before an in-progress task triggers a stale reminder",
+    "type": "int",
+    "env": "PI_TASK_STALE_IN_PROGRESS_MINUTES",
+    "default": 30,
+    "min": 5,
+    "max": 1440,
+    "group": "Tasks"
   }
 }
