@@ -145,7 +145,11 @@ export function registerComs(pi: ExtensionAPI) {
     });
     // Expose handler to pidash for browser command dispatch
     try {
+        if ((globalThis as any).__coms_pidash_listener) {
+            try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__coms_pidash_listener); } catch {}
+        }
         const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "coms", handler: comsCmdHandler });
+        (globalThis as any).__coms_pidash_listener = registerWithPidash;
         registerWithPidash();
         pi.events.on("pidash:request-commands", registerWithPidash);
     } catch {}

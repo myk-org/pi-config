@@ -95,11 +95,11 @@ coms_send(target="coder", prompt="Implement these features", tasks=[
 
 ### Recommended Pattern
 
-1. Create tasks silently on the peer via `coms_tasks_create` (no message sent)
-   - Always add a final "Report completion to sender" task, blocked by all other tasks
-2. Send ONE message: `coms_send(target="peer", prompt="You have tasks to work on. Check TaskList and start.")`
-3. Monitor progress via `coms_task_list` / `coms_task_get` (no message sent)
-4. The peer works through tasks, updates status, reports when done via the final report task
+1. Create tasks on the peer via `coms_tasks_create`
+   - Automatically adds a "Report completion to sender" task, blocked by all other tasks
+   - Automatically sends a message to the peer to start working
+2. Monitor progress via `coms_task_list` / `coms_task_get` (no message sent)
+3. The peer works through tasks, updates status, reports when done via the final report task
 
 ## Remote Task Management
 

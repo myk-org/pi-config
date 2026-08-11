@@ -2165,6 +2165,7 @@ Do not respond to this message.`;
 		}),
 		async execute(_callId, params) {
 			if (!identity) throw new Error("coms not initialised");
+			if (!params.tasks || params.tasks.length === 0) throw new Error("coms_tasks_create requires at least one task");
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
@@ -3053,9 +3054,13 @@ Do not respond to this message.`;
 
 	// Expose command handlers to pidash for browser command dispatch
 	try {
+		if ((globalThis as any).__coms_p2p_pidash_listener) {
+			try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__coms_p2p_pidash_listener); } catch {}
+		}
 		const registerWithPidash = () => {
 			pi.events.emit("pidash:register-command", { name: "coms-queue", handler: comsQueueCmdHandler });
 		};
+		(globalThis as any).__coms_p2p_pidash_listener = registerWithPidash;
 		registerWithPidash();
 		pi.events.on("pidash:request-commands", registerWithPidash);
 	} catch {}

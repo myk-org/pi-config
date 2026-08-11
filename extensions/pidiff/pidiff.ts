@@ -380,7 +380,11 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
   // Expose handler to pidash for browser command dispatch
   try {
+    if ((globalThis as any).__pidiff_pidash_listener) {
+      try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__pidiff_pidash_listener); } catch {}
+    }
     const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "pidiff", handler: pidiffCmdHandler });
+    (globalThis as any).__pidiff_pidash_listener = registerWithPidash;
     registerWithPidash();
     pi.events.on("pidash:request-commands", registerWithPidash);
   } catch {}

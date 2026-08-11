@@ -268,6 +268,7 @@ export class TaskStore {
 			const warnings: string[] = [];
 
 			if (fields.status === "deleted") {
+				task.statusHistory.deleted_at = new Date().toISOString();
 				this.tasks.delete(id);
 				for (const t of this.tasks.values()) {
 					t.blocks = t.blocks.filter(bid => bid !== id);
@@ -336,6 +337,7 @@ export class TaskStore {
 				const changedFields: string[] = [];
 
 				if (fields.status === "deleted") {
+					task.statusHistory.deleted_at = new Date().toISOString();
 					this.tasks.delete(id);
 					for (const t of this.tasks.values()) {
 						t.blocks = t.blocks.filter(bid => bid !== id);

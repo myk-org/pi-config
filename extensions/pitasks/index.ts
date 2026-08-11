@@ -378,11 +378,15 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 	registerTasksCommand();
-	// Expose handler to pidash for browser command dispatch
-	try {
-		const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "tasks", handler: tasksCmdHandler });
-		registerWithPidash();
-		pi.events.on("pidash:request-commands", registerWithPidash);
-	} catch {}
+		// Expose handler to pidash for browser command dispatch
+		try {
+			if ((globalThis as any).__pitasks_pidash_listener) {
+				try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__pitasks_pidash_listener); } catch {}
+			}
+			const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "tasks", handler: tasksCmdHandler });
+			(globalThis as any).__pitasks_pidash_listener = registerWithPidash;
+			registerWithPidash();
+			pi.events.on("pidash:request-commands", registerWithPidash);
+		} catch {}
 	log.debug("extension factory complete");
 }
