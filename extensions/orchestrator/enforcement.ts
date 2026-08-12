@@ -42,6 +42,7 @@ import {
   stripHeredocBodies,
   escapeForDoubleQuote,
   escapeForSingleQuote,
+  commandHasTrailerByName,
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
@@ -129,9 +130,13 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     trailerName = trailerSetting;
   }
 
-  // Raw trailer line for duplicate detection (what the commit message should contain)
-  const rawTrailerLine = `${trailerName}: ${piIdentity}`;
-  if (command.includes(rawTrailerLine)) return undefined;
+  // Duplicate detection by trailer NAME (a message must have only one such trailer).
+  // Catches trailers the committer (e.g. git-expert) already added, even if the
+  // model/identity string differs or `$PI_MODEL` was left unexpanded.
+  if (commandHasTrailerByName(command, trailerName)) {
+    log.debug("commit_trailer already present (by name) — skipping injection", trailerName);
+    return undefined;
+  }
 
   // Pattern A: echo "..." | git commit -F -
   const pipeIdx = command.lastIndexOf("|");

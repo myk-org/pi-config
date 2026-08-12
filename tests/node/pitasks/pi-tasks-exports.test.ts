@@ -5,6 +5,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import {
+	pendingReminderContent,
+	staleReminderContent,
+	shouldFireReminder,
+} from "../../../extensions/pitasks/reminders.js";
 
 describe("pitasks exported API pattern", () => {
 	it("TaskStore.create returns task with correct subject", () => {
@@ -91,32 +96,17 @@ describe("pitasks exported API pattern", () => {
 });
 
 /**
- * Tests for the task-focus reminder timer logic (Qodo #2).
+ * Tests for the task-focus reminder logic (Qodo #2, #5).
  *
- * NOTE: The reminder timer lives inside the activate() closure and drives
- * setInterval + pi.sendMessage, which cannot be exercised without the full
- * pi extension runtime. Following the established simulate-the-closure pattern
- * used elsewhere in the test suite, these tests mirror:
+ * These tests import the REAL exported pure functions from
+ * extensions/pitasks/reminders.ts (also re-exported by index.ts and used by
+ * the reminder timer) — pendingReminderContent, staleReminderContent,
+ * shouldFireReminder — so production regressions are caught:
  *   (a) the agentBusy gate — reminders are SKIPPED while agentBusy is true; and
  *   (b) the reminder CONTENT — a GENERIC "You have N active task(s)..." string
  *       that contains the active COUNT but NO task ids or subjects (no leak).
- *
- * Both mirror extensions/pitasks/index.ts (~lines 194–262).
  */
 describe("task-focus reminder timer (Qodo #2)", () => {
-	// Mirror the pending-only reminder content string built in index.ts.
-	function pendingReminderContent(activeCount: number): string {
-		return `⚠️ You have ${activeCount} active task(s) and none are in progress. Check your TaskList and resume your workflow.`;
-	}
-	// Mirror the stale in_progress reminder content string built in index.ts.
-	function staleReminderContent(staleCount: number): string {
-		return `⚠️ You have ${staleCount} task(s) stuck in progress. Check your TaskList and update their status.`;
-	}
-	// Mirror the agentBusy gate: the reminder only fires when NOT busy.
-	function shouldFireReminder(agentBusy: boolean, matchingCount: number): boolean {
-		return matchingCount > 0 && !agentBusy;
-	}
-
 	it("reminder is SKIPPED when agentBusy is true", () => {
 		assert.equal(shouldFireReminder(true, 3), false);
 	});
@@ -157,11 +147,7 @@ describe("task-focus reminder timer (Qodo #2)", () => {
 		assert.ok(content.includes("1 task(s) stuck in progress"));
 	});
 
-	it("stale reminder content is GENERIC — no task subject/id leaked", () => {
-		const store = new TaskStore();
-		const by = { type: "local" as const, origin: "", session: "s", project: "" };
-		const t1 = store.create("Stuck subject GAMMA", "desc", by);
-		void t1;
+	it("stale reminder content is GENERIC — no task subject leaked", () => {
 		const content = staleReminderContent(1);
 		assert.equal(content.includes("Stuck subject GAMMA"), false);
 		assert.equal(content.includes("GAMMA"), false);

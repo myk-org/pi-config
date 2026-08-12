@@ -12,6 +12,20 @@ import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "../orchestrator/project-settings.js";
+import {
+	pendingReminderContent,
+	staleReminderContent,
+	shouldFireReminder,
+	selectActiveTasks,
+} from "./reminders.js";
+
+// Re-export reminder pure helpers so consumers (and tests) can import from index.
+export {
+	pendingReminderContent,
+	staleReminderContent,
+	shouldFireReminder,
+	selectActiveTasks,
+};
 
 const log = createLogger("pitasks");
 
@@ -207,16 +221,16 @@ export default function (pi: ExtensionAPI) {
 					const now = Date.now();
 					if (now - lastReminderAt >= threshold) {
 						const tasks = store.list();
-						const active = tasks.filter(t => t.status === "pending" || t.status === "in_progress");
-						if (active.length > 0 && !active.some(t => t.status === "in_progress")) {
-							if (agentBusy) {
+						const { active, anyInProgress } = selectActiveTasks(tasks);
+						if (active.length > 0 && !anyInProgress) {
+							if (!shouldFireReminder(agentBusy, active.length)) {
 								log.debug("reminder_skipped", "busy");
 							} else {
 								lastReminderAt = now;
 								try {
 									pi.sendMessage({
 										customType: "task-focus-reminder",
-										content: `⚠️ You have ${active.length} active task(s) and none are in progress. Check your TaskList and resume your workflow.`,
+										content: pendingReminderContent(active.length),
 										display: true,
 									}, { triggerTurn: true });
 									log.info("reminder_fired", "active", active.length);
@@ -241,14 +255,14 @@ export default function (pi: ExtensionAPI) {
 					now2 - new Date(t.statusHistory.in_progress_at).getTime() > staleThreshold
 				);
 				if (staleTasks.length > 0) {
-					if (agentBusy) {
+					if (!shouldFireReminder(agentBusy, staleTasks.length)) {
 						log.debug("reminder_skipped", "busy");
 					} else {
 						lastStaleReminderAt = now2;
 						try {
 							pi.sendMessage({
 								customType: "task-focus-reminder",
-								content: `⚠️ You have ${staleTasks.length} task(s) stuck in progress. Check your TaskList and update their status.`,
+								content: staleReminderContent(staleTasks.length),
 								display: true,
 							}, { triggerTurn: true });
 							log.info("stale_reminder_fired", "stale", staleTasks.length);
