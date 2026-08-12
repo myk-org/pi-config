@@ -68,6 +68,7 @@ export interface AsyncJob {
   projectCwd?: string;
   sessionId?: string;
   model?: string;
+  restoredPid?: number;
 }
 
 /** Get the effective working directory for a job. */
@@ -200,6 +201,20 @@ export function registerAsyncAgents(
           // No status file — process never started or died before writing status.
           // Check if workerDir still exists; if not, the job is definitely dead.
           if (!fs.existsSync(job.workerDir)) {
+            // Worker dir missing (e.g. cleaned across a reload). Do NOT declare
+            // death if the worker process is still alive — trust the live PID.
+            const restoredPid = job.restoredPid;
+            const stillAlive = restoredPid
+              ? (() => { try { process.kill(restoredPid, 0); return true; } catch { return false; } })()
+              : false;
+            if (stillAlive) {
+              const elapsed = Date.now() - job.startedAt;
+              if (elapsed <= getSetting(jobCwd(job), "async_phantom_timeout_ms")) {
+                log.debug(`restored job dir missing but pid ${restoredPid} alive — waiting`, job.id);
+                continue;
+              }
+              // else fall through to failure below (grace window exceeded)
+            }
             job.status = "failed";
             job.output = "Agent process died without writing status";
             job.durationMs = Date.now() - job.startedAt;
@@ -1202,6 +1217,7 @@ export function registerAsyncAgents(
             projectCwd: marker.projectCwd || undefined,
             sessionId: marker.sessionId || undefined,
             model: status.model || marker.model || undefined,
+            restoredPid: typeof status.pid === "number" ? status.pid : undefined,
           };
           asyncState.jobs.set(id, job);
           log.info(`restored job: ${id} state=${job.status}`);

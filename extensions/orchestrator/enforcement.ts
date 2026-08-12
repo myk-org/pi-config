@@ -42,6 +42,7 @@ import {
   stripHeredocBodies,
   escapeForDoubleQuote,
   escapeForSingleQuote,
+  commandHasTrailerByName,
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
@@ -129,10 +130,6 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     trailerName = trailerSetting;
   }
 
-  // Raw trailer line for duplicate detection (what the commit message should contain)
-  const rawTrailerLine = `${trailerName}: ${piIdentity}`;
-  if (command.includes(rawTrailerLine)) return undefined;
-
   // Pattern A: echo "..." | git commit -F -
   const pipeIdx = command.lastIndexOf("|");
   if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
@@ -144,6 +141,14 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     if (lastQuoteIdx > 0) {
       // Determine quote context for correct escaping
       const quoteChar = echoPart[lastQuoteIdx];
+      // Scope dedup to the echo/message-construction portion (before the pipe), which
+      // excludes the git args. Do NOT attempt to slice out the exact quoted substring
+      // by backward-scanning for a quote — escaped quotes (\") inside the message would
+      // misparse the boundary and cause a missed trailer -> duplicate injection.
+      if (commandHasTrailerByName(echoPart, trailerName)) {
+        log.debug("commit_trailer already present in echo message (by name) — skipping injection", trailerName);
+        return undefined;
+      }
       const escaped = quoteChar === "'"
         ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
         : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
@@ -156,6 +161,14 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
     if (mFlagMatch) {
       const quoteChar = mFlagMatch[1];
+      // Scope duplicate-by-name detection to the -m message payload only
+      // (mFlagMatch[2]) — not the whole command — so an unrelated arg/env var
+      // containing the trailer token does not wrongly skip injection.
+      const payload = mFlagMatch[2];
+      if (commandHasTrailerByName(payload, trailerName)) {
+        log.debug("commit_trailer already present in message (by name) — skipping injection", trailerName);
+        return undefined;
+      }
       const escaped = quoteChar === "'"
         ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
         : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;

@@ -5,6 +5,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import {
+	pendingReminderContent,
+	staleReminderContent,
+	shouldFireReminder,
+} from "../../../extensions/pitasks/reminders.js";
 
 describe("pitasks exported API pattern", () => {
 	it("TaskStore.create returns task with correct subject", () => {
@@ -70,7 +75,7 @@ describe("pitasks exported API pattern", () => {
 
 	it("TaskStore.update with metadata merges keys", () => {
 		const store = new TaskStore();
-		const task = store.create("Meta task", "desc", undefined, { key1: "a" });
+		const task = store.create("Meta task", "desc", undefined, undefined, { key1: "a" });
 		store.update(task.id, { metadata: { key2: "b" } });
 		const updated = store.get(task.id);
 		assert.equal(updated?.metadata.key1, "a");
@@ -87,5 +92,64 @@ describe("pitasks exported API pattern", () => {
 		const result = store.update("999", { status: "completed" });
 		assert.equal(result.task, undefined);
 		assert.equal(result.changedFields.length, 0);
+	});
+});
+
+/**
+ * Tests for the task-focus reminder logic (Qodo #2, #5).
+ *
+ * These tests import the REAL exported pure functions from
+ * extensions/pitasks/reminders.ts (also re-exported by index.ts and used by
+ * the reminder timer) — pendingReminderContent, staleReminderContent,
+ * shouldFireReminder — so production regressions are caught:
+ *   (a) the agentBusy gate — reminders are SKIPPED while agentBusy is true; and
+ *   (b) the reminder CONTENT — a GENERIC "You have N active task(s)..." string
+ *       that contains the active COUNT but NO task ids or subjects (no leak).
+ */
+describe("task-focus reminder timer (Qodo #2)", () => {
+	it("reminder is SKIPPED when agentBusy is true", () => {
+		assert.equal(shouldFireReminder(true, 3), false);
+	});
+
+	it("reminder fires when agent is idle with active tasks", () => {
+		assert.equal(shouldFireReminder(false, 3), true);
+	});
+
+	it("reminder does not fire when there are no matching tasks (even if idle)", () => {
+		assert.equal(shouldFireReminder(false, 0), false);
+	});
+
+	it("pending reminder content includes the active COUNT", () => {
+		assert.ok(pendingReminderContent(3).includes("3 active task(s)"));
+	});
+
+	it("pending reminder content is GENERIC — no task subject/id leaked", () => {
+		// Build tasks with distinctive subjects/ids and verify none appear in the content.
+		const store = new TaskStore();
+		const by = { type: "local" as const, origin: "", session: "s", project: "" };
+		const t1 = store.create("Secret subject ALPHA", "desc", by);
+		const t2 = store.create("Confidential BETA", "desc", by);
+		const active = store.list().filter(t => t.status === "pending" || t.status === "in_progress");
+		const content = pendingReminderContent(active.length);
+
+		// Sequential numeric ids ("1", "2") intentionally NOT asserted here — they
+		// collide with the active COUNT that legitimately appears in the string.
+		void t1; void t2;
+		assert.ok(content.includes("2 active task(s)"));
+		assert.equal(content.includes("Secret subject ALPHA"), false);
+		assert.equal(content.includes("Confidential BETA"), false);
+		assert.equal(content.includes("ALPHA"), false);
+		assert.equal(content.includes("BETA"), false);
+	});
+
+	it("stale reminder content includes the COUNT", () => {
+		const content = staleReminderContent(1);
+		assert.ok(content.includes("1 task(s) stuck in progress"));
+	});
+
+	it("stale reminder content is GENERIC — no task subject leaked", () => {
+		const content = staleReminderContent(1);
+		assert.equal(content.includes("Stuck subject GAMMA"), false);
+		assert.equal(content.includes("GAMMA"), false);
 	});
 });

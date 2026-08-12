@@ -37,6 +37,28 @@ export function escapeForSingleQuote(s: string): string {
   return s.replace(/'/g, "'\\\''");
 }
 
+/**
+ * Detect whether a commit command already contains a trailer with the given
+ * NAME (e.g. `Assisted-by:`). A commit message must only ever have ONE such
+ * trailer, so we match by name — not by the full identity string — to avoid
+ * appending a duplicate when the committer (e.g. git-expert) already added one
+ * with a DIFFERENT model/identity string (or an unexpanded `$PI_MODEL`).
+ *
+ * The command embeds the message inside a quoted string where line breaks may
+ * appear as REAL newline characters OR as the two-character escaped `\n`
+ * sequence (echo -e / printf style). We therefore accept, immediately before
+ * the trailer name: start-of-string, a real newline, a literal `\n` two-char
+ * sequence, or a quote/whitespace character.
+ */
+export function commandHasTrailerByName(command: string, trailerName: string): boolean {
+  const escName = trailerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // (^|\n real newline|\\n literal backslash-n|quote/space) + name + ":" + space
+  const trailerNameRe = new RegExp(String.raw`(^|\n|\\n|["'\s])` + escName + String.raw`:\s`);
+  const result = trailerNameRe.test(command);
+  enfLog.debug("commandHasTrailerByName", trailerName, "match", result);
+  return result;
+}
+
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
   // Match the FIRST cd in the command (at start or after &&, ;, ||)

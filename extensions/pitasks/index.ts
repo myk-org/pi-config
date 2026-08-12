@@ -12,6 +12,20 @@ import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "../orchestrator/project-settings.js";
+import {
+	pendingReminderContent,
+	staleReminderContent,
+	shouldFireReminder,
+	selectActiveTasks,
+} from "./reminders.js";
+
+// Re-export reminder pure helpers so consumers (and tests) can import from index.
+export {
+	pendingReminderContent,
+	staleReminderContent,
+	shouldFireReminder,
+	selectActiveTasks,
+};
 
 const log = createLogger("pitasks");
 
@@ -195,6 +209,7 @@ export default function (pi: ExtensionAPI) {
 	let reminderTimer: ReturnType<typeof setInterval> | null = null;
 	let lastReminderAt = 0;
 	let lastStaleReminderAt = 0;
+	let agentBusy = false;       // true while the agent is actively running a turn
 	const startReminderTimer = () => {
 		if (reminderTimer) clearInterval(reminderTimer);
 		reminderTimer = setInterval(() => {
@@ -206,19 +221,21 @@ export default function (pi: ExtensionAPI) {
 					const now = Date.now();
 					if (now - lastReminderAt >= threshold) {
 						const tasks = store.list();
-						const active = tasks.filter(t => t.status === "pending" || t.status === "in_progress");
-						if (active.length > 0 && !active.some(t => t.status === "in_progress")) {
-							lastReminderAt = now;
-							const summary = active.slice(0, 3).map(t => `#${t.id} [${t.status}] ${t.subject}`).join(", ");
-							const more = active.length > 3 ? ` (+${active.length - 3} more)` : "";
-							try {
-								pi.sendMessage({
-									customType: "task-focus-reminder",
-									content: `⚠️ You have active tasks — resume your workflow:\n${summary}${more}`,
-									display: true,
-								}, { triggerTurn: true });
-								log.info("reminder_fired", summary);
-							} catch {}
+						const { active, anyInProgress } = selectActiveTasks(tasks);
+						if (active.length > 0 && !anyInProgress) {
+							if (!shouldFireReminder(agentBusy, active.length)) {
+								log.debug("reminder_skipped", "busy");
+							} else {
+								lastReminderAt = now;
+								try {
+									pi.sendMessage({
+										customType: "task-focus-reminder",
+										content: pendingReminderContent(active.length),
+										display: true,
+									}, { triggerTurn: true });
+									log.info("reminder_fired", "active", active.length);
+								} catch {}
+							}
 						}
 					}
 				}
@@ -238,16 +255,19 @@ export default function (pi: ExtensionAPI) {
 					now2 - new Date(t.statusHistory.in_progress_at).getTime() > staleThreshold
 				);
 				if (staleTasks.length > 0) {
-					lastStaleReminderAt = now2;
-					const summary = staleTasks.map(t => `#${t.id} [in_progress for ${Math.round((now2 - new Date(t.statusHistory.in_progress_at!).getTime()) / 60000)}m] ${t.subject}`).join(", ");
-					try {
-						pi.sendMessage({
-							customType: "task-focus-reminder",
-							content: `⚠️ Tasks stuck in progress — check status:\n${summary}`,
-							display: true,
-						}, { triggerTurn: true });
-						log.info("stale_reminder_fired", summary);
-					} catch {}
+					if (!shouldFireReminder(agentBusy, staleTasks.length)) {
+						log.debug("reminder_skipped", "busy");
+					} else {
+						lastStaleReminderAt = now2;
+						try {
+							pi.sendMessage({
+								customType: "task-focus-reminder",
+								content: staleReminderContent(staleTasks.length),
+								display: true,
+							}, { triggerTurn: true });
+							log.info("stale_reminder_fired", "stale", staleTasks.length);
+						} catch {}
+					}
 				}
 			} catch {}
 		}, 60000);
@@ -263,6 +283,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_start", async (_event: any, ctx: any) => {
 		if (shuttingDown) return;
+		agentBusy = true;
+		log.debug("agentBusy", "turn_start");
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);
@@ -270,14 +292,26 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (event: any) => {
 		if (shuttingDown) return;
+		agentBusy = false;
+		log.debug("agentBusy", "turn_end");
 		const msg = (event as any).message;
 		if (msg?.role === "assistant" && msg.usage) {
 			widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0);
 		}
 	});
 
+	// agent_settled is guaranteed to fire even if turn_end is skipped (abort/error).
+	// Reset agentBusy defensively so reminders are never suppressed forever.
+	pi.on("agent_settled", async () => {
+		if (shuttingDown) return;
+		agentBusy = false;
+		log.debug("agentBusy", "agent_settled reset");
+	});
+
 	pi.on("session_start", async (event: any, ctx: any) => {
 		shuttingDown = false;
+		agentBusy = false;
+		log.debug("agentBusy", "session_start reset");
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;
@@ -301,6 +335,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event: any, ctx: any) => {
 		if (shuttingDown) return;
+		agentBusy = true;
+		log.debug("agentBusy", "before_agent_start");
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		upgradeStoreIfNeeded(ctx);

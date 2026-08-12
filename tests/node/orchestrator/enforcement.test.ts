@@ -16,6 +16,7 @@ import {
   normalizeForRepeatCheck,
   escapeForDoubleQuote,
   escapeForSingleQuote,
+  commandHasTrailerByName,
   resolveEffectiveCwd,
   checkPythonPipBlock,
   setUvAvailable,
@@ -1167,5 +1168,82 @@ describe("getCachedBranch", () => {
     // After clear, fresh lookup on non-git path returns null
     const result = getCachedBranch(fakePath);
     assert.equal(result, null);
+  });
+});
+
+// ── commandHasTrailerByName (commit-trailer dup detection) ──
+
+describe("commandHasTrailerByName", () => {
+  it("detects trailer with DIFFERENT model in git commit -m (real newlines)", () => {
+    const cmd = 'git commit -m "fix: something\n\nAssisted-by: PI (some-other-model) <noreply@pi.dev>"';
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
+  });
+
+  it("detects trailer with unexpanded $PI_MODEL", () => {
+    const cmd = 'git commit -m "fix: something\n\nAssisted-by: PI ($PI_MODEL) <noreply@pi.dev>"';
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
+  });
+
+  it("detects trailer written with escaped \\n (echo -e / printf style)", () => {
+    const cmd = 'echo -e "fix: something\\n\\nAssisted-by: PI (other-model) <noreply@pi.dev>" | git commit -F -';
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
+  });
+
+  it("detects trailer right after opening quote", () => {
+    const cmd = "git commit -m 'Assisted-by: PI (x) <noreply@pi.dev>'";
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
+  });
+
+  it("returns false when trailer name is absent", () => {
+    const cmd = 'git commit -m "fix: something\n\nCo-authored-by: Someone <a@b.c>"';
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), false);
+  });
+
+  it("does not false-match a substring of the trailer name", () => {
+    const cmd = 'git commit -m "Not-Assisted-by-anyone: foo"';
+    // `Assisted-by:` is not present as a boundary-delimited trailer name here
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), false);
+  });
+
+  it("escapes regex metacharacters in the trailer name", () => {
+    const cmd = 'git commit -m "msg\n\nX-Trailer.v1: value"';
+    assert.equal(commandHasTrailerByName(cmd, "X-Trailer.v1"), true);
+    // A different name that would match if the dot were treated as wildcard
+    assert.equal(commandHasTrailerByName(cmd, "X-TrailerXv1"), false);
+  });
+
+  // Regression: the dedup guard must be scoped to the MESSAGE PAYLOAD, not the
+  // whole command. Here the trailer token appears only in a NON-message part
+  // (an env var / arg), so on the extracted -m payload it is absent — meaning
+  // injection should still happen.
+  it("does NOT detect the trailer when it appears only in a non-message part (env var)", () => {
+    const cmd = 'FOO="Assisted-by: x" git commit -m "real msg"';
+    // Payload for Pattern B is the -m quoted content only
+    const payload = cmd.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/)![2];
+    assert.equal(payload, "real msg");
+    assert.equal(commandHasTrailerByName(payload, "Assisted-by"), false);
+    // Whole-command scan (the old buggy behavior) WOULD wrongly report true
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
+  });
+
+  // Regression (Pattern A): an echo payload containing an ESCAPED quote (\")
+  // BEFORE an existing trailer must still be detected. The old backward-scan
+  // for the opening quote treated the escaped quote as the delimiter, slicing
+  // the payload mid-message and MISSING the trailer -> duplicate injection.
+  // Scoping dedup to the whole echoPart (before the pipe) avoids the misparse.
+  it("detects trailer in Pattern A echo payload with an escaped quote before the trailer", () => {
+    const cmd =
+      'echo -e "fix: something with a \\"quote\\" in it\\n\\nAssisted-by: PI (other-model) <noreply@pi.dev>" | git commit -F -';
+    const pipeIdx = cmd.lastIndexOf("|");
+    const echoPart = cmd.slice(0, pipeIdx);
+    assert.equal(commandHasTrailerByName(echoPart, "Assisted-by"), true);
+  });
+
+  it("does NOT detect an absent trailer in a Pattern A echo payload (injection should proceed)", () => {
+    const cmd =
+      'echo -e "fix: something with a \\"quote\\" in it\\n\\nCo-authored-by: Someone <a@b.c>" | git commit -F -';
+    const pipeIdx = cmd.lastIndexOf("|");
+    const echoPart = cmd.slice(0, pipeIdx);
+    assert.equal(commandHasTrailerByName(echoPart, "Assisted-by"), false);
   });
 });

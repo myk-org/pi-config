@@ -5,6 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { detectMixedTurn, type BranchEntry } from "../../../extensions/coms/coms-shared.js";
+import { isUserMessageDuringInbound, computeMixedTurn } from "../../../extensions/coms/mixed-turn.js";
 
 const MSG_ID = "test-msg-001";
 const COMS_INBOUND = "coms-inbound";
@@ -316,5 +317,48 @@ describe("userMessageInTurn flag state machine", () => {
 			processingInbound = false;
 		}
 		assert.equal(processingInbound, true);
+	});
+});
+
+/**
+ * Tests for the userMessageDuringInbound flag (#741).
+ *
+ * NOTE: Like the state-machine tests above, these simulate the actual handler
+ * logic because the handlers (pi.on("message_start") / pi.on("agent_end")) live
+ * inside the activate() closure and require the full pi extension runtime.
+ *
+ * Production behavior (coms-p2p.ts):
+ *   1. agent_start: userMessageDuringInbound = false (per-turn reset)
+ *   2. message_start: sets userMessageDuringInbound = true ONLY when
+ *      `processingInbound && event.message.role === "user"` — a genuine user
+ *      message landed during an inbound turn. This is the #741 fix: without it,
+ *      auto-capture would leak user-directed assistant text to the peer.
+ *   3. agent_end: hasMixedTurn = inboundSetDuringUserTurn || userMessageDuringInbound.
+ *      When hasMixedTurn is true the inbound is RE-INJECTED for a clean turn
+ *      instead of being auto-captured and sent to the peer.
+ */
+describe("userMessageDuringInbound flag (#741)", () => {
+	it("flags a user message arriving during an inbound turn", () => {
+		assert.equal(isUserMessageDuringInbound(true, "user"), true);
+	});
+
+	it("does not flag an assistant message during an inbound turn", () => {
+		assert.equal(isUserMessageDuringInbound(true, "assistant"), false);
+	});
+
+	it("does not flag a user message when no inbound is active", () => {
+		assert.equal(isUserMessageDuringInbound(false, "user"), false);
+	});
+
+	it("forces mixed turn when userMessageDuringInbound alone is set (#741 fix)", () => {
+		assert.equal(computeMixedTurn(false, true), true);
+	});
+
+	it("forces mixed turn via the pre-existing inboundSetDuringUserTurn path", () => {
+		assert.equal(computeMixedTurn(true, false), true);
+	});
+
+	it("treats a clean turn as non-mixed (auto-capture)", () => {
+		assert.equal(computeMixedTurn(false, false), false);
 	});
 });

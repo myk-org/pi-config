@@ -88,7 +88,8 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
 
   // Mask secret-like keys
   const SECRET_PATTERNS = /token|secret|password|auth/i;
-  if (def.type === "string" && SECRET_PATTERNS.test(key) && typeof value === "string" && value !== "") {
+  const looksSecret = SECRET_PATTERNS.test(key) || (typeof def.env === "string" && SECRET_PATTERNS.test(def.env));
+  if (def.type === "string" && looksSecret && typeof value === "string" && value !== "") {
     return value.length > 4 ? "••••" + value.slice(-4) : "••••••••";
   }
 
