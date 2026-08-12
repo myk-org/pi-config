@@ -141,14 +141,12 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     if (lastQuoteIdx > 0) {
       // Determine quote context for correct escaping
       const quoteChar = echoPart[lastQuoteIdx];
-      // Extract the quoted message region (message construction), then scope the
-      // duplicate-by-name detection to that PAYLOAD only — never the git args or
-      // any unrelated env var/path in the command, which would false-positive and
-      // wrongly skip injecting the real trailer.
-      const openQuoteIdx = echoPart.lastIndexOf(quoteChar, lastQuoteIdx - 1);
-      const payload = openQuoteIdx >= 0 ? echoPart.slice(openQuoteIdx + 1, lastQuoteIdx) : echoPart;
-      if (commandHasTrailerByName(payload, trailerName)) {
-        log.debug("commit_trailer already present in message (by name) — skipping injection", trailerName);
+      // Scope dedup to the echo/message-construction portion (before the pipe), which
+      // excludes the git args. Do NOT attempt to slice out the exact quoted substring
+      // by backward-scanning for a quote — escaped quotes (\") inside the message would
+      // misparse the boundary and cause a missed trailer -> duplicate injection.
+      if (commandHasTrailerByName(echoPart, trailerName)) {
+        log.debug("commit_trailer already present in echo message (by name) — skipping injection", trailerName);
         return undefined;
       }
       const escaped = quoteChar === "'"

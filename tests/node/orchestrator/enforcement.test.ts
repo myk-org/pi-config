@@ -1225,4 +1225,25 @@ describe("commandHasTrailerByName", () => {
     // Whole-command scan (the old buggy behavior) WOULD wrongly report true
     assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
   });
+
+  // Regression (Pattern A): an echo payload containing an ESCAPED quote (\")
+  // BEFORE an existing trailer must still be detected. The old backward-scan
+  // for the opening quote treated the escaped quote as the delimiter, slicing
+  // the payload mid-message and MISSING the trailer -> duplicate injection.
+  // Scoping dedup to the whole echoPart (before the pipe) avoids the misparse.
+  it("detects trailer in Pattern A echo payload with an escaped quote before the trailer", () => {
+    const cmd =
+      'echo -e "fix: something with a \\"quote\\" in it\\n\\nAssisted-by: PI (other-model) <noreply@pi.dev>" | git commit -F -';
+    const pipeIdx = cmd.lastIndexOf("|");
+    const echoPart = cmd.slice(0, pipeIdx);
+    assert.equal(commandHasTrailerByName(echoPart, "Assisted-by"), true);
+  });
+
+  it("does NOT detect an absent trailer in a Pattern A echo payload (injection should proceed)", () => {
+    const cmd =
+      'echo -e "fix: something with a \\"quote\\" in it\\n\\nCo-authored-by: Someone <a@b.c>" | git commit -F -';
+    const pipeIdx = cmd.lastIndexOf("|");
+    const echoPart = cmd.slice(0, pipeIdx);
+    assert.equal(commandHasTrailerByName(echoPart, "Assisted-by"), false);
+  });
 });
