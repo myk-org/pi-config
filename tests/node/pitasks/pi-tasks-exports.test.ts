@@ -70,7 +70,7 @@ describe("pitasks exported API pattern", () => {
 
 	it("TaskStore.update with metadata merges keys", () => {
 		const store = new TaskStore();
-		const task = store.create("Meta task", "desc", undefined, { key1: "a" });
+		const task = store.create("Meta task", "desc", undefined, undefined, { key1: "a" });
 		store.update(task.id, { metadata: { key2: "b" } });
 		const updated = store.get(task.id);
 		assert.equal(updated?.metadata.key1, "a");

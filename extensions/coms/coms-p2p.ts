@@ -628,6 +628,8 @@ export default function (pi: ExtensionAPI) {
 	let agentRunningUserTurn = false;
 	/** True when currentInbound was set while the agent was running a user turn (#731). */
 	let inboundSetDuringUserTurn = false;
+	/** True when a real user message landed during an inbound turn (#741). */
+	let userMessageDuringInbound = false;
 	const comsSendCalledThisTurn: Set<string> = new Set();
 
 	function getPendingInboundCount(): number {
@@ -1322,12 +1324,16 @@ export default function (pi: ExtensionAPI) {
 			maybeRefreshWidget();
 		}
 
-		// Show welcome if peers found on boot
-		if (peerCards.size > 0 && identity && !welcomeShown) {
+		// Show welcome if peers found — reusable so the FIRST peer (who booted
+		// with no peers) still gets it retroactively when a peer later joins.
+		const showWelcomeIfNeeded = () => {
+			if (welcomeShown || !identity) return;
 			welcomeShown = true;
-			const peerList = [...peerCards.values()]
-				.map(card => `● ${card.name} (${card.model})${card.purpose ? ` — ${card.purpose}` : ""}`)
-				.join("\n");
+			const peerList = peerCards.size > 0
+				? [...peerCards.values()]
+					.map(card => `● ${card.name} (${card.model})${card.purpose ? ` — ${card.purpose}` : ""}`)
+					.join("\n")
+				: "(none yet — you are the first peer)";
 			const welcomeMsg = `📡 Connected to coms · You are "${identity.name}" on project "${identity.project}"
 
 ## How to reply
@@ -1356,6 +1362,10 @@ export default function (pi: ExtensionAPI) {
 ${peerList}
 Do not respond to this message.`;
 
+			// Seed knownPeerSessions for every current peer so the retroactive
+			// welcome does not also trigger duplicate "peer joined" cards.
+			for (const [sid, card] of peerCards) knownPeerSessions.set(sid, card.name);
+
 			log.info("welcome_shown", "peers", peerCards.size);
 			try {
 				pi.sendMessage({
@@ -1364,7 +1374,10 @@ Do not respond to this message.`;
 					display: true,
 				}, { triggerTurn: true });
 			} catch {}
-		}
+		};
+
+		// Show welcome if peers found on boot
+		showWelcomeIfNeeded();
 
 		// Watch registry directory for peer changes (fs.watch)
 		const agentsDir = projectAgentsDir(project);
@@ -1400,6 +1413,10 @@ Do not respond to this message.`;
 									peerCards.set(entry.coms_session_id, card);
 									log.info("fs_watch_peer_added", entry.name, entry.coms_session_id);
 									maybeRefreshWidget();
+									if (!welcomeShown) {
+										log.debug("welcome_retroactive", entry.name);
+										showWelcomeIfNeeded();
+									}
 									if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
 										knownPeerSessions.set(entry.coms_session_id, entry.name);
 										try { pi.sendMessage({ customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
@@ -1444,6 +1461,10 @@ Do not respond to this message.`;
 							peerCards.set(entry.coms_session_id, card);
 							log.info("fs_watch_peer_added_via_change", entry.name, entry.coms_session_id);
 							maybeRefreshWidget();
+							if (!welcomeShown) {
+								log.debug("welcome_retroactive", entry.name);
+								showWelcomeIfNeeded();
+							}
 							if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
 								knownPeerSessions.set(entry.coms_session_id, entry.name);
 								try { pi.sendMessage({ customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
@@ -2451,7 +2472,20 @@ Do not respond to this message.`;
 	pi.on("agent_start" as any, () => {
 		agentRunningUserTurn = !processingInbound;
 		comsSendCalledThisTurn.clear();
+		userMessageDuringInbound = false;
 		log.debug("agent_start", "userTurn", agentRunningUserTurn, "processingInbound", processingInbound, "currentInbound", currentInbound?.msg_id ?? "null");
+	});
+
+	// ━━ message_start: detect a real user message interrupting an inbound turn (#741) ━━
+	// A message_start with role "user" while processingInbound means a genuine user
+	// message landed during a coms inbound turn — auto-capturing that assistant text
+	// would leak user-directed content to the peer. Flag it for mixed-turn handling.
+	pi.on("message_start" as any, (event: any) => {
+		if (shuttingDown || !identity) return;
+		if (processingInbound && event?.message?.role === "user") {
+			userMessageDuringInbound = true;
+			log.info("user_message_during_inbound", currentInbound?.msg_id ?? "null");
+		}
 	});
 
 	// ━━ agent_end: capture turn output and dispatch response back ━━━━━━━━
@@ -2470,6 +2504,7 @@ Do not respond to this message.`;
 			}
 			agentRunningUserTurn = false;
 			inboundSetDuringUserTurn = false;
+			userMessageDuringInbound = false;
 			processingInbound = false;
 			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
 			return;
@@ -2516,8 +2551,12 @@ Do not respond to this message.`;
 		// If the inbound was set while the agent was running a user turn
 		// (not a coms followUp), the assistant's response is for the user.
 		// Re-inject the inbound for a dedicated turn.
-		const hasMixedTurn = inboundSetDuringUserTurn;
+		const hasMixedTurn = inboundSetDuringUserTurn || userMessageDuringInbound;
+		if (userMessageDuringInbound && !inboundSetDuringUserTurn) {
+			log.info("mixed_turn_user_interrupt", inbound.msg_id);
+		}
 		inboundSetDuringUserTurn = false;
+		userMessageDuringInbound = false;
 
 		const MAX_MIXED_RETRIES = 2;
 		if (hasMixedTurn) {

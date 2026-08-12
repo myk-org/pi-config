@@ -217,7 +217,7 @@ export function buildCategoryItems(
           }
 
           const SECRET_PATTERN = /token|secret|password|auth/i;
-          const isSecret = SECRET_PATTERN.test(key);
+          const isSecret = SECRET_PATTERN.test(key) || (typeof def?.env === "string" && SECRET_PATTERN.test(def.env));
           const secretInfo = isSecret ? resolveSecretPrefill(key, editScope, cwd) : null;
           item.submenu = (current: string, done: (val?: string) => void): Component => {
             const prefill = secretInfo ? secretInfo.prefill : current;
