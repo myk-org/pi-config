@@ -768,8 +768,8 @@ export default function (pi: ExtensionAPI) {
 			}
 			log.debug("handleResponse", env.msg_id, "from", env.sender_session.slice(-8), "error", env.error ?? "none");
 
-			// Skip display for bundled responses — primary already displayed
-			if (env.error === "bundled") {
+			// Skip display for bundled/cleared responses — not user-visible
+			if (env.error === "bundled" || env.error === "queue_cleared") {
 				setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
 				return;
 			}
@@ -930,6 +930,7 @@ export default function (pi: ExtensionAPI) {
 						log.debug("presence_leaving_received", "from", env.sender_name);
 						try {
 							pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false });
+							try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]` }); } catch {}
 						} catch {}
 					}
 					break;
@@ -1037,7 +1038,7 @@ export default function (pi: ExtensionAPI) {
 				case "update":
 					if (env.task_id && env.fields) {
 						const t = getTask(env.task_id);
-						if (t?.metadata?.coms_origin?.sender_session === env.sender_session) {
+						if (t?.createdBy?.session === env.sender_session) {
 							result = updateTask(env.task_id, env.fields);
 						} else {
 							error = "ownership_denied — can only update tasks you created";
@@ -1047,7 +1048,7 @@ export default function (pi: ExtensionAPI) {
 				case "delete":
 					if (env.task_id) {
 						const t = getTask(env.task_id);
-						if (t?.metadata?.coms_origin?.sender_session === env.sender_session) {
+						if (t?.createdBy?.session === env.sender_session) {
 							result = deleteTask(env.task_id);
 						} else {
 							error = "ownership_denied — can only delete tasks you created";
@@ -1090,13 +1091,13 @@ export default function (pi: ExtensionAPI) {
 		const newStatus = input.status as string;
 		if (!taskId || !newStatus) return;
 
-		// Look up the task to check for coms_origin metadata
+		// Look up the task to check if created by a coms peer
 		try {
 			const { getComsOriginTask } = await import("./coms-shared.js");
 			const task = await getComsOriginTask(taskId);
-			if (!task?.coms_origin) return;
-			const origin = task.coms_origin;
-			if (!origin.sender_endpoint) return;
+			if (!task?.createdBy) return;
+			const origin = task.createdBy;
+			if (!origin.endpoint) return;
 
 			const env: TaskUpdateEnvelope = {
 				type: "task_update",
@@ -1110,8 +1111,8 @@ export default function (pi: ExtensionAPI) {
 				status: newStatus,
 				sender_name: identity.name,
 			};
-			await sendEnvelope(origin.sender_endpoint, env);
-			log.debug("task_update_out", taskId, newStatus, "to", origin.sender_name);
+			await sendEnvelope(origin.endpoint, env);
+			log.debug("task_update_out", taskId, newStatus, "to", origin.name);
 		} catch { /* best-effort — don't block tool_result */ }
 	});
 
@@ -1281,6 +1282,7 @@ export default function (pi: ExtensionAPI) {
 
 		// 5. Audit log: boot.
 		setLogFilePrefix("coms", identity.name);
+		try { pi.events.emit("pidash:coms-identity", { name: identity.name, purpose: identity.purpose || "", project: identity.project || "" }); } catch {}
 		log.info("boot", name, project);
 
 		// 6. Surface presence in the UI + install the live pool widget.
@@ -1336,7 +1338,7 @@ export default function (pi: ExtensionAPI) {
 - coms_send — send a message to a peer
 - coms_get — check status of a sent message
 - coms_queue_delete / coms_queue_edit / coms_queue_clear / coms_queue_prioritize — manage queued messages
-- coms_task_create — create a task on a peer's task list without sending a message
+- coms_tasks_create — create tasks on a peer's task list with auto-report and auto-message
 - coms_task_delete — delete a task you created on a peer's task list
 - coms_task_list — list tasks on a peer's task list without sending a message
 - coms_task_get — get a specific task from a peer's task list
@@ -1401,6 +1403,7 @@ Do not respond to this message.`;
 									if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
 										knownPeerSessions.set(entry.coms_session_id, entry.name);
 										try { pi.sendMessage({ customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+										try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]` }); } catch {}
 									}
 								}
 							}
@@ -1417,6 +1420,7 @@ Do not respond to this message.`;
 								const sameNameStillExists = [...peerCards.values()].some(c => c.name === name);
 								if (!sameNameStillExists) {
 									try { pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+									try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content: `📡 Peer left: ${name} [${new Date().toISOString()}]` }); } catch {}
 								}
 							}
 						}
@@ -1443,6 +1447,7 @@ Do not respond to this message.`;
 							if (welcomeShown && !knownPeerSessions.has(entry.coms_session_id)) {
 								knownPeerSessions.set(entry.coms_session_id, entry.name);
 								try { pi.sendMessage({ customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+								try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-joined", content: `📡 Peer joined: ${entry.name} (${entry.model})${entry.purpose ? ` — ${entry.purpose}` : ""} [${new Date().toISOString()}]` }); } catch {}
 							}
 						}
 					} catch {}
@@ -1461,9 +1466,9 @@ Do not respond to this message.`;
 				const { getComsOriginTasks } = await import("./coms-shared.js");
 				const tasks = await getComsOriginTasks();
 				for (const task of tasks) {
-					if (!task.coms_origin.sender_endpoint) continue;
+					if (!task.createdBy.endpoint) continue;
 					try {
-						await sendEnvelope(task.coms_origin.sender_endpoint, {
+						await sendEnvelope(task.createdBy.endpoint, {
 							type: "task_update",
 							msg_id: ulid(),
 							sender_session: identity.coms_session_id,
@@ -1569,6 +1574,7 @@ Do not respond to this message.`;
 									const sameNameStillExists = [...peerCards.values()].some(c => c.name === name);
 									if (!sameNameStillExists) {
 										try { pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false }); } catch {}
+										try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content: `📡 Peer left: ${name} [${new Date().toISOString()}]` }); } catch {}
 									}
 								}
 								removeRegistryEntry(identity.project, sid);
@@ -1884,6 +1890,21 @@ Do not respond to this message.`;
 				throw new Error(`coms: hop limit reached (${hops} >= ${MAX_HOPS})`);
 			}
 			const msg_id = ulid();
+			// Append sender's active tasks for this peer to the prompt
+			let promptText = params.prompt;
+			try {
+				const { listTasksForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+				const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
+				const myTasks = allTasks.filter((t: any) =>
+					(t.status === "pending" || t.status === "in_progress") &&
+					t.createdBy?.session === identity!.coms_session_id
+				);
+				if (myTasks.length > 0) {
+					const taskLines = myTasks.map((t: any) => `#${t.id} [${t.status}] ${t.subject}`).join("\n");
+					promptText += `\n\n---\nReminder - Tasks assigned to you by ${identity!.name}:\n${taskLines}`;
+				}
+			} catch { /* task store not available — skip */ }
 			const env: PromptEnvelope = {
 				type: "prompt",
 				msg_id,
@@ -1893,7 +1914,7 @@ Do not respond to this message.`;
 				sender_cwd: identity.cwd,
 				hops,
 				timestamp: nowIso(),
-				prompt: params.prompt,
+				prompt: promptText,
 				conversation_id: params.conversation_id ?? null,
 				response_schema: (params.response_schema as object | undefined) ?? null,
 				tasks: params.tasks ?? null,
@@ -2132,49 +2153,108 @@ Do not respond to this message.`;
 	});
 
 	pi.registerTool({
-		name: "coms_task_create",
-		label: "Coms Task Create",
-		description: "Create a task on a peer's task list without sending a message. The task appears in the peer's task widget immediately.",
+		name: "coms_tasks_create",
+		label: "Coms Tasks Create",
+		description: "Create multiple tasks on a peer's task list. Automatically adds a 'Report completion to sender' task blocked by all created tasks, and sends a message to the peer to start working.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
-			subject: Type.String({ description: "Brief task title." }),
-			description: Type.String({ description: "Detailed task description." }),
-			activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress (e.g., 'Running tests')" })),
-			agentType: Type.Optional(Type.String({ description: "Agent type for subagent execution (e.g., 'general-purpose', 'Explore'). Tasks with agentType can be started via TaskExecute." })),
-			metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
+			tasks: Type.Array(Type.Object({
+				subject: Type.String({ description: "Brief task title" }),
+				description: Type.String({ description: "Detailed task description" }),
+			}), { description: "Tasks to create on the peer" }),
 		}),
 		async execute(_callId, params) {
 			if (!identity) throw new Error("coms not initialised");
+			if (!params.tasks || params.tasks.length === 0) throw new Error("coms_tasks_create requires at least one task");
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
-			try {
-				const { createTaskForSession } = require("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-				const meta: Record<string, any> = params.metadata ?? {};
-				if (params.agentType) meta.agentType = params.agentType;
-				meta.coms_origin = {
-					sender_session: identity.coms_session_id,
-					sender_name: identity.name,
-					sender_endpoint: identity.endpoint,
-				};
-				createTaskForSession(targetPiSessionId, params.subject, params.description, meta, target.cwd, params.activeForm);
-				log.info("coms_task_create", params.subject, "on", target.name);
-			} catch (e: any) {
-				throw new Error(`Failed to create task on ${target.name}: ${e?.message}`);
-			}
-
-			return {
-				content: [{ type: "text" as const, text: `Task created on ${target.name}: ${params.subject}` }],
-				details: { target: target.name, subject: params.subject },
+			const createdBy = {
+				type: "coms" as const,
+				origin: identity.name,
+				session: identity.coms_session_id,
+				project: process.cwd(),
 			};
+			const meta: Record<string, any> = {};
+			if (identity.endpoint) meta.sender_endpoint = identity.endpoint;
+
+			try {
+				const { createTasksForSession, listTasksForSession, updateTaskForSession } = require("../pitasks/index.js");
+				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+
+				// Create all tasks in one batch
+				const taskDefs = params.tasks.map(t => ({
+					subject: t.subject,
+					description: t.description,
+					createdBy,
+					metadata: { ...meta },
+				}));
+				const created = createTasksForSession(targetPiSessionId, taskDefs, target.cwd);
+				const createdIds = created.map((t: any) => t.id);
+
+				// Check if "Report completion to sender" already exists from this sender
+				const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
+				const existingReport = allTasks.find((t: any) =>
+					t.createdBy?.session === identity!.coms_session_id &&
+					t.subject === "Report completion to sender" &&
+					t.status !== "completed" && t.status !== "deleted"
+				);
+
+				if (existingReport) {
+					// Update existing report task's blockedBy to include new task IDs
+					const newBlockedBy = [...new Set([...(existingReport.blockedBy || []), ...createdIds])];
+					updateTaskForSession(targetPiSessionId, existingReport.id, { blockedBy: newBlockedBy }, target.cwd);
+				} else {
+					// Create report task blocked by all new tasks
+					createTasksForSession(targetPiSessionId, [{
+						subject: "Report completion to sender",
+						description: `When all tasks are done, use coms_send to report back to ${identity!.name}.`,
+						createdBy,
+						blockedBy: createdIds,
+						metadata: { ...meta },
+					}], target.cwd);
+				}
+
+				log.info("coms_tasks_create", created.length, "tasks on", target.name);
+
+				// Auto-send message to peer to start working
+				try {
+					const msg_id = ulid();
+					const env: PromptEnvelope = {
+						type: "prompt",
+						msg_id,
+						sender_session: identity.coms_session_id,
+						sender_endpoint: identity.endpoint,
+						sender_name: identity.name,
+						sender_cwd: identity.cwd,
+						hops: 0,
+						timestamp: nowIso(),
+						prompt: `You have tasks to work on. Check TaskList and start.`,
+						conversation_id: null,
+						response_schema: null,
+						tasks: null,
+					};
+					await sendEnvelope(target.endpoint, env);
+					pendingReplies.set(msg_id, { target_session: target.coms_session_id, target_name: target.name, sent_at: Date.now() });
+				} catch (e: any) {
+					log.debug("auto-message after task create failed:", e?.message);
+				}
+
+				const lines = created.map((t: any) => `#${t.id}: ${t.subject}`);
+				return {
+					content: [{ type: "text" as const, text: `Created ${created.length} tasks on ${target.name}:\n${lines.join("\n")}` }],
+					details: { target: target.name, count: created.length, taskIds: createdIds },
+				};
+			} catch (e: any) {
+				throw new Error(`Failed to create tasks on ${target.name}: ${e?.message}`);
+			}
 		},
 	});
 
 	pi.registerTool({
 		name: "coms_task_delete",
 		label: "Coms Task Delete",
-		description: "Delete a task from a peer's task list. Only works on tasks you created (coms_origin match).",
+		description: "Delete a task from a peer's task list. Only works on tasks you created (createdBy match).",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
 			task_id: Type.String({ description: "Task ID to delete." }),
@@ -2189,8 +2269,14 @@ Do not respond to this message.`;
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found`);
-				if (task.metadata?.coms_origin?.sender_session !== identity.coms_session_id) {
+				if (task.createdBy?.session !== identity.coms_session_id) {
 					throw new Error(`Ownership denied — can only delete tasks you created`);
+				}
+				if (task.status === "in_progress") {
+					return {
+						content: [{ type: "text" as const, text: `Cannot delete task #${params.task_id} — task is in_progress. Wait for the peer to finish.` }],
+						details: { blocked: true, reason: "in_progress" },
+					};
 				}
 				deleteTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				log.info("coms_task_delete", params.task_id, "on", target.name);
@@ -2308,7 +2394,7 @@ Do not respond to this message.`;
 	pi.registerTool({
 		name: "coms_task_update",
 		label: "Coms Task Update",
-		description: "Update a task on a peer's task list. Only works on tasks you created (coms_origin match).",
+		description: "Update a task on a peer's task list. Only works on tasks you created (createdBy match).",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
 			task_id: Type.String({ description: "The ID of the task to update" }),
@@ -2331,8 +2417,14 @@ Do not respond to this message.`;
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
-				if (task.metadata?.coms_origin?.sender_session !== identity.coms_session_id) {
+				if (task.createdBy?.session !== identity.coms_session_id) {
 					throw new Error(`Ownership denied — can only update tasks you created`);
+				}
+				if (task.status === "in_progress") {
+					return {
+						content: [{ type: "text" as const, text: `Cannot update task #${params.task_id} — task is in_progress. Wait for the peer to finish.` }],
+						details: { blocked: true, reason: "in_progress" },
+					};
 				}
 
 				const { target: _t, task_id: _tid, ...fields } = params;
@@ -2819,27 +2911,29 @@ Do not respond to this message.`;
 	});
 
 	// ━━ /coms slash command ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	const comsRefreshHandler = async (args: any, ctx: any) => {
+		const trimmed = ((args as string) ?? "").trim();
+		if (trimmed.includes("--all")) {
+			includeExplicit = !includeExplicit;
+			try { ctx.ui.notify(`coms: include_explicit = ${includeExplicit}`, "info"); } catch { /* ignore */ }
+		}
+		const projectMatch = trimmed.match(/--project\s+(\S+)/);
+		if (projectMatch) {
+			displayProject = projectMatch[1];
+			try { ctx.ui.notify(`coms: displaying project ${displayProject}`, "info"); } catch { /* ignore */ }
+		}
+		maybeRefreshWidget();
+	};
 	pi.registerCommand("coms", {
 		description: "Force-refresh the coms pool widget (or filter with --all / --project <name>)",
-		handler: async (args, ctx) => {
-			const trimmed = (args ?? "").trim();
-			if (trimmed.includes("--all")) {
-				includeExplicit = !includeExplicit;
-				try { ctx.ui.notify(`coms: include_explicit = ${includeExplicit}`, "info"); } catch { /* ignore */ }
-			}
-			const projectMatch = trimmed.match(/--project\s+(\S+)/);
-			if (projectMatch) {
-				displayProject = projectMatch[1];
-				try { ctx.ui.notify(`coms: displaying project ${displayProject}`, "info"); } catch { /* ignore */ }
-			}
-			maybeRefreshWidget();
-		},
+		handler: comsRefreshHandler,
 	});
 
 	// ━━ /coms-queue command — view and kill queued messages ━━━━━━━━━━━━━━━
+	let comsQueueCmdHandler: any;
 	pi.registerCommand("coms-queue", {
 		description: "View and manage queued coms inbound messages",
-		handler: async (_args, ctx) => {
+		handler: comsQueueCmdHandler = async (_args: any, ctx: any) => {
 			interface QueueItem {
 				id: string;
 				msg_id: string;
@@ -2958,11 +3052,25 @@ Do not respond to this message.`;
 		},
 	});
 
+	// Expose command handlers to pidash for browser command dispatch
+	try {
+		if ((globalThis as any).__coms_p2p_pidash_listener) {
+			try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__coms_p2p_pidash_listener); } catch {}
+		}
+		const registerWithPidash = () => {
+			pi.events.emit("pidash:register-command", { name: "coms-queue", handler: comsQueueCmdHandler });
+		};
+		(globalThis as any).__coms_p2p_pidash_listener = registerWithPidash;
+		registerWithPidash();
+		pi.events.on("pidash:request-commands", registerWithPidash);
+	} catch {}
+
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
 	async function cleanShutdown(): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		try { pi.events.emit("pidash:coms-identity", { name: null, purpose: null }); } catch {}
 		const ident = identity; // snapshot before nulling
 		identity = null; // null identity so old handlers from previous reload cycles exit via !identity check
 		if (fsWatcher) { try { fsWatcher.close(); } catch { /* ignore */ } fsWatcher = null; }

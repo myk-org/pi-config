@@ -78,11 +78,19 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       contextWindow: parsed.contextWindow || 0,
       diffPort: parsed.diffPort || null,
       thinkingLevel: parsed.thinkingLevel || "medium",
+      name: parsed.name || undefined,
+      comsName: parsed.comsName || undefined,
+      comsPurpose: parsed.comsPurpose || undefined,
+      comsProject: parsed.comsProject || undefined,
     };
     // Re-registration: update existing inactive session (keep event buffer)
     const existing = piClients.get(sessionId);
     let piClient: PiClient;
     if (existing) {
+      if (!session.name && existing.session.name) session.name = existing.session.name;
+      if (!session.comsName && existing.session.comsName) session.comsName = existing.session.comsName;
+      if (!session.comsPurpose && existing.session.comsPurpose) session.comsPurpose = existing.session.comsPurpose;
+      if (!session.comsProject && existing.session.comsProject) session.comsProject = existing.session.comsProject;
       existing.ws = ws;
       existing.session = session;
       existing.eventBuffer = []; // Clear stale buffer — extension will replay current events
@@ -117,6 +125,9 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.contextWindow !== undefined) piClient.session.contextWindow = parsed.contextWindow;
     if (parsed.diffPort !== undefined) piClient.session.diffPort = parsed.diffPort;
     if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
+    if (parsed.comsName !== undefined) piClient.session.comsName = parsed.comsName;
+    if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose;
+    if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject;
     piClient.session.lastActivity = Date.now();
     sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
     return;
@@ -310,9 +321,11 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
   onBrowserWatch: (ws, watchId, client) => {
     // Replay buffered events
     if (client) {
+      try { ws.send(JSON.stringify({ type: "replay_start" })); } catch {}
       for (const event of client.eventBuffer) {
         try { ws.send(event); } catch {}
       }
+      try { ws.send(JSON.stringify({ type: "replay_end" })); } catch {}
       log(`replayed ${client.eventBuffer.length} events for ${watchId}`);
     }
     return watchId;  // pidash stores just the sessionId string

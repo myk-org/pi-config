@@ -7,7 +7,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { TaskStore } from "./task-store.js";
 import type { TaskWidget } from "./task-widget.js";
-import type { AutoClearManager } from "./task-auto-clear.js";
 
 function textResult(msg: string) {
 	return { content: [{ type: "text" as const, text: msg }], details: undefined };
@@ -17,8 +16,6 @@ export function registerTaskTools(
 	pi: ExtensionAPI,
 	getStore: () => TaskStore,
 	widget: TaskWidget,
-	autoClear: AutoClearManager,
-	cadence: { currentTurn: number },
 ): void {
 	// ── TaskCreate ──
 	pi.registerTool({
@@ -78,11 +75,11 @@ All tasks are created with status \`pending\`.
 			metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
 		}),
 		execute(_toolCallId: string, params: any) {
-			autoClear.resetBatchCountdown();
 			const store = getStore();
 			const meta = params.metadata ?? {};
 			if (params.agentType) meta.agentType = params.agentType;
-			const task = store.create(params.subject, params.description, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined);
+			const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
+			const task = store.create(params.subject, params.description, createdBy, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined);
 			widget.update();
 			return Promise.resolve(textResult(`Task #${task.id} created successfully: ${task.subject}`));
 		},
@@ -180,6 +177,15 @@ Returns full task details:
 				if (openBlockers.length > 0) lines.push(`Blocked by: ${openBlockers.map(id => "#" + id).join(", ")}`);
 			}
 			if (task.blocks.length > 0) lines.push(`Blocks: ${task.blocks.map(id => "#" + id).join(", ")}`);
+			if (task.statusHistory) {
+				const sh = task.statusHistory;
+				const parts: string[] = [];
+				if (sh.pending_at) parts.push(`Created: ${sh.pending_at}`);
+				if (sh.in_progress_at) parts.push(`Started: ${sh.in_progress_at}`);
+				if (sh.completed_at) parts.push(`Completed: ${sh.completed_at}`);
+				if (parts.length > 0) lines.push(`Timeline: ${parts.join(" → ")}`);
+			}
+			if (task.createdBy) lines.push(`Created by: ${task.createdBy.origin} (${task.createdBy.type})`);
 			const metaKeys = Object.keys(task.metadata);
 			if (metaKeys.length > 0) lines.push(`Metadata: ${JSON.stringify(task.metadata)}`);
 			return Promise.resolve(textResult(lines.join("\n")));
@@ -284,16 +290,86 @@ Set up task dependencies:
 			const { taskId, ...fields } = params;
 			const { task, changedFields, warnings } = store.update(taskId, fields);
 			if (changedFields.length === 0 && !task) return Promise.resolve(textResult(`Task #${taskId} not found`));
-			if (fields.status === "in_progress") { widget.setActiveTask(taskId); autoClear.resetBatchCountdown(); }
-			else if (fields.status === "pending") { autoClear.resetBatchCountdown(); }
+			if (fields.status === "in_progress") { widget.setActiveTask(taskId); }
 			else if (fields.status === "completed" || fields.status === "deleted") {
 				widget.setActiveTask(taskId, false);
-				if (fields.status === "completed") autoClear.trackCompletion(taskId, cadence.currentTurn);
 			}
 			widget.update();
 			let msg = `Updated task #${taskId} ${changedFields.join(", ")}`;
 			if (warnings.length > 0) msg += ` (warning: ${warnings.join("; ")})`;
 			return Promise.resolve(textResult(msg));
+		},
+	});
+
+	// ── TaskBulkCreate ──
+	pi.registerTool({
+		name: "TaskBulkCreate",
+		label: "TaskBulkCreate",
+		description: "Create multiple tasks at once. More efficient than calling TaskCreate multiple times.",
+		parameters: Type.Object({
+			tasks: Type.Array(Type.Object({
+				subject: Type.String({ description: "Brief task title" }),
+				description: Type.String({ description: "Detailed task description" }),
+				blockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+			}), { description: "Array of tasks to create" }),
+		}),
+		async execute(_callId, params) {
+			const store = getStore();
+			const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
+			const created = store.createTasks(params.tasks.map(t => ({ ...t, createdBy })));
+			widget.update();
+			const lines = created.map(t => `#${t.id}: ${t.subject}`);
+			return textResult(`Created ${created.length} tasks:\n${lines.join("\n")}`);
+		},
+	});
+
+	// ── TaskBulkDelete ──
+	pi.registerTool({
+		name: "TaskBulkDelete",
+		label: "TaskBulkDelete",
+		description: "Delete multiple tasks at once by ID.",
+		parameters: Type.Object({
+			taskIds: Type.Array(Type.String(), { description: "Task IDs to delete" }),
+		}),
+		async execute(_callId, params) {
+			const store = getStore();
+			const count = store.deleteTasks(params.taskIds);
+			widget.update();
+			return textResult(`Deleted ${count} task(s)`);
+		},
+	});
+
+	// ── TaskBulkUpdate ──
+	pi.registerTool({
+		name: "TaskBulkUpdate",
+		label: "TaskBulkUpdate",
+		description: "Update multiple tasks at once. More efficient than calling TaskUpdate multiple times.",
+		parameters: Type.Object({
+			updates: Type.Array(Type.Object({
+				taskId: Type.String({ description: "Task ID to update" }),
+				status: Type.Optional(Type.Unsafe({ type: "string", enum: ["pending", "in_progress", "completed", "deleted"], description: "New status" })),
+				subject: Type.Optional(Type.String({ description: "New subject" })),
+				description: Type.Optional(Type.String({ description: "New description" })),
+				addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+				addBlocks: Type.Optional(Type.Array(Type.String(), { description: "Task IDs this task blocks" })),
+			}), { description: "Array of task updates" }),
+		}),
+		async execute(_callId, params) {
+			const store = getStore();
+			const updates = params.updates.map(u => ({
+				id: u.taskId,
+				fields: {
+					...(u.status !== undefined ? { status: u.status } : {}),
+					...(u.subject !== undefined ? { subject: u.subject } : {}),
+					...(u.description !== undefined ? { description: u.description } : {}),
+					...(u.addBlockedBy !== undefined ? { addBlockedBy: u.addBlockedBy } : {}),
+					...(u.addBlocks !== undefined ? { addBlocks: u.addBlocks } : {}),
+				},
+			}));
+			const results = store.updateTasks(updates);
+			widget.update();
+			const lines = results.map(r => r.success ? `#${r.id}: ${r.changedFields?.join(", ") || "no changes"}` : `#${r.id}: not found`);
+			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${lines.join("\n")}`);
 		},
 	});
 }

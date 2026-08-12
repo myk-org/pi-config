@@ -42,6 +42,12 @@ interface ProjectSettings {
   pidash_enable?: boolean;
   pidiff_enable?: boolean;
   pidash_port?: number;
+  task_auto_clear_enabled?: boolean;
+  task_auto_clear_minutes?: number;
+  task_reminder_enabled?: boolean;
+  task_reminder_interval_minutes?: number;
+  task_stale_in_progress_enabled?: boolean;
+  task_stale_in_progress_minutes?: number;
   image_model?: string;
   /** Provider for detached LLM async children when parent is acpx (must-async / dream). */
   internal_operations_provider?: string;
@@ -71,8 +77,6 @@ interface ProjectSettings {
   async_poll_interval_ms?: number;
   /** Subagent: async phantom timeout in ms. */
   async_phantom_timeout_ms?: number;
-  /** Tasks: reminder cadence in turns. */
-  task_reminder_cadence_turns?: number;
   /** Max hops for P2P coms message relay. */
   coms_max_hops?: number;
   /** P2P coms message response timeout in ms. */
@@ -133,6 +137,12 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "pidash_enable",
   "pidiff_enable",
   "pidash_port",
+  "task_auto_clear_enabled",
+  "task_auto_clear_minutes",
+  "task_reminder_enabled",
+  "task_reminder_interval_minutes",
+  "task_stale_in_progress_enabled",
+  "task_stale_in_progress_minutes",
   "image_model",
   "internal_operations_provider",
   "internal_operations_model",
@@ -148,7 +158,6 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "sync_agent_max_seconds",
   "async_poll_interval_ms",
   "async_phantom_timeout_ms",
-  "task_reminder_cadence_turns",
   "coms_max_hops",
   "coms_timeout_ms",
   "coms_dir",
@@ -458,6 +467,12 @@ export function getSetting(cwd: string, key: "cli_agents"): string[];
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
 export function getSetting(cwd: string, key: "pidash_port"): number;
+export function getSetting(cwd: string, key: "task_auto_clear_enabled"): boolean;
+export function getSetting(cwd: string, key: "task_auto_clear_minutes"): number;
+export function getSetting(cwd: string, key: "task_reminder_enabled"): boolean;
+export function getSetting(cwd: string, key: "task_reminder_interval_minutes"): number;
+export function getSetting(cwd: string, key: "task_stale_in_progress_enabled"): boolean;
+export function getSetting(cwd: string, key: "task_stale_in_progress_minutes"): number;
 export function getSetting(cwd: string, key: "image_model"): string;
 export function getSetting(cwd: string, key: "internal_operations_provider"): string;
 export function getSetting(cwd: string, key: "internal_operations_model"): string;
@@ -473,7 +488,6 @@ export function getSetting(cwd: string, key: "enforcement_sleep_threshold_s"): n
 export function getSetting(cwd: string, key: "sync_agent_max_seconds"): number;
 export function getSetting(cwd: string, key: "async_poll_interval_ms"): number;
 export function getSetting(cwd: string, key: "async_phantom_timeout_ms"): number;
-export function getSetting(cwd: string, key: "task_reminder_cadence_turns"): number;
 export function getSetting(cwd: string, key: "coms_max_hops"): number;
 export function getSetting(cwd: string, key: "coms_timeout_ms"): number;
 export function getSetting(cwd: string, key: "coms_dir"): string;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@ui/collapsible";
 import { Button } from "@ui/button";
 import { ChevronRight, ChevronDown, Copy, Check } from "lucide-react";
@@ -58,25 +58,56 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
   const viewportRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, autoScroll]);
+  const [replaying, setReplaying] = useState(false);
 
-  // Force scroll to bottom on session switch — keep scrolling during replay
   useEffect(() => {
+    if (autoScroll && !replaying) bottomRef.current?.scrollIntoView({ behavior: "instant" as any });
+  }, [messages, autoScroll, replaying]);
+
+  // On session switch: show spinner overlay while messages replay invisibly,
+  // then scroll to bottom and reveal the messages.
+  useLayoutEffect(() => {
     setAutoScroll(true);
-    // Scroll multiple times during replay (messages arrive over ~2s)
-    const times = [50, 200, 500, 1000, 2000, 3000];
-    const timers = times.map(ms =>
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "instant" }), ms)
-    );
-    return () => timers.forEach(clearTimeout);
+    setReplaying(true);
+    const container = viewportRef.current;
+    if (container) container.style.visibility = "hidden";
+    const reveal = () => {
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+        container.style.visibility = "";
+      }
+      setReplaying(false);
+    };
+    let settleTimer: ReturnType<typeof setTimeout>;
+    const observer = container ? new MutationObserver(() => {
+      clearTimeout(settleTimer);
+      if (container) container.scrollTop = container.scrollHeight;
+      settleTimer = setTimeout(reveal, 300);
+    }) : null;
+    if (observer && container) {
+      observer.observe(container, { childList: true, subtree: true });
+    }
+    const fallback = setTimeout(reveal, 1500);
+    return () => { observer?.disconnect(); clearTimeout(settleTimer!); clearTimeout(fallback); };
   }, [scrollKey]);
 
   return (
-    <div
-      className="flex-1 overflow-y-auto"
-      ref={viewportRef}
+    <div className="flex-1 relative">
+      {replaying && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
+          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+            <div className="flex gap-1">
+              <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+              <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+              <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            </div>
+            <span className="text-xs">Loading session...</span>
+          </div>
+        </div>
+      )}
+      <div
+        className="h-full overflow-y-auto"
+        ref={viewportRef}
       onScroll={() => {
         const el = viewportRef.current;
         if (el) setAutoScroll(el.scrollTop + el.clientHeight >= el.scrollHeight - 50);
@@ -132,6 +163,7 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
           </div>
         )}
         <div ref={bottomRef} />
+      </div>
       </div>
     </div>
   );

@@ -24,7 +24,7 @@ describe("getComsOriginTask", () => {
 });
 
 describe("getComsOriginTasks", () => {
-	it("returns empty array when no tasks have coms_origin", async () => {
+	it("returns empty array when no tasks have coms createdBy", async () => {
 		const result = await getComsOriginTasks();
 		assert.ok(Array.isArray(result));
 	});

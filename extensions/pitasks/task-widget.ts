@@ -100,11 +100,9 @@ export class TaskWidget {
 		if (overflowLine && hiddenAt === "top") lines.push(overflowLine);
 
 		for (const task of visible) {
-			const isActive = this.activeTaskIds.has(task.id) && task.status === "in_progress";
 			let icon: string;
-			if (isActive) icon = theme.fg("accent", spinnerChar);
+			if (task.status === "in_progress") icon = theme.fg("accent", spinnerChar);
 			else if (task.status === "completed") icon = theme.fg("success", "✔");
-			else if (task.status === "in_progress") icon = theme.fg("accent", "◼");
 			else icon = "◻";
 
 			let suffix = "";
@@ -117,7 +115,7 @@ export class TaskWidget {
 			}
 
 			let text: string;
-			if (isActive) {
+			if (task.status === "in_progress") {
 				const form = task.activeForm || task.subject;
 				const agentId = task.metadata?.agentId;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
@@ -159,7 +157,7 @@ export class TaskWidget {
 			const t = this.store.get(id);
 			if (!t || t.status !== "in_progress") { this.activeTaskIds.delete(id); this.metrics.delete(id); }
 		}
-		const hasActiveSpinner = tasks.some(t => this.activeTaskIds.has(t.id) && t.status === "in_progress");
+		const hasActiveSpinner = tasks.some(t => t.status === "in_progress");
 		if (hasActiveSpinner) this.ensureTimer();
 		else if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
 		this.widgetFrame++;

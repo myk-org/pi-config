@@ -9,14 +9,11 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { TaskStore } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
-import { AutoClearManager } from "./task-auto-clear.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 
 const log = createLogger("pitasks");
-
-const AUTO_CLEAR_DELAY = 4;
 
 // Module-level refs — survive closure replacement on /reload
 let currentUiCtx: any = null;
@@ -26,8 +23,8 @@ let currentWidget: TaskWidget | null = null;
 export let taskStore: TaskStore;
 
 /** Create a task directly — for use by other extensions (e.g., coms auto-create). */
-export function createTask(subject: string, description: string, metadata?: Record<string, any>): any {
-	return taskStore.create(subject, description, undefined, metadata);
+export function createTask(subject: string, description: string, createdBy?: any, metadata?: Record<string, any>): any {
+	return taskStore.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, undefined, metadata);
 }
 
 /** Get a task by ID — for use by other extensions (e.g., coms heartbeat). */
@@ -53,11 +50,19 @@ export function deleteTask(id: string): boolean {
 // ── Session-targeted task operations (for cross-session/peer access) ────
 
 /** Create a task on a specific session's store. Used by coms for sender-side task creation. */
-export function createTaskForSession(sessionId: string, subject: string, description: string, metadata?: Record<string, any>, targetCwd?: string, activeForm?: string): any {
+export function createTaskForSession(sessionId: string, subject: string, description: string, createdBy?: any, metadata?: Record<string, any>, targetCwd?: string, activeForm?: string): any {
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.create(subject, description, activeForm, metadata);
+	return store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata);
+}
+
+/** Create multiple tasks on a specific session's store. Used by coms for bulk task creation. */
+export function createTasksForSession(sessionId: string, tasks: Array<{ subject: string; description: string; createdBy: any; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>, targetCwd?: string): any[] {
+	const base = targetCwd || process.cwd();
+	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
+	const store = new TaskStore(storePath);
+	return store.createTasks(tasks);
 }
 
 /** Get a task from a specific session's store. */
@@ -82,6 +87,14 @@ export function updateTaskForSession(sessionId: string, taskId: string, fields: 
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
 	return store.update(taskId, fields);
+}
+
+/** Update multiple tasks on a specific session's store. Used by coms for bulk updates. */
+export function updateTasksForSession(sessionId: string, updates: Array<{ id: string; fields: Record<string, any> }>, targetCwd?: string): any[] {
+	const base = targetCwd || process.cwd();
+	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
+	const store = new TaskStore(storePath);
+	return store.updateTasks(updates);
 }
 
 /** Delete a task from a specific session's store. */
@@ -114,8 +127,6 @@ export default function (pi: ExtensionAPI) {
 	taskStore = store;
 	const widget = new TaskWidget(store);
 	currentWidget = widget;
-	const autoClear = new AutoClearManager(() => store, () => "on_task_complete", AUTO_CLEAR_DELAY);
-	const cadence = { currentTurn: 0, turnsSinceTaskTool: 0, reminderFired: false };
 	const instanceId = Math.random().toString(36).slice(2, 8);
 	(globalThis as any).__pitasks_active_instance = instanceId;
 
@@ -151,53 +162,110 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Register tools
-	registerTaskTools(pi, () => store, widget, autoClear, cadence);
+	registerTaskTools(pi, () => store, widget);
 
-	pi.on("session_shutdown", () => { shuttingDown = true; });
-
-	// Turn tracking
-	pi.on("turn_start", async (_event: any, ctx: any) => {
-		if (shuttingDown) return;
-		cadence.currentTurn++;
-		widget.setUICtx(ctx.ui);
-		currentUiCtx = ctx.ui;
-		upgradeStoreIfNeeded(ctx);
-		if (autoClear.onTurnStart(cadence.currentTurn)) widget.update();
-
-		// Task reminder: fire after 4 turns without task tool usage
-		cadence.turnsSinceTaskTool++;
-		log.debug("reminder_check", "turnsSinceTaskTool", cadence.turnsSinceTaskTool, "reminderFired", cadence.reminderFired, "store_path", store.filePath);
-		if ((globalThis as any).__pitasks_active_instance !== instanceId) return;
-		if (cadence.turnsSinceTaskTool >= getSetting(process.cwd(), "task_reminder_cadence_turns") && !cadence.reminderFired) {
-			const now = Date.now();
-			const lastReminder = (globalThis as any).__pitasks_last_reminder ?? 0;
-			if (now - lastReminder < 30000) {
-				cadence.reminderFired = true;
-				log.debug("reminder_skipped_30s", "last", new Date(lastReminder).toISOString());
-			} else {
+	// Time-based GC: auto-clear completed tasks after configured minutes
+	let gcTimer: ReturnType<typeof setInterval> | null = null;
+	const startGcTimer = () => {
+		if (gcTimer) clearInterval(gcTimer);
+		gcTimer = setInterval(() => {
+			try {
+				if (!getSetting(process.cwd(), "task_auto_clear_enabled")) return;
+				const minutes = getSetting(process.cwd(), "task_auto_clear_minutes");
+				const threshold = minutes * 60000;
+				const now = Date.now();
 				const tasks = store.list();
-				const active = tasks.filter(t => t.status === "in_progress" || t.status === "pending");
-				log.debug("reminder_tasks", "total", tasks.length, "active", active.length, active.map(t => `#${t.id} ${t.subject}`).join(", "));
-				active.sort((a, b) => a.status === "in_progress" && b.status !== "in_progress" ? -1 : b.status === "in_progress" && a.status !== "in_progress" ? 1 : 0);
-				if (active.length > 0) {
-					const summary = active.slice(0, 3).map(t => `#${t.id} [${t.status}] ${t.subject}`).join(", ");
-					const more = active.length > 3 ? ` (+${active.length - 3} more)` : "";
+				let cleared = false;
+				for (const task of tasks) {
+					if (task.status === "completed" && task.statusHistory?.completed_at) {
+						if (now - new Date(task.statusHistory.completed_at).getTime() > threshold) {
+							store.delete(task.id);
+							cleared = true;
+						}
+					}
+				}
+				if (cleared) widget.update();
+			} catch {}
+		}, 60000);
+		if (gcTimer.unref) gcTimer.unref();
+	};
+	startGcTimer();
+
+	// Time-based reminder: periodic nudge when tasks exist but none in_progress
+	let reminderTimer: ReturnType<typeof setInterval> | null = null;
+	let lastReminderAt = 0;
+	let lastStaleReminderAt = 0;
+	const startReminderTimer = () => {
+		if (reminderTimer) clearInterval(reminderTimer);
+		reminderTimer = setInterval(() => {
+			// Pending-only reminder: nudge when tasks exist but none in_progress
+			try {
+				if (getSetting(process.cwd(), "task_reminder_enabled")) {
+					const minutes = getSetting(process.cwd(), "task_reminder_interval_minutes");
+					const threshold = minutes * 60000;
+					const now = Date.now();
+					if (now - lastReminderAt >= threshold) {
+						const tasks = store.list();
+						const active = tasks.filter(t => t.status === "pending" || t.status === "in_progress");
+						if (active.length > 0 && !active.some(t => t.status === "in_progress")) {
+							lastReminderAt = now;
+							const summary = active.slice(0, 3).map(t => `#${t.id} [${t.status}] ${t.subject}`).join(", ");
+							const more = active.length > 3 ? ` (+${active.length - 3} more)` : "";
+							try {
+								pi.sendMessage({
+									customType: "task-focus-reminder",
+									content: `⚠️ You have active tasks — resume your workflow:\n${summary}${more}`,
+									display: true,
+								}, { triggerTurn: true });
+								log.info("reminder_fired", summary);
+							} catch {}
+						}
+					}
+				}
+			} catch {}
+
+			// Stale in_progress reminder
+			try {
+				if (!getSetting(process.cwd(), "task_stale_in_progress_enabled")) return;
+				const staleMinutes = getSetting(process.cwd(), "task_stale_in_progress_minutes");
+				const staleThreshold = staleMinutes * 60000;
+				const now2 = Date.now();
+				if (now2 - lastStaleReminderAt < staleThreshold) return;
+				const allTasks = store.list();
+				const staleTasks = allTasks.filter(t =>
+					t.status === "in_progress" &&
+					t.statusHistory?.in_progress_at &&
+					now2 - new Date(t.statusHistory.in_progress_at).getTime() > staleThreshold
+				);
+				if (staleTasks.length > 0) {
+					lastStaleReminderAt = now2;
+					const summary = staleTasks.map(t => `#${t.id} [in_progress for ${Math.round((now2 - new Date(t.statusHistory.in_progress_at!).getTime()) / 60000)}m] ${t.subject}`).join(", ");
 					try {
 						pi.sendMessage({
 							customType: "task-focus-reminder",
-							content: `⚠️ You have active tasks — resume your workflow:\n${summary}${more}`,
+							content: `⚠️ Tasks stuck in progress — check status:\n${summary}`,
 							display: true,
-						}, { triggerTurn: false, deliverAs: "nextTurn" });
-						(globalThis as any).__pitasks_last_reminder = now;
+						}, { triggerTurn: true });
+						log.info("stale_reminder_fired", summary);
 					} catch {}
-					log.info("reminder_fired", summary);
-					cadence.reminderFired = true;
-					cadence.turnsSinceTaskTool = 0;
-				} else {
-					log.debug("reminder_skipped_no_active");
 				}
-			}
-		}
+			} catch {}
+		}, 60000);
+		if (reminderTimer.unref) reminderTimer.unref();
+	};
+	startReminderTimer();
+
+	pi.on("session_shutdown", () => {
+		shuttingDown = true;
+		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
+		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
+	});
+
+	pi.on("turn_start", async (_event: any, ctx: any) => {
+		if (shuttingDown) return;
+		widget.setUICtx(ctx.ui);
+		currentUiCtx = ctx.ui;
+		upgradeStoreIfNeeded(ctx);
 	});
 
 	pi.on("turn_end", async (event: any) => {
@@ -205,14 +273,6 @@ export default function (pi: ExtensionAPI) {
 		const msg = (event as any).message;
 		if (msg?.role === "assistant" && msg.usage) {
 			widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0);
-		}
-	});
-
-	pi.on("tool_result", async (event: any) => {
-		const toolName = event?.toolName as string;
-		if (toolName === "TaskUpdate" || toolName === "TaskGet" || toolName === "TaskCreate" || toolName === "TaskList") {
-			cadence.turnsSinceTaskTool = 0;
-			cadence.reminderFired = false;
 		}
 	});
 
@@ -227,10 +287,6 @@ export default function (pi: ExtensionAPI) {
 		if (isSwitch) {
 			storeUpgraded = false;
 			persistedTasksShown = false;
-			cadence.currentTurn = 0;
-			cadence.turnsSinceTaskTool = 0;
-			cadence.reminderFired = false;
-			autoClear.reset();
 			if (reason === "new") store.clearAll();
 		}
 		// Re-register command on reload to replace stale registration from old runtime
@@ -260,11 +316,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// /tasks command — extracted so it can be re-registered on reload
+	let tasksCmdHandler: any;
 	function registerTasksCommand(): void {
 		log.debug("registerTasksCommand called");
 		pi.registerCommand("tasks", {
 			description: "Manage tasks — view, create, clear completed",
-			handler: async (_args: string, ctx: any) => {
+			handler: tasksCmdHandler = async (_args: string, ctx: any) => {
 				log.debug("/tasks handler called");
 				const ui = ctx.ui;
 				const mainMenu = async (): Promise<void> => {
@@ -303,7 +360,7 @@ export default function (pi: ExtensionAPI) {
 					const title = `#${task.id} [${task.status}] ${task.subject}\n${task.description}`;
 					const action = await ui.select(title, actions);
 					if (action === "▸ Start (in_progress)") { taskStore.update(taskId, { status: "in_progress" }); currentWidget?.setActiveTask(taskId); currentWidget?.update(); return viewTasks(); }
-					else if (action === "✓ Complete") { taskStore.update(taskId, { status: "completed" }); autoClear.trackCompletion(taskId, cadence.currentTurn); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
+					else if (action === "✓ Complete") { taskStore.update(taskId, { status: "completed" }); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
 					else if (action === "✗ Delete") { taskStore.update(taskId, { status: "deleted" }); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
 					return viewTasks();
 				};
@@ -312,7 +369,7 @@ export default function (pi: ExtensionAPI) {
 					if (!subject) return mainMenu();
 					const description = await ui.input("Task description");
 					if (!description) return mainMenu();
-					taskStore.create(subject, description);
+					taskStore.create(subject, description, { type: "local", origin: "user", session: "", project: process.cwd() });
 					currentWidget?.update();
 					return mainMenu();
 				};
@@ -321,5 +378,15 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 	registerTasksCommand();
+		// Expose handler to pidash for browser command dispatch
+		try {
+			if ((globalThis as any).__pitasks_pidash_listener) {
+				try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__pitasks_pidash_listener); } catch {}
+			}
+			const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "tasks", handler: tasksCmdHandler });
+			(globalThis as any).__pitasks_pidash_listener = registerWithPidash;
+			registerWithPidash();
+			pi.events.on("pidash:request-commands", registerWithPidash);
+		} catch {}
 	log.debug("extension factory complete");
 }

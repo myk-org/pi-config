@@ -50,6 +50,66 @@ export function registerComs(pi: ExtensionAPI) {
         }
     });
 
+    const comsCmdHandler = async (args: string, ctx: any) => {
+        const trimmed = (args || "").trim();
+        const parts = tokenizeArgs(trimmed);
+        const subcommand = parts[0] || "status";
+
+        if (subcommand === "start") {
+            if (state.active) {
+                try { ctx.ui.notify("📡 coms already active", "warning"); } catch {}
+                return;
+            }
+            state.flagValues = new Map();
+            parseFlags(parts.slice(1), state.flagValues);
+
+            if (state.flagValues.has("name")) {
+                try { ctx.ui.notify("📡 coms: use --cname instead of --name", "error"); } catch {}
+                return;
+            }
+
+            // Default project to cwd so sessions in different dirs are isolated
+            if (!state.flagValues.has("project")) {
+                const cwd = ctx.cwd || "";
+                const proj = cwd.replace(/^[\\/]+/,"").replace(/[\\/]+/g, "__");
+                if (!proj) {
+                    try { ctx.ui.notify("📡 coms: cannot start from /. Run from a project directory.", "error"); } catch {}
+                    return;
+                }
+                state.flagValues.set("project", proj);
+            }
+
+            if (!state.capturedSessionStart) {
+                try { ctx.ui.notify("📡 coms: internal error — no session handler captured", "error"); } catch {}
+                return;
+            }
+
+            try {
+                await state.capturedSessionStart({}, ctx);
+                state.active = true;
+                persistState(pi, PERSIST_KEY, state);
+            } catch (err: any) {
+                try { ctx.ui.notify(`📡 coms start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
+            }
+        } else if (subcommand === "stop") {
+            if (!state.active) {
+                try { ctx.ui.notify("📡 coms not active", "info"); } catch {}
+                return;
+            }
+            if (state.capturedSessionShutdown) {
+                try { await state.capturedSessionShutdown(); } catch {}
+            }
+            state.active = false;
+            persistState(pi, PERSIST_KEY, state);
+            try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
+        } else if (subcommand === "status") {
+            try {
+                ctx.ui.notify(state.active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
+            } catch {}
+        } else {
+            try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status`, "warning"); } catch {}
+        }
+    };
     pi.registerCommand("coms", {
         description: "P2P agent communication: /coms start | stop | status",
         getArgumentCompletions: (prefix: string) => {
@@ -81,65 +141,16 @@ export function registerComs(pi: ExtensionAPI) {
             }
             return null;
         },
-        handler: async (args: string, ctx: any) => {
-            const trimmed = (args || "").trim();
-            const parts = tokenizeArgs(trimmed);
-            const subcommand = parts[0] || "status";
-
-            if (subcommand === "start") {
-                if (state.active) {
-                    try { ctx.ui.notify("📡 coms already active", "warning"); } catch {}
-                    return;
-                }
-                state.flagValues = new Map();
-                parseFlags(parts.slice(1), state.flagValues);
-
-                if (state.flagValues.has("name")) {
-                    try { ctx.ui.notify("📡 coms: use --cname instead of --name", "error"); } catch {}
-                    return;
-                }
-
-                // Default project to cwd so sessions in different dirs are isolated
-                if (!state.flagValues.has("project")) {
-                    const cwd = ctx.cwd || "";
-                    const proj = cwd.replace(/^[\\/]/,"").replace(/[\\/]/g, "__");
-                    if (!proj) {
-                        try { ctx.ui.notify("📡 coms: cannot start from /. Run from a project directory.", "error"); } catch {}
-                        return;
-                    }
-                    state.flagValues.set("project", proj);
-                }
-
-                if (!state.capturedSessionStart) {
-                    try { ctx.ui.notify("📡 coms: internal error — no session handler captured", "error"); } catch {}
-                    return;
-                }
-
-                try {
-                    await state.capturedSessionStart({}, ctx);
-                    state.active = true;
-                    persistState(pi, PERSIST_KEY, state);
-                } catch (err: any) {
-                    try { ctx.ui.notify(`📡 coms start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
-                }
-            } else if (subcommand === "stop") {
-                if (!state.active) {
-                    try { ctx.ui.notify("📡 coms not active", "info"); } catch {}
-                    return;
-                }
-                if (state.capturedSessionShutdown) {
-                    try { await state.capturedSessionShutdown(); } catch {}
-                }
-                state.active = false;
-                persistState(pi, PERSIST_KEY, state);
-                try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
-            } else if (subcommand === "status") {
-                try {
-                    ctx.ui.notify(state.active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
-                } catch {}
-            } else {
-                try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status`, "warning"); } catch {}
-            }
-        },
+        handler: comsCmdHandler,
     });
+    // Expose handler to pidash for browser command dispatch
+    try {
+        if ((globalThis as any).__coms_pidash_listener) {
+            try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__coms_pidash_listener); } catch {}
+        }
+        const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "coms", handler: comsCmdHandler });
+        (globalThis as any).__coms_pidash_listener = registerWithPidash;
+        registerWithPidash();
+        pi.events.on("pidash:request-commands", registerWithPidash);
+    } catch {}
 }

@@ -15,8 +15,20 @@ export interface Task {
 	metadata: Record<string, any>;
 	blocks: string[];
 	blockedBy: string[];
+	createdBy: {
+		type: "local" | "coms";
+		origin: string;
+		session: string;
+		project: string;
+	};
 	createdAt: number;
 	updatedAt: number;
+	statusHistory: {
+		pending_at: string;
+		in_progress_at: string | null;
+		completed_at: string | null;
+		deleted_at: string | null;
+	};
 }
 
 /** Serialized store format on disk. */

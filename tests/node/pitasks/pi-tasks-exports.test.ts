@@ -60,13 +60,12 @@ describe("pitasks exported API pattern", () => {
 		assert.equal(store.get(task.id), undefined);
 	});
 
-	it("TaskStore.create with metadata stores coms_origin", () => {
+	it("TaskStore.create with createdBy stores origin", () => {
 		const store = new TaskStore();
-		const task = store.create("Peer task", "desc", undefined, {
-			coms_origin: { sender_session: "sess-1", sender_name: "peer-a" },
-		});
-		assert.equal(task.metadata.coms_origin.sender_session, "sess-1");
-		assert.equal(task.metadata.coms_origin.sender_name, "peer-a");
+		const task = store.create("Peer task", "desc", { type: "coms", origin: "peer-a", session: "sess-1", project: "" });
+		assert.equal(task.createdBy.session, "sess-1");
+		assert.equal(task.createdBy.origin, "peer-a");
+		assert.equal(task.createdBy.type, "coms");
 	});
 
 	it("TaskStore.update with metadata merges keys", () => {
