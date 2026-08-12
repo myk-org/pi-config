@@ -31,6 +31,7 @@ import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
 import { probeStaleSocket } from "./probe-socket.js";
+import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2483,7 +2484,7 @@ Do not respond to this message.`;
 	// would leak user-directed content to the peer. Flag it for mixed-turn handling.
 	pi.on("message_start" as any, (event: any) => {
 		if (shuttingDown || !identity) return;
-		if (processingInbound && event?.message?.role === "user") {
+		if (isUserMessageDuringInbound(processingInbound, event?.message?.role)) {
 			userMessageDuringInbound = true;
 			log.info("user_message_during_inbound", currentInbound?.msg_id ?? "null");
 		}
@@ -2552,7 +2553,7 @@ Do not respond to this message.`;
 		// If the inbound was set while the agent was running a user turn
 		// (not a coms followUp), the assistant's response is for the user.
 		// Re-inject the inbound for a dedicated turn.
-		const hasMixedTurn = inboundSetDuringUserTurn || userMessageDuringInbound;
+		const hasMixedTurn = computeMixedTurn(inboundSetDuringUserTurn, userMessageDuringInbound);
 		if (userMessageDuringInbound && !inboundSetDuringUserTurn) {
 			log.info("mixed_turn_user_interrupt", inbound.msg_id);
 		}
