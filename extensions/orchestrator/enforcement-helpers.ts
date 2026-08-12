@@ -54,7 +54,9 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
   const escName = trailerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // (^|\n real newline|\\n literal backslash-n|quote/space) + name + ":" + space
   const trailerNameRe = new RegExp(String.raw`(^|\n|\\n|["'\s])` + escName + String.raw`:\s`);
-  return trailerNameRe.test(command);
+  const result = trailerNameRe.test(command);
+  enfLog.debug("commandHasTrailerByName", trailerName, "match", result);
+  return result;
 }
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */

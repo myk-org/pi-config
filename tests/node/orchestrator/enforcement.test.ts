@@ -1211,4 +1211,18 @@ describe("commandHasTrailerByName", () => {
     // A different name that would match if the dot were treated as wildcard
     assert.equal(commandHasTrailerByName(cmd, "X-TrailerXv1"), false);
   });
+
+  // Regression: the dedup guard must be scoped to the MESSAGE PAYLOAD, not the
+  // whole command. Here the trailer token appears only in a NON-message part
+  // (an env var / arg), so on the extracted -m payload it is absent — meaning
+  // injection should still happen.
+  it("does NOT detect the trailer when it appears only in a non-message part (env var)", () => {
+    const cmd = 'FOO="Assisted-by: x" git commit -m "real msg"';
+    // Payload for Pattern B is the -m quoted content only
+    const payload = cmd.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/)![2];
+    assert.equal(payload, "real msg");
+    assert.equal(commandHasTrailerByName(payload, "Assisted-by"), false);
+    // Whole-command scan (the old buggy behavior) WOULD wrongly report true
+    assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
+  });
 });
