@@ -121,7 +121,7 @@ describe("task-focus reminder timer (Qodo #2)", () => {
 		assert.equal(shouldFireReminder(true, 3), false);
 	});
 
-	it("reminder fires when agent is NOT busy and there are active tasks", () => {
+	it("reminder fires when agent is idle with active tasks", () => {
 		assert.equal(shouldFireReminder(false, 3), true);
 	});
 
@@ -152,14 +152,17 @@ describe("task-focus reminder timer (Qodo #2)", () => {
 		assert.equal(content.includes("BETA"), false);
 	});
 
-	it("stale reminder content includes the COUNT and is GENERIC (no subject/id)", () => {
+	it("stale reminder content includes the COUNT", () => {
+		const content = staleReminderContent(1);
+		assert.ok(content.includes("1 task(s) stuck in progress"));
+	});
+
+	it("stale reminder content is GENERIC — no task subject/id leaked", () => {
 		const store = new TaskStore();
 		const by = { type: "local" as const, origin: "", session: "s", project: "" };
 		const t1 = store.create("Stuck subject GAMMA", "desc", by);
-		const content = staleReminderContent(1);
-
 		void t1;
-		assert.ok(content.includes("1 task(s) stuck in progress"));
+		const content = staleReminderContent(1);
 		assert.equal(content.includes("Stuck subject GAMMA"), false);
 		assert.equal(content.includes("GAMMA"), false);
 	});
