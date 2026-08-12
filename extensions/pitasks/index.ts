@@ -286,8 +286,18 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// agent_settled is guaranteed to fire even if turn_end is skipped (abort/error).
+	// Reset agentBusy defensively so reminders are never suppressed forever.
+	pi.on("agent_settled", async () => {
+		if (shuttingDown) return;
+		agentBusy = false;
+		log.debug("agentBusy", "agent_settled reset");
+	});
+
 	pi.on("session_start", async (event: any, ctx: any) => {
 		shuttingDown = false;
+		agentBusy = false;
+		log.debug("agentBusy", "session_start reset");
 		widget.setUICtx(ctx.ui);
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;

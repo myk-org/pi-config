@@ -5,6 +5,9 @@
  */
 
 import * as path from "node:path";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("task-lifecycle");
 
 /** Get the shared task store instance (lazy import to avoid circular deps). */
 async function getStore(): Promise<any> {
@@ -50,7 +53,7 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
     if (task.status !== "completed") { store.update(taskId, { status: "completed" }); return true; }
     return false;
   } catch (e: any) {
-    console.debug(`[task-lifecycle] autoCompleteTask failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
+    log.debug("autoCompleteTask failed for task", taskId, e?.message?.slice(0, 100));
     return false;
   }
 }
@@ -89,7 +92,7 @@ export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?
     if (task.status === "pending") { store.update(taskId, { status: "in_progress" }); return true; }
     return false;
   } catch (e: any) {
-    console.debug(`[task-lifecycle] autoMarkInProgress failed for task ${taskId}: ${e?.message?.slice(0, 100)}`);
+    log.debug("autoMarkInProgress failed for task", taskId, e?.message?.slice(0, 100));
     return false;
   }
 }

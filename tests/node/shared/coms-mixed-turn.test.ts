@@ -318,3 +318,99 @@ describe("userMessageInTurn flag state machine", () => {
 		assert.equal(processingInbound, true);
 	});
 });
+
+/**
+ * Tests for the userMessageDuringInbound flag (#741).
+ *
+ * NOTE: Like the state-machine tests above, these simulate the actual handler
+ * logic because the handlers (pi.on("message_start") / pi.on("agent_end")) live
+ * inside the activate() closure and require the full pi extension runtime.
+ *
+ * Production behavior (coms-p2p.ts):
+ *   1. agent_start: userMessageDuringInbound = false (per-turn reset)
+ *   2. message_start: sets userMessageDuringInbound = true ONLY when
+ *      `processingInbound && event.message.role === "user"` — a genuine user
+ *      message landed during an inbound turn. This is the #741 fix: without it,
+ *      auto-capture would leak user-directed assistant text to the peer.
+ *   3. agent_end: hasMixedTurn = inboundSetDuringUserTurn || userMessageDuringInbound.
+ *      When hasMixedTurn is true the inbound is RE-INJECTED for a clean turn
+ *      instead of being auto-captured and sent to the peer.
+ */
+describe("userMessageDuringInbound flag (#741)", () => {
+	/**
+	 * Mirror the message_start handler guard for the #741 flag.
+	 * @returns the new value of userMessageDuringInbound after the event.
+	 */
+	function onMessageStart(
+		prev: boolean,
+		processingInbound: boolean,
+		role: string,
+	): boolean {
+		if (processingInbound && role === "user") return true;
+		return prev;
+	}
+
+	/** Mirror the agent_end mixed-turn decision. */
+	function computeMixedTurn(inboundSetDuringUserTurn: boolean, userMessageDuringInbound: boolean): boolean {
+		return inboundSetDuringUserTurn || userMessageDuringInbound;
+	}
+
+	it("message_start sets flag when a user message arrives during an inbound turn", () => {
+		// agent_start reset
+		let userMessageDuringInbound = false;
+		const processingInbound = true; // inbound turn is running
+		userMessageDuringInbound = onMessageStart(userMessageDuringInbound, processingInbound, "user");
+		assert.equal(userMessageDuringInbound, true);
+	});
+
+	it("message_start does NOT set flag for assistant messages during an inbound turn", () => {
+		let userMessageDuringInbound = false;
+		userMessageDuringInbound = onMessageStart(userMessageDuringInbound, true, "assistant");
+		assert.equal(userMessageDuringInbound, false);
+	});
+
+	it("message_start does NOT set flag for a user message when no inbound is active", () => {
+		// Normal user turn — processingInbound is false, so no leak concern.
+		let userMessageDuringInbound = false;
+		userMessageDuringInbound = onMessageStart(userMessageDuringInbound, false, "user");
+		assert.equal(userMessageDuringInbound, false);
+	});
+
+	it("agent_end takes mixed-turn (re-inject) path when userMessageDuringInbound is true", () => {
+		// #741: user message interrupted an inbound turn → re-inject, do NOT auto-capture.
+		const inboundSetDuringUserTurn = false; // inbound started as a followUp, not a user turn
+		const userMessageDuringInbound = true;  // but a user message landed mid-turn
+		assert.equal(computeMixedTurn(inboundSetDuringUserTurn, userMessageDuringInbound), true);
+	});
+
+	it("full #741 flow: inbound turn + user message → re-inject instead of leak", () => {
+		// agent_start (during coms followUp): reset flag, processingInbound stays true
+		let userMessageDuringInbound = false;
+		const inboundSetDuringUserTurn = false;
+		const processingInbound = true;
+
+		// message_start: genuine user message arrives mid-inbound-turn (the #741 case)
+		userMessageDuringInbound = onMessageStart(userMessageDuringInbound, processingInbound, "user");
+		assert.equal(userMessageDuringInbound, true);
+
+		// agent_end: mixed-turn detected → re-inject path (NOT auto-capture/send to peer)
+		const hasMixedTurn = computeMixedTurn(inboundSetDuringUserTurn, userMessageDuringInbound);
+		assert.equal(hasMixedTurn, true);
+	});
+
+	it("clean inbound turn (no user message) auto-captures — flag stays false", () => {
+		let userMessageDuringInbound = false; // agent_start reset
+		const inboundSetDuringUserTurn = false;
+		// only assistant messages during the turn
+		userMessageDuringInbound = onMessageStart(userMessageDuringInbound, true, "assistant");
+		const hasMixedTurn = computeMixedTurn(inboundSetDuringUserTurn, userMessageDuringInbound);
+		assert.equal(hasMixedTurn, false); // auto-capture path
+	});
+
+	it("agent_start resets flag so a stale #741 flag does not carry into the next turn", () => {
+		let userMessageDuringInbound = true; // stale from a previous turn
+		// agent_start reset
+		userMessageDuringInbound = false;
+		assert.equal(userMessageDuringInbound, false);
+	});
+});

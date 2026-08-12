@@ -1367,12 +1367,13 @@ Do not respond to this message.`;
 			for (const [sid, card] of peerCards) knownPeerSessions.set(sid, card.name);
 
 			log.info("welcome_shown", "peers", peerCards.size);
+			log.debug("welcome_trigger_turn", peerCards.size > 0);
 			try {
 				pi.sendMessage({
 					customType: "coms-welcome",
 					content: welcomeMsg,
 					display: true,
-				}, { triggerTurn: true });
+				}, { triggerTurn: peerCards.size > 0 });
 			} catch {}
 		};
 
