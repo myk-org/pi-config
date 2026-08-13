@@ -687,8 +687,38 @@ export function injectSignoff(command: string): string {
   }
 
   // Pattern B: bare / inline git commit (no message pipe)
-  if (!commitRe.test(command)) return command;
-  if (SIGNOFF_RE.test(command) || SHORT_S_RE.test(command)) return command;
+  const m = commitRe.exec(command);
+  if (!m) return command;
+  // Scope the "already signed" check to the MATCHED real invocation ONLY, not the
+  // whole command. The invocation region runs from the start of the match to the
+  // next UNQUOTED statement boundary (; && || | & newline) or end-of-string.
+  const regionStart = m.index;
+  let regionEnd = command.length;
+  {
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = regionStart; i < command.length; i++) {
+      const c = command[i];
+      if (inSingle) {
+        if (c === "'") inSingle = false;
+        continue;
+      }
+      if (inDouble) {
+        if (c === '"') inDouble = false;
+        continue;
+      }
+      if (c === "'") { inSingle = true; continue; }
+      if (c === '"') { inDouble = true; continue; }
+      if (c === "\n" || c === ";" || c === "&" || c === "|") { regionEnd = i; break; }
+    }
+  }
+  // Strip quoted substrings from the region so a `-s`/`--signoff` INSIDE the
+  // -m/-F message value (e.g. `-m "fix -s bug"`) is NOT treated as already-signed.
+  const region = command
+    .slice(regionStart, regionEnd)
+    .replace(/"[^"]*"/g, '""')
+    .replace(/'[^']*'/g, "''");
+  if (SIGNOFF_RE.test(region) || SHORT_S_RE.test(region)) return command;
   enfLog.debug("injectSignoff", "pattern B (inline git commit)");
   return command.replace(commitRe, "$1 --signoff");
 }

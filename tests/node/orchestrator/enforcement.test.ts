@@ -1529,12 +1529,28 @@ describe("injectSignoff", () => {
       assert.equal(out.match(/--signoff/g)?.length, 1);
       assert.ok(out.includes('"msg mentioning git commit again"'));
     });
+    it("pattern B: '-s' inside the -m message value must NOT count as signed", () => {
+      const out = injectSignoff('git commit -m "fix -s bug"');
+      assert.equal(out, 'git commit --signoff -m "fix -s bug"');
+      assert.ok(out.includes('"fix -s bug"'));
+    });
+    it("pattern B: '--signoff' inside the -m message value must NOT count as signed", () => {
+      const out = injectSignoff('git commit -m "use --signoff please"');
+      assert.equal(out, 'git commit --signoff -m "use --signoff please"');
+      assert.ok(out.includes('"use --signoff please"'));
+    });
+    it("pattern B: FIRST unsigned commit signed even when a LATER commit already has --signoff", () => {
+      const out = injectSignoff('git commit -m a; git commit --signoff -m b');
+      assert.equal(out, 'git commit --signoff -m a; git commit --signoff -m b');
+    });
   });
 
   describe("MUST NOT change (already signed / not a real commit)", () => {
     const UNCHANGED = [
       'echo -e "x" | git commit -F - --signoff',
       "git commit -s -m x",
+      'git commit --signoff -m x',
+      'git commit -m x -s',
       'echo "run git commit later"',
       'node "/tmp/git commit test.mjs"',
     ];
