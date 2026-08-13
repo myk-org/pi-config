@@ -26,6 +26,7 @@ import {
   hasGitAddBulk,
   hasGitAddForce,
   isRealGitCommitOrPush,
+  injectSignoff,
   stripHeredocBodies,
   isTestRunnerCommand,
   isBumpVersionBranch,
@@ -1500,6 +1501,48 @@ describe("commandHasTrailerByName", () => {
     const pipeIdx = cmd.lastIndexOf("|");
     const echoPart = cmd.slice(0, pipeIdx);
     assert.equal(commandHasTrailerByName(echoPart, "Assisted-by"), false);
+  });
+});
+
+// ── injectSignoff ──
+describe("injectSignoff", () => {
+  describe("MUST inject --signoff into the REAL invocation, body untouched", () => {
+    it("pattern A: echo -e | git commit -F -", () => {
+      const out = injectSignoff('echo -e "title\\n\\nbody" | git commit -F -');
+      assert.equal(out, 'echo -e "title\\n\\nbody" | git commit --signoff -F -');
+    });
+    it("pattern A: body containing 'sudo -u root git commit' stays untouched", () => {
+      const out = injectSignoff('echo -e "fix: text with sudo -u root git commit inside" | git commit -F -');
+      assert.equal(out, 'echo -e "fix: text with sudo -u root git commit inside" | git commit --signoff -F -');
+      // The body's git-commit substring must NOT be modified
+      assert.ok(out.split("|")[0].includes("sudo -u root git commit inside"));
+      assert.ok(!out.split("|")[0].includes("--signoff"));
+    });
+    it("pattern B: git commit -m gets --signoff after commit token", () => {
+      const out = injectSignoff('git commit -m "msg"');
+      assert.equal(out, 'git commit --signoff -m "msg"');
+    });
+    it("pattern B: message mentioning 'git commit again' — only one --signoff on real invocation", () => {
+      const out = injectSignoff('git commit -m "msg mentioning git commit again"');
+      assert.equal(out, 'git commit --signoff -m "msg mentioning git commit again"');
+      // exactly one --signoff, message value untouched
+      assert.equal(out.match(/--signoff/g)?.length, 1);
+      assert.ok(out.includes('"msg mentioning git commit again"'));
+    });
+  });
+
+  describe("MUST NOT change (already signed / not a real commit)", () => {
+    const UNCHANGED = [
+      'echo -e "x" | git commit -F - --signoff',
+      "git commit -s -m x",
+      'echo "run git commit later"',
+      'node "/tmp/git commit test.mjs"',
+    ];
+    for (const cmd of UNCHANGED) {
+      it(`unchanged: ${JSON.stringify(cmd)}`, () => {
+        assert.equal(injectSignoff(cmd), cmd);
+      });
+    }
   });
 });
 

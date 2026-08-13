@@ -640,6 +640,59 @@ export function isRealGitCommitOrPush(command: string): boolean {
   return false;
 }
 
+/**
+ * Inject `--signoff` into the REAL git-commit invocation only (DCO enforcement).
+ *
+ * BUG THIS FIXES: a naive `command.replace(/\bgit\b...commit\b/, ...)` injects
+ * `--signoff` into the FIRST `git ... commit` substring anywhere in the command —
+ * including a `git commit` mention INSIDE an echo/printf message body before a pipe
+ * (e.g. `echo -e "...sudo -u root git commit..." | git commit -F -`), corrupting the
+ * commit MESSAGE instead of the real invocation. This mirrors the trailer-injection
+ * scoping in handleCommitTrailer.
+ *
+ * Behavior:
+ *   - Pattern A (echo/printf "..." | git commit -F -): the real invocation is AFTER
+ *     the last pipe. Inject into the gitPart only; never touch the echo/message body.
+ *   - Pattern B (bare `git commit ...`, `git commit -m/-F ...` with no commit pipe):
+ *     inject `--signoff` right after the `commit` token of the real invocation, using
+ *     the same command-position/prefix boundary logic as isRealGitCommitOrPush so a
+ *     `git commit` substring inside a quoted arg is never matched.
+ *   - If the real invocation already has `--signoff` or `-s` -> return unchanged.
+ *   - If there is no real git-commit invocation -> return unchanged.
+ */
+export function injectSignoff(command: string): string {
+  const SIGNOFF_RE = /(?:^|\s)--signoff(?:\s|$)/;
+  const SHORT_S_RE = /(?:^|\s)-s(?:\s|$)/;
+  // Reuse the exact command-position/prefix construction from isRealGitCommitOrPush,
+  // capturing everything up to and including the `commit` token so we can insert
+  // ` --signoff` immediately after it via a NON-global replace (first real match only).
+  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
+  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
+  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
+  const wrapArg = /(?:command|builtin|exec)\s+/.source;
+  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
+  const gitExe = /(?:\S*\/)?git\b/.source;
+  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+  const commitRe = new RegExp(`(${boundary}${prefix}${gitExe}${gitFlags}\\s+commit\\b)`);
+
+  // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe)
+  const pipeIdx = command.lastIndexOf("|");
+  if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+    const echoPart = command.slice(0, pipeIdx);
+    const gitPart = command.slice(pipeIdx);
+    if (SIGNOFF_RE.test(gitPart) || SHORT_S_RE.test(gitPart)) return command;
+    if (!commitRe.test(gitPart)) return command;
+    enfLog.debug("injectSignoff", "pattern A (piped git commit -F -)");
+    return echoPart + gitPart.replace(commitRe, "$1 --signoff");
+  }
+
+  // Pattern B: bare / inline git commit (no message pipe)
+  if (!commitRe.test(command)) return command;
+  if (SIGNOFF_RE.test(command) || SHORT_S_RE.test(command)) return command;
+  enfLog.debug("injectSignoff", "pattern B (inline git commit)");
+  return command.replace(commitRe, "$1 --signoff");
+}
+
 /** Detect git add --force / -f (including combined short options like -fn).
  *  Respects -- end-of-options marker and shell separators (&&, ;, |, ||). */
 export function hasGitAddForce(command: string): boolean {
