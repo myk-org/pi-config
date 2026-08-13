@@ -142,7 +142,10 @@ Writing effective rules:
 - Remote script exec enforcement (`checkRemoteExecBlock` in `enforcement-helpers.ts`):
   blocks `curl | bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`,
   prefix assignments (`VAR=$(curl) cmd`), path-prefixed exec (`/bin/bash -c`).
-  Allows safe `VAR=$(curl ...)` variable assignments at statement boundaries.
+  Uses variable-flow analysis: allows a safe `VAR=$(curl ...)` capture followed by an
+  UNRELATED interpreter/`eval` call (e.g. `code=$(curl ...); uv run python3 -c '...'`), but still
+  blocks when the exec consumes the curl output — inline `$(curl)`, a captured var fed to
+  exec (`x=$(curl ...); uv run python3 -c "$x"`), or a shell reading untrackable stdin/file input.
 - Native `cli-*` / `acpx-*` providers: use `extensions/shared/create-runtime-provider.ts`
   (`createProvider` + `/login` + fetch/filter) — never legacy `registerProvider(name, bag)`
 

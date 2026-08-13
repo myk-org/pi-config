@@ -35,6 +35,8 @@ import {
   checkTempFileEnforcement,
   hasGitAddBulk,
   hasGitAddForce,
+  isRealGitCommitOrPush,
+  injectSignoff,
   isReadOnlyStatement,
   isRmInProjectTmp,
   normalizeForRepeatCheck,
@@ -288,12 +290,17 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
     const trailerResult = await handleCommitTrailer(command, event, ctx, gitCwd);
     if (trailerResult) return trailerResult;
 
-    // DCO enforcement — inject --signoff when dco setting is enabled
-    if (getSetting(gitCwd, "dco") && !/(?:^|\s)--signoff(?:\s|$)/.test(command) && !/(?:^|\s)-s(?:\s|$)/.test(command)) {
-      event.input.command = event.input.command.replace(
-        /\bgit\b((?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*\s+)commit\b/,
-        "git$1commit --signoff",
-      );
+    // DCO enforcement — inject --signoff into the REAL git commit invocation only.
+    // injectSignoff scopes to the actual invocation (after the last pipe for
+    // `echo ... | git commit -F -`, or the command-position-anchored `git commit`),
+    // so a `git commit` mention inside the echo/message body is never corrupted.
+    // The already-signed (--signoff/-s) guards live inside injectSignoff.
+    if (getSetting(gitCwd, "dco")) {
+      const signed = injectSignoff(event.input.command);
+      if (signed !== event.input.command) {
+        log.debug("DCO: injected --signoff into real git commit invocation");
+        event.input.command = signed;
+      }
     }
   }
 
@@ -524,9 +531,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const remoteCheck = checkRemoteExecBlock(cmdLower);
     if (remoteCheck) return remoteCheck;
 
-    // Enforce git commit/push only via git-expert agent
+    // Enforce git commit/push only via git-expert agent.
+    // Use isRealGitCommitOrPush (heredoc-stripped + command-position aware) so that
+    // file CONTENT / string args / paths that merely MENTION "git commit" do not trip
+    // the guard (BUG #3). Only genuine git commit/push invocations are blocked.
     if (process.env.PI_AGENT_NAME !== "git-expert") {
-      if (hasGitSub(command, "commit") || hasGitSub(command, "push")) {
+      if (isRealGitCommitOrPush(command)) {
         return {
           block: true,
           reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",

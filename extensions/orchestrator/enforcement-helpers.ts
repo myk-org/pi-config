@@ -185,8 +185,9 @@ export function checkPythonPipBlock(command: string, cmdLower: string): Enforcem
 export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   const cmdForExecCheck = cmdLower.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*/m, "");
   const remoteExecReason = "\u26d4 Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
-  if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
-      /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
+  if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
+      /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
+    enfLog.debug("remote_exec_block", "pipe");
     return { block: true, reason: remoteExecReason };
   }
   // Match curl/wget anywhere inside process substitution <(...), not just as first token
@@ -194,21 +195,59 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
       /\bsource\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
       /(?:^|[\s;&|])\.\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+    enfLog.debug("remote_exec_block", "proc-sub");
     return { block: true, reason: remoteExecReason };
   }
   // Block when curl/wget is inside a command substitution AND an execution primitive
-  // (eval, bash -c, sh -c, etc.) appears anywhere — order-independent.
-  // Catches: x=$(curl ...); eval "$x", eval "$x"; x=$(curl ...), etc.
-  // Only matches curl/wget actually inside $() or backticks, not bare curl before unrelated $().
-  // Detect curl/wget anywhere inside a command substitution, not just as first token.
-  // Allow quoted strings inside $() to handle quoted ) characters.
-  // Note: this is intentionally conservative — it matches curl/wget as a word anywhere inside
-  // the substitution, including in strings like $(echo curl). This trades rare false positives
-  // for stronger security against obfuscated curl invocations.
-  const hasCurlSub = /\$\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) || /`[^`]*\b(curl|wget)\b/.test(cmdForExecCheck);
+  // (eval, bash -c, sh -c, etc.) CONSUMES that curl output — either inline
+  // ($(curl ...)/`curl ...` passed directly to the primitive) or via a variable
+  // that was assigned from curl.
+  //
+  // FALSE-POSITIVE FIX: A SAFE capture `VAR=$(curl ...)` at a statement boundary,
+  // followed by an UNRELATED exec primitive that does NOT reference that variable,
+  // is not a remote exec. Example (now ALLOWED):
+  //   code=$(curl -s -w "%{http_code}" https://x/json); python3 -c "import json"
+  // Here $code never flows into python3, so there is no remote code execution.
+  //
+  // To avoid opening a bypass we:
+  //   1. Record the set of variable names assigned from curl/wget captures.
+  //   2. Strip SAFE curl assignments before the inline-substitution exec check, so a
+  //      captured-but-unused curl output no longer counts as "curl feeding an exec".
+  //   3. Separately block when an exec primitive REFERENCES a curl-assigned variable
+  //      (e.g. x=$(curl ...); eval "$x") — stripping alone would miss this.
+  //
+  // Allow quoted strings inside $() to handle quoted ) characters. Matching curl/wget
+  // as a word anywhere inside the substitution is intentional — it trades rare false
+  // positives for stronger security against obfuscated curl invocations.
+  //
+  // Safe-assignment shape: VAR=$(...) / VAR=`...` at a statement boundary, terminated
+  // by a statement separator / comment / end. CRITICAL: the captured value must NOT
+  // itself contain a NESTED command substitution ($( or backtick) — even inside quotes.
+  // Otherwise `var=$(bash -c "$(curl ...)")` (a REAL remote exec) would be treated as a
+  // simple safe capture and stripped, opening a bypass. Quoted branches therefore
+  // forbid `$(` and backtick, and the unquoted branch forbids them too.
+  const qDouble = /"(?:(?!\$\()[^"`])*"/.source;
+  const qSingle = /'(?:(?!\$\()[^'`])*'/.source;
+  const dollarSub = String.raw`\$\((?:` + qDouble + `|` + qSingle + String.raw`|(?!\$\()(?!` + "`" + String.raw`)[^)])*\)`;
+  const backtickSub = "`(?:(?!\\$\\()[^`])*`";
+  const captureValue = `(?:${dollarSub}|${backtickSub})`;
+  const safeAssignmentSrc =
+    String.raw`(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?([a-z_]\w*)=(` +
+    captureValue + String.raw`)(?=\s*(?:$|[;&|#\n)}]))`;
+  // Collect variable names whose SAFE assignment substitution contains curl/wget.
+  const curlVars = new Set<string>();
+  for (const m of cmdForExecCheck.matchAll(new RegExp(safeAssignmentSrc, "gi"))) {
+    if (/\b(curl|wget)\b/.test(m[2])) curlVars.add(m[1]);
+  }
+  // Strip ALL safe assignments (curl or not) for the inline-substitution exec check,
+  // so a curl output safely captured into a variable no longer counts as an inline
+  // substitution feeding an exec primitive.
+  const strippedForSub = cmdForExecCheck.replace(new RegExp(safeAssignmentSrc, "gi"), " ");
+  // Curl still inside a substitution AFTER stripping safe captures = inline/consumed curl.
+  const hasCurlSub = /\$\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(strippedForSub) || /`[^`]*\b(curl|wget)\b/.test(strippedForSub);
   // Anchor exec primitives to command position (start-of-string or after statement separator)
   // to avoid matching inside URLs/arguments (e.g., https://host/eval)
-  if (hasCurlSub) {
+  if (hasCurlSub || curlVars.size > 0) {
     // Allow assignment prefixes (VAR=val, VAR="a b"), sudo, and env before exec primitives.
     // Shell allows VAR="a b" bash -c "cmd" — the assignment sets env for the command.
     const assignPrefix = /(?:[a-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)*/.source;
@@ -220,14 +259,58 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Allow leading redirections (>file, 2>/dev/null, etc.), shell wrappers (command, builtin, exec)
     const redirections = /(?:(?:[0-9]*>[>&]?|<)\s*\S+\s+)*/.source;
     const pathPrefix = /(?:\/\S+\/)*/.source;
-    const wrappers = /(?:(?:command|builtin|exec)\s+)*/.source;
+    // Wrappers/prefixes that may precede the interpreter name at a command position:
+    // command/builtin/exec shell builtins, and `uv run` (the test harness rewrites
+    // `python3` -> `uv run python3`, so `uv run python3 -c "$x"` must also be detected).
+    const wrappers = /(?:(?:command|builtin|exec)\s+|uv\s+run\s+)*/.source;
     const execPrefix = cmdPos + redirections + wrappers;
+    // Exec-primitive cores (shell/interpreter with a code-carrying flag or stdin/procsub).
+    const shellExec = /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source;
+    const interpExec = /(?:python[23]?|perl|ruby|node|deno|bun)(?:\s+-[ce]\b|\s+<\()/.source;
+    // (a)/(b) INLINE: curl substitution survives safe-assignment stripping AND an exec
+    // primitive appears at command position — the curl output feeds the primitive.
     // Match shells with -c flag, stdin (<<<, <), or process substitution <(...)
     // Match interpreters with -c/-e flag or process substitution <(...)
-    if (new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
-        new RegExp(execPrefix + pathPrefix + /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+-c\b|\s+<<<|\s+<[^<])/.source).test(cmdForExecCheck) ||
-        new RegExp(execPrefix + pathPrefix + /(?:python[23]?|perl|ruby|node|deno|bun)(?:\s+-[ce]\b|\s+<\()/.source).test(cmdForExecCheck)) {
+    if (hasCurlSub && (
+        new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
+        new RegExp(execPrefix + pathPrefix + shellExec).test(cmdForExecCheck) ||
+        new RegExp(execPrefix + pathPrefix + interpExec).test(cmdForExecCheck))) {
+      enfLog.debug("remote_exec_block", "inline-sub");
       return { block: true, reason: remoteExecReason };
+    }
+    // (c) CONSERVATIVE VARIABLE-FLOW (SECURITY HARDENING): the previous logic only
+    // tracked the DIRECT curl-assigned variable name and was bypassable via aliasing
+    // (`x=$(curl); y=$x; bash -c "$y"`), quoted aliasing (`y="$x"; eval "$y"`), and
+    // indirect expansion (`bash -c "${!x}"`). We cannot statically track how curl output
+    // flows through arbitrary variable aliases/indirection, so we take the conservative
+    // direction: once curl output has been CAPTURED into the shell (curlVars.size > 0),
+    // ANY exec primitive whose command/argument region references ANY shell variable
+    // (contains a `$` — `$x`, `${x}`, `${!x}`, `"$x"`, ...) is assumed to potentially
+    // carry the curl output and is BLOCKED. Only an exec whose argument region contains
+    // NO `$` at all (e.g. `python3 -c "import json"`) is allowed to pass this rule.
+    if (curlVars.size > 0) {
+      // Argument/target region after the primitive, within the same statement (stops at
+      // ; & | newline), that contains at least one `$` variable reference.
+      const dollarArg = /[^\n;&|]*\$/.source;
+      if (new RegExp(execPrefix + /eval\b/.source + dollarArg).test(cmdForExecCheck) ||
+          new RegExp(execPrefix + pathPrefix + shellExec + dollarArg).test(cmdForExecCheck) ||
+          new RegExp(execPrefix + pathPrefix + interpExec + dollarArg).test(cmdForExecCheck)) {
+        enfLog.debug("remote_exec_block", "var-flow");
+        return { block: true, reason: remoteExecReason };
+      }
+      // (d) UNTRACKABLE INPUT: when a curl capture exists, a shell/interpreter that reads
+      // its program from stdin / a file / process-substitution / here-string is blocked
+      // regardless of variable reference — the curl output could have been redirected to a
+      // file that is then executed, which cannot be tracked statically. This is the
+      // conservative direction: only the inline `-c`/`-e` form (which needs an explicit
+      // `$` reference to consume curl output, handled by (c)) is allowed to pass through.
+      const shellStdin = /(?:ba|c|da|[akz]|fi|tc)?sh(?:\s+<<<|\s+<[^<]|\s+<\()/.source;
+      const interpStdin = /(?:python[23]?|perl|ruby|node|deno|bun)\s+<\(/.source;
+      if (new RegExp(execPrefix + pathPrefix + shellStdin).test(cmdForExecCheck) ||
+          new RegExp(execPrefix + pathPrefix + interpStdin).test(cmdForExecCheck)) {
+        enfLog.debug("remote_exec_block", "untrackable");
+        return { block: true, reason: remoteExecReason };
+      }
     }
   }
   // Block $(curl ...) and `curl ...` UNLESS every occurrence is a safe shell variable assignment.
@@ -237,6 +320,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Block env VAR=$(curl ...) cmd — env runs a command with the var, so curl output could influence execution
     // Note: [a-z_] without /i is fine — cmdLower (the parameter) is already lowercased
     if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+      enfLog.debug("remote_exec_block", "env-var-sub");
       return { block: true, reason: remoteExecReason };
     }
     // Strip safe assignment patterns at statement boundaries only.
@@ -251,6 +335,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const safeAssignment = /(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n)}]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
+      enfLog.debug("remote_exec_block", "bare-sub");
       return { block: true, reason: remoteExecReason };
     }
   }
@@ -492,6 +577,169 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   }
 
   return true;
+}
+
+/**
+ * Detect a REAL `git <sub>` invocation (sub = "commit" or "push") at a shell command
+ * position — NOT a substring inside a heredoc body, string argument, or file path.
+ *
+ * BUG #3 FIX: `hasGitSub` matches the literal text `git ... commit` ANYWHERE, so
+ * writing a file whose CONTENT mentions "git commit" (heredoc body), an echo/string
+ * arg like `echo 'run git commit later'`, or a path like `node "/tmp/git commit x.mjs"`
+ * wrongly triggered the commit/push guard. This helper narrows detection to genuine
+ * invocations by (1) stripping heredoc bodies and (2) requiring `git` at a command
+ * boundary (start, or after ; && || | & newline ( { or control-flow keywords).
+ *
+ * Security note: we DO NOT attempt full shell quote parsing. We block conservatively
+ * — any `git <flags> <sub>` at a command boundary in the (heredoc-stripped) command
+ * still blocks. This narrows false-positives without opening a bypass: a real
+ * `git commit`/`git push` cannot avoid appearing at a command boundary.
+ */
+export function isRealGitCommitOrPush(command: string): boolean {
+  // Strip heredoc bodies so file CONTENT that mentions "git commit" does not count.
+  const stripped = stripHeredocBodies(command);
+  // Require git at a command position: start-of-string, or after a statement separator
+  // / pipe / background / newline / subshell-open / brace-group / control-flow keyword.
+  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
+  // PREFIX BYPASS FIX: real git invocations can be preceded by allowed prefixes that the
+  // old boundary-only check missed — `sudo git commit`, `env GIT_DIR=x git commit`,
+  // `GIT_DIR=x git commit` (bare VAR=value assignment prefix), `command git commit`,
+  // `builtin`/`exec` wrappers. Allow an optional sequence of these before git:
+  //   - sudo (with flags), env (with flags)
+  //   - one-or-more VAR=value assignments
+  //   - command / builtin / exec wrappers
+  //
+  // SUDO/ENV ARG BYPASS FIX (finding #3): real sudo/env flags TAKE A FOLLOWING
+  // ARGUMENT (`sudo -u root git commit`, `sudo -g grp git commit`, `env -u HOME git
+  // commit`), and env accepts VAR=value operands (`env FOO=bar git commit`). The old
+  // `(?:\s+-\S+)*` only consumed bare flags, so the arg token stopped the prefix early
+  // and these BYPASSED the guard. We now consume, after `sudo`/`env`, a sequence of:
+  //   - `--long ARG` long option taking an argument (`--user root`)
+  //   - `-x ARG`     short option taking an argument (`-u root`, `-g grp`)
+  //   - `-\S+`       bare flag (`-n`, `--preserve-env`, combined `-xyz`)
+  //   - `VAR=value`  env operand (`FOO=bar`)
+  // A `(?!git\b)` guard on the arg-consuming forms prevents swallowing the `git` token
+  // itself; alternatives are ordered specific-first and backtracking resolves the rest.
+  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
+  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
+  const wrapArg = /(?:command|builtin|exec)\s+/.source;
+  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
+  // Allow an optional path prefix on git itself: `/usr/bin/git`, `/bin/git`, etc. The
+  // executable must END in `/git` so that a path ARGUMENT to another program (e.g.
+  // `node "/tmp/git commit test.mjs"`) is NOT matched — there git is not the invoked
+  // command (first token is `node`, "git commit" lives inside a quoted arg).
+  const gitExe = /(?:\S*\/)?git\b/.source;
+  // Then allow git's own flags (git -c k=v, git -C dir, --no-pager, etc.) before the sub.
+  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+  for (const sub of ["commit", "push"]) {
+    if (new RegExp(boundary + prefix + gitExe + gitFlags + `\\s+${sub}\\b`).test(stripped)) {
+      enfLog.debug("git_invocation_detected", sub);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Inject `--signoff` into the REAL git-commit invocation only (DCO enforcement).
+ *
+ * BUG THIS FIXES: a naive `command.replace(/\bgit\b...commit\b/, ...)` injects
+ * `--signoff` into the FIRST `git ... commit` substring anywhere in the command —
+ * including a `git commit` mention INSIDE an echo/printf message body before a pipe
+ * (e.g. `echo -e "...sudo -u root git commit..." | git commit -F -`), corrupting the
+ * commit MESSAGE instead of the real invocation. This mirrors the trailer-injection
+ * scoping in handleCommitTrailer.
+ *
+ * Behavior:
+ *   - Pattern A (echo/printf "..." | git commit -F -): the real invocation is AFTER
+ *     the last pipe. Inject into the gitPart only; never touch the echo/message body.
+ *   - Pattern B (bare `git commit ...`, `git commit -m/-F ...` with no commit pipe):
+ *     inject `--signoff` right after the `commit` token of the real invocation, using
+ *     the same command-position/prefix boundary logic as isRealGitCommitOrPush so a
+ *     `git commit` substring inside a quoted arg is never matched.
+ *   - If the real invocation already has `--signoff` or `-s` -> return unchanged.
+ *   - If there is no real git-commit invocation -> return unchanged.
+ */
+export function injectSignoff(command: string): string {
+  const SIGNOFF_RE = /(?:^|\s)--signoff(?:\s|$)/;
+  const SHORT_S_RE = /(?:^|\s)-s(?:\s|$)/;
+  // Reuse the exact command-position/prefix construction from isRealGitCommitOrPush,
+  // capturing everything up to and including the `commit` token so we can insert
+  // ` --signoff` immediately after it via a NON-global replace (first real match only).
+  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
+  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
+  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
+  const wrapArg = /(?:command|builtin|exec)\s+/.source;
+  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
+  const gitExe = /(?:\S*\/)?git\b/.source;
+  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+  const commitRe = new RegExp(`(${boundary}${prefix}${gitExe}${gitFlags}\\s+commit\\b)`);
+
+  // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe)
+  const pipeIdx = command.lastIndexOf("|");
+  if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+    const echoPart = command.slice(0, pipeIdx);
+    const gitPart = command.slice(pipeIdx);
+    if (SIGNOFF_RE.test(gitPart) || SHORT_S_RE.test(gitPart)) return command;
+    if (!commitRe.test(gitPart)) return command;
+    enfLog.debug("injectSignoff", "pattern A (piped git commit -F -)");
+    return echoPart + gitPart.replace(commitRe, "$1 --signoff");
+  }
+
+  // Pattern B: bare / inline git commit (no message pipe)
+  const m = commitRe.exec(command);
+  if (!m) return command;
+  // Scope the "already signed" check to the MATCHED real invocation ONLY, not the
+  // whole command. The invocation region runs from the start of the match to the
+  // next UNQUOTED statement boundary (; && || | & newline) or end-of-string.
+  const regionStart = m.index;
+  let regionEnd = command.length;
+  {
+    // Escape-aware quote-state scan. In POSIX sh, backslash escapes the next char
+    // ONLY inside double quotes (and unquoted); inside single quotes a backslash is
+    // literal and only a `'` ends the string. A `\"` inside a double-quoted string is
+    // an escaped quote (stays inside), and `\\` is an escaped backslash (does not
+    // escape the following quote). Getting this right prevents a `\"` from wrongly
+    // toggling quote state — which would let an inner `;`/`&`/`|` be seen as a real
+    // statement boundary (or hide a real one) and miscompute the invocation region.
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = regionStart; i < command.length; i++) {
+      const c = command[i];
+      if (inSingle) {
+        // Single quotes: no backslash processing; only `'` terminates.
+        if (c === "'") inSingle = false;
+        continue;
+      }
+      if (inDouble) {
+        // Double quotes: `\` escapes the next char (e.g. \" or \\) — skip it.
+        if (c === "\\") { i++; continue; }
+        if (c === '"') inDouble = false;
+        continue;
+      }
+      // Unquoted: `\` escapes the next char so an escaped quote does not open a string.
+      if (c === "\\") { i++; continue; }
+      if (c === "'") { inSingle = true; continue; }
+      if (c === '"') { inDouble = true; continue; }
+      if (c === "\n" || c === ";" || c === "&" || c === "|") { regionEnd = i; break; }
+    }
+  }
+  // Strip quoted substrings from the region so a `-s`/`--signoff` INSIDE the
+  // -m/-F message value (e.g. `-m "fix -s bug"`) is NOT treated as already-signed.
+  // Escape-aware: a `\"` inside a double-quoted span does NOT terminate it, so an
+  // inner `-s`/`--signoff` fenced by escaped quotes (`-m "a \" -s \" b"`) is still
+  // stripped away — otherwise it would leak out as an unquoted flag and suppress
+  // injection on an unsigned real commit (DCO bypass). Double-quoted spans are
+  // stripped FIRST so the single-quote regex cannot misfire on an apostrophe that
+  // lives literally inside a double-quoted string. Single quotes do NOT process
+  // backslashes in POSIX sh, so their regex stays escape-agnostic.
+  const region = command
+    .slice(regionStart, regionEnd)
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/'[^']*'/g, "''");
+  if (SIGNOFF_RE.test(region) || SHORT_S_RE.test(region)) return command;
+  enfLog.debug("injectSignoff", "pattern B (inline git commit)");
+  return command.replace(commitRe, "$1 --signoff");
 }
 
 /** Detect git add --force / -f (including combined short options like -fn).
