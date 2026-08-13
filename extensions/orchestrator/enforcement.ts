@@ -35,6 +35,7 @@ import {
   checkTempFileEnforcement,
   hasGitAddBulk,
   hasGitAddForce,
+  isRealGitCommitOrPush,
   isReadOnlyStatement,
   isRmInProjectTmp,
   normalizeForRepeatCheck,
@@ -524,9 +525,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const remoteCheck = checkRemoteExecBlock(cmdLower);
     if (remoteCheck) return remoteCheck;
 
-    // Enforce git commit/push only via git-expert agent
+    // Enforce git commit/push only via git-expert agent.
+    // Use isRealGitCommitOrPush (heredoc-stripped + command-position aware) so that
+    // file CONTENT / string args / paths that merely MENTION "git commit" do not trip
+    // the guard (BUG #3). Only genuine git commit/push invocations are blocked.
     if (process.env.PI_AGENT_NAME !== "git-expert") {
-      if (hasGitSub(command, "commit") || hasGitSub(command, "push")) {
+      if (isRealGitCommitOrPush(command)) {
         return {
           block: true,
           reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
