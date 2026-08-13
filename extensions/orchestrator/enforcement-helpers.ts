@@ -695,18 +695,30 @@ export function injectSignoff(command: string): string {
   const regionStart = m.index;
   let regionEnd = command.length;
   {
+    // Escape-aware quote-state scan. In POSIX sh, backslash escapes the next char
+    // ONLY inside double quotes (and unquoted); inside single quotes a backslash is
+    // literal and only a `'` ends the string. A `\"` inside a double-quoted string is
+    // an escaped quote (stays inside), and `\\` is an escaped backslash (does not
+    // escape the following quote). Getting this right prevents a `\"` from wrongly
+    // toggling quote state — which would let an inner `;`/`&`/`|` be seen as a real
+    // statement boundary (or hide a real one) and miscompute the invocation region.
     let inSingle = false;
     let inDouble = false;
     for (let i = regionStart; i < command.length; i++) {
       const c = command[i];
       if (inSingle) {
+        // Single quotes: no backslash processing; only `'` terminates.
         if (c === "'") inSingle = false;
         continue;
       }
       if (inDouble) {
+        // Double quotes: `\` escapes the next char (e.g. \" or \\) — skip it.
+        if (c === "\\") { i++; continue; }
         if (c === '"') inDouble = false;
         continue;
       }
+      // Unquoted: `\` escapes the next char so an escaped quote does not open a string.
+      if (c === "\\") { i++; continue; }
       if (c === "'") { inSingle = true; continue; }
       if (c === '"') { inDouble = true; continue; }
       if (c === "\n" || c === ";" || c === "&" || c === "|") { regionEnd = i; break; }
@@ -714,9 +726,16 @@ export function injectSignoff(command: string): string {
   }
   // Strip quoted substrings from the region so a `-s`/`--signoff` INSIDE the
   // -m/-F message value (e.g. `-m "fix -s bug"`) is NOT treated as already-signed.
+  // Escape-aware: a `\"` inside a double-quoted span does NOT terminate it, so an
+  // inner `-s`/`--signoff` fenced by escaped quotes (`-m "a \" -s \" b"`) is still
+  // stripped away — otherwise it would leak out as an unquoted flag and suppress
+  // injection on an unsigned real commit (DCO bypass). Double-quoted spans are
+  // stripped FIRST so the single-quote regex cannot misfire on an apostrophe that
+  // lives literally inside a double-quoted string. Single quotes do NOT process
+  // backslashes in POSIX sh, so their regex stays escape-agnostic.
   const region = command
     .slice(regionStart, regionEnd)
-    .replace(/"[^"]*"/g, '""')
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
     .replace(/'[^']*'/g, "''");
   if (SIGNOFF_RE.test(region) || SHORT_S_RE.test(region)) return command;
   enfLog.debug("injectSignoff", "pattern B (inline git commit)");

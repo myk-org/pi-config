@@ -1543,6 +1543,32 @@ describe("injectSignoff", () => {
       const out = injectSignoff('git commit -m a; git commit --signoff -m b');
       assert.equal(out, 'git commit --signoff -m a; git commit --signoff -m b');
     });
+    // ── Escaped-quote message must NOT suppress injection (the DCO-bypass bug) ──
+    it('pattern B: escaped quotes with inner -s in message must NOT count as signed', () => {
+      const out = injectSignoff('git commit -m "say \\"done -s\\" now"');
+      assert.equal(out, 'git commit --signoff -m "say \\"done -s\\" now"');
+      // message text (incl escaped quotes and inner -s) unchanged; only commit signed
+      assert.ok(out.includes('"say \\"done -s\\" now"'));
+      assert.equal(out.match(/--signoff/g)?.length, 1);
+    });
+    it('pattern B: escaped quotes around --signoff typo must NOT count as signed', () => {
+      const out = injectSignoff('git commit -m "fix \\"--signoff\\" typo"');
+      assert.equal(out, 'git commit --signoff -m "fix \\"--signoff\\" typo"');
+      assert.ok(out.includes('"fix \\"--signoff\\" typo"'));
+    });
+    it('pattern B: escaped quotes fencing an inner -s must NOT count as signed', () => {
+      const out = injectSignoff('git commit -m "a \\" -s \\" b"');
+      assert.equal(out, 'git commit --signoff -m "a \\" -s \\" b"');
+    });
+    // ── region-boundary scan must be escape-aware / quote-aware ──
+    it('pattern B: unquoted-looking ; inside double-quoted message must NOT truncate region', () => {
+      const out = injectSignoff('git commit -m "a ; b -s"');
+      assert.equal(out, 'git commit --signoff -m "a ; b -s"');
+    });
+    it('pattern B: escaped quotes around an inner ; still inject', () => {
+      const out = injectSignoff('git commit -m "a \\"; b\\" c"');
+      assert.equal(out, 'git commit --signoff -m "a \\"; b\\" c"');
+    });
   });
 
   describe("MUST NOT change (already signed / not a real commit)", () => {
@@ -1553,6 +1579,9 @@ describe("injectSignoff", () => {
       'git commit -m x -s',
       'echo "run git commit later"',
       'node "/tmp/git commit test.mjs"',
+      // real -s / --signoff flag present alongside an escaped-quote message
+      'git commit -s -m "say \\"hi\\""',
+      'git commit --signoff -m "x \\"y\\" z"',
     ];
     for (const cmd of UNCHANGED) {
       it(`unchanged: ${JSON.stringify(cmd)}`, () => {
