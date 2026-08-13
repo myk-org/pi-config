@@ -143,9 +143,9 @@ Writing effective rules:
   blocks `curl | bash`, `eval $(curl)`, nested `$(bash -c "$(curl)")`,
   prefix assignments (`VAR=$(curl) cmd`), path-prefixed exec (`/bin/bash -c`).
   Uses variable-flow analysis: allows a safe `VAR=$(curl ...)` capture followed by an
-  UNRELATED interpreter/`eval` call (e.g. `code=$(curl ...); python3 -c '...'`), but still
+  UNRELATED interpreter/`eval` call (e.g. `code=$(curl ...); uv run python3 -c '...'`), but still
   blocks when the exec consumes the curl output — inline `$(curl)`, a captured var fed to
-  exec (`x=$(curl ...); python3 -c "$x"`), or a shell reading untrackable stdin/file input.
+  exec (`x=$(curl ...); uv run python3 -c "$x"`), or a shell reading untrackable stdin/file input.
 - Native `cli-*` / `acpx-*` providers: use `extensions/shared/create-runtime-provider.ts`
   (`createProvider` + `/login` + fetch/filter) — never legacy `registerProvider(name, bag)`
 

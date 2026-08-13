@@ -187,6 +187,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   const remoteExecReason = "\u26d4 Remote script execution is forbidden. Download the script first, audit it with security-auditor, then run if safe.";
   if (/\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(ba|c|da|[akz]|fi|tc)?sh\b/.test(cmdForExecCheck) ||
       /\b(curl|wget)\b.*\|(?!\|)\s*(?:sudo\s+(?:-\S+\s+)*|env\s+(?:-\S+\s+)*|uv\s+run\s+)*(?:\/\S+\/)*(python[23]?|perl|ruby|node|deno|bun)\b/.test(cmdForExecCheck)) {
+    enfLog.debug("remote_exec_block", "pipe");
     return { block: true, reason: remoteExecReason };
   }
   // Match curl/wget anywhere inside process substitution <(...), not just as first token
@@ -194,6 +195,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
   if (/\b(?:(?:ba|c|da|[akz]|fi|tc)?sh|python[23]?|perl|ruby|node|deno|bun)\b.*<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
       /\bsource\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck) ||
       /(?:^|[\s;&|])\.\s+<\((?:"[^"]*"|'[^']*'|[^)"'])*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+    enfLog.debug("remote_exec_block", "proc-sub");
     return { block: true, reason: remoteExecReason };
   }
   // Block when curl/wget is inside a command substitution AND an execution primitive
@@ -273,6 +275,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
         new RegExp(execPrefix + /eval(?:\s|$)/.source).test(cmdForExecCheck) ||
         new RegExp(execPrefix + pathPrefix + shellExec).test(cmdForExecCheck) ||
         new RegExp(execPrefix + pathPrefix + interpExec).test(cmdForExecCheck))) {
+      enfLog.debug("remote_exec_block", "inline-sub");
       return { block: true, reason: remoteExecReason };
     }
     // (c) CONSERVATIVE VARIABLE-FLOW (SECURITY HARDENING): the previous logic only
@@ -292,6 +295,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       if (new RegExp(execPrefix + /eval\b/.source + dollarArg).test(cmdForExecCheck) ||
           new RegExp(execPrefix + pathPrefix + shellExec + dollarArg).test(cmdForExecCheck) ||
           new RegExp(execPrefix + pathPrefix + interpExec + dollarArg).test(cmdForExecCheck)) {
+        enfLog.debug("remote_exec_block", "var-flow");
         return { block: true, reason: remoteExecReason };
       }
       // (d) UNTRACKABLE INPUT: when a curl capture exists, a shell/interpreter that reads
@@ -304,6 +308,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
       const interpStdin = /(?:python[23]?|perl|ruby|node|deno|bun)\s+<\(/.source;
       if (new RegExp(execPrefix + pathPrefix + shellStdin).test(cmdForExecCheck) ||
           new RegExp(execPrefix + pathPrefix + interpStdin).test(cmdForExecCheck)) {
+        enfLog.debug("remote_exec_block", "untrackable");
         return { block: true, reason: remoteExecReason };
       }
     }
@@ -315,6 +320,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     // Block env VAR=$(curl ...) cmd — env runs a command with the var, so curl output could influence execution
     // Note: [a-z_] without /i is fine — cmdLower (the parameter) is already lowercased
     if (/\benv\s+.*[a-z_]\w*=(?:\$\(|`).*\b(curl|wget)\b/.test(cmdForExecCheck)) {
+      enfLog.debug("remote_exec_block", "env-var-sub");
       return { block: true, reason: remoteExecReason };
     }
     // Strip safe assignment patterns at statement boundaries only.
@@ -329,6 +335,7 @@ export function checkRemoteExecBlock(cmdLower: string): EnforcementResult {
     const safeAssignment = /(?:^|(?<=[;&|\n({])\s*)(?:export\s+|declare\s+|local\s+|readonly\s+|typeset\s+)?[a-z_]\w*=(?:\$\((?:"[^"]*"|'[^']*'|(?!\$\()(?!`)[^)])*\)|`(?:(?!\$\()[^`])*`)(?=\s*(?:$|[;&|#\n)}]))/gi;
     const stripped = cmdForExecCheck.replace(safeAssignment, " ");
     if (/\$\(\s*\b(curl|wget)\b/.test(stripped) || /`\s*\b(curl|wget)\b/.test(stripped)) {
+      enfLog.debug("remote_exec_block", "bare-sub");
       return { block: true, reason: remoteExecReason };
     }
   }
@@ -601,7 +608,22 @@ export function isRealGitCommitOrPush(command: string): boolean {
   //   - sudo (with flags), env (with flags)
   //   - one-or-more VAR=value assignments
   //   - command / builtin / exec wrappers
-  const prefix = /(?:(?:sudo|env)(?:\s+-\S+)*\s+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+|(?:command|builtin|exec)\s+)*/.source;
+  //
+  // SUDO/ENV ARG BYPASS FIX (finding #3): real sudo/env flags TAKE A FOLLOWING
+  // ARGUMENT (`sudo -u root git commit`, `sudo -g grp git commit`, `env -u HOME git
+  // commit`), and env accepts VAR=value operands (`env FOO=bar git commit`). The old
+  // `(?:\s+-\S+)*` only consumed bare flags, so the arg token stopped the prefix early
+  // and these BYPASSED the guard. We now consume, after `sudo`/`env`, a sequence of:
+  //   - `--long ARG` long option taking an argument (`--user root`)
+  //   - `-x ARG`     short option taking an argument (`-u root`, `-g grp`)
+  //   - `-\S+`       bare flag (`-n`, `--preserve-env`, combined `-xyz`)
+  //   - `VAR=value`  env operand (`FOO=bar`)
+  // A `(?!git\b)` guard on the arg-consuming forms prevents swallowing the `git` token
+  // itself; alternatives are ordered specific-first and backtracking resolves the rest.
+  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
+  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
+  const wrapArg = /(?:command|builtin|exec)\s+/.source;
+  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
   // Allow an optional path prefix on git itself: `/usr/bin/git`, `/bin/git`, etc. The
   // executable must END in `/git` so that a path ARGUMENT to another program (e.g.
   // `node "/tmp/git commit test.mjs"`) is NOT matched — there git is not the invoked
@@ -611,6 +633,7 @@ export function isRealGitCommitOrPush(command: string): boolean {
   const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
   for (const sub of ["commit", "push"]) {
     if (new RegExp(boundary + prefix + gitExe + gitFlags + `\\s+${sub}\\b`).test(stripped)) {
+      enfLog.debug("git_invocation_detected", sub);
       return true;
     }
   }

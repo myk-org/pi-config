@@ -1129,6 +1129,30 @@ describe("isRealGitCommitOrPush", () => {
     assert.ok(isRealGitCommitOrPush("/bin/git push"));
   });
 
+  // SUDO/ENV ARG BYPASS (finding #3): sudo/env flags that TAKE an argument used to
+  // stop the prefix early and BYPASS the guard. These MUST BLOCK.
+  it("blocks sudo -u root git commit (flag-with-arg)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo -u root git commit"));
+  });
+  it("blocks sudo -u root git push (flag-with-arg)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo -u root git push"));
+  });
+  it("blocks sudo -g grp git commit (flag-with-arg)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo -g grp git commit"));
+  });
+  it("blocks env -u HOME git commit (env unset flag-with-arg)", () => {
+    assert.ok(isRealGitCommitOrPush("env -u HOME git commit"));
+  });
+  it("blocks env FOO=bar git commit (env VAR=val operand)", () => {
+    assert.ok(isRealGitCommitOrPush("env FOO=bar git commit"));
+  });
+  it("blocks sudo --preserve-env git commit (long flag)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo --preserve-env git commit"));
+  });
+  it("blocks sudo -u root -g grp git push (multiple flag-with-arg)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo -u root -g grp git push"));
+  });
+
   // False-positives — MUST ALLOW
   it("does NOT block heredoc body mentioning 'git commit'", () => {
     assert.ok(!isRealGitCommitOrPush("cat > /tmp/x.mjs << 'EOF'\nconst m = \"git commit -m foo\";\nEOF"));
@@ -1152,6 +1176,20 @@ describe("isRealGitCommitOrPush", () => {
   // `node "/tmp/git commit test.mjs"` (first token is node, git is a path arg => allow).
   it("does NOT block path arg ending elsewhere: node /tmp/git-stuff/run.mjs commit", () => {
     assert.ok(!isRealGitCommitOrPush('node /tmp/git-stuff/run.mjs commit'));
+  });
+  // SUDO/ENV ARG BYPASS FIX must NOT over-block: these mention "git" but are NOT
+  // `git commit`/`git push` invocations, or run a different program entirely.
+  it("does NOT block sudo apt install git (git is a package arg, not the command)", () => {
+    assert.ok(!isRealGitCommitOrPush("sudo apt install git"));
+  });
+  it("does NOT block env FOO=bar node x.js (env runs node, no git)", () => {
+    assert.ok(!isRealGitCommitOrPush("env FOO=bar node x.js"));
+  });
+  it("does NOT block sudo -u root node repro.mjs (sudo runs node, no git)", () => {
+    assert.ok(!isRealGitCommitOrPush("sudo -u root node repro.mjs"));
+  });
+  it("does NOT block echo 'run git commit later' (string arg)", () => {
+    assert.ok(!isRealGitCommitOrPush("echo \"run git commit later\""));
   });
 });
 
@@ -1530,6 +1568,13 @@ describe("ADVERSARIAL — confirmed bypasses MUST BLOCK, legit cases MUST ALLOW"
       "/usr/bin/git commit",
       "GIT_DIR=x git commit",
       "command git commit",
+      // SUDO/ENV ARG BYPASS (finding #3) — flag-with-arg / env operands
+      "sudo -u root git commit",
+      "sudo -u root git push",
+      "sudo -g grp git commit",
+      "env -u HOME git commit",
+      "env FOO=bar git commit",
+      "sudo --preserve-env git commit",
     ];
     const MUST_ALLOW = [
       'echo "run git commit later"',
@@ -1537,6 +1582,9 @@ describe("ADVERSARIAL — confirmed bypasses MUST BLOCK, legit cases MUST ALLOW"
       'node "/tmp/git commit test.mjs"',
       'echo "please git push soon"',
       "node /tmp/repro.mjs",
+      // MUST NOT over-block: git is a package arg / different program
+      "sudo apt install git",
+      "env FOO=bar node x.js",
     ];
     for (const cmd of MUST_BLOCK) {
       it(`BLOCKS: ${JSON.stringify(cmd)}`, () => {
