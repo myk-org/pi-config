@@ -206,11 +206,16 @@ describe("lookupModelsDevModel", () => {
     assert.equal(lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "composer-2.5"), undefined);
   });
 
-  it("reuses catalog index across repeated lookups", () => {
-    const first = lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
-    const second = lookupModelsDevModel(SAMPLE_CATALOG, "claude", "claude-4.6-opus-high");
-    assert.equal(first?.modelId, "grok-4.6");
-    assert.equal(second?.modelId, "claude-opus-4-6");
+  it("second cursor lookup hits same catalog index entry", () => {
+    lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
+    const again = lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
+    assert.equal(again?.modelId, "grok-4.6");
+  });
+
+  it("second claude lookup hits same catalog index entry", () => {
+    lookupModelsDevModel(SAMPLE_CATALOG, "claude", "claude-4.6-opus-high");
+    const again = lookupModelsDevModel(SAMPLE_CATALOG, "claude", "claude-4.6-opus-high");
+    assert.equal(again?.modelId, "claude-opus-4-6");
   });
 });
 
