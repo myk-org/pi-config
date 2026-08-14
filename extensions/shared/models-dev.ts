@@ -7,7 +7,8 @@
  * from models.dev `reasoning`.
  */
 
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "./logger.js";
@@ -78,10 +79,19 @@ function cacheAgeMs(path: string, nowMs: number): number | null {
 
 function writeCache(path: string, catalog: ModelsDevCatalog): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(catalog)}\n`, "utf8");
-  renameSync(tmp, path);
-  log.info("models.dev cache written", path);
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  log.debug("models.dev cache write tmp", tmp);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(catalog)}\n`, "utf8");
+    renameSync(tmp, path);
+    log.info("models.dev cache written", path);
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // rename consumed tmp, or write never created it
+    }
+  }
 }
 
 async function fetchCatalog(
@@ -282,6 +292,36 @@ function providerOrder(agent: string, catalog: ModelsDevCatalog): string[] {
   return [...first, ...rest];
 }
 
+type ProviderModelIndex = Map<string, { modelId: string; entry: ModelsDevModel }>;
+type CatalogLookupIndex = Map<string, ProviderModelIndex>;
+
+const catalogIndexCache = new WeakMap<ModelsDevCatalog, CatalogLookupIndex>();
+
+function catalogLookupIndex(catalog: ModelsDevCatalog): CatalogLookupIndex {
+  const cached = catalogIndexCache.get(catalog);
+  if (cached) {
+    log.debug("models.dev catalog index reuse", cached.size, "providers");
+    return cached;
+  }
+  const index: CatalogLookupIndex = new Map();
+  for (const [provider, block] of Object.entries(catalog)) {
+    const models = block?.models;
+    if (!models) continue;
+    const byKey: ProviderModelIndex = new Map();
+    for (const [modelId, entry] of Object.entries(models)) {
+      const hit = { modelId, entry };
+      const idKey = modelId.toLowerCase();
+      if (!byKey.has(idKey)) byKey.set(idKey, hit);
+      const alt = entry.id?.toLowerCase();
+      if (alt && !byKey.has(alt)) byKey.set(alt, hit);
+    }
+    index.set(provider, byKey);
+  }
+  catalogIndexCache.set(catalog, index);
+  log.debug("models.dev catalog index built", index.size, "providers");
+  return index;
+}
+
 export function lookupModelsDevModel(
   catalog: ModelsDevCatalog | null | undefined,
   agent: string,
@@ -289,15 +329,15 @@ export function lookupModelsDevModel(
 ): ModelsDevHit | undefined {
   if (!catalog) return undefined;
   const keys = modelsDevLookupKeys(agent, discoveredId);
+  const index = catalogLookupIndex(catalog);
   for (const provider of providerOrder(agent, catalog)) {
-    const models = catalog[provider]?.models;
-    if (!models) continue;
+    const byKey = index.get(provider);
+    if (!byKey) continue;
     for (const key of keys) {
-      for (const [modelId, entry] of Object.entries(models)) {
-        if (modelId.toLowerCase() === key || entry.id?.toLowerCase() === key) {
-          log.debug("models.dev hit", agent, discoveredId, "->", provider, modelId);
-          return { provider, modelId, entry };
-        }
+      const hit = byKey.get(key);
+      if (hit) {
+        log.debug("models.dev hit", agent, discoveredId, "->", provider, hit.modelId);
+        return { provider, modelId: hit.modelId, entry: hit.entry };
       }
     }
   }

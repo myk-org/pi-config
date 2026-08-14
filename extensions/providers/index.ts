@@ -540,6 +540,7 @@ export default async function (pi: ExtensionAPI) {
   // Fire-and-forget restore so session_start is not blocked by retries (#753).
   // Omit registeredProviders: cli/acpx-only lists falsely fail-fast native defaults.
   const applyCliAcpxThinking = (model: { id: string; provider: string } | undefined) => {
+    log.debug("applyCliAcpxThinking", model?.provider, model?.id);
     try {
       applyThinkingLevelFromModel(
         model,

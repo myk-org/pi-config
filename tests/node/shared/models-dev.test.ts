@@ -60,7 +60,7 @@ describe("modelsDevCachePath", () => {
 });
 
 describe("loadModelsDevCatalog", () => {
-  it("fetches and writes cache when file is missing", async () => {
+  it("fetches catalog when cache file is missing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
     const cachePath = join(dir, "models.dev.json");
     let fetches = 0;
@@ -74,6 +74,40 @@ describe("loadModelsDevCatalog", () => {
       });
       assert.equal(fetches, 1);
       assert.equal(catalog?.xai?.models?.["grok-4.6"]?.limit?.context, 500_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes cache file when catalog fetch succeeds", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const cachePath = join(dir, "models.dev.json");
+    try {
+      await loadModelsDevCatalog({
+        cachePath,
+        fetchImpl: async () => catalogResponse(SAMPLE_CATALOG),
+      });
+      const disk = JSON.parse(readFileSync(cachePath, "utf8"));
+      assert.equal(disk.xai.models["grok-4.6"].id, "grok-4.6");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("concurrent refreshes leave a valid cache file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const cachePath = join(dir, "models.dev.json");
+    try {
+      await Promise.all([
+        loadModelsDevCatalog({
+          cachePath,
+          fetchImpl: async () => catalogResponse(SAMPLE_CATALOG),
+        }),
+        loadModelsDevCatalog({
+          cachePath,
+          fetchImpl: async () => catalogResponse(SAMPLE_CATALOG),
+        }),
+      ]);
       const disk = JSON.parse(readFileSync(cachePath, "utf8"));
       assert.equal(disk.xai.models["grok-4.6"].id, "grok-4.6");
     } finally {
@@ -171,6 +205,13 @@ describe("lookupModelsDevModel", () => {
   it("returns undefined for unknown composer ids", () => {
     assert.equal(lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "composer-2.5"), undefined);
   });
+
+  it("reuses catalog index across repeated lookups", () => {
+    const first = lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
+    const second = lookupModelsDevModel(SAMPLE_CATALOG, "claude", "claude-4.6-opus-high");
+    assert.equal(first?.modelId, "grok-4.6");
+    assert.equal(second?.modelId, "claude-opus-4-6");
+  });
 });
 
 describe("thinkingLevelFromDiscoveredId", () => {
@@ -189,8 +230,11 @@ describe("thinkingLevelFromDiscoveredId", () => {
     assert.equal(thinkingLevelFromDiscoveredId("grok-4.6[effort=high]"), "high");
   });
 
-  it("maps trailing -off and -max", () => {
+  it("maps trailing -off suffix to off", () => {
     assert.equal(thinkingLevelFromDiscoveredId("cursor-grok-4.6-off"), "off");
+  });
+
+  it("maps trailing -max suffix to max", () => {
     assert.equal(thinkingLevelFromDiscoveredId("cursor-grok-4.6-max"), "max");
   });
 
@@ -292,7 +336,7 @@ describe("fillRuntimeModelFromCatalog", () => {
     assert.equal(filled.thinkingLevelMap?.xhigh, "xhigh");
   });
 
-  it("keeps explicit fields and bracket context= over catalog", () => {
+  it("uses bracket context= over catalog", () => {
     const filled = fillRuntimeModelFromCatalog(
       {
         id: "cursor:grok-4.6[context=200k]",
@@ -300,13 +344,27 @@ describe("fillRuntimeModelFromCatalog", () => {
         api: "acpx",
         provider: "acpx-cursor",
         contextWindow: undefined,
-        reasoning: false,
       },
       SAMPLE_CATALOG,
       "cursor",
       "grok-4.6[context=200k,effort=high]",
     );
     assert.equal(filled.contextWindow, 200_000);
+  });
+
+  it("keeps explicit reasoning false over catalog", () => {
+    const filled = fillRuntimeModelFromCatalog(
+      {
+        id: "cursor:grok-4.6[context=200k]",
+        name: "Grok 4.6 (cursor)",
+        api: "acpx",
+        provider: "acpx-cursor",
+        reasoning: false,
+      },
+      SAMPLE_CATALOG,
+      "cursor",
+      "grok-4.6[context=200k,effort=high]",
+    );
     assert.equal(filled.reasoning, false);
   });
 
@@ -329,18 +387,23 @@ describe("fillRuntimeModelFromCatalog", () => {
 });
 
 describe("mapCli/mapAcpx with catalog", () => {
-  it("fills cli-cursor grok from catalog and leaves unmatched models at defaults", () => {
+  it("fills cli-cursor grok from catalog", () => {
     const models = mapCliDiscoveredModels(
       "cursor",
-      [
-        { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
-        { id: "composer-2.5", name: "Composer 2.5" },
-      ],
+      [{ id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" }],
       SAMPLE_CATALOG,
     );
     const grok = models.find((m) => m.id === "cursor:cursor-grok-4.6-high");
-    const composer = models.find((m) => m.id === "cursor:composer-2.5");
     assert.equal(grok?.contextWindow, 500_000);
+  });
+
+  it("leaves unmatched cli models at defaults", () => {
+    const models = mapCliDiscoveredModels(
+      "cursor",
+      [{ id: "composer-2.5", name: "Composer 2.5" }],
+      SAMPLE_CATALOG,
+    );
+    const composer = models.find((m) => m.id === "cursor:composer-2.5");
     assert.equal(composer?.contextWindow, 200_000);
   });
 
