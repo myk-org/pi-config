@@ -1758,4 +1758,17 @@ describe("injectGhBodySignature", () => {
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, `gh pr edit 1 --body "updated${FOOTER}"`);
   });
+
+  it("does not inject into an unrelated heredoc before gh pr create", () => {
+    const cmd = "cat <<EOF\nfoo\nEOF\ngh pr create --title t --body \"x\"";
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.ok(out.includes("cat <<EOF\nfoo\nEOF\n"));
+    assert.equal(out, `cat <<EOF\nfoo\nEOF\ngh pr create --title t --body "x${FOOTER}"`);
+  });
+
+  it("appends footer after escaped quotes inside double-quoted --body", () => {
+    const cmd = 'gh pr create --title t --body "say \\"hi\\" there"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr create --title t --body "say \\"hi\\" there${FOOTER}"`);
+  });
 });
