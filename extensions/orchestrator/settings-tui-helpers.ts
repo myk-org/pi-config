@@ -223,13 +223,82 @@ export function resolveSecretPrefill(
 
 // ── Provider-filtered model items ───────────────────────────────
 
+export type ModelSelectItem = { value: string; label: string; description?: string };
+
+export type ModelPickerPairedSettings = {
+  agent_provider?: string;
+  internal_operations_provider?: string;
+};
+
 /** Filter model SelectItems by provider. Returns all models if provider is empty/undefined. */
 export function filterModelsByProvider(
-  allModels: Array<{ value: string; label: string; description?: string }>,
+  allModels: ModelSelectItem[],
   provider?: string,
-): Array<{ value: string; label: string; description?: string }> {
+): ModelSelectItem[] {
   if (!provider) return allModels;
   return allModels.filter((m) => m.description === provider);
+}
+
+/** Registry provider hardwired for image_model picker (no image_provider setting). */
+export const IMAGE_MODEL_PROVIDER = "google";
+
+/**
+ * Registry provider used to filter the model picker for a settings key.
+ * image_model is hardwired to IMAGE_MODEL_PROVIDER (no image_provider setting).
+ */
+export function resolveModelPickerProvider(
+  key: string,
+  paired: ModelPickerPairedSettings = {},
+): string | undefined {
+  if (key === "image_model") return IMAGE_MODEL_PROVIDER;
+  if (key === "agent_model") {
+    const p = paired.agent_provider?.trim();
+    return p || undefined;
+  }
+  if (key === "internal_operations_model") {
+    const p = paired.internal_operations_provider?.trim();
+    return p || undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Models shown in the settings TUI picker for a key.
+ * image_model: IMAGE_MODEL_PROVIDER-only — never falls back to all providers (empty list if none).
+ * agent_model / internal_operations_model: fall back to all models when filter is empty.
+ */
+export function resolveModelPickerItems(
+  key: string,
+  allModels: ModelSelectItem[],
+  provider?: string,
+): ModelSelectItem[] {
+  // image_model is always google-filtered — ignore caller provider (even truthy non-google)
+  const effectiveProvider = key === "image_model" ? IMAGE_MODEL_PROVIDER : provider;
+  const filtered = filterModelsByProvider(allModels, effectiveProvider);
+  if (key === "image_model") return filtered;
+  return filtered.length > 0 ? filtered : allModels;
+}
+
+/**
+ * Decide picker vs free-text for a model settings key.
+ * Call at submenu-open time (not build time) so paired provider changes are fresh.
+ * image_model with an empty google list → free-text input (never show all providers).
+ */
+export type ModelKeySubmenu =
+  | { mode: "picker"; models: ModelSelectItem[]; provider?: string }
+  | { mode: "input"; provider?: string };
+
+export function resolveModelKeySubmenu(
+  key: string,
+  allModels: ModelSelectItem[],
+  paired: ModelPickerPairedSettings = {},
+): ModelKeySubmenu {
+  const provider = resolveModelPickerProvider(key, paired);
+  const models = resolveModelPickerItems(key, allModels, provider);
+  if (key === "image_model" && models.length === 0) {
+    return { mode: "input", provider };
+  }
+  return { mode: "picker", models, provider };
 }
 
 // ── Source glyph (colored) ──────────────────────────────────────

@@ -45,7 +45,9 @@ Answer the question, then resume the next unchecked task immediately — the per
 ## Integration & Key Rules
 
 Task tracking works alongside existing workflow rules — include issue-first, code review, and documentation steps as individual tasks.
+{{IF:task_reminder_enabled}}
 Tasks are code-enforced (reminders after 4+ ignored turns).
+{{/IF}}
 Never abandon tasks — if scope changes, use `TaskUpdate` with `status: "deleted"` to remove obsolete tasks; the task list is your contract.
 
 ---

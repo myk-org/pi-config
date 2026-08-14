@@ -42,8 +42,9 @@ Empty / unset → extension registers nothing.
      used), force next turn to re-seed from pi `context.messages` (other
      concurrent pi sessions in the same cwd are kept)
    - `reason=reload`: keep markers so CLI `--resume` continues
-8. On `session_shutdown`: stop reaper, clear in-memory state (disk markers kept
-   for `/reload` resume)
+8. On `session_shutdown`: stop reaper, clear AgentState / in-memory maps, and
+   reset providers `initialized` so the next factory invocation re-registers
+   (needed for `/new`|`/resume`|`/fork`; disk markers kept for `/reload` resume)
 
 `pi --help` / `pi --version` (and `-h` / `-v`) still load extensions; both
 `cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
@@ -69,8 +70,61 @@ restart.
 show again via filter/ambient. `/login` only stores the credential; model refresh
 rediscovers.
 
-**After `session_shutdown`** → `agents` cleared; models stay hidden until
-`/reload` or restart recreates AgentState (PATH restore alone is not enough).
+**After `session_shutdown`** → AgentState / instance maps cleared and
+`initialized` reset. The next extension factory call (after `/new`|`/resume`|
+`/fork`) re-runs discovery + `registerProvider` so saved `cli-*` / `acpx-*`
+defaults remain available. PATH restore alone does not recreate AgentState;
+re-registration does.
+
+### Cold-start default restore (#753)
+
+pi `findInitialModel` needs both `getModel` and `hasConfiguredAuth`. Native
+`createProvider` registration does not provisionally mark auth configured, so a
+cold start can race: models are registered but `hasConfiguredAuth` is still
+false → wrong initial model even when agent `settings.json` has
+`defaultProvider` / `defaultModel`.
+
+Implementation: `extensions/providers/restore-default-model.ts`, hooked from
+`session_start` in `extensions/providers/index.ts` (fire-and-forget so startup
+is not blocked by retries). Provider-agnostic — any saved default is restored
+when gates pass (no hardcoded provider/model allowlists).
+
+**Settings:** Merged like pi `SettingsManager` — global
+(`PI_CODING_AGENT_DIR/settings.json` if set, else `~/.pi/agent/settings.json`)
+plus project `cwd/.pi/settings.json` (from `ctx.cwd`) **only when the project
+is trusted** (`ctx.isProjectTrusted()`); untrusted sessions use global defaults
+only. When trusted, project wins for `defaultProvider` / `defaultModel` /
+`enabledModels`. ExtensionContext has `cwd` but no `agentDir`.
+
+**Gate (must all pass):**
+
+1. Settings have both `defaultProvider` and `defaultModel` (non-empty)
+2. `session_start` `reason` is `startup` or `new` (skip `resume` / `fork` /
+   `reload`)
+3. Current model is missing **or** current provider/id ≠ saved default
+4. `process.argv` does not contain `--model`, `--provider`, or `--models`
+   (CLI override)
+5. Settings `enabledModels` is missing or empty (non-empty scopes models the
+   same way as `--models`; restore must not set an out-of-scope default)
+
+**Retry:** Up to 5 attempts × 100ms when the model is not yet resolvable
+(`registry.find` / `getAvailable` fallback) or `setModel` returns false
+(stale auth). Warns on exhaust for unresolvable **or** repeated `setModel`
+failure/throw. Production does **not**
+pass a `registeredProviders` list (a cli/acpx-only list would falsely
+fail-fast native defaults). Optional `registeredProviders` fail-fast remains
+for tests only. Does **not** fail-fast from `getAvailable()` missing the
+target — that API is auth-filtered and can omit the default during the #753
+race.
+
+**Live re-check:** Before each attempt (and again immediately before
+`setModel`), optional `getCurrentModel` (wired as `() => ctx.model`) aborts
+if current already matches the saved default, changed away from the
+`session_start` snapshot, or — when there was no initial model — any
+non-default live selection appears mid-retry (user intent).
+
+Complements #752 (`/new` re-register); does not replace an upstream
+provisional-auth fix.
 
 ## Model discovery (CLI only)
 
@@ -188,6 +242,7 @@ Operational logs go to **`~/.pi/logs/`** (never `console.*` — that leaks into 
 |------|----------|
 | `~/.pi/logs/cli-provider.log` | discovery, registration, resume recover, session reaper |
 | `~/.pi/logs/dreaming.log` | dream skip/sidecar notes, provenance merge, promotion/rebuild errors |
+| `~/.pi/logs/providers/` | `createLogger("providers")` — restore-default-model, initialized-guard, session_shutdown |
 
 Helper: `extensions/shared/file-logger.ts`
 

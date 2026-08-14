@@ -49,13 +49,18 @@ import { mapCliDiscoveredModels } from "../cli-provider/runtime-models.js";
 import { mapAcpxDiscoveredModels } from "../acpx-provider/runtime-models.js";
 import {
   startCliSessionReaper,
-  stopCliSessionReaper,
 } from "../cli-provider/session-reaper.js";
 import {
   readPiSessionIdFromManager,
 } from "../cli-provider/sessions.js";
 import { fileLog } from "../shared/file-logger.js";
 import { isCliAgentName } from "../cli-provider/providers.js";
+import {
+  isProvidersInitialized,
+  markProvidersInitialized,
+} from "./initialized-guard.js";
+import { restoreDefaultModelOnSessionStart } from "./restore-default-model.js";
+import { teardownProvidersOnSessionShutdown } from "./session-shutdown.js";
 
 const LOG_DOMAIN = "providers";
 const DISCOVERY_TIMEOUT_MS = 30_000;
@@ -71,7 +76,6 @@ const cliInstances = new Map<string, ProviderInstance>();
 const acpxInstances = new Map<string, ProviderInstance>();
 
 let projectCwd = "";
-let initialized = false;
 
 // ---------------------------------------------------------------------------
 // Configured Gates
@@ -276,9 +280,18 @@ export default async function (pi: ExtensionAPI) {
 
   // Idempotency guard — shims re-export this default, so it may be called
   // multiple times (cli-provider shim, acpx-provider shim, providers dir).
-  // Only run once per process.
-  if (initialized) return;
-  initialized = true;
+  // Only run once per session; session_shutdown resets so /new|/resume|/fork
+  // re-registers providers on the next factory invocation.
+  if (isProvidersInitialized()) {
+    log.debug(
+      "providers factory early-return: already initialized (same-session double-load)",
+    );
+    return;
+  }
+  markProvidersInitialized();
+  log.debug(
+    "providers factory: proceeding after reset / first load — re-entering discovery",
+  );
 
   const versionCheck = checkMinPiVersion();
   if (!versionCheck.ok && versionCheck.installed !== null) {
@@ -495,7 +508,8 @@ export default async function (pi: ExtensionAPI) {
   // Run CLI and ACPX discovery concurrently
   await Promise.all([discoverAndRegisterCli(), discoverAndRegisterAcpx()]);
 
-  // Show discovery summary on session start
+  // Show discovery summary on session start; restore saved default model when
+  // findInitialModel raced hasConfiguredAuth false → wrong initial model (#753).
   const providerSummaryParts: string[] = [];
   for (const [agent, inst] of cliInstances) {
     const count = inst.snapshot.getSnapshot().models.length;
@@ -505,22 +519,68 @@ export default async function (pi: ExtensionAPI) {
     const count = inst.snapshot.getSnapshot().models.length;
     providerSummaryParts.push(`acpx-${agent} (${count})`);
   }
-  if (providerSummaryParts.length > 0) {
-    pi.on("session_start", (_event, ctx) => {
-      if (!ctx.hasUI) return;
+
+  // Fire-and-forget restore so session_start is not blocked by retries (#753).
+  // Omit registeredProviders: cli/acpx-only lists falsely fail-fast native defaults.
+  pi.on("session_start", (event, ctx) => {
+    const reason = typeof event?.reason === "string" ? event.reason : "";
+    if (providerSummaryParts.length > 0 && ctx.hasUI) {
       try {
         ctx.ui.notify(`Providers: ${providerSummaryParts.join(", ")}`, "info");
-      } catch { /* stale ctx */ }
+      } catch (err) {
+        log.debug(
+          "providers notify skipped",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    // agentDir via PI_CODING_AGENT_DIR / ~/.pi/agent only (ctx has cwd, not agentDir).
+    // Merge global + cwd/.pi/settings.json (project wins) only when trusted —
+    // same gate as pi SettingsManager (ctx.isProjectTrusted). Fail closed.
+    const cwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
+    let projectTrusted = false;
+    try {
+      projectTrusted = typeof ctx.isProjectTrusted === "function"
+        ? ctx.isProjectTrusted() === true
+        : false;
+    } catch (err) {
+      log.debug(
+        "restore-default-model isProjectTrusted failed",
+        err instanceof Error ? err.message : String(err),
+      );
+      projectTrusted = false;
+    }
+    void restoreDefaultModelOnSessionStart({
+      ctx: {
+        model: ctx.model
+          ? { id: ctx.model.id, provider: String(ctx.model.provider) }
+          : undefined,
+        modelRegistry: ctx.modelRegistry,
+      },
+      reason,
+      cwd,
+      projectTrusted,
+      getCurrentModel: () =>
+        ctx.model
+          ? { id: ctx.model.id, provider: String(ctx.model.provider) }
+          : undefined,
+      setModel: (model) => pi.setModel(model as Model<any>),
+    }).catch((err) => {
+      log.warn(
+        "restore-default-model session_start error",
+        err instanceof Error ? err.message : String(err),
+      );
     });
-  }
+  });
 
   // ---------------------------------------------------------------------------
   // Shutdown
   // ---------------------------------------------------------------------------
   pi.on("session_shutdown", async () => {
-    stopCliSessionReaper();
-    await registry.teardownAll();
-    cliInstances.clear();
-    acpxInstances.clear();
+    await teardownProvidersOnSessionShutdown(
+      registry,
+      cliInstances,
+      acpxInstances,
+    );
   });
 }

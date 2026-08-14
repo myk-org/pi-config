@@ -104,7 +104,7 @@
     "group": "Dashboard"
   },
   "image_model": {
-    "description": "Gemini model ID for generate_image tool (empty = disabled)",
+    "description": "Gemini/Google image model for generate_image (Settings TUI picker filters to google; empty = disabled)",
     "type": "string",
     "env": "PI_IMAGE_MODEL",
     "default": "",

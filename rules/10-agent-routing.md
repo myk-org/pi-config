@@ -19,7 +19,7 @@
 | Debugging | `debugger` |
 | API docs | `api-documenter` |
 | External repo security audit | `security-auditor` |
-| External AI agents (cursor, codex, gemini, claude, copilot, etc.) | `/acpx-prompt` |
+| {{IF:external_ai_agents}}External AI agents (cursor, codex, gemini, claude, copilot, etc.){{/IF}} | {{IF:external_ai_agents}}`/acpx-prompt`{{/IF}} |
 | External library/framework docs (React, FastAPI, Django, etc.) | `docs-fetcher` |
 
 ## Routing by Intent, Not Tool

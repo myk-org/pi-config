@@ -49,6 +49,8 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ---
 
+{{IF:use_worktrees}}
+
 ## Multi-PR / Multi-Branch Work
 
 **NEVER switch branches in the main worktree** when working on multiple PRs — other agents may be running there.
@@ -60,6 +62,7 @@ git worktree remove .worktrees/pr-42  # when done
 ```
 
 ---
+{{/IF}}
 
 ## User Interaction
 

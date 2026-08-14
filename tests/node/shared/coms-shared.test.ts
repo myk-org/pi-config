@@ -329,4 +329,82 @@ describe("createDeferredProxy registerCommand", () => {
 		assert.equal(called, true);
 	});
 
+	it("sets coms_active flag on reload reactivation", async () => {
+		const { setComsActive, isComsActive } = await import("../../../extensions/shared/coms-active.js");
+		setComsActive(false);
+		assert.equal(isComsActive(), false);
+
+		const handlers: Array<(evt: any, ctx: any) => Promise<void>> = [];
+		const pi = {
+			registerCommand: () => {},
+			registerTool: () => {},
+			registerFlag: () => {},
+			getFlag: () => undefined,
+			on: (_event: string, handler: any) => {
+				handlers.push(handler);
+			},
+			appendEntry: () => {},
+		};
+		const state = makeState(false);
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.on("session_start", async () => {});
+
+		assert.equal(handlers.length, 1);
+		await handlers[0](
+			{ reason: "reload" },
+			{
+				sessionManager: {
+					getEntries: () => [
+						{ type: "custom", customType: "coms-state", data: { active: true, flags: {}, extra: {} } },
+					],
+				},
+			},
+		);
+		assert.equal(state.active, true);
+		assert.equal(isComsActive(), true);
+		setComsActive(false);
+	});
+
+	it("clears active state and persists on reload reactivation failure", async () => {
+		const { setComsActive, isComsActive } = await import("../../../extensions/shared/coms-active.js");
+		setComsActive(true);
+		assert.equal(isComsActive(), true);
+
+		const handlers: Array<(evt: any, ctx: any) => Promise<void>> = [];
+		const persisted: Array<{ key: string; data: any }> = [];
+		const pi = {
+			registerCommand: () => {},
+			registerTool: () => {},
+			registerFlag: () => {},
+			getFlag: () => undefined,
+			on: (_event: string, handler: any) => {
+				handlers.push(handler);
+			},
+			appendEntry: (key: string, data: any) => {
+				persisted.push({ key, data });
+			},
+		};
+		const state = makeState(true);
+		const proxy = createDeferredProxy(pi as any, state, "inactive", "coms-state");
+		proxy.on("session_start", async () => {
+			throw new Error("reactivate boom");
+		});
+
+		assert.equal(handlers.length, 1);
+		await handlers[0](
+			{ reason: "reload" },
+			{
+				sessionManager: {
+					getEntries: () => [
+						{ type: "custom", customType: "coms-state", data: { active: true, flags: {}, extra: {} } },
+					],
+				},
+			},
+		);
+		assert.equal(state.active, false);
+		assert.equal(isComsActive(), false);
+		assert.ok(persisted.some((p) => p.key === "coms-state" && p.data?.active === false));
+		setComsActive(false);
+	});
+
 });

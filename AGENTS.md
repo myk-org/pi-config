@@ -94,12 +94,19 @@ Rules load from 3 layers (later overrides earlier):
 
 Rules auto-load alphabetically. Changes take effect on next pi session.
 
+**Conditional assembly** — see `dev-docs/project-settings.md` (Rules assembly). Essentials:
+
+- `{{IF:key}}` / `{{IFNOT:key}}` — settings truthiness (`isSettingTruthy`: empty object/array falsy) or feature predicates (`coms_active`, `external_ai_agents`)
+- `{{IF:key==value}}` / `{{IF:key!=value}}` — literal compare
+- Frontmatter: `requires_setting` / `requires` (AND). Per-file conditionals then join then placeholders.
+
 Writing effective rules:
 
 - Fewer lines = more compliance. One sentence per concept.
 - Reserve MANDATORY/NEVER for data loss, security, or irreversible changes.
 - Use precise, scoped language — ambiguous rules get exploited.
 - Numbered checklists over flowcharts. Merge overlapping sub-sections.
+- Gate setting/feature-specific prose with `{{IF}}`/`{{IFNOT}}` or frontmatter so off settings do not inject dead tokens.
 
 ## When Adding a Prompt Template
 
@@ -126,6 +133,7 @@ Writing effective rules:
 - Extension commands: see `dev-docs/extension-commands.md`
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
+- Cold-start default model restore (#753): `startup`|`new` only; skips non-empty `enabledModels`; trusted project merge — see `dev-docs/cli-provider.md`
 - Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `dev-docs/cli-provider.md` Logging
 - Memory system: see `dev-docs/memory-architecture.md`
 - Enforcement honesty (code vs injected): see `dev-docs/enforcement-honesty-map.md`
@@ -135,7 +143,7 @@ Writing effective rules:
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
 - Settings CLI: `uv run myk-pi-tools settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
-- Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — resolved at prompt assembly time via `substituteSettingsPlaceholders`.
+- Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `dev-docs/project-settings.md`.
   Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
 - Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries
