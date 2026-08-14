@@ -33,6 +33,8 @@ import {
   getCachedBranch,
   clearBranchCache,
   seedBranchCacheForTests,
+  injectGhBodySignature,
+  isRealGhBodyCommand,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 // ── extractSubshells ──
@@ -1684,5 +1686,76 @@ describe("ADVERSARIAL — confirmed bypasses MUST BLOCK, legit cases MUST ALLOW"
         assert.ok(!isRealGitCommitOrPush(cmd), `expected ALLOW for: ${cmd}`);
       });
     }
+  });
+});
+
+const SIG = "Assisted-by: PI (cursor:cursor-grok-4.6-high)";
+const FOOTER = `\n\n---\n*${SIG}*`;
+
+describe("isRealGhBodyCommand", () => {
+  it("detects gh pr create at command boundary", () => {
+    assert.equal(isRealGhBodyCommand('gh pr create --title t --body "x"'), true);
+  });
+
+  it("detects gh issue create at command boundary", () => {
+    assert.equal(isRealGhBodyCommand('gh issue create --title t --body "x"'), true);
+  });
+
+  it("ignores gh pr create mentioned only inside a quoted string", () => {
+    assert.equal(isRealGhBodyCommand('echo "later run gh pr create"'), false);
+  });
+});
+
+describe("injectGhBodySignature", () => {
+  it("appends footer before heredoc closer on gh pr create", () => {
+    const cmd = "gh pr create --title \"t\" --body \"$(cat <<'EOF'\n## Summary\nhello\nEOF\n)\"";
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.ok(out.includes("## Summary\nhello"));
+    assert.match(out, /\n---\n\*Assisted-by: PI \(cursor:cursor-grok-4\.6-high\)\*\nEOF/);
+  });
+
+  it("appends footer before heredoc closer on gh issue create", () => {
+    const cmd = "gh issue create --title \"t\" --body \"$(cat <<'EOF'\n## Summary\nbug\nEOF\n)\"";
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.match(out, /\n---\n\*Assisted-by: PI \(cursor:cursor-grok-4\.6-high\)\*\nEOF/);
+  });
+
+  it("appends footer inside double-quoted --body on gh pr create", () => {
+    const cmd = 'gh pr create --title t --body "short body"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr create --title t --body "short body${FOOTER}"`);
+  });
+
+  it("appends footer inside single-quoted --body on gh issue create", () => {
+    const cmd = "gh issue create --title t --body 'short body'";
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh issue create --title t --body 'short body${FOOTER}'`);
+  });
+
+  it("skips when Assisted-by already present in body", () => {
+    const cmd = 'gh pr create --body "hello\n\n---\n*Assisted-by: PI (old)*"';
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+  });
+
+  it("leaves command unchanged when signature is empty", () => {
+    const cmd = 'gh pr create --body "x"';
+    assert.equal(injectGhBodySignature(cmd, ""), cmd);
+  });
+
+  it("leaves non-gh commands unchanged", () => {
+    const cmd = 'git commit -m "msg"';
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+  });
+
+  it("appends footer on gh pr comment --body", () => {
+    const cmd = 'gh pr comment 1 --body "thanks"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr comment 1 --body "thanks${FOOTER}"`);
+  });
+
+  it("appends footer on gh pr edit --body", () => {
+    const cmd = 'gh pr edit 1 --body "updated"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr edit 1 --body "updated${FOOTER}"`);
   });
 });

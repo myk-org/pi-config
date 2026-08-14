@@ -1,7 +1,9 @@
-"""Comment signature injection for AI-posted PR comments.
+"""Comment signature injection for AI-posted GitHub markdown bodies.
 
 Reads PI_COMMENT_SIGNATURE env var (set by the pi extension on session_start)
-and appends a signature line to comment bodies.
+and appends a signature line to comment / review bodies. `gh pr create` /
+`gh issue create` injection lives in the TS enforcement hook
+(`injectGhBodySignature`), not here.
 """
 
 from __future__ import annotations

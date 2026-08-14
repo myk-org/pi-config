@@ -28,7 +28,7 @@
     "group": "Git"
   },
   "comment_signature": {
-    "description": "Add Assisted-by: PI (model) signature to GitHub comments",
+    "description": "Add Assisted-by: PI (model) signature to GitHub PR/issue bodies and comments",
     "type": "bool",
     "default": false,
     "group": "Git"

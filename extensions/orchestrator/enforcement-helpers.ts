@@ -787,6 +787,79 @@ export function stripHeredocBodies(cmd: string): string {
 }
 
 /**
+ * True when `gh pr|issue create|comment|edit` is a real invocation (command
+ * boundary), not a mention inside a string/heredoc body.
+ */
+export function isRealGhBodyCommand(command: string): boolean {
+  const stripped = stripHeredocBodies(command);
+  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
+  const ghExe = /(?:\S*\/)?gh\b/.source;
+  const re = new RegExp(
+    boundary + ghExe + String.raw`\s+(?:pr|issue)\s+(?:create|comment|edit)\b`,
+  );
+  return re.test(stripped);
+}
+
+function commentSignatureFooter(signature: string): string {
+  return `\n\n---\n*${signature}*`;
+}
+
+function bodyAlreadySigned(text: string): boolean {
+  return /\*Assisted-by:/.test(text) || /(?:^|\n|\\n)Assisted-by:\s/.test(text);
+}
+
+/**
+ * Append the comment_signature footer to `gh pr|issue create|comment|edit`
+ * `--body` / heredoc payloads. Idempotent. Empty signature is a no-op.
+ */
+export function injectGhBodySignature(command: string, signature: string): string {
+  if (!signature) {
+    enfLog.debug("injectGhBodySignature skip empty signature");
+    return command;
+  }
+  if (!isRealGhBodyCommand(command)) {
+    enfLog.debug("injectGhBodySignature skip not a gh body command");
+    return command;
+  }
+  if (bodyAlreadySigned(command)) {
+    enfLog.debug("injectGhBodySignature skip already present");
+    return command;
+  }
+  const footer = commentSignatureFooter(signature);
+
+  const heredocRe = /<<(?:-)?\s*(['"]?)(\w+)\1[^\n]*\n([\s\S]*?)\n([ \t]*)\2\s*(?=\n|$)/g;
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = heredocRe.exec(command)) !== null) last = m;
+  if (last) {
+    const delim = last[2];
+    const indent = last[4] ?? "";
+    const closeToken = `\n${indent}${delim}`;
+    const closeIdx = last.index + last[0].lastIndexOf(closeToken);
+    if (closeIdx >= last.index) {
+      enfLog.debug("injectGhBodySignature heredoc", delim);
+      return command.slice(0, closeIdx) + footer + command.slice(closeIdx);
+    }
+  }
+
+  const bodyRe = /--body(?:=|\s+)(["'])([\s\S]*?)\1/;
+  const bm = bodyRe.exec(command);
+  if (bm && bm.index !== undefined) {
+    const payload = bm[2];
+    if (payload.startsWith("$(")) {
+      enfLog.warn("injectGhBodySignature --body command subst without heredoc match");
+      return command;
+    }
+    const insertAt = bm.index + bm[0].length - 1;
+    enfLog.debug("injectGhBodySignature --body quoted");
+    return command.slice(0, insertAt) + footer + command.slice(insertAt);
+  }
+
+  enfLog.debug("injectGhBodySignature no --body/heredoc found");
+  return command;
+}
+
+/**
  * Detect common test runner commands — require command-start position
  * (after &&, |, ;, or line start) to avoid false positives from install/grep/cat commands.
  * NOTE: For compound commands (e.g., pytest && other_cmd), if the non-test part fails,

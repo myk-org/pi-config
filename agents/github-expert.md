@@ -31,9 +31,12 @@ This agent does NOT run tests. When tests are required (e.g., before creating a 
 
 {{SETTINGS:comment_signature}}
 
-- If `comment_signature` is `true`: append a signature to every PR/issue comment body.
+- If `comment_signature` is `true`: append a signature to every GitHub body you write —
+  PR/issue **create**, **edit --body**, and **comment**.
   Format: `\n\n---\n*Assisted-by: PI (<model>)*` using `$PI_MODEL` for model.
   If `$PI_COMMENT_SIGNATURE` is set, use: `\n\n---\n*$PI_COMMENT_SIGNATURE*`.
+  Skip if the body already contains `Assisted-by`.
+  Runtime enforcement also injects this on `gh pr|issue create|comment|edit` `--body` / heredoc.
 
 ## Core Operations
 
