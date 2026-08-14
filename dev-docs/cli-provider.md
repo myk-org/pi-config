@@ -138,6 +138,31 @@ Results cached under `~/.pi/cli-model-cache/` (keyed by binary mtime/size; no TT
 
 No curated model lists and no API-key-based discovery.
 
+### models.dev metadata fill (CLI / ACPX only)
+
+Discovery still owns **which** models exist. After discovery, missing
+`contextWindow` / `maxTokens` / cost / input modalities are filled
+from [models.dev](https://models.dev) `api.json`.
+
+Thinking level is **not** copied from the catalog. CLI `-high` /
+ACPX `[effort=high]` (also `xhigh|medium|low|minimal|max|off`) set
+`reasoning` and `pi.setThinkingLevel` on `session_start` / `model_select`.
+`-fast` is not a thinking token. Catalog `reasoning: true` alone must
+not show `thinking off` for `cursor-grok-4.6-high`.
+
+- Cache: `~/.pi/pi-config/models.dev.json`
+- Fetch on first use; refresh when the file is older than 1 day
+- Stale cache is kept if the fetch fails
+- Native pi providers are not modified
+- Unmapped ids (e.g. `composer-2.5`) keep `buildRuntimeModel` defaults (200k / 32k)
+- ACPX `context=` in the id (e.g. `[context=200k]`) wins over the catalog
+
+Mapping examples: `cursor-grok-4.6-high` → `xai/grok-4.6`;
+`claude-4.6-opus-high` → `anthropic/claude-opus-4-6`;
+`grok-4.6[effort=xhigh,fast=false]` → `xai/grok-4.6`.
+
+Code: `extensions/shared/models-dev.ts`.
+
 ### CLI model ids ≠ acpx model ids
 
 `cli-*` and `acpx-*` share agent names (`cursor`, `claude`, …) but **not** model id strings. Always discover and pass ids in the namespace of the transport you use.
@@ -243,6 +268,7 @@ Operational logs go to **`~/.pi/logs/`** (never `console.*` — that leaks into 
 | `~/.pi/logs/cli-provider.log` | discovery, registration, resume recover, session reaper |
 | `~/.pi/logs/dreaming.log` | dream skip/sidecar notes, provenance merge, promotion/rebuild errors |
 | `~/.pi/logs/providers/` | `createLogger("providers")` — restore-default-model, initialized-guard, session_shutdown |
+| `~/.pi/logs/models-dev/` | models.dev fetch/cache hit/miss and CLI/ACPX catalog mapping |
 
 Helper: `extensions/shared/file-logger.ts`
 

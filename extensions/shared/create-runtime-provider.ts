@@ -34,6 +34,7 @@ export interface BuildRuntimeModelOptions {
   provider: string;
   baseUrl?: string;
   reasoning?: boolean;
+  thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
   input?: ("text" | "image")[];
   cost?: Model<Api>["cost"];
   contextWindow?: number;
@@ -49,6 +50,7 @@ export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
     provider: opts.provider,
     baseUrl: opts.baseUrl ?? DEFAULT_RUNTIME_BASE_URL,
     reasoning: opts.reasoning ?? false,
+    ...(opts.thinkingLevelMap ? { thinkingLevelMap: opts.thinkingLevelMap } : {}),
     input: opts.input ?? ["text", "image"],
     cost: opts.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: opts.contextWindow ?? 200_000,

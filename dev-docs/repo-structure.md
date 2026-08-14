@@ -98,6 +98,7 @@ pi-config/
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
 │   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
+│   │   ├── models-dev.ts            # models.dev api.json cache (~/.pi/pi-config) + CLI/ACPX metadata fill
 │   │   ├── provider-driver.ts       # ProviderDriver SPI interfaces (t3code-inspired driver architecture)
 │   │   ├── provider-errors.ts       # Tagged error hierarchy for provider system
 │   │   ├── provider-registry.ts     # ProviderDriverRegistry — lifecycle management for driver instances
@@ -225,7 +226,7 @@ pi-config/
 │   │   ├── providers/               # Driver schema, restore-default-model, initialized-reset tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
-│   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider)
+│   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider, models-dev)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

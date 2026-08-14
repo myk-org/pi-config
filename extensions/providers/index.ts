@@ -29,6 +29,7 @@ import type {
 import { createLogger } from "../shared/logger.js";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
 import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import {
@@ -37,10 +38,14 @@ import {
 } from "../orchestrator/utils.js";
 import {
   buildAmbientLoginAuth,
-  buildRuntimeModel,
   createRuntimeProvider,
   filterModelsWhenConfigured,
 } from "../shared/create-runtime-provider.js";
+import {
+  applyThinkingLevelFromModel,
+  loadModelsDevCatalog,
+  type ModelsDevCatalog,
+} from "../shared/models-dev.js";
 import { StreamAssembler, createAssistantMessageOutput } from "../shared/stream-builder.js";
 import { ProviderDriverRegistry } from "../shared/provider-registry.js";
 import type { ProviderInstance, DiscoveredModel } from "../shared/provider-driver.js";
@@ -190,12 +195,13 @@ async function registerCliAgent(
   pi: ExtensionAPI,
   agent: string,
   instance: ProviderInstance,
+  catalog: ModelsDevCatalog | null,
 ): Promise<void> {
   const providerId = `cli-${agent}`;
   const snapshot = instance.snapshot.getSnapshot();
   const discovered = snapshot.models;
 
-  const models = mapCliDiscoveredModels(agent, discovered);
+  const models = mapCliDiscoveredModels(agent, discovered, catalog);
   const streamFn = makeStreamFunction("cli", agent, () => cliInstances.get(agent));
 
   const provider = await createRuntimeProvider({
@@ -214,7 +220,8 @@ async function registerCliAgent(
       const inst = cliInstances.get(agent);
       if (!inst) return [];
       const snap = await inst.snapshot.refresh();
-      return mapCliDiscoveredModels(agent, snap.models);
+      const fresh = await loadModelsDevCatalog();
+      return mapCliDiscoveredModels(agent, snap.models, fresh);
     },
     filterModels: (catalog, credential) =>
       filterModelsWhenConfigured(catalog, credential, () =>
@@ -231,12 +238,13 @@ async function registerAcpxAgent(
   pi: ExtensionAPI,
   agent: string,
   instance: ProviderInstance,
+  catalog: ModelsDevCatalog | null,
 ): Promise<void> {
   const providerId = `acpx-${agent}`;
   const snapshot = instance.snapshot.getSnapshot();
   const modelIds = snapshot.models.map((m) => m.id);
 
-  const models = mapAcpxDiscoveredModels(agent, modelIds);
+  const models = mapAcpxDiscoveredModels(agent, modelIds, catalog);
   const streamFn = makeStreamFunction("acpx", agent, () => acpxInstances.get(agent));
 
   const provider = await createRuntimeProvider({
@@ -254,7 +262,8 @@ async function registerAcpxAgent(
       const inst = acpxInstances.get(agent);
       if (!inst) return [];
       const snap = await inst.snapshot.refresh();
-      return mapAcpxDiscoveredModels(agent, snap.models.map((m) => m.id));
+      const fresh = await loadModelsDevCatalog();
+      return mapAcpxDiscoveredModels(agent, snap.models.map((m) => m.id), fresh);
     },
     filterModels: (catalog, credential) =>
       filterModelsWhenConfigured(catalog, credential, () =>
@@ -312,6 +321,14 @@ export default async function (pi: ExtensionAPI) {
   // CLI agents (load in subagent children too)
   // ---------------------------------------------------------------------------
   const cliAgentList = asStringArray(getSetting(projectCwd, "cli_agents")).filter(isCliAgentName);
+  const acpxAgentList = asStringArray(getSetting(projectCwd, "acpx_agents"));
+  const modelsDevCatalog =
+    cliAgentList.length > 0 || acpxAgentList.length > 0
+      ? await loadModelsDevCatalog()
+      : null;
+  if (modelsDevCatalog) {
+    log.info("models.dev catalog loaded for cli/acpx model fill");
+  }
 
   if (cliAgentList.length > 0) {
     startCliSessionReaper({
@@ -414,7 +431,7 @@ export default async function (pi: ExtensionAPI) {
       if (result.status !== "fulfilled" || !result.value) continue;
       const { agent, instance } = result.value;
       try {
-        await registerCliAgent(pi, agent, instance);
+        await registerCliAgent(pi, agent, instance, modelsDevCatalog);
       } catch (err) {
         fileLog(LOG_DOMAIN, "error", LOG_DOMAIN,
           `cli-${agent}: registration failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -497,7 +514,7 @@ export default async function (pi: ExtensionAPI) {
       if (result.status !== "fulfilled" || !result.value) continue;
       const { agent, instance } = result.value;
       try {
-        await registerAcpxAgent(pi, agent, instance);
+        await registerAcpxAgent(pi, agent, instance, modelsDevCatalog);
       } catch (err) {
         fileLog(LOG_DOMAIN, "error", LOG_DOMAIN,
           `acpx-${agent}: registration failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -522,6 +539,21 @@ export default async function (pi: ExtensionAPI) {
 
   // Fire-and-forget restore so session_start is not blocked by retries (#753).
   // Omit registeredProviders: cli/acpx-only lists falsely fail-fast native defaults.
+  const applyCliAcpxThinking = (model: { id: string; provider: string } | undefined) => {
+    try {
+      applyThinkingLevelFromModel(
+        model,
+        (level) => pi.setThinkingLevel(level as ThinkingLevel),
+        () => pi.getThinkingLevel(),
+      );
+    } catch (err) {
+      log.warn(
+        "thinking from id failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
   pi.on("session_start", (event, ctx) => {
     const reason = typeof event?.reason === "string" ? event.reason : "";
     if (providerSummaryParts.length > 0 && ctx.hasUI) {
@@ -534,6 +566,11 @@ export default async function (pi: ExtensionAPI) {
         );
       }
     }
+    applyCliAcpxThinking(
+      ctx.model
+        ? { id: ctx.model.id, provider: String(ctx.model.provider) }
+        : undefined,
+    );
     // agentDir via PI_CODING_AGENT_DIR / ~/.pi/agent only (ctx has cwd, not agentDir).
     // Merge global + cwd/.pi/settings.json (project wins) only when trusted —
     // same gate as pi SettingsManager (ctx.isProjectTrusted). Fail closed.
@@ -570,6 +607,13 @@ export default async function (pi: ExtensionAPI) {
         "restore-default-model session_start error",
         err instanceof Error ? err.message : String(err),
       );
+    });
+  });
+
+  pi.on("model_select", (event) => {
+    applyCliAcpxThinking({
+      id: event.model.id,
+      provider: String(event.model.provider),
     });
   });
 

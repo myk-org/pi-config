@@ -135,6 +135,11 @@ Writing effective rules:
 - Extension commands: see `dev-docs/extension-commands.md`
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
+- CLI/ACPX model metadata (context window, maxTokens, cost): cached from
+  `https://models.dev/api.json` at `~/.pi/pi-config/models.dev.json` (refresh after
+  1 day). Mapping is CLI/ACPX only — native pi models are untouched. Thinking
+  from id (`-high`, `[effort=xhigh]`), not catalog `reasoning`. See
+  `extensions/shared/models-dev.ts`
 - Cold-start default model restore (#753): `startup`|`new` only; skips non-empty `enabledModels`; trusted project merge — see `dev-docs/cli-provider.md`
 - Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `dev-docs/cli-provider.md` Logging
 - Memory system: see `dev-docs/memory-architecture.md`
