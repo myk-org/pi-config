@@ -136,7 +136,12 @@ def expand_at_includes(text: str, source: Path) -> str:
             out.append(line)
             continue
         log.debug("expand_at_includes %s -> %s", source, candidate)
-        included = candidate.read_text(encoding="utf-8")
+        try:
+            included = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            log.debug("expand_at_includes read failed %s: %s", candidate, exc)
+            out.append(line)
+            continue
         if included and not included.endswith("\n"):
             included += "\n"
         out.append(included)

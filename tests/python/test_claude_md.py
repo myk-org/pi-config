@@ -57,3 +57,27 @@ def test_expand_at_includes_rejects_absolute_path(tmp_path: Path) -> None:
     source = tmp_path / "CLAUDE.md"
     raw = f"@{abs_md.resolve()}\n"
     assert expand_at_includes(raw, source) == raw
+
+
+def test_expand_at_includes_leaves_directive_on_decode_error(tmp_path: Path) -> None:
+    """Invalid UTF-8 include stays as the literal @file line."""
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe not utf-8")
+    source = tmp_path / "CLAUDE.md"
+    raw = "@AGENTS.md\n"
+    assert expand_at_includes(raw, source) == raw
+
+
+def test_expand_at_includes_leaves_directive_on_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filesystem read errors leave the @file directive unchanged."""
+    (tmp_path / "AGENTS.md").write_text("ok\n", encoding="utf-8")
+    source = tmp_path / "CLAUDE.md"
+    orig = Path.read_text
+
+    def boom(self: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        if self.name == "AGENTS.md":
+            raise OSError("permission denied")
+        return orig(self, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    raw = "@AGENTS.md\n"
+    assert expand_at_includes(raw, source) == raw
