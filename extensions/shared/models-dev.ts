@@ -295,14 +295,33 @@ function providerOrder(agent: string, catalog: ModelsDevCatalog): string[] {
 type ProviderModelIndex = Map<string, { modelId: string; entry: ModelsDevModel }>;
 type CatalogLookupIndex = Map<string, ProviderModelIndex>;
 
-const catalogIndexCache = new WeakMap<ModelsDevCatalog, CatalogLookupIndex>();
+let catalogIndexCache = new WeakMap<ModelsDevCatalog, CatalogLookupIndex>();
+let catalogIndexBuilds = 0;
+let catalogIndexReuses = 0;
+
+/** Test hook: WeakMap hit/miss counts since last reset. */
+export function catalogIndexCacheStats(): { builds: number; reuses: number } {
+  const stats = { builds: catalogIndexBuilds, reuses: catalogIndexReuses };
+  log.debug("models.dev catalog index stats", stats.builds, "builds", stats.reuses, "reuses");
+  return stats;
+}
+
+/** Test hook: drop cached indexes and zero counters. */
+export function resetCatalogIndexCacheForTests(): void {
+  catalogIndexCache = new WeakMap();
+  catalogIndexBuilds = 0;
+  catalogIndexReuses = 0;
+  log.debug("models.dev catalog index cache reset for tests");
+}
 
 function catalogLookupIndex(catalog: ModelsDevCatalog): CatalogLookupIndex {
   const cached = catalogIndexCache.get(catalog);
   if (cached) {
+    catalogIndexReuses += 1;
     log.debug("models.dev catalog index reuse", cached.size, "providers");
     return cached;
   }
+  catalogIndexBuilds += 1;
   const index: CatalogLookupIndex = new Map();
   for (const [provider, block] of Object.entries(catalog)) {
     const models = block?.models;
