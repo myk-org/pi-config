@@ -37,3 +37,23 @@ def test_collect_local_expands_includes(tmp_path: Path, monkeypatch: pytest.Monk
     (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     sections = _collect_local(["./CLAUDE.md", "./AGENTS.md"])
     assert sections == ["from-agents\n", "from-agents\n"]
+
+
+def test_expand_at_includes_rejects_parent_traversal(tmp_path: Path) -> None:
+    """@../secret.md is not inlined even when the file exists."""
+    secret = tmp_path / "secret.md"
+    secret.write_text("LEAK\n", encoding="utf-8")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    source = nested / "CLAUDE.md"
+    raw = "@../secret.md\n"
+    assert expand_at_includes(raw, source) == raw
+
+
+def test_expand_at_includes_rejects_absolute_path(tmp_path: Path) -> None:
+    """@/abs.md is left literal and is not read."""
+    abs_md = tmp_path / "outside.md"
+    abs_md.write_text("LEAK\n", encoding="utf-8")
+    source = tmp_path / "CLAUDE.md"
+    raw = f"@{abs_md.resolve()}\n"
+    assert expand_at_includes(raw, source) == raw
