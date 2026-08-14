@@ -14,6 +14,7 @@ Output: Combined CLAUDE.md + AGENTS.md content (or empty if none found)
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -22,6 +23,10 @@ from pathlib import Path
 
 from myk_pi_tools.pr.common import PRInfo
 from myk_pi_tools.pr.common import parse_args as _parse_args
+
+log = logging.getLogger(__name__)
+
+_AT_INCLUDE = re.compile(r"^@([A-Za-z0-9._/-]+\.md)\s*$")
 
 
 def parse_args(args: list[str]) -> PRInfo:
@@ -102,13 +107,38 @@ def fetch_from_github(owner: str, repo: str, file_path: str) -> str | None:
         return None
 
 
+def expand_at_includes(text: str, source: Path) -> str:
+    """Replace `@file.md` lines with that file's contents (same directory).
+
+    Unresolved includes are left as-is. Used so `pr claude-md` does not emit
+    a literal `@AGENTS.md` when the referenced file exists on disk.
+    """
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        m = _AT_INCLUDE.match(line.strip("\n"))
+        if not m:
+            out.append(line)
+            continue
+        target = (source.parent / m.group(1)).resolve()
+        if not target.is_file():
+            log.debug("expand_at_includes unresolved %s from %s", m.group(1), source)
+            out.append(line)
+            continue
+        log.debug("expand_at_includes %s -> %s", source, target)
+        included = target.read_text(encoding="utf-8")
+        if included and not included.endswith("\n"):
+            included += "\n"
+        out.append(included)
+    return "".join(out)
+
+
 def _collect_local(paths: list[str]) -> list[str]:
     """Check local file paths and return contents of those that exist."""
     found = []
     for p in paths:
         f = Path(p)
         if f.is_file():
-            found.append(f.read_text(encoding="utf-8"))
+            found.append(expand_at_includes(f.read_text(encoding="utf-8"), f))
     return found
 
 

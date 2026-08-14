@@ -1,5 +1,4 @@
 # Pi Config
 
-Contributor rules: [AGENTS.md](AGENTS.md).
-
-@AGENTS.md
+Contributor rules live in [AGENTS.md](AGENTS.md).
+Claude Code loads `AGENTS.md` natively; this file is a short fallback pointer.
