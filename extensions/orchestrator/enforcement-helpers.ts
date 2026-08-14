@@ -787,6 +787,140 @@ export function stripHeredocBodies(cmd: string): string {
 }
 
 /**
+ * True when `gh pr|issue create|comment|edit` is a real invocation (command
+ * boundary), not a mention inside a string/heredoc body.
+ */
+export function isRealGhBodyCommand(command: string): boolean {
+  const stripped = stripHeredocBodies(command);
+  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
+  const ghExe = /(?:\S*\/)?gh\b/.source;
+  const re = new RegExp(
+    boundary + ghExe + String.raw`\s+(?:pr|issue)\s+(?:create|comment|edit)\b`,
+  );
+  const result = re.test(stripped);
+  enfLog.debug("isRealGhBodyCommand", result);
+  return result;
+}
+
+function commentSignatureFooter(signature: string): string {
+  return `\n\n---\n*${signature}*`;
+}
+
+function bodyAlreadySigned(text: string): boolean {
+  return /\*Assisted-by:/.test(text) || /(?:^|\n|\\n)Assisted-by:\s/.test(text);
+}
+
+/** Index of the matching closer for a quote at `openIdx`, honoring POSIX escapes. */
+function matchingQuoteIndex(s: string, openIdx: number): number | null {
+  const q = s[openIdx];
+  if (q !== '"' && q !== "'") return null;
+  if (q === "'") {
+    const close = s.indexOf("'", openIdx + 1);
+    enfLog.debug("matchingQuoteIndex single", close != null && close >= 0);
+    return close < 0 ? null : close;
+  }
+  for (let i = openIdx + 1; i < s.length; i++) {
+    if (s[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (s[i] === '"') {
+      enfLog.debug("matchingQuoteIndex double", i);
+      return i;
+    }
+  }
+  enfLog.debug("matchingQuoteIndex unclosed double");
+  return null;
+}
+
+/**
+ * Last quoted `--body` / `--body=` span in `command`. Conservative: unquoted
+ * or unclosed values are skipped (caller no-ops).
+ */
+function findLastQuotedBodySpan(command: string): { open: number; close: number } | null {
+  const flagRe = /--body(?:=|\s+)/g;
+  let last: { open: number; close: number } | null = null;
+  let fm: RegExpExecArray | null;
+  while ((fm = flagRe.exec(command)) !== null) {
+    const after = fm.index + fm[0].length;
+    const q = command[after];
+    if (q !== '"' && q !== "'") {
+      enfLog.debug("findLastQuotedBodySpan skip unquoted --body");
+      continue;
+    }
+    const close = matchingQuoteIndex(command, after);
+    if (close == null) {
+      enfLog.warn("findLastQuotedBodySpan unclosed --body quote");
+      continue;
+    }
+    last = { open: after, close };
+  }
+  enfLog.debug("findLastQuotedBodySpan", last ? "found" : "none");
+  return last;
+}
+
+function lastHeredocInSpan(
+  command: string,
+  spanStart: number,
+  spanEnd: number,
+): RegExpExecArray | null {
+  const heredocRe = /<<(?:-)?\s*(['"]?)(\w+)\1[^\n]*\n([\s\S]*?)\n([ \t]*)\2\s*(?=\n|$)/g;
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = heredocRe.exec(command)) !== null) {
+    if (m.index > spanStart && m.index < spanEnd) last = m;
+  }
+  enfLog.debug("lastHeredocInSpan", last ? last[2] : "none");
+  return last;
+}
+
+/**
+ * Append the comment_signature footer to `gh pr|issue create|comment|edit`
+ * `--body` / heredoc payloads. Idempotent. Empty signature is a no-op.
+ * Only mutates a heredoc that sits inside the `--body` quoted span.
+ */
+export function injectGhBodySignature(command: string, signature: string): string {
+  if (!signature) {
+    enfLog.debug("injectGhBodySignature skip empty signature");
+    return command;
+  }
+  if (!isRealGhBodyCommand(command)) {
+    enfLog.debug("injectGhBodySignature skip not a gh body command");
+    return command;
+  }
+  if (bodyAlreadySigned(command)) {
+    enfLog.debug("injectGhBodySignature skip already present");
+    return command;
+  }
+  const footer = commentSignatureFooter(signature);
+  const span = findLastQuotedBodySpan(command);
+  if (!span) {
+    enfLog.debug("injectGhBodySignature no quoted --body found");
+    return command;
+  }
+
+  const last = lastHeredocInSpan(command, span.open, span.close);
+  if (last) {
+    const delim = last[2];
+    const indent = last[4] ?? "";
+    const closeToken = `\n${indent}${delim}`;
+    const closeIdx = last.index + last[0].lastIndexOf(closeToken);
+    if (closeIdx >= last.index) {
+      enfLog.debug("injectGhBodySignature heredoc in --body", delim);
+      return command.slice(0, closeIdx) + footer + command.slice(closeIdx);
+    }
+  }
+
+  const payload = command.slice(span.open + 1, span.close);
+  if (payload.startsWith("$(")) {
+    enfLog.warn("injectGhBodySignature --body command subst without heredoc match");
+    return command;
+  }
+  enfLog.debug("injectGhBodySignature --body quoted");
+  return command.slice(0, span.close) + footer + command.slice(span.close);
+}
+
+/**
  * Detect common test runner commands — require command-start position
  * (after &&, |, ;, or line start) to avoid false positives from install/grep/cat commands.
  * NOTE: For compound commands (e.g., pytest && other_cmd), if the non-test part fails,

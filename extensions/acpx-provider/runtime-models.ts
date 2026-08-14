@@ -4,6 +4,10 @@
  */
 
 import { buildRuntimeModel } from "../shared/create-runtime-provider.js";
+import {
+	fillRuntimeModelFromCatalog,
+	type ModelsDevCatalog,
+} from "../shared/models-dev.js";
 
 export function modelIdToDisplayName(modelId: string): string {
 	// Strip bracket suffixes for display: gpt-5.4[context=272k,...] -> Gpt 5.4
@@ -17,6 +21,7 @@ export function modelIdToDisplayName(modelId: string): string {
 export function mapAcpxDiscoveredModels(
 	agent: string,
 	modelIds: readonly string[],
+	catalog?: ModelsDevCatalog | null,
 ): ReturnType<typeof buildRuntimeModel>[] {
 	const provider = `acpx-${agent}`;
 	if (modelIds.length === 0) {
@@ -30,11 +35,18 @@ export function mapAcpxDiscoveredModels(
 		];
 	}
 	return modelIds.map((m) =>
-		buildRuntimeModel({
-			id: `${agent}:${m}`,
-			name: `${modelIdToDisplayName(m)} (${agent})`,
-			api: "acpx",
-			provider,
-		}),
+		buildRuntimeModel(
+			fillRuntimeModelFromCatalog(
+				{
+					id: `${agent}:${m}`,
+					name: `${modelIdToDisplayName(m)} (${agent})`,
+					api: "acpx",
+					provider,
+				},
+				catalog,
+				agent,
+				m,
+			),
+		),
 	);
 }

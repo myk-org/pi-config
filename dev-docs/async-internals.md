@@ -33,7 +33,10 @@ ambient `resolve`/`check` succeed when `isAcpxAgentConfigured` (`agents.has`);
 auth); `fetchModels` rediscovers via `discoverModelsInternal` (returns `[]` if no
 state; empty discovery with state → `${agent}:default`);
 `filterModels` also gates on `agents.has` — **not** a live health probe;
-`session_shutdown` clears `agents`, so models hide until reload/restart;
+`session_shutdown` clears AgentState / maps and resets providers `initialized`
+so the next factory re-registers (required for `/new`|`/resume`|`/fork` to keep
+saved `cli-*` / `acpx-*` defaults — same lifecycle as native `createProvider`
+in `extensions/providers/`);
 streams use `{ stream, streamSimple }` → `streamAcpx`.
 No legacy `registerProvider(name, { streamSimple })` bag.
 

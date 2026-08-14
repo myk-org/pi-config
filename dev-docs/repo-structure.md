@@ -42,7 +42,7 @@ pi-config/
 │   │   ├── cron-status-ui.ts        # /cron list + list-all overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
 │   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (uses overlay-dashboard)
-│   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O)
+│   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O, model-picker resolution: image_model google+image-capable filter + paired agent/internal_operations providers)
 │   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, multi-select, overrides)
 │   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + internal ops provider settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
@@ -62,7 +62,7 @@ pi-config/
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
 │   │   ├── resolve-agent-model.ts   # Resolve effective model/provider for an agent (priority chain)
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
-│   │   ├── rule-placeholders.ts     # Substitutes {{REVIEW_LOOP_MAX_CYCLES}} into injected rules text
+│   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries
 │   │   ├── state-jsonl.ts               # JSONL state persistence (JsonlStateStore + JsonlAppendLog)
@@ -98,6 +98,7 @@ pi-config/
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
 │   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
+│   │   ├── models-dev.ts            # models.dev api.json cache (~/.pi/pi-config) + CLI/ACPX metadata fill
 │   │   ├── provider-driver.ts       # ProviderDriver SPI interfaces (t3code-inspired driver architecture)
 │   │   ├── provider-errors.ts       # Tagged error hierarchy for provider system
 │   │   ├── provider-registry.ts     # ProviderDriverRegistry — lifecycle management for driver instances
@@ -105,6 +106,7 @@ pi-config/
 │   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
+│   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)
 │   ├── acpx-provider/              # ACPX provider — backward-compatible shim (re-exports for pi-sidecar)
 │   │   ├── index.ts                # Shim: re-exports discoverAcpxModels + no-op extension entry
@@ -119,6 +121,9 @@ pi-config/
 │   │   └── index.ts                # Shim: re-exports discoverCliModels + no-op extension entry
 │   ├── providers/                  # Unified provider extension (t3code-inspired driver architecture)
 │   │   ├── index.ts                # Extension entry — registers all providers via ProviderDriverRegistry
+│   │   ├── initialized-guard.ts    # Session-scoped init flag; reset on session_shutdown for /new|/resume|/fork
+│   │   ├── session-shutdown.ts     # Teardown: stop reaper, clear maps, reset initialized (#752)
+│   │   ├── restore-default-model.ts # Cold-start restore of saved default (provider-agnostic) after auth-race fallback (#753)
 │   │   ├── built-in-drivers.ts     # Static driver list + agent→driver mappings
 │   │   ├── claude-driver.ts        # ClaudeDriver — ProviderDriver<ClaudeCliConfig> (CLI)
 │   │   ├── gemini-driver.ts        # GeminiDriver — ProviderDriver<GeminiCliConfig> (CLI)
@@ -218,10 +223,10 @@ pi-config/
 │   ├── node/                        # Node.js tests (tsx + node:test)
 │   │   ├── acpx-provider/           # ACPX createProvider / runtime-model tests
 │   │   ├── cli-provider/            # CLI createProvider / runtime-model tests
-│   │   ├── providers/               # Driver config schema + built-in-drivers tests
+│   │   ├── providers/               # Driver schema, restore-default-model, initialized-reset tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
-│   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider)
+│   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider, models-dev)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

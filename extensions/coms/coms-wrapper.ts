@@ -13,6 +13,10 @@ import * as os from "node:os";
 import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./coms-p2p.js";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { setComsActive } from "../shared/coms-active.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("coms");
 
 function fuzzy(items: AutocompleteItem[], query: string): AutocompleteItem[] | null {
     if (!query.trim()) return items.length > 0 ? items : null;
@@ -43,9 +47,13 @@ export function registerComs(pi: ExtensionAPI) {
             const cwd = ctx?.cwd || process.cwd();
             const comsDir = getSetting(cwd, "coms_dir") || path.join(os.homedir(), ".pi", "coms");
             pruneStaleRegistry(comsDir);
-        } catch (e: any) { console.debug("[coms] stale cleanup:", e?.message?.slice(0, 100)); }
+        } catch (e: any) {
+            const err = e instanceof Error ? e : new Error(String(e?.message ?? e));
+            log.warn("stale cleanup failed", err.message?.slice(0, 100), err);
+        }
         if (evt?.reason !== "reload") {
             state.active = false;
+            setComsActive(false);
             persistState(pi, PERSIST_KEY, state);
         }
     });
@@ -87,9 +95,14 @@ export function registerComs(pi: ExtensionAPI) {
             try {
                 await state.capturedSessionStart({}, ctx);
                 state.active = true;
+                setComsActive(true);
                 persistState(pi, PERSIST_KEY, state);
             } catch (err: any) {
-                try { ctx.ui.notify(`📡 coms start failed: ${err?.message ?? String(err)}`, "error"); } catch {}
+                setComsActive(false);
+                const msg = err?.message ?? String(err);
+                const error = err instanceof Error ? err : new Error(msg);
+                log.error("/coms start failed", msg, error);
+                try { ctx.ui.notify(`📡 coms start failed: ${msg}`, "error"); } catch {}
             }
         } else if (subcommand === "stop") {
             if (!state.active) {
@@ -97,9 +110,16 @@ export function registerComs(pi: ExtensionAPI) {
                 return;
             }
             if (state.capturedSessionShutdown) {
-                try { await state.capturedSessionShutdown(); } catch {}
+                try {
+                    await state.capturedSessionShutdown();
+                } catch (err: any) {
+                    const msg = err?.message ?? String(err);
+                    const error = err instanceof Error ? err : new Error(msg);
+                    log.warn("/coms stop: session shutdown threw", msg, error);
+                }
             }
             state.active = false;
+            setComsActive(false);
             persistState(pi, PERSIST_KEY, state);
             try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
         } else if (subcommand === "status") {

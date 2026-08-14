@@ -12,6 +12,9 @@ import {
   getSettingsPath,
   getGlobalSettingsPath,
 } from "./project-settings.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("settings_tui");
 
 /** Sentinel value displayed for empty strings in the TUI. Centralized to prevent divergence. */
 export const EMPTY_VALUE_SENTINEL = "(empty)";
@@ -223,13 +226,127 @@ export function resolveSecretPrefill(
 
 // ── Provider-filtered model items ───────────────────────────────
 
+export type ModelSelectItem = {
+  value: string;
+  label: string;
+  description?: string;
+  /** Registry input modalities when present (vision ≠ image generation). */
+  input?: string[];
+  /** Registry output modalities when present (`image` = image-generation capable). */
+  output?: string[];
+};
+
+/** True when a model id looks like a Google/Gemini image-generation model. */
+export function isImageGenModelId(id: string): boolean {
+  const lower = id.toLowerCase();
+  const result =
+    lower.includes("imagen") ||
+    lower.includes("image-generation") ||
+    /(?:^|[-_./])image(?:[-_./]|$)/.test(lower);
+  log.debug("isImageGenModelId", { id, result });
+  return result;
+}
+
+/** Image-gen picker: prefer `output` includes `image`; else id pattern. Not `input` (vision). */
+export function isImageCapablePickerItem(item: ModelSelectItem): boolean {
+  if (Array.isArray(item.output) && item.output.includes("image")) {
+    log.debug("isImageCapablePickerItem", { id: item.value, via: "output" });
+    return true;
+  }
+  return isImageGenModelId(item.value);
+}
+
+export type ModelPickerPairedSettings = {
+  agent_provider?: string;
+  internal_operations_provider?: string;
+};
+
 /** Filter model SelectItems by provider. Returns all models if provider is empty/undefined. */
 export function filterModelsByProvider(
-  allModels: Array<{ value: string; label: string; description?: string }>,
+  allModels: ModelSelectItem[],
   provider?: string,
-): Array<{ value: string; label: string; description?: string }> {
+): ModelSelectItem[] {
   if (!provider) return allModels;
   return allModels.filter((m) => m.description === provider);
+}
+
+/** Registry provider hardwired for image_model picker (no image_provider setting). */
+export const IMAGE_MODEL_PROVIDER = "google";
+
+/**
+ * Registry provider used to filter the model picker for a settings key.
+ * image_model is hardwired to IMAGE_MODEL_PROVIDER (no image_provider setting).
+ */
+export function resolveModelPickerProvider(
+  key: string,
+  paired: ModelPickerPairedSettings = {},
+): string | undefined {
+  if (key === "image_model") {
+    log.debug("resolveModelPickerProvider", { key, provider: IMAGE_MODEL_PROVIDER });
+    return IMAGE_MODEL_PROVIDER;
+  }
+  if (key === "agent_model") {
+    const p = paired.agent_provider?.trim();
+    log.debug("resolveModelPickerProvider", { key, provider: p || undefined });
+    return p || undefined;
+  }
+  if (key === "internal_operations_model") {
+    const p = paired.internal_operations_provider?.trim();
+    log.debug("resolveModelPickerProvider", { key, provider: p || undefined });
+    return p || undefined;
+  }
+  log.debug("resolveModelPickerProvider", { key, provider: undefined });
+  return undefined;
+}
+
+/**
+ * Models shown in the settings TUI picker for a key.
+ * image_model: IMAGE_MODEL_PROVIDER + image-capable only — never falls back to all providers (empty list if none).
+ * agent_model / internal_operations_model: fall back to all models when filter is empty.
+ */
+export function resolveModelPickerItems(
+  key: string,
+  allModels: ModelSelectItem[],
+  provider?: string,
+): ModelSelectItem[] {
+  // image_model is always google-filtered — ignore caller provider (even truthy non-google)
+  const effectiveProvider = key === "image_model" ? IMAGE_MODEL_PROVIDER : provider;
+  const filtered = filterModelsByProvider(allModels, effectiveProvider);
+  if (key === "image_model") {
+    const imageCapable = filtered.filter(isImageCapablePickerItem);
+    log.debug("resolveModelPickerItems image_model", {
+      googleCount: filtered.length,
+      imageCapableCount: imageCapable.length,
+    });
+    return imageCapable;
+  }
+  const result = filtered.length > 0 ? filtered : allModels;
+  log.debug("resolveModelPickerItems", { key, provider: effectiveProvider, count: result.length });
+  return result;
+}
+
+/**
+ * Decide picker vs free-text for a model settings key.
+ * Call at submenu-open time (not build time) so paired provider changes are fresh.
+ * image_model with an empty google list → free-text input (never show all providers).
+ */
+export type ModelKeySubmenu =
+  | { mode: "picker"; models: ModelSelectItem[]; provider?: string }
+  | { mode: "input"; provider?: string };
+
+export function resolveModelKeySubmenu(
+  key: string,
+  allModels: ModelSelectItem[],
+  paired: ModelPickerPairedSettings = {},
+): ModelKeySubmenu {
+  const provider = resolveModelPickerProvider(key, paired);
+  const models = resolveModelPickerItems(key, allModels, provider);
+  if (key === "image_model" && models.length === 0) {
+    log.debug("resolveModelKeySubmenu", { key, mode: "input", provider });
+    return { mode: "input", provider };
+  }
+  log.debug("resolveModelKeySubmenu", { key, mode: "picker", count: models.length, provider });
+  return { mode: "picker", models, provider };
 }
 
 // ── Source glyph (colored) ──────────────────────────────────────

@@ -13,6 +13,10 @@ import * as net from "node:net";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as os from "node:os";
+import { setComsActive } from "../shared/coms-active.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("coms");
 
 /**
  * Tokenize a command string respecting double and single quotes.
@@ -183,8 +187,14 @@ export function createDeferredProxy(
                                     try {
                                         await handler(evt, ctx);
                                         state.active = true;
+                                        setComsActive(true);
                                     } catch (err) {
-                                        console.error(`[coms] reload reactivation failed:`, err);
+                                        state.active = false;
+                                        setComsActive(false);
+                                        persistState(target, persistKey, state);
+                                        const msg = err instanceof Error ? err.message : String(err);
+                                        const error = err instanceof Error ? err : new Error(msg);
+                                        log.error("reload reactivation failed", msg, error);
                                     }
                                 }
                             });

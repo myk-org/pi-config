@@ -4,11 +4,16 @@
  */
 
 import { buildRuntimeModel } from "../shared/create-runtime-provider.js";
+import {
+  fillRuntimeModelFromCatalog,
+  type ModelsDevCatalog,
+} from "../shared/models-dev.js";
 import type { DiscoveredCliModel } from "./discover.js";
 
 export function mapCliDiscoveredModels(
   agent: string,
   discovered: readonly DiscoveredCliModel[],
+  catalog?: ModelsDevCatalog | null,
 ): ReturnType<typeof buildRuntimeModel>[] {
   const provider = `cli-${agent}`;
   if (discovered.length === 0) {
@@ -22,11 +27,18 @@ export function mapCliDiscoveredModels(
     ];
   }
   return discovered.map((m) =>
-    buildRuntimeModel({
-      id: `${agent}:${m.id}`,
-      name: `${m.name} (${agent})`,
-      api: "cli",
-      provider,
-    }),
+    buildRuntimeModel(
+      fillRuntimeModelFromCatalog(
+        {
+          id: `${agent}:${m.id}`,
+          name: `${m.name} (${agent})`,
+          api: "cli",
+          provider,
+        },
+        catalog,
+        agent,
+        m.id,
+      ),
+    ),
   );
 }

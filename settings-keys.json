@@ -28,7 +28,7 @@
     "group": "Git"
   },
   "comment_signature": {
-    "description": "Add Assisted-by: PI (model) signature to GitHub comments",
+    "description": "Add Assisted-by: PI (model) signature to GitHub PR/issue bodies and comments",
     "type": "bool",
     "default": false,
     "group": "Git"
@@ -104,7 +104,7 @@
     "group": "Dashboard"
   },
   "image_model": {
-    "description": "Gemini model ID for generate_image tool (empty = disabled)",
+    "description": "Gemini/Google image model for generate_image (Settings TUI picker: google + image-capable; empty = disabled)",
     "type": "string",
     "env": "PI_IMAGE_MODEL",
     "default": "",

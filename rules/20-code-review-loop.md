@@ -4,6 +4,7 @@ After ANY code change, send to ALL 6 agents (5 reviewers + test-automator) IN PA
 
 ## Commit enforcement
 
+{{IF:review_loop_enforcement}}
 When `review_loop_enforcement` is enabled, the enforcement rule in `enforcement.ts` blocks `git commit` unless:
 
 - Review status is `clean` (all reviewers returned 0 findings)
@@ -20,14 +21,17 @@ The ONLY way to reach `clean` status is to run the actual review agents.
 Resolution is handled automatically via project settings injection.
 
 - MUST loop until clean or the max cycle cap is reached — see "Cycle Definition & Max Cycles" below.
+{{/IF}}
 
-If disabled:
+{{IFNOT:review_loop_enforcement}}
+Single review pass is sufficient — no commit blocking from the review loop.
+Step 5a (fix/explain every finding) is optional: fix what you agree with, skip what you don't.
+{{/IFNOT}}
 
-- Single review pass is sufficient
-- No commit blocking
+**All 6 agents are always called.** `review_loop_enforcement` controls whether the loop repeats.
 
-**In both cases, all 6 agents are always called.** `review_loop_enforcement` controls whether the loop repeats; when enabled,
-`review_loop_max_cycles` caps **total** cycles including the first (see Cycle Definition below).
+{{IF:review_loop_enforcement}}
+When enabled, `review_loop_max_cycles` caps **total** cycles including the first (see Cycle Definition below).
 
 ### Cycle Definition & Max Cycles
 
@@ -87,6 +91,7 @@ The enforcement rule blocks commits until this is satisfied — if it blocks you
 blocked); commit is allowed when status is `has_findings` or `clean`, no reviewers pending, and
 `cycle >= review_loop_max_cycles` (no `tests_passed` requirement); do **not**
 return to step 2 (re-dispatch of all 6 agents, including test-automator).
+{{/IF}}
 
 ## Review Agents
 
@@ -123,7 +128,9 @@ reviewers, even on the same file/line. A quality finding about *how* code is wri
 address *whether* the code matches the spec. Always keep both. Spec findings CAN still be
 deduplicated against other spec findings when they are truly the same issue.
 
-## Step 5a: Respond to Findings (when `review_loop_enforcement` is enabled)
+{{IF:review_loop_enforcement}}
+
+## Step 5a: Respond to Findings
 
 For each finding from step 4, do ONE of:
 
@@ -156,23 +163,31 @@ Findings that were fixed in code → verify the fix, do not re-raise if correct.
 - If a finding was fixed → verify the fix is correct, don't re-raise
 - If a finding was explained with a valid technical reason → accept it, don't re-raise
 - If the explanation is wrong or the fix is incomplete → re-raise with specific pushback
-
-**When `review_loop_enforcement` is disabled:** Step 5a is optional. Single review pass
-is sufficient — fix what you agree with, skip what you don't. No need to explain skips.
+{{/IF}}
 
 ## Key Rules
 
 Never skip code review — all 6 agents always run (5 reviewers + test-automator).
 Exception: on `chore/bump-version` branches (release version bumps), review dirty-tracking and commit blocking are skipped.
+{{IF:review_loop_enforcement}}
 When `review_loop_enforcement` is enabled: loop, respond to each finding (fix or explain), and re-run all 6 from step 2
 until clean or the cycle cap is reached — see "Cycle Definition & Max Cycles" above for the exact stop conditions.
-When disabled: single pass is sufficient; no mandatory re-loop or explanations.
+{{/IF}}
+{{IFNOT:review_loop_enforcement}}
+When `review_loop_enforcement` is disabled: single pass is sufficient; no mandatory re-loop or explanations.
+{{/IFNOT}}
 Minor test/config-only fixes skip re-review (go to step 5); substantive code changes require full re-review.
 
 ## Test Tracking
 
 Test results are tracked in `pi-config-review-state.jsonl` via the `tests_passed` field.
-This is **code-enforced** — commit/push is blocked unless `tests_passed: true` (when `review_loop_enforcement` is enabled).
+
+{{IF:review_loop_enforcement}}
+This is **code-enforced** — commit/push is blocked unless `tests_passed: true`.
+{{/IF}}
+{{IFNOT:review_loop_enforcement}}
+Tests still run and `tests_passed` is still recorded; commit is not blocked by review state when enforcement is off.
+{{/IFNOT}}
 
 **How `tests_passed` gets set:**
 
@@ -221,10 +236,15 @@ If both `git apply` methods fail, skip baseline comparison and note "baseline co
 For automated review flows (autorabbit, autoqodo), use **two-stage order** instead of parallel:
 
 1. **Stage 1 — Spec Compliance:** Does code meet requirements? All deliverables implemented? No scope creep?
+{{IF:review_loop_enforcement}}
    Loop Stage 1 until passed OR the shared cycle cap is reached.
+{{/IF}}
 2. **Stage 2 — Code Quality:** Quality, security, guidelines adherence.
+{{IF:review_loop_enforcement}}
    Loop Stage 2 until passed OR the shared cycle cap is reached.
+{{/IF}}
 
+{{IF:review_loop_enforcement}}
 **Staged cycle definition:** one **cycle** = one pass of the *current* stage's reviewers (in parallel)
 → fix/explain that stage's findings → end of cycle. This mirrors the parallel-mode cycle definition
 (see "Cycle Definition & Max Cycles" above), scoped to one stage's reviewers instead of all 6.
@@ -235,6 +255,7 @@ Stage 1 and Stage 2 both draw from and increment the same `cycle` counter in
 "Cycle Definition & Max Cycles" above. Stage-specific stops: if Stage 1 is **not clean** when the cap is hit, stop entirely — do not proceed
 to Stage 2 (covers both **Not fixed** and **Fixed** (verification blocked)). If hit during Stage 2,
 stop looping Stage 2.
+{{/IF}}
 
 Don't polish code that doesn't meet spec — it wastes work.
 Parallel mode (all 6 agents at once) remains default for manual reviews.

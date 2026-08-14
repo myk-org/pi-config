@@ -9,6 +9,8 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { isImageGenModelId } from "../orchestrator/settings-tui-helpers.js";
+import { createLogger } from "../shared/logger.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -16,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"] as const;
 const IMAGE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
+const log = createLogger("image_gen");
 
 const imageGenSchema = Type.Object({
     subject: Type.String({ description: "Main subject of the image" }),
@@ -51,7 +54,13 @@ function getApiKey(): string | null {
 
 function getModel(cwd: string): string | null {
     const model = getSetting(cwd, "image_model");
-    return model || null;
+    const id = typeof model === "string" ? model.trim() : "";
+    if (!id) {
+        log.debug("getModel", "image_model unset");
+        return null;
+    }
+    log.debug("getModel", id);
+    return id;
 }
 
 function assemblePrompt(params: {
@@ -163,6 +172,15 @@ export function createImageGenTool(): ToolDefinition {
                     content: [{
                         type: "text" as const,
                         text: "Error: image model is not set. Add image_model to pi-config-settings.json (or PI_IMAGE_MODEL env) and reload pi.",
+                    }],
+                };
+            }
+            if (!isImageGenModelId(model)) {
+                log.warn("generate_image rejected non-image model", model);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Error: image_model '${model}' is not an image-generation model. Choose a Gemini image model (id contains image or imagen).`,
                     }],
                 };
             }

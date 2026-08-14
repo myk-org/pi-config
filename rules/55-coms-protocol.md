@@ -1,3 +1,6 @@
+---
+requires: coms_active
+---
 # Coms Protocol — Inter-Agent Communication
 
 ## Overview

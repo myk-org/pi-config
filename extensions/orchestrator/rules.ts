@@ -16,8 +16,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
-import { getSetting } from "./project-settings.js";
-import { substituteRulePlaceholders } from "./rule-placeholders.js";
+import { getSetting, SETTINGS_KEYS } from "./project-settings.js";
+import { assembleRuleText, isSettingTruthy } from "./rule-placeholders.js";
+import { isComsActive } from "../shared/coms-active.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir } from "./utils.js";
 
@@ -177,7 +178,35 @@ export function registerRules(
         }
         if (ruleContents.length > 0) {
           const reviewLoopMaxCycles = getSetting(ctx.cwd, "review_loop_max_cycles");
-          const joined = substituteRulePlaceholders(ruleContents.join("\n\n"), { reviewLoopMaxCycles });
+          log.debug("assembling rules", { count: ruleContents.length, reviewLoopMaxCycles });
+          let includedCount = 0;
+          let skippedCount = 0;
+          const joined = assembleRuleText(ruleContents, {
+            resolve: (key) => getSetting(ctx.cwd, key),
+            knownKeys: Object.keys(SETTINGS_KEYS),
+            featurePredicates: {
+              coms_active: () => isComsActive(),
+              external_ai_agents: () =>
+                isSettingTruthy(getSetting(ctx.cwd, "acpx_agents")) ||
+                isSettingTruthy(getSetting(ctx.cwd, "cli_agents")),
+            },
+            reviewLoopMaxCycles: Number(reviewLoopMaxCycles),
+            onWarn: (msg) => log.warn("rule assembly:", msg),
+            onSkip: ({ attrs, index }) => {
+              skippedCount += 1;
+              log.debug("rule skipped by frontmatter gate", { index, attrs });
+            },
+            onInclude: ({ attrs, index }) => {
+              includedCount += 1;
+              log.debug("rule included", { index, attrs });
+            },
+          });
+          log.info("rules assembled", {
+            chars: joined.length,
+            files: ruleContents.length,
+            included: includedCount,
+            skipped: skippedCount,
+          });
           extra += "\n\n" + joined;
         } else {
           extra +=

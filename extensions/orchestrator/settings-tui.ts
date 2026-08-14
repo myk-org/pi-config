@@ -39,7 +39,8 @@ import {
   isSecretNoChange,
   resolveSecretPrefill,
   sourceGlyph,
-  filterModelsByProvider,
+  resolveModelKeySubmenu,
+  type ModelSelectItem,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -75,19 +76,23 @@ export {
   resolveSecretPrefill,
   sourceGlyph,
   filterModelsByProvider,
+  resolveModelPickerProvider,
+  resolveModelPickerItems,
+  resolveModelKeySubmenu,
 } from "./settings-tui-helpers.js";
 
 // ── Provider/Model data helpers ─────────────────────────────────────
 
 interface ProviderModelInfo {
   providers: SelectItem[];
-  models: SelectItem[];
+  models: ModelSelectItem[];
 }
 
 function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): ProviderModelInfo {
   if (!modelRegistry) return { providers: [], models: [] };
 
   const models = modelRegistry.getAvailable?.() || modelRegistry.getAll?.() || [];
+  log.debug("getProviderModelInfo", { modelCount: models.length });
 
   const providerSet = new Set<string>();
   for (const m of models) {
@@ -101,13 +106,18 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
     label: p,
   }));
 
-  const modelItems: SelectItem[] = models
+  const modelItems: ModelSelectItem[] = models
     .filter((m) => !(m.provider || "").startsWith("acpx-"))
-    .map((m) => ({
-      value: m.id,
-      label: m.id,
-      description: m.provider,
-    }));
+    .map((m) => {
+      const extra = m as { input?: string[]; output?: string[] };
+      return {
+        value: m.id,
+        label: m.id,
+        description: m.provider,
+        input: Array.isArray(extra.input) ? extra.input : undefined,
+        output: Array.isArray(extra.output) ? extra.output : undefined,
+      };
+    });
 
   return { providers, models: modelItems };
 }
@@ -171,20 +181,33 @@ export function buildCategoryItems(
 
     // Configure interaction based on type and key
     const isProviderKey = key === "agent_provider" || key === "internal_operations_provider";
-    const isModelKey = key === "agent_model" || key === "internal_operations_model";
+    const isModelKey =
+      key === "agent_model" || key === "internal_operations_model" || key === "image_model";
 
     if (isProviderKey && pmInfo.providers.length > 0) {
       item.submenu = (_current: string, done: (val?: string) => void): Component => {
         return new PickerSubmenu(`Select provider for ${key}`, pmInfo.providers, theme, done);
       };
     } else if (isModelKey && pmInfo.models.length > 0) {
-      item.submenu = (_current: string, done: (val?: string) => void): Component => {
-        // Filter models by the paired provider setting
-        const pairedProvider = key === "agent_model"
-          ? getSetting(cwd, "agent_provider")
-          : getSetting(cwd, "internal_operations_provider");
-        const filteredModels = filterModelsByProvider(pmInfo.models, pairedProvider || undefined);
-        return new PickerSubmenu(`Select model for ${key}`, filteredModels.length > 0 ? filteredModels : pmInfo.models, theme, done);
+      // Resolve provider/models inside the callback so refreshItem after
+      // agent_provider / internal_operations_provider changes does not leave a stale list.
+      item.submenu = (current: string, done: (val?: string) => void): Component => {
+        const submenu = resolveModelKeySubmenu(key, pmInfo.models, {
+          agent_provider: getSetting(cwd, "agent_provider"),
+          internal_operations_provider: getSetting(cwd, "internal_operations_provider"),
+        });
+        // image_model: provider-filtered list; if empty, free-text (do not show all models)
+        if (submenu.mode === "input") {
+          log.debug("image_model picker empty — free-text fallback", { provider: submenu.provider });
+          return new InputSubmenu(key, current, "Enter new value (empty to clear)", theme, done);
+        }
+        if (key === "image_model") {
+          log.debug("image_model picker open", {
+            provider: submenu.provider,
+            count: submenu.models.length,
+          });
+        }
+        return new PickerSubmenu(`Select model for ${key}`, submenu.models, theme, done);
       };
     } else {
       switch (def.type) {

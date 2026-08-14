@@ -8,6 +8,8 @@
 
 ---
 
+{{IF:orchestrator_edit_write_block}}
+
 ## Delegation Model
 
 The orchestrator delegates — never implements directly.
@@ -28,6 +30,7 @@ Outside slash commands, never use edit, write, or bash directly (except `mcpl`) 
 **Never delegate:** slash commands — execute them directly (see slash command rules).
 
 ---
+{{/IF}}
 
 ## Before Implementation (MANDATORY)
 

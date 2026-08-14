@@ -15,7 +15,7 @@ Single extension that provides:
 | **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes); optional `model` param for model override |
 | **`list_models`** | List available models and providers for subagent model override |
 | **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
-| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable |
+| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable. Missing context window / maxTokens / cost filled from models.dev (`~/.pi/pi-config/models.dev.json`, 1-day refresh). Cold-start default restore (#753): gates `startup`\|`new`, empty `enabledModels`, trusted project merge — see `dev-docs/cli-provider.md` |
 | **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
 | **`/async-status` command** | Show status of background agents — select one for live output streaming |
 | **`/async-kill` command** | Kill async agents (overlay picker or by name/id) |
@@ -317,6 +317,17 @@ EOF
 
 Rules auto-load alphabetically. Same-filename entries are overridden (project > user > package). Missing directories are silently skipped.
 
+#### Conditional assembly
+
+Rules support settings/feature conditionals at prompt assembly (`assembleRuleText` in
+`rule-placeholders.ts`). Full syntax, truthiness, and assembly order:
+**[dev-docs/project-settings.md](dev-docs/project-settings.md)** (Rules assembly).
+
+Markers: `{{IF:key}}…{{/IF}}`, `{{IFNOT:key}}…{{/IFNOT}}`, comparisons
+`{{IF:key==value}}` / `{{IF:key!=value}}`. Whole-file frontmatter: `requires_setting` /
+`requires`. Conditionals run **per file** (no cross-file matching), then bodies are
+joined, then placeholders like `{{REVIEW_LOOP_MAX_CYCLES}}` are substituted.
+
 ### Add project agents
 
 Create `.pi/agents/my-agent.md` in your project with frontmatter:
@@ -343,7 +354,7 @@ Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
 
 | Setting / Variable | Description |
 |----------|-------------|
-| `image_model` / `PI_IMAGE_MODEL` | Gemini model name (e.g., `gemini-3-pro-image`). No default. |
+| `image_model` / `PI_IMAGE_MODEL` | Google/Gemini image model for `generate_image` (Settings TUI filters to google; empty = disabled). |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key (env only) |
 
 **Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
@@ -376,8 +387,9 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 `agent` (Cursor Agent CLI). Enable with `cli_agents` in settings (e.g.
 `["claude","cursor","gemini"]`). Binary missing at load → `cli-*` not registered.
 After register, `filterModels` hides models when unavailable: PATH cleared while
-agent state remains → restore PATH; after `session_shutdown` (AgentState cleared)
-→ `/reload` or restart (PATH alone is not enough). See `dev-docs/cli-provider.md`.
+agent state remains, restore PATH; after `session_shutdown` (AgentState cleared
+and `initialized` reset) the next factory re-registers on `/new`|`/resume`|`/fork`
+(PATH alone is not enough). See `dev-docs/cli-provider.md`.
 
 **ACPX provider agents (optional `acpx_agents`):** ACPX wraps CLI agents via the
 ACP runtime. Supported agents: `cursor`, `claude`, `gemini`. Enable with

@@ -17,6 +17,7 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 - Actions: `block`, `warn`, `run_after <cmd>`
 - Verifiers: `tool_called <tool> before <command>` at `turn_end`
 - Remote script exec blocks: `curl \| bash`, nested `$(bash -c "$(curl)")`, etc. (`checkRemoteExecBlock`)
+- `comment_signature`: injects `Assisted-by: PI (<model>)` into `gh pr|issue create|comment|edit` `--body` / heredoc (`injectGhBodySignature`)
 
 Inventory a project’s code-tier memories:
 

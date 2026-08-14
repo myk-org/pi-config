@@ -16,7 +16,13 @@ import {
   resolveSecretPrefill,
   sourceGlyph,
   filterModelsByProvider,
+  resolveModelPickerProvider,
+  resolveModelPickerItems,
+  resolveModelKeySubmenu,
+  IMAGE_MODEL_PROVIDER,
   EMPTY_VALUE_SENTINEL,
+  isImageGenModelId,
+  isImageCapablePickerItem,
 } from "../../../extensions/orchestrator/settings-tui-helpers.js";
 import {
   SETTINGS_KEYS,
@@ -762,5 +768,220 @@ describe("filterModelsByProvider", () => {
     ];
     const result = filterModelsByProvider(models, "unknown");
     assert.equal(result.length, 0);
+  });
+});
+
+// ── resolveModelPickerProvider ──────────────────────────────────
+
+describe("resolveModelPickerProvider", () => {
+  it("hardwires image_model to google", () => {
+    assert.equal(resolveModelPickerProvider("image_model"), IMAGE_MODEL_PROVIDER);
+    assert.equal(
+      resolveModelPickerProvider("image_model", {
+        agent_provider: "openai",
+        internal_operations_provider: "anthropic",
+      }),
+      "google",
+    );
+  });
+
+  it("uses agent_provider for agent_model", () => {
+    assert.equal(
+      resolveModelPickerProvider("agent_model", { agent_provider: "cli-cursor" }),
+      "cli-cursor",
+    );
+  });
+
+  it("uses internal_operations_provider for internal_operations_model", () => {
+    assert.equal(
+      resolveModelPickerProvider("internal_operations_model", {
+        internal_operations_provider: "google",
+      }),
+      "google",
+    );
+  });
+
+  it("returns undefined when paired provider is empty", () => {
+    assert.equal(resolveModelPickerProvider("agent_model", { agent_provider: "" }), undefined);
+    assert.equal(resolveModelPickerProvider("agent_model", { agent_provider: "  " }), undefined);
+    assert.equal(resolveModelPickerProvider("agent_model", {}), undefined);
+    assert.equal(
+      resolveModelPickerProvider("internal_operations_model", {
+        internal_operations_provider: "",
+      }),
+      undefined,
+    );
+  });
+
+  it("returns undefined for unknown keys", () => {
+    assert.equal(resolveModelPickerProvider("agent_provider"), undefined);
+  });
+});
+
+// ── resolveModelPickerItems ─────────────────────────────────────
+
+describe("resolveModelPickerItems", () => {
+  const models = [
+    { value: "gemini-2.0-flash", label: "gemini-2.0-flash", description: "google" },
+    { value: "gpt-4o", label: "gpt-4o", description: "openai" },
+    { value: "gemini-3-pro-image", label: "gemini-3-pro-image", description: "google" },
+  ];
+
+  it("image_model returns only google image-capable models", () => {
+    const result = resolveModelPickerItems("image_model", models, "google");
+    assert.equal(result.length, 1);
+    assert.equal(result[0].value, "gemini-3-pro-image");
+    assert.ok(result.every((m) => m.description === "google"));
+  });
+
+  it("image_model excludes google text-only models", () => {
+    const result = resolveModelPickerItems("image_model", models, "google");
+    assert.ok(!result.some((m) => m.value === "gemini-2.0-flash"));
+  });
+
+  it("image_model never falls back to all models when google filter is empty", () => {
+    const noGoogle = models.filter((m) => m.description !== "google");
+    const result = resolveModelPickerItems("image_model", noGoogle, "openai");
+    assert.deepEqual(result, []);
+  });
+
+  it("image_model forces google even when provider is undefined, empty, or non-google", () => {
+    assert.equal(resolveModelPickerItems("image_model", models, undefined).length, 1);
+    assert.equal(resolveModelPickerItems("image_model", models, "").length, 1);
+    assert.equal(resolveModelPickerItems("image_model", models, "openai").length, 1);
+    assert.ok(
+      resolveModelPickerItems("image_model", models, undefined).every((m) => m.description === "google"),
+    );
+    assert.ok(
+      resolveModelPickerItems("image_model", models, "").every((m) => m.description === "google"),
+    );
+    assert.ok(
+      resolveModelPickerItems("image_model", models, "openai").every((m) => m.description === "google"),
+    );
+  });
+
+  it("agent_model falls back to all models when filter is empty", () => {
+    const result = resolveModelPickerItems("agent_model", models, "missing-provider");
+    assert.equal(result.length, 3);
+  });
+
+  it("agent_model returns filtered models when provider matches", () => {
+    const result = resolveModelPickerItems("agent_model", models, "openai");
+    assert.equal(result.length, 1);
+    assert.equal(result[0].value, "gpt-4o");
+  });
+
+  it("internal_operations_model falls back to all when filter empty", () => {
+    const result = resolveModelPickerItems("internal_operations_model", models, "nope");
+    assert.equal(result.length, 3);
+  });
+
+  it("image_model includes output-image models without image in id", () => {
+    const items = [
+      { value: "nano-banana", label: "nano-banana", description: "google", output: ["image"] },
+      { value: "gemini-2.0-flash", label: "gemini-2.0-flash", description: "google" },
+    ];
+    const result = resolveModelPickerItems("image_model", items);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].value, "nano-banana");
+  });
+});
+
+// ── resolveModelKeySubmenu (buildCategoryItems wiring helper) ────────
+
+describe("resolveModelKeySubmenu image_model wiring", () => {
+  /** Same shape getProviderModelInfo produces from a ModelRegistry. */
+  const registryModels = [
+    { value: "gemini-2.0-flash", label: "gemini-2.0-flash", description: "google" },
+    { value: "gpt-4o", label: "gpt-4o", description: "openai" },
+    { value: "gemini-3-pro-image", label: "gemini-3-pro-image", description: "google" },
+  ];
+
+  it("image_model picks only google image-capable models when present (PickerSubmenu path)", () => {
+    const result = resolveModelKeySubmenu("image_model", registryModels);
+    assert.equal(result.mode, "picker");
+    if (result.mode !== "picker") return;
+    assert.equal(result.models.length, 1);
+    assert.equal(result.models[0].value, "gemini-3-pro-image");
+    assert.ok(result.models.every((m) => m.description === "google"));
+    assert.ok(!result.models.some((m) => m.value === "gpt-4o"));
+    assert.ok(!result.models.some((m) => m.value === "gemini-2.0-flash"));
+    assert.equal(result.provider, "google");
+  });
+
+  it("image_model free-text InputSubmenu when registry has models but none from google", () => {
+    const noGoogle = [
+      { value: "gpt-4o", label: "gpt-4o", description: "openai" },
+      { value: "claude-sonnet", label: "claude-sonnet", description: "anthropic" },
+    ];
+    const result = resolveModelKeySubmenu("image_model", noGoogle);
+    assert.equal(result.mode, "input");
+    assert.equal(result.provider, "google");
+  });
+
+  it("image_model InputSubmenu when google models exist but none are image-capable", () => {
+    const textOnlyGoogle = [
+      { value: "gemini-2.0-flash", label: "gemini-2.0-flash", description: "google" },
+    ];
+    const result = resolveModelKeySubmenu("image_model", textOnlyGoogle);
+    assert.equal(result.mode, "input");
+    assert.equal(result.provider, "google");
+  });
+
+  it("agent_model re-resolves paired provider at call time (no stale closure)", () => {
+    const withOpenai = resolveModelKeySubmenu("agent_model", registryModels, {
+      agent_provider: "openai",
+    });
+    assert.equal(withOpenai.mode, "picker");
+    if (withOpenai.mode === "picker") {
+      assert.equal(withOpenai.models.length, 1);
+      assert.equal(withOpenai.models[0].value, "gpt-4o");
+    }
+
+    const withGoogle = resolveModelKeySubmenu("agent_model", registryModels, {
+      agent_provider: "google",
+    });
+    assert.equal(withGoogle.mode, "picker");
+    if (withGoogle.mode === "picker") {
+      assert.equal(withGoogle.models.length, 2);
+      assert.ok(withGoogle.models.every((m) => m.description === "google"));
+    }
+  });
+});
+
+describe("isImageGenModelId / isImageCapablePickerItem", () => {
+  it("matches imagen, image-generation, plus -image suffix ids", () => {
+    assert.equal(isImageGenModelId("imagen-3.0-generate-002"), true);
+    assert.equal(isImageGenModelId("gemini-2.0-flash-preview-image-generation"), true);
+    assert.equal(isImageGenModelId("gemini-3-pro-image"), true);
+  });
+
+  it("rejects google text model ids", () => {
+    assert.equal(isImageGenModelId("gemini-2.0-flash"), false);
+    assert.equal(isImageGenModelId("gemini-2.5-pro"), false);
+  });
+
+  it("treats output image as capable even when id has no image token", () => {
+    assert.equal(
+      isImageCapablePickerItem({
+        value: "nano-banana",
+        label: "nano-banana",
+        description: "google",
+        output: ["image"],
+      }),
+      true,
+    );
+  });
+
+  it("does not treat input image (vision) as generation-capable", () => {
+    assert.equal(
+      isImageCapablePickerItem({
+        value: "gemini-2.0-flash",
+        label: "gemini-2.0-flash",
+        description: "google",
+        input: ["text", "image"],
+      }),
+      false,
+    );
   });
 });
