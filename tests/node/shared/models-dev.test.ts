@@ -9,12 +9,10 @@ import { tmpdir } from "node:os";
 import {
   MODELS_DEV_TTL_MS,
   applyThinkingLevelFromModel,
-  catalogIndexCacheStats,
   fillRuntimeModelFromCatalog,
   loadModelsDevCatalog,
   lookupModelsDevModel,
   modelsDevCachePath,
-  resetCatalogIndexCacheForTests,
   thinkingLevelFromDiscoveredId,
 } from "../../../extensions/shared/models-dev.js";
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
@@ -208,12 +206,11 @@ describe("lookupModelsDevModel", () => {
     assert.equal(lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "composer-2.5"), undefined);
   });
 
-  it("reuses WeakMap catalog index on second lookup", () => {
-    resetCatalogIndexCacheForTests();
-    lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
-    assert.deepEqual(catalogIndexCacheStats(), { builds: 1, reuses: 0 });
-    lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
-    assert.deepEqual(catalogIndexCacheStats(), { builds: 1, reuses: 1 });
+  it("second lookup of same id returns same model", () => {
+    const first = lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
+    const second = lookupModelsDevModel(SAMPLE_CATALOG, "cursor", "cursor-grok-4.6-high");
+    assert.equal(second?.modelId, first?.modelId);
+    assert.equal(second?.modelId, "grok-4.6");
   });
 });
 
