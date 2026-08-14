@@ -42,7 +42,7 @@ pi-config/
 │   │   ├── cron-status-ui.ts        # /cron list + list-all overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
 │   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (uses overlay-dashboard)
-│   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O, model-picker resolution: image_model google filter + paired agent/internal_operations providers)
+│   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O, model-picker resolution: image_model google+image-capable filter + paired agent/internal_operations providers)
 │   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, multi-select, overrides)
 │   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + internal ops provider settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)

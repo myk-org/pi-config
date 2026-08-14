@@ -163,7 +163,7 @@ describe("sanitizeComsName", () => {
 		assert.equal(sanitizeComsName("my   agent   name"), "my-agent-name");
 	});
 
-	it("trims leading and trailing whitespace", () => {
+	it("trims leading plus trailing whitespace", () => {
 		assert.equal(sanitizeComsName("  coder  "), "coder");
 	});
 
@@ -365,7 +365,7 @@ describe("createDeferredProxy registerCommand", () => {
 		setComsActive(false);
 	});
 
-	it("clears active state and persists on reload reactivation failure", async () => {
+	it("clears active state on reload reactivation failure, persists", async () => {
 		const { setComsActive, isComsActive } = await import("../../../extensions/shared/coms-active.js");
 		setComsActive(true);
 		assert.equal(isComsActive(), true);

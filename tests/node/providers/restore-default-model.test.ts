@@ -23,7 +23,7 @@ import {
 } from "../../../extensions/providers/restore-default-model.js";
 
 describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
-  it("restores when current missing and defaults set (startup)", () => {
+  it("restores when current missing with defaults set (startup)", () => {
     assert.equal(
       shouldRestoreDefaultModel({
         reason: "startup",
@@ -285,13 +285,22 @@ describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
 });
 
 describe("argvHasModelOrProviderOverride / hasEnabledModelsScope", () => {
-  it("detects --model, --provider, and --models (including = forms)", () => {
+  it("detects --model flag", () => {
     assert.equal(argvHasModelOrProviderOverride(["--model"]), true);
-    assert.equal(argvHasModelOrProviderOverride(["--provider"]), true);
-    assert.equal(argvHasModelOrProviderOverride(["--models"]), true);
     assert.equal(argvHasModelOrProviderOverride(["--model=foo/foo-model"]), true);
+  });
+
+  it("detects --provider flag", () => {
+    assert.equal(argvHasModelOrProviderOverride(["--provider"]), true);
     assert.equal(argvHasModelOrProviderOverride(["--provider=foo"]), true);
+  });
+
+  it("detects --models flag", () => {
+    assert.equal(argvHasModelOrProviderOverride(["--models"]), true);
     assert.equal(argvHasModelOrProviderOverride(["--models=foo/foo-model"]), true);
+  });
+
+  it("ignores argv without model/provider/models flags", () => {
     assert.equal(argvHasModelOrProviderOverride(["node", "pi"]), false);
     assert.equal(argvHasModelOrProviderOverride(null), false);
     assert.equal(argvHasModelOrProviderOverride(undefined), false);
@@ -322,7 +331,7 @@ describe("resolvePiAgentDir / settings path (PI_CODING_AGENT_DIR)", () => {
     );
   });
 
-  it("uses PI_CODING_AGENT_DIR when set and no agentDir", () => {
+  it("uses PI_CODING_AGENT_DIR when set with no agentDir", () => {
     process.env.PI_CODING_AGENT_DIR = "/custom/pi-agent";
     assert.equal(resolvePiAgentDir(), "/custom/pi-agent");
     assert.equal(
@@ -408,7 +417,7 @@ describe("readPiAgentDefaults + merge", () => {
     assert.deepEqual(got, {});
   });
 
-  it("mergePiAgentDefaults: project wins for defaults and enabledModels", () => {
+  it("mergePiAgentDefaults: project wins for defaults plus enabledModels", () => {
     const merged = mergePiAgentDefaults(
       {
         defaultProvider: "global-p",

@@ -8,6 +8,10 @@
  * the test install). Callers pass a resolve function for settings lookups.
  */
 
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("rules");
+
 export function substituteRulePlaceholders(text: string, values: { reviewLoopMaxCycles: number }): string {
   return text.replaceAll("{{REVIEW_LOOP_MAX_CYCLES}}", String(values.reviewLoopMaxCycles));
 }
@@ -41,14 +45,18 @@ export function substituteSettingsPlaceholders(
 /** Truthiness for settings-gated rule blocks. */
 export function isSettingTruthy(value: unknown): boolean {
   if (value === false || value === null || value === undefined || value === "" || value === 0) {
+    log.debug("isSettingTruthy", { result: false, kind: value === "" ? "empty-string" : String(value) });
     return false;
   }
   if (Array.isArray(value) && value.length === 0) {
+    log.debug("isSettingTruthy", { result: false, kind: "empty-array" });
     return false;
   }
   if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value as object).length === 0) {
+    log.debug("isSettingTruthy", { result: false, kind: "empty-object" });
     return false;
   }
+  log.debug("isSettingTruthy", { result: true, kind: Array.isArray(value) ? "array" : typeof value });
   return true;
 }
 
@@ -59,37 +67,46 @@ export function parseConditionExpr(expr: string): {
   literal?: unknown;
 } | null {
   const trimmed = expr.trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    log.debug("parseConditionExpr empty");
+    return null;
+  }
   const cmp = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=)\s*(.*)$/);
   if (cmp) {
-    return {
+    const parsed = {
       key: cmp[1],
-      op: cmp[2] === "==" ? "eq" : "neq",
+      op: (cmp[2] === "==" ? "eq" : "neq") as "eq" | "neq",
       literal: parseConditionLiteral(cmp[3].trim()),
     };
+    log.debug("parseConditionExpr", parsed);
+    return parsed;
   }
   const keyOnly = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)$/);
   if (keyOnly) {
-    return { key: keyOnly[1], op: "truthy" };
+    const parsed = { key: keyOnly[1], op: "truthy" as const };
+    log.debug("parseConditionExpr", parsed);
+    return parsed;
   }
+  log.debug("parseConditionExpr malformed", trimmed);
   return null;
 }
 
 /** Parse `true`/`false`/`null`/number/string literals used in `key==value` conditions. */
 export function parseConditionLiteral(raw: string): unknown {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  if (raw === "null") return null;
-  if (
+  let result: unknown = raw;
+  if (raw === "true") result = true;
+  else if (raw === "false") result = false;
+  else if (raw === "null") result = null;
+  else if (
     (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) ||
     (raw.startsWith("'") && raw.endsWith("'") && raw.length >= 2)
   ) {
-    return raw.slice(1, -1);
+    result = raw.slice(1, -1);
+  } else if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
+    result = Number(raw);
   }
-  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
-    return Number(raw);
-  }
-  return raw;
+  log.debug("parseConditionLiteral", { raw, resultType: typeof result });
+  return result;
 }
 
 export type ConditionalEvalOpts = {
@@ -198,7 +215,9 @@ function conditionHolds(
   let value: unknown = undefined;
   if (opts?.knownKeys && !opts.knownKeys.includes(key)) {
     opts.onWarn?.(`unknown setting key in conditional: ${key}`);
-    // Unknown keys are falsy (undefined); still evaluate ==/!= against that.
+    // Fail closed: unknown keys never keep the block, including {{IFNOT:typo}}.
+    log.warn("conditionHolds fail-closed unknown key", { key, invert, op });
+    return false;
   } else {
     value = resolve(key);
   }

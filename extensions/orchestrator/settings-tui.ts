@@ -40,6 +40,7 @@ import {
   resolveSecretPrefill,
   sourceGlyph,
   resolveModelKeySubmenu,
+  type ModelSelectItem,
 } from "./settings-tui-helpers.js";
 import {
   OVERLAY_OPTS,
@@ -84,13 +85,14 @@ export {
 
 interface ProviderModelInfo {
   providers: SelectItem[];
-  models: SelectItem[];
+  models: ModelSelectItem[];
 }
 
 function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): ProviderModelInfo {
   if (!modelRegistry) return { providers: [], models: [] };
 
   const models = modelRegistry.getAvailable?.() || modelRegistry.getAll?.() || [];
+  log.debug("getProviderModelInfo", { modelCount: models.length });
 
   const providerSet = new Set<string>();
   for (const m of models) {
@@ -104,13 +106,18 @@ function getProviderModelInfo(modelRegistry: ModelRegistry | undefined): Provide
     label: p,
   }));
 
-  const modelItems: SelectItem[] = models
+  const modelItems: ModelSelectItem[] = models
     .filter((m) => !(m.provider || "").startsWith("acpx-"))
-    .map((m) => ({
-      value: m.id,
-      label: m.id,
-      description: m.provider,
-    }));
+    .map((m) => {
+      const extra = m as { input?: string[]; output?: string[] };
+      return {
+        value: m.id,
+        label: m.id,
+        description: m.provider,
+        input: Array.isArray(extra.input) ? extra.input : undefined,
+        output: Array.isArray(extra.output) ? extra.output : undefined,
+      };
+    });
 
   return { providers, models: modelItems };
 }

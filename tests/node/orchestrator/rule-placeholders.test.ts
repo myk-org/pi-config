@@ -96,8 +96,11 @@ describe("isSettingTruthy", () => {
 		assert.equal(isSettingTruthy(0), false);
 	});
 
-	it("treats empty array and empty object as falsy", () => {
+	it("treats empty array as falsy", () => {
 		assert.equal(isSettingTruthy([]), false);
+	});
+
+	it("treats empty object as falsy", () => {
 		assert.equal(isSettingTruthy({}), false);
 	});
 
@@ -120,16 +123,11 @@ describe("parseConditionExpr", () => {
 		});
 	});
 
-	it("parses == and != with literals", () => {
+	it("parses == with literals", () => {
 		assert.deepEqual(parseConditionExpr("mode==strict"), {
 			key: "mode",
 			op: "eq",
 			literal: "strict",
-		});
-		assert.deepEqual(parseConditionExpr('mode != "off"'), {
-			key: "mode",
-			op: "neq",
-			literal: "off",
 		});
 		assert.deepEqual(parseConditionExpr("count==3"), {
 			key: "count",
@@ -140,6 +138,14 @@ describe("parseConditionExpr", () => {
 			key: "flag",
 			op: "eq",
 			literal: true,
+		});
+	});
+
+	it("parses != with literals", () => {
+		assert.deepEqual(parseConditionExpr('mode != "off"'), {
+			key: "mode",
+			op: "neq",
+			literal: "off",
 		});
 	});
 
@@ -177,7 +183,7 @@ describe("evaluateConditionalBlocks", () => {
 		assert.equal(result, "");
 	});
 
-	it("supports == and != comparisons", () => {
+	it("supports == comparisons", () => {
 		const resolve = (key: string) => (key === "mode" ? "strict" : undefined);
 		assert.equal(
 			evaluateConditionalBlocks("{{IF:mode==strict}}yes{{/IF}}", resolve, { knownKeys }),
@@ -187,6 +193,10 @@ describe("evaluateConditionalBlocks", () => {
 			evaluateConditionalBlocks("{{IF:mode==loose}}yes{{/IF}}", resolve, { knownKeys }),
 			"",
 		);
+	});
+
+	it("supports != comparisons", () => {
+		const resolve = (key: string) => (key === "mode" ? "strict" : undefined);
 		assert.equal(
 			evaluateConditionalBlocks("{{IF:mode!=loose}}yes{{/IF}}", resolve, { knownKeys }),
 			"yes",
@@ -214,7 +224,7 @@ describe("evaluateConditionalBlocks", () => {
 		assert.equal(evaluateConditionalBlocks(text, resolveLoose, { knownKeys }), "outer  end");
 	});
 
-	it("treats unknown key as falsy and warns", () => {
+	it("treats unknown IF key as falsy with warning", () => {
 		const warnings: string[] = [];
 		const text = "{{IF:unknown_key}}secret{{/IF}}keep";
 		const result = evaluateConditionalBlocks(text, () => true, {
@@ -223,6 +233,16 @@ describe("evaluateConditionalBlocks", () => {
 		});
 		assert.equal(result, "keep");
 		assert.ok(warnings.some((w) => w.includes("unknown_key")));
+	});
+
+	it("strips IFNOT body for unknown key with warning", () => {
+		const warnings: string[] = [];
+		const result = evaluateConditionalBlocks("{{IFNOT:typo}}X{{/IFNOT}}", () => true, {
+			knownKeys,
+			onWarn: (msg) => warnings.push(msg),
+		});
+		assert.equal(result, "");
+		assert.ok(warnings.some((w) => w.includes("typo")));
 	});
 
 	it("leaves unbalanced markers as-is, warns, does not throw", () => {
@@ -254,7 +274,7 @@ describe("evaluateConditionalBlocks", () => {
 		assert.equal(evaluateConditionalBlocks(text, () => true, { knownKeys }), text);
 	});
 
-	it("nested IF/IFNOT mismatch: warn and leave as-is (kind stack)", () => {
+	it("nested IF/IFNOT mismatch: warn, leave as-is (kind stack)", () => {
 		const warnings: string[] = [];
 		// Outer IF closed by /IFNOT — mismatched closer must not pop
 		const text = "{{IF:mode}}outer {{IFNOT:count}}inner{{/IF}} end{{/IFNOT}}";
@@ -304,12 +324,12 @@ describe("evaluateConditionalBlocks", () => {
 });
 
 describe("parseRuleFrontmatter", () => {
-	it("returns empty attrs and raw body when no frontmatter", () => {
+	it("returns empty attrs plus raw body when no frontmatter", () => {
 		const raw = "# Rule\n\ncontent";
 		assert.deepEqual(parseRuleFrontmatter(raw), { attrs: {}, body: raw });
 	});
 
-	it("parses key: value attrs and body", () => {
+	it("parses key: value attrs plus body", () => {
 		const raw = "---\nrequires_setting: review_loop_enforcement\nrequires: coms_active\n---\n# Body\n";
 		const { attrs, body } = parseRuleFrontmatter(raw);
 		assert.deepEqual(attrs, {
@@ -372,7 +392,7 @@ describe("rulePassesFrontmatterGate", () => {
 		);
 	});
 
-	it("ANDs requires_setting and requires when both present", () => {
+	it("ANDs requires_setting with requires when both present", () => {
 		const attrs = { requires_setting: "dco", requires: "coms_active" };
 		assert.equal(
 			rulePassesFrontmatterGate(attrs, {
@@ -400,7 +420,7 @@ describe("rulePassesFrontmatterGate", () => {
 		);
 	});
 
-	it("warns and fails on unknown requires_setting / feature", () => {
+	it("warns, fails on unknown requires_setting / feature", () => {
 		const warnings: string[] = [];
 		assert.equal(
 			rulePassesFrontmatterGate({ requires_setting: "nope" }, {
@@ -426,7 +446,7 @@ describe("rulePassesFrontmatterGate", () => {
 		assert.ok(warnings.some((w) => w.includes("unknown feature")));
 	});
 
-	it("warns and fails when feature predicate throws", () => {
+	it("warns, fails when feature predicate throws", () => {
 		const warnings: string[] = [];
 		assert.equal(
 			rulePassesFrontmatterGate({ requires: "boom" }, {
@@ -478,7 +498,7 @@ describe("assembleRuleText", () => {
 		assert.doesNotMatch(off, /gated/);
 	});
 
-	it("skips whole file via frontmatter gate and calls onSkip", () => {
+	it("skips whole file via frontmatter gate, calls onSkip", () => {
 		const skipped: number[] = [];
 		const included: number[] = [];
 		const contents = [

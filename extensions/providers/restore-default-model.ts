@@ -43,8 +43,11 @@ export type RestoreDefaultModelOpts = {
 
 /** True when argv contains an explicit --model, --provider, or --models flag. */
 export function argvHasModelOrProviderOverride(argv: string[] | null | undefined): boolean {
-  if (!Array.isArray(argv)) return false;
-  return argv.some(
+  if (!Array.isArray(argv)) {
+    log.debug("argvHasModelOrProviderOverride", { result: false, reason: "not-array" });
+    return false;
+  }
+  const result = argv.some(
     (arg) =>
       arg === "--model" ||
       arg === "--provider" ||
@@ -53,13 +56,20 @@ export function argvHasModelOrProviderOverride(argv: string[] | null | undefined
       arg.startsWith("--provider=") ||
       arg.startsWith("--models="),
   );
+  log.debug("argvHasModelOrProviderOverride", { result, argvLen: argv.length });
+  return result;
 }
 
 /** True when settings enabledModels is a non-empty array (scopes like --models). */
 export function hasEnabledModelsScope(
   enabledModels: string[] | null | undefined,
 ): boolean {
-  return Array.isArray(enabledModels) && enabledModels.length > 0;
+  const result = Array.isArray(enabledModels) && enabledModels.length > 0;
+  log.debug("hasEnabledModelsScope", {
+    result,
+    length: Array.isArray(enabledModels) ? enabledModels.length : null,
+  });
+  return result;
 }
 
 /**

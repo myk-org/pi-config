@@ -19,7 +19,7 @@ Both extensions supported; `.jsonc` allows comments. Per-project settings overri
 | `pidash_enable` | boolean | `true` | `PI_PIDASH_ENABLE` | Enable pidash web dashboard (`false`/`0`/`no`/`off` disables) |
 | `pidiff_enable` | boolean | `true` | `PI_PIDIFF_ENABLE` | Enable pidiff diff viewer (`false`/`0`/`no`/`off` disables) |
 | `pidash_port` | number | `19190` | `PI_PIDASH_PORT` | pidash HTTP/WebSocket port |
-| `image_model` | string | disabled | `PI_IMAGE_MODEL` | Gemini/Google image model for `generate_image` (Settings TUI: google-only picker; empty = disabled) |
+| `image_model` | string | disabled | `PI_IMAGE_MODEL` | Gemini/Google image model for `generate_image` (Settings TUI: google + image-capable picker; empty = disabled) |
 | `internal_operations_provider` | string | unset | `PI_INTERNAL_OPERATIONS_PROVIDER` | Provider for detached LLM async children when parent is acpx (dream/cron/fireAndForget). Both this and `internal_operations_model` required. |
 | `internal_operations_model` | string | unset | `PI_INTERNAL_OPERATIONS_MODEL` | Model id for those children. If unset on acpx, must-async LLM work is skipped. |
 | `agent_provider` | string | `""` | — | Default provider for all subagents (e.g. `cli-cursor`). |
@@ -77,6 +77,9 @@ same-filename merge, **all** included rule files — from every layer — go thr
 2. **Per-file conditionals** — `evaluateConditionalBlocks` on each body (never across files):
    - `{{IF:key}}…{{/IF}}` — keep when truthy
    - `{{IFNOT:key}}…{{/IFNOT}}` — inverse
+   - Unknown setting keys (typos vs `knownKeys`, not a feature predicate) fail closed:
+     strip the block and warn — including `{{IFNOT:typo}}`. Unset *known* keys stay falsy
+     (`IF` strips, `IFNOT` keeps).
    - `{{IF:key==value}}` / `{{IF:key!=value}}` — compare resolved value to a literal
    - Nesting OK; mismatched closer kinds → warn + leave as-is
 3. **Join** included bodies with `\n\n`
@@ -114,8 +117,9 @@ The `/pi-config-settings [project|global]` slash command opens an interactive TU
 - **Two scopes:** `project` (writes to `<repo>/.pi/pi-config-settings.json`) and `global` (writes to `~/.pi/pi-config-settings.json`). Press Tab to switch.
 - **Source indicators:** Each setting shows its source: `P` (project file), `G` (global file), `E` (env var), `D` (default).
 - **Smart pickers:** Provider and model fields use fuzzy-searchable `SelectList` from
-  `ctx.modelRegistry`. `image_model` is hard-filtered to provider `google`; if that
-  filtered list is empty, the TUI falls back to free-text `InputSubmenu`.
+  `ctx.modelRegistry`. `image_model` is hard-filtered to provider `google` **and**
+  image-capable models (`output` includes `image`, else id matches imagen/image);
+  if that filtered list is empty, the TUI falls back to free-text `InputSubmenu`.
 - **Agent lists:** `acpx_agents` and `cli_agents` use multi-select with ☑/☐ toggles.
 - **Agent overrides:** Nested per-agent provider/model editor.
 - **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.

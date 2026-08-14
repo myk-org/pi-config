@@ -96,7 +96,9 @@ Rules auto-load alphabetically. Changes take effect on next pi session.
 
 **Conditional assembly** — see `dev-docs/project-settings.md` (Rules assembly). Essentials:
 
-- `{{IF:key}}` / `{{IFNOT:key}}` — settings truthiness (`isSettingTruthy`: empty object/array falsy) or feature predicates (`coms_active`, `external_ai_agents`)
+- `{{IF:key}}` / `{{IFNOT:key}}` — settings truthiness (`isSettingTruthy`: empty object/array falsy)
+  or feature predicates (`coms_active`, `external_ai_agents`). Unknown setting keys fail closed
+  (strip block + warn), including `{{IFNOT:typo}}`.
 - `{{IF:key==value}}` / `{{IF:key!=value}}` — literal compare
 - Frontmatter: `requires_setting` / `requires` (AND). Per-file conditionals then join then placeholders.
 
