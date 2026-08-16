@@ -150,8 +150,19 @@ describe("isPiOneshotInvocation", () => {
 		);
 	});
 
-	it("stops at -- so later -p in prompt is ignored", () => {
-		assert.equal(isPiOneshotInvocation(["node", "pi", "--", "-p", "hi"]), false);
+	it("treats -p after -- as print (parseArgs has no end-of-options)", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--", "-p", "hi"]), true);
+	});
+
+	it("ignores -p when it is the --name value", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--name", "-p"]), false);
+	});
+
+	it("ignores --print when it is the --api-key value", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--api-key", "--print"]),
+			false,
+		);
 	});
 
 	it("ignores -p when it is the --mode value", () => {

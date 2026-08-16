@@ -228,14 +228,36 @@ export function isPiMetaInvocation(argv: string[] = process.argv): boolean {
   return sawMeta;
 }
 
-/** Flags whose next argv token is a value, not a flag (even if it starts with `-`). */
+/**
+ * Value-taking flags from pi `parseArgs` (`@earendil-works/pi-coding-agent`
+ * `dist/cli/args.js`). `--mode` is handled separately. Keep this list in
+ * sync when upgrading pi. Next token is always a value, even if it starts
+ * with `-` (including `--`).
+ */
 const ONESHOT_VALUE_FLAGS = new Set([
-  "--mode",
   "--model",
   "--models",
   "--provider",
+  "--api-key",
+  "--system-prompt",
+  "--append-system-prompt",
+  "--name",
+  "-n",
   "--session",
   "--session-id",
+  "--fork",
+  "--session-dir",
+  "--tools",
+  "-t",
+  "--exclude-tools",
+  "-xt",
+  "--thinking",
+  "--export",
+  "--extension",
+  "-e",
+  "--skill",
+  "--prompt-template",
+  "--theme",
 ]);
 
 const PI_MODES = new Set(["text", "json", "rpc"]);
@@ -248,8 +270,9 @@ const PI_MODES = new Set(["text", "json", "rpc"]);
  * Mirrors pi `parseArgs` + `resolveAppMode` (without TTY): last valid
  * `--mode <text|json|rpc>` wins; rpc is never oneshot; json is; print flag
  * is oneshot unless last mode is rpc. `--mode=json` / `--mode=rpc` are unknown
- * flags in pi (not mode). Stops at `--`. Value-aware so `--mode -p` does not
- * treat `-p` as the print flag (pi consumes it as an invalid mode value).
+ * flags in pi (not mode). Value-aware so `--mode -p` does not treat `-p`
+ * as the print flag (pi consumes it as an invalid mode value). No `--`
+ * end-of-options (parseArgs has none).
  *
  * CLI/ACPX providers still load. Non-TTY print (`echo | pi`) is not detected
  * here — argv has no flags; use `ctx.mode` after session_start.
@@ -260,7 +283,6 @@ export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
   let print = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--") break;
     if (arg === "-p" || arg === "--print") {
       print = true;
       continue;
@@ -273,9 +295,8 @@ export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
       }
       continue;
     }
-    if (ONESHOT_VALUE_FLAGS.has(arg)) {
-      const value = args[i + 1];
-      if (value !== undefined && value !== "--") i += 1;
+    if (ONESHOT_VALUE_FLAGS.has(arg) && args[i + 1] !== undefined) {
+      i += 1;
     }
   }
   const oneshot = lastMode === "rpc" ? false : lastMode === "json" || print;
@@ -298,7 +319,7 @@ export function shouldSkipOneshotRegister(
 /**
  * Shutdown dream runs `runDreamAsync` → `spawnAsyncAgent` (not detached/unref'd).
  * Skip when argv is oneshot OR session `mode` is print/json so `pi -p` can exit.
- * Rpc/interactive is not skipped.
+ * Does not skip rpc/tui unless argv is oneshot (`-p` + `--mode rpc` is not oneshot).
  */
 export function shouldSkipOneshotShutdownDream(
   mode?: string | null,

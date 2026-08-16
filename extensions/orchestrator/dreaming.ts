@@ -329,7 +329,8 @@ export function registerDreaming(
     lastCwd = ctx.cwd;
     lastCtx = ctx;
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
-    // Skip dreaming in one-shot modes (print/json) — timer and shutdown dream
+    // Skip auto-dream timer in print/json; shutdown dream is skipped in
+    // session_shutdown via shouldSkipOneshotShutdownDream.
     if (ctx.mode === "print" || ctx.mode === "json") {
       log.debug("skip dream timer: print/json mode");
       return;
