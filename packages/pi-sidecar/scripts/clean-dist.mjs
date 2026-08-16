@@ -26,9 +26,14 @@ function createLogger(name) {
     mkdirSync(dir, { recursive: true });
     file = join(dir, "postbuild.log");
   } catch (err) {
-    process.stderr.write(
-      `[sidecar] clean-dist: file logging unavailable for ${name}: ${String(err)}\n`,
-    );
+    try {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[sidecar] clean-dist: file logging unavailable for ${name}: ${detail}\n`,
+      );
+    } catch {
+      // stderr may be closed; logging stays best-effort.
+    }
     return noop;
   }
   const emit = (level, args) => {
