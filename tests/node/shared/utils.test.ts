@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream } from "../../../extensions/orchestrator/utils.js";
+import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, skipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
 
 describe("djb2Hash", () => {
 	it("returns same value for same input (deterministic)", () => {
@@ -108,6 +108,27 @@ describe("isPiOneshotInvocation", () => {
 		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode=rpc"]), false);
 	});
 
+	it("rpc wins over -p before print flag", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--mode", "rpc", "-p", "hi"]),
+			false,
+		);
+	});
+
+	it("rpc wins over -p after print flag", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "-p", "--mode", "rpc"]),
+			false,
+		);
+	});
+
+	it("rpc equals form wins over --print", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--print", "hi", "--mode=rpc"]),
+			false,
+		);
+	});
+
 	it("stops at -- so later -p in prompt is ignored", () => {
 		assert.equal(isPiOneshotInvocation(["node", "pi", "--", "-p", "hi"]), false);
 	});
@@ -163,5 +184,25 @@ describe("shouldSkipOneshotShutdownDream", () => {
 			shouldSkipOneshotShutdownDream(undefined, ["node", "pi"]),
 			false,
 		);
+	});
+});
+
+describe("skipOneshotRegister", () => {
+	it("logs and returns true on -p", () => {
+		const messages: string[] = [];
+		assert.equal(
+			skipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi", "-p", "hi"]),
+			true,
+		);
+		assert.deepEqual(messages, ["skip register: oneshot print/json"]);
+	});
+
+	it("returns false for interactive argv", () => {
+		const messages: string[] = [];
+		assert.equal(
+			skipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi"]),
+			false,
+		);
+		assert.deepEqual(messages, []);
 	});
 });

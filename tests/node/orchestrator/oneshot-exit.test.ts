@@ -27,18 +27,13 @@ const SKIP_REGISTER_FILES = [
 ];
 
 describe("oneshot skip call sites", () => {
-  it("session extras still skip register via isPiOneshotInvocation", () => {
+  it("session extras still skip register via skipOneshotRegister", () => {
     for (const rel of SKIP_REGISTER_FILES) {
       const src = readFileSync(path.join(repoRoot, rel), "utf8");
       assert.match(
         src,
-        /if \(isPiOneshotInvocation\(\)\)/,
+        /skipOneshotRegister\(log\)/,
         `${rel} must skip register on oneshot`,
-      );
-      assert.match(
-        src,
-        /skip register: oneshot print\/json/,
-        `${rel} must log the oneshot skip`,
       );
     }
   });

@@ -547,8 +547,9 @@ PI_PIDASH_PORT=9999 pi
 PI_PIDASH_ENABLE=false pi
 ```
 
-Oneshot (`pi -p` / `--mode json`) does not load pidash, pidiff, pitasks, or coms
-so the process can exit after the reply. CLI and ACPX providers still load.
+Oneshot (`pi -p` / `--print` / `--mode json`) skips register of pidash, pidiff,
+pitasks, and coms so those daemons/watchers do not start. CLI and ACPX providers
+still load. `--mode rpc` is long-lived and is not skipped.
 
 **Management:**
 
@@ -574,7 +575,8 @@ Pidiff is a per-project diff viewer that opens in your browser, providing rich b
 
 **How it works:**
 
-- Each pi session spawns its own server (`pidiff-server.ts`) on a random free port
+- Each interactive pi session spawns its own server (`pidiff-server.ts`) on a random free port
+- Oneshot (`pi -p` / `--mode json`) skips pidiff register, so no per-session server starts
 - Container and native sessions get separate servers automatically
 - Lockfiles in `.pi/tmp/` track port and PID for each server
 - The extension (`pidiff.ts`) connects to its session's server and registers its repo

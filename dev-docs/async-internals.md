@@ -43,11 +43,15 @@ No legacy `registerProvider(name, { streamSimple })` bag.
 **Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
 skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
 
-**Oneshot invocations:** `isPiOneshotInvocation()` skips pitasks, pidash, pidiff,
-and coms on `-p` / `--print` / `--mode json` so the process can exit after the
-reply. CLI/ACPX providers still load. `--mode rpc` is long-lived and is not skipped.
-The scanner consumes the next token after value flags (`--mode`, `--model`,
-`--provider`, `--session-id`, …) so a dash-prefixed *value* is not treated as `-p`.
+**Oneshot invocations:** `isPiOneshotInvocation()` / `skipOneshotRegister()` skip
+pitasks, pidash, pidiff, and coms on `-p` / `--print` / `--mode json` /
+`--mode=json` so the process can exit after the reply. CLI/ACPX providers still
+load. `--mode rpc` / `--mode=rpc` is long-lived and is not skipped (rpc wins over
+`-p`, matching pi's `resolveAppMode`). The scanner consumes the next token after
+value flags (`--mode`, `--model`, `--models`, `--provider`, `--session`,
+`--session-id`) so a dash-prefixed *value* is not treated as `-p`.
+`shouldSkipOneshotShutdownDream()` also skips the shutdown dream spawn (not
+detached/unref'd) so `pi -p` can exit.
 
 **Code-enforced (not prompt-only):**
 
@@ -127,7 +131,9 @@ Modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured outpu
 
 | Feature | Guard | Reason |
 |---------|-------|--------|
-| Daemon connections (pidash, pidiff) | `ctx.mode === "tui"` | No UI to display |
+| Session extras register (pitasks, pidash, pidiff, coms) | `skipOneshotRegister()` / argv `isPiOneshotInvocation()` | Watchers/sockets keep the event loop alive; argv runs before `ctx.mode` exists |
+| Shutdown dream spawn | `shouldSkipOneshotShutdownDream()` | Spawn is not detached/unref'd |
+| Daemon connections (pidash, pidiff) | `ctx.mode === "tui"` | No UI to display (rpc/tui path after register) |
 | Autocomplete providers | `ctx.mode === "tui"` | No editor input |
 | Cron scheduling | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no timers |
 | Dreaming (auto-dream timer) | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no background work |

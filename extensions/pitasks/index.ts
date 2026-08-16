@@ -12,7 +12,7 @@ import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "../orchestrator/project-settings.js";
-import { isPiOneshotInvocation } from "../orchestrator/utils.js";
+import { skipOneshotRegister } from "../orchestrator/utils.js";
 import {
 	pendingReminderContent,
 	staleReminderContent,
@@ -122,10 +122,7 @@ export function deleteTaskForSession(sessionId: string, taskId: string, targetCw
 
 export default function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
-	if (isPiOneshotInvocation()) {
-		log.info("skip register: oneshot print/json");
-		return;
-	}
+	if (skipOneshotRegister(log)) return;
 	let shuttingDown = false;
 	const taskScope = "session";
 	const piTasks = process.env.PI_TASKS;

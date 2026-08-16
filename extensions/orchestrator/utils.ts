@@ -238,18 +238,34 @@ const ONESHOT_VALUE_FLAGS = new Set([
   "--session-id",
 ]);
 
+/** Pi resolveAppMode: rpc wins over print. `--mode rpc` is never oneshot. */
+function argvHasRpcMode(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === "--mode=rpc") return true;
+    if (arg === "--mode" && args[i + 1] === "rpc") return true;
+  }
+  return false;
+}
+
 /**
  * True when this process is a oneshot pi invocation (`-p` / `--print` /
- * `--mode json`). Session extensions (pitasks, pidash, pidiff, coms) must not
- * register — watchers and sockets keep the Node event loop alive after the reply.
+ * `--mode json` / `--mode=json`). Session extras must not register —
+ * watchers and sockets keep the Node event loop alive after the reply.
  *
- * CLI/ACPX providers still load. `--mode rpc` is long-lived and returns false.
+ * CLI/ACPX providers still load. `--mode rpc` / `--mode=rpc` is long-lived
+ * and returns false even if `-p` is also present (rpc wins, matching pi).
  * Stops at `--` so prompt tokens are ignored.
  * Value-aware: consumes the token after known value flags so a dash-prefixed
  * *value* (e.g. `--mode -p`) is not treated as the print flag.
  */
 export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
   const args = argv.slice(2);
+  if (argvHasRpcMode(args)) {
+    log.debug("oneshot: --mode rpc (not oneshot)");
+    return false;
+  }
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--") break;
@@ -268,12 +284,23 @@ export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
         return true;
       }
       if (value !== undefined && value !== "--") {
-        log.debug("oneshot: skip flag value", { arg, value });
         i += 1;
       }
     }
   }
   return false;
+}
+
+/** Skip pitasks/pidash/pidiff/coms register on oneshot. Caller returns if true. */
+export function skipOneshotRegister(
+  logger: { info: (msg: string) => void },
+  argv: string[] = process.argv,
+): boolean {
+  const skip = isPiOneshotInvocation(argv);
+  log.debug("skipOneshotRegister", { skip });
+  if (!skip) return false;
+  logger.info("skip register: oneshot print/json");
+  return true;
 }
 
 /**

@@ -12,15 +12,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
-import { isPiOneshotInvocation } from "../orchestrator/utils.js";
+import { skipOneshotRegister } from "../orchestrator/utils.js";
 import { registerComs } from "./coms-wrapper.js";
 
 const log = createLogger("coms");
 
 export default function (pi: ExtensionAPI) {
-    if (isPiOneshotInvocation()) {
-        log.info("skip register: oneshot print/json");
-        return;
-    }
+    if (skipOneshotRegister(log)) return;
     registerComs(pi);
 }
