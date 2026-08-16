@@ -215,16 +215,29 @@ describe("file-logger", () => {
       `../../../extensions/shared/logger.ts?t=${Date.now() + 10}`
     );
 
-    const loggerName = `api_logger_${Date.now()}`;
+    const log = createLogger(`api_logger_${Date.now()}`);
+    assert.equal(typeof log.debug, "function");
+    assert.equal(typeof log.info, "function");
+    assert.equal(typeof log.warn, "function");
+    assert.equal(typeof log.error, "function");
+  });
+
+  it("createLogger returns isDebugEnabled", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-dbg-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 17}`
+    );
+
+    const loggerName = `api_dbg_${Date.now()}`;
     const apiEnvKey = `PI_LOG_${loggerName.toUpperCase()}`;
     const prevApiEnv = process.env[apiEnvKey];
     delete process.env[apiEnvKey];
     try {
       const log = createLogger(loggerName);
-      assert.equal(typeof log.debug, "function");
-      assert.equal(typeof log.info, "function");
-      assert.equal(typeof log.warn, "function");
-      assert.equal(typeof log.error, "function");
       assert.equal(typeof log.isDebugEnabled, "function");
       assert.equal(typeof log.isDebugEnabled(), "boolean");
     } finally {
