@@ -12,12 +12,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
-import { skipOneshotRegister } from "../orchestrator/utils.js";
+import { shouldSkipOneshotRegister } from "../orchestrator/utils.js";
 import { registerComs } from "./coms-wrapper.js";
 
 const log = createLogger("coms");
 
 export default function (pi: ExtensionAPI) {
-    if (skipOneshotRegister(log)) return;
+    if (shouldSkipOneshotRegister(log)) return;
     registerComs(pi);
 }

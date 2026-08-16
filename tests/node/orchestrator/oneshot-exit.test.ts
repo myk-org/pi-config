@@ -27,12 +27,12 @@ const SKIP_REGISTER_FILES = [
 ];
 
 describe("oneshot skip call sites", () => {
-  it("session extras still skip register via skipOneshotRegister", () => {
+  it("session extras still skip register via shouldSkipOneshotRegister", () => {
     for (const rel of SKIP_REGISTER_FILES) {
       const src = readFileSync(path.join(repoRoot, rel), "utf8");
       assert.match(
         src,
-        /skipOneshotRegister\(log\)/,
+        /shouldSkipOneshotRegister\(log\)/,
         `${rel} must skip register on oneshot`,
       );
     }

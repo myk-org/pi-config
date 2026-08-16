@@ -576,7 +576,7 @@ Pidiff is a per-project diff viewer that opens in your browser, providing rich b
 **How it works:**
 
 - Each interactive pi session spawns its own server (`pidiff-server.ts`) on a random free port
-- Oneshot (`pi -p` / `--mode json`) skips pidiff register, so no per-session server starts
+- Oneshot (`pi -p` / `--print` / `--mode json`) skips pidiff register, so no per-session server starts
 - Container and native sessions get separate servers automatically
 - Lockfiles in `.pi/tmp/` track port and PID for each server
 - The extension (`pidiff.ts`) connects to its session's server and registers its repo

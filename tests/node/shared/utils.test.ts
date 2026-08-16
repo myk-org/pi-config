@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, skipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
+import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, shouldSkipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
 
 describe("djb2Hash", () => {
 	it("returns same value for same input (deterministic)", () => {
@@ -85,8 +85,8 @@ describe("isPiOneshotInvocation", () => {
 		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode", "json", "hi"]), true);
 	});
 
-	it("detects --mode=json", () => {
-		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode=json", "hi"]), true);
+	it("ignores --mode=json (pi parseArgs treats equals as unknown flag)", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode=json", "hi"]), false);
 	});
 
 	it("detects -p mixed with --model", () => {
@@ -122,10 +122,31 @@ describe("isPiOneshotInvocation", () => {
 		);
 	});
 
-	it("rpc equals form wins over --print", () => {
+	it("ignores --mode=rpc so -p stays oneshot", () => {
 		assert.equal(
 			isPiOneshotInvocation(["node", "pi", "--print", "hi", "--mode=rpc"]),
+			true,
+		);
+	});
+
+	it("last --mode json wins over earlier rpc", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--mode", "rpc", "--mode", "json"]),
+			true,
+		);
+	});
+
+	it("last --mode text wins over earlier json", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--mode", "json", "--mode", "text"]),
 			false,
+		);
+	});
+
+	it("print flag is oneshot when last mode is text", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--mode", "json", "--mode", "text", "-p"]),
+			true,
 		);
 	});
 
@@ -187,11 +208,11 @@ describe("shouldSkipOneshotShutdownDream", () => {
 	});
 });
 
-describe("skipOneshotRegister", () => {
+describe("shouldSkipOneshotRegister", () => {
 	it("logs and returns true on -p", () => {
 		const messages: string[] = [];
 		assert.equal(
-			skipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi", "-p", "hi"]),
+			shouldSkipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi", "-p", "hi"]),
 			true,
 		);
 		assert.deepEqual(messages, ["skip register: oneshot print/json"]);
@@ -200,7 +221,7 @@ describe("skipOneshotRegister", () => {
 	it("returns false for interactive argv", () => {
 		const messages: string[] = [];
 		assert.equal(
-			skipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi"]),
+			shouldSkipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi"]),
 			false,
 		);
 		assert.deepEqual(messages, []);

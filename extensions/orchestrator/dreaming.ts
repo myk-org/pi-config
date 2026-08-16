@@ -338,13 +338,10 @@ export function registerDreaming(
     if (enabled) startTimer(ctx.cwd);
   });
 
-  // Fire-and-forget dream on session shutdown.
-  // Uses detached spawn (not async agent) because the session is ending —
-  // async agents need the pi process alive to deliver results.
+  // Shutdown dream: runDreamAsync → spawnAsyncAgent (not detached/unref'd).
+  // Skip oneshot print/json or the child keeps the parent event loop alive.
   pi.on("session_shutdown", (event) => {
     stopTimer();
-    // Print/json oneshot: skip shutdown dream. spawnAsyncAgent is not
-    // detached/unref'd — the child keeps the parent event loop alive.
     if (shouldSkipOneshotShutdownDream(lastCtx?.mode)) {
       log.info("skip shutdown dream: oneshot print/json");
       return;
@@ -355,8 +352,6 @@ export function registerDreaming(
     // session continues or transitions, not ending meaningfully.
     if ((event as any).reason && (event as any).reason !== "quit") return;
 
-    // On shutdown, run a lightweight dream via detached async runner
-    // (can't use spawnAsyncAgent since the session is ending)
     try {
       runDreamAsync(lastCwd);
     } catch (err) {

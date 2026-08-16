@@ -238,74 +238,67 @@ const ONESHOT_VALUE_FLAGS = new Set([
   "--session-id",
 ]);
 
-/** Pi resolveAppMode: rpc wins over print. `--mode rpc` is never oneshot. */
-function argvHasRpcMode(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--") break;
-    if (arg === "--mode=rpc") return true;
-    if (arg === "--mode" && args[i + 1] === "rpc") return true;
-  }
-  return false;
-}
+const PI_MODES = new Set(["text", "json", "rpc"]);
 
 /**
- * True when this process is a oneshot pi invocation (`-p` / `--print` /
- * `--mode json` / `--mode=json`). Session extras must not register —
- * watchers and sockets keep the Node event loop alive after the reply.
+ * True when argv is a oneshot pi invocation (`-p` / `--print` / `--mode json`).
+ * Session extras must not register — watchers and sockets keep the event loop
+ * alive after the reply.
  *
- * CLI/ACPX providers still load. `--mode rpc` / `--mode=rpc` is long-lived
- * and returns false even if `-p` is also present (rpc wins, matching pi).
- * Stops at `--` so prompt tokens are ignored.
- * Value-aware: consumes the token after known value flags so a dash-prefixed
- * *value* (e.g. `--mode -p`) is not treated as the print flag.
+ * Mirrors pi `parseArgs` + `resolveAppMode` (without TTY): last valid
+ * `--mode <text|json|rpc>` wins; rpc is never oneshot; json is; print flag
+ * is oneshot unless last mode is rpc. `--mode=json` / `--mode=rpc` are unknown
+ * flags in pi (not mode). Stops at `--`. Value-aware so `--mode -p` does not
+ * treat `-p` as the print flag (pi consumes it as an invalid mode value).
+ *
+ * CLI/ACPX providers still load. Non-TTY print (`echo | pi`) is not detected
+ * here — argv has no flags; use `ctx.mode` after session_start.
  */
 export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
   const args = argv.slice(2);
-  if (argvHasRpcMode(args)) {
-    log.debug("oneshot: --mode rpc (not oneshot)");
-    return false;
-  }
+  let lastMode: string | undefined;
+  let print = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--") break;
     if (arg === "-p" || arg === "--print") {
-      log.debug("oneshot: print flag", arg);
-      return true;
+      print = true;
+      continue;
     }
-    if (arg.startsWith("--mode=") && arg.slice("--mode=".length) === "json") {
-      log.debug("oneshot: --mode=json");
-      return true;
+    if (arg === "--mode") {
+      const value = args[i + 1];
+      if (value !== undefined) {
+        i += 1;
+        if (PI_MODES.has(value)) lastMode = value;
+      }
+      continue;
     }
     if (ONESHOT_VALUE_FLAGS.has(arg)) {
       const value = args[i + 1];
-      if (arg === "--mode" && value === "json") {
-        log.debug("oneshot: --mode json");
-        return true;
-      }
-      if (value !== undefined && value !== "--") {
-        i += 1;
-      }
+      if (value !== undefined && value !== "--") i += 1;
     }
   }
-  return false;
+  const oneshot = lastMode === "rpc" ? false : lastMode === "json" || print;
+  log.debug("oneshot argv", { oneshot, lastMode, print });
+  return oneshot;
 }
 
-/** Skip pitasks/pidash/pidiff/coms register on oneshot. Caller returns if true. */
-export function skipOneshotRegister(
+/** True when pitasks/pidash/pidiff/coms should skip register. Caller returns if true. */
+export function shouldSkipOneshotRegister(
   logger: { info: (msg: string) => void },
   argv: string[] = process.argv,
 ): boolean {
   const skip = isPiOneshotInvocation(argv);
-  log.debug("skipOneshotRegister", { skip });
+  log.debug("shouldSkipOneshotRegister", { skip });
   if (!skip) return false;
   logger.info("skip register: oneshot print/json");
   return true;
 }
 
 /**
- * Shutdown dream spawn is not detached/unref'd — skip it for oneshot
- * print/json so `pi -p` / `--mode json` can exit.
+ * Shutdown dream runs `runDreamAsync` → `spawnAsyncAgent` (not detached/unref'd).
+ * Skip when argv is oneshot OR session `mode` is print/json so `pi -p` can exit.
+ * Rpc/interactive is not skipped.
  */
 export function shouldSkipOneshotShutdownDream(
   mode?: string | null,
