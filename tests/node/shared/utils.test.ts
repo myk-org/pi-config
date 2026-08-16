@@ -227,21 +227,29 @@ describe("shouldSkipOneshotShutdownDream", () => {
 });
 
 describe("shouldSkipOneshotRegister", () => {
-	it("logs and returns true on -p", () => {
-		const messages: string[] = [];
+	it("returns true on -p", () => {
 		assert.equal(
-			shouldSkipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi", "-p", "hi"]),
+			shouldSkipOneshotRegister({ info() {} }, ["node", "pi", "-p", "hi"]),
 			true,
 		);
+	});
+
+	it("logs skip register on -p", () => {
+		const messages: string[] = [];
+		shouldSkipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi", "-p", "hi"]);
 		assert.deepEqual(messages, ["skip register: oneshot print/json"]);
 	});
 
 	it("returns false for interactive argv", () => {
-		const messages: string[] = [];
 		assert.equal(
-			shouldSkipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi"]),
+			shouldSkipOneshotRegister({ info() {} }, ["node", "pi"]),
 			false,
 		);
+	});
+
+	it("does not log skip for interactive argv", () => {
+		const messages: string[] = [];
+		shouldSkipOneshotRegister({ info: (m) => messages.push(m) }, ["node", "pi"]);
 		assert.deepEqual(messages, []);
 	});
 });

@@ -19,7 +19,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
-import { shouldSkipOneshotRegister } from "../orchestrator/utils.js";
+import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pidash");

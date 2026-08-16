@@ -28,7 +28,7 @@ import {
 import { createLogger } from "../shared/logger.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 import { getSetting } from "../orchestrator/project-settings.js";
-import { shouldSkipOneshotRegister } from "../orchestrator/utils.js";
+import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { evaluateSpawnLock } from "./spawn-lock.js";
 
 /** Re-export for callers/tests that import from pidiff. */

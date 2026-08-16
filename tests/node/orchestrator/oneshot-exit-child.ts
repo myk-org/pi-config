@@ -7,7 +7,7 @@ import {
   isPiOneshotInvocation,
   shouldSkipOneshotRegister,
   shouldSkipOneshotShutdownDream,
-} from "../../../extensions/orchestrator/utils.ts";
+} from "../../../extensions/shared/oneshot.ts";
 
 process.argv = ["node", "pi", "-p", "say hi"];
 

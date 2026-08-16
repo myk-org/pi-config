@@ -12,7 +12,7 @@ import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "../orchestrator/project-settings.js";
-import { shouldSkipOneshotRegister } from "../orchestrator/utils.js";
+import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
 	pendingReminderContent,
 	staleReminderContent,

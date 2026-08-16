@@ -133,8 +133,8 @@ Writing effective rules:
 - **pidiff** runs as a per-project server (one per cwd, not shared).
   Random free port, tracked via `.pi/tmp/pidiff.port` and `.pi/tmp/pidiff.pid`.
 - Oneshot (`-p` / `--print` / `--mode json`): pitasks, pidash, pidiff, and coms
-  skip register; shutdown dream also skipped. See `dev-docs/async-internals.md`
-  (Oneshot invocations). `--mode rpc` is not oneshot.
+  skip register via `extensions/shared/oneshot.ts`; shutdown dream also skipped.
+  See `dev-docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.
 - Extension commands: see `dev-docs/extension-commands.md`
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`

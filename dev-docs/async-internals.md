@@ -43,8 +43,9 @@ No legacy `registerProvider(name, { streamSimple })` bag.
 **Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
 skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
 
-**Oneshot invocations:** `isPiOneshotInvocation()` / `shouldSkipOneshotRegister()` skip
-pitasks, pidash, pidiff, and coms on `-p` / `--print` / `--mode json` so the
+**Oneshot invocations:** `isPiOneshotInvocation()` / `shouldSkipOneshotRegister()`
+(`extensions/shared/oneshot.ts`, re-exported from `extensions/orchestrator/utils.ts`)
+skip pitasks, pidash, pidiff, and coms on `-p` / `--print` / `--mode json` so the
 process can exit after the reply. CLI/ACPX providers still load. Last valid
 `--mode <text|json|rpc>` wins (matching pi `parseArgs`); rpc is never oneshot
 even with `-p`. `--mode=json` / `--mode=rpc` are unknown flags in pi, not mode.
