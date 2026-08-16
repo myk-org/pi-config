@@ -220,6 +220,8 @@ describe("file-logger", () => {
     assert.equal(typeof log.info, "function");
     assert.equal(typeof log.warn, "function");
     assert.equal(typeof log.error, "function");
+    assert.equal(typeof log.isDebugEnabled, "function");
+    assert.equal(log.isDebugEnabled(), false);
   });
 
   it("createLogger info writes to log file", async () => {
@@ -270,5 +272,37 @@ describe("file-logger", () => {
     // Verify stack frames are present (not just the error message)
     assert.match(body, /Error: boom/);
     assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
+  });
+
+  it("isLevelEnabled is false for debug at default info", async () => {
+    const { isLevelEnabled } = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 13}`
+    );
+    assert.equal(isLevelEnabled("level_default_info", "debug"), false);
+    assert.equal(isLevelEnabled("level_default_info", "info"), true);
+  });
+
+  it("isLevelEnabled honors PI_LOG env", async () => {
+    process.env.PI_LOG_LEVEL_ENV_DBG = "debug";
+    try {
+      const { isLevelEnabled } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 14}`
+      );
+      assert.equal(isLevelEnabled("level_env_dbg", "debug"), true);
+    } finally {
+      delete process.env.PI_LOG_LEVEL_ENV_DBG;
+    }
+  });
+
+  it("isLevelEnabled is false when level is off", async () => {
+    process.env.PI_LOG_LEVEL_ENV_OFF = "off";
+    try {
+      const { isLevelEnabled } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 15}`
+      );
+      assert.equal(isLevelEnabled("level_env_off", "error"), false);
+    } finally {
+      delete process.env.PI_LOG_LEVEL_ENV_OFF;
+    }
   });
 });

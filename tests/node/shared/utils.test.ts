@@ -188,7 +188,7 @@ describe("isPiOneshotInvocation", () => {
 		);
 	});
 
-	it("still detects -p when PI_LOG_ONESHOT is debug", () => {
+	it("still detects -p when oneshot debug is enabled", () => {
 		const prev = process.env.PI_LOG_ONESHOT;
 		process.env.PI_LOG_ONESHOT = "debug";
 		try {

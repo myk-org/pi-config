@@ -53,8 +53,8 @@ const PI_MODES = new Set(["text", "json", "rpc"]);
  * flags in pi (not mode). Value-aware so `--mode -p` does not treat `-p`
  * as the print flag. No `--` end-of-options (parseArgs has none).
  *
- * Debug log is gated on PI_LOG_ONESHOT=debug. Unconditional fileLog would
- * sync-resolve settings on every extension register even when debug is filtered.
+ * Debug log uses isDebugEnabled() (same log_oneshot / PI_LOG_ONESHOT sources
+ * as fileLog). Level is cached 30s so register/argv scan does not re-stat.
  *
  * CLI/ACPX providers still load. Non-TTY stdin or stdout print (`echo | pi`,
  * `pi | cat`) without those flags is not detected here — argv has no flags;
@@ -83,7 +83,7 @@ export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
     }
   }
   const oneshot = lastMode === "rpc" ? false : lastMode === "json" || print;
-  if (process.env.PI_LOG_ONESHOT === "debug") {
+  if (log.isDebugEnabled()) {
     log.debug("oneshot argv", { oneshot, lastMode, print });
   }
   return oneshot;

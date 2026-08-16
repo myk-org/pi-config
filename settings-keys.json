@@ -498,6 +498,20 @@
     ],
     "group": "Logging"
   },
+  "log_oneshot": {
+    "description": "Log level for oneshot argv helpers (`pi -p` / `--mode json`)",
+    "type": "string",
+    "env": "PI_LOG_ONESHOT",
+    "default": "info",
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
+    "group": "Logging"
+  },
   "task_auto_clear_enabled": {
     "description": "Enable automatic removal of completed tasks",
     "type": "bool",
