@@ -43,6 +43,10 @@ No legacy `registerProvider(name, { streamSimple })` bag.
 **Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
 skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
 
+**Oneshot invocations:** `isPiOneshotInvocation()` skips pitasks, pidash, pidiff,
+and coms on `-p` / `--print` / `--mode json` so the process can exit after the
+reply. CLI/ACPX providers still load. `--mode rpc` is long-lived and is not skipped.
+
 **Code-enforced (not prompt-only):**
 
 - `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`

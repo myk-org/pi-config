@@ -547,6 +547,9 @@ PI_PIDASH_PORT=9999 pi
 PI_PIDASH_ENABLE=false pi
 ```
 
+Oneshot (`pi -p` / `--mode json`) does not load pidash, pidiff, pitasks, or coms
+so the process can exit after the reply. CLI and ACPX providers still load.
+
 **Management:**
 
 ```bash

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { djb2Hash, isPiMetaInvocation } from "../../../extensions/orchestrator/utils.js";
+import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation } from "../../../extensions/orchestrator/utils.js";
 
 describe("djb2Hash", () => {
 	it("returns same value for same input (deterministic)", () => {
@@ -69,5 +69,46 @@ describe("isPiMetaInvocation", () => {
 
 	it("stops at -- so later help-like tokens are ignored", () => {
 		assert.equal(isPiMetaInvocation(["node", "pi", "--", "--help"]), false);
+	});
+});
+
+describe("isPiOneshotInvocation", () => {
+	it("detects -p", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "-p", "say hi"]), true);
+	});
+
+	it("detects --print", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--print", "say hi"]), true);
+	});
+
+	it("detects --mode json", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode", "json", "hi"]), true);
+	});
+
+	it("detects --mode=json", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode=json", "hi"]), true);
+	});
+
+	it("detects -p mixed with --model", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--model", "litellm/claude-opus-4-6-1m", "-p", "say hi"]),
+			true,
+		);
+	});
+
+	it("ignores interactive session", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi"]), false);
+	});
+
+	it("ignores --mode rpc", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode", "rpc"]), false);
+	});
+
+	it("ignores --mode=rpc", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode=rpc"]), false);
+	});
+
+	it("stops at -- so later -p in prompt is ignored", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--", "-p", "hi"]), false);
 	});
 });

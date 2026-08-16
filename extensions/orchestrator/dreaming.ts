@@ -26,7 +26,7 @@ import { setSlot } from "./status-bar.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
-import { getProjectTmpDir } from "./utils.js";
+import { getProjectTmpDir, isPiOneshotInvocation } from "./utils.js";
 import { fileLog } from "../shared/file-logger.js";
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
@@ -329,8 +329,11 @@ export function registerDreaming(
     lastCwd = ctx.cwd;
     lastCtx = ctx;
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
-    // Skip dreaming in one-shot modes (print/json)
-    if (ctx.mode === "print" || ctx.mode === "json") return;
+    // Skip dreaming in one-shot modes (print/json) — timer and shutdown dream
+    if (ctx.mode === "print" || ctx.mode === "json") {
+      log.debug("skip dream timer: print/json mode");
+      return;
+    }
     updateDreamStatus();
     if (enabled) startTimer(ctx.cwd);
   });
@@ -340,6 +343,12 @@ export function registerDreaming(
   // async agents need the pi process alive to deliver results.
   pi.on("session_shutdown", (event) => {
     stopTimer();
+    // Print/json oneshot: skip shutdown dream. spawnAsyncAgent is not
+    // detached/unref'd — the child keeps the parent event loop alive.
+    if (isPiOneshotInvocation() || lastCtx?.mode === "print" || lastCtx?.mode === "json") {
+      log.info("skip shutdown dream: oneshot print/json");
+      return;
+    }
     if (!enabled || !lastCwd || dreamInFlight) return;
 
     // Only dream on quit — skip for fork/new/resume/reload since the

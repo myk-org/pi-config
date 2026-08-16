@@ -28,6 +28,7 @@ import {
 import { createLogger } from "../shared/logger.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
 import { getSetting } from "../orchestrator/project-settings.js";
+import { isPiOneshotInvocation } from "../orchestrator/utils.js";
 import { evaluateSpawnLock } from "./spawn-lock.js";
 
 /** Re-export for callers/tests that import from pidiff. */
@@ -80,6 +81,10 @@ async function resolveSpawnPort(preferred: number | null | undefined): Promise<n
 
 export function registerPidiff(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
+  if (isPiOneshotInvocation()) {
+    log.info("skip register: oneshot print/json");
+    return;
+  }
 
   const projectCwd = process.cwd();
   const pidiffDisabled = !getSetting(projectCwd, "pidiff_enable");

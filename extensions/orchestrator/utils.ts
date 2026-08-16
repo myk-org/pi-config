@@ -6,8 +6,10 @@ import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
+import { createLogger } from "../shared/logger.js";
 
 const require = createRequire(import.meta.url);
+const log = createLogger("orchestrator");
 
 /** Whether notify-send is available (false = ENOENT, never retry) */
 let notifyAvailable: boolean | undefined;
@@ -224,4 +226,36 @@ export function isPiMetaInvocation(argv: string[] = process.argv): boolean {
     return false;
   }
   return sawMeta;
+}
+
+/**
+ * True when this process is a oneshot pi invocation (`-p` / `--print` /
+ * `--mode json`). Session extensions (pitasks, pidash, pidiff, coms) must not
+ * register — watchers and sockets keep the Node event loop alive after the reply.
+ *
+ * CLI/ACPX providers still load. `--mode rpc` is long-lived and returns false.
+ * Stops at `--` so prompt tokens are ignored.
+ */
+export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
+  const args = argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === "-p" || arg === "--print") {
+      log.debug("oneshot: print flag", arg);
+      return true;
+    }
+    if (arg === "--mode") {
+      if (args[i + 1] === "json") {
+        log.debug("oneshot: --mode json");
+        return true;
+      }
+      continue;
+    }
+    if (arg.startsWith("--mode=") && arg.slice("--mode=".length) === "json") {
+      log.debug("oneshot: --mode=json");
+      return true;
+    }
+  }
+  return false;
 }
