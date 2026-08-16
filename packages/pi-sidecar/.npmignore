@@ -10,5 +10,8 @@ pi_sidecar_client/
 .gitignore
 .coderabbit.yaml
 AGENTS.md
+# files: ["dist"] in package.json overrides these for paths under dist/.
+# Python artifacts are excluded via files negation (!dist/*.whl, !dist/*.tar.gz)
+# and stripped by postbuild. Keep these anyway for packs without a files whitelist.
 *.whl
 *.tar.gz
