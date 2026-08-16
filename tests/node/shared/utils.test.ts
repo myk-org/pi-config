@@ -187,6 +187,17 @@ describe("isPiOneshotInvocation", () => {
 			true,
 		);
 	});
+
+	it("still detects -p when PI_LOG_ONESHOT is debug", () => {
+		const prev = process.env.PI_LOG_ONESHOT;
+		process.env.PI_LOG_ONESHOT = "debug";
+		try {
+			assert.equal(isPiOneshotInvocation(["node", "pi", "-p", "hi"]), true);
+		} finally {
+			if (prev === undefined) delete process.env.PI_LOG_ONESHOT;
+			else process.env.PI_LOG_ONESHOT = prev;
+		}
+	});
 });
 
 describe("shouldSkipOneshotShutdownDream", () => {
