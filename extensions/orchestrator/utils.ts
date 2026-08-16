@@ -228,6 +228,16 @@ export function isPiMetaInvocation(argv: string[] = process.argv): boolean {
   return sawMeta;
 }
 
+/** Flags whose next argv token is a value, not a flag (even if it starts with `-`). */
+const ONESHOT_VALUE_FLAGS = new Set([
+  "--mode",
+  "--model",
+  "--models",
+  "--provider",
+  "--session",
+  "--session-id",
+]);
+
 /**
  * True when this process is a oneshot pi invocation (`-p` / `--print` /
  * `--mode json`). Session extensions (pitasks, pidash, pidiff, coms) must not
@@ -235,6 +245,8 @@ export function isPiMetaInvocation(argv: string[] = process.argv): boolean {
  *
  * CLI/ACPX providers still load. `--mode rpc` is long-lived and returns false.
  * Stops at `--` so prompt tokens are ignored.
+ * Value-aware: consumes the token after known value flags so a dash-prefixed
+ * *value* (e.g. `--mode -p`) is not treated as the print flag.
  */
 export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
   const args = argv.slice(2);
@@ -245,17 +257,36 @@ export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
       log.debug("oneshot: print flag", arg);
       return true;
     }
-    if (arg === "--mode") {
-      if (args[i + 1] === "json") {
-        log.debug("oneshot: --mode json");
-        return true;
-      }
-      continue;
-    }
     if (arg.startsWith("--mode=") && arg.slice("--mode=".length) === "json") {
       log.debug("oneshot: --mode=json");
       return true;
     }
+    if (ONESHOT_VALUE_FLAGS.has(arg)) {
+      const value = args[i + 1];
+      if (arg === "--mode" && value === "json") {
+        log.debug("oneshot: --mode json");
+        return true;
+      }
+      if (value !== undefined && value !== "--") {
+        log.debug("oneshot: skip flag value", { arg, value });
+        i += 1;
+      }
+    }
   }
   return false;
+}
+
+/**
+ * Shutdown dream spawn is not detached/unref'd — skip it for oneshot
+ * print/json so `pi -p` / `--mode json` can exit.
+ */
+export function shouldSkipOneshotShutdownDream(
+  mode?: string | null,
+  argv: string[] = process.argv,
+): boolean {
+  const oneshot = isPiOneshotInvocation(argv);
+  const printOrJson = mode === "print" || mode === "json";
+  const skip = oneshot || printOrJson;
+  log.debug("skip shutdown dream?", { skip, oneshot, mode });
+  return skip;
 }

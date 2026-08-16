@@ -134,7 +134,8 @@ Writing effective rules:
   Random free port, tracked via `.pi/tmp/pidiff.port` and `.pi/tmp/pidiff.pid`.
 - Oneshot (`-p` / `--print` / `--mode json`): pitasks, pidash, pidiff, and coms
   skip register via `isPiOneshotInvocation()`. Providers/cli/acpx still load.
-  `--mode rpc` is not oneshot.
+  `--mode rpc` is not oneshot. Scanner is value-aware: `-p` as a `--mode` /
+  `--model` / `--provider` / `--session-id` value is not oneshot.
 - Extension commands: see `dev-docs/extension-commands.md`
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`

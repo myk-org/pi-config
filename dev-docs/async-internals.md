@@ -46,6 +46,8 @@ skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
 **Oneshot invocations:** `isPiOneshotInvocation()` skips pitasks, pidash, pidiff,
 and coms on `-p` / `--print` / `--mode json` so the process can exit after the
 reply. CLI/ACPX providers still load. `--mode rpc` is long-lived and is not skipped.
+The scanner consumes the next token after value flags (`--mode`, `--model`,
+`--provider`, `--session-id`, …) so a dash-prefixed *value* is not treated as `-p`.
 
 **Code-enforced (not prompt-only):**
 

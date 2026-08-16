@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation } from "../../../extensions/orchestrator/utils.js";
+import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream } from "../../../extensions/orchestrator/utils.js";
 
 describe("djb2Hash", () => {
 	it("returns same value for same input (deterministic)", () => {
@@ -110,5 +110,58 @@ describe("isPiOneshotInvocation", () => {
 
 	it("stops at -- so later -p in prompt is ignored", () => {
 		assert.equal(isPiOneshotInvocation(["node", "pi", "--", "-p", "hi"]), false);
+	});
+
+	it("ignores -p when it is the --mode value", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--mode", "-p"]), false);
+	});
+
+	it("ignores -p when it is the --model value", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--model", "-p"]), false);
+	});
+
+	it("ignores -p when it is the --provider value", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--provider", "-p"]), false);
+	});
+
+	it("ignores -p when it is the --session-id value", () => {
+		assert.equal(isPiOneshotInvocation(["node", "pi", "--session-id", "-p"]), false);
+	});
+
+	it("still detects -p after a consumed --model value", () => {
+		assert.equal(
+			isPiOneshotInvocation(["node", "pi", "--model", "litellm/x", "-p", "hi"]),
+			true,
+		);
+	});
+});
+
+describe("shouldSkipOneshotShutdownDream", () => {
+	it("skips when argv is oneshot even if mode is interactive", () => {
+		assert.equal(
+			shouldSkipOneshotShutdownDream("interactive", ["node", "pi", "-p", "hi"]),
+			true,
+		);
+	});
+
+	it("skips when session mode is print", () => {
+		assert.equal(
+			shouldSkipOneshotShutdownDream("print", ["node", "pi"]),
+			true,
+		);
+	});
+
+	it("skips when session mode is json", () => {
+		assert.equal(
+			shouldSkipOneshotShutdownDream("json", ["node", "pi"]),
+			true,
+		);
+	});
+
+	it("does not skip interactive session", () => {
+		assert.equal(
+			shouldSkipOneshotShutdownDream(undefined, ["node", "pi"]),
+			false,
+		);
 	});
 });

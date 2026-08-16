@@ -26,7 +26,7 @@ import { setSlot } from "./status-bar.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
-import { getProjectTmpDir, isPiOneshotInvocation } from "./utils.js";
+import { getProjectTmpDir, shouldSkipOneshotShutdownDream } from "./utils.js";
 import { fileLog } from "../shared/file-logger.js";
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
@@ -345,7 +345,7 @@ export function registerDreaming(
     stopTimer();
     // Print/json oneshot: skip shutdown dream. spawnAsyncAgent is not
     // detached/unref'd — the child keeps the parent event loop alive.
-    if (isPiOneshotInvocation() || lastCtx?.mode === "print" || lastCtx?.mode === "json") {
+    if (shouldSkipOneshotShutdownDream(lastCtx?.mode)) {
       log.info("skip shutdown dream: oneshot print/json");
       return;
     }
