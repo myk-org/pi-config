@@ -211,6 +211,13 @@ describe("shouldSkipOneshotShutdownDream", () => {
 		);
 	});
 
+	it("does not skip rpc even with -p", () => {
+		assert.equal(
+			shouldSkipOneshotShutdownDream("rpc", ["node", "pi", "-p", "--mode", "rpc"]),
+			false,
+		);
+	});
+
 	it("does not skip interactive session", () => {
 		assert.equal(
 			shouldSkipOneshotShutdownDream(undefined, ["node", "pi"]),

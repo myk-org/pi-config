@@ -509,7 +509,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 **How it works:**
 
 - A daemon (`pidash-server.ts`) runs on port `19190` and aggregates all pi sessions
-- Each pi session's extension (`pidash.ts`) connects to the daemon and forwards events
+- Each interactive pi session's extension (`pidash.ts`) connects to the daemon and forwards events
+- Oneshot (`pi -p` / `--print` / `--mode json`) skips pidash register, so no session connects
 - The React web UI shows live conversations, tool calls, and session status
 
 **Features:**

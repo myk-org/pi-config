@@ -274,8 +274,9 @@ const PI_MODES = new Set(["text", "json", "rpc"]);
  * as the print flag (pi consumes it as an invalid mode value). No `--`
  * end-of-options (parseArgs has none).
  *
- * CLI/ACPX providers still load. Non-TTY print (`echo | pi`) is not detected
- * here — argv has no flags; use `ctx.mode` after session_start.
+ * CLI/ACPX providers still load. Non-TTY stdin or stdout print (`echo | pi`,
+ * `pi | cat`) without those flags is not detected here — argv has no flags;
+ * use `ctx.mode` after session_start.
  */
 export function isPiOneshotInvocation(argv: string[] = process.argv): boolean {
   const args = argv.slice(2);

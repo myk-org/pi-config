@@ -50,8 +50,9 @@ process can exit after the reply. CLI/ACPX providers still load. Last valid
 even with `-p`. `--mode=json` / `--mode=rpc` are unknown flags in pi, not mode.
 The scanner consumes the next token after value flags so `--mode -p` is not
 oneshot. No `--` end-of-options (parseArgs has none). Argv detection does not
-cover non-TTY print without `-p`/`--print`/`--mode json` (`echo hi | pi`);
-register skips are argv-only — `ctx.mode` exists only after session_start.
+cover non-TTY stdin or stdout without `-p`/`--print`/`--mode json`
+(`echo hi | pi`, `pi | cat`); register skips are argv-only — `ctx.mode`
+exists only after session_start.
 `shouldSkipOneshotShutdownDream(mode)` skips when argv is oneshot **or**
 `mode` is `print`/`json`.
 
