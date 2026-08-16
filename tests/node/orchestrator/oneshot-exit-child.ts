@@ -5,12 +5,16 @@
  */
 import {
   isPiOneshotInvocation,
+  shouldSkipOneshotRegister,
   shouldSkipOneshotShutdownDream,
 } from "../../../extensions/orchestrator/utils.ts";
 
 process.argv = ["node", "pi", "-p", "say hi"];
 
 if (!isPiOneshotInvocation()) {
+  setInterval(() => {}, 60_000);
+}
+if (!shouldSkipOneshotRegister({ info() {} })) {
   setInterval(() => {}, 60_000);
 }
 if (!shouldSkipOneshotShutdownDream("print")) {
