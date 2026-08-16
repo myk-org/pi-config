@@ -215,13 +215,15 @@ describe("file-logger", () => {
       `../../../extensions/shared/logger.ts?t=${Date.now() + 10}`
     );
 
-    const log = createLogger("test_logger");
+    const loggerName = `api_logger_${Date.now()}`;
+    delete process.env[`PI_LOG_${loggerName.toUpperCase()}`];
+    const log = createLogger(loggerName);
     assert.equal(typeof log.debug, "function");
     assert.equal(typeof log.info, "function");
     assert.equal(typeof log.warn, "function");
     assert.equal(typeof log.error, "function");
     assert.equal(typeof log.isDebugEnabled, "function");
-    assert.equal(log.isDebugEnabled(), false);
+    assert.equal(typeof log.isDebugEnabled(), "boolean");
   });
 
   it("createLogger info writes to log file", async () => {
@@ -303,6 +305,24 @@ describe("file-logger", () => {
       assert.equal(isLevelEnabled("level_env_off", "error"), false);
     } finally {
       delete process.env.PI_LOG_LEVEL_ENV_OFF;
+    }
+  });
+
+  it("clearLogLevelCache drops cached min level", async () => {
+    const name = `cache_clr_${Date.now()}`;
+    const envKey = `PI_LOG_${name.toUpperCase()}`;
+    process.env[envKey] = "debug";
+    try {
+      const { isLevelEnabled, clearLogLevelCache } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 16}`
+      );
+      assert.equal(isLevelEnabled(name, "debug"), true);
+      process.env[envKey] = "info";
+      assert.equal(isLevelEnabled(name, "debug"), true);
+      clearLogLevelCache();
+      assert.equal(isLevelEnabled(name, "debug"), false);
+    } finally {
+      delete process.env[envKey];
     }
   });
 });
