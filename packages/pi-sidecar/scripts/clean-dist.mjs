@@ -25,8 +25,10 @@ function createLogger(name) {
     const dir = join(homedir(), ".pi", "logs", name);
     mkdirSync(dir, { recursive: true });
     file = join(dir, "postbuild.log");
-  } catch {
-    noop.debug("createLogger file logging unavailable", { name });
+  } catch (err) {
+    process.stderr.write(
+      `[sidecar] clean-dist: file logging unavailable for ${name}: ${String(err)}\n`,
+    );
     return noop;
   }
   const emit = (level, args) => {
