@@ -14,14 +14,30 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 
 function createLogger(name) {
-  const dir = join(homedir(), ".pi", "logs", name);
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, "postbuild.log");
+  const noop = {
+    debug() {},
+    info() {},
+    warn() {},
+    error() {},
+  };
+  let file;
+  try {
+    const dir = join(homedir(), ".pi", "logs", name);
+    mkdirSync(dir, { recursive: true });
+    file = join(dir, "postbuild.log");
+  } catch {
+    noop.debug("createLogger file logging unavailable", { name });
+    return noop;
+  }
   const emit = (level, args) => {
-    const msg = args
-      .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
-      .join(" ");
-    appendFileSync(file, `${new Date().toISOString()} ${level} [clean-dist] ${msg}\n`);
+    try {
+      const msg = args
+        .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+        .join(" ");
+      appendFileSync(file, `${new Date().toISOString()} ${level} [clean-dist] ${msg}\n`);
+    } catch {
+      // Never fail postbuild on log I/O.
+    }
   };
   const logger = {
     debug: (...args) => emit("debug", args),
@@ -29,7 +45,7 @@ function createLogger(name) {
     warn: (...args) => emit("warn", args),
     error: (...args) => emit("error", args),
   };
-  logger.debug("createLogger", { name });
+  logger.debug("createLogger", { name, file });
   return logger;
 }
 
