@@ -4,10 +4,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import * as path from "node:path";
-
-const require = createRequire(import.meta.url);
 
 /** Whether notify-send is available (false = ENOENT, never retry) */
 let notifyAvailable: boolean | undefined;
@@ -225,3 +222,9 @@ export function isPiMetaInvocation(argv: string[] = process.argv): boolean {
   }
   return sawMeta;
 }
+
+export {
+  isPiOneshotInvocation,
+  shouldSkipOneshotRegister,
+  shouldSkipOneshotShutdownDream,
+} from "../shared/oneshot.js";

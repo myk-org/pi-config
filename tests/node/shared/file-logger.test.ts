@@ -215,11 +215,35 @@ describe("file-logger", () => {
       `../../../extensions/shared/logger.ts?t=${Date.now() + 10}`
     );
 
-    const log = createLogger("test_logger");
+    const log = createLogger(`api_logger_${Date.now()}`);
     assert.equal(typeof log.debug, "function");
     assert.equal(typeof log.info, "function");
     assert.equal(typeof log.warn, "function");
     assert.equal(typeof log.error, "function");
+  });
+
+  it("createLogger returns isDebugEnabled", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-dbg-"));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.__PI_PARENT_SESSION_ID;
+
+    const { createLogger } = await import(
+      `../../../extensions/shared/logger.ts?t=${Date.now() + 17}`
+    );
+
+    const loggerName = `api_dbg_${Date.now()}`;
+    const apiEnvKey = `PI_LOG_${loggerName.toUpperCase()}`;
+    const prevApiEnv = process.env[apiEnvKey];
+    delete process.env[apiEnvKey];
+    try {
+      const log = createLogger(loggerName);
+      assert.equal(typeof log.isDebugEnabled, "function");
+      assert.equal(typeof log.isDebugEnabled(), "boolean");
+    } finally {
+      if (prevApiEnv === undefined) delete process.env[apiEnvKey];
+      else process.env[apiEnvKey] = prevApiEnv;
+    }
   });
 
   it("createLogger info writes to log file", async () => {
@@ -270,5 +294,60 @@ describe("file-logger", () => {
     // Verify stack frames are present (not just the error message)
     assert.match(body, /Error: boom/);
     assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
+  });
+
+  it("isLevelEnabled is false for debug at default info", async () => {
+    const { isLevelEnabled } = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 13}`
+    );
+    assert.equal(isLevelEnabled("level_default_info", "debug"), false);
+    assert.equal(isLevelEnabled("level_default_info", "info"), true);
+  });
+
+  it("isLevelEnabled honors PI_LOG env", async () => {
+    const prev = process.env.PI_LOG_LEVEL_ENV_DBG;
+    process.env.PI_LOG_LEVEL_ENV_DBG = "debug";
+    try {
+      const { isLevelEnabled } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 14}`
+      );
+      assert.equal(isLevelEnabled("level_env_dbg", "debug"), true);
+    } finally {
+      if (prev === undefined) delete process.env.PI_LOG_LEVEL_ENV_DBG;
+      else process.env.PI_LOG_LEVEL_ENV_DBG = prev;
+    }
+  });
+
+  it("isLevelEnabled is false when level is off", async () => {
+    const prev = process.env.PI_LOG_LEVEL_ENV_OFF;
+    process.env.PI_LOG_LEVEL_ENV_OFF = "off";
+    try {
+      const { isLevelEnabled } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 15}`
+      );
+      assert.equal(isLevelEnabled("level_env_off", "error"), false);
+    } finally {
+      if (prev === undefined) delete process.env.PI_LOG_LEVEL_ENV_OFF;
+      else process.env.PI_LOG_LEVEL_ENV_OFF = prev;
+    }
+  });
+
+  it("clearLogLevelCache reflects current log level", async () => {
+    const name = `cache_clr_${Date.now()}`;
+    const envKey = `PI_LOG_${name.toUpperCase()}`;
+    const prev = process.env[envKey];
+    process.env[envKey] = "debug";
+    try {
+      const { isLevelEnabled, clearLogLevelCache } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 16}`
+      );
+      isLevelEnabled(name, "debug");
+      process.env[envKey] = "info";
+      clearLogLevelCache();
+      assert.equal(isLevelEnabled(name, "debug"), false);
+    } finally {
+      if (prev === undefined) delete process.env[envKey];
+      else process.env[envKey] = prev;
+    }
   });
 });

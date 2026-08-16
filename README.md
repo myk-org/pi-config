@@ -509,7 +509,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 **How it works:**
 
 - A daemon (`pidash-server.ts`) runs on port `19190` and aggregates all pi sessions
-- Each pi session's extension (`pidash.ts`) connects to the daemon and forwards events
+- Each interactive pi session's extension (`pidash.ts`) connects to the daemon and forwards events
+- Oneshot (`pi -p` / `--print` / `--mode json`) skips pidash register, so no session connects
 - The React web UI shows live conversations, tool calls, and session status
 
 **Features:**
@@ -547,6 +548,10 @@ PI_PIDASH_PORT=9999 pi
 PI_PIDASH_ENABLE=false pi
 ```
 
+Oneshot (`pi -p` / `--print` / `--mode json`) skips register of pidash, pidiff,
+pitasks, and coms so those daemons/watchers do not start. CLI and ACPX providers
+still load. `--mode rpc` is long-lived and is not skipped.
+
 **Management:**
 
 ```bash
@@ -571,7 +576,8 @@ Pidiff is a per-project diff viewer that opens in your browser, providing rich b
 
 **How it works:**
 
-- Each pi session spawns its own server (`pidiff-server.ts`) on a random free port
+- Each interactive pi session spawns its own server (`pidiff-server.ts`) on a random free port
+- Oneshot (`pi -p` / `--print` / `--mode json`) skips pidiff register, so no per-session server starts
 - Container and native sessions get separate servers automatically
 - Lockfiles in `.pi/tmp/` track port and PID for each server
 - The extension (`pidiff.ts`) connects to its session's server and registers its repo

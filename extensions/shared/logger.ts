@@ -10,13 +10,14 @@
  * Writes to ~/.pi/logs/<name>/<PI_SESSION_ID>.log.  Never console.* (chat UI leak).
  */
 
-import { fileLog, type FileLogLevel } from "./file-logger.js";
+import { fileLog, isLevelEnabled, type FileLogLevel } from "./file-logger.js";
 
 export interface Logger {
   debug(...args: any[]): void;
   info(...args: any[]): void;
   warn(...args: any[]): void;
   error(...args: any[]): void;
+  isDebugEnabled(): boolean;
 }
 
 function fmt(args: any[]): string {
@@ -37,9 +38,13 @@ export function createLogger(name: string, prefix?: string): Logger {
     }
   };
   return {
-    debug(...args: any[]) { emit("debug", args); },
+    debug(...args: any[]) {
+      if (!isLevelEnabled(name, "debug")) return;
+      emit("debug", args);
+    },
     info(...args: any[]) { emit("info", args); },
     warn(...args: any[]) { emit("warn", args); },
     error(...args: any[]) { emit("error", args); },
+    isDebugEnabled() { return isLevelEnabled(name, "debug"); },
   };
 }

@@ -26,7 +26,7 @@ import { setSlot } from "./status-bar.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
-import { getProjectTmpDir } from "./utils.js";
+import { getProjectTmpDir, shouldSkipOneshotShutdownDream } from "./utils.js";
 import { fileLog } from "../shared/file-logger.js";
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
@@ -329,25 +329,30 @@ export function registerDreaming(
     lastCwd = ctx.cwd;
     lastCtx = ctx;
     dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
-    // Skip dreaming in one-shot modes (print/json)
-    if (ctx.mode === "print" || ctx.mode === "json") return;
+    // Skip auto-dream timer in print/json; shutdown dream is skipped in
+    // session_shutdown via shouldSkipOneshotShutdownDream.
+    if (ctx.mode === "print" || ctx.mode === "json") {
+      log.debug("skip dream timer: print/json mode");
+      return;
+    }
     updateDreamStatus();
     if (enabled) startTimer(ctx.cwd);
   });
 
-  // Fire-and-forget dream on session shutdown.
-  // Uses detached spawn (not async agent) because the session is ending —
-  // async agents need the pi process alive to deliver results.
+  // Shutdown dream: runDreamAsync → spawnAsyncAgent (not detached/unref'd).
+  // Skip oneshot print/json or the child keeps the parent event loop alive.
   pi.on("session_shutdown", (event) => {
     stopTimer();
+    if (shouldSkipOneshotShutdownDream(lastCtx?.mode)) {
+      log.info("skip shutdown dream: oneshot print/json");
+      return;
+    }
     if (!enabled || !lastCwd || dreamInFlight) return;
 
     // Only dream on quit — skip for fork/new/resume/reload since the
     // session continues or transitions, not ending meaningfully.
     if ((event as any).reason && (event as any).reason !== "quit") return;
 
-    // On shutdown, run a lightweight dream via detached async runner
-    // (can't use spawnAsyncAgent since the session is ending)
     try {
       runDreamAsync(lastCwd);
     } catch (err) {

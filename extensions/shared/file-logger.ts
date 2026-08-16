@@ -132,7 +132,11 @@ const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), {
 
 let _cachedGetSetting: ((cwd: string, key: string) => any) | null | false = null;
 
-function getMinLevel(name: string): number {
+/** Match settings mtime throttle — burst register calls must not re-stat. */
+const MIN_LEVEL_CACHE_MS = 30_000;
+const minLevelCache = new Map<string, { level: number; at: number }>();
+
+function resolveMinLevel(name: string): number {
   if (_cachedGetSetting !== false) {
     try {
       if (!_cachedGetSetting) {
@@ -153,6 +157,31 @@ function getMinLevel(name: string): number {
   if (val && val in LEVEL_ORDER) return LEVEL_ORDER[val];
 
   return LEVEL_ORDER.info;
+}
+
+function getMinLevel(name: string): number {
+  const now = Date.now();
+  const hit = minLevelCache.get(name);
+  if (hit && now - hit.at < MIN_LEVEL_CACHE_MS) return hit.level;
+  const level = resolveMinLevel(name);
+  minLevelCache.set(name, { level, at: now });
+  return level;
+}
+
+/** Drop cached min levels (tests). No fileLog here — this is the log filter. */
+export function clearLogLevelCache(): void {
+  minLevelCache.clear();
+}
+
+/**
+ * True when `level` would be written for `name`.
+ * Same sources as fileLog (log_<name> setting, then PI_LOG_<NAME>, then info).
+ * Cached 30s so debug gates on hot paths do not re-resolve settings.
+ */
+export function isLevelEnabled(name: string, level: FileLogLevel): boolean {
+  const minLevel = getMinLevel(name);
+  if (minLevel < 0) return false;
+  return (LEVEL_ORDER[level] ?? 0) >= minLevel;
 }
 
 export function fileLog(

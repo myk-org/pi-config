@@ -96,6 +96,7 @@ pi-config/
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/tmp/ lockfiles)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── shared/                      # Shared extension utilities
+│   │   ├── oneshot.ts               # Argv oneshot helpers (`pi -p` / `--mode json` skip register)
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
 │   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
 │   │   ├── models-dev.ts            # models.dev api.json cache (~/.pi/pi-config) + CLI/ACPX metadata fill
@@ -226,7 +227,7 @@ pi-config/
 │   │   ├── providers/               # Driver schema, restore-default-model, initialized-reset tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
-│   │   └── shared/                  # Shared tests (coms-shared, daemon-manager, create-runtime-provider, models-dev)
+│   │   └── shared/                  # Shared tests (oneshot via utils.test, coms-shared, daemon-manager, create-runtime-provider, models-dev)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

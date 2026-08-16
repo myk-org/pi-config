@@ -43,6 +43,20 @@ No legacy `registerProvider(name, { streamSimple })` bag.
 **Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
 skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
 
+**Oneshot invocations:** `isPiOneshotInvocation()` / `shouldSkipOneshotRegister()`
+(`extensions/shared/oneshot.ts`, re-exported from `extensions/orchestrator/utils.ts`)
+skip pitasks, pidash, pidiff, and coms on `-p` / `--print` / `--mode json` so the
+process can exit after the reply. CLI/ACPX providers still load. Last valid
+`--mode <text|json|rpc>` wins (matching pi `parseArgs`); rpc is never oneshot
+even with `-p`. `--mode=json` / `--mode=rpc` are unknown flags in pi, not mode.
+The scanner consumes the next token after value flags so `--mode -p` is not
+oneshot. No `--` end-of-options (parseArgs has none). Argv detection does not
+cover non-TTY stdin or stdout without `-p`/`--print`/`--mode json`
+(`echo hi | pi`, `pi | cat`); register skips are argv-only — `ctx.mode`
+exists only after session_start.
+`shouldSkipOneshotShutdownDream(mode)` skips when argv is oneshot **or**
+`mode` is `print`/`json`.
+
 **Code-enforced (not prompt-only):**
 
 - `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`
@@ -115,15 +129,18 @@ next cycle, preventing context overflow.
 (paths resolved via `realpathSync()` to prevent symlink traversal).
 Read-only commands with dangerous patterns in args are also excluded from confirmation.
 
-## Mode-Aware Guards (`ctx.mode`)
+## Argv and mode guards
 
 Modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured output), `"print"` (one-shot).
+`ctx.mode` does not exist at extension register time — use argv helpers there.
 
 | Feature | Guard | Reason |
 |---------|-------|--------|
-| Daemon connections (pidash, pidiff) | `ctx.mode === "tui"` | No UI to display |
+| Session extras register (pitasks, pidash, pidiff, coms) | `shouldSkipOneshotRegister()` / argv `isPiOneshotInvocation()` | Watchers/sockets keep the event loop alive; argv runs before `ctx.mode` exists |
+| Shutdown dream spawn | `shouldSkipOneshotShutdownDream(mode)` — argv oneshot **or** `mode === "print"\|"json"` | `runDreamAsync` → `spawnAsyncAgent` is not detached/unref'd |
+| Daemon connections (pidash, pidiff) | `ctx.mode === "tui"` | No UI to display (rpc/tui path after register) |
 | Autocomplete providers | `ctx.mode === "tui"` | No editor input |
 | Cron scheduling | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no timers |
 | Dreaming (auto-dream timer) | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no background work |
 
-Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`); use `ctx.mode` when interactive vs. one-shot distinction matters.
+Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`). Use argv helpers for register-time oneshot skips. Use `ctx.mode` in session callbacks after mode exists.
