@@ -5,14 +5,38 @@
  * tsc and uv build share dist/. Strip Unix-only leftovers so npm pack never
  * ships Python wheels/sdists and so tests can run postbuild on Windows.
  */
-import { readdirSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 
+function createLogger(name) {
+  const dir = join(homedir(), ".pi", "logs", name);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "postbuild.log");
+  const emit = (level, args) => {
+    const msg = args
+      .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+      .join(" ");
+    appendFileSync(file, `${new Date().toISOString()} ${level} [clean-dist] ${msg}\n`);
+  };
+  const logger = {
+    debug: (...args) => emit("debug", args),
+    info: (...args) => emit("info", args),
+    warn: (...args) => emit("warn", args),
+    error: (...args) => emit("error", args),
+  };
+  logger.debug("createLogger", { name });
+  return logger;
+}
+
+const log = createLogger("pi-sidecar");
+
 function rmForce(path) {
+  log.debug("rmForce", { path });
   rmSync(path, { force: true });
 }
 
@@ -24,9 +48,10 @@ try {
 } catch (err) {
   const code = err && typeof err === "object" && "code" in err ? err.code : undefined;
   if (code === "ENOENT") {
-    console.log("[sidecar] clean-dist: dist/ missing, nothing to strip");
+    log.info("dist/ missing, nothing to strip");
     process.exit(0);
   }
+  log.error("readdir dist failed", { code, err: String(err) });
   throw err;
 }
 
@@ -37,8 +62,8 @@ for (const name of names) {
   removed.push(name);
 }
 
-console.log(
-  removed.length > 0
-    ? `[sidecar] clean-dist: removed ${removed.join(", ")}`
-    : "[sidecar] clean-dist: no Python artifacts in dist/",
-);
+if (removed.length > 0) {
+  log.info("removed Python artifacts", { removed });
+} else {
+  log.debug("no Python artifacts in dist/");
+}
