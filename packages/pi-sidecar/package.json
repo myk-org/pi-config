@@ -26,12 +26,14 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "scripts"
+    "scripts",
+    "!dist/*.whl",
+    "!dist/*.tar.gz"
   ],
   "scripts": {
     "start": "node dist/server.js",
     "build": "tsc",
-    "postbuild": "rm -f dist/.gitignore",
+    "postbuild": "node scripts/clean-dist.mjs",
     "prepublishOnly": "npm run build",
     "test": "node --import tsx --test tests/test_ts/*.test.ts",
     "postinstall": "node scripts/enforce-protobufjs-floor.mjs"

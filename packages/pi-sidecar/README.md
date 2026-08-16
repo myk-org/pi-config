@@ -29,6 +29,9 @@ simple JSON API. Ships with a Python client for easy integration.
 | `@myk-org/pi-sidecar` | TypeScript | `npm install @myk-org/pi-sidecar` |
 | `pi-sidecar-client` | Python ≥ 3.10 | `uv pip install pi-sidecar-client` |
 
+The npm tarball is the Node server only. Python wheels/sdists publish to PyPI — they must not ship
+inside `@myk-org/pi-sidecar` even though `uv build` writes them to the same `dist/` as `tsc`.
+
 ## Quick Start
 
 ```python
