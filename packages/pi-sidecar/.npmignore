@@ -12,6 +12,7 @@ pi_sidecar_client/
 AGENTS.md
 # files: ["dist"] in package.json overrides these for paths under dist/.
 # Python artifacts are excluded via files negation (!dist/*.whl, !dist/*.tar.gz)
-# and stripped by postbuild. Keep these anyway for packs without a files whitelist.
+# and stripped by scripts/clean-dist.mjs (postbuild). Keep these anyway for packs
+# without a files whitelist.
 *.whl
 *.tar.gz

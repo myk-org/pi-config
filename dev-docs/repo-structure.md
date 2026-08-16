@@ -198,6 +198,7 @@ pi-config/
 │       │   └── __init__.py          # SidecarClient, call_ai_once, call_ai
 │       ├── scripts/                 # Sidecar scripts
 │       │   ├── start-sidecar.sh     # Dev launcher (background, tsx from source)
+│       │   ├── clean-dist.mjs       # Portable postbuild: strip dist/.gitignore + Python artifacts
 │       │   └── enforce-protobufjs-floor.mjs # Postinstall protobufjs version fix
 │       ├── tests/                   # Sidecar tests
 │       │   ├── test_ts/             # TypeScript unit tests (node:test)
