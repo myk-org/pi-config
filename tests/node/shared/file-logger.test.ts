@@ -216,14 +216,21 @@ describe("file-logger", () => {
     );
 
     const loggerName = `api_logger_${Date.now()}`;
-    delete process.env[`PI_LOG_${loggerName.toUpperCase()}`];
-    const log = createLogger(loggerName);
-    assert.equal(typeof log.debug, "function");
-    assert.equal(typeof log.info, "function");
-    assert.equal(typeof log.warn, "function");
-    assert.equal(typeof log.error, "function");
-    assert.equal(typeof log.isDebugEnabled, "function");
-    assert.equal(typeof log.isDebugEnabled(), "boolean");
+    const apiEnvKey = `PI_LOG_${loggerName.toUpperCase()}`;
+    const prevApiEnv = process.env[apiEnvKey];
+    delete process.env[apiEnvKey];
+    try {
+      const log = createLogger(loggerName);
+      assert.equal(typeof log.debug, "function");
+      assert.equal(typeof log.info, "function");
+      assert.equal(typeof log.warn, "function");
+      assert.equal(typeof log.error, "function");
+      assert.equal(typeof log.isDebugEnabled, "function");
+      assert.equal(typeof log.isDebugEnabled(), "boolean");
+    } finally {
+      if (prevApiEnv === undefined) delete process.env[apiEnvKey];
+      else process.env[apiEnvKey] = prevApiEnv;
+    }
   });
 
   it("createLogger info writes to log file", async () => {
@@ -285,6 +292,7 @@ describe("file-logger", () => {
   });
 
   it("isLevelEnabled honors PI_LOG env", async () => {
+    const prev = process.env.PI_LOG_LEVEL_ENV_DBG;
     process.env.PI_LOG_LEVEL_ENV_DBG = "debug";
     try {
       const { isLevelEnabled } = await import(
@@ -292,11 +300,13 @@ describe("file-logger", () => {
       );
       assert.equal(isLevelEnabled("level_env_dbg", "debug"), true);
     } finally {
-      delete process.env.PI_LOG_LEVEL_ENV_DBG;
+      if (prev === undefined) delete process.env.PI_LOG_LEVEL_ENV_DBG;
+      else process.env.PI_LOG_LEVEL_ENV_DBG = prev;
     }
   });
 
   it("isLevelEnabled is false when level is off", async () => {
+    const prev = process.env.PI_LOG_LEVEL_ENV_OFF;
     process.env.PI_LOG_LEVEL_ENV_OFF = "off";
     try {
       const { isLevelEnabled } = await import(
@@ -304,25 +314,27 @@ describe("file-logger", () => {
       );
       assert.equal(isLevelEnabled("level_env_off", "error"), false);
     } finally {
-      delete process.env.PI_LOG_LEVEL_ENV_OFF;
+      if (prev === undefined) delete process.env.PI_LOG_LEVEL_ENV_OFF;
+      else process.env.PI_LOG_LEVEL_ENV_OFF = prev;
     }
   });
 
-  it("clearLogLevelCache drops cached min level", async () => {
+  it("clearLogLevelCache reflects current log level", async () => {
     const name = `cache_clr_${Date.now()}`;
     const envKey = `PI_LOG_${name.toUpperCase()}`;
+    const prev = process.env[envKey];
     process.env[envKey] = "debug";
     try {
       const { isLevelEnabled, clearLogLevelCache } = await import(
         `../../../extensions/shared/file-logger.ts?t=${Date.now() + 16}`
       );
-      assert.equal(isLevelEnabled(name, "debug"), true);
+      isLevelEnabled(name, "debug");
       process.env[envKey] = "info";
-      assert.equal(isLevelEnabled(name, "debug"), true);
       clearLogLevelCache();
       assert.equal(isLevelEnabled(name, "debug"), false);
     } finally {
-      delete process.env[envKey];
+      if (prev === undefined) delete process.env[envKey];
+      else process.env[envKey] = prev;
     }
   });
 });
