@@ -437,6 +437,7 @@ export function applyThinkingParams(
 	modelId: string,
 	reasoning: string,
 	thinkingBudgets?: Record<string, number | undefined>,
+	modelMaxTokens?: number,
 ): void {
 	const level = normalizeReasoning(reasoning);
 	if (level === "off") {
@@ -454,10 +455,35 @@ export function applyThinkingParams(
 		return;
 	}
 
-	const thinkingBudget = resolveThinkingBudget(level, thinkingBudgets);
 	const minOutputTokens = 1024;
+	let thinkingBudget = resolveThinkingBudget(level, thinkingBudgets);
+	const cap = modelMaxTokens && modelMaxTokens > 0 ? modelMaxTokens : undefined;
+	if (cap !== undefined) {
+		const maxBudget = Math.max(minOutputTokens, cap - minOutputTokens);
+		if (thinkingBudget > maxBudget) {
+			log.debug("applyThinkingParams: clamp budget to model maxTokens", {
+				modelId,
+				requestedBudget: thinkingBudget,
+				maxBudget,
+				modelMaxTokens: cap,
+			});
+			thinkingBudget = maxBudget;
+		}
+		if (params.max_tokens > cap) {
+			params.max_tokens = cap;
+		}
+	}
 	if (params.max_tokens <= thinkingBudget) {
-		params.max_tokens = thinkingBudget + minOutputTokens;
+		const raised = thinkingBudget + minOutputTokens;
+		params.max_tokens = cap !== undefined ? Math.min(cap, raised) : raised;
+	}
+	if (thinkingBudget >= params.max_tokens) {
+		thinkingBudget = Math.max(minOutputTokens, params.max_tokens - minOutputTokens);
+		log.debug("applyThinkingParams: shrink budget below max_tokens", {
+			modelId,
+			thinkingBudget,
+			max_tokens: params.max_tokens,
+		});
 	}
 	params.thinking = {
 		type: "enabled",
@@ -468,6 +494,7 @@ export function applyThinkingParams(
 		reasoning: level,
 		thinkingBudget,
 		max_tokens: params.max_tokens,
+		modelMaxTokens: cap,
 	});
 }
 
@@ -589,6 +616,7 @@ export function streamVertexClaude(
 					model.id,
 					options.reasoning,
 					options.thinkingBudgets as Record<string, number | undefined> | undefined,
+					model.maxTokens,
 				);
 			}
 

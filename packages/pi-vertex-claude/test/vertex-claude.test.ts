@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { createLogger } from "../logger.ts";
+import { createLogger, isDebugEnabled, sanitizeLogSegment } from "../logger.ts";
 
 vi.mock(
 	"@earendil-works/pi-ai",
@@ -349,6 +349,17 @@ describe("adaptive vs extended thinking", () => {
 		expect(params.max_tokens).toBe(32768 + 1024);
 	});
 
+	it("clamps extended thinking so max_tokens stays within model maxTokens", () => {
+		const params = { max_tokens: 4096 };
+		applyThinkingParams(params, "claude-opus-4-5@20251101", "max", undefined, 32000);
+		const thinking = params.thinking as { type: string; budget_tokens: number };
+		expect(thinking.type).toBe("enabled");
+		expect(params.max_tokens).toBeLessThanOrEqual(32000);
+		expect(thinking.budget_tokens).toBeLessThan(params.max_tokens);
+		expect(thinking.budget_tokens).toBe(32000 - 1024);
+		expect(params.max_tokens).toBe(32000);
+	});
+
 	it("keeps enabled + budget_tokens for 4.5", () => {
 		const params = { max_tokens: 4096 };
 		applyThinkingParams(params, "claude-opus-4-5@20251101", "medium");
@@ -359,6 +370,16 @@ describe("adaptive vs extended thinking", () => {
 });
 
 describe("package-local logger", () => {
+	const originalPiLog = process.env.PI_LOG;
+	const originalNamed = process.env.PI_LOG_PI_VERTEX_CLAUDE;
+
+	afterEach(() => {
+		if (originalPiLog === undefined) delete process.env.PI_LOG;
+		else process.env.PI_LOG = originalPiLog;
+		if (originalNamed === undefined) delete process.env.PI_LOG_PI_VERTEX_CLAUDE;
+		else process.env.PI_LOG_PI_VERTEX_CLAUDE = originalNamed;
+	});
+
 	it("does not import repo-only shared logger from index.ts", () => {
 		const src = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
 		expect(src).not.toContain("extensions/shared/logger");
@@ -368,5 +389,21 @@ describe("package-local logger", () => {
 	it("createLogger does not throw", () => {
 		const localLog = createLogger("pi-vertex-claude");
 		expect(() => localLog.debug("test")).not.toThrow();
+	});
+
+	it("sanitizes session IDs and logger names against path traversal", () => {
+		expect(sanitizeLogSegment("../etc/passwd")).toBe(".._etc_passwd");
+		expect(sanitizeLogSegment("foo/../../bar")).toBe("foo_.._.._bar");
+		expect(sanitizeLogSegment("a\\b")).toBe("a_b");
+		expect(sanitizeLogSegment("...")).toBe("_");
+		expect(sanitizeLogSegment("")).toBe("_");
+	});
+
+	it("gates debug writes unless PI_LOG is debug", () => {
+		process.env.PI_LOG = "info";
+		delete process.env.PI_LOG_PI_VERTEX_CLAUDE;
+		expect(isDebugEnabled("pi-vertex-claude")).toBe(false);
+		process.env.PI_LOG = "debug";
+		expect(isDebugEnabled("pi-vertex-claude")).toBe(true);
 	});
 });

@@ -12,7 +12,15 @@ export interface Logger {
 	info(...args: unknown[]): void;
 	warn(...args: unknown[]): void;
 	error(...args: unknown[]): void;
+	isDebugEnabled(): boolean;
 }
+
+const LEVEL_ORDER: Record<string, number> = {
+	debug: 0,
+	info: 1,
+	warn: 2,
+	error: 3,
+};
 
 function fmt(args: unknown[]): string {
 	return args
@@ -27,6 +35,11 @@ function fmt(args: unknown[]): string {
 		.join(" ");
 }
 
+export function sanitizeLogSegment(value: string): string {
+	const safe = value.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+$/, "_");
+	return safe || "_";
+}
+
 function sessionId(): string {
 	return (
 		process.env.__PI_CONFIG_SESSION_ID ||
@@ -36,18 +49,32 @@ function sessionId(): string {
 	);
 }
 
+function envLogLevel(name: string): string {
+	const envName = `PI_LOG_${sanitizeLogSegment(name).toUpperCase()}`;
+	return (process.env[envName] || process.env.PI_LOG || "info").trim().toLowerCase();
+}
+
+export function isDebugEnabled(name: string): boolean {
+	const min = envLogLevel(name);
+	if (min === "off") return false;
+	return (LEVEL_ORDER[min] ?? LEVEL_ORDER.info) <= LEVEL_ORDER.debug;
+}
+
 export function createLogger(name: string): Logger {
+	const safeName = sanitizeLogSegment(name);
 	const emit = (level: string, args: unknown[]) => {
 		try {
-			const dir = join(homedir(), ".pi", "logs", name);
+			const dir = join(homedir(), ".pi", "logs", safeName);
 			mkdirSync(dir, { recursive: true });
-			appendFileSync(join(dir, `${sessionId()}.log`), `${new Date().toISOString()} ${level} ${fmt(args)}\n`);
+			const safeSid = sanitizeLogSegment(sessionId());
+			appendFileSync(join(dir, `${safeSid}.log`), `${new Date().toISOString()} ${level} ${fmt(args)}\n`);
 		} catch {
 			// Logging must never break the provider.
 		}
 	};
 	return {
 		debug(...args: unknown[]) {
+			if (!isDebugEnabled(name)) return;
 			emit("debug", args);
 		},
 		info(...args: unknown[]) {
@@ -58,6 +85,9 @@ export function createLogger(name: string): Logger {
 		},
 		error(...args: unknown[]) {
 			emit("error", args);
+		},
+		isDebugEnabled() {
+			return isDebugEnabled(name);
 		},
 	};
 }
