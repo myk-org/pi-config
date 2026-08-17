@@ -383,7 +383,6 @@ describe("package-local logger", () => {
 	it("publishes logger.ts in the npm package files list", () => {
 		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 		expect(pkg.files).toContain("logger.ts");
-		expect(() => createLogger("pi-vertex-claude").info("ok")).not.toThrow();
 	});
 
 	it("createLogger does not throw", () => {
