@@ -862,6 +862,7 @@ function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiff
     enableLineSelection: !hasOpenForm,
     enableGutterUtility: !hasOpenForm,
     onLineSelectionEnd: handleLineSelectionEnd,
+    onGutterUtilityClick: handleLineSelectionEnd,
   }), [diffStyle, diffIndicators, lineDiffType, disableBackground, overflow, disableLineNumbers, hunkSeparators, collapsed, theme, hasOpenForm, handleLineSelectionEnd]);
 
   return (
