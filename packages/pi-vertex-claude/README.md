@@ -48,6 +48,7 @@ piv() {
 
 | Model | Context | Output |
 |-------|---------|--------|
+| `claude-opus-4-8` | 1M | 128K |
 | `claude-opus-4-6` | 200K | 128K |
 | `claude-sonnet-4-6` | 200K | 64K |
 | `claude-opus-4-5@20251101` | 200K | 32K |
@@ -62,7 +63,7 @@ piv() {
 
 ## 1M Context Window
 
-Claude Opus 4.6 and Sonnet 4.6 support up to 1M tokens of context via the `context-1m-2025-08-07` beta header.
+Claude Opus 4.8 has a native 1M context window. Opus 4.6 and Sonnet 4.6 support 1M via the `context-1m-2025-08-07` beta header.
 
 To enable 1M model variants, set:
 

@@ -55,6 +55,15 @@ import { parse as partialParse } from "partial-json";
 
 const VERTEX_CLAUDE_MODELS = [
 	{
+		id: "claude-opus-4-8",
+		name: "Claude Opus 4.8 (Vertex)",
+		reasoning: true,
+		input: ["text", "image"] as ("text" | "image")[],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 128000,
+	},
+	{
 		id: "claude-opus-4-6",
 		name: "Claude Opus 4.6 (Vertex)",
 		reasoning: true,
@@ -370,6 +379,64 @@ export function mapStopReason(reason: string): StopReason {
 	}
 }
 
+export function stripOneMSuffix(id: string): string {
+	return id.endsWith("-1m") ? id.slice(0, -3) : id;
+}
+
+/** Opus/Sonnet 4.6+ use adaptive thinking. 4.5 and older require enabled + budget_tokens. */
+export function usesAdaptiveThinking(modelId: string): boolean {
+	const match = /^claude-(opus|sonnet)-4-(\d+)/.exec(stripOneMSuffix(modelId));
+	if (!match) return false;
+	return Number(match[2]) >= 6;
+}
+
+const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
+	minimal: 1024,
+	low: 4096,
+	medium: 10240,
+	high: 20480,
+	xhigh: 32768,
+};
+
+const EFFORT_BY_REASONING: Record<string, "low" | "medium" | "high" | "xhigh"> = {
+	minimal: "low",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+};
+
+export function resolveThinkingBudget(
+	reasoning: string,
+	thinkingBudgets?: Record<string, number | undefined>,
+): number {
+	const budgetKey = reasoning === "xhigh" ? "high" : reasoning;
+	return thinkingBudgets?.[budgetKey] ?? DEFAULT_THINKING_BUDGETS[reasoning] ?? 10240;
+}
+
+export function applyThinkingParams(
+	params: { max_tokens: number; thinking?: unknown; output_config?: unknown },
+	modelId: string,
+	reasoning: string,
+	thinkingBudgets?: Record<string, number | undefined>,
+): void {
+	if (usesAdaptiveThinking(modelId)) {
+		params.thinking = { type: "adaptive" };
+		params.output_config = { effort: EFFORT_BY_REASONING[reasoning] ?? "high" };
+		return;
+	}
+
+	const thinkingBudget = resolveThinkingBudget(reasoning, thinkingBudgets);
+	const minOutputTokens = 1024;
+	if (params.max_tokens <= thinkingBudget) {
+		params.max_tokens = thinkingBudget + minOutputTokens;
+	}
+	params.thinking = {
+		type: "enabled",
+		budget_tokens: thinkingBudget,
+	};
+}
+
 // Streaming JSON parser for tool arguments
 export function parseStreamingJson(partialJson: string): Record<string, any> {
 	if (!partialJson || partialJson.trim() === "") {
@@ -453,7 +520,7 @@ export function streamVertexClaude(
 			});
 
 			// Build request params — strip -1m suffix for the actual API model ID
-			const apiModelId = model.id.endsWith("-1m") ? model.id.slice(0, -3) : model.id;
+			const apiModelId = stripOneMSuffix(model.id);
 			const params: MessageCreateParamsStreaming = {
 				model: apiModelId,
 				messages: convertMessages(context.messages, model),
@@ -482,29 +549,13 @@ export function streamVertexClaude(
 				params.tools = convertTools(context.tools);
 			}
 
-			// Handle thinking/reasoning
 			if (options?.reasoning && model.reasoning) {
-				const defaultBudgets: Record<string, number> = {
-					minimal: 1024,
-					low: 4096,
-					medium: 10240,
-					high: 20480,
-					xhigh: 32768,
-				};
-				const budgetKey = options.reasoning === "xhigh" ? "high" : options.reasoning;
-				const customBudget = options.thinkingBudgets?.[budgetKey as keyof typeof options.thinkingBudgets];
-				const thinkingBudget = customBudget ?? defaultBudgets[options.reasoning] ?? 10240;
-
-				// Ensure max_tokens > thinking budget
-				const minOutputTokens = 1024;
-				if (params.max_tokens <= thinkingBudget) {
-					params.max_tokens = thinkingBudget + minOutputTokens;
-				}
-
-				params.thinking = {
-					type: "enabled",
-					budget_tokens: thinkingBudget,
-				};
+				applyThinkingParams(
+					params as { max_tokens: number; thinking?: unknown; output_config?: unknown },
+					model.id,
+					options.reasoning,
+					options.thinkingBudgets as Record<string, number | undefined> | undefined,
+				);
 			}
 
 			// Start streaming

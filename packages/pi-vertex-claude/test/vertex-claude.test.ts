@@ -20,6 +20,9 @@ let mapStopReason: typeof import("../index.js").mapStopReason;
 let parseStreamingJson: typeof import("../index.js").parseStreamingJson;
 let buildModels: typeof import("../index.js").buildModels;
 let resolveProjectId: typeof import("../index.js").resolveProjectId;
+let stripOneMSuffix: typeof import("../index.js").stripOneMSuffix;
+let usesAdaptiveThinking: typeof import("../index.js").usesAdaptiveThinking;
+let applyThinkingParams: typeof import("../index.js").applyThinkingParams;
 
 beforeAll(async () => {
 	const helpers = await import("../index.js");
@@ -28,6 +31,9 @@ beforeAll(async () => {
 	parseStreamingJson = helpers.parseStreamingJson;
 	buildModels = helpers.buildModels;
 	resolveProjectId = helpers.resolveProjectId;
+	stripOneMSuffix = helpers.stripOneMSuffix;
+	usesAdaptiveThinking = helpers.usesAdaptiveThinking;
+	applyThinkingParams = helpers.applyThinkingParams;
 });
 
 describe("vertex-claude helpers", () => {
@@ -174,6 +180,11 @@ describe("1M context window support", () => {
 			const models = buildModels();
 			const has1m = models.some((m) => m.id.endsWith("-1m"));
 			expect(has1m).toBe(false);
+			expect(models.map((m) => m.id)).toContain("claude-opus-4-8");
+			expect(models.map((m) => m.id)).toContain("claude-opus-4-6");
+			const opus48 = models.find((m) => m.id === "claude-opus-4-8");
+			expect(opus48?.contextWindow).toBe(1000000);
+			expect(opus48?.maxTokens).toBe(128000);
 		});
 
 		it("should return only base models when VERTEX_CLAUDE_1M is set to a non-true value", () => {
@@ -192,6 +203,7 @@ describe("1M context window support", () => {
 			// Should have -1m variants for opus-4-6 and sonnet-4-6
 			expect(oneM.map((m) => m.id)).toContain("claude-opus-4-6-1m");
 			expect(oneM.map((m) => m.id)).toContain("claude-sonnet-4-6-1m");
+			expect(oneM.map((m) => m.id)).not.toContain("claude-opus-4-8-1m");
 			delete process.env.VERTEX_CLAUDE_1M;
 		});
 
@@ -243,11 +255,10 @@ describe("1M context window support", () => {
 
 	describe("streaming -1m model handling", () => {
 		it("should strip -1m suffix to get API model ID", () => {
-			// Test the suffix-stripping logic used in streamVertexClaude
-			const stripSuffix = (id: string) => (id.endsWith("-1m") ? id.slice(0, -3) : id);
-			expect(stripSuffix("claude-opus-4-6-1m")).toBe("claude-opus-4-6");
-			expect(stripSuffix("claude-sonnet-4-6-1m")).toBe("claude-sonnet-4-6");
-			expect(stripSuffix("claude-opus-4-6")).toBe("claude-opus-4-6");
+			expect(stripOneMSuffix("claude-opus-4-8-1m")).toBe("claude-opus-4-8");
+			expect(stripOneMSuffix("claude-opus-4-6-1m")).toBe("claude-opus-4-6");
+			expect(stripOneMSuffix("claude-sonnet-4-6-1m")).toBe("claude-sonnet-4-6");
+			expect(stripOneMSuffix("claude-opus-4-6")).toBe("claude-opus-4-6");
 		});
 
 		it("should identify -1m models for beta header injection", () => {
@@ -267,5 +278,56 @@ describe("1M context window support", () => {
 			expect(betaFeatures.join(",")).toContain("context-1m-2025-08-07");
 			expect(betaFeatures).toHaveLength(3);
 		});
+	});
+});
+
+describe("adaptive vs extended thinking", () => {
+	it("uses adaptive thinking for Opus/Sonnet 4.6+", () => {
+		expect(usesAdaptiveThinking("claude-opus-4-8")).toBe(true);
+		expect(usesAdaptiveThinking("claude-opus-4-8-1m")).toBe(true);
+		expect(usesAdaptiveThinking("claude-opus-4-6")).toBe(true);
+		expect(usesAdaptiveThinking("claude-opus-4-6-1m")).toBe(true);
+		expect(usesAdaptiveThinking("claude-sonnet-4-6")).toBe(true);
+	});
+
+	it("keeps extended thinking for 4.5 and older", () => {
+		expect(usesAdaptiveThinking("claude-opus-4-5@20251101")).toBe(false);
+		expect(usesAdaptiveThinking("claude-sonnet-4-5@20250929")).toBe(false);
+		expect(usesAdaptiveThinking("claude-haiku-4-5@20251001")).toBe(false);
+		expect(usesAdaptiveThinking("claude-3-7-sonnet@20250219")).toBe(false);
+	});
+
+	it("sends adaptive + effort for 4.6+", () => {
+		const params = { max_tokens: 4096 };
+		applyThinkingParams(params, "claude-opus-4-8", "high");
+		expect(params).toEqual({
+			max_tokens: 4096,
+			thinking: { type: "adaptive" },
+			output_config: { effort: "high" },
+		});
+	});
+
+	it("maps pi reasoning levels to effort", () => {
+		const cases: Array<[string, string]> = [
+			["minimal", "low"],
+			["low", "low"],
+			["medium", "medium"],
+			["high", "high"],
+			["xhigh", "xhigh"],
+		];
+		for (const [reasoning, effort] of cases) {
+			const params = { max_tokens: 4096 };
+			applyThinkingParams(params, "claude-opus-4-6", reasoning);
+			expect(params.output_config).toEqual({ effort });
+			expect(params.thinking).toEqual({ type: "adaptive" });
+		}
+	});
+
+	it("keeps enabled + budget_tokens for 4.5", () => {
+		const params = { max_tokens: 4096 };
+		applyThinkingParams(params, "claude-opus-4-5@20251101", "medium");
+		expect(params.thinking).toEqual({ type: "enabled", budget_tokens: 10240 });
+		expect(params).not.toHaveProperty("output_config");
+		expect(params.max_tokens).toBe(10240 + 1024);
 	});
 });

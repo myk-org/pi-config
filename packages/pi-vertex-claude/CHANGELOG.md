@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Claude Opus 4.8 model (`claude-opus-4-8`) with native 1M context and 128K max output
+
+### Fixed
+
+- Use `thinking.type=adaptive` and `output_config.effort` for Claude 4.6+
+  (Opus 4.6/4.8, Sonnet 4.6). `type=enabled` + `budget_tokens` is deprecated
+  on 4.6 and rejected on 4.8. Older models still use extended thinking.
+
 ## [0.2.3] - 2026-06-28
 
 ### Fixed
