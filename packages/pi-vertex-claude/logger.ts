@@ -49,9 +49,14 @@ function sessionId(): string {
 	);
 }
 
+function envVarKey(name: string): string {
+	return `PI_LOG_${sanitizeLogSegment(name).replace(/[-.]/g, "_").toUpperCase()}`;
+}
+
 function envLogLevel(name: string): string {
-	const envName = `PI_LOG_${sanitizeLogSegment(name).toUpperCase()}`;
-	return (process.env[envName] || process.env.PI_LOG || "info").trim().toLowerCase();
+	const envName = envVarKey(name);
+	const hyphenated = `PI_LOG_${sanitizeLogSegment(name).toUpperCase()}`;
+	return (process.env[envName] || process.env[hyphenated] || process.env.PI_LOG || "info").trim().toLowerCase();
 }
 
 export function isDebugEnabled(name: string): boolean {

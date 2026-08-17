@@ -391,7 +391,7 @@ describe("package-local logger", () => {
 		expect(() => localLog.debug("test")).not.toThrow();
 	});
 
-	it("sanitizes session IDs and logger names against path traversal", () => {
+	it("sanitizes log path segments against traversal", () => {
 		expect(sanitizeLogSegment("../etc/passwd")).toBe(".._etc_passwd");
 		expect(sanitizeLogSegment("foo/../../bar")).toBe("foo_.._.._bar");
 		expect(sanitizeLogSegment("a\\b")).toBe("a_b");
@@ -404,6 +404,12 @@ describe("package-local logger", () => {
 		delete process.env.PI_LOG_PI_VERTEX_CLAUDE;
 		expect(isDebugEnabled("pi-vertex-claude")).toBe(false);
 		process.env.PI_LOG = "debug";
+		expect(isDebugEnabled("pi-vertex-claude")).toBe(true);
+	});
+
+	it("honors underscore PI_LOG override for hyphenated logger names", () => {
+		delete process.env.PI_LOG;
+		process.env.PI_LOG_PI_VERTEX_CLAUDE = "debug";
 		expect(isDebugEnabled("pi-vertex-claude")).toBe(true);
 	});
 });
