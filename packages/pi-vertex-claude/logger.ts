@@ -22,14 +22,19 @@ const LEVEL_ORDER: Record<string, number> = {
 	error: 3,
 };
 
+/** Collapse CR/LF so one emit call = one physical log line. */
+export function oneLine(text: string): string {
+	return text.replace(/\r\n|\r|\n/g, "\\n");
+}
+
 function fmt(args: unknown[]): string {
 	return args
 		.map((a) => {
-			if (typeof a === "string") return a;
+			if (typeof a === "string") return oneLine(a);
 			try {
-				return JSON.stringify(a);
+				return oneLine(JSON.stringify(a));
 			} catch {
-				return String(a);
+				return oneLine(String(a));
 			}
 		})
 		.join(" ");
@@ -67,14 +72,21 @@ export function isDebugEnabled(name: string): boolean {
 
 export function createLogger(name: string): Logger {
 	const safeName = sanitizeLogSegment(name);
+	let failed = false;
 	const emit = (level: string, args: unknown[]) => {
+		if (failed) return;
 		try {
 			const dir = join(homedir(), ".pi", "logs", safeName);
 			mkdirSync(dir, { recursive: true });
 			const safeSid = sanitizeLogSegment(sessionId());
 			appendFileSync(join(dir, `${safeSid}.log`), `${new Date().toISOString()} ${level} ${fmt(args)}\n`);
-		} catch {
-			// Logging must never break the provider.
+		} catch (err) {
+			failed = true;
+			try {
+				process.stderr.write(`pi-vertex-claude logger write failed name=${name} err=${String(err)}\n`);
+			} catch {
+				// Diagnostic must never throw.
+			}
 		}
 	};
 	return {

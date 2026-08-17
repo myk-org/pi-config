@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { createLogger, isDebugEnabled, sanitizeLogSegment } from "../logger.ts";
+import { createLogger, isDebugEnabled, oneLine, sanitizeLogSegment } from "../logger.ts";
 
 vi.mock(
 	"@earendil-works/pi-ai",
@@ -380,10 +380,10 @@ describe("package-local logger", () => {
 		else process.env.PI_LOG_PI_VERTEX_CLAUDE = originalNamed;
 	});
 
-	it("does not import repo-only shared logger from index.ts", () => {
-		const src = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-		expect(src).not.toContain("extensions/shared/logger");
-		expect(src).toContain('from "./logger.ts"');
+	it("publishes logger.ts in the npm package files list", () => {
+		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		expect(pkg.files).toContain("logger.ts");
+		expect(() => createLogger("pi-vertex-claude").info("ok")).not.toThrow();
 	});
 
 	it("createLogger does not throw", () => {
@@ -411,5 +411,9 @@ describe("package-local logger", () => {
 		delete process.env.PI_LOG;
 		process.env.PI_LOG_PI_VERTEX_CLAUDE = "debug";
 		expect(isDebugEnabled("pi-vertex-claude")).toBe(true);
+	});
+
+	it("collapses CR LF into a single physical log line", () => {
+		expect(oneLine("a\nb\r\nc")).toBe("a\\nb\\nc");
 	});
 });
