@@ -47,7 +47,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as partialParse } from "partial-json";
-import { createLogger } from "../../extensions/shared/logger.ts";
+import { createLogger } from "./logger.ts";
 
 const log = createLogger("pi-vertex-claude");
 

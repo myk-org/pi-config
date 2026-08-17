@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on 4.6 and rejected on 4.8. Older models still use extended thinking.
 - Honor session thinking `off` (omit thinking params) and `max` (adaptive
   effort `max`, or highest extended budget on 4.5 and older)
+- Package-local `createLogger` (`logger.ts`) so npm installs do not import
+  repo-only `extensions/shared/logger.ts`
 
 ## [0.2.3] - 2026-06-28
 

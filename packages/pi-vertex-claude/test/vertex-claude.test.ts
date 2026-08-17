@@ -1,4 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { createLogger } from "../logger.ts";
 
 vi.mock(
 	"@earendil-works/pi-ai",
@@ -353,5 +355,18 @@ describe("adaptive vs extended thinking", () => {
 		expect(params.thinking).toEqual({ type: "enabled", budget_tokens: 10240 });
 		expect(params).not.toHaveProperty("output_config");
 		expect(params.max_tokens).toBe(10240 + 1024);
+	});
+});
+
+describe("package-local logger", () => {
+	it("does not import repo-only shared logger from index.ts", () => {
+		const src = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
+		expect(src).not.toContain("extensions/shared/logger");
+		expect(src).toContain('from "./logger.ts"');
+	});
+
+	it("createLogger does not throw", () => {
+		const localLog = createLogger("pi-vertex-claude");
+		expect(() => localLog.debug("test")).not.toThrow();
 	});
 });
