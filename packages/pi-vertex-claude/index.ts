@@ -47,6 +47,9 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as partialParse } from "partial-json";
+import { createLogger } from "../../extensions/shared/logger.ts";
+
+const log = createLogger("pi-vertex-claude");
 
 // =============================================================================
 // Models from models.dev google-vertex-anthropic
@@ -380,14 +383,17 @@ export function mapStopReason(reason: string): StopReason {
 }
 
 export function stripOneMSuffix(id: string): string {
-	return id.endsWith("-1m") ? id.slice(0, -3) : id;
+	const stripped = id.endsWith("-1m") ? id.slice(0, -3) : id;
+	log.debug("stripOneMSuffix", { id, stripped });
+	return stripped;
 }
 
 /** Opus/Sonnet 4.6+ use adaptive thinking. 4.5 and older require enabled + budget_tokens. */
 export function usesAdaptiveThinking(modelId: string): boolean {
 	const match = /^claude-(opus|sonnet)-4-(\d+)/.exec(stripOneMSuffix(modelId));
-	if (!match) return false;
-	return Number(match[2]) >= 6;
+	const adaptive = match != null && Number(match[2]) >= 6;
+	log.debug("usesAdaptiveThinking", { modelId, adaptive });
+	return adaptive;
 }
 
 const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
@@ -396,22 +402,34 @@ const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
 	medium: 10240,
 	high: 20480,
 	xhigh: 32768,
+	max: 32768,
 };
 
-const EFFORT_BY_REASONING: Record<string, "low" | "medium" | "high" | "xhigh"> = {
+const EFFORT_BY_REASONING: Record<string, "low" | "medium" | "high" | "xhigh" | "max"> = {
 	minimal: "low",
 	low: "low",
 	medium: "medium",
 	high: "high",
 	xhigh: "xhigh",
+	max: "max",
 };
+
+function normalizeReasoning(reasoning: string): string {
+	const level = reasoning.trim().toLowerCase();
+	log.debug("normalizeReasoning", { reasoning, level });
+	return level;
+}
 
 export function resolveThinkingBudget(
 	reasoning: string,
 	thinkingBudgets?: Record<string, number | undefined>,
 ): number {
-	const budgetKey = reasoning === "xhigh" ? "high" : reasoning;
-	return thinkingBudgets?.[budgetKey] ?? DEFAULT_THINKING_BUDGETS[reasoning] ?? 10240;
+	const level = normalizeReasoning(reasoning);
+	const mapped = level === "max" ? "xhigh" : level;
+	const budgetKey = mapped === "xhigh" ? "high" : mapped;
+	const budget = thinkingBudgets?.[budgetKey] ?? DEFAULT_THINKING_BUDGETS[mapped] ?? 10240;
+	log.debug("resolveThinkingBudget", { reasoning: level, budgetKey, budget });
+	return budget;
 }
 
 export function applyThinkingParams(
@@ -420,13 +438,23 @@ export function applyThinkingParams(
 	reasoning: string,
 	thinkingBudgets?: Record<string, number | undefined>,
 ): void {
-	if (usesAdaptiveThinking(modelId)) {
-		params.thinking = { type: "adaptive" };
-		params.output_config = { effort: EFFORT_BY_REASONING[reasoning] ?? "high" };
+	const level = normalizeReasoning(reasoning);
+	if (level === "off") {
+		delete params.thinking;
+		delete params.output_config;
+		log.debug("applyThinkingParams: off, omit thinking", { modelId });
 		return;
 	}
 
-	const thinkingBudget = resolveThinkingBudget(reasoning, thinkingBudgets);
+	if (usesAdaptiveThinking(modelId)) {
+		const effort = EFFORT_BY_REASONING[level] ?? "high";
+		params.thinking = { type: "adaptive" };
+		params.output_config = { effort };
+		log.debug("applyThinkingParams: adaptive", { modelId, reasoning: level, effort });
+		return;
+	}
+
+	const thinkingBudget = resolveThinkingBudget(level, thinkingBudgets);
 	const minOutputTokens = 1024;
 	if (params.max_tokens <= thinkingBudget) {
 		params.max_tokens = thinkingBudget + minOutputTokens;
@@ -435,6 +463,12 @@ export function applyThinkingParams(
 		type: "enabled",
 		budget_tokens: thinkingBudget,
 	};
+	log.debug("applyThinkingParams: extended", {
+		modelId,
+		reasoning: level,
+		thinkingBudget,
+		max_tokens: params.max_tokens,
+	});
 }
 
 // Streaming JSON parser for tool arguments

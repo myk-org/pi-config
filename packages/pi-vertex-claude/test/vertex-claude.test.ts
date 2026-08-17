@@ -314,6 +314,7 @@ describe("adaptive vs extended thinking", () => {
 			["medium", "medium"],
 			["high", "high"],
 			["xhigh", "xhigh"],
+			["max", "max"],
 		];
 		for (const [reasoning, effort] of cases) {
 			const params = { max_tokens: 4096 };
@@ -321,6 +322,29 @@ describe("adaptive vs extended thinking", () => {
 			expect(params.output_config).toEqual({ effort });
 			expect(params.thinking).toEqual({ type: "adaptive" });
 		}
+	});
+
+	it("omits thinking params when reasoning is off", () => {
+		const params = { max_tokens: 4096, thinking: { type: "adaptive" }, output_config: { effort: "high" } };
+		applyThinkingParams(params, "claude-opus-4-8", "off");
+		expect(params).toEqual({ max_tokens: 4096 });
+		expect(params).not.toHaveProperty("thinking");
+		expect(params).not.toHaveProperty("output_config");
+	});
+
+	it("maps max to adaptive effort max", () => {
+		const params = { max_tokens: 4096 };
+		applyThinkingParams(params, "claude-opus-4-8", "max");
+		expect(params.thinking).toEqual({ type: "adaptive" });
+		expect(params.output_config).toEqual({ effort: "max" });
+	});
+
+	it("maps max to the highest extended thinking budget", () => {
+		const params = { max_tokens: 4096 };
+		applyThinkingParams(params, "claude-opus-4-5@20251101", "max");
+		expect(params.thinking).toEqual({ type: "enabled", budget_tokens: 32768 });
+		expect(params).not.toHaveProperty("output_config");
+		expect(params.max_tokens).toBe(32768 + 1024);
 	});
 
 	it("keeps enabled + budget_tokens for 4.5", () => {

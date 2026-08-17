@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `thinking.type=adaptive` and `output_config.effort` for Claude 4.6+
   (Opus 4.6/4.8, Sonnet 4.6). `type=enabled` + `budget_tokens` is deprecated
   on 4.6 and rejected on 4.8. Older models still use extended thinking.
+- Honor session thinking `off` (omit thinking params) and `max` (adaptive
+  effort `max`, or highest extended budget on 4.5 and older)
 
 ## [0.2.3] - 2026-06-28
 
