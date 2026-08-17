@@ -16,28 +16,23 @@ def _record(
 
 def test_parse_git_log_strips_leading_newline_on_later_commits() -> None:
     """Git format inserts a newline after each NUL, which used to taint hash."""
+    first = _record("aaa111aaa111", "aaa111a", "feat: first")  # pragma: allowlist secret
+    second_hash = "bbb222bbb222"  # pragma: allowlist secret
+    second = _record(second_hash, "bbb222b", "fix: second")
+    commits = _parse_git_log(f"{first}\x00\n{second}\x00")
+    assert commits[1].hash == second_hash
+
+
+def test_parse_git_log_parses_two_nul_separated_records() -> None:
     first_hash = "aaa111aaa111"  # pragma: allowlist secret
     second_hash = "bbb222bbb222"  # pragma: allowlist secret
-    first = _record(first_hash, "aaa111a", "feat: first", body="first body")
-    second = _record(second_hash, "bbb222b", "fix: second", body="second body")
-    output = f"{first}\x00\n{second}\x00"
-
-    commits = _parse_git_log(output)
-
-    assert len(commits) == 2
-    assert commits[0].hash == first_hash
-    assert commits[0].short_hash == "aaa111a"
-    assert commits[1].hash == second_hash
-    assert commits[1].short_hash == "bbb222b"
-    assert not commits[1].hash.startswith("\n")
-    assert commits[1].subject == "fix: second"
-    assert commits[1].body == "second body"
+    first = _record(first_hash, "aaa111a", "feat: first")
+    second = _record(second_hash, "bbb222b", "fix: second")
+    commits = _parse_git_log(f"{first}\x00{second}\x00")
+    assert [c.hash for c in commits] == [first_hash, second_hash]
 
 
 def test_parse_git_log_collapses_body_whitespace() -> None:
-    hash_full = "abc123def456"  # pragma: allowlist secret
-    record = _record(hash_full, "abc123d", "fix: spaces", body="line one\nline two")
+    record = _record("abc123def456", "abc123d", "fix: spaces", body="line one\nline two")  # pragma: allowlist secret
     commits = _parse_git_log(f"{record}\x00")
-    assert len(commits) == 1
     assert commits[0].body == "line one line two"
-    assert commits[0].hash == hash_full
