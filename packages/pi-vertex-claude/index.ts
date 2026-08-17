@@ -47,6 +47,9 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as partialParse } from "partial-json";
+import { createLogger } from "./logger.ts";
+
+const log = createLogger("pi-vertex-claude");
 
 // =============================================================================
 // Models from models.dev google-vertex-anthropic
@@ -54,6 +57,15 @@ import { parse as partialParse } from "partial-json";
 // =============================================================================
 
 const VERTEX_CLAUDE_MODELS = [
+	{
+		id: "claude-opus-4-8",
+		name: "Claude Opus 4.8 (Vertex)",
+		reasoning: true,
+		input: ["text", "image"] as ("text" | "image")[],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 128000,
+	},
 	{
 		id: "claude-opus-4-6",
 		name: "Claude Opus 4.6 (Vertex)",
@@ -370,6 +382,122 @@ export function mapStopReason(reason: string): StopReason {
 	}
 }
 
+export function stripOneMSuffix(id: string): string {
+	const stripped = id.endsWith("-1m") ? id.slice(0, -3) : id;
+	log.debug("stripOneMSuffix", { id, stripped });
+	return stripped;
+}
+
+/** Opus/Sonnet 4.6+ use adaptive thinking. 4.5 and older require enabled + budget_tokens. */
+export function usesAdaptiveThinking(modelId: string): boolean {
+	const match = /^claude-(opus|sonnet)-4-(\d+)/.exec(stripOneMSuffix(modelId));
+	const adaptive = match != null && Number(match[2]) >= 6;
+	log.debug("usesAdaptiveThinking", { modelId, adaptive });
+	return adaptive;
+}
+
+const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
+	minimal: 1024,
+	low: 4096,
+	medium: 10240,
+	high: 20480,
+	xhigh: 32768,
+	max: 32768,
+};
+
+const EFFORT_BY_REASONING: Record<string, "low" | "medium" | "high" | "xhigh" | "max"> = {
+	minimal: "low",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: "max",
+};
+
+function normalizeReasoning(reasoning: string): string {
+	const level = reasoning.trim().toLowerCase();
+	log.debug("normalizeReasoning", { reasoning, level });
+	return level;
+}
+
+export function resolveThinkingBudget(
+	reasoning: string,
+	thinkingBudgets?: Record<string, number | undefined>,
+): number {
+	const level = normalizeReasoning(reasoning);
+	const mapped = level === "max" ? "xhigh" : level;
+	const budgetKey = mapped === "xhigh" ? "high" : mapped;
+	const budget = thinkingBudgets?.[budgetKey] ?? DEFAULT_THINKING_BUDGETS[mapped] ?? 10240;
+	log.debug("resolveThinkingBudget", { reasoning: level, budgetKey, budget });
+	return budget;
+}
+
+export function applyThinkingParams(
+	params: { max_tokens: number; thinking?: unknown; output_config?: unknown },
+	modelId: string,
+	reasoning: string,
+	thinkingBudgets?: Record<string, number | undefined>,
+	modelMaxTokens?: number,
+): void {
+	const level = normalizeReasoning(reasoning);
+	if (level === "off") {
+		delete params.thinking;
+		delete params.output_config;
+		log.debug("applyThinkingParams: off, omit thinking", { modelId });
+		return;
+	}
+
+	if (usesAdaptiveThinking(modelId)) {
+		const effort = EFFORT_BY_REASONING[level] ?? "high";
+		params.thinking = { type: "adaptive" };
+		params.output_config = { effort };
+		log.debug("applyThinkingParams: adaptive", { modelId, reasoning: level, effort });
+		return;
+	}
+
+	const minOutputTokens = 1024;
+	let thinkingBudget = resolveThinkingBudget(level, thinkingBudgets);
+	const cap = modelMaxTokens && modelMaxTokens > 0 ? modelMaxTokens : undefined;
+	if (cap !== undefined) {
+		const maxBudget = Math.max(minOutputTokens, cap - minOutputTokens);
+		if (thinkingBudget > maxBudget) {
+			log.debug("applyThinkingParams: clamp budget to model maxTokens", {
+				modelId,
+				requestedBudget: thinkingBudget,
+				maxBudget,
+				modelMaxTokens: cap,
+			});
+			thinkingBudget = maxBudget;
+		}
+		if (params.max_tokens > cap) {
+			params.max_tokens = cap;
+		}
+	}
+	if (params.max_tokens <= thinkingBudget) {
+		const raised = thinkingBudget + minOutputTokens;
+		params.max_tokens = cap !== undefined ? Math.min(cap, raised) : raised;
+	}
+	if (thinkingBudget >= params.max_tokens) {
+		thinkingBudget = Math.max(minOutputTokens, params.max_tokens - minOutputTokens);
+		log.debug("applyThinkingParams: shrink budget below max_tokens", {
+			modelId,
+			thinkingBudget,
+			max_tokens: params.max_tokens,
+		});
+	}
+	params.thinking = {
+		type: "enabled",
+		budget_tokens: thinkingBudget,
+	};
+	log.debug("applyThinkingParams: extended", {
+		modelId,
+		reasoning: level,
+		thinkingBudget,
+		max_tokens: params.max_tokens,
+		modelMaxTokens: cap,
+	});
+}
+
 // Streaming JSON parser for tool arguments
 export function parseStreamingJson(partialJson: string): Record<string, any> {
 	if (!partialJson || partialJson.trim() === "") {
@@ -453,7 +581,7 @@ export function streamVertexClaude(
 			});
 
 			// Build request params — strip -1m suffix for the actual API model ID
-			const apiModelId = model.id.endsWith("-1m") ? model.id.slice(0, -3) : model.id;
+			const apiModelId = stripOneMSuffix(model.id);
 			const params: MessageCreateParamsStreaming = {
 				model: apiModelId,
 				messages: convertMessages(context.messages, model),
@@ -482,29 +610,14 @@ export function streamVertexClaude(
 				params.tools = convertTools(context.tools);
 			}
 
-			// Handle thinking/reasoning
 			if (options?.reasoning && model.reasoning) {
-				const defaultBudgets: Record<string, number> = {
-					minimal: 1024,
-					low: 4096,
-					medium: 10240,
-					high: 20480,
-					xhigh: 32768,
-				};
-				const budgetKey = options.reasoning === "xhigh" ? "high" : options.reasoning;
-				const customBudget = options.thinkingBudgets?.[budgetKey as keyof typeof options.thinkingBudgets];
-				const thinkingBudget = customBudget ?? defaultBudgets[options.reasoning] ?? 10240;
-
-				// Ensure max_tokens > thinking budget
-				const minOutputTokens = 1024;
-				if (params.max_tokens <= thinkingBudget) {
-					params.max_tokens = thinkingBudget + minOutputTokens;
-				}
-
-				params.thinking = {
-					type: "enabled",
-					budget_tokens: thinkingBudget,
-				};
+				applyThinkingParams(
+					params as { max_tokens: number; thinking?: unknown; output_config?: unknown },
+					model.id,
+					options.reasoning,
+					options.thinkingBudgets as Record<string, number | undefined> | undefined,
+					model.maxTokens,
+				);
 			}
 
 			// Start streaming

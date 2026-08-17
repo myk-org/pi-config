@@ -25,6 +25,7 @@
   "main": "index.ts",
   "files": [
     "index.ts",
+    "logger.ts",
     "README.md",
     "LICENSE"
   ],
