@@ -320,20 +320,30 @@ def _get_commits(last_tag: str | None, limit: int = 100) -> tuple[list[Commit], 
     if code != 0 or not output:
         return [], is_first_release
 
-    commits = []
-    # Split by record separator, filter empty
+    commits = _parse_git_log(output)
+    filtered = [c for c in commits if not _is_changelog_noise(c)]
+    return filtered, is_first_release
+
+
+def _parse_git_log(output: str) -> list[Commit]:
+    """Parse NUL-separated git log records from `_get_commits` format.
+
+    Git ``format:`` inserts a newline *between* commits, so records after the
+    first start with ``\\n`` (``...\\x00\\n<hash>``). Strip each record and
+    field so hashes are never prefixed with that separator.
+    """
+    commits: list[Commit] = []
     for record in output.split("\x00"):
-        if not record.strip():
+        record = record.strip()
+        if not record:
             continue
 
         parts = record.split("\x1f")
         if len(parts) < 6:
             continue
 
-        hash_full, short_hash, subject, author, date = parts[:5]
-        # Body is everything after the 5th field separator
+        hash_full, short_hash, subject, author, date = (p.strip() for p in parts[:5])
         body = parts[5] if len(parts) > 5 else ""
-        # Clean up body
         body = " ".join(body.split())
 
         commits.append(
@@ -346,9 +356,7 @@ def _get_commits(last_tag: str | None, limit: int = 100) -> tuple[list[Commit], 
                 date=date,
             )
         )
-
-    filtered = [c for c in commits if not _is_changelog_noise(c)]
-    return filtered, is_first_release
+    return commits
 
 
 def get_release_info(repo: str | None = None, target: str | None = None, tag_match: str | None = None) -> ReleaseInfo:
