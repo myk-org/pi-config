@@ -160,8 +160,9 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
 
     # ── Step 1: Pi Packages ──────────────────────────────────────────────
     pi_dis = "" if has["pi"] else "requires pi"
+    pi_cfg_git = "git:github.com/myk-org/pi-config"
+    pi_vtx_git = "git:github.com/myk-org/pi-config/packages/pi-vertex-claude"
     pi_cfg = (HOME / ".pi/agent/git/github.com/myk-org/pi-config").exists()
-    pi_vtx = (HOME / ".pi/agent/git/github.com/myk-org/pi-vertex-claude").exists()
 
     def _is_pi_pkg_installed(name: str) -> bool:
         try:
@@ -169,6 +170,8 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
             return False
 
+    # Nested monorepo path — not the retired standalone git:…/pi-vertex-claude repo.
+    pi_vtx = _is_pi_pkg_installed("pi-config/packages/pi-vertex-claude")
     pi_web = _is_pi_pkg_installed("pi-web-access")
 
     step1 = Step(
@@ -181,14 +184,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Orchestrator + 24 agents + prompts",
                 installed=pi_cfg,
                 disabled=pi_dis,
-                install_cmd=f"pi {'update' if pi_cfg else 'install'} git:github.com/myk-org/pi-config",
+                install_cmd=f"pi {'update' if pi_cfg else 'install'} {pi_cfg_git}",
             ),
             Tool(
                 "pi-vertex-claude",
                 "Claude via Google Cloud Vertex AI",
                 installed=pi_vtx,
                 disabled=pi_dis,
-                install_cmd=f"pi {'update' if pi_vtx else 'install'} git:github.com/myk-org/pi-vertex-claude",
+                install_cmd=f"pi {'update' if pi_vtx else 'install'} {pi_vtx_git}",
             ),
             Tool(
                 "pi-web-access",
