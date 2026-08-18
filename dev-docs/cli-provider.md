@@ -41,8 +41,8 @@ symbol id in sync.
 
 Headless Cursor passes `--approve-mcps` only when `CLI_APPROVE_MCPS` is set
 (`false` opts out even in sidecar) or the process is a sidecar (`SIDECAR_PORT`).
-`startSidecar()` always writes `SIDECAR_PORT` (default 9100, or `options.port`)
-so programmatic launches without that env still get headless MCP. Interactive
+`startSidecar()` stamps `SIDECAR_PORT` while running (default 9100, `options.port`,
+or `0` for an OS ephemeral port) and restores the inherited value on `close()`. Interactive
 pi omits the flag so project MCP still needs TTY approval. Headless Gemini defaults
 `GEMINI_CLI_TRUST_WORKSPACE=true` on spawn but preserves an explicit parent
 value (including `false`) — `--skip-trust` alone does not connect project

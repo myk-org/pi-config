@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { SessionStore } from "./sessions.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
-import { logger } from "./logger.js";
+import { createLogger, logger } from "./logger.js";
 import { ensureSidecarPortEnv, resolveSidecarListenPort } from "./sidecar-port.js";
 
 const MAX_BODY_SIZE = 1_048_576;
@@ -149,6 +149,7 @@ export interface SidecarHandle {
 }
 
 export function startSidecar(options?: { port?: number; host?: string; watchdogUrl?: string; watchdogOptions?: WatchdogOptions }): SidecarHandle {
+  const log = createLogger("startSidecar");
   // Fail fast on a stale SDK install rather than surfacing confusing runtime
   // errors later (e.g. createProvider()-based ACPX/CLI providers silently
   // failing to register on a pre-0.81 SDK).
@@ -213,7 +214,8 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   }
 
   const PORT = resolveSidecarListenPort(options?.port);
-  ensureSidecarPortEnv(PORT);
+  const releaseSidecarPortEnv = ensureSidecarPortEnv(PORT);
+  log.info(`startSidecar listenPort=${PORT}`);
   // Precedence: explicit options.host → SIDECAR_HOST (start-sidecar.sh) → DEV_MODE → localhost.
   const HOST =
     options?.host ??
@@ -306,6 +308,9 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
       } catch (err) {
         logger.error(`[sidecar] SHUTDOWN_FAILED: reason=${reason}`, err);
         // Still complete the memoized promise so joiners do not hang; draining stays true.
+      } finally {
+        releaseSidecarPortEnv();
+        log.info(`startSidecar restored SIDECAR_PORT reason=${reason}`);
       }
     })();
     return shutdownPromise;

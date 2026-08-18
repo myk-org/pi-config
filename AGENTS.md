@@ -150,8 +150,9 @@ Writing effective rules:
   keep `Symbol.for("pi-config.sessionCwdAls")` in sync — sidecar cannot import
   the extension file (`tsconfig` rootDir). See `dev-docs/cli-provider.md`.
   Headless Cursor `--approve-mcps`: `CLI_APPROVE_MCPS` wins (`false` opts out);
-  otherwise sidecar (`SIDECAR_PORT` — `startSidecar()` always sets it, including
-  default 9100 and `options.port`). Headless Gemini defaults
+  otherwise sidecar (`SIDECAR_PORT` — `startSidecar()` stamps it while running,
+  including default 9100, `options.port`, and ephemeral `0`; `close()` restores
+  the inherited value). Headless Gemini defaults
   `GEMINI_CLI_TRUST_WORKSPACE=true` but preserves an explicit parent value.
 - Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `dev-docs/cli-provider.md` Logging
 - Memory system: see `dev-docs/memory-architecture.md`

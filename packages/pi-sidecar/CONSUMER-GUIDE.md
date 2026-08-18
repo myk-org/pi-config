@@ -144,7 +144,7 @@ npx pi-sidecar-start --help
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script). `startSidecar()` always sets this env (including default and `options.port`) so nested Cursor CLI can detect sidecar and pass `--approve-mcps`. |
+| `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script). `startSidecar()` stamps this env while running (default, `options.port`, or `0` for ephemeral) so nested Cursor CLI can detect sidecar and pass `--approve-mcps`. `close()` restores the inherited value. |
 | `SIDECAR_HOST` | `127.0.0.1` | Bind address |
 | `SIDECAR_URL` | `http://127.0.0.1:9100` | Python client base URL |
 | `CLI_AGENTS` | (none) | Comma-separated CLI agents: `cursor,claude,gemini` |
