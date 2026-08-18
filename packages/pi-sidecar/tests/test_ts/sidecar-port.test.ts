@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 
-import { startSidecar } from "../../src/index.js";
+import { bindSidecarListenExit, startSidecar } from "../../src/index.js";
 import {
   ensureSidecarPortEnv,
   resolveSidecarListenPort,
@@ -130,6 +130,7 @@ describe("sidecar listen port env (#768 MCP)", () => {
     try {
       const handle = startSidecar({ port: 0, host: "127.0.0.1" });
       assert.equal(process.env.SIDECAR_PORT, "0");
+      await handle.ready;
       await handle.close();
       assert.equal(process.env.SIDECAR_PORT, "9100");
     } finally {
@@ -138,7 +139,7 @@ describe("sidecar listen port env (#768 MCP)", () => {
     }
   });
 
-  it("startSidecar releases SIDECAR_PORT when listen fails", async () => {
+  it("startSidecar ready rejects when listen fails", async () => {
     const blocker = createServer();
     await new Promise<void>((resolve, reject) => {
       blocker.once("error", reject);
@@ -151,6 +152,10 @@ describe("sidecar listen port env (#768 MCP)", () => {
     delete process.env.SIDECAR_PORT;
     try {
       const handle = startSidecar({ port, host: "127.0.0.1" });
+      await assert.rejects(
+        () => handle.ready,
+        (err: NodeJS.ErrnoException) => err.code === "EADDRINUSE",
+      );
       await waitUntil(() => !("SIDECAR_PORT" in process.env));
       await handle.close();
     } finally {
@@ -158,5 +163,23 @@ describe("sidecar listen port env (#768 MCP)", () => {
       if (prev === undefined) delete process.env.SIDECAR_PORT;
       else process.env.SIDECAR_PORT = prev;
     }
+  });
+
+  it("bindSidecarListenExit exits 1 when ready rejects", async () => {
+    let rejectReady!: (err: Error) => void;
+    const handle = {
+      close: async () => {},
+      ready: new Promise<void>((_, reject) => {
+        rejectReady = reject;
+      }),
+    };
+    let exitCode: number | undefined;
+    bindSidecarListenExit(handle, (code) => {
+      exitCode = code;
+    });
+    const err = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+    rejectReady(err);
+    await Promise.resolve();
+    assert.equal(exitCode, 1);
   });
 });

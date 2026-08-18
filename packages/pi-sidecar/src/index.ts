@@ -146,6 +146,8 @@ export function redactProviderStatusAuth<T extends {
 
 export interface SidecarHandle {
   close(): Promise<void>;
+  /** Resolves when the HTTP server is listening; rejects on bind failure. */
+  ready: Promise<void>;
 }
 
 export function startSidecar(options?: { port?: number; host?: string; watchdogUrl?: string; watchdogOptions?: WatchdogOptions }): SidecarHandle {
@@ -240,6 +242,32 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   // Declared early so shutdownSidecar can clear them; assigned after createServer.
   let cleanupInterval: ReturnType<typeof setInterval> | undefined;
   let stopWatchdog: (() => void) | undefined;
+  let settleReady: { resolve: () => void; reject: (err: Error) => void } | undefined;
+  let readySettled = false;
+  const ready = new Promise<void>((resolve, reject) => {
+    settleReady = { resolve, reject };
+  });
+
+  function resolveListenReady(): void {
+    if (readySettled) {
+      log.debug("startSidecar ready already settled");
+      return;
+    }
+    readySettled = true;
+    log.info("startSidecar listen ready");
+    settleReady?.resolve();
+  }
+
+  function rejectListenReady(err: Error): void {
+    if (readySettled) {
+      log.debug("startSidecar ready already settled");
+      return;
+    }
+    readySettled = true;
+    log.error(`startSidecar listen failed code=${(err as NodeJS.ErrnoException).code}`);
+    settleReady?.reject(err);
+  }
+
   // Memoize shutdown so concurrent watchdog + close() share one teardown.
   let shutdownPromise: Promise<void> | undefined;
 
@@ -579,14 +607,17 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   cleanupInterval.unref();
 
   server.on("error", (err) => {
+    const error = err instanceof Error ? err : new Error(String(err));
     log.error(
-      `startSidecar listen error code=${(err as NodeJS.ErrnoException).code}`,
+      `startSidecar listen error code=${(error as NodeJS.ErrnoException).code}`,
     );
+    rejectListenReady(error);
     void shutdownSidecar("listen_error");
   });
 
   try {
     server.listen(PORT, HOST, () => {
+      resolveListenReady();
       const addr = server.address();
       if (addr && typeof addr === "object" && addr.address) {
         trustBindHost = addr.address;
@@ -610,14 +641,36 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
       });
     });
   } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
     log.error("startSidecar listen threw");
+    rejectListenReady(error);
     void shutdownSidecar("listen_throw");
-    throw err;
+    throw error;
   }
 
   return {
     close: async () => {
       await shutdownSidecar("close");
     },
+    ready,
   };
+}
+
+/** CLI helper: exit 1 when `handle.ready` rejects (async bind failures). */
+export function bindSidecarListenExit(
+  handle: SidecarHandle,
+  exitProcess: (code: number) => void = (code) => {
+    process.exit(code);
+  },
+): void {
+  const log = createLogger("sidecar-cli");
+  handle.ready.then(
+    () => {
+      log.info("sidecar-cli listening");
+    },
+    (err) => {
+      log.error(`sidecar-cli listen failed code=${(err as NodeJS.ErrnoException).code}`);
+      exitProcess(1);
+    },
+  );
 }

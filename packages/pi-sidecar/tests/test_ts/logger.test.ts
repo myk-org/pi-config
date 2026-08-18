@@ -38,7 +38,7 @@ function stubLogger(): {
 }
 
 describe("sidecar createLogger", () => {
-  it("createLogger prefixes the logger name", () => {
+  it("createLogger logs the factory name on create", () => {
     const stub = stubLogger();
     try {
       createLogger("unit");

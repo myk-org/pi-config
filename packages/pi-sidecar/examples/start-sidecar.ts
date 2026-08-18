@@ -16,6 +16,10 @@ const handle = startSidecar({
   // Optional: monitor a backend health endpoint
   // watchdogUrl: "http://localhost:8000/health",
 });
+handle.ready.catch((err) => {
+  console.error("Sidecar failed to listen", err);
+  process.exit(1);
+});
 
 console.log("Sidecar started on http://127.0.0.1:9200");
 console.log("Press Ctrl+C to stop\n");

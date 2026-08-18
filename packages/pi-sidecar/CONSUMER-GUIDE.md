@@ -53,6 +53,10 @@ const handle = startSidecar({
   port: parseInt(process.env.SIDECAR_PORT || "9100"),
   host: process.env.SIDECAR_HOST || "127.0.0.1",
 });
+handle.ready.catch((err) => {
+  console.error("Sidecar failed to listen", err);
+  process.exit(1);
+});
 
 // Optional: graceful shutdown
 process.on("SIGTERM", async () => {

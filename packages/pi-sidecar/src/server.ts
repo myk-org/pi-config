@@ -6,5 +6,6 @@
 // TODO(#47): Remove when upstream getPiInvocation() supports override.
 process.argv[1] = "";
 
-import { startSidecar } from "./index.js";
+import { bindSidecarListenExit, startSidecar } from "./index.js";
 const handle = startSidecar();
+bindSidecarListenExit(handle);
