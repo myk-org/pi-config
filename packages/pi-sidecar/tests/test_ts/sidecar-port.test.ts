@@ -285,6 +285,22 @@ describe("sidecar listen port env (#768 MCP)", () => {
       await closing;
     } finally {
       releaseListen();
+      await handle.close();
+    }
+  });
+
+  it("startSidecar ready settles when beforeListenReady rejects", async () => {
+    const handle = startSidecar({
+      port: 0,
+      host: "127.0.0.1",
+      beforeListenReady: async () => {
+        throw new Error("hold failed");
+      },
+    });
+    try {
+      await handle.ready;
+    } finally {
+      await handle.close();
     }
   });
 });
