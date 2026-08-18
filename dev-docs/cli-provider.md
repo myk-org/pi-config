@@ -40,7 +40,10 @@ symbol id in sync.
 - ACPX: `ensureSession({ cwd })`; in-memory maps keyed per model+cwd
 
 Headless Cursor also passes `--approve-mcps` so project `.cursor/mcp.json` under
-the session cwd loads without a TTY.
+the session cwd loads without a TTY. Headless Gemini sets
+`GEMINI_CLI_TRUST_WORKSPACE=true` on spawn — `--skip-trust` alone does not
+connect project `.gemini/settings.json` MCP in untrusted folders (including
+`/tmp`). Claude project `.mcp.json` loads via `-p` + `--dangerously-skip-permissions`.
 
 ## Load flow (matches acpx-provider)
 

@@ -81,7 +81,8 @@ export const geminiProvider: CliProviderDef = {
   name: "gemini",
   binary: "gemini",
   buildBaseArgs: (model) => {
-    // --skip-trust: workspace; --yolo: auto-approve all tool actions
+    // --skip-trust: skip TTY trust dialog (MCP still needs GEMINI_CLI_TRUST_WORKSPACE)
+    // --yolo: auto-approve all tool actions
     const args = [
       "--skip-trust",
       "--yolo",

@@ -3,8 +3,11 @@
  */
 
 import { spawn } from "node:child_process";
+import { createLogger } from "../shared/logger.js";
 import type { CliAgentName } from "./providers.js";
 import { buildCliCommand } from "./providers.js";
+
+const log = createLogger("cli_provider");
 import {
   parseCliOutput,
   StreamJsonAccumulator,
@@ -54,9 +57,16 @@ const STRIP_ENV = [
   "CURSOR_TRACE_ID",
 ];
 
-function childEnv(): NodeJS.ProcessEnv {
+function childEnv(agent: CliAgentName): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const k of STRIP_ENV) delete env[k];
+  // --skip-trust skips the TTY dialog; Gemini still treats /tmp (and other
+  // unsigned folders) as untrusted and will not connect project MCP unless
+  // this env is set (same class of headless gap as Cursor --approve-mcps).
+  if (agent === "gemini") {
+    env.GEMINI_CLI_TRUST_WORKSPACE = "true";
+    log.debug("gemini spawn: GEMINI_CLI_TRUST_WORKSPACE=true for project MCP");
+  }
   return env;
 }
 
@@ -82,7 +92,7 @@ export function runCliAgent(opts: CliRunOptions): Promise<CliRunResult> {
 
     const child = spawn(binary, argv, {
       cwd: opts.cwd,
-      env: childEnv(),
+      env: childEnv(opts.agent),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

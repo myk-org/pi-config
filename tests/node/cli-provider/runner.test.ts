@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCliAgent } from "../../../extensions/cli-provider/runner.js";
@@ -117,6 +117,27 @@ exit 0
             }),
           /CLI call aborted/,
         );
+      },
+    );
+  });
+
+  it("sets GEMINI_CLI_TRUST_WORKSPACE so headless gemini can connect project MCP", async () => {
+    await withFakeBinary(
+      "gemini",
+      `#!/bin/sh
+printf '%s' "$GEMINI_CLI_TRUST_WORKSPACE" > "$(dirname "$0")/seen-trust"
+printf '%s\\n' '{"response":"ok","sessionId":"g1"}'
+exit 0
+`,
+      async (binDir) => {
+        await runCliAgent({
+          agent: "gemini",
+          model: "gemini-2.5-flash",
+          cwd: process.cwd(),
+          prompt: "hi",
+          timeoutMs: 5000,
+        });
+        assert.equal(readFileSync(join(binDir, "seen-trust"), "utf8"), "true");
       },
     );
   });
