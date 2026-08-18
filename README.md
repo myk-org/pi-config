@@ -726,7 +726,8 @@ Then just run `pi-docker` from any project directory.
 > `pi install` runs on each start.
 > A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
 > If pi misbehaves or the warning persists, verify network connectivity
-> and run `pi install git:github.com/myk-org/pi-config` manually.
+> and run `pi install git:github.com/myk-org/pi-config` and
+> `pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude` manually.
 
 ## Discord Bot
 

@@ -5,7 +5,7 @@ Access Claude models via Google Vertex AI.
 ## Installation
 
 ```bash
-pi install npm:@myk-org/pi-vertex-claude
+pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude
 ```
 
 ## Setup

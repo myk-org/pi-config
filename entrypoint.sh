@@ -14,8 +14,11 @@ if [ ! -d "$PI_PKG_DIR/myk-org/pi-config" ]; then
     pi install git:github.com/myk-org/pi-config
 fi
 
-if [ ! -d "$PI_PKG_DIR/myk-org/pi-vertex-claude" ]; then
-    pi install git:github.com/myk-org/pi-vertex-claude
+# Vertex lives in the pi-config monorepo. Do not use directory existence:
+# packages/pi-vertex-claude is already in the clone, so a -d check would skip
+# registering it in settings.json.
+if ! grep -q "pi-config/packages/pi-vertex-claude" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
+    pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude
 fi
 
 # Update all installed packages + myk-pi-tools
