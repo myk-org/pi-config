@@ -227,4 +227,44 @@ describe("sidecar listen port env (#768 MCP)", () => {
     await Promise.resolve();
     assert.equal(exitCode, 1);
   });
+
+  it("bindSidecarListenExit exits once for overlapping fatal signals", async () => {
+    let rejectReady!: (err: Error) => void;
+    let resolveStopped!: (result: SidecarStopResult) => void;
+    const handle = {
+      close: async () => {},
+      ready: new Promise<void>((_, reject) => {
+        rejectReady = reject;
+      }),
+      stopped: new Promise<SidecarStopResult>((resolve) => {
+        resolveStopped = resolve;
+      }),
+    };
+    let exitCount = 0;
+    bindSidecarListenExit(handle, () => {
+      exitCount += 1;
+    });
+    const err = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+    rejectReady(err);
+    await Promise.resolve();
+    resolveStopped({ reason: "listen_error", fatal: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(exitCount, 1);
+  });
+
+  it("startSidecar close before listen settles ready", async () => {
+    const prev = process.env.SIDECAR_PORT;
+    process.env.SIDECAR_PORT = "9100";
+    try {
+      const handle = startSidecar({ port: 0, host: "127.0.0.1" });
+      const closing = handle.close();
+      await handle.ready;
+      await closing;
+      assert.equal(process.env.SIDECAR_PORT, "9100");
+    } finally {
+      if (prev === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prev;
+    }
+  });
 });

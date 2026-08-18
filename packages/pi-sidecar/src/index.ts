@@ -293,6 +293,15 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   }
 
   function resolveStopped(reason: string): void {
+    if (!readySettled) {
+      if (isFatalShutdown(reason)) {
+        rejectListenReady(new Error(`sidecar stopped before listen reason=${reason}`));
+      } else {
+        readySettled = true;
+        log.debug(`startSidecar ready resolved on non-fatal shutdown reason=${reason}`);
+        settleReady?.resolve();
+      }
+    }
     if (stoppedSettled) {
       log.debug(`startSidecar stopped already settled reason=${reason}`);
       return;
@@ -708,7 +717,7 @@ export function bindSidecarListenExit(
   let exiting = false;
   function exitFatal(message: string): void {
     if (exiting) {
-      log.debug("sidecar-cli exit already requested");
+      log.debug(`sidecar-cli exit already requested message=${message}`);
       return;
     }
     exiting = true;
