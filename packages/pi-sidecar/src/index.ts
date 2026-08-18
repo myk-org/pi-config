@@ -163,7 +163,14 @@ export interface StartedSidecarHandle extends SidecarHandle {
   stopped: Promise<SidecarStopResult>;
 }
 
-export function startSidecar(options?: { port?: number; host?: string; watchdogUrl?: string; watchdogOptions?: WatchdogOptions }): StartedSidecarHandle {
+export function startSidecar(options?: {
+  port?: number;
+  host?: string;
+  watchdogUrl?: string;
+  watchdogOptions?: WatchdogOptions;
+  /** Test hook: runs after TCP listen and before `ready` resolves. */
+  beforeListenReady?: () => void | Promise<void>;
+}): StartedSidecarHandle {
   const log = createLogger("startSidecar");
   // Fail fast on a stale SDK install rather than surfacing confusing runtime
   // errors later (e.g. createProvider()-based ACPX/CLI providers silently
@@ -665,28 +672,47 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
 
   try {
     server.listen(PORT, HOST, () => {
-      resolveListenReady();
-      const addr = server.address();
-      if (addr && typeof addr === "object" && addr.address) {
-        trustBindHost = addr.address;
-      }
-      logger.info(`[sidecar] Pi SDK sidecar listening on http://${HOST}:${PORT}`);
-      logger.info(`[sidecar] Config: host=${HOST}, port=${PORT}, trustBindHost=${trustBindHost}, devMode=${process.env.DEV_MODE || 'false'}, logLevel=${process.env.PI_SIDECAR_LOG_LEVEL || 'info'}`);
-      const watchdogUrl = options?.watchdogUrl || process.env.SIDECAR_WATCHDOG_URL;
-      if (watchdogUrl) {
-        logger.info(`[sidecar] Watchdog enabled: url=${watchdogUrl}`);
-        stopWatchdog = startWatchdog(watchdogUrl, async () => {
-          logger.warn("[sidecar] Backend unresponsive, shutting down");
-          await shutdownSidecar("watchdog");
-        }, options?.watchdogOptions);
-      } else {
-        logger.info("[sidecar] Watchdog disabled (no SIDECAR_WATCHDOG_URL)");
-      }
+      const completeListen = (): void => {
+        if (shutdownPromise) {
+          log.debug("startSidecar listen callback skipped after shutdown");
+          return;
+        }
+        resolveListenReady();
+        const addr = server.address();
+        if (addr && typeof addr === "object" && addr.address) {
+          trustBindHost = addr.address;
+        }
+        logger.info(`[sidecar] Pi SDK sidecar listening on http://${HOST}:${PORT}`);
+        logger.info(`[sidecar] Config: host=${HOST}, port=${PORT}, trustBindHost=${trustBindHost}, devMode=${process.env.DEV_MODE || 'false'}, logLevel=${process.env.PI_SIDECAR_LOG_LEVEL || 'info'}`);
+        const watchdogUrl = options?.watchdogUrl || process.env.SIDECAR_WATCHDOG_URL;
+        if (watchdogUrl) {
+          logger.info(`[sidecar] Watchdog enabled: url=${watchdogUrl}`);
+          stopWatchdog = startWatchdog(watchdogUrl, async () => {
+            logger.warn("[sidecar] Backend unresponsive, shutting down");
+            await shutdownSidecar("watchdog");
+          }, options?.watchdogOptions);
+        } else {
+          logger.info("[sidecar] Watchdog disabled (no SIDECAR_WATCHDOG_URL)");
+        }
 
-      // Auto-discover models from extensions on startup
-      store.refreshModels().catch((err) => {
-        logger.error("[sidecar] Model discovery failed:", err);
-      });
+        // Auto-discover models from extensions on startup
+        store.refreshModels().catch((err) => {
+          logger.error("[sidecar] Model discovery failed:", err);
+        });
+      };
+      const gate = options?.beforeListenReady;
+      if (!gate) {
+        completeListen();
+        return;
+      }
+      log.debug("startSidecar beforeListenReady");
+      void Promise.resolve()
+        .then(() => gate())
+        .then(completeListen, (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn(`startSidecar beforeListenReady failed message=${message}`);
+          completeListen();
+        });
     });
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
