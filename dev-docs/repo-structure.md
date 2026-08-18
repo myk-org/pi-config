@@ -104,6 +104,7 @@ pi-config/
 │   │   ├── provider-errors.ts       # Tagged error hierarchy for provider system
 │   │   ├── provider-registry.ts     # ProviderDriverRegistry — lifecycle management for driver instances
 │   │   ├── stream-builder.ts        # StreamAssembler — unified thinking/text event→pi stream mapping
+│   │   ├── session-cwd.ts           # Per-turn CLI/ACPX spawn cwd ALS (#768; same Symbol.for as sidecar copy)
 │   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
@@ -189,6 +190,7 @@ pi-config/
 │       │   ├── index.ts             # Public API + startSidecar()
 │       │   ├── server.ts            # CLI entry point
 │       │   ├── sessions.ts          # SessionStore — session lifecycle + model discovery
+│       │   ├── session-cwd.ts       # Sidecar ALS wrap for prompt(); same Symbol.for as extensions/shared/session-cwd.ts (#768)
 │       │   ├── http-tool-executor.ts # HTTP-backed custom tool execution
 │       │   ├── watchdog.ts          # Health-check poller for companion backend
 │       │   ├── resolve-extension-path.ts # Extension path resolution (env override + require.resolve)

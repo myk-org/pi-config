@@ -23,6 +23,7 @@ import { createJiti } from "jiti";
 import { logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
+import { runWithSessionCwd } from "./session-cwd.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -315,6 +316,7 @@ interface SessionEntry {
   session: AgentSession;
   lastActivity: number;
   inFlight: boolean;
+  cwd: string;
 }
 
 /**
@@ -935,7 +937,7 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false });
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd });
     logger.log(`[sidecar] Session created: ${id} (provider=${options.provider}, model=${options.model}, cwd=${options.cwd}, tools=${tools.join(",")}, customTools=${customTools.length})`);
     return id;
   }
@@ -952,7 +954,7 @@ export class SessionStore {
     entry.lastActivity = Date.now();
     entry.inFlight = true;
 
-    logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}`);
+    logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${entry.cwd}`);
 
     const errors: string[] = [];
     let errorsDropped = 0;
@@ -1042,7 +1044,7 @@ export class SessionStore {
     });
 
     try {
-      await entry.session.prompt(message);
+      await runWithSessionCwd(entry.cwd, () => entry.session.prompt(message));
     } catch (err: any) {
       logger.error(`[sidecar] Prompt failed: session=${id}, error=${err?.message}`, err);
       // If we captured partial text or error events before the rejection,

@@ -59,6 +59,10 @@ import {
   readPiSessionIdFromManager,
 } from "../cli-provider/sessions.js";
 import { fileLog } from "../shared/file-logger.js";
+import {
+  enterSessionCwd,
+  resolveProviderStreamCwd,
+} from "../shared/session-cwd.js";
 import { isCliAgentName } from "../cli-provider/providers.js";
 import {
   isProvidersInitialized,
@@ -152,14 +156,19 @@ function makeStreamFunction(
         const colonIdx = model.id.indexOf(":");
         const driverModelId = colonIdx >= 0 ? model.id.substring(colonIdx + 1) : "default";
 
+        const turnCwd = resolveProviderStreamCwd(projectCwd);
+        log.debug(
+          `${kind}-${agent} stream cwd=${turnCwd} boot=${projectCwd} model=${driverModelId}`,
+        );
+
         // Build system prompt
-        const systemPrompt = buildExternalSystemPrompt(context, projectCwd);
+        const systemPrompt = buildExternalSystemPrompt(context, turnCwd);
 
         // Ensure session
         const handle = await instance.adapter.startSession({
           model: driverModelId,
           systemPrompt,
-          cwd: projectCwd,
+          cwd: turnCwd,
         });
 
         // Extract latest user message
@@ -283,9 +292,21 @@ async function registerAcpxAgent(
 const log = createLogger("providers");
 log.debug("providers module loaded");
 
+const cwdHookBound = new WeakSet<object>();
+
 export default async function (pi: ExtensionAPI) {
   // pi --help / --version — skip discovery
   if (isPiMetaInvocation()) return;
+
+  // Always bind this AgentSession's cwd, even when the factory early-returns.
+  // Sidecar user sessions load this extension after the internal registrar
+  // already marked initialized — without this hook they never stash cwd (#768).
+  if (!cwdHookBound.has(pi)) {
+    cwdHookBound.add(pi);
+    pi.on("before_agent_start", (_event, ctx) => {
+      enterSessionCwd(typeof ctx.cwd === "string" ? ctx.cwd : "");
+    });
+  }
 
   // Idempotency guard — shims re-export this default, so it may be called
   // multiple times (cli-provider shim, acpx-provider shim, providers dir).
@@ -358,7 +379,7 @@ export default async function (pi: ExtensionAPI) {
       for (const inst of cliInstances.values()) {
         const adapter = inst.adapter as any;
         if (typeof adapter.handleSessionStart === "function") {
-          adapter.handleSessionStart(reason, sid);
+          adapter.handleSessionStart(reason, sid, ctx.cwd);
         }
       }
     });

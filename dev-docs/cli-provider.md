@@ -19,6 +19,29 @@ Empty / unset → extension registers nothing.
 `cli_agents` is coerced with `asStringArray` before `.filter` so a stale/mismatched
 `getSetting` (non-array) cannot crash extension load (issue #651).
 
+## Working directory (issue #768)
+
+CLI/ACPX spawn uses the **pi session cwd** when it is bound, otherwise boot
+`process.cwd()` (sidecar start dir, typically `/app` in a container).
+
+Bind paths:
+
+- Sidecar: `POST /sessions` `cwd` → `runWithSessionCwd` around `session.prompt()`
+- Interactive pi: `before_agent_start` `ctx.cwd` → `enterSessionCwd` (skipped if ALS already set)
+- `resolveProviderStreamCwd` reads ALS, then falls back to boot `projectCwd` (warn)
+
+Two copies of `session-cwd.ts` share one store via `Symbol.for("pi-config.sessionCwdAls")`:
+`extensions/shared/session-cwd.ts` and `packages/pi-sidecar/src/session-cwd.ts`.
+Sidecar cannot import the extension file (`tsconfig` `rootDir` is `src/`). Keep the
+symbol id in sync.
+
+- Cursor: `--workspace <session-cwd>` and `spawn({ cwd })`
+- Claude / Gemini: `spawn({ cwd })` only (no `--workspace` flag)
+- ACPX: `ensureSession({ cwd })`; in-memory maps keyed per model+cwd
+
+Headless Cursor also passes `--approve-mcps` so project `.cursor/mcp.json` under
+the session cwd loads without a TTY.
+
 ## Load flow (matches acpx-provider)
 
 1. Read `cli_agents` at extension load

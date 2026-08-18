@@ -233,6 +233,9 @@ class SidecarClient:
         The ``cwd`` parameter also controls project-level resource loading —
         the Pi SDK automatically discovers skills, prompts, extensions, and themes
         from ``{cwd}/.pi/`` and loads ``AGENTS.md`` from ``{cwd}/``.
+        Nested CLI/ACPX agents (``cli-cursor`` ``--workspace``, spawn cwd, ACPX sessions)
+        use this same folder. Omitting ``cwd`` defaults to ``tempfile.gettempdir()``,
+        not the sidecar process working directory.
 
         The ``agent_dir`` parameter points to the global agent directory for
         user-level skills, extensions, auth, and model configs (e.g., ``~/.pi/agent/``).
@@ -394,6 +397,8 @@ async def call_ai(
     The ``cwd`` parameter also controls project-level resource loading —
     the Pi SDK automatically discovers skills, prompts, extensions, and themes
     from ``{cwd}/.pi/`` and loads ``AGENTS.md`` from ``{cwd}/``.
+    Nested CLI/ACPX agents use this same folder. Omitting ``cwd`` defaults to
+    the system temp directory (``DEFAULT_CWD``), not the sidecar process cwd.
 
     Session lifecycle:
     - Caller is responsible for deleting sessions when done.

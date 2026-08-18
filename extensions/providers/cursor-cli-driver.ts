@@ -53,6 +53,7 @@ import {
 } from "../cli-provider/sessions.js";
 import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared/session-cwd.js";
 
 const LOG_DOMAIN = "cursor-cli-driver";
 const DRIVER_KIND = "cursor-cli";
@@ -155,28 +156,43 @@ function createCursorCliAdapter(
   /** Bind the real pi session UUID (from sessionManager). */
   bindPiSessionId: (sid: string) => void;
   /** Handle session_start event (reseed, marker cleanup). */
-  handleSessionStart: (reason: string, sid: string | null) => void;
+  handleSessionStart: (reason: string, sid: string | null, sessionCwd?: string) => void;
   /** Force history re-seed on next turn. */
   setForceHistorySeed: (force: boolean) => void;
 } {
   let activePiSessionId: string | null = null;
   const provisionalPiSessionId = createProvisionalPiSessionId();
   let forceHistorySeed = false;
+  const forceHistorySeedCwds = new Set<string>();
   const systemPromptSent = new Set<string>();
   const storedSystemPrompts = new Map<string, string>();
   const sessionKeys = new Map<string, CliSessionKey>();
+
+  function memoryKey(model: string | undefined, turnCwd: string): string {
+    return adapterMemoryKey(model, turnCwd);
+  }
+
+  function markerCwds(): string[] {
+    const found = new Set<string>([cwd]);
+    for (const key of sessionKeys.values()) {
+      if (key.cwd) found.add(key.cwd);
+    }
+    return [...found];
+  }
 
   function resolvedPiSessionId(): string {
     return activePiSessionId || provisionalPiSessionId;
   }
 
-  function sessionKeyFor(model: string): CliSessionKey {
-    return { cwd, agent: "cursor", model, piSessionId: resolvedPiSessionId() };
+  function sessionKeyFor(model: string, turnCwd: string = cwd): CliSessionKey {
+    return { cwd: turnCwd, agent: "cursor", model, piSessionId: resolvedPiSessionId() };
   }
 
   function migrateMarkersToRealPiSessionId(sid: string): void {
     if (!sid || sid === provisionalPiSessionId) return;
-    migrateAllCliSessionMarkers(cwd, provisionalPiSessionId, sid);
+    for (const markerCwd of markerCwds()) {
+      migrateAllCliSessionMarkers(markerCwd, provisionalPiSessionId, sid);
+    }
     for (const [handleKey, prevKey] of sessionKeys) {
       if (
         !prevKey.piSessionId ||
@@ -202,9 +218,10 @@ function createCursorCliAdapter(
       migrateMarkersToRealPiSessionId(sid);
     },
 
-    handleSessionStart: (reason: string, sid: string | null) => {
+    handleSessionStart: (reason: string, sid: string | null, sessionCwd?: string) => {
       const prevSid = activePiSessionId;
       const resolvedSid = sid || activePiSessionId;
+      const turnCwd = sessionCwd || cwd;
       if (sid) {
         activePiSessionId = sid;
         migrateMarkersToRealPiSessionId(sid);
@@ -215,22 +232,26 @@ function createCursorCliAdapter(
         prevPiSessionId: prevSid,
         nextPiSessionId: resolvedSid,
       });
-      forceHistorySeed = decision.forceHistorySeed;
+      if (decision.forceHistorySeed) {
+        forceHistorySeedCwds.add(turnCwd);
+        forceHistorySeed = true;
+      }
 
       if (decision.action === "keep") {
         return;
       }
       if (decision.action === "reseed" && resolvedSid) {
         try {
-          clearCliSessionsForPiSession(cwd, resolvedSid, {
+          clearCliSessionsForPiSession(turnCwd, resolvedSid, {
             includeLegacyDefault: prevSid == null || prevSid === "" || prevSid === "default",
           });
         } catch (err) {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
             `session_start marker cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        systemPromptSent.clear();
-        storedSystemPrompts.clear();
+        deleteKeysForCwd(systemPromptSent, turnCwd);
+        deleteKeysForCwd(storedSystemPrompts, turnCwd);
+        deleteKeysForCwd(sessionKeys, turnCwd);
       }
     },
 
@@ -240,13 +261,18 @@ function createCursorCliAdapter(
 
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
-      if (opts.systemPrompt) storedSystemPrompts.set(model, opts.systemPrompt);
-      const key = sessionKeyFor(model);
-      sessionKeys.set(model, key);
+      const turnCwd = resolveAdapterCwd(opts, cwd);
+      const memKey = memoryKey(model, turnCwd);
+      if (opts.systemPrompt) storedSystemPrompts.set(memKey, opts.systemPrompt);
+      const key = sessionKeyFor(model, turnCwd);
+      sessionKeys.set(memKey, key);
       const existingId = loadCliSessionId(key);
+      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+        `startSession model=${model} cwd=${turnCwd} boot=${cwd}`);
       return {
         sessionId: existingId || `cursor-${instanceId}-${model}`,
         model,
+        cwd: turnCwd,
       };
     },
 
@@ -255,8 +281,9 @@ function createCursorCliAdapter(
       prompt: string,
       opts?: TurnOptions,
     ): Promise<TurnResult> => {
-      const handleKey = handle.model || "default";
-      const key = sessionKeyFor(handle.model);
+      const turnCwd = resolveAdapterCwd(handle, cwd);
+      const handleKey = memoryKey(handle.model, turnCwd);
+      const key = sessionKeyFor(handle.model, turnCwd);
       // Read previous key BEFORE updating so legacy-marker adoption can compare categories
       const prevKey = sessionKeys.get(handleKey);
       sessionKeys.set(handleKey, key);
@@ -268,14 +295,18 @@ function createCursorCliAdapter(
         sessionId = loadCliSessionId(key);
       }
 
-      const needsSystemPrompt = !systemPromptSent.has(handleKey) || forceHistorySeed;
+      const needsSystemPrompt = !systemPromptSent.has(handleKey)
+        || forceHistorySeed
+        || forceHistorySeedCwds.has(turnCwd);
+      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+        `sendTurn model=${handle.model} cwd=${turnCwd} boot=${cwd}`);
 
       // Prefer the system prompt stored at startSession over rebuilding
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
         systemPrompt =
           storedSystemPrompts.get(handleKey) ||
-          buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
+          buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
       }
 
       // Resolve history seed plan
@@ -315,7 +346,7 @@ function createCursorCliAdapter(
         runCliAgent({
           agent: "cursor",
           model: handle.model === "default" ? "default" : handle.model,
-          cwd,
+          cwd: turnCwd,
           prompt: p,
           sessionId: sid,
           signal: opts?.signal,
@@ -335,6 +366,7 @@ function createCursorCliAdapter(
         if (needsSystemPrompt) {
           systemPromptSent.add(handleKey);
         }
+        forceHistorySeedCwds.delete(turnCwd);
         if (forceHistorySeed) {
           forceHistorySeed = false;
         }
@@ -366,6 +398,7 @@ function createCursorCliAdapter(
           if (needsSystemPrompt) {
             systemPromptSent.add(handleKey);
           }
+          forceHistorySeedCwds.delete(turnCwd);
           if (forceHistorySeed) {
             forceHistorySeed = false;
           }
@@ -382,12 +415,14 @@ function createCursorCliAdapter(
     },
 
     stopSession: async (handle: SessionHandle): Promise<void> => {
-      const key = sessionKeyFor(handle.model);
+      const turnCwd = resolveAdapterCwd(handle, cwd);
+      const memKey = memoryKey(handle.model, turnCwd);
+      const key = sessionKeyFor(handle.model, turnCwd);
       clearCliSessionId(key);
-      const handleKey = handle.model || "default";
-      sessionKeys.delete(handleKey);
-      systemPromptSent.delete(handleKey);
-      storedSystemPrompts.delete(handleKey);
+      sessionKeys.delete(memKey);
+      systemPromptSent.delete(memKey);
+      storedSystemPrompts.delete(memKey);
+      forceHistorySeedCwds.delete(turnCwd);
     },
 
     stopAll: async (): Promise<void> => {

@@ -15,6 +15,7 @@ import { geminiProvider } from "./agents/gemini.js";
  * |---------|--------|--------|--------|
  * | Workspace trust | `--trust` | skipped by `-p` | `--skip-trust` |
  * | Tool/command approve | `--force` (`--yolo` alias) | `--dangerously-skip-permissions` | `--yolo` |
+ * | Project MCP | `--approve-mcps` | n/a | n/a |
  *
  * Trust alone is NOT enough: without auto-approve, tool calls that need
  * confirmation hang or fail (no interactive user).

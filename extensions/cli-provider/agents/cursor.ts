@@ -58,11 +58,12 @@ export const cursorProvider: CliProviderDef = {
   name: "cursor",
   binary: "agent",
   buildBaseArgs: (model, cwd) => {
-    // --trust: workspace; --force: auto-approve; stream-partial-output: live tokens
+    // --trust: workspace; --force: auto-approve tools; --approve-mcps: project MCP
     const args = [
       "--print",
       "--trust",
       "--force",
+      "--approve-mcps",
       "--output-format",
       "stream-json",
       "--stream-partial-output",

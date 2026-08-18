@@ -84,6 +84,7 @@ describe("cli-provider providers", () => {
     assert.ok(args.includes("--print"));
     assert.ok(args.includes("--trust"));
     assert.ok(args.includes("--force"));
+    assert.ok(args.includes("--approve-mcps"));
     assert.ok(args.includes("--stream-partial-output"));
     assert.ok(args.includes("--workspace"));
     assert.ok(args.includes("/tmp/ws"));

@@ -117,6 +117,8 @@ export interface SessionStartOptions {
 export interface SessionHandle {
   readonly sessionId: string;
   readonly model: string;
+  /** Session/project cwd for this turn's CLI/ACPX spawn (#768). */
+  readonly cwd?: string;
 }
 
 /** Options for sending a turn. */

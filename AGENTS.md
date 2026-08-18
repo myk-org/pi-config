@@ -144,6 +144,11 @@ Writing effective rules:
   from id (`-high`, `[effort=xhigh]`), not catalog `reasoning`. See
   `extensions/shared/models-dev.ts`
 - Cold-start default model restore (#753): `startup`|`new` only; skips non-empty `enabledModels`; trusted project merge — see `dev-docs/cli-provider.md`
+- CLI/ACPX spawn cwd (#768): session cwd (`POST /sessions` / `ctx.cwd`), not
+  sidecar `process.cwd()`. Cursor `--workspace` matches that folder. Dual
+  `session-cwd.ts` copies (extensions/shared + packages/pi-sidecar/src) must
+  keep `Symbol.for("pi-config.sessionCwdAls")` in sync — sidecar cannot import
+  the extension file (tsconfig rootDir). See `dev-docs/cli-provider.md`.
 - Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `dev-docs/cli-provider.md` Logging
 - Memory system: see `dev-docs/memory-architecture.md`
 - Enforcement honesty (code vs injected): see `dev-docs/enforcement-honesty-map.md`

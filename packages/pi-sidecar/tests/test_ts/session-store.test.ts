@@ -229,7 +229,7 @@ describe("SessionStore (mocked runtime)", () => {
       // Inject fake session entries — never call create() (that would hit the real SDK).
       const sessionIds = Array.from({ length: 5 }, (_, i) => `mock-session-${i}`);
       for (const id of sessionIds) {
-        store.sessions.set(id, { session: fakeSession(), lastActivity: Date.now(), inFlight: false });
+        store.sessions.set(id, { session: fakeSession(), lastActivity: Date.now(), inFlight: false, cwd: "/tmp" });
       }
       assert.equal(store.count(), 5);
 
