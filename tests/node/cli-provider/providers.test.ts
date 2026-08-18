@@ -121,6 +121,26 @@ describe("cli-provider providers", () => {
     }
   });
 
+  it("omits --approve-mcps when CLI_APPROVE_MCPS=false even if SIDECAR_PORT is set", () => {
+    const prevApprove = process.env.CLI_APPROVE_MCPS;
+    const prevPort = process.env.SIDECAR_PORT;
+    process.env.CLI_APPROVE_MCPS = "false";
+    process.env.SIDECAR_PORT = "9211";
+    try {
+      const { args } = buildCliCommand({
+        agent: "cursor",
+        model: "gpt-5.4",
+        cwd: "/tmp/ws",
+      });
+      assert.ok(!args.includes("--approve-mcps"));
+    } finally {
+      if (prevApprove === undefined) delete process.env.CLI_APPROVE_MCPS;
+      else process.env.CLI_APPROVE_MCPS = prevApprove;
+      if (prevPort === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prevPort;
+    }
+  });
+
   it("adds --approve-mcps when SIDECAR_PORT is set", () => {
     const prevApprove = process.env.CLI_APPROVE_MCPS;
     const prevPort = process.env.SIDECAR_PORT;

@@ -457,6 +457,24 @@ export class SessionStore {
   }
 
   /**
+   * Test fixture: register a duck-typed session without create() (no real SDK).
+   * Lets tests exercise prompt() ALS cwd binding through the public store API.
+   */
+  putSessionFixture(
+    id: string,
+    session: Pick<AgentSession, "prompt" | "subscribe" | "dispose">,
+    cwd: string,
+  ): void {
+    logger.debug(`[sidecar] putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
+    this.sessions.set(id, {
+      session: session as AgentSession,
+      lastActivity: Date.now(),
+      inFlight: false,
+      cwd,
+    });
+  }
+
+  /**
    * Lazily create the internal AgentSessionRuntime (see field docstring above).
    * Idempotent — concurrent callers await the same in-flight creation.
    */

@@ -78,6 +78,10 @@ export const cursorProvider: CliProviderDef = {
   binary: "agent",
   buildBaseArgs: (model, cwd) => {
     // --trust: workspace; --force: auto-approve tools
+    const approveMcps = shouldApproveCursorMcps();
+    log.debug(
+      `cursor buildBaseArgs approveMcps=${approveMcps} modelOverride=${Boolean(model && model !== "default")}`,
+    );
     const args = [
       "--print",
       "--trust",
@@ -88,7 +92,7 @@ export const cursorProvider: CliProviderDef = {
       "--workspace",
       cwd,
     ];
-    if (shouldApproveCursorMcps()) {
+    if (approveMcps) {
       args.push("--approve-mcps");
     }
     if (model && model !== "default") {

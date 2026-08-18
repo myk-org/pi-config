@@ -329,8 +329,7 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("prompt() binds session cwd on ALS for the turn (#768)", async () => {
-    const store = new SessionStore() as any;
-    installMockRuntime(store);
+    const store = new SessionStore();
     let seen: string | undefined;
     const session = {
       subscribe: () => () => {},
@@ -339,12 +338,7 @@ describe("SessionStore (mocked runtime)", () => {
       },
       dispose: () => {},
     };
-    store.sessions.set("s-cwd", {
-      session,
-      lastActivity: Date.now(),
-      inFlight: false,
-      cwd: "/tmp/job-sidecar-768",
-    });
+    store.putSessionFixture("s-cwd", session, "/tmp/job-sidecar-768");
     await store.prompt("s-cwd", "hi");
     assert.equal(seen, "/tmp/job-sidecar-768");
     assert.equal(getSessionCwd(), undefined);
