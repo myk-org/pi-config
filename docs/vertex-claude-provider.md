@@ -14,7 +14,7 @@ Run Claude through your Google Cloud project so usage stays on Vertex AI billing
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=your-project-id
 
-pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude
+pi install git:github.com/myk-org/pi-vertex-claude
 
 pi --provider google-vertex-claude --model claude-sonnet-4-6
 ```
@@ -32,8 +32,8 @@ uv run scripts/install.py
 Or install / update directly:
 
 ```bash
-pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude
-pi update git:github.com/myk-org/pi-config/packages/pi-vertex-claude
+pi install git:github.com/myk-org/pi-vertex-claude
+pi update git:github.com/myk-org/pi-vertex-claude
 ```
 
 npm package name: `@myk-org/pi-vertex-claude`.

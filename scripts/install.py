@@ -179,7 +179,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
     # Nested monorepo path — not the retired standalone git:…/pi-vertex-claude repo.
     pi_vtx = is_pi_pkg_installed(settings_text, PI_VERTEX_SETTINGS_MARKER)
     pi_web = is_pi_pkg_installed(settings_text, "pi-web-access")
-    log.info(
+    log.debug(
         "pi package detection pi-config-clone=%s vertex-installed=%s",
         pi_cfg,
         pi_vtx,
