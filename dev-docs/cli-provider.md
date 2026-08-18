@@ -41,10 +41,11 @@ symbol id in sync.
 
 Headless Cursor passes `--approve-mcps` only when `CLI_APPROVE_MCPS` is set or
 the process is a sidecar (`SIDECAR_PORT`). Interactive pi omits it so project
-MCP still needs TTY approval. Headless Gemini sets
-`GEMINI_CLI_TRUST_WORKSPACE=true` on spawn — `--skip-trust` alone does not
-connect project `.gemini/settings.json` MCP in untrusted folders (including
-`/tmp`). Claude project `.mcp.json` loads via `-p` + `--dangerously-skip-permissions`.
+MCP still needs TTY approval. Headless Gemini defaults
+`GEMINI_CLI_TRUST_WORKSPACE=true` on spawn but preserves an explicit parent
+value (including `false`) — `--skip-trust` alone does not connect project
+`.gemini/settings.json` MCP in untrusted folders (including `/tmp`). Claude
+project `.mcp.json` loads via `-p` + `--dangerously-skip-permissions`.
 
 ## Load flow (matches acpx-provider)
 

@@ -121,24 +121,59 @@ exit 0
     );
   });
 
-  it("sets GEMINI_CLI_TRUST_WORKSPACE so headless gemini can connect project MCP", async () => {
-    await withFakeBinary(
-      "gemini",
-      `#!/bin/sh
+  it("defaults GEMINI_CLI_TRUST_WORKSPACE so headless gemini can connect project MCP", async () => {
+    const prev = process.env.GEMINI_CLI_TRUST_WORKSPACE;
+    delete process.env.GEMINI_CLI_TRUST_WORKSPACE;
+    try {
+      await withFakeBinary(
+        "gemini",
+        `#!/bin/sh
 printf '%s' "$GEMINI_CLI_TRUST_WORKSPACE" > "$(dirname "$0")/seen-trust"
 printf '%s\\n' '{"response":"ok","sessionId":"g1"}'
 exit 0
 `,
-      async (binDir) => {
-        await runCliAgent({
-          agent: "gemini",
-          model: "gemini-2.5-flash",
-          cwd: process.cwd(),
-          prompt: "hi",
-          timeoutMs: 5000,
-        });
-        assert.equal(readFileSync(join(binDir, "seen-trust"), "utf8"), "true");
-      },
-    );
+        async (binDir) => {
+          await runCliAgent({
+            agent: "gemini",
+            model: "gemini-2.5-flash",
+            cwd: process.cwd(),
+            prompt: "hi",
+            timeoutMs: 5000,
+          });
+          assert.equal(readFileSync(join(binDir, "seen-trust"), "utf8"), "true");
+        },
+      );
+    } finally {
+      if (prev === undefined) delete process.env.GEMINI_CLI_TRUST_WORKSPACE;
+      else process.env.GEMINI_CLI_TRUST_WORKSPACE = prev;
+    }
+  });
+
+  it("preserves explicit GEMINI_CLI_TRUST_WORKSPACE=false on gemini spawn", async () => {
+    const prev = process.env.GEMINI_CLI_TRUST_WORKSPACE;
+    process.env.GEMINI_CLI_TRUST_WORKSPACE = "false";
+    try {
+      await withFakeBinary(
+        "gemini",
+        `#!/bin/sh
+printf '%s' "$GEMINI_CLI_TRUST_WORKSPACE" > "$(dirname "$0")/seen-trust"
+printf '%s\\n' '{"response":"ok","sessionId":"g1"}'
+exit 0
+`,
+        async (binDir) => {
+          await runCliAgent({
+            agent: "gemini",
+            model: "gemini-2.5-flash",
+            cwd: process.cwd(),
+            prompt: "hi",
+            timeoutMs: 5000,
+          });
+          assert.equal(readFileSync(join(binDir, "seen-trust"), "utf8"), "false");
+        },
+      );
+    } finally {
+      if (prev === undefined) delete process.env.GEMINI_CLI_TRUST_WORKSPACE;
+      else process.env.GEMINI_CLI_TRUST_WORKSPACE = prev;
+    }
   });
 });
