@@ -31,7 +31,16 @@ from pathlib import Path
 from typing import Any
 
 import questionary
+from install_sources import (
+    PI_CONFIG_GIT,
+    PI_VERTEX_SETTINGS_MARKER,
+    create_logger,
+    is_pi_pkg_installed,
+    vertex_pi_cmd,
+)
 from questionary import Choice
+
+log = create_logger("install")
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -160,19 +169,21 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
 
     # ── Step 1: Pi Packages ──────────────────────────────────────────────
     pi_dis = "" if has["pi"] else "requires pi"
-    pi_cfg_git = "git:github.com/myk-org/pi-config"
-    pi_vtx_git = "git:github.com/myk-org/pi-config/packages/pi-vertex-claude"
     pi_cfg = (HOME / ".pi/agent/git/github.com/myk-org/pi-config").exists()
 
-    def _is_pi_pkg_installed(name: str) -> bool:
-        try:
-            return name in (HOME / ".pi/agent/settings.json").read_text()
-        except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
-            return False
+    try:
+        settings_text = (HOME / ".pi/agent/settings.json").read_text()
+    except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
+        settings_text = ""
 
     # Nested monorepo path — not the retired standalone git:…/pi-vertex-claude repo.
-    pi_vtx = _is_pi_pkg_installed("pi-config/packages/pi-vertex-claude")
-    pi_web = _is_pi_pkg_installed("pi-web-access")
+    pi_vtx = is_pi_pkg_installed(settings_text, PI_VERTEX_SETTINGS_MARKER)
+    pi_web = is_pi_pkg_installed(settings_text, "pi-web-access")
+    log.info(
+        "pi package detection pi-config-clone=%s vertex-installed=%s",
+        pi_cfg,
+        pi_vtx,
+    )
 
     step1 = Step(
         "📦",
@@ -184,14 +195,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Orchestrator + 24 agents + prompts",
                 installed=pi_cfg,
                 disabled=pi_dis,
-                install_cmd=f"pi {'update' if pi_cfg else 'install'} {pi_cfg_git}",
+                install_cmd=f"pi {'update' if pi_cfg else 'install'} {PI_CONFIG_GIT}",
             ),
             Tool(
                 "pi-vertex-claude",
                 "Claude via Google Cloud Vertex AI",
                 installed=pi_vtx,
                 disabled=pi_dis,
-                install_cmd=f"pi {'update' if pi_vtx else 'install'} {pi_vtx_git}",
+                install_cmd=vertex_pi_cmd(pi_vtx),
             ),
             Tool(
                 "pi-web-access",
