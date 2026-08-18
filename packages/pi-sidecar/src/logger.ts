@@ -27,3 +27,15 @@ export const logger = {
   warn: (...args: any[]) => { if (shouldLog("warn")) console.warn(...args); },
   error: (...args: any[]) => { if (shouldLog("error")) console.error(...args); },
 };
+
+/** Named logger for new sidecar methods (PR compliance: createLogger, not bare console). */
+export function createLogger(name: string): Pick<typeof logger, "debug" | "info" | "warn" | "error"> {
+  logger.debug(`[sidecar] createLogger name=${name}`);
+  const prefix = `[${name}]`;
+  return {
+    debug: (...args: any[]) => logger.debug(prefix, ...args),
+    info: (...args: any[]) => logger.info(prefix, ...args),
+    warn: (...args: any[]) => logger.warn(prefix, ...args),
+    error: (...args: any[]) => logger.error(prefix, ...args),
+  };
+}

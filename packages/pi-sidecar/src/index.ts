@@ -11,6 +11,7 @@ import { SessionStore } from "./sessions.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
 import { logger } from "./logger.js";
+import { ensureSidecarPortEnv, resolveSidecarListenPort } from "./sidecar-port.js";
 
 const MAX_BODY_SIZE = 1_048_576;
 
@@ -211,7 +212,8 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
     }
   }
 
-  const PORT = options?.port ?? parseInt(process.env.SIDECAR_PORT || "9100", 10);
+  const PORT = resolveSidecarListenPort(options?.port);
+  ensureSidecarPortEnv(PORT);
   // Precedence: explicit options.host → SIDECAR_HOST (start-sidecar.sh) → DEV_MODE → localhost.
   const HOST =
     options?.host ??

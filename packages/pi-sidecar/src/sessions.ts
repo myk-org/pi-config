@@ -20,10 +20,12 @@ import {
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { createJiti } from "jiti";
 
-import { logger } from "./logger.js";
+import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
+
+const fixtureLog = createLogger("session-store");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -312,8 +314,11 @@ function createInternalRuntimeFactory(extensionPaths: string[]): CreateAgentSess
 
 export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 
+/** Methods SessionStore calls on a stored session (create() or test fixture). */
+type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "abort">;
+
 interface SessionEntry {
-  session: AgentSession;
+  session: StoredSession;
   lastActivity: number;
   inFlight: boolean;
   cwd: string;
@@ -457,17 +462,18 @@ export class SessionStore {
   }
 
   /**
-   * Test fixture: register a duck-typed session without create() (no real SDK).
-   * Lets tests exercise prompt() ALS cwd binding through the public store API.
+   * Test fixture: register a session without create() (no real SDK).
+   * Not part of the HTTP/Python client contract. Requires abort() so
+   * SessionStore.abort() cannot TypeError.
    */
   putSessionFixture(
     id: string,
-    session: Pick<AgentSession, "prompt" | "subscribe" | "dispose">,
+    session: StoredSession,
     cwd: string,
   ): void {
-    logger.debug(`[sidecar] putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
+    fixtureLog.debug(`putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
     this.sessions.set(id, {
-      session: session as AgentSession,
+      session,
       lastActivity: Date.now(),
       inFlight: false,
       cwd,

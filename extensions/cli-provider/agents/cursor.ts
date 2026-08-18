@@ -56,8 +56,9 @@ function discoverCursorModels(): DiscoveredCliModel[] {
 
 /**
  * Headless Cursor MCP: `--approve-mcps` is opt-in, not unconditional.
- * `CLI_APPROVE_MCPS` wins; otherwise sidecar processes (`SIDECAR_PORT`) get it
- * because they have no TTY. Interactive pi omits the flag.
+ * `CLI_APPROVE_MCPS` wins; otherwise sidecar processes (`SIDECAR_PORT`, always
+ * set by `startSidecar()`) get it because they have no TTY. Interactive pi
+ * omits the flag.
  */
 export function shouldApproveCursorMcps(
   env: NodeJS.ProcessEnv = process.env,

@@ -26,6 +26,22 @@ function fakeSession(): { dispose: () => void } {
   return { dispose: () => {} };
 }
 
+function fixtureSession(overrides: {
+  prompt?: () => Promise<void>;
+} = {}): {
+  subscribe: () => () => void;
+  prompt: () => Promise<void>;
+  dispose: () => void;
+  abort: () => Promise<void>;
+} {
+  return {
+    subscribe: () => () => {},
+    prompt: overrides.prompt ?? (async () => {}),
+    dispose: () => {},
+    abort: async () => {},
+  };
+}
+
 function installMockRuntime(
   store: any,
   options: {
@@ -337,17 +353,35 @@ describe("SessionStore (mocked runtime)", () => {
   it("prompt() binds session cwd on ALS for the turn (#768)", async () => {
     const store = new SessionStore();
     let seen: string | undefined;
-    const session = {
-      subscribe: () => () => {},
-      prompt: async () => {
-        seen = getSessionCwd();
-      },
-      dispose: () => {},
-    };
-    store.putSessionFixture("s-cwd", session, "/tmp/job-sidecar-768");
+    store.putSessionFixture(
+      "s-cwd",
+      fixtureSession({
+        prompt: async () => {
+          seen = getSessionCwd();
+        },
+      }),
+      "/tmp/job-sidecar-768",
+    );
     await store.prompt("s-cwd", "hi");
     assert.equal(seen, "/tmp/job-sidecar-768");
     assert.equal(getSessionCwd(), undefined);
+  });
+
+  it("abort() succeeds on a fixture session that implements abort()", async () => {
+    const store = new SessionStore();
+    let aborted = false;
+    store.putSessionFixture(
+      "s-abort",
+      {
+        ...fixtureSession(),
+        abort: async () => {
+          aborted = true;
+        },
+      },
+      "/tmp/job-sidecar-768",
+    );
+    await store.abort("s-abort");
+    assert.equal(aborted, true);
   });
 
   it("prompt() passes session cwd to Cursor CLI spawn, not boot cwd (#768)", async () => {
@@ -378,8 +412,7 @@ exit 0
       );
       store.putSessionFixture(
         "s-cli",
-        {
-          subscribe: () => () => {},
+        fixtureSession({
           prompt: async () => {
             const turnCwd = resolveProviderStreamCwd(bootCwd);
             const handle = await adapter.startSession({
@@ -388,8 +421,7 @@ exit 0
             });
             await adapter.sendTurn(handle, "hi");
           },
-          dispose: () => {},
-        },
+        }),
         sessionCwd,
       );
       await store.prompt("s-cli", "hi");
@@ -423,14 +455,12 @@ exit 0
       );
       store.putSessionFixture(
         "s-acpx",
-        {
-          subscribe: () => () => {},
+        fixtureSession({
           prompt: async () => {
             const turnCwd = resolveProviderStreamCwd(bootCwd);
             await adapter.startSession({ model: "default", cwd: turnCwd });
           },
-          dispose: () => {},
-        },
+        }),
         sessionCwd,
       );
       await store.prompt("s-acpx", "hi");
