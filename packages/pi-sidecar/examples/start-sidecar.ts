@@ -7,26 +7,17 @@
  * Install: npm install @myk-org/pi-sidecar
  * Run:     npx tsx start-sidecar.ts
  */
-import { startSidecar } from "@myk-org/pi-sidecar";
+import { bindSidecarListenExit, startSidecar } from "@myk-org/pi-sidecar";
 
-// Start with custom options
 const handle = startSidecar({
   port: 9200,
   host: "127.0.0.1",
   // Optional: monitor a backend health endpoint
   // watchdogUrl: "http://localhost:8000/health",
 });
-handle.ready.catch((err) => {
-  console.error("Sidecar failed to listen", err);
-  process.exit(1);
-});
+bindSidecarListenExit(handle);
 
-console.log("Sidecar started on http://127.0.0.1:9200");
-console.log("Press Ctrl+C to stop\n");
-
-// Graceful shutdown on SIGINT
 process.on("SIGINT", async () => {
-  console.log("\nShutting down...");
   await handle.close();
   process.exit(0);
 });

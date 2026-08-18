@@ -1,6 +1,7 @@
 export { SessionStore, type CreateSessionOptions, type CustomToolConfig, DEFAULT_TOOLS } from "./sessions.js";
 export { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 export { createHttpToolExecutor, normalizeHttpToolConfig, interpolate, type HttpToolConfig } from "./http-tool-executor.js";
+export { createLogger } from "./logger.js";
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
@@ -146,11 +147,23 @@ export function redactProviderStatusAuth<T extends {
 
 export interface SidecarHandle {
   close(): Promise<void>;
-  /** Resolves when the HTTP server is listening; rejects on bind failure. */
-  ready: Promise<void>;
 }
 
-export function startSidecar(options?: { port?: number; host?: string; watchdogUrl?: string; watchdogOptions?: WatchdogOptions }): SidecarHandle {
+/** Why the sidecar HTTP server stopped. `fatal` means the process should exit nonzero. */
+export interface SidecarStopResult {
+  reason: string;
+  fatal: boolean;
+}
+
+/** Handle returned by `startSidecar()` — adds listen readiness without changing `SidecarHandle`. */
+export interface StartedSidecarHandle extends SidecarHandle {
+  /** Resolves when the HTTP server is listening; rejects on async bind failure. */
+  ready: Promise<void>;
+  /** Settles when shutdown finishes. `fatal` is true for listen/server/watchdog failures. */
+  stopped: Promise<SidecarStopResult>;
+}
+
+export function startSidecar(options?: { port?: number; host?: string; watchdogUrl?: string; watchdogOptions?: WatchdogOptions }): StartedSidecarHandle {
   const log = createLogger("startSidecar");
   // Fail fast on a stale SDK install rather than surfacing confusing runtime
   // errors later (e.g. createProvider()-based ACPX/CLI providers silently
@@ -247,6 +260,17 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   const ready = new Promise<void>((resolve, reject) => {
     settleReady = { resolve, reject };
   });
+  let settleStopped: { resolve: (result: SidecarStopResult) => void } | undefined;
+  let stoppedSettled = false;
+  const stopped = new Promise<SidecarStopResult>((resolve) => {
+    settleStopped = { resolve };
+  });
+
+  function isFatalShutdown(reason: string): boolean {
+    const fatal = reason !== "close";
+    log.debug(`isFatalShutdown reason=${reason} fatal=${fatal}`);
+    return fatal;
+  }
 
   function resolveListenReady(): void {
     if (readySettled) {
@@ -266,6 +290,17 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
     readySettled = true;
     log.error(`startSidecar listen failed code=${(err as NodeJS.ErrnoException).code}`);
     settleReady?.reject(err);
+  }
+
+  function resolveStopped(reason: string): void {
+    if (stoppedSettled) {
+      log.debug(`startSidecar stopped already settled reason=${reason}`);
+      return;
+    }
+    stoppedSettled = true;
+    const result = { reason, fatal: isFatalShutdown(reason) };
+    log.info(`startSidecar stopped reason=${result.reason} fatal=${result.fatal}`);
+    settleStopped?.resolve(result);
   }
 
   // Memoize shutdown so concurrent watchdog + close() share one teardown.
@@ -339,6 +374,7 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
       } finally {
         releaseSidecarPortEnv();
         log.info(`startSidecar restored SIDECAR_PORT reason=${reason}`);
+        resolveStopped(reason);
       }
     })();
     return shutdownPromise;
@@ -608,11 +644,14 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
 
   server.on("error", (err) => {
     const error = err instanceof Error ? err : new Error(String(err));
+    const reason = readySettled ? "server_error" : "listen_error";
     log.error(
-      `startSidecar listen error code=${(error as NodeJS.ErrnoException).code}`,
+      `startSidecar server error reason=${reason} code=${(error as NodeJS.ErrnoException).code}`,
     );
-    rejectListenReady(error);
-    void shutdownSidecar("listen_error");
+    if (!readySettled) {
+      rejectListenReady(error);
+    }
+    void shutdownSidecar(reason);
   });
 
   try {
@@ -643,7 +682,8 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     log.error("startSidecar listen threw");
-    rejectListenReady(error);
+    // Do not reject `ready` here: the handle is not returned, so a rejection
+    // would be unhandled even when the caller catches this throw.
     void shutdownSidecar("listen_throw");
     throw error;
   }
@@ -653,24 +693,43 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
       await shutdownSidecar("close");
     },
     ready,
+    stopped,
   };
 }
 
-/** CLI helper: exit 1 when `handle.ready` rejects (async bind failures). */
+/** CLI helper: exit 1 on async bind failure or a later fatal server stop. */
 export function bindSidecarListenExit(
-  handle: SidecarHandle,
+  handle: StartedSidecarHandle,
   exitProcess: (code: number) => void = (code) => {
     process.exit(code);
   },
 ): void {
   const log = createLogger("sidecar-cli");
+  let exiting = false;
+  function exitFatal(message: string): void {
+    if (exiting) {
+      log.debug("sidecar-cli exit already requested");
+      return;
+    }
+    exiting = true;
+    log.error(message);
+    exitProcess(1);
+  }
   handle.ready.then(
     () => {
       log.info("sidecar-cli listening");
     },
     (err) => {
-      log.error(`sidecar-cli listen failed code=${(err as NodeJS.ErrnoException).code}`);
-      exitProcess(1);
+      exitFatal(`sidecar-cli listen failed code=${(err as NodeJS.ErrnoException).code}`);
+    },
+  );
+  handle.stopped.then(
+    (result) => {
+      if (result.fatal) {
+        exitFatal(`sidecar-cli stopped reason=${result.reason}`);
+        return;
+      }
+      log.info(`sidecar-cli stopped reason=${result.reason}`);
     },
   );
 }

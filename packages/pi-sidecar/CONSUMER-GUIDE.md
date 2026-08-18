@@ -47,18 +47,14 @@ your-project/
 Create `sidecar-helper/src/server.ts`:
 
 ```typescript
-import { startSidecar } from "@myk-org/pi-sidecar";
+import { bindSidecarListenExit, startSidecar } from "@myk-org/pi-sidecar";
 
 const handle = startSidecar({
   port: parseInt(process.env.SIDECAR_PORT || "9100"),
   host: process.env.SIDECAR_HOST || "127.0.0.1",
 });
-handle.ready.catch((err) => {
-  console.error("Sidecar failed to listen", err);
-  process.exit(1);
-});
+bindSidecarListenExit(handle);
 
-// Optional: graceful shutdown
 process.on("SIGTERM", async () => {
   await handle.close();
   process.exit(0);

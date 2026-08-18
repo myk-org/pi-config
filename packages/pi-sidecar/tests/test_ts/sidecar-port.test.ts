@@ -3,10 +3,25 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 
 import { bindSidecarListenExit, startSidecar } from "../../src/index.js";
+import type { SidecarStopResult } from "../../src/index.js";
 import {
   ensureSidecarPortEnv,
   resolveSidecarListenPort,
 } from "../../src/sidecar-port.js";
+
+async function occupyListenPort(): Promise<{ port: number; close: () => Promise<void> }> {
+  const blocker = createServer();
+  await new Promise<void>((resolve, reject) => {
+    blocker.once("error", reject);
+    blocker.listen(0, "127.0.0.1", () => resolve());
+  });
+  const addr = blocker.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  return {
+    port,
+    close: () => new Promise((resolve) => blocker.close(() => resolve())),
+  };
+}
 
 async function waitUntil(
   predicate: () => boolean,
@@ -140,26 +155,36 @@ describe("sidecar listen port env (#768 MCP)", () => {
   });
 
   it("startSidecar ready rejects when listen fails", async () => {
-    const blocker = createServer();
-    await new Promise<void>((resolve, reject) => {
-      blocker.once("error", reject);
-      blocker.listen(0, "127.0.0.1", () => resolve());
-    });
-    const addr = blocker.address();
-    const port = typeof addr === "object" && addr ? addr.port : 0;
-    assert.ok(port > 0);
+    const blocker = await occupyListenPort();
+    assert.ok(blocker.port > 0);
     const prev = process.env.SIDECAR_PORT;
     delete process.env.SIDECAR_PORT;
     try {
-      const handle = startSidecar({ port, host: "127.0.0.1" });
+      const handle = startSidecar({ port: blocker.port, host: "127.0.0.1" });
       await assert.rejects(
         () => handle.ready,
         (err: NodeJS.ErrnoException) => err.code === "EADDRINUSE",
       );
+      await handle.close();
+    } finally {
+      await blocker.close();
+      if (prev === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prev;
+    }
+  });
+
+  it("startSidecar releases SIDECAR_PORT when listen fails", async () => {
+    const blocker = await occupyListenPort();
+    assert.ok(blocker.port > 0);
+    const prev = process.env.SIDECAR_PORT;
+    delete process.env.SIDECAR_PORT;
+    try {
+      const handle = startSidecar({ port: blocker.port, host: "127.0.0.1" });
+      handle.ready.catch(() => {});
       await waitUntil(() => !("SIDECAR_PORT" in process.env));
       await handle.close();
     } finally {
-      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      await blocker.close();
       if (prev === undefined) delete process.env.SIDECAR_PORT;
       else process.env.SIDECAR_PORT = prev;
     }
@@ -172,6 +197,7 @@ describe("sidecar listen port env (#768 MCP)", () => {
       ready: new Promise<void>((_, reject) => {
         rejectReady = reject;
       }),
+      stopped: new Promise<SidecarStopResult>(() => {}),
     };
     let exitCode: number | undefined;
     bindSidecarListenExit(handle, (code) => {
@@ -179,6 +205,25 @@ describe("sidecar listen port env (#768 MCP)", () => {
     });
     const err = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
     rejectReady(err);
+    await Promise.resolve();
+    assert.equal(exitCode, 1);
+  });
+
+  it("bindSidecarListenExit exits 1 when stopped is fatal", async () => {
+    let resolveStopped!: (result: SidecarStopResult) => void;
+    const handle = {
+      close: async () => {},
+      ready: Promise.resolve(),
+      stopped: new Promise<SidecarStopResult>((resolve) => {
+        resolveStopped = resolve;
+      }),
+    };
+    let exitCode: number | undefined;
+    bindSidecarListenExit(handle, (code) => {
+      exitCode = code;
+    });
+    resolveStopped({ reason: "server_error", fatal: true });
+    await Promise.resolve();
     await Promise.resolve();
     assert.equal(exitCode, 1);
   });
