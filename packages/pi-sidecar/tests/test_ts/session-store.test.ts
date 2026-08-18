@@ -428,7 +428,8 @@ exit 0
       assert.equal(readFileSync(seenFile, "utf8"), sessionCwd);
       assert.notEqual(sessionCwd, bootCwd);
     } finally {
-      process.env.PATH = prevPath;
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
       delete process.env.CLI_SPAWN_CWD_FILE;
       rmSync(bootCwd, { recursive: true, force: true });
       rmSync(sessionCwd, { recursive: true, force: true });
