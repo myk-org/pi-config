@@ -58,6 +58,23 @@ import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared
 const LOG_DOMAIN = "cursor-cli-driver";
 const DRIVER_KIND = "cursor-cli";
 
+/**
+ * Per-turn history reseed. Cwd-scoped `session_start` must not force a fresh
+ * CLI session on a different workspace. `forceHistorySeedGlobal` is only
+ * `setForceHistorySeed()` (explicit adapter-wide override).
+ */
+export function cursorTurnNeedsHistorySeed(
+  turnCwd: string,
+  forceHistorySeedCwds: ReadonlySet<string>,
+  forceHistorySeedGlobal: boolean,
+): boolean {
+  const cwdListed = forceHistorySeedCwds.has(turnCwd);
+  const needed = forceHistorySeedGlobal || cwdListed;
+  fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+    `cursorTurnNeedsHistorySeed cwd=${turnCwd} global=${forceHistorySeedGlobal} cwdListed=${cwdListed} needed=${needed}`);
+  return needed;
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -234,7 +251,8 @@ function createCursorCliAdapter(
       });
       if (decision.forceHistorySeed) {
         forceHistorySeedCwds.add(turnCwd);
-        forceHistorySeed = true;
+        fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+          `handleSessionStart reseed cwd=${turnCwd} (not adapter-global)`);
       }
 
       if (decision.action === "keep") {
@@ -295,11 +313,14 @@ function createCursorCliAdapter(
         sessionId = loadCliSessionId(key);
       }
 
-      const needsSystemPrompt = !systemPromptSent.has(handleKey)
-        || forceHistorySeed
-        || forceHistorySeedCwds.has(turnCwd);
+      const reseedThisCwd = cursorTurnNeedsHistorySeed(
+        turnCwd,
+        forceHistorySeedCwds,
+        forceHistorySeed,
+      );
+      const needsSystemPrompt = !systemPromptSent.has(handleKey) || reseedThisCwd;
       fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-        `sendTurn model=${handle.model} cwd=${turnCwd} boot=${cwd}`);
+        `sendTurn model=${handle.model} cwd=${turnCwd} boot=${cwd} reseed=${reseedThisCwd}`);
 
       // Prefer the system prompt stored at startSession over rebuilding
       let systemPrompt: string | undefined;
@@ -312,10 +333,10 @@ function createCursorCliAdapter(
       // Resolve history seed plan
       const seedPlan = resolveCliHistorySeed({
         hasCliSession: !!sessionId,
-        forceHistorySeed,
+        forceHistorySeed: reseedThisCwd,
       });
       // Stale marker after /resume: drop it so we open a fresh CLI chat
-      if (forceHistorySeed && sessionId) {
+      if (reseedThisCwd && sessionId) {
         clearCliSessionId(key);
       }
       const effectiveSessionId = seedPlan.useCliSession ? sessionId : null;
@@ -367,7 +388,7 @@ function createCursorCliAdapter(
           systemPromptSent.add(handleKey);
         }
         forceHistorySeedCwds.delete(turnCwd);
-        if (forceHistorySeed) {
+        if (forceHistorySeed && reseedThisCwd) {
           forceHistorySeed = false;
         }
 
@@ -399,7 +420,7 @@ function createCursorCliAdapter(
             systemPromptSent.add(handleKey);
           }
           forceHistorySeedCwds.delete(turnCwd);
-          if (forceHistorySeed) {
+          if (forceHistorySeed && reseedThisCwd) {
             forceHistorySeed = false;
           }
           return {

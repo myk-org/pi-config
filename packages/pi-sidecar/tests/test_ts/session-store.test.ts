@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { SessionStore } from "../../src/sessions.js";
+import { getSessionCwd } from "../../../../extensions/shared/session-cwd.js";
 
 /**
  * Unit tests for SessionStore lifecycle (refresh / catalog / status / concurrency).
@@ -325,5 +326,27 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(runtimeDisposed, true, "runtime assigned during awaited init must be disposed");
     assert.equal(store.internalRuntime, undefined);
     assert.equal(store.runtimeInit, undefined);
+  });
+
+  it("prompt() binds session cwd on ALS for the turn (#768)", async () => {
+    const store = new SessionStore() as any;
+    installMockRuntime(store);
+    let seen: string | undefined;
+    const session = {
+      subscribe: () => () => {},
+      prompt: async () => {
+        seen = getSessionCwd();
+      },
+      dispose: () => {},
+    };
+    store.sessions.set("s-cwd", {
+      session,
+      lastActivity: Date.now(),
+      inFlight: false,
+      cwd: "/tmp/job-sidecar-768",
+    });
+    await store.prompt("s-cwd", "hi");
+    assert.equal(seen, "/tmp/job-sidecar-768");
+    assert.equal(getSessionCwd(), undefined);
   });
 });

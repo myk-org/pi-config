@@ -63,8 +63,17 @@ describe("session cwd ALS (#768)", () => {
     const a = adapterMemoryKey("auto", "/tmp/job-a");
     const b = adapterMemoryKey("auto", "/tmp/job-b");
     assert.notEqual(a, b);
+  });
+
+  it("adapterMemoryKeyMatchesCwd checks the cwd suffix", () => {
+    const a = adapterMemoryKey("auto", "/tmp/job-a");
     assert.equal(adapterMemoryKeyMatchesCwd(a, "/tmp/job-a"), true);
     assert.equal(adapterMemoryKeyMatchesCwd(a, "/tmp/job-b"), false);
+  });
+
+  it("deleteKeysForCwd drops only that cwd's entries", () => {
+    const a = adapterMemoryKey("auto", "/tmp/job-a");
+    const b = adapterMemoryKey("auto", "/tmp/job-b");
     const map = new Map<string, string>([[a, "prompt-a"], [b, "prompt-b"]]);
     deleteKeysForCwd(map, "/tmp/job-a");
     assert.equal(map.has(a), false);

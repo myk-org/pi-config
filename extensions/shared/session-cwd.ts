@@ -37,7 +37,9 @@ function getAls(): AsyncLocalStorage<string> {
 /** Cwd bound for the current async turn, if any. */
 export function getSessionCwd(): string | undefined {
   const value = getAls().getStore();
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const cwd = typeof value === "string" && value.length > 0 ? value : undefined;
+  log.debug(`getSessionCwd bound=${cwd !== undefined}`);
+  return cwd;
 }
 
 /** Bind cwd for the rest of this async resource (before_agent_start). */
