@@ -165,7 +165,7 @@ function buildPromptWithHistory(
 // Adapter
 // ---------------------------------------------------------------------------
 
-function createCursorCliAdapter(
+export function createCursorCliAdapter(
   config: CursorCliConfig,
   cwd: string,
   instanceId: string,
@@ -177,6 +177,8 @@ function createCursorCliAdapter(
   /** Force history re-seed on next turn. */
   setForceHistorySeed: (force: boolean) => void;
 } {
+  fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+    `createCursorCliAdapter bootCwdBound=${Boolean(cwd)} instance=${instanceId}`);
   let activePiSessionId: string | null = null;
   const provisionalPiSessionId = createProvisionalPiSessionId();
   let forceHistorySeed = false;

@@ -74,12 +74,14 @@ type AcpRuntimeHandle = Awaited<ReturnType<AcpxRuntime["ensureSession"]>>;
 // Adapter
 // ---------------------------------------------------------------------------
 
-function createAcpxAdapter(
+export function createAcpxAdapter(
   config: AcpxConfig,
   cwd: string,
   runtime: AcpxRuntime,
   initialHandle?: AcpRuntimeHandle,
 ): ProviderAdapterShape {
+  fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+    `createAcpxAdapter bootCwdBound=${Boolean(cwd)} agent=${config.agent}`);
   const handles = new Map<string, AcpRuntimeHandle>();
   const prevCumulative = new Map<string, { inputTokens?: number; outputTokens?: number; totalTokens?: number }>();
   // Seed with the discovery handle so the first turn reuses it when cwd matches boot
