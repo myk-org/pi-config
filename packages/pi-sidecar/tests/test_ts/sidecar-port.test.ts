@@ -1,10 +1,25 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 
+import { startSidecar } from "../../src/index.js";
 import {
   ensureSidecarPortEnv,
   resolveSidecarListenPort,
 } from "../../src/sidecar-port.js";
+
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start >= timeoutMs) {
+      throw new Error("timed out waiting for condition");
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
 
 describe("sidecar listen port env (#768 MCP)", () => {
   it("resolveSidecarListenPort prefers options.port over env", () => {
@@ -31,10 +46,17 @@ describe("sidecar listen port env (#768 MCP)", () => {
     assert.equal(resolveSidecarListenPort(undefined, { SIDECAR_PORT: "-5" }), 9100);
   });
 
-  it("resolveSidecarListenPort falls back to 9100 for invalid optionsPort", () => {
+  it("resolveSidecarListenPort falls back to 9100 for negative optionsPort", () => {
     assert.equal(resolveSidecarListenPort(-1, {}), 9100);
+  });
+
+  it("resolveSidecarListenPort falls back to 9100 for non-finite optionsPort", () => {
     assert.equal(resolveSidecarListenPort(Number.NaN, {}), 9100);
     assert.equal(resolveSidecarListenPort(Number.POSITIVE_INFINITY, {}), 9100);
+  });
+
+  it("resolveSidecarListenPort falls back to 9100 for optionsPort above 65535", () => {
+    assert.equal(resolveSidecarListenPort(70000, {}), 9100);
   });
 
   it("ensureSidecarPortEnv writes SIDECAR_PORT for programmatic launches", () => {
@@ -100,5 +122,41 @@ describe("sidecar listen port env (#768 MCP)", () => {
     release();
     release();
     assert.equal("SIDECAR_PORT" in env, false);
+  });
+
+  it("startSidecar close restores inherited SIDECAR_PORT", async () => {
+    const prev = process.env.SIDECAR_PORT;
+    process.env.SIDECAR_PORT = "9100";
+    try {
+      const handle = startSidecar({ port: 0, host: "127.0.0.1" });
+      assert.equal(process.env.SIDECAR_PORT, "0");
+      await handle.close();
+      assert.equal(process.env.SIDECAR_PORT, "9100");
+    } finally {
+      if (prev === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prev;
+    }
+  });
+
+  it("startSidecar releases SIDECAR_PORT when listen fails", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once("error", reject);
+      blocker.listen(0, "127.0.0.1", () => resolve());
+    });
+    const addr = blocker.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    assert.ok(port > 0);
+    const prev = process.env.SIDECAR_PORT;
+    delete process.env.SIDECAR_PORT;
+    try {
+      const handle = startSidecar({ port, host: "127.0.0.1" });
+      await waitUntil(() => !("SIDECAR_PORT" in process.env));
+      await handle.close();
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      if (prev === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prev;
+    }
   });
 });

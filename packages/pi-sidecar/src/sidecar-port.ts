@@ -21,11 +21,22 @@ type EnvPortState = {
 let nextLeaseId = 1;
 const envPortState = new WeakMap<NodeJS.ProcessEnv, EnvPortState>();
 
+const MAX_TCP_PORT = 65535;
+
+function isValidListenPort(port: number): boolean {
+  const valid = Number.isInteger(port) && port >= 0 && port <= MAX_TCP_PORT;
+  log.debug(`isValidListenPort port=${port} valid=${valid}`);
+  return valid;
+}
+
 function getEnvPortState(env: NodeJS.ProcessEnv): EnvPortState {
   let state = envPortState.get(env);
   if (!state) {
     state = { inherited: undefined, leases: [] };
     envPortState.set(env, state);
+    log.debug("getEnvPortState created");
+  } else {
+    log.debug(`getEnvPortState existing leases=${state.leases.length}`);
   }
   return state;
 }
@@ -34,21 +45,27 @@ function getEnvPortState(env: NodeJS.ProcessEnv): EnvPortState {
 function inheritedSidecarPort(env: NodeJS.ProcessEnv): string | undefined {
   const state = envPortState.get(env);
   if (state && state.leases.length > 0) {
+    log.debug(`inheritedSidecarPort from captured leaseCount=${state.leases.length}`);
     return state.inherited;
   }
+  log.debug(`inheritedSidecarPort from env set=${env.SIDECAR_PORT !== undefined}`);
   return env.SIDECAR_PORT;
 }
 
 function parsePositivePort(raw: string | undefined): number {
   const parsed = parseInt(raw || String(DEFAULT_PORT), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PORT;
+  const port = Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_TCP_PORT
+    ? parsed
+    : DEFAULT_PORT;
+  log.debug(`parsePositivePort rawSet=${raw !== undefined} port=${port}`);
+  return port;
 }
 
 export function resolveSidecarListenPort(
   optionsPort?: number,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
-  if (typeof optionsPort === "number" && Number.isFinite(optionsPort) && optionsPort >= 0) {
+  if (typeof optionsPort === "number" && isValidListenPort(optionsPort)) {
     log.debug(`resolveSidecarListenPort from options.port=${optionsPort}`);
     return optionsPort;
   }

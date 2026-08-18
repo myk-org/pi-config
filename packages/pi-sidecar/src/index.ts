@@ -576,30 +576,44 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
     const cleaned = store.cleanupStale(60 * 60 * 1000); // 1 hour
     logger.debug(`[sidecar] Stale cleanup result: removed=${cleaned}`);
   }, 10 * 60 * 1000);
+  cleanupInterval.unref();
 
-  server.listen(PORT, HOST, () => {
-    const addr = server.address();
-    if (addr && typeof addr === "object" && addr.address) {
-      trustBindHost = addr.address;
-    }
-    logger.info(`[sidecar] Pi SDK sidecar listening on http://${HOST}:${PORT}`);
-    logger.info(`[sidecar] Config: host=${HOST}, port=${PORT}, trustBindHost=${trustBindHost}, devMode=${process.env.DEV_MODE || 'false'}, logLevel=${process.env.PI_SIDECAR_LOG_LEVEL || 'info'}`);
-    const watchdogUrl = options?.watchdogUrl || process.env.SIDECAR_WATCHDOG_URL;
-    if (watchdogUrl) {
-      logger.info(`[sidecar] Watchdog enabled: url=${watchdogUrl}`);
-      stopWatchdog = startWatchdog(watchdogUrl, async () => {
-        logger.warn("[sidecar] Backend unresponsive, shutting down");
-        await shutdownSidecar("watchdog");
-      }, options?.watchdogOptions);
-    } else {
-      logger.info("[sidecar] Watchdog disabled (no SIDECAR_WATCHDOG_URL)");
-    }
-
-    // Auto-discover models from extensions on startup
-    store.refreshModels().catch((err) => {
-      logger.error("[sidecar] Model discovery failed:", err);
-    });
+  server.on("error", (err) => {
+    log.error(
+      `startSidecar listen error code=${(err as NodeJS.ErrnoException).code}`,
+    );
+    void shutdownSidecar("listen_error");
   });
+
+  try {
+    server.listen(PORT, HOST, () => {
+      const addr = server.address();
+      if (addr && typeof addr === "object" && addr.address) {
+        trustBindHost = addr.address;
+      }
+      logger.info(`[sidecar] Pi SDK sidecar listening on http://${HOST}:${PORT}`);
+      logger.info(`[sidecar] Config: host=${HOST}, port=${PORT}, trustBindHost=${trustBindHost}, devMode=${process.env.DEV_MODE || 'false'}, logLevel=${process.env.PI_SIDECAR_LOG_LEVEL || 'info'}`);
+      const watchdogUrl = options?.watchdogUrl || process.env.SIDECAR_WATCHDOG_URL;
+      if (watchdogUrl) {
+        logger.info(`[sidecar] Watchdog enabled: url=${watchdogUrl}`);
+        stopWatchdog = startWatchdog(watchdogUrl, async () => {
+          logger.warn("[sidecar] Backend unresponsive, shutting down");
+          await shutdownSidecar("watchdog");
+        }, options?.watchdogOptions);
+      } else {
+        logger.info("[sidecar] Watchdog disabled (no SIDECAR_WATCHDOG_URL)");
+      }
+
+      // Auto-discover models from extensions on startup
+      store.refreshModels().catch((err) => {
+        logger.error("[sidecar] Model discovery failed:", err);
+      });
+    });
+  } catch (err) {
+    log.error("startSidecar listen threw");
+    void shutdownSidecar("listen_throw");
+    throw err;
+  }
 
   return {
     close: async () => {
