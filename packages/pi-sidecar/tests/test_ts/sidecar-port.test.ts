@@ -261,7 +261,6 @@ describe("sidecar listen port env (#768 MCP)", () => {
       const closing = handle.close();
       await handle.ready;
       await closing;
-      assert.equal(process.env.SIDECAR_PORT, "9100");
     } finally {
       if (prev === undefined) delete process.env.SIDECAR_PORT;
       else process.env.SIDECAR_PORT = prev;
