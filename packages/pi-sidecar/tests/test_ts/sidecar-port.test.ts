@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 
@@ -37,6 +37,17 @@ async function waitUntil(
 }
 
 describe("sidecar listen port env (#768 MCP)", () => {
+  let inheritedSidecarPort: string | undefined;
+
+  beforeEach(() => {
+    inheritedSidecarPort = process.env.SIDECAR_PORT;
+  });
+
+  afterEach(() => {
+    if (inheritedSidecarPort === undefined) delete process.env.SIDECAR_PORT;
+    else process.env.SIDECAR_PORT = inheritedSidecarPort;
+  });
+
   it("resolveSidecarListenPort prefers options.port over env", () => {
     assert.equal(resolveSidecarListenPort(9200, { SIDECAR_PORT: "9100" }), 9200);
   });
@@ -254,16 +265,9 @@ describe("sidecar listen port env (#768 MCP)", () => {
   });
 
   it("startSidecar close before listen settles ready", async () => {
-    const prev = process.env.SIDECAR_PORT;
-    process.env.SIDECAR_PORT = "9100";
-    try {
-      const handle = startSidecar({ port: 0, host: "127.0.0.1" });
-      const closing = handle.close();
-      await handle.ready;
-      await closing;
-    } finally {
-      if (prev === undefined) delete process.env.SIDECAR_PORT;
-      else process.env.SIDECAR_PORT = prev;
-    }
+    const handle = startSidecar({ port: 0, host: "127.0.0.1" });
+    const closing = handle.close();
+    await handle.ready;
+    await closing;
   });
 });
