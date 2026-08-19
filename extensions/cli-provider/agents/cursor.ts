@@ -54,11 +54,35 @@ function discoverCursorModels(): DiscoveredCliModel[] {
   return models;
 }
 
+/**
+ * Headless Cursor MCP: `--approve-mcps` is opt-in, not unconditional.
+ * `CLI_APPROVE_MCPS` wins; otherwise sidecar processes (`SIDECAR_PORT`, stamped
+ * by `startSidecar()` while running) get it because they have no TTY.
+ * Interactive pi omits the flag.
+ */
+export function shouldApproveCursorMcps(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const explicit = env.CLI_APPROVE_MCPS;
+  if (typeof explicit === "string" && explicit.length > 0) {
+    const on = ["1", "true", "yes", "on"].includes(explicit.toLowerCase());
+    log.debug(`cursor --approve-mcps CLI_APPROVE_MCPS=${explicit} -> ${on}`);
+    return on;
+  }
+  const sidecar = typeof env.SIDECAR_PORT === "string" && env.SIDECAR_PORT.length > 0;
+  log.debug(`cursor --approve-mcps SIDECAR_PORT set=${sidecar}`);
+  return sidecar;
+}
+
 export const cursorProvider: CliProviderDef = {
   name: "cursor",
   binary: "agent",
   buildBaseArgs: (model, cwd) => {
-    // --trust: workspace; --force: auto-approve; stream-partial-output: live tokens
+    // --trust: workspace; --force: auto-approve tools
+    const approveMcps = shouldApproveCursorMcps();
+    log.debug(
+      `cursor buildBaseArgs approveMcps=${approveMcps} modelOverride=${Boolean(model && model !== "default")}`,
+    );
     const args = [
       "--print",
       "--trust",
@@ -69,6 +93,9 @@ export const cursorProvider: CliProviderDef = {
       "--workspace",
       cwd,
     ];
+    if (approveMcps) {
+      args.push("--approve-mcps");
+    }
     if (model && model !== "default") {
       args.unshift("--model", model);
     }

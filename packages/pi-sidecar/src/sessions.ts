@@ -20,9 +20,12 @@ import {
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { createJiti } from "jiti";
 
-import { logger } from "./logger.js";
+import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
+import { runWithSessionCwd } from "./session-cwd.js";
+
+const fixtureLog = createLogger("session-store");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -311,10 +314,14 @@ function createInternalRuntimeFactory(extensionPaths: string[]): CreateAgentSess
 
 export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 
+/** Methods SessionStore calls on a stored session (create() or test fixture). */
+type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "abort">;
+
 interface SessionEntry {
-  session: AgentSession;
+  session: StoredSession;
   lastActivity: number;
   inFlight: boolean;
+  cwd: string;
 }
 
 /**
@@ -452,6 +459,25 @@ export class SessionStore {
 
   count(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Test fixture: register a session without create() (no real SDK).
+   * Not part of the HTTP/Python client contract. Requires abort() so
+   * SessionStore.abort() cannot TypeError.
+   */
+  putSessionFixture(
+    id: string,
+    session: StoredSession,
+    cwd: string,
+  ): void {
+    fixtureLog.debug(`putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
+    this.sessions.set(id, {
+      session,
+      lastActivity: Date.now(),
+      inFlight: false,
+      cwd,
+    });
   }
 
   /**
@@ -935,7 +961,7 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false });
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd });
     logger.log(`[sidecar] Session created: ${id} (provider=${options.provider}, model=${options.model}, cwd=${options.cwd}, tools=${tools.join(",")}, customTools=${customTools.length})`);
     return id;
   }
@@ -952,7 +978,7 @@ export class SessionStore {
     entry.lastActivity = Date.now();
     entry.inFlight = true;
 
-    logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}`);
+    logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${entry.cwd}`);
 
     const errors: string[] = [];
     let errorsDropped = 0;
@@ -1042,7 +1068,7 @@ export class SessionStore {
     });
 
     try {
-      await entry.session.prompt(message);
+      await runWithSessionCwd(entry.cwd, () => entry.session.prompt(message));
     } catch (err: any) {
       logger.error(`[sidecar] Prompt failed: session=${id}, error=${err?.message}`, err);
       // If we captured partial text or error events before the rejection,

@@ -1,22 +1,45 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { SessionStore } from "../../src/sessions.js";
+import {
+  getSessionCwd,
+  resolveProviderStreamCwd,
+} from "../../../../extensions/shared/session-cwd.js";
+import { createCursorCliAdapter } from "../../../../extensions/providers/cursor-cli-driver.js";
+import { createAcpxAdapter } from "../../../../extensions/providers/acpx-driver.js";
 
 /**
  * Unit tests for SessionStore lifecycle (refresh / catalog / status / concurrency).
  *
- * Fully mocked — never creates a real AgentSessionRuntime, never loads
- * extensions, never touches provider APIs or credentials. Mirrors the
- * snapshot-agent-source.test.ts pattern: pre-install duck-typed
- * `internalRuntime` / `modelRuntime` / `modelRegistry` so
- * `ensureInternalRuntime()` short-circuits.
+ * Fully mocked runtime for catalog/lifecycle tests. The #768 prompt() spawn
+ * tests exercise Cursor CLI / ACPX adapters with a fake `agent` binary and a
+ * mock ACPX runtime — they still never create a real AgentSessionRuntime.
  */
 
 type DiscoveredModel = { id: string; name: string; provider: string };
 
 function fakeSession(): { dispose: () => void } {
   return { dispose: () => {} };
+}
+
+function fixtureSession(overrides: {
+  prompt?: () => Promise<void>;
+} = {}): {
+  subscribe: () => () => void;
+  prompt: () => Promise<void>;
+  dispose: () => void;
+  abort: () => Promise<void>;
+} {
+  return {
+    subscribe: () => () => {},
+    prompt: overrides.prompt ?? (async () => {}),
+    dispose: () => {},
+    abort: async () => {},
+  };
 }
 
 function installMockRuntime(
@@ -229,7 +252,7 @@ describe("SessionStore (mocked runtime)", () => {
       // Inject fake session entries — never call create() (that would hit the real SDK).
       const sessionIds = Array.from({ length: 5 }, (_, i) => `mock-session-${i}`);
       for (const id of sessionIds) {
-        store.sessions.set(id, { session: fakeSession(), lastActivity: Date.now(), inFlight: false });
+        store.sessions.set(id, { session: fakeSession(), lastActivity: Date.now(), inFlight: false, cwd: "/tmp" });
       }
       assert.equal(store.count(), 5);
 
@@ -325,5 +348,128 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(runtimeDisposed, true, "runtime assigned during awaited init must be disposed");
     assert.equal(store.internalRuntime, undefined);
     assert.equal(store.runtimeInit, undefined);
+  });
+
+  it("prompt() binds session cwd on ALS for the turn (#768)", async () => {
+    const store = new SessionStore();
+    let seen: string | undefined;
+    store.putSessionFixture(
+      "s-cwd",
+      fixtureSession({
+        prompt: async () => {
+          seen = getSessionCwd();
+        },
+      }),
+      "/tmp/job-sidecar-768",
+    );
+    await store.prompt("s-cwd", "hi");
+    assert.equal(seen, "/tmp/job-sidecar-768");
+    assert.equal(getSessionCwd(), undefined);
+  });
+
+  it("abort() succeeds on a fixture session that implements abort()", async () => {
+    const store = new SessionStore();
+    let aborted = false;
+    store.putSessionFixture(
+      "s-abort",
+      {
+        ...fixtureSession(),
+        abort: async () => {
+          aborted = true;
+        },
+      },
+      "/tmp/job-sidecar-768",
+    );
+    await store.abort("s-abort");
+    assert.equal(aborted, true);
+  });
+
+  it("prompt() passes session cwd to Cursor CLI spawn, not boot cwd (#768)", async () => {
+    const bootCwd = mkdtempSync(join(tmpdir(), "pi-boot-768-"));
+    const sessionCwd = mkdtempSync(join(tmpdir(), "pi-job-768-"));
+    const binDir = mkdtempSync(join(tmpdir(), "pi-agent-bin-768-"));
+    const seenFile = join(binDir, "seen-cwd");
+    const prevPath = process.env.PATH;
+    writeFileSync(
+      join(binDir, "agent"),
+      `#!/bin/sh
+printf '%s' "$(pwd)" > "$CLI_SPAWN_CWD_FILE"
+printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}'
+printf '%s\\n' '{"type":"result","result":"ok"}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    chmodSync(join(binDir, "agent"), 0o755);
+    process.env.PATH = `${binDir}:${prevPath || ""}`;
+    process.env.CLI_SPAWN_CWD_FILE = seenFile;
+    try {
+      const store = new SessionStore();
+      const adapter = createCursorCliAdapter(
+        { binary: "agent", enabled: true },
+        bootCwd,
+        "test-768",
+      );
+      store.putSessionFixture(
+        "s-cli",
+        fixtureSession({
+          prompt: async () => {
+            const turnCwd = resolveProviderStreamCwd(bootCwd);
+            const handle = await adapter.startSession({
+              model: "default",
+              cwd: turnCwd,
+            });
+            await adapter.sendTurn(handle, "hi");
+          },
+        }),
+        sessionCwd,
+      );
+      await store.prompt("s-cli", "hi");
+      assert.equal(readFileSync(seenFile, "utf8"), sessionCwd);
+      assert.notEqual(sessionCwd, bootCwd);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      delete process.env.CLI_SPAWN_CWD_FILE;
+      rmSync(bootCwd, { recursive: true, force: true });
+      rmSync(sessionCwd, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("prompt() passes session cwd to ACPX ensureSession, not boot cwd (#768)", async () => {
+    const bootCwd = mkdtempSync(join(tmpdir(), "pi-boot-acpx-768-"));
+    const sessionCwd = mkdtempSync(join(tmpdir(), "pi-job-acpx-768-"));
+    let ensureCwd: string | undefined;
+    const mockRuntime = {
+      ensureSession: async (opts: { cwd?: string }) => {
+        ensureCwd = opts.cwd;
+        return { id: "acpx-h1" };
+      },
+    };
+    try {
+      const store = new SessionStore();
+      const adapter = createAcpxAdapter(
+        { agent: "cursor", enabled: true },
+        bootCwd,
+        mockRuntime as never,
+      );
+      store.putSessionFixture(
+        "s-acpx",
+        fixtureSession({
+          prompt: async () => {
+            const turnCwd = resolveProviderStreamCwd(bootCwd);
+            await adapter.startSession({ model: "default", cwd: turnCwd });
+          },
+        }),
+        sessionCwd,
+      );
+      await store.prompt("s-acpx", "hi");
+      assert.equal(ensureCwd, sessionCwd);
+      assert.notEqual(ensureCwd, bootCwd);
+    } finally {
+      rmSync(bootCwd, { recursive: true, force: true });
+      rmSync(sessionCwd, { recursive: true, force: true });
+    }
   });
 });

@@ -1,6 +1,7 @@
 export { SessionStore, type CreateSessionOptions, type CustomToolConfig, DEFAULT_TOOLS } from "./sessions.js";
 export { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 export { createHttpToolExecutor, normalizeHttpToolConfig, interpolate, type HttpToolConfig } from "./http-tool-executor.js";
+export { createLogger } from "./logger.js";
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { SessionStore } from "./sessions.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
-import { logger } from "./logger.js";
+import { createLogger, logger } from "./logger.js";
+import { ensureSidecarPortEnv, resolveSidecarListenPort } from "./sidecar-port.js";
 
 const MAX_BODY_SIZE = 1_048_576;
 
@@ -147,7 +149,29 @@ export interface SidecarHandle {
   close(): Promise<void>;
 }
 
-export function startSidecar(options?: { port?: number; host?: string; watchdogUrl?: string; watchdogOptions?: WatchdogOptions }): SidecarHandle {
+/** Why the sidecar HTTP server stopped. `fatal` means the process should exit nonzero. */
+export interface SidecarStopResult {
+  reason: string;
+  fatal: boolean;
+}
+
+/** Handle returned by `startSidecar()` — adds listen readiness without changing `SidecarHandle`. */
+export interface StartedSidecarHandle extends SidecarHandle {
+  /** Resolves when the HTTP server is listening; rejects on async bind failure. */
+  ready: Promise<void>;
+  /** Settles when shutdown finishes. `fatal` is true for listen/server/watchdog failures. */
+  stopped: Promise<SidecarStopResult>;
+}
+
+export function startSidecar(options?: {
+  port?: number;
+  host?: string;
+  watchdogUrl?: string;
+  watchdogOptions?: WatchdogOptions;
+  /** Test hook: runs after TCP listen and before `ready` resolves. */
+  beforeListenReady?: () => void | Promise<void>;
+}): StartedSidecarHandle {
+  const log = createLogger("startSidecar");
   // Fail fast on a stale SDK install rather than surfacing confusing runtime
   // errors later (e.g. createProvider()-based ACPX/CLI providers silently
   // failing to register on a pre-0.81 SDK).
@@ -211,7 +235,9 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
     }
   }
 
-  const PORT = options?.port ?? parseInt(process.env.SIDECAR_PORT || "9100", 10);
+  const PORT = resolveSidecarListenPort(options?.port);
+  const releaseSidecarPortEnv = ensureSidecarPortEnv(PORT);
+  log.info(`startSidecar listenPort=${PORT}`);
   // Precedence: explicit options.host → SIDECAR_HOST (start-sidecar.sh) → DEV_MODE → localhost.
   const HOST =
     options?.host ??
@@ -236,6 +262,63 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
   // Declared early so shutdownSidecar can clear them; assigned after createServer.
   let cleanupInterval: ReturnType<typeof setInterval> | undefined;
   let stopWatchdog: (() => void) | undefined;
+  let settleReady: { resolve: () => void; reject: (err: Error) => void } | undefined;
+  let readySettled = false;
+  const ready = new Promise<void>((resolve, reject) => {
+    settleReady = { resolve, reject };
+  });
+  let settleStopped: { resolve: (result: SidecarStopResult) => void } | undefined;
+  let stoppedSettled = false;
+  const stopped = new Promise<SidecarStopResult>((resolve) => {
+    settleStopped = { resolve };
+  });
+
+  function isFatalShutdown(reason: string): boolean {
+    const fatal = reason !== "close";
+    log.debug(`isFatalShutdown reason=${reason} fatal=${fatal}`);
+    return fatal;
+  }
+
+  function resolveListenReady(): void {
+    if (readySettled) {
+      log.debug("startSidecar ready already settled");
+      return;
+    }
+    readySettled = true;
+    log.info("startSidecar listen ready");
+    settleReady?.resolve();
+  }
+
+  function rejectListenReady(err: Error): void {
+    if (readySettled) {
+      log.debug("startSidecar ready already settled");
+      return;
+    }
+    readySettled = true;
+    log.error(`startSidecar listen failed code=${(err as NodeJS.ErrnoException).code}`);
+    settleReady?.reject(err);
+  }
+
+  function resolveStopped(reason: string): void {
+    if (!readySettled) {
+      if (isFatalShutdown(reason)) {
+        rejectListenReady(new Error(`sidecar stopped before listen reason=${reason}`));
+      } else {
+        readySettled = true;
+        log.debug(`startSidecar ready resolved on non-fatal shutdown reason=${reason}`);
+        settleReady?.resolve();
+      }
+    }
+    if (stoppedSettled) {
+      log.debug(`startSidecar stopped already settled reason=${reason}`);
+      return;
+    }
+    stoppedSettled = true;
+    const result = { reason, fatal: isFatalShutdown(reason) };
+    log.info(`startSidecar stopped reason=${result.reason} fatal=${result.fatal}`);
+    settleStopped?.resolve(result);
+  }
+
   // Memoize shutdown so concurrent watchdog + close() share one teardown.
   let shutdownPromise: Promise<void> | undefined;
 
@@ -304,6 +387,10 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
       } catch (err) {
         logger.error(`[sidecar] SHUTDOWN_FAILED: reason=${reason}`, err);
         // Still complete the memoized promise so joiners do not hang; draining stays true.
+      } finally {
+        releaseSidecarPortEnv();
+        log.info(`startSidecar restored SIDECAR_PORT reason=${reason}`);
+        resolveStopped(reason);
       }
     })();
     return shutdownPromise;
@@ -569,34 +656,115 @@ export function startSidecar(options?: { port?: number; host?: string; watchdogU
     const cleaned = store.cleanupStale(60 * 60 * 1000); // 1 hour
     logger.debug(`[sidecar] Stale cleanup result: removed=${cleaned}`);
   }, 10 * 60 * 1000);
+  cleanupInterval.unref();
 
-  server.listen(PORT, HOST, () => {
-    const addr = server.address();
-    if (addr && typeof addr === "object" && addr.address) {
-      trustBindHost = addr.address;
+  server.on("error", (err) => {
+    const error = err instanceof Error ? err : new Error(String(err));
+    const reason = readySettled ? "server_error" : "listen_error";
+    log.error(
+      `startSidecar server error reason=${reason} code=${(error as NodeJS.ErrnoException).code}`,
+    );
+    if (!readySettled) {
+      rejectListenReady(error);
     }
-    logger.info(`[sidecar] Pi SDK sidecar listening on http://${HOST}:${PORT}`);
-    logger.info(`[sidecar] Config: host=${HOST}, port=${PORT}, trustBindHost=${trustBindHost}, devMode=${process.env.DEV_MODE || 'false'}, logLevel=${process.env.PI_SIDECAR_LOG_LEVEL || 'info'}`);
-    const watchdogUrl = options?.watchdogUrl || process.env.SIDECAR_WATCHDOG_URL;
-    if (watchdogUrl) {
-      logger.info(`[sidecar] Watchdog enabled: url=${watchdogUrl}`);
-      stopWatchdog = startWatchdog(watchdogUrl, async () => {
-        logger.warn("[sidecar] Backend unresponsive, shutting down");
-        await shutdownSidecar("watchdog");
-      }, options?.watchdogOptions);
-    } else {
-      logger.info("[sidecar] Watchdog disabled (no SIDECAR_WATCHDOG_URL)");
-    }
-
-    // Auto-discover models from extensions on startup
-    store.refreshModels().catch((err) => {
-      logger.error("[sidecar] Model discovery failed:", err);
-    });
+    void shutdownSidecar(reason);
   });
+
+  try {
+    server.listen(PORT, HOST, () => {
+      const completeListen = (): void => {
+        if (shutdownPromise) {
+          log.debug("startSidecar listen callback skipped after shutdown");
+          return;
+        }
+        resolveListenReady();
+        const addr = server.address();
+        if (addr && typeof addr === "object" && addr.address) {
+          trustBindHost = addr.address;
+        }
+        logger.info(`[sidecar] Pi SDK sidecar listening on http://${HOST}:${PORT}`);
+        logger.info(`[sidecar] Config: host=${HOST}, port=${PORT}, trustBindHost=${trustBindHost}, devMode=${process.env.DEV_MODE || 'false'}, logLevel=${process.env.PI_SIDECAR_LOG_LEVEL || 'info'}`);
+        const watchdogUrl = options?.watchdogUrl || process.env.SIDECAR_WATCHDOG_URL;
+        if (watchdogUrl) {
+          logger.info(`[sidecar] Watchdog enabled: url=${watchdogUrl}`);
+          stopWatchdog = startWatchdog(watchdogUrl, async () => {
+            logger.warn("[sidecar] Backend unresponsive, shutting down");
+            await shutdownSidecar("watchdog");
+          }, options?.watchdogOptions);
+        } else {
+          logger.info("[sidecar] Watchdog disabled (no SIDECAR_WATCHDOG_URL)");
+        }
+
+        // Auto-discover models from extensions on startup
+        store.refreshModels().catch((err) => {
+          logger.error("[sidecar] Model discovery failed:", err);
+        });
+      };
+      const gate = options?.beforeListenReady;
+      if (!gate) {
+        completeListen();
+        return;
+      }
+      log.debug("startSidecar beforeListenReady");
+      void Promise.resolve()
+        .then(() => gate())
+        .then(completeListen, (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn(`startSidecar beforeListenReady failed message=${message}`);
+          completeListen();
+        });
+    });
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log.error("startSidecar listen threw");
+    // Do not reject `ready` here: the handle is not returned, so a rejection
+    // would be unhandled even when the caller catches this throw.
+    void shutdownSidecar("listen_throw");
+    throw error;
+  }
 
   return {
     close: async () => {
       await shutdownSidecar("close");
     },
+    ready,
+    stopped,
   };
+}
+
+/** CLI helper: exit 1 on async bind failure or a later fatal server stop. */
+export function bindSidecarListenExit(
+  handle: StartedSidecarHandle,
+  exitProcess: (code: number) => void = (code) => {
+    process.exit(code);
+  },
+): void {
+  const log = createLogger("sidecar-cli");
+  let exiting = false;
+  function exitFatal(message: string): void {
+    if (exiting) {
+      log.debug(`sidecar-cli exit already requested message=${message}`);
+      return;
+    }
+    exiting = true;
+    log.error(message);
+    exitProcess(1);
+  }
+  handle.ready.then(
+    () => {
+      log.info("sidecar-cli listening");
+    },
+    (err) => {
+      exitFatal(`sidecar-cli listen failed code=${(err as NodeJS.ErrnoException).code}`);
+    },
+  );
+  handle.stopped.then(
+    (result) => {
+      if (result.fatal) {
+        exitFatal(`sidecar-cli stopped reason=${result.reason}`);
+        return;
+      }
+      log.info(`sidecar-cli stopped reason=${result.reason}`);
+    },
+  );
 }

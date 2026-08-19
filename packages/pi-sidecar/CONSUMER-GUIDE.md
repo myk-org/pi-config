@@ -47,14 +47,14 @@ your-project/
 Create `sidecar-helper/src/server.ts`:
 
 ```typescript
-import { startSidecar } from "@myk-org/pi-sidecar";
+import { bindSidecarListenExit, startSidecar } from "@myk-org/pi-sidecar";
 
 const handle = startSidecar({
   port: parseInt(process.env.SIDECAR_PORT || "9100"),
   host: process.env.SIDECAR_HOST || "127.0.0.1",
 });
+bindSidecarListenExit(handle);
 
-// Optional: graceful shutdown
 process.on("SIGTERM", async () => {
   await handle.close();
   process.exit(0);
@@ -144,7 +144,7 @@ npx pi-sidecar-start --help
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script) |
+| `SIDECAR_PORT` | `9100` | Listen port (`9201` for start script). `startSidecar()` stamps this env while running (default, `options.port`, or `0` for ephemeral) so nested Cursor CLI can detect sidecar and pass `--approve-mcps`. `close()` restores the inherited value. |
 | `SIDECAR_HOST` | `127.0.0.1` | Bind address |
 | `SIDECAR_URL` | `http://127.0.0.1:9100` | Python client base URL |
 | `CLI_AGENTS` | (none) | Comma-separated CLI agents: `cursor,claude,gemini` |
@@ -291,6 +291,12 @@ curl -s -X POST http://127.0.0.1:9100/sessions \
   }'
 # Returns: {"session_id": "<uuid>"}
 ```
+
+`cwd` is the session working directory. Pi tools (`read` / `ls` / `grep` /
+`bash`) use it, and nested CLI/ACPX agents (`cli-cursor` `--workspace`, spawn
+cwd, ACPX `ensureSession`) inherit that same folder. Omit `cwd` and the sidecar
+still defaults to its process working directory (`process.cwd()`). Pass an
+explicit project path when you want job isolation.
 
 ### Send Prompt
 

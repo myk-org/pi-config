@@ -42,6 +42,7 @@ import {
 } from "../cli-provider/sessions.js";
 import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared/session-cwd.js";
 
 const LOG_DOMAIN = "gemini-driver";
 const DRIVER_KIND = "gemini-cli";
@@ -78,14 +79,14 @@ function createGeminiAdapter(
   instanceId: string,
 ): ProviderAdapterShape & {
   bindPiSessionId: (sid: string) => void;
-  handleSessionStart: (reason: string, sid: string | null) => void;
+  handleSessionStart: (reason: string, sid: string | null, sessionCwd?: string) => void;
 } {
   let piSessionId = createProvisionalPiSessionId();
   const systemPromptSent = new Set<string>();
   const storedSystemPrompts = new Map<string, string>();
 
-  function sessionKeyFor(model: string): CliSessionKey {
-    return { cwd, agent: "gemini", model, piSessionId };
+  function sessionKeyFor(model: string, turnCwd: string = cwd): CliSessionKey {
+    return { cwd: turnCwd, agent: "gemini", model, piSessionId };
   }
 
   return {
@@ -93,21 +94,27 @@ function createGeminiAdapter(
       if (sid) piSessionId = sid;
     },
 
-    handleSessionStart: (reason: string, _sid: string | null) => {
+    handleSessionStart: (reason: string, _sid: string | null, sessionCwd?: string) => {
       if (reason === "new" || reason === "resume") {
-        systemPromptSent.clear();
-        storedSystemPrompts.clear();
+        const turnCwd = sessionCwd || cwd;
+        deleteKeysForCwd(systemPromptSent, turnCwd);
+        deleteKeysForCwd(storedSystemPrompts, turnCwd);
       }
     },
 
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
-      if (opts.systemPrompt) storedSystemPrompts.set(model, opts.systemPrompt);
-      const key = sessionKeyFor(model);
+      const turnCwd = resolveAdapterCwd(opts, cwd);
+      const memKey = adapterMemoryKey(model, turnCwd);
+      if (opts.systemPrompt) storedSystemPrompts.set(memKey, opts.systemPrompt);
+      const key = sessionKeyFor(model, turnCwd);
       const existingId = loadCliSessionId(key);
+      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+        `startSession model=${model} cwd=${turnCwd} boot=${cwd}`);
       return {
         sessionId: existingId || `gemini-${instanceId}-${model}`,
         model,
+        cwd: turnCwd,
       };
     },
 
@@ -116,16 +123,17 @@ function createGeminiAdapter(
       prompt: string,
       opts?: TurnOptions,
     ): Promise<TurnResult> => {
-      const key = sessionKeyFor(handle.model);
+      const turnCwd = resolveAdapterCwd(handle, cwd);
+      const key = sessionKeyFor(handle.model, turnCwd);
       const sessionId = loadCliSessionId(key);
-      const handleKey = handle.model || "default";
+      const handleKey = adapterMemoryKey(handle.model, turnCwd);
       const needsSystemPrompt = !systemPromptSent.has(handleKey);
 
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
         systemPrompt =
           storedSystemPrompts.get(handleKey) ||
-          buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
+          buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
       }
 
       let finalPrompt = prompt;
@@ -150,7 +158,7 @@ function createGeminiAdapter(
         runCliAgent({
           agent: "gemini",
           model: handle.model === "default" ? "default" : handle.model,
-          cwd,
+          cwd: turnCwd,
           prompt: p,
           sessionId: sid,
           signal: opts?.signal,
@@ -202,9 +210,10 @@ function createGeminiAdapter(
     },
 
     stopSession: async (handle: SessionHandle): Promise<void> => {
-      const key = sessionKeyFor(handle.model);
+      const turnCwd = resolveAdapterCwd(handle, cwd);
+      const key = sessionKeyFor(handle.model, turnCwd);
       clearCliSessionId(key);
-      const handleKey = handle.model || "default";
+      const handleKey = adapterMemoryKey(handle.model, turnCwd);
       systemPromptSent.delete(handleKey);
       storedSystemPrompts.delete(handleKey);
     },

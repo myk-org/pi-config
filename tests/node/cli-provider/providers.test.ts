@@ -75,18 +75,90 @@ describe("cli-provider providers", () => {
   });
 
   it("builds cursor with trust force stream-partial", () => {
-    const { binary, args } = buildCliCommand({
-      agent: "cursor",
-      model: "gpt-5.4",
-      cwd: "/tmp/ws",
-    });
-    assert.equal(binary, "agent");
-    assert.ok(args.includes("--print"));
-    assert.ok(args.includes("--trust"));
-    assert.ok(args.includes("--force"));
-    assert.ok(args.includes("--stream-partial-output"));
-    assert.ok(args.includes("--workspace"));
-    assert.ok(args.includes("/tmp/ws"));
+    const prevApprove = process.env.CLI_APPROVE_MCPS;
+    const prevPort = process.env.SIDECAR_PORT;
+    delete process.env.CLI_APPROVE_MCPS;
+    delete process.env.SIDECAR_PORT;
+    try {
+      const { binary, args } = buildCliCommand({
+        agent: "cursor",
+        model: "gpt-5.4",
+        cwd: "/tmp/ws",
+      });
+      assert.equal(binary, "agent");
+      assert.ok(args.includes("--print"));
+      assert.ok(args.includes("--trust"));
+      assert.ok(args.includes("--force"));
+      assert.ok(!args.includes("--approve-mcps"));
+      assert.ok(args.includes("--stream-partial-output"));
+      assert.ok(args.includes("--workspace"));
+      assert.ok(args.includes("/tmp/ws"));
+    } finally {
+      if (prevApprove === undefined) delete process.env.CLI_APPROVE_MCPS;
+      else process.env.CLI_APPROVE_MCPS = prevApprove;
+      if (prevPort === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prevPort;
+    }
+  });
+
+  it("adds --approve-mcps when CLI_APPROVE_MCPS is set", () => {
+    const prevApprove = process.env.CLI_APPROVE_MCPS;
+    const prevPort = process.env.SIDECAR_PORT;
+    process.env.CLI_APPROVE_MCPS = "true";
+    delete process.env.SIDECAR_PORT;
+    try {
+      const { args } = buildCliCommand({
+        agent: "cursor",
+        model: "gpt-5.4",
+        cwd: "/tmp/ws",
+      });
+      assert.ok(args.includes("--approve-mcps"));
+    } finally {
+      if (prevApprove === undefined) delete process.env.CLI_APPROVE_MCPS;
+      else process.env.CLI_APPROVE_MCPS = prevApprove;
+      if (prevPort === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prevPort;
+    }
+  });
+
+  it("omits --approve-mcps when CLI_APPROVE_MCPS=false even if SIDECAR_PORT is set", () => {
+    const prevApprove = process.env.CLI_APPROVE_MCPS;
+    const prevPort = process.env.SIDECAR_PORT;
+    process.env.CLI_APPROVE_MCPS = "false";
+    process.env.SIDECAR_PORT = "9211";
+    try {
+      const { args } = buildCliCommand({
+        agent: "cursor",
+        model: "gpt-5.4",
+        cwd: "/tmp/ws",
+      });
+      assert.ok(!args.includes("--approve-mcps"));
+    } finally {
+      if (prevApprove === undefined) delete process.env.CLI_APPROVE_MCPS;
+      else process.env.CLI_APPROVE_MCPS = prevApprove;
+      if (prevPort === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prevPort;
+    }
+  });
+
+  it("adds --approve-mcps when SIDECAR_PORT is set", () => {
+    const prevApprove = process.env.CLI_APPROVE_MCPS;
+    const prevPort = process.env.SIDECAR_PORT;
+    delete process.env.CLI_APPROVE_MCPS;
+    process.env.SIDECAR_PORT = "9211";
+    try {
+      const { args } = buildCliCommand({
+        agent: "cursor",
+        model: "gpt-5.4",
+        cwd: "/tmp/ws",
+      });
+      assert.ok(args.includes("--approve-mcps"));
+    } finally {
+      if (prevApprove === undefined) delete process.env.CLI_APPROVE_MCPS;
+      else process.env.CLI_APPROVE_MCPS = prevApprove;
+      if (prevPort === undefined) delete process.env.SIDECAR_PORT;
+      else process.env.SIDECAR_PORT = prevPort;
+    }
   });
 
   // runCliAgent forwards opts.binary to buildCliCommand (runner.ts); the

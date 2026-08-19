@@ -35,6 +35,7 @@ import { loadAcpxRuntime, type AcpxRuntimeModule } from "../acpx-provider/load-r
 import { modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
 import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { resolveAdapterCwd, adapterMemoryKey } from "../shared/session-cwd.js";
 
 const LOG_DOMAIN = "cursor-acpx-driver";
 const DRIVER_KIND = "cursor-acpx";
@@ -76,24 +77,30 @@ function createCursorAcpxAdapter(
   config: CursorAcpxConfig,
   cwd: string,
   runtime: AcpxRuntime,
-  cwdSlug: string,
 ): ProviderAdapterShape {
   const handles = new Map<string, AcpRuntimeHandle>();
   const pendingHandles = new Map<string, Promise<AcpRuntimeHandle>>();
   const systemPromptSent = new Set<string>();
+  const knownSessionIds = new Set<string>();
 
-  function sessionKey(modelId?: string): string {
+  function handleMapKey(modelId: string | undefined, turnCwd: string): string {
+    return adapterMemoryKey(modelId, turnCwd);
+  }
+
+  function sessionKey(modelId: string | undefined, turnCwd: string): string {
+    const slug = createHash("sha256").update(turnCwd).digest("hex").slice(0, 12);
     const model = modelId && modelId !== "default"
       ? `-${modelId.replace(/[^a-zA-Z0-9.-]/g, "_")}`
       : "";
-    return `pi-${config.agent}${model}-${cwdSlug}`;
+    return `pi-${config.agent}${model}-${slug}`;
   }
 
   async function ensureHandle(
     acpxModelId: string | undefined,
-    systemPrompt?: string,
+    systemPrompt: string | undefined,
+    turnCwd: string,
   ): Promise<AcpRuntimeHandle> {
-    const key = acpxModelId || "default";
+    const key = handleMapKey(acpxModelId, turnCwd);
 
     const existing = handles.get(key);
     if (existing) return existing;
@@ -111,11 +118,13 @@ function createCursorAcpxAdapter(
           sessionOpts.systemPrompt = systemPrompt;
         }
 
+        fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+          `ensureSession agent=${config.agent} cwd=${turnCwd} boot=${cwd} model=${acpxModelId || "default"}`);
         const handle = await runtime.ensureSession({
-          sessionKey: sessionKey(acpxModelId),
+          sessionKey: sessionKey(acpxModelId, turnCwd),
           agent: config.agent,
           mode: "persistent",
-          cwd,
+          cwd: turnCwd,
           ...(Object.keys(sessionOpts).length > 0
             ? { sessionOptions: sessionOpts }
             : {}),
@@ -135,13 +144,17 @@ function createCursorAcpxAdapter(
   return {
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
+      const turnCwd = resolveAdapterCwd(opts, cwd);
       const systemPrompt = opts.systemPrompt
         ? opts.systemPrompt
-        : buildExternalSystemPrompt({ systemPrompt: undefined }, cwd);
-      const handle = await ensureHandle(model, systemPrompt);
+        : buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
+      await ensureHandle(model, systemPrompt, turnCwd);
+      const sessionId = sessionKey(model, turnCwd);
+      knownSessionIds.add(sessionId);
       return {
-        sessionId: sessionKey(model),
+        sessionId,
         model,
+        cwd: turnCwd,
       };
     },
 
@@ -150,13 +163,14 @@ function createCursorAcpxAdapter(
       prompt: string,
       opts?: TurnOptions,
     ): Promise<TurnResult> => {
-      const handleKey = handle.model || "default";
+      const turnCwd = resolveAdapterCwd(handle, cwd);
+      const handleKey = handleMapKey(handle.model, turnCwd);
       const needsSystemPrompt = !systemPromptSent.has(handleKey);
       const systemPrompt = needsSystemPrompt
-        ? buildExternalSystemPrompt({ systemPrompt: undefined }, cwd)
+        ? buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd)
         : undefined;
 
-      const acpxHandle = await ensureHandle(handle.model, systemPrompt);
+      const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd);
       if (needsSystemPrompt) {
         systemPromptSent.add(handleKey);
       }
@@ -207,7 +221,8 @@ function createCursorAcpxAdapter(
     },
 
     stopSession: async (handle: SessionHandle): Promise<void> => {
-      const key = handle.model || "default";
+      const turnCwd = resolveAdapterCwd(handle, cwd);
+      const key = handleMapKey(handle.model, turnCwd);
       const acpxHandle = handles.get(key);
       if (acpxHandle) {
         await runtime.close({ handle: acpxHandle, reason: "session stop" }).catch((err: unknown) => {
@@ -217,6 +232,7 @@ function createCursorAcpxAdapter(
         handles.delete(key);
       }
       systemPromptSent.delete(key);
+      knownSessionIds.delete(sessionKey(handle.model, turnCwd));
     },
 
     stopAll: async (): Promise<void> => {
@@ -233,15 +249,11 @@ function createCursorAcpxAdapter(
       handles.clear();
       pendingHandles.clear();
       systemPromptSent.clear();
+      knownSessionIds.clear();
     },
 
     hasSession: (sessionId: string): boolean => {
-      for (const key of handles.keys()) {
-        if (sessionKey(key === "default" ? undefined : key) === sessionId) {
-          return true;
-        }
-      }
-      return false;
+      return knownSessionIds.has(sessionId);
     },
   };
 }
@@ -376,7 +388,7 @@ export const CursorAcpxDriver: ProviderDriver<CursorAcpxConfig> = {
     });
 
     // Create adapter
-    const adapter = createCursorAcpxAdapter(config, cwd, runtime, cwdSlug);
+    const adapter = createCursorAcpxAdapter(config, cwd, runtime);
 
     return {
       instanceId,
