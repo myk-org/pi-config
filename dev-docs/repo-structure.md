@@ -178,6 +178,7 @@ pi-config/
 │   └── reviews/
 ├── scripts/                         # Utility scripts
 │   ├── docker-safe                  # Restricted Docker/Podman CLI wrapper (container only)
+│   ├── remap-node-identity.sh       # Container init: remap `node` to PI_HOST_UID/GID (sourced by init-entrypoint.sh)
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff per-project server (diff hub with review comments, one per project cwd)
@@ -219,6 +220,7 @@ pi-config/
 │       └── vitest.config.ts           # Test config
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
+├── init-entrypoint.sh               # Container init (UID remap, HOME map, docker.sock, then entrypoint.sh)
 ├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)
 ├── README.md                        # Project README
 ├── AGENTS.md                        # Contributor rules (this repo)

@@ -458,6 +458,11 @@ TZ=Asia/Jerusalem
 # Host username (creates /home/<user> -> container home symlink so host paths resolve)
 PI_HOST_USER=myakove
 
+# Host UID/GID belong on the docker alias (see below), not hardcoded here:
+#   -e PI_HOST_UID="$(id -u)" -e PI_HOST_GID="$(id -g)"
+# The entrypoint remaps user `node` to those ids so bind-mounted 0600/0700
+# files (~/.npmrc, ~/.ssh) are readable. IPA/LDAP users are not UID 1000.
+
 # Google Cloud / Vertex AI
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
@@ -701,6 +706,8 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   --name "pi-config-$(basename $PWD)-$(date +%s)" \
   --network host \
   --env-file "$HOME/.pi/.env" \
+  -e PI_HOST_UID="$(id -u)" \
+  -e PI_HOST_GID="$(id -g)" \
   -v "$PWD":"$PWD":rw \
   -v "$HOME/.pi":"$HOME/.pi":rw \
   -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
@@ -722,7 +729,10 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
 
 Then just run `pi-docker` from any project directory.
 
-> **Startup note:** The container runs as non-root user `node` (UID 1000).
+> **Startup note:** The container runs as non-root user `node`. At start the
+> entrypoint remaps `node` to `PI_HOST_UID`/`PI_HOST_GID` (pass `$(id -u)` /
+> `$(id -g)` on the alias) so bind-mounted secrets match the host user.
+> Without those env vars, `node` stays UID 1000 (breaks IPA/LDAP hosts).
 > `pi install` runs on each start.
 > A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
 > If pi misbehaves or the warning persists, verify network connectivity

@@ -1,19 +1,27 @@
 #!/bin/bash
-# Init wrapper — handles HOME mapping for PI_HOST_USER.
-# When called as node (by docker), re-execs as root via sudo for chown/symlink,
+# Init wrapper — handles host UID remap and HOME mapping for PI_HOST_USER.
+# When called as node (by docker), re-execs as root via sudo for usermod/chown/symlink,
 # then execs entrypoint.sh as node. No root access remains after setup.
 set -e
 
 # If running as node, re-exec as root for the setup phase
 if [ "$(id -u)" != "0" ]; then
-    if { [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ]; } || [ -S /var/run/docker.sock ]; then
+    if { [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ]; } \
+        || [ -n "${PI_HOST_UID:-}" ] || [ -n "${PI_HOST_GID:-}" ] \
+        || [ -S /var/run/docker.sock ]; then
         exec sudo --preserve-env "$0" "$@"
     fi
-    # No PI_HOST_USER and no docker socket — skip root setup, run entrypoint directly as node
+    # No PI_HOST_USER/UID and no docker socket — skip root setup, run entrypoint directly as node
     exec entrypoint.sh "$@"
 fi
 
-# Running as root — do the HOME setup
+# Running as root — remap node to host uid/gid before any HOME reverse-symlinks
+# so chown stays on the image /home/node tree and bind mounts keep host ownership.
+# shellcheck source=/usr/local/bin/remap-node-identity.sh
+. /usr/local/bin/remap-node-identity.sh
+pi_remap_node_identity
+
+# HOME setup (paths). node is already the host uid when PI_HOST_UID was set.
 if [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ] && [ -d "/home/$PI_HOST_USER" ]; then
     NEW_HOME="/home/$PI_HOST_USER"
     chown node:node "$NEW_HOME"
