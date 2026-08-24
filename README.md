@@ -650,6 +650,7 @@ PI_PIDIFF_ENABLE=false pi
 | `kubectl` / `oc` | Kubernetes and OpenShift CLI |
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
 | `procps` | Process utilities (ps, top, pgrep, pkill) |
+| `passwd` | `usermod`/`groupmod` — init remaps user `node` to `PI_HOST_UID`/`PI_HOST_GID` |
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
 | `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
 | `jq` | JSON processing |

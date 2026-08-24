@@ -31,9 +31,12 @@ def test_uint_accepts_numeric() -> None:
     assert r.returncode == 0, r.stderr
 
 
-def test_uint_rejects_empty_and_garbage() -> None:
+def test_uint_rejects_garbage() -> None:
     assert _run("pi_is_uint abc; echo $?").stdout.strip() == "1"
     assert _run("pi_is_uint 12a; echo $?").stdout.strip() == "1"
+
+
+def test_uint_rejects_empty() -> None:
     assert _run('pi_is_uint ""; echo $?').stdout.strip() == "1"
 
 
@@ -114,3 +117,37 @@ def test_init_entrypoint_remaps_before_home_mapping() -> None:
     assert remap_at < home_at
     assert ". /usr/local/bin/remap-node-identity.sh" in text
     assert "PI_HOST_UID" in text
+    assert "WARNING: node remap failed; continuing without remap" in text
+    assert (
+        'chown -R "$(id -u node):$(id -g node)" /home/node'
+        in (Path(__file__).resolve().parents[2] / "scripts" / "remap-node-identity.sh").read_text()
+    )
+
+
+def test_resolve_uid_only_fills_gid_from_node() -> None:
+    if _run("id -u node >/dev/null 2>&1; echo $?").stdout.strip() != "0":
+        pytest.skip("no node user on host")
+    node_gid = _run("id -g node").stdout.strip()
+    r = _run(
+        "pi_resolve_host_ids",
+        {"PI_HOST_UID": "18812", "PI_HOST_GID": "", "PI_HOST_USER": ""},
+    )
+    assert r.returncode == 0, r.stderr
+    uid, gid = r.stdout.strip().split(":")
+    assert uid == "18812"
+    assert gid == node_gid
+
+
+def test_resolve_gid_only_fills_uid_from_node() -> None:
+    check = _run("id -u node >/dev/null 2>&1; echo $?")
+    if check.stdout.strip() != "0":
+        pytest.skip("no node user on host")
+    node_uid = _run("id -u node").stdout.strip()
+    r = _run(
+        "pi_resolve_host_ids",
+        {"PI_HOST_UID": "", "PI_HOST_GID": "18812", "PI_HOST_USER": ""},
+    )
+    assert r.returncode == 0, r.stderr
+    uid, gid = r.stdout.strip().split(":")
+    assert uid == node_uid
+    assert gid == "18812"

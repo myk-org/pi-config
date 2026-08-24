@@ -19,13 +19,15 @@ fi
 # so chown stays on the image /home/node tree and bind mounts keep host ownership.
 # shellcheck source=/usr/local/bin/remap-node-identity.sh
 . /usr/local/bin/remap-node-identity.sh
-pi_remap_node_identity
+if ! pi_remap_node_identity; then
+    pi_init_log "WARNING: node remap failed; continuing without remap"
+fi
 
 # HOME setup (paths). node is already the host uid when PI_HOST_UID was set.
 if [ -n "$PI_HOST_USER" ] && [ "$PI_HOST_USER" != "node" ] && [ -d "/home/$PI_HOST_USER" ]; then
     NEW_HOME="/home/$PI_HOST_USER"
-    chown node:node "$NEW_HOME"
-    [ -d "$NEW_HOME/.config" ] && chown node:node "$NEW_HOME/.config"
+    chown "$(id -u node):$(id -g node)" "$NEW_HOME"
+    [ -d "$NEW_HOME/.config" ] && chown "$(id -u node):$(id -g node)" "$NEW_HOME/.config"
 
     # Symlink container-internal tool dirs/files into the new HOME
     for item in .npm-global .npm .npmrc .cache .local .claude .claude.json \

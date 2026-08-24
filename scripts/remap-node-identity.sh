@@ -18,31 +18,57 @@ pi_is_uint() {
   esac
 }
 
+# Probe bind-mounted files; print uid:gid from the first hit. Exit 1 if none.
+pi_infer_ids_from_probe() {
+  local probe user_home
+  if [ -z "${PI_HOST_USER:-}" ] || [ "$PI_HOST_USER" = "node" ]; then
+    return 1
+  fi
+  user_home="${PI_HOST_HOME:-/home/$PI_HOST_USER}"
+  for probe in "$user_home/.pi" "$user_home/.ssh" "$user_home/.npmrc" "$user_home/.gitconfig"; do
+    if [ -e "$probe" ]; then
+      pi_init_log "inferred host ids $(stat -c '%u:%g' "$probe") from ${probe}"
+      stat -c '%u:%g' "$probe"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Print uid:gid. Exit 1 if nothing to remap from.
+# One of PI_HOST_UID / PI_HOST_GID may be omitted; the missing half is filled
+# from a bind-mount probe, else from the current node uid/gid.
 pi_resolve_host_ids() {
   local uid="${PI_HOST_UID:-}"
   local gid="${PI_HOST_GID:-}"
-  local probe user_home
+  local inferred inferred_uid inferred_gid
 
   if [ -n "$uid" ] && [ -n "$gid" ]; then
     printf '%s:%s\n' "$uid" "$gid"
     return 0
   fi
 
-  if [ -z "${PI_HOST_USER:-}" ] || [ "$PI_HOST_USER" = "node" ]; then
-    return 1
-  fi
+  inferred="$(pi_infer_ids_from_probe)" || inferred=""
+  inferred_uid="${inferred%%:*}"
+  inferred_gid="${inferred##*:}"
+  [ "$inferred" = "$inferred_uid" ] && inferred_gid=""
 
-  user_home="${PI_HOST_HOME:-/home/$PI_HOST_USER}"
-  for probe in "$user_home/.pi" "$user_home/.ssh" "$user_home/.npmrc" "$user_home/.gitconfig"; do
-    if [ -e "$probe" ]; then
-      uid="$(stat -c '%u' "$probe")"
-      gid="$(stat -c '%g' "$probe")"
-      pi_init_log "inferred host ids ${uid}:${gid} from ${probe}"
+  if [ -n "$uid" ] || [ -n "$gid" ]; then
+    [ -z "$uid" ] && uid="${inferred_uid:-$(id -u node 2>/dev/null || true)}"
+    [ -z "$gid" ] && gid="${inferred_gid:-$(id -g node 2>/dev/null || true)}"
+    if [ -n "$uid" ] && [ -n "$gid" ]; then
+      pi_init_log "partial PI_HOST_UID/GID; using ${uid}:${gid}"
       printf '%s:%s\n' "$uid" "$gid"
       return 0
     fi
-  done
+    pi_init_log "PI_HOST_UID/GID partially set but missing half could not be filled"
+    return 1
+  fi
+
+  if [ -n "$inferred" ]; then
+    printf '%s\n' "$inferred"
+    return 0
+  fi
   return 1
 }
 
@@ -107,8 +133,9 @@ pi_remap_node_identity() {
   fi
 
   # Image home only — caller must run this before reverse-symlinks into bind mounts.
+  # Numeric ids: after usermod -g to a non-node group, group "node" may still be GID 1000.
   if [ -d /home/node ]; then
-    pi_init_log "chown image /home/node to node:node ($(id -u node):$(id -g node))"
-    chown -R node:node /home/node
+    pi_init_log "chown image /home/node to $(id -u node):$(id -g node)"
+    chown -R "$(id -u node):$(id -g node)" /home/node
   fi
 }
