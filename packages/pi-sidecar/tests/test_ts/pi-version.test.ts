@@ -68,6 +68,10 @@ describe("MIN_PI_VERSION", () => {
   it("is a valid x.y.z version string", () => {
     assert.match(MIN_PI_VERSION, /^\d+\.\d+\.\d+$/);
   });
+
+  it("matches the pi-config orchestrator floor", () => {
+    assert.equal(MIN_PI_VERSION, "0.84.0");
+  });
 });
 
 describe("assertPiVersionFloor", () => {
