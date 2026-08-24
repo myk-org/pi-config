@@ -919,7 +919,7 @@ export function registerAsyncAgents(
     }), { mode: 0o600 });
 
     // Find the runner script
-    const runnerPath = path.join(path.dirname(new URL(import.meta.url).pathname), "async-runner.ts");
+    const runnerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "async-runner.ts");
 
     // Find jiti for TypeScript execution
     let jitiCliPath: string | undefined;
@@ -967,7 +967,7 @@ export function registerAsyncAgents(
     // jiti themselves (npm consumers are covered by strategies 1-2).
     if (!jitiCliPath) {
       try {
-        const pkgRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+        const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
         const candidate = path.join(pkgRoot, "node_modules/jiti/lib/jiti-cli.mjs");
         if (fs.existsSync(candidate)) jitiCliPath = candidate;
       } catch (e: any) {
@@ -979,6 +979,9 @@ export function registerAsyncAgents(
     // cannot load TypeScript (bare node dies on ".js"→".ts" specifiers).
     if (!jitiCliPath) {
       log.error(`async-spawn: ${id} — no jiti-cli.mjs found (strategies 1-3 failed); refusing to spawn`);
+      // Clean up the artifacts we already created — nothing will consume them.
+      try { fs.rmSync(configPath, { force: true }); } catch {}
+      try { fs.rmSync(workerDir, { recursive: true, force: true }); } catch {}
       return { id, error: "jiti-cli.mjs not found — cannot execute async agent (see orchestrator logs)" };
     }
 
@@ -1045,6 +1048,7 @@ export function registerAsyncAgents(
 
     const stderrLogPath = path.join(workerDir, "child-stderr.log");
     const stderrLog = fs.createWriteStream(stderrLogPath, { flags: "w" });
+    stderrLog.on("error", () => {}); // never let a log write failure crash the session
     log.debug(`async-spawn: ${job.id} stderr → ${stderrLogPath}`);
 
     const proc = spawn(process.execPath, spawnArgs, {
@@ -1056,6 +1060,7 @@ export function registerAsyncAgents(
     proc.stderr?.pipe(stderrLog);
 
     proc.once("error", (err) => {
+      try { stderrLog.destroy(); } catch {}
       log.info(`spawn-error: ${job.id} — ${err.message}`);
       if (job.status === "complete" || job.status === "failed") return;
       job.status = "failed";
@@ -1084,8 +1089,19 @@ export function registerAsyncAgents(
           let stderrTail = "";
           try {
             if (fs.existsSync(stderrLogPath)) {
-              const content = fs.readFileSync(stderrLogPath, "utf8").trim();
-              if (content) stderrTail = content.slice(-1200);
+              // Tail-read only — the log can be arbitrarily large on noisy failures.
+              const size = fs.statSync(stderrLogPath).size;
+              const start = Math.max(0, size - 4096);
+              let raw = "";
+              if (size > 0) {
+                const fd = fs.openSync(stderrLogPath, "r");
+                try {
+                  const buf = Buffer.alloc(Math.min(size - start, 4096));
+                  fs.readSync(fd, buf, 0, buf.length, start);
+                  raw = buf.toString("utf8");
+                } finally { fs.closeSync(fd); }
+              }
+              stderrTail = raw.trim().slice(-1200);
             }
           } catch {}
           log.warn(`async-child failed: ${job.id} code=${code}${stderrTail ? " (see child-stderr.log)" : " (no stderr captured)"}`);
