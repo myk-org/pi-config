@@ -329,4 +329,11 @@ All packages in the pi-config monorepo share the same version number:
 - `myk-pi-tools` (PyPI)
 - `pi-sidecar-client` (PyPI)
 
-Use `"*"` or `">={current_version}"` for dependencies to always get the latest.
+Sidecar depends on `pi-orchestrator-config` and `@myk-org/pi-vertex-claude` at
+`>=4.3.4` (not `*`, which can resolve to an older published tag) — installing
+sidecar pulls the full set.
+
+`@myk-org/pi-vertex-claude` is standalone: it does not depend on
+`pi-orchestrator-config`. Its peer deps require
+`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=0.84.0` — same
+floor as sidecar.

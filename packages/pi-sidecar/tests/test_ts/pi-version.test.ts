@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 import {
   MIN_PI_VERSION,
@@ -67,6 +68,20 @@ describe("extractPiVersionToken", () => {
 describe("MIN_PI_VERSION", () => {
   it("is a valid x.y.z version string", () => {
     assert.match(MIN_PI_VERSION, /^\d+\.\d+\.\d+$/);
+  });
+
+  it("matches the pi-config orchestrator floor", function () {
+    // True sync check — parse the orchestrator's constant instead of duplicating
+    // a literal here (a hardcoded string would silently tolerate drift).
+    const orchSrc = new URL("../../../../extensions/orchestrator/utils.ts", import.meta.url);
+    if (!fs.existsSync(orchSrc)) {
+      // Published tarballs ship only packages/ — orchestrator source is a
+      // monorepo-only artifact, so cross-package sync cannot be verified there.
+      this.skip();
+    }
+    const m = fs.readFileSync(orchSrc, "utf8").match(/MIN_PI_VERSION = "([^\"]+)"/);
+    assert.ok(m, "MIN_PI_VERSION not found in extensions/orchestrator/utils.ts");
+    assert.equal(MIN_PI_VERSION, m[1]);
   });
 });
 

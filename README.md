@@ -452,11 +452,12 @@ variables. Pi-config settings (image_model, acpx_agents, vertex_claude_1m, etc.)
 go in `.pi/pi-config-settings.json` — not here:
 
 ```env
-# Timezone (host timezone for correct timestamps)
-TZ=Asia/Jerusalem
+# Timezone (host timezone for correct timestamps) — plain value, no inline comment:
+# `docker run --env-file` does not strip trailing comments.
+TZ=America/New_York
 
 # Host username (creates /home/<user> -> container home symlink so host paths resolve)
-PI_HOST_USER=myakove
+PI_HOST_USER=youruser
 
 # Host UID/GID belong on the docker alias (see below), not hardcoded here:
 #   -e PI_HOST_UID="$(id -u)" -e PI_HOST_GID="$(id -g)"
@@ -466,19 +467,19 @@ PI_HOST_USER=myakove
 # Google Cloud / Vertex AI
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/myakove/.config/gcloud/application_default_credentials.json
+GOOGLE_APPLICATION_CREDENTIALS=/home/youruser/.config/gcloud/application_default_credentials.json
 
 # GitHub
 GITHUB_TOKEN=ghp_xxx
 GITHUB_API_TOKEN=ghp_xxx
-GH_CONFIG_DIR=/home/myakove/.config/gh
+GH_CONFIG_DIR=/home/youruser/.config/gh
 
 # Gemini (optional — required for image generation)
 GEMINI_API_KEY=xxx
 
 # mcpl (MCP Launchpad) config path inside the container (must match mount target)
 # Use your actual home path — it resolves inside the container via the PI_HOST_USER symlink
-MCPL_CONFIG_FILES=/home/myakove/.config/mcpl/mcp.json
+MCPL_CONFIG_FILES=/home/youruser/.config/mcpl/mcp.json
 ```
 
 Pass via `--env-file /path/to/.env` in the docker run command.

@@ -39,17 +39,17 @@
     "postinstall": "node scripts/enforce-protobufjs-floor.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.81.1",
-    "@earendil-works/pi-coding-agent": "^0.81.1",
-    "@myk-org/pi-vertex-claude": "*",
+    "@earendil-works/pi-ai": "^0.84.0",
+    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@myk-org/pi-vertex-claude": ">=4.3.4 <5",
     "acpx": "^0.8.0",
     "jiti": "^2.7.0",
     "protobufjs": "7.6.5",
-    "pi-orchestrator-config": "*"
+    "pi-orchestrator-config": ">=4.3.4 <5"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.81.1",
-    "@earendil-works/pi-coding-agent": ">=0.81.1"
+    "@earendil-works/pi-ai": ">=0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
