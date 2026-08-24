@@ -121,12 +121,13 @@ COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 # Workaround: re-chown /home/node after cache mounts (buildah bug #6747).
 USER root
 # sudo for init-entrypoint (node needs root to chown/symlink host HOME)
-RUN apt-get update && apt-get install -y --no-install-recommends sudo && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y --no-install-recommends sudo passwd && rm -rf /var/lib/apt/lists/* && \
     echo 'node ALL=(ALL) NOPASSWD:SETENV: /usr/local/bin/init-entrypoint.sh' >> /etc/sudoers.d/pi-init && \
     chmod 0440 /etc/sudoers.d/pi-init
 
 RUN chown node:node /home/node
 
+COPY --chmod=755 scripts/remap-node-identity.sh /usr/local/bin/remap-node-identity.sh
 COPY --chmod=755 init-entrypoint.sh /usr/local/bin/init-entrypoint.sh
 
 # USER node so docker exec enters as node.
