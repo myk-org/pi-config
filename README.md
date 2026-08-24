@@ -452,8 +452,9 @@ variables. Pi-config settings (image_model, acpx_agents, vertex_claude_1m, etc.)
 go in `.pi/pi-config-settings.json` — not here:
 
 ```env
-# Timezone (host timezone for correct timestamps)
-TZ=America/New_York  # your timezone
+# Timezone (host timezone for correct timestamps) — plain value, no inline comment:
+# `docker run --env-file` does not strip trailing comments.
+TZ=America/New_York
 
 # Host username (creates /home/<user> -> container home symlink so host paths resolve)
 PI_HOST_USER=youruser
