@@ -112,16 +112,24 @@ def test_dry_run_remap_skips_usermod() -> None:
 
 def test_init_entrypoint_remaps_before_home_mapping() -> None:
     text = INIT.read_text()
-    remap_at = text.index("pi_remap_node_identity")
-    home_at = text.index("NEW_HOME=")
-    assert remap_at < home_at
-    assert ". /usr/local/bin/remap-node-identity.sh" in text
-    assert "PI_HOST_UID" in text
-    assert "WARNING: node remap failed; continuing without remap" in text
-    assert (
-        'chown -R "$(id -u node):$(id -g node)" /home/node'
-        in (Path(__file__).resolve().parents[2] / "scripts" / "remap-node-identity.sh").read_text()
-    )
+    assert text.index("pi_remap_node_identity") < text.index("NEW_HOME=")
+
+
+def test_init_entrypoint_sources_remap_script() -> None:
+    assert ". /usr/local/bin/remap-node-identity.sh" in INIT.read_text()
+
+
+def test_init_entrypoint_mentions_host_uid() -> None:
+    assert "PI_HOST_UID" in INIT.read_text()
+
+
+def test_init_entrypoint_continues_when_remap_fails() -> None:
+    assert "WARNING: node remap failed; continuing without remap" in INIT.read_text()
+
+
+def test_remap_chowns_home_with_numeric_ids() -> None:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "remap-node-identity.sh"
+    assert 'chown -R "$(id -u node):$(id -g node)" /home/node' in script.read_text()
 
 
 def test_resolve_uid_only_fills_gid_from_node() -> None:

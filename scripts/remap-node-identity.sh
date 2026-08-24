@@ -20,15 +20,18 @@ pi_is_uint() {
 
 # Probe bind-mounted files; print uid:gid from the first hit. Exit 1 if none.
 pi_infer_ids_from_probe() {
-  local probe user_home
+  local probe user_home ids
   if [ -z "${PI_HOST_USER:-}" ] || [ "$PI_HOST_USER" = "node" ]; then
     return 1
   fi
   user_home="${PI_HOST_HOME:-/home/$PI_HOST_USER}"
   for probe in "$user_home/.pi" "$user_home/.ssh" "$user_home/.npmrc" "$user_home/.gitconfig"; do
     if [ -e "$probe" ]; then
-      pi_init_log "inferred host ids $(stat -c '%u:%g' "$probe") from ${probe}"
-      stat -c '%u:%g' "$probe"
+      # Capture once; ignore stat failures (root-squash) so set -e does not abort init.
+      ids="$(stat -c '%u:%g' "$probe" 2>/dev/null)" || continue
+      [ -n "$ids" ] || continue
+      pi_init_log "inferred host ids ${ids} from ${probe}"
+      printf '%s\n' "$ids"
       return 0
     fi
   done
