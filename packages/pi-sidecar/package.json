@@ -41,11 +41,11 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.0",
     "@earendil-works/pi-coding-agent": "^0.84.0",
-    "@myk-org/pi-vertex-claude": ">=4.3.4",
+    "@myk-org/pi-vertex-claude": ">=4.3.4 <5",
     "acpx": "^0.8.0",
     "jiti": "^2.7.0",
     "protobufjs": "7.6.5",
-    "pi-orchestrator-config": ">=4.3.4"
+    "pi-orchestrator-config": ">=4.3.4 <5"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.0",
