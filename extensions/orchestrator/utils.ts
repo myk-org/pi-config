@@ -152,17 +152,27 @@ export const MIN_PI_VERSION = "0.84.0";
 
 /** Get the installed pi version from its package.json. */
 export function getPiVersion(): string | null {
+  // 1) Resolve from the running binary — walk up until we find the package
+  // root (works for any layout: dist/cli.js, dist/bundle/cli.js, src/…).
   try {
-    // Resolve from pi's own install location (process.argv[1] → dist/cli.js → package root)
     const piScript = process.argv[1];
     if (piScript) {
-      const realPath = fs.realpathSync(piScript);
-      const piPkgPath = path.join(path.dirname(path.dirname(realPath)), "package.json");
-      if (fs.existsSync(piPkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(piPkgPath, "utf-8"));
-        if (pkg.name === "@earendil-works/pi-coding-agent" && pkg.version) return pkg.version;
+      let dir = path.dirname(fs.realpathSync(piScript));
+      while (dir !== path.dirname(dir)) {
+        const pkgPath = path.join(dir, "package.json");
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+          if (pkg.name === "@earendil-works/pi-coding-agent" && pkg.version) return pkg.version;
+        }
+        dir = path.dirname(dir);
       }
     }
+  } catch {}
+  // 2) Ask the CLI the user actually runs — authoritative for wrapper/bundle layouts.
+  try {
+    const out = execFileSync("pi", ["--version"], { timeout: 5000, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    const m = out.match(/\d+\.\d+\.\d+(?:-[\w.]+)?/);
+    if (m) return m[0];
   } catch {}
   return null;
 }
