@@ -503,7 +503,8 @@ files organized by category (lessons, preferences, patterns, decisions, completi
 
 The `.pi/memory/` directory is auto-added to the global gitignore in the container
 (along with `.pi/`, `.worktrees/`, `.cursor/agents/`, `.claude/agents/`, and
-`.gemini/agents/`).
+`.gemini/agents/`). This repo's `.gitignore` also ignores those three `*/agents/`
+dirs so `uv build` does not pack local specialist symlinks.
 
 For **native** (non-container) usage, add memory (and optionally CLI agent dirs) to your
 global gitignore:

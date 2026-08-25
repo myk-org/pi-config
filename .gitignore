@@ -22,3 +22,8 @@ Thumbs.db
 .pi/
 .env
 .dev/
+
+# CLI specialist agent symlinks (entrypoint / native ln -sfn)
+.cursor/agents/
+.claude/agents/
+.gemini/agents/

@@ -46,8 +46,20 @@ packages = ["myk_pi_tools"]
 [tool.hatch.build.targets.wheel.force-include]
 "settings-keys.json" = "settings-keys.json"
 
+# Sdist is the Python package only. Default Hatch packing walks the monorepo
+# and will put local `.claude/agents` absolute symlinks in the tarball; uv then
+# refuses to unpack them.
 [tool.hatch.build.targets.sdist]
-exclude = ["CLAUDE.md"]
+only-include = [
+  "myk_pi_tools",
+  "settings-keys.json",
+  "README.md",
+]
+exclude = [
+  ".claude",
+  ".cursor",
+  ".gemini",
+]
 
 [tool.ruff]
 preview = true
