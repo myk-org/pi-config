@@ -29,9 +29,7 @@ import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { getCronFilePath } from "./cron.js";
-import { createLogger } from "../shared/logger.js";
-
-const log = createLogger("orchestrator", "extended-autocomplete");
+import { mcpcArgumentCompletions } from "./mcpc.js";
 
 // ── Cache infrastructure ────────────────────────────────────────────
 
@@ -78,14 +76,6 @@ function filter(items: AutocompleteItem[], prefix: string): AutocompleteItem[] |
   const filtered = fuzzyFilter(items, prefix, (item) => `${item.label} ${item.description || ""}`)
     .slice(0, MAX_SUGGESTIONS);
   return filtered.length > 0 ? filtered : null;
-}
-
-export function mcpcArgumentCompletions(prefix: string): AutocompleteItem[] | null {
-  log.debug("mcpc argument completions", prefix);
-  return filter(
-    [{ value: "connect", label: "connect", description: "Connect ~/.pi/pi-config/mcp.json (--stdio)" }],
-    prefix.trim(),
-  );
 }
 
 // ── Shared types ────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   connectMcpc,
+  mcpcArgumentCompletions,
   mcpcConfigPath,
   registerMcpc,
   setMcpcExecFile,
@@ -139,11 +140,34 @@ describe("connectMcpc", () => {
   });
 });
 
+describe("mcpcArgumentCompletions", () => {
+  it("suggests connect when the prefix is empty", () => {
+    const items = mcpcArgumentCompletions("");
+    assert.ok(items);
+    assert.equal(items[0].value, "connect");
+  });
+
+  it("suggests connect when the prefix matches", () => {
+    const items = mcpcArgumentCompletions("con");
+    assert.ok(items);
+    assert.equal(items[0].value, "connect");
+  });
+
+  it("returns null when the prefix does not match", () => {
+    assert.equal(mcpcArgumentCompletions("status"), null);
+  });
+});
+
 describe("registerMcpc", () => {
-  it("registers /mcpc and a session_start handler", () => {
-    const { pi, commands, sessionStarts } = mockPi();
+  it("registers the mcpc command", () => {
+    const { pi, commands } = mockPi();
     registerMcpc(pi);
     assert.equal(commands.has("mcpc"), true);
+  });
+
+  it("registers a session_start handler", () => {
+    const { pi, sessionStarts } = mockPi();
+    registerMcpc(pi);
     assert.equal(sessionStarts.length, 1);
   });
 

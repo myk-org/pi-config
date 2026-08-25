@@ -48,9 +48,31 @@ export type McpcConnectResult = {
   message: string;
 };
 
+export type McpcCompletionItem = {
+  value: string;
+  label: string;
+  description: string;
+};
+
+const MCPC_CONNECT_COMPLETION: McpcCompletionItem = {
+  value: "connect",
+  label: "connect",
+  description: "Connect ~/.pi/pi-config/mcp.json (--stdio)",
+};
+
+export function mcpcArgumentCompletions(prefix: string): McpcCompletionItem[] | null {
+  log.debug("mcpc argument completions", prefix);
+  const needle = prefix.trim().toLowerCase();
+  const haystack = `${MCPC_CONNECT_COMPLETION.label} ${MCPC_CONNECT_COMPLETION.description}`.toLowerCase();
+  if (!needle || haystack.includes(needle) || MCPC_CONNECT_COMPLETION.value.startsWith(needle)) {
+    return [MCPC_CONNECT_COMPLETION];
+  }
+  return null;
+}
+
 function formatExecError(err: unknown): string {
   if (!err || typeof err !== "object") {
-    log.debug("formatExecError non-object");
+    log.debug("formatExecError non-object", String(err));
     return String(err);
   }
   const e = err as {

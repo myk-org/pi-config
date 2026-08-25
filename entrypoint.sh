@@ -7,7 +7,7 @@ set -e
 # PI_HOST_USER can reverse-symlink the host ~/.npm-global over the image copy.
 npm install -g @earendil-works/pi-coding-agent
 npm install -g acpx
-npm install -g @apify/mcpc
+npm install -g @apify/mcpc 2>/dev/null || true
 
 # Register pi packages if not already present — single mechanism for all of
 # them. `legacy_marker` catches a stale pre-npm source (e.g. vertex's old

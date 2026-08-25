@@ -353,3 +353,8 @@ def test_build_steps_mcpc_disabled_without_node(monkeypatch: pytest.MonkeyPatch)
 def test_entrypoint_reinstalls_mcpc() -> None:
     text = (REPO / "entrypoint.sh").read_text()
     assert "npm install -g @apify/mcpc" in text
+
+
+def test_entrypoint_mcpc_reinstall_does_not_abort_startup() -> None:
+    text = (REPO / "entrypoint.sh").read_text()
+    assert "npm install -g @apify/mcpc 2>/dev/null || true" in text
