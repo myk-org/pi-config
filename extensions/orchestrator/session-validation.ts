@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setUvAvailable, isUvAvailable } from "./enforcement-helpers.js";
+import { registerMcpc } from "./mcpc.js";
 import { checkMinPiVersion } from "./utils.js";
 
 /** Check whether a CLI command is available on PATH. */
@@ -209,9 +210,9 @@ async function checkSessionTools(ctx: any): Promise<void> {
   // Optional
   if (!hasCmd("gh"))
     optional.push("gh — GitHub CLI. Install: https://cli.github.com/");
-  if (!hasCmd("mcpl"))
+  if (!hasCmd("mcpc"))
     optional.push(
-      "mcpl — MCP Launchpad. Install: https://github.com/kenneth-liao/mcp-launchpad",
+      "mcpc — MCP CLI. Install: npm install -g @apify/mcpc",
     );
   if (!hasCmd("myk-pi-tools"))
     optional.push(
@@ -333,6 +334,7 @@ async function checkUpgradeChangelog(ctx: any): Promise<void> {
 
 export function registerSessionValidation(pi: ExtensionAPI): void {
   registerRepairCommand(pi);
+  registerMcpc(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     // Always check uv availability — even in headless mode.

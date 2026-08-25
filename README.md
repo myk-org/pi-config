@@ -36,7 +36,7 @@ Single extension that provides:
 | **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT) |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
 | **Inter-agent communication** | P2P (`/coms`) agent communication — on-demand activation via slash command |
-| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings` — with autocomplete argument hints |
+| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings`, `/mcpc connect` — with autocomplete argument hints |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
 | **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
@@ -82,6 +82,7 @@ Single extension that provides:
 | `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
 | `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
 | `/coms start\|stop\|status` | P2P local agent communication (Unix socket) |
+| `/mcpc connect` | Connect MCP servers from `~/.pi/pi-config/mcp.json` (`mcpc connect --stdio`). Run after editing that file. |
 
 ### Inter-Agent Communication (coms)
 
@@ -144,8 +145,8 @@ uv run scripts/install.py
 The installer covers:
 
 - **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
-- **Python Tools** — mcp-launchpad (mcpl), prek
-- **npm Packages** — acpx, agent-browser
+- **Python Tools** — prek
+- **npm Packages** — mcpc, acpx, agent-browser
 - **Browser Automation** — playwright + chromium
 - **Environment Setup** — gitignore configuration
 
@@ -201,6 +202,7 @@ Add retry logic to the HTTP client in src/api.py
 /release --dry-run
 /review-local main
 /query-db stats
+/mcpc connect
 ```
 
 ### Direct subagent usage
@@ -485,10 +487,6 @@ GH_CONFIG_DIR=/home/youruser/.config/gh
 
 # Gemini (optional — required for image generation)
 GEMINI_API_KEY=xxx
-
-# mcpl (MCP Launchpad) config path inside the container (must match mount target)
-# Use your actual home path — it resolves inside the container via the PI_HOST_USER symlink
-MCPL_CONFIG_FILES=/home/youruser/.config/mcpl/mcp.json
 ```
 
 Pass via `--env-file /path/to/.env` in the docker run command.
@@ -631,7 +629,6 @@ PI_PIDIFF_ENABLE=false pi
 
 | Mount | Purpose |
 |---|---|
-| `-v "<PATH_TO_MCPL_CONFIG>":"$HOME/.config/mcpl/mcp.json":ro` | MCP server config for `mcpl` |
 | `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
 | `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
 | `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx-cursor / cli-cursor models) |
@@ -654,7 +651,7 @@ PI_PIDIFF_ENABLE=false pi
 | `uv` / `uvx` | Python execution (enforced by orchestrator) |
 | `go` | Go development and code review |
 | `libxml2-dev` | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
-| `mcpl` | MCP server access (search, Jenkins, etc.) |
+| `mcpc` | MCP CLI (`npm: @apify/mcpc`). Put servers in `~/.pi/pi-config/mcp.json` (already on the `~/.pi` mount). Pi runs `mcpc connect … --stdio` on start. After editing the file, `/mcpc connect`. |
 | `myk-pi-tools` | PR review, release, and other CLI utilities |
 | `prek` | Pre-commit hook runner |
 | `acpx` | Agent proxy for remote models |
@@ -726,7 +723,6 @@ alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
   -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
   -v "$HOME/.ssh":"$HOME/.ssh":ro \
   -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v "$HOME/.config/mcpl/mcp.json":"$HOME/.config/mcpl/mcp.json":ro \ # adjust host path to your mcpl config location
   -v "$HOME/.agents":"$HOME/.agents":rw \
   -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
   -v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro \

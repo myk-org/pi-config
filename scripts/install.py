@@ -235,13 +235,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         "CLI utilities used by pi-config workflows",
         [
             Tool(
-                "mcp-launchpad (mcpl)",
-                "MCP server discovery and tool execution",
-                installed=bool(shutil.which("mcpl")),
-                disabled=uv_dis,
-                install_cmd='uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git"',
-            ),
-            Tool(
                 "prek",
                 "Fast Git hook manager (pre-commit alternative)",
                 installed=bool(shutil.which("prek")),
@@ -258,6 +251,13 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         "npm Packages",
         "Node.js tools for agent capabilities",
         [
+            Tool(
+                "mcpc",
+                "MCP CLI client (connects ~/.pi/pi-config/mcp.json)",
+                installed=bool(shutil.which("mcpc")),
+                disabled=nd,
+                install_cmd="npm install -g @apify/mcpc",
+            ),
             Tool(
                 "acpx",
                 "Headless CLI client for Agent Client Protocol (ACP)",

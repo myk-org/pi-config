@@ -19,6 +19,7 @@
  *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
  *   /async-kill <Tab>            → all (or type name / id prefix)
+ *   /mcpc <Tab>                  → connect
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -264,6 +265,13 @@ function registerCompletions(
       } catch {
         return null;
       }
+    },
+
+    "mcpc": (prefix: string) => {
+      return filter(
+        [{ value: "connect", label: "connect", description: "Connect ~/.pi/pi-config/mcp.json (--stdio)" }],
+        prefix.trim(),
+      );
     },
 
     "dream-auto": (prefix: string) => {
