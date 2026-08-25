@@ -77,6 +77,8 @@ export interface SpawnOptions {
   env?: Record<string, string>;
   /** Logger function */
   log: (msg: string) => void;
+  /** Override jiti lookup (tests). Default: findJitiPath(). */
+  resolveJiti?: () => string | undefined;
 }
 
 export function spawnDaemon(opts: SpawnOptions): void {
@@ -85,12 +87,13 @@ export function spawnDaemon(opts: SpawnOptions): void {
     "..", "..", "scripts", opts.serverScript,
   );
 
-  const jitiPath = findJitiPath();
+  const jitiPath = (opts.resolveJiti ?? findJitiPath)();
   opts.log(`jiti path: ${jitiPath || "NOT FOUND"}`);
   if (!jitiPath) {
     const msg =
       "jiti-cli.mjs not found — refusing to run .ts under node_modules (Node type-stripping is disabled there)";
     log.error("%s server=%s", msg, serverPath);
+    log.debug("spawnDaemon refused — jiti missing server=%s", serverPath);
     opts.log(msg);
     return;
   }

@@ -62,6 +62,11 @@
   "devDependencies": {
     "tsx": "^4.0.0"
   },
+  "scripts": {
+    "build:extension-uis": "bash scripts/build-extension-uis.sh",
+    "prepack": "bash scripts/build-extension-uis.sh",
+    "prepublishOnly": "bash scripts/build-extension-uis.sh"
+  },
   "allowScripts": {
     "onnxruntime-node": true,
     "sharp": true,

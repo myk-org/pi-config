@@ -33,7 +33,7 @@ from install_sources import (  # noqa: E402
     is_vertex_registered,
     npm_files_field_ships_pidash_pidiff,
     npm_pack_paths_include_pidash_pidiff_runtime,
-    npm_pack_paths_include_ui_dist_when_built,
+    npm_pack_paths_include_ui_dist,
     pi_config_pi_cmd,
     should_migrate_pi_config_to_npm,
     should_migrate_vertex_to_npm,
@@ -146,15 +146,21 @@ def test_should_migrate_pi_config_to_npm() -> None:
     assert should_migrate_pi_config_to_npm(vertex_git) is False
 
 
-def test_pi_config_cmd_uses_npm_and_migrates_root_git() -> None:
+def test_pi_config_cmd_uses_npm() -> None:
     assert pi_config_pi_cmd(False) == f"pi install {PI_CONFIG_NPM}"
     assert pi_config_pi_cmd(True) == f"pi update {PI_CONFIG_NPM}"
+
+
+def test_pi_config_cmd_migrates_root_git() -> None:
     git_only = '{"packages":["git:github.com/myk-org/pi-config"]}'
     migrate = pi_config_pi_cmd(False, git_only)
     assert f"pi uninstall {PI_CONFIG_GIT}" in migrate
     assert f"pi install {PI_CONFIG_NPM}" in migrate
     both = '{"packages":["git:github.com/myk-org/pi-config","npm:pi-orchestrator-config"]}'
     assert pi_config_pi_cmd(True, both) == f"pi uninstall {PI_CONFIG_GIT}"
+
+
+def test_myk_pi_tools_install_is_pypi() -> None:
     assert MYK_PI_TOOLS_INSTALL_CMD == "uv tool install myk-pi-tools"
     assert "git+" not in MYK_PI_TOOLS_INSTALL_CMD
 
@@ -215,7 +221,7 @@ def _package_files_field() -> list[str]:
 
 def _npm_pack_paths() -> list[str]:
     result = subprocess.run(
-        ["npm", "pack", "--dry-run", "--json"],
+        ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
         cwd=REPO,
         check=True,
         capture_output=True,
@@ -235,12 +241,26 @@ def test_npm_files_field_ships_pidash_pidiff_without_swallowing_node_modules() -
         assert glob not in files
 
 
-def test_npm_pack_includes_pidash_pidiff_daemons_and_ui_source() -> None:
+def test_npm_pack_includes_pidash_pidiff_daemons() -> None:
     paths = _npm_pack_paths()
     assert npm_pack_paths_include_pidash_pidiff_runtime(paths) is True
     for required in NPM_PACK_REQUIRED_PATHS:
         assert required in paths
-    dist_built = (REPO / "extensions/pidash/pidash-ui/dist/index.html").is_file() and (
-        REPO / "extensions/pidiff/pidiff-ui/dist/index.html"
-    ).is_file()
-    assert npm_pack_paths_include_ui_dist_when_built(paths, dist_built) is True
+
+
+def test_npm_pack_includes_ui_source() -> None:
+    paths = _npm_pack_paths()
+    assert "extensions/pidash/pidash-ui/package.json" in paths
+    assert "extensions/pidiff/pidiff-ui/package.json" in paths
+
+
+def test_npm_pack_includes_ui_dist() -> None:
+    paths = _npm_pack_paths()
+    assert npm_pack_paths_include_ui_dist(paths) is True
+
+
+def test_package_json_prepack_builds_extension_uis() -> None:
+    data = json.loads((REPO / "package.json").read_text())
+    scripts = data["scripts"]
+    assert "build-extension-uis.sh" in scripts["prepack"]
+    assert "build-extension-uis.sh" in scripts["prepublishOnly"]

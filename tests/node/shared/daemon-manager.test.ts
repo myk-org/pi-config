@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon } from "../../../extensions/shared/daemon-manager.js";
 
 describe("lockfile operations", () => {
   it("stores port and pid via writeLockfile, retrieves via readLockfile", () => {
@@ -149,5 +149,19 @@ describe("findJitiUnder", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("spawnDaemon", () => {
+  it("refuses to spawn when jiti cannot be resolved", () => {
+    const logs: string[] = [];
+    spawnDaemon({
+      serverScript: "pidash-server.ts",
+      logFile: join(tmpdir(), "pidash-spawn-test.log"),
+      log: (msg) => logs.push(msg),
+      resolveJiti: () => undefined,
+    });
+    assert.ok(logs.some((m) => m.includes("jiti-cli.mjs not found")));
+    assert.ok(!logs.some((m) => m.startsWith("spawning daemon:")));
   });
 });

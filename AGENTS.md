@@ -149,8 +149,8 @@ Writing effective rules:
   (`scripts/pidash-server.ts`, `pidiff-server.ts`, `daemon-shared.ts`,
   `serve-ui.ts`, `pidash-discord.ts`, `httpd.py`) and pidash/pidiff UI `src/` + `dist/` —
   never a whole-tree `extensions/pidash/` entry (that packs `node_modules`).
-  Pre-publish: `bash scripts/build-extension-uis.sh` so gitignored `dist/`
-  exists on disk.
+  Pre-publish: `prepack`/`prepublishOnly` run `bash scripts/build-extension-uis.sh`
+  so gitignored `dist/` exists before `npm pack` / `npm publish`.
 - Oneshot (`-p` / `--print` / `--mode json`): pitasks, pidash, pidiff, and coms
   skip register via `extensions/shared/oneshot.ts`; shutdown dream also skipped.
   See `dev-docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.

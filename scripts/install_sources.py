@@ -259,13 +259,8 @@ def npm_pack_paths_include_pidash_pidiff_runtime(paths: list[str]) -> bool:
     return ok
 
 
-def npm_pack_paths_include_ui_dist_when_built(paths: list[str], dist_built: bool) -> bool:
-    """When UI dist exists on disk, the tarball must include index.html.
-    Unbuilt dist is allowed in unit tests; publish builds first.
-    """
-    if not dist_built:
-        log.debug("npm pack ui-dist check skipped (dist not built)")
-        return True
+def npm_pack_paths_include_ui_dist(paths: list[str]) -> bool:
+    """Packed tarball must include built pidash/pidiff dashboard index.html."""
     required = (
         "extensions/pidash/pidash-ui/dist/index.html",
         "extensions/pidiff/pidiff-ui/dist/index.html",

@@ -835,6 +835,11 @@ export function registerPidash(
 
     log.debug("session_start", (event as any)?.reason);
 
+    if (isLiveExtensionCtx(ctx)) {
+      lastCtx = ctx;
+      log.debug("lastCtx updated from session_start");
+    }
+
     // Auto-capture command context: silently run /pidash status.
     // pi.sendUserMessage won't trigger command dispatch (expandPromptTemplates: false),
     // so we call the handler directly. The context won't have switchSession yet,
