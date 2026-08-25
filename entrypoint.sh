@@ -7,35 +7,38 @@ set -e
 npm install -g @earendil-works/pi-coding-agent
 npm install -g acpx
 
-# Install or update packages
-PI_PKG_DIR="$HOME/.pi/agent/git/github.com"
-
-if [ ! -d "$PI_PKG_DIR/myk-org/pi-config" ]; then
-    pi install git:github.com/myk-org/pi-config
-fi
-
-# Vertex ships as an npm package since 4.3.5 (aligned version set). Register it
-# from the registry; accept the legacy git-subdir marker so existing installs
-# don't churn. Do not use directory existence: packages/pi-vertex-claude is
-# already in the pi-config clone, so a -d check would skip registration.
-if ! grep -qE "pi-config/packages/pi-vertex-claude|npm:@myk-org/pi-vertex-claude" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
-    pi install npm:@myk-org/pi-vertex-claude
-fi
-
-# Update all installed packages + myk-pi-tools
-pi update --all
-uv tool install --force myk-pi-tools --from "$PI_PKG_DIR/myk-org/pi-config" 2>/dev/null || true
-
-# Register pi packages if not already present
-# (installed globally in Docker image, just need pi to know about them)
+# Register pi packages if not already present — single mechanism for all of
+# them. `legacy_marker` catches a stale pre-npm source (e.g. vertex's old
+# racing git-subdir registration) and actively migrates it to npm instead of
+# leaving it in place.
 register_pi_pkg() {
-    local name="$1" source="$2"
-    if ! grep -q "$name" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
-        pi install "npm:$source" 2>/dev/null || true
+    local source="$1" legacy_marker="${2:-}"
+    if grep -qF "npm:${source}" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
+        return 0
     fi
+    if [ -n "$legacy_marker" ] && grep -qF "$legacy_marker" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
+        pi uninstall "$legacy_marker" 2>/dev/null || true
+    fi
+    pi install "npm:$source" 2>/dev/null || true
 }
-register_pi_pkg pi-web-access pi-web-access
+register_pi_pkg pi-orchestrator-config
+register_pi_pkg "@myk-org/pi-vertex-claude" "git:github.com/myk-org/pi-config/packages/pi-vertex-claude"
+register_pi_pkg pi-web-access
 
+# Update all installed packages + myk-pi-tools (published on PyPI — no local
+# source clone needed).
+pi update --all
+uv tool install --force myk-pi-tools 2>/dev/null || true
+
+# Source clone for files npm doesn't ship (agents/, symlink script). Lives
+# under $HOME, never under .pi — that tree is package-managed, not a scratch
+# git checkout.
+PI_SRC_DIR="$HOME/pi-config-src"
+if [ ! -d "$PI_SRC_DIR" ]; then
+    git clone --depth 1 https://github.com/myk-org/pi-config.git "$PI_SRC_DIR" 2>/dev/null || true
+else
+    git -C "$PI_SRC_DIR" pull --ff-only 2>/dev/null || true
+fi
 
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
@@ -82,8 +85,8 @@ add_to_gitignore '.gemini/agents/'
 # Symlink package agents into PWD for Cursor/Claude/Gemini discovery (container only).
 # Native users place these manually — see README / cli-provider.md.
 # Failures are warn-only: container start must not abort if linking fails.
-AGENTS_SRC="$PI_PKG_DIR/myk-org/pi-config/agents"
-SYMLINK_SCRIPT="$PI_PKG_DIR/myk-org/pi-config/scripts/symlink-cli-specialists.sh"
+AGENTS_SRC="$PI_SRC_DIR/agents"
+SYMLINK_SCRIPT="$PI_SRC_DIR/scripts/symlink-cli-specialists.sh"
 if [ -d "$AGENTS_SRC" ] && [ -x "$SYMLINK_SCRIPT" ]; then
     if ! "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
         echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
