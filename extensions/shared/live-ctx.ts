@@ -34,3 +34,23 @@ export function lastCtxAfterSessionStart<T>(previous: T | null, incoming: unknow
   log.debug("session_start lastCtx: incoming stale, keeping previous");
   return previous;
 }
+
+/** Safe ctxs for pidash session_start: never read properties on a stale incoming. */
+export function resolveSessionStartCtx<T>(
+  previous: T | null,
+  incoming: unknown,
+): { lastCtx: T | null; execCtx: T | null; switchCtx: T | null } {
+  const lastCtx = lastCtxAfterSessionStart(previous, incoming);
+  if (isLiveExtensionCtx(incoming)) {
+    const live = incoming as T;
+    log.debug("session_start: incoming ctx is live");
+    return { lastCtx, execCtx: live, switchCtx: live };
+  }
+  const fallback = isLiveExtensionCtx(lastCtx) ? lastCtx : null;
+  if (fallback) {
+    log.debug("session_start: incoming stale, falling back to previous lastCtx");
+  } else {
+    log.debug("session_start: incoming stale and no live lastCtx");
+  }
+  return { lastCtx, execCtx: null, switchCtx: fallback };
+}

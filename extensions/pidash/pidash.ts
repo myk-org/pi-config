@@ -20,7 +20,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
-import { isLiveExtensionCtx, lastCtxAfterSessionStart } from "../shared/live-ctx.js";
+import { isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pidash");
@@ -830,14 +830,19 @@ export function registerPidash(
   /** Handle session_start event — connect or notify session switch. */
   function handleSessionStart(event: any, ctx: any): void {
     sessionNamed = false;
-    execCtx = ctx;
-    log.debug("execCtx created from session_start");
-
     log.debug("session_start", (event as any)?.reason);
 
-    lastCtx = lastCtxAfterSessionStart(lastCtx, ctx);
+    const resolved = resolveSessionStartCtx(lastCtx, ctx);
+    lastCtx = resolved.lastCtx;
+    if (resolved.execCtx) {
+      execCtx = resolved.execCtx;
+      log.debug("execCtx created from session_start");
+    } else {
+      log.debug("session_start incoming ctx stale — not assigning execCtx");
+    }
     if (lastCtx === ctx) log.debug("lastCtx updated from session_start");
 
+    const switchCtx = resolved.switchCtx;
     // Auto-capture command context: silently run /pidash status.
     // pi.sendUserMessage won't trigger command dispatch (expandPromptTemplates: false),
     // so we call the handler directly. The context won't have switchSession yet,
@@ -845,19 +850,23 @@ export function registerPidash(
     // when the user types their first prompt (via before_agent_start triggering
     // the input pipeline). For now, this at least initializes the connection.
     // Session switching requires the user to have typed at least one slash command.
-    if (!connected && isLiveExtensionCtx(ctx) && ctx.mode === "tui") {
-      connect(ctx);
+    if (!connected && switchCtx && switchCtx.mode === "tui") {
+      connect(switchCtx);
     } else if (ws) {
+      if (!switchCtx) {
+        log.debug("session_switch skipped — no live ctx");
+        return;
+      }
       // Already connected — session switched (e.g., /resume, /new)
       eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
       ws.send(JSON.stringify({
         type: "session_switch",
         sessionId,
-        cwd: ctx.cwd,
-        branch: getCurrentBranch(ctx.cwd),
-        sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
+        cwd: switchCtx.cwd,
+        branch: getCurrentBranch(switchCtx.cwd),
+        sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
       }));
-      log.debug(`session_switch sent: cwd=${ctx.cwd}`);
+      log.debug(`session_switch sent: cwd=${switchCtx.cwd}`);
     }
   }
 
