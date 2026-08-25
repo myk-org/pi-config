@@ -52,5 +52,18 @@ export function resolveSessionStartCtx<T>(
   } else {
     log.debug("session_start: incoming stale and no live lastCtx");
   }
-  return { lastCtx, execCtx: null, switchCtx: fallback };
+  return { lastCtx, execCtx: fallback, switchCtx: fallback };
+}
+
+/** First captured ctx that is still live; skips null and stale getters. */
+export function firstLiveExtensionCtx<T>(...candidates: Array<T | null | undefined>): T | null {
+  for (const c of candidates) {
+    if (c == null) continue;
+    if (isLiveExtensionCtx(c)) {
+      log.debug("firstLiveExtensionCtx: selected live candidate");
+      return c;
+    }
+  }
+  log.debug("firstLiveExtensionCtx: no live candidate");
+  return null;
 }

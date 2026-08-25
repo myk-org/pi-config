@@ -107,7 +107,7 @@ pi-config/
 │   │   ├── session-cwd.ts           # Per-turn CLI/ACPX spawn cwd ALS (#768; same Symbol.for as sidecar copy)
 │   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
-│   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx — probe captured ctx after /reload
+│   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)
 │   │   └── ui/                      # Shared shadcn/ui components (used by pidash-ui and pidiff-ui via @ui alias)

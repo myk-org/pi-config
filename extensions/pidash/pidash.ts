@@ -20,7 +20,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
-import { isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
+import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pidash");
@@ -834,12 +834,9 @@ export function registerPidash(
 
     const resolved = resolveSessionStartCtx(lastCtx, ctx);
     lastCtx = resolved.lastCtx;
-    if (resolved.execCtx) {
-      execCtx = resolved.execCtx;
-      log.debug("execCtx created from session_start");
-    } else {
-      log.debug("session_start incoming ctx stale — not assigning execCtx");
-    }
+    execCtx = resolved.execCtx;
+    if (execCtx) log.debug("execCtx set from session_start");
+    else log.debug("session_start: execCtx cleared — no live ctx");
     if (lastCtx === ctx) log.debug("lastCtx updated from session_start");
 
     const switchCtx = resolved.switchCtx;
@@ -891,7 +888,11 @@ export function registerPidash(
     const handler = commandHandlerRegistry.get(cmdName);
     if (handler) {
       try {
-        const rawCtx = lastCmdCtx ?? execCtx ?? lastCtx;
+        const rawCtx = firstLiveExtensionCtx(lastCmdCtx, execCtx, lastCtx);
+        if (!rawCtx) {
+          log.debug(`browser command /${cmdName} skipped — no live ctx`);
+          return { action: "handled" as const };
+        }
         const ctx = rawCtx?.ui ? { ...rawCtx, ui: { ...rawCtx.ui, notify: (msg: string, level?: string) => {
           if (ws && connected) { try { ws.send(JSON.stringify({ type: "notification", level: level || "info", message: String(msg) })); } catch {} }
           return rawCtx.ui.notify(msg, level);

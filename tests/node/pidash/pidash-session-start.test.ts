@@ -5,6 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+	firstLiveExtensionCtx,
 	lastCtxAfterSessionStart,
 	resolveSessionStartCtx,
 } from "../../../extensions/shared/live-ctx.js";
@@ -50,7 +51,7 @@ describe("handleSessionStart switchCtx", () => {
 	it("does not read stale incoming cwd; falls back to live lastCtx for session_switch", () => {
 		const previous = { mode: "tui", cwd: "/old" };
 		const r = resolveSessionStartCtx(previous, staleCtx());
-		assert.equal(r.execCtx, null);
+		assert.equal(r.execCtx, previous);
 		assert.equal(r.switchCtx, previous);
 		assert.equal(r.switchCtx?.cwd, "/old");
 	});
@@ -59,5 +60,16 @@ describe("handleSessionStart switchCtx", () => {
 		const r = resolveSessionStartCtx(null, staleCtx());
 		assert.equal(r.execCtx, null);
 		assert.equal(r.switchCtx, null);
+	});
+});
+
+describe("browser command ctx selection", () => {
+	it("skips stale execCtx and uses a later live lastCtx", () => {
+		const live = { mode: "tui", cwd: "/live" };
+		assert.equal(firstLiveExtensionCtx(staleCtx(), live), live);
+	});
+
+	it("returns null when lastCmdCtx, execCtx, and lastCtx are all stale", () => {
+		assert.equal(firstLiveExtensionCtx(staleCtx(), staleCtx(), staleCtx()), null);
 	});
 });
