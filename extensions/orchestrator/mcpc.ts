@@ -21,9 +21,25 @@ const log = createLogger("orchestrator", "mcpc");
 const CONNECT_TIMEOUT_MS = 120_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
 
+export type McpcExecFile = (
+  file: string,
+  args: readonly string[],
+  options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string | Buffer; stderr: string | Buffer }>;
+
+let execMcpcConnect: McpcExecFile = execFileAsync as McpcExecFile;
+
+/** Replace the mcpc subprocess (tests). Pass undefined to restore. */
+export function setMcpcExecFile(fn: McpcExecFile | undefined): void {
+  execMcpcConnect = fn ?? (execFileAsync as McpcExecFile);
+  log.debug("setMcpcExecFile", fn ? "override" : "restore");
+}
+
 export function mcpcConfigPath(): string {
   const home = process.env.HOME || os.homedir();
-  return path.join(home, ".pi", "pi-config", "mcp.json");
+  const configPath = path.join(home, ".pi", "pi-config", "mcp.json");
+  log.debug("mcpcConfigPath", configPath);
+  return configPath;
 }
 
 export type McpcConnectResult = {
@@ -33,7 +49,10 @@ export type McpcConnectResult = {
 };
 
 function formatExecError(err: unknown): string {
-  if (!err || typeof err !== "object") return String(err);
+  if (!err || typeof err !== "object") {
+    log.debug("formatExecError non-object");
+    return String(err);
+  }
   const e = err as {
     code?: string;
     killed?: boolean;
@@ -41,6 +60,7 @@ function formatExecError(err: unknown): string {
     stdout?: string;
     stderr?: string;
   };
+  log.debug("formatExecError", { code: e.code ?? "none", killed: Boolean(e.killed) });
   const parts: string[] = [];
   if (e.code === "ENOENT") {
     parts.push("mcpc not on PATH. Install: npm install -g @apify/mcpc");
@@ -70,7 +90,7 @@ export async function connectMcpc(): Promise<McpcConnectResult> {
 
   log.info("mcpc connect start", configPath);
   try {
-    const { stdout, stderr } = await execFileAsync(
+    const { stdout, stderr } = await execMcpcConnect(
       "mcpc",
       ["connect", configPath, "--stdio"],
       {
@@ -95,6 +115,7 @@ export async function connectMcpc(): Promise<McpcConnectResult> {
 }
 
 export function registerMcpc(pi: ExtensionAPI): void {
+  log.info("registerMcpc");
   pi.registerCommand("mcpc", {
     description:
       "Reconnect MCP servers from ~/.pi/pi-config/mcp.json (mcpc connect --stdio). Run after editing that file.",

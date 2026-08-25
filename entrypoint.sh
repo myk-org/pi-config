@@ -3,9 +3,11 @@
 # HOME is set to /home/$PI_HOST_USER if configured, otherwise /home/node.
 set -e
 
-# Always install/update pi and acpx to latest on every container start
+# Always install/update pi, acpx, and mcpc on every container start.
+# PI_HOST_USER can reverse-symlink the host ~/.npm-global over the image copy.
 npm install -g @earendil-works/pi-coding-agent
 npm install -g acpx
+npm install -g @apify/mcpc
 
 # Register pi packages if not already present — single mechanism for all of
 # them. `legacy_marker` catches a stale pre-npm source (e.g. vertex's old

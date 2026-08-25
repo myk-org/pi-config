@@ -651,7 +651,7 @@ PI_PIDIFF_ENABLE=false pi
 | `uv` / `uvx` | Python execution (enforced by orchestrator) |
 | `go` | Go development and code review |
 | `libxml2-dev` | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
-| `mcpc` | MCP CLI (`npm: @apify/mcpc`). Put servers in `~/.pi/pi-config/mcp.json` (already on the `~/.pi` mount). Pi runs `mcpc connect … --stdio` on start. After editing the file, `/mcpc connect`. |
+| `mcpc` | MCP CLI (`npm: @apify/mcpc`). Put servers in `~/.pi/pi-config/mcp.json` (already on the `~/.pi` mount). Pi runs `mcpc connect … --stdio` on start. After editing the file, `/mcpc connect`. `entrypoint.sh` reinstalls `@apify/mcpc` on every start so `PI_HOST_USER` host `.npm-global` mapping does not hide the image copy. |
 | `myk-pi-tools` | PR review, release, and other CLI utilities |
 | `prek` | Pre-commit hook runner |
 | `acpx` | Agent proxy for remote models |
