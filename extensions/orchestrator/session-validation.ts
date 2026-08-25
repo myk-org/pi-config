@@ -215,7 +215,7 @@ async function checkSessionTools(ctx: any): Promise<void> {
     );
   if (!hasCmd("myk-pi-tools"))
     optional.push(
-      "myk-pi-tools — PR/release/review CLI. Install: uv tool install git+https://github.com/myk-org/pi-config",
+      "myk-pi-tools — PR/release/review CLI. Install: uv tool install myk-pi-tools",
     );
 
   // Check agent-browser skill

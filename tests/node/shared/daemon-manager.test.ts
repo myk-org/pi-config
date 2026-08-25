@@ -4,10 +4,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, removeLockfile, findFreePort, killDaemonByPid } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon } from "../../../extensions/shared/daemon-manager.js";
 
 describe("lockfile operations", () => {
   it("stores port and pid via writeLockfile, retrieves via readLockfile", () => {
@@ -109,5 +109,59 @@ describe("findFreePort", () => {
     // Not guaranteed but very likely
     assert.ok(typeof port1 === "number");
     assert.ok(typeof port2 === "number");
+  });
+});
+
+describe("findJitiUnder", () => {
+  it("walks up from a nested dir to jiti-cli.mjs", () => {
+    const root = mkdtempSync(join(tmpdir(), "jiti-walk-"));
+    try {
+      const cli = join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs");
+      mkdirSync(join(root, "node_modules", "jiti", "lib"), { recursive: true });
+      writeFileSync(cli, "// stub\n");
+      const nested = join(root, "dist", "bundle");
+      mkdirSync(nested, { recursive: true });
+      assert.strictEqual(findJitiUnder(nested), cli);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined when jiti is absent", () => {
+    const root = mkdtempSync(join(tmpdir(), "jiti-miss-"));
+    try {
+      assert.strictEqual(findJitiUnder(root), undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("findJitiPath uses argv1 walk, not execPath-adjacent global", () => {
+    const root = mkdtempSync(join(tmpdir(), "jiti-argv-"));
+    try {
+      const cli = join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs");
+      mkdirSync(join(root, "node_modules", "jiti", "lib"), { recursive: true });
+      writeFileSync(cli, "// stub\n");
+      const argv1 = join(root, "dist", "bundle", "cli.js");
+      mkdirSync(join(root, "dist", "bundle"), { recursive: true });
+      writeFileSync(argv1, "// fake pi\n");
+      assert.strictEqual(findJitiPath({ argv1, moduleDir: join(root, "nowhere") }), cli);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("spawnDaemon", () => {
+  it("refuses to spawn when jiti cannot be resolved", () => {
+    const logs: string[] = [];
+    spawnDaemon({
+      serverScript: "pidash-server.ts",
+      logFile: join(tmpdir(), "pidash-spawn-test.log"),
+      log: (msg) => logs.push(msg),
+      resolveJiti: () => undefined,
+    });
+    assert.ok(logs.some((m) => m.includes("jiti-cli.mjs not found")));
+    assert.ok(!logs.some((m) => m.startsWith("spawning daemon:")));
   });
 });

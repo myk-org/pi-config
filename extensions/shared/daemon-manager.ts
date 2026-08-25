@@ -11,6 +11,10 @@ import * as net from "node:net";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createLogger } from "./logger.js";
+import { findJitiPath } from "./find-jiti.js";
+
+const log = createLogger("daemon-manager");
 
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
@@ -58,30 +62,7 @@ export function ensureUiBuilt(callerUrl: string, uiDirName: string, log: (msg: s
   }
 }
 
-// ── Find jiti ───────────────────────────────────────────────────────
-
-export function findJitiPath(): string | undefined {
-  let jitiPath: string | undefined;
-  try {
-    let dir = path.dirname(fileURLToPath(import.meta.url));
-    for (let i = 0; i < 10; i++) {
-      const candidate = path.join(dir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
-      if (fs.existsSync(candidate)) { jitiPath = candidate; break; }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    if (!jitiPath) {
-      const globalCandidate = path.join(
-        path.dirname(process.execPath), "..", "lib", "node_modules",
-        "@earendil-works", "pi-coding-agent", "node_modules",
-        "jiti", "lib", "jiti-cli.mjs",
-      );
-      if (fs.existsSync(globalCandidate)) jitiPath = globalCandidate;
-    }
-  } catch (e: any) { console.debug("[pidash-daemon] jiti path resolution failed:", e?.message || e); }
-  return jitiPath;
-}
+export { findJitiPath, findJitiUnder } from "./find-jiti.js";
 
 // ── Spawn daemon ────────────────────────────────────────────────────
 
@@ -96,6 +77,8 @@ export interface SpawnOptions {
   env?: Record<string, string>;
   /** Logger function */
   log: (msg: string) => void;
+  /** Override jiti lookup (tests). Default: findJitiPath(). */
+  resolveJiti?: () => string | undefined;
 }
 
 export function spawnDaemon(opts: SpawnOptions): void {
@@ -104,15 +87,22 @@ export function spawnDaemon(opts: SpawnOptions): void {
     "..", "..", "scripts", opts.serverScript,
   );
 
-  const jitiPath = findJitiPath();
+  const jitiPath = (opts.resolveJiti ?? findJitiPath)();
   opts.log(`jiti path: ${jitiPath || "NOT FOUND"}`);
+  if (!jitiPath) {
+    const msg =
+      "jiti-cli.mjs not found — refusing to run .ts under node_modules (Node type-stripping is disabled there)";
+    log.error("%s server=%s", msg, serverPath);
+    log.debug("spawnDaemon refused — jiti missing server=%s", serverPath);
+    opts.log(msg);
+    return;
+  }
 
   const nodeCmd = process.execPath;
-  const serverArgs = jitiPath
-    ? `"${jitiPath}" "${serverPath}"${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`
-    : `"${serverPath}"${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`;
+  const serverArgs = `"${jitiPath}" "${serverPath}"${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`;
   const cmd = `nohup "${nodeCmd}" ${serverArgs} > "${opts.logFile}" 2>&1 &`;
   opts.log(`spawning daemon: ${cmd}`);
+  log.info("spawning daemon script=%s jiti=%s", opts.serverScript, jitiPath);
 
   try {
     execSync(cmd, {
@@ -120,6 +110,7 @@ export function spawnDaemon(opts: SpawnOptions): void {
       env: { ...process.env, ...(opts.env || {}) },
     });
   } catch (e: any) {
+    log.error("spawn error: %s", e.message);
     opts.log(`spawn error: ${e.message}`);
   }
 }
@@ -207,7 +198,7 @@ export function readLockfile(lockDir: string): { port: number; pid: number | nul
       if (isNaN(pid)) pid = null;
     }
     return { port, pid };
-  } catch (e: any) { console.debug(`[daemon-manager] readLockfile error: ${e?.message}`); return null; }
+  } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
 }
 
 /** Clean up lockfiles. */

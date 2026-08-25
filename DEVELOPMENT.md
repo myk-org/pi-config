@@ -15,7 +15,7 @@ pi -ne -e ~/git/pi-config/extensions/orchestrator/index.ts
 
 > **Note:** `-ne -e` only loads your extension in the **parent** process.
 > Subagent child processes load the **installed** version from `~/.pi/agent/`.
-> To test changes that affect child processes, run `pi update git:github.com/myk-org/pi-config` first.
+> To test changes that affect child processes, run `pi update npm:pi-orchestrator-config` first.
 
 ## Running Tests
 

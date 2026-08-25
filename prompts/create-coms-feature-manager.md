@@ -60,7 +60,7 @@ If **Cancel**: stop and inform the user.
 Read the template file:
 
 ```text
-~/.pi/agent/git/github.com/myk-org/pi-config/templates/coms-feature-manager-prompt.md
+~/.pi/agent/npm/node_modules/pi-orchestrator-config/templates/coms-feature-manager-prompt.md
 ```
 
 This is the immutable source template. NEVER modify it.

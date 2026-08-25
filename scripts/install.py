@@ -32,10 +32,14 @@ from typing import Any
 
 import questionary
 from install_sources import (
-    PI_CONFIG_GIT,
-    PI_VERTEX_SETTINGS_MARKER,
+    MYK_PI_TOOLS_INSTALL_CMD,
+    PI_CONFIG_NPM,
+    PI_VERTEX_NPM,
     create_logger,
     is_pi_pkg_installed,
+    pi_config_pi_cmd,
+    should_migrate_pi_config_to_npm,
+    should_migrate_vertex_to_npm,
     vertex_pi_cmd,
 )
 from questionary import Choice
@@ -169,20 +173,22 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
 
     # ── Step 1: Pi Packages ──────────────────────────────────────────────
     pi_dis = "" if has["pi"] else "requires pi"
-    pi_cfg = (HOME / ".pi/agent/git/github.com/myk-org/pi-config").exists()
 
     try:
         settings_text = (HOME / ".pi/agent/settings.json").read_text()
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
         settings_text = ""
 
-    # Nested monorepo path — not the retired standalone git:…/pi-vertex-claude repo.
-    pi_vtx = is_pi_pkg_installed(settings_text, PI_VERTEX_SETTINGS_MARKER)
+    pi_cfg = is_pi_pkg_installed(settings_text, PI_CONFIG_NPM) and not should_migrate_pi_config_to_npm(settings_text)
+    pi_vtx = is_pi_pkg_installed(settings_text, PI_VERTEX_NPM) and not should_migrate_vertex_to_npm(settings_text)
     pi_web = is_pi_pkg_installed(settings_text, "pi-web-access")
     log.debug(
-        "pi package detection pi-config-clone=%s vertex-installed=%s",
+        "pi package detection pi-config-ready=%s vertex-ready=%s web=%s pi-config-migrate=%s vertex-migrate=%s",
         pi_cfg,
         pi_vtx,
+        pi_web,
+        should_migrate_pi_config_to_npm(settings_text),
+        should_migrate_vertex_to_npm(settings_text),
     )
 
     step1 = Step(
@@ -195,14 +201,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Orchestrator + 24 agents + prompts",
                 installed=pi_cfg,
                 disabled=pi_dis,
-                install_cmd=f"pi {'update' if pi_cfg else 'install'} {PI_CONFIG_GIT}",
+                install_cmd=pi_config_pi_cmd(pi_cfg, settings_text),
             ),
             Tool(
                 "pi-vertex-claude",
                 "Claude via Google Cloud Vertex AI",
                 installed=pi_vtx,
                 disabled=pi_dis,
-                install_cmd=vertex_pi_cmd(pi_vtx),
+                install_cmd=vertex_pi_cmd(pi_vtx, settings_text),
             ),
             Tool(
                 "pi-web-access",
@@ -216,7 +222,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "CLI utilities for pi-config (reviews, releases, memory)",
                 installed=bool(shutil.which("myk-pi-tools")),
                 disabled="requires uv" if not has["uv"] else pi_dis,
-                install_cmd='uv tool install myk-pi-tools --from "myk-pi-tools @ git+https://github.com/myk-org/pi-config.git"',
+                install_cmd=MYK_PI_TOOLS_INSTALL_CMD,
             ),
         ],
     )
