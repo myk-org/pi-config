@@ -921,55 +921,60 @@ export function registerAsyncAgents(
     // Find the runner script
     const runnerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "async-runner.ts");
 
-    // Find jiti for TypeScript execution
+    // Find jiti for TypeScript execution — walk UP from known roots until
+    // found; never assume a fixed depth (install layouts vary: dist/,
+    // dist/bundle/, workspace hoisting, nested node_modules).
     let jitiCliPath: string | undefined;
-    // Strategy 1: resolve from pi's own require context
-    // NOTE: newer pi SDK "exports" maps hide ./package.json — fall back to
-    // resolving the main entry and walking up to its package root.
-    try {
-      const req = createRequire(import.meta.url);
-      let piPkgJsonPath: string | undefined;
-      try {
-        piPkgJsonPath = req.resolve("@earendil-works/pi-coding-agent/package.json");
-      } catch {
-        const entry = req.resolve("@earendil-works/pi-coding-agent");
-        let dir = path.dirname(entry);
-        while (dir !== path.dirname(dir)) {
-          const pj = path.join(dir, "package.json");
-          if (fs.existsSync(pj) && JSON.parse(fs.readFileSync(pj, "utf8"))?.name === "@earendil-works/pi-coding-agent") { piPkgJsonPath = pj; break; }
-          dir = path.dirname(dir);
-        }
+    const jitiProbes: string[] = [];
+    const findJitiUnder = (label: string, startDir: string): string | undefined => {
+      let dir = startDir;
+      while (dir !== path.dirname(dir)) {
+        const candidate = path.join(dir, "node_modules/jiti/lib/jiti-cli.mjs");
+        jitiProbes.push(`${fs.existsSync(candidate) ? "HIT" : "--"} ${candidate}`);
+        if (fs.existsSync(candidate)) return candidate;
+        dir = path.dirname(dir);
       }
-      if (piPkgJsonPath) {
-        const candidate = path.join(path.dirname(piPkgJsonPath), "node_modules/jiti/lib/jiti-cli.mjs");
-        if (fs.existsSync(candidate)) jitiCliPath = candidate;
+      jitiProbes.push(`(exhausted from ${label}: ${startDir})`);
+      return undefined;
+    };
+
+    // Strategy 1: resolve from pi's own install location (the running binary).
+    try {
+      if (process.argv[1]) {
+        const piRoot = path.dirname(fs.realpathSync(process.argv[1]));
+        jitiCliPath = findJitiUnder("argv-binary", piRoot);
       }
     } catch (e: any) {
-      log.debug(`jiti strategy 1 (require.resolve) failed: ${e?.message || e}`);
+      log.debug(`jiti strategy 1 (running binary) failed: ${e?.message || e}`);
     }
-    // Strategy 2: resolve from the pi binary (works for global npm installs)
+
+    // Strategy 2: resolve the pi SDK package from this module's require context.
     if (!jitiCliPath) {
       try {
-        const piScript = process.argv[1];
-        if (piScript) {
-          const realPath = fs.realpathSync(piScript);
-          // pi script -> dist/cli.js, package root is 2 levels up
-          const piPkgDir = path.dirname(path.dirname(realPath));
-          const candidate = path.join(piPkgDir, "node_modules/jiti/lib/jiti-cli.mjs");
-          if (fs.existsSync(candidate)) jitiCliPath = candidate;
+        const req = createRequire(fileURLToPath(import.meta.url));
+        let sdkPkgJson: string | undefined;
+        try {
+          sdkPkgJson = req.resolve("@earendil-works/pi-coding-agent/package.json");
+        } catch {
+          // Newer SDK "exports" maps hide ./package.json — resolve the entry
+          // and walk up to the owning package.json instead.
+          let dir = path.dirname(req.resolve("@earendil-works/pi-coding-agent"));
+          while (dir !== path.dirname(dir)) {
+            const pj = path.join(dir, "package.json");
+            if (fs.existsSync(pj) && JSON.parse(fs.readFileSync(pj, "utf8"))?.name === "@earendil-works/pi-coding-agent") { sdkPkgJson = pj; break; }
+            dir = path.dirname(dir);
+          }
         }
+        if (sdkPkgJson) jitiCliPath ??= findJitiUnder("sdk-pkg", path.dirname(sdkPkgJson));
       } catch (e: any) {
-        log.debug(`jiti strategy 2 (process.argv) failed: ${e?.message || e}`);
+        log.debug(`jiti strategy 2 (SDK package) failed: ${e?.message || e}`);
       }
     }
 
-    // Strategy 3: this package's own node_modules — git/stow installs ship
-    // jiti themselves (npm consumers are covered by strategies 1-2).
+    // Strategy 3: this package's own node_modules (git/stow clones ship jiti).
     if (!jitiCliPath) {
       try {
-        const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-        const candidate = path.join(pkgRoot, "node_modules/jiti/lib/jiti-cli.mjs");
-        if (fs.existsSync(candidate)) jitiCliPath = candidate;
+        jitiCliPath = findJitiUnder("extension-dir", path.dirname(fileURLToPath(import.meta.url)));
       } catch (e: any) {
         log.debug(`jiti strategy 3 (package root) failed: ${e?.message || e}`);
       }
@@ -978,7 +983,7 @@ export function registerAsyncAgents(
     // Fail fast with a self-explanatory error instead of spawning a child that
     // cannot load TypeScript (bare node dies on ".js"→".ts" specifiers).
     if (!jitiCliPath) {
-      log.error(`async-spawn: ${id} — no jiti-cli.mjs found (strategies 1-3 failed); refusing to spawn`);
+      log.error(`async-spawn: ${id} — no jiti-cli.mjs found. Probes:\n  ${(jitiProbes.slice(-14)).join("\n  ")}`);
       // Clean up the artifacts we already created — nothing will consume them.
       try { fs.rmSync(configPath, { force: true }); } catch {}
       try { fs.rmSync(workerDir, { recursive: true, force: true }); } catch {}

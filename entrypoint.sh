@@ -14,11 +14,12 @@ if [ ! -d "$PI_PKG_DIR/myk-org/pi-config" ]; then
     pi install git:github.com/myk-org/pi-config
 fi
 
-# Vertex lives in the pi-config monorepo. Do not use directory existence:
-# packages/pi-vertex-claude is already in the clone, so a -d check would skip
-# registering it in settings.json.
-if ! grep -q "pi-config/packages/pi-vertex-claude" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
-    pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude
+# Vertex ships as an npm package since 4.3.5 (aligned version set). Register it
+# from the registry; accept the legacy git-subdir marker so existing installs
+# don't churn. Do not use directory existence: packages/pi-vertex-claude is
+# already in the pi-config clone, so a -d check would skip registration.
+if ! grep -qE "pi-config/packages/pi-vertex-claude|npm:@myk-org/pi-vertex-claude" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
+    pi install npm:@myk-org/pi-vertex-claude
 fi
 
 # Update all installed packages + myk-pi-tools

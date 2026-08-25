@@ -8,6 +8,8 @@ PI_CONFIG_GIT = "git:github.com/myk-org/pi-config"
 PI_VERTEX_GIT = "git:github.com/myk-org/pi-config/packages/pi-vertex-claude"
 PI_VERTEX_SETTINGS_MARKER = "pi-config/packages/pi-vertex-claude"
 RETIRED_VERTEX_GIT = "git:github.com/myk-org/pi-vertex-claude"
+# Preferred source since 4.3.5 — npm ships the aligned version set.
+PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
 
 
 def create_logger(name: str = "install") -> logging.Logger:
@@ -25,11 +27,20 @@ def is_pi_pkg_installed(settings_text: str, name: str) -> bool:
     return found
 
 
+def is_vertex_registered(settings_text: str) -> bool:
+    """True when vertex is registered via the legacy git marker or the npm package."""
+    registered = is_pi_pkg_installed(settings_text, PI_VERTEX_SETTINGS_MARKER) or is_pi_pkg_installed(
+        settings_text, PI_VERTEX_NPM
+    )
+    log.debug("vertex registered (git or npm marker)=%s", registered)
+    return registered
+
+
 def vertex_pi_cmd(installed: bool) -> str:
-    """Install or update command for Vertex Claude from the pi-config monorepo."""
+    """Install or update command for Vertex Claude from the npm registry."""
     action = "update" if installed else "install"
-    cmd = f"pi {action} {PI_VERTEX_GIT}"
-    log.debug("vertex git source installed=%s cmd=%s", installed, cmd)
+    cmd = f"pi {action} {PI_VERTEX_NPM}"
+    log.debug("vertex npm source installed=%s cmd=%s", installed, cmd)
     return cmd
 
 
