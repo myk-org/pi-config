@@ -64,8 +64,7 @@
   },
   "scripts": {
     "build:extension-uis": "bash scripts/build-extension-uis.sh",
-    "prepack": "bash scripts/build-extension-uis.sh",
-    "prepublishOnly": "bash scripts/build-extension-uis.sh"
+    "prepack": "npm run build:extension-uis"
   },
   "allowScripts": {
     "onnxruntime-node": true,

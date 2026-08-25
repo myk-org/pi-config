@@ -219,7 +219,26 @@ def _package_files_field() -> list[str]:
     return files
 
 
+def _ensure_ui_dist_pack_fixtures() -> None:
+    """Gitignored dist/ may be absent on a clean checkout. Write minimal
+    index.html so ``npm pack --ignore-scripts`` still lists dashboard entrypoints.
+    """
+    log = create_logger("install-test")
+    for rel in (
+        "extensions/pidash/pidash-ui/dist/index.html",
+        "extensions/pidiff/pidiff-ui/dist/index.html",
+    ):
+        path = REPO / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file():
+            log.debug("ui dist already present path=%s", path)
+            continue
+        path.write_text("<!doctype html><title>pack-fixture</title>\n", encoding="utf-8")
+        log.debug("wrote ui dist pack fixture path=%s", path)
+
+
 def _npm_pack_paths() -> list[str]:
+    _ensure_ui_dist_pack_fixtures()
     result = subprocess.run(
         ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
         cwd=REPO,
@@ -262,5 +281,6 @@ def test_npm_pack_includes_ui_dist() -> None:
 def test_package_json_prepack_builds_extension_uis() -> None:
     data = json.loads((REPO / "package.json").read_text())
     scripts = data["scripts"]
-    assert "build-extension-uis.sh" in scripts["prepack"]
-    assert "build-extension-uis.sh" in scripts["prepublishOnly"]
+    assert scripts["prepack"] == "npm run build:extension-uis"
+    assert "build-extension-uis.sh" in scripts["build:extension-uis"]
+    assert "prepublishOnly" not in scripts

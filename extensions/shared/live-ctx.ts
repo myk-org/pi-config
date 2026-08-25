@@ -21,3 +21,16 @@ export function isLiveExtensionCtx(ctx: unknown): boolean {
     return false;
   }
 }
+
+/**
+ * Pidash session_start: keep a live incoming ctx as lastCtx so reconnect
+ * after /new|/resume still has a context. Stale incoming does not wipe previous.
+ */
+export function lastCtxAfterSessionStart<T>(previous: T | null, incoming: unknown): T | null {
+  if (isLiveExtensionCtx(incoming)) {
+    log.debug("session_start lastCtx: using live incoming ctx");
+    return incoming as T;
+  }
+  log.debug("session_start lastCtx: incoming stale, keeping previous");
+  return previous;
+}

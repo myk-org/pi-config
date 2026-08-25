@@ -20,7 +20,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
-import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { isLiveExtensionCtx, lastCtxAfterSessionStart } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pidash");
@@ -835,10 +835,8 @@ export function registerPidash(
 
     log.debug("session_start", (event as any)?.reason);
 
-    if (isLiveExtensionCtx(ctx)) {
-      lastCtx = ctx;
-      log.debug("lastCtx updated from session_start");
-    }
+    lastCtx = lastCtxAfterSessionStart(lastCtx, ctx);
+    if (lastCtx === ctx) log.debug("lastCtx updated from session_start");
 
     // Auto-capture command context: silently run /pidash status.
     // pi.sendUserMessage won't trigger command dispatch (expandPromptTemplates: false),
