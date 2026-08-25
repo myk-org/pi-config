@@ -152,7 +152,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/34/b8/aa7d6cf2d5efdd2fc
 
 [[package]]
 name = "myk-pi-tools"
-version = "4.3.5"
+version = "4.3.6"
 source = { editable = "." }
 dependencies = [
     { name = "ai-cli-runner" },
