@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -355,6 +356,54 @@ def test_entrypoint_reinstalls_mcpc() -> None:
     assert "npm install -g @apify/mcpc" in text
 
 
-def test_entrypoint_mcpc_reinstall_does_not_abort_startup() -> None:
-    text = (REPO / "entrypoint.sh").read_text()
-    assert "npm install -g @apify/mcpc 2>/dev/null || true" in text
+def test_entrypoint_continues_when_mcpc_npm_install_fails(tmp_path: Path) -> None:
+    """A failed @apify/mcpc reinstall must not abort container start."""
+    log = create_logger("install-test")
+    entrypoint = REPO / "entrypoint.sh"
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir.mkdir()
+    npm_log = tmp_path / "npm.log"
+    update_marker = tmp_path / "reached-pi-update"
+
+    npm = bin_dir / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{npm_log}"\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "@apify/mcpc" ]; then exit 1; fi\n'
+        "done\n"
+        "exit 0\n"
+    )
+    pi = bin_dir / "pi"
+    pi.write_text(f'#!/bin/sh\nif [ "$1" = "update" ]; then : > "{update_marker}"; fi\nexit 0\n')
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\nexit 0\n")
+    git = bin_dir / "git"
+    git.write_text("#!/bin/sh\nexit 0\n")
+    for stub in (npm, pi, uv, git):
+        stub.chmod(0o755)
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["bash", str(entrypoint), "survived"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=15,
+    )
+    log.debug(
+        "entrypoint mcpc-fail-open exit=%s npm_log=%s update=%s stderr=%s",
+        result.returncode,
+        npm_log.exists(),
+        update_marker.exists(),
+        (result.stderr or "").strip()[:200],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "@apify/mcpc" in npm_log.read_text()
+    assert update_marker.is_file()
