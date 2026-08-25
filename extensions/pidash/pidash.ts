@@ -20,6 +20,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaemon } from "../shared/daemon-manager.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pidash");
@@ -480,10 +481,13 @@ export function registerPidash(
   // ── connect() ──────────────────────────────────────────────────────
 
   async function connect(ctx: any) {
-    log.debug(`connect() called, connected=${connected}, connecting=${connecting}, shuttingDown=${shuttingDown}, cwd=${ctx?.cwd}`);
     if (connected || connecting || shuttingDown) return;
     // Guard against stale ctx from surviving setTimeout after reload
-    try { void ctx?.ui?.theme; } catch { log.debug("connect() skipped — stale ctx"); return; }
+    if (!isLiveExtensionCtx(ctx)) {
+      log.debug("connect() skipped — stale ctx");
+      return;
+    }
+    log.debug(`connect() called, connected=${connected}, connecting=${connecting}, shuttingDown=${shuttingDown}, cwd=${ctx?.cwd}`);
     connecting = true;
     lastCtx = ctx;
 
@@ -800,9 +804,14 @@ export function registerPidash(
   }
 
   /** Periodically send git status updates to the daemon. */
-  function setupPeriodicStatus(): void {
+  function setupPeriodicStatus(): ReturnType<typeof setInterval> {
     const statusInterval = setInterval(() => {
-      if (!ws || !connected || !lastCtx) return;
+      if (shuttingDown || !ws || !connected || !lastCtx) return;
+      if (!isLiveExtensionCtx(lastCtx)) {
+        log.debug("periodic status stopped — stale ctx after session replacement");
+        lastCtx = null;
+        return;
+      }
       if (lastCtx.mode !== "tui") return;
       try {
         const git = getGitStatus(lastCtx.cwd);
@@ -815,6 +824,7 @@ export function registerPidash(
       } catch (e: any) { log.debug(`periodic status error: ${e?.message || e}`); }
     }, 10000);
     if (statusInterval.unref) statusInterval.unref();
+    return statusInterval;
   }
 
   /** Handle session_start event — connect or notify session switch. */
@@ -832,7 +842,7 @@ export function registerPidash(
     // when the user types their first prompt (via before_agent_start triggering
     // the input pipeline). For now, this at least initializes the connection.
     // Session switching requires the user to have typed at least one slash command.
-    if (!connected && ctx.mode === "tui") {
+    if (!connected && isLiveExtensionCtx(ctx) && ctx.mode === "tui") {
       connect(ctx);
     } else if (ws) {
       // Already connected — session switched (e.g., /resume, /new)
@@ -891,14 +901,14 @@ export function registerPidash(
 
   setupEventForwarding();
   setupPidashEventListeners();
-  setupPeriodicStatus();
+  const statusInterval = setupPeriodicStatus();
 
   pi.on("session_start", (event: any, ctx: any) => { if (shuttingDown) return; handleSessionStart(event, ctx); });
 
   // Fallback for /reload — connect on first tool_result if not connected
   pi.on("tool_result", (_event, ctx) => {
     if (shuttingDown) return;
-    if (!connected && !shuttingDown && ctx.mode === "tui") connect(ctx);
+    if (!connected && !shuttingDown && isLiveExtensionCtx(ctx) && ctx.mode === "tui") connect(ctx);
   });
 
   // Periodic reconnect — ensures sessions that started before the daemon still connect
@@ -906,7 +916,16 @@ export function registerPidash(
     isConnected: () => connected,
     isConnecting: () => connecting,
     isShuttingDown: () => shuttingDown,
-    connect: () => { if (lastCtx?.mode === "tui") connect(lastCtx); },
+    connect: () => {
+      if (!isLiveExtensionCtx(lastCtx)) {
+        if (lastCtx) {
+          log.debug("reconnect poller skipped — stale ctx");
+          lastCtx = null;
+        }
+        return;
+      }
+      if (lastCtx.mode === "tui") connect(lastCtx);
+    },
   });
 
   // ── Command execution from browser ────────────────────────────────
@@ -969,6 +988,7 @@ export function registerPidash(
       } catch {}
     }
     shuttingDown = true;
+    clearInterval(statusInterval);
     cleanupReconnect();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (cleanupHeartbeat) { cleanupHeartbeat(); cleanupHeartbeat = null; }

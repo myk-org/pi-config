@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,21 +11,31 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from install_sources import (  # noqa: E402
+    MYK_PI_TOOLS_INSTALL_CMD,
+    NPM_FILES_FORBIDDEN_TREES,
+    NPM_FILES_REQUIRED,
+    NPM_PACK_REQUIRED_PATHS,
     PI_CONFIG_GIT,
     PI_CONFIG_NPM,
-    PI_SRC_DIR_MARKER,
+    PI_NPM_PKG_DIR,
     PI_VERTEX_GIT,
     PI_VERTEX_NPM,
     PI_VERTEX_SETTINGS_MARKER,
     RETIRED_VERTEX_GIT,
     create_logger,
+    entrypoint_has_no_pi_config_git_clone,
     entrypoint_has_single_registration_mechanism,
     entrypoint_installs_myk_pi_tools_from_pypi,
     entrypoint_registers_pi_config_via_npm,
     entrypoint_registers_vertex_via_settings,
-    entrypoint_source_clone_under_home_not_dotpi,
     is_pi_pkg_installed,
+    is_quoted_package_source,
     is_vertex_registered,
+    npm_files_field_ships_pidash_pidiff,
+    npm_pack_paths_include_pidash_pidiff_runtime,
+    npm_pack_paths_include_ui_dist_when_built,
+    pi_config_pi_cmd,
+    should_migrate_pi_config_to_npm,
     should_migrate_vertex_to_npm,
     vertex_pi_cmd,
 )
@@ -77,7 +89,7 @@ def test_should_migrate_vertex_to_npm_actively_replaces_stale_legacy_source() ->
     neither = '{"packages":["npm:pi-web-access"]}'
     assert should_migrate_vertex_to_npm(legacy_only) is True
     assert should_migrate_vertex_to_npm(npm_only) is False
-    assert should_migrate_vertex_to_npm(both) is False
+    assert should_migrate_vertex_to_npm(both) is True
     assert should_migrate_vertex_to_npm(neither) is False
 
 
@@ -85,9 +97,13 @@ def test_vertex_cmd_uses_npm_registry_source() -> None:
     assert vertex_pi_cmd(False) == f"pi install {PI_VERTEX_NPM}"
     assert vertex_pi_cmd(True) == f"pi update {PI_VERTEX_NPM}"
     assert RETIRED_VERTEX_GIT not in vertex_pi_cmd(False)
-    # Legacy git-subdir source must never reappear in generated commands — it
-    # races the parent pi-config updater over the same working tree.
-    assert PI_VERTEX_GIT not in vertex_pi_cmd(False)
+    # Legacy git-subdir source must never reappear as the *install* target —
+    # it races the parent pi-config updater over the same working tree.
+    assert f"pi install {PI_VERTEX_GIT}" not in vertex_pi_cmd(False)
+    legacy = '{"packages":["git:github.com/myk-org/pi-config/packages/pi-vertex-claude"]}'
+    migrate = vertex_pi_cmd(False, legacy)
+    assert f"pi uninstall {PI_VERTEX_GIT}" in migrate
+    assert f"pi install {PI_VERTEX_NPM}" in migrate
 
 
 def test_entrypoint_registers_vertex_via_settings_not_sibling_clone() -> None:
@@ -112,16 +128,48 @@ def test_pi_config_npm_source_matches_published_package() -> None:
     assert PI_CONFIG_NPM == "npm:pi-orchestrator-config"
 
 
-def test_source_clone_marker_lives_under_home_not_dotpi() -> None:
-    assert PI_SRC_DIR_MARKER == "$HOME/pi-config-src"
-    assert ".pi" not in PI_SRC_DIR_MARKER
+def test_quoted_package_source_does_not_match_vertex_subdir() -> None:
+    root = '{"packages":["git:github.com/myk-org/pi-config"]}'
+    nested = '{"packages":["git:github.com/myk-org/pi-config/packages/pi-vertex-claude"]}'
+    assert is_quoted_package_source(root, PI_CONFIG_GIT) is True
+    assert is_quoted_package_source(nested, PI_CONFIG_GIT) is False
+
+
+def test_should_migrate_pi_config_to_npm() -> None:
+    git_only = '{"packages":["git:github.com/myk-org/pi-config"]}'
+    npm_only = '{"packages":["npm:pi-orchestrator-config"]}'
+    both = '{"packages":["git:github.com/myk-org/pi-config","npm:pi-orchestrator-config"]}'
+    vertex_git = '{"packages":["git:github.com/myk-org/pi-config/packages/pi-vertex-claude"]}'
+    assert should_migrate_pi_config_to_npm(git_only) is True
+    assert should_migrate_pi_config_to_npm(npm_only) is False
+    assert should_migrate_pi_config_to_npm(both) is True
+    assert should_migrate_pi_config_to_npm(vertex_git) is False
+
+
+def test_pi_config_cmd_uses_npm_and_migrates_root_git() -> None:
+    assert pi_config_pi_cmd(False) == f"pi install {PI_CONFIG_NPM}"
+    assert pi_config_pi_cmd(True) == f"pi update {PI_CONFIG_NPM}"
+    git_only = '{"packages":["git:github.com/myk-org/pi-config"]}'
+    migrate = pi_config_pi_cmd(False, git_only)
+    assert f"pi uninstall {PI_CONFIG_GIT}" in migrate
+    assert f"pi install {PI_CONFIG_NPM}" in migrate
+    both = '{"packages":["git:github.com/myk-org/pi-config","npm:pi-orchestrator-config"]}'
+    assert pi_config_pi_cmd(True, both) == f"pi uninstall {PI_CONFIG_GIT}"
+    assert MYK_PI_TOOLS_INSTALL_CMD == "uv tool install myk-pi-tools"
+    assert "git+" not in MYK_PI_TOOLS_INSTALL_CMD
+
+
+def test_npm_pkg_dir_is_pi_npm_tree() -> None:
+    assert PI_NPM_PKG_DIR == "$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
+    assert "git/" not in PI_NPM_PKG_DIR
 
 
 def test_entrypoint_registers_pi_config_via_npm_not_git_clone() -> None:
     text = (REPO / "entrypoint.sh").read_text()
     assert entrypoint_registers_pi_config_via_npm(text) is True
-    assert PI_CONFIG_GIT not in text
+    assert f"pi install {PI_CONFIG_GIT}" not in text
     assert ".pi/agent/git/github.com" not in text
+    assert 'register_pi_pkg pi-orchestrator-config "git:github.com/myk-org/pi-config"' in text
 
 
 def test_entrypoint_installs_myk_pi_tools_from_pypi_not_source() -> None:
@@ -129,9 +177,20 @@ def test_entrypoint_installs_myk_pi_tools_from_pypi_not_source() -> None:
     assert entrypoint_installs_myk_pi_tools_from_pypi(text) is True
 
 
-def test_entrypoint_source_clone_under_home_not_dotpi() -> None:
+def test_entrypoint_has_no_pi_config_git_clone() -> None:
     text = (REPO / "entrypoint.sh").read_text()
-    assert entrypoint_source_clone_under_home_not_dotpi(text) is True
+    assert entrypoint_has_no_pi_config_git_clone(text) is True
+    assert "github.com/myk-org/pi-config.git" not in text
+    assert "pi-config-src" not in text
+    assert "node_modules/pi-orchestrator-config" in text
+    assert r'"\"${legacy_marker}\""' in text
+
+
+def test_install_py_has_no_pi_config_git_commands() -> None:
+    text = (REPO / "scripts/install.py").read_text()
+    assert "git:github.com/myk-org/pi-config" not in text
+    assert "git+https://github.com/myk-org/pi-config" not in text
+    assert "agent/git/github.com" not in text
 
 
 def test_entrypoint_has_single_registration_mechanism() -> None:
@@ -145,3 +204,43 @@ def test_create_logger_returns_named_logger() -> None:
     logger = create_logger("install")
     assert logger.name == "install"
     logger.info("vertex detection probe")
+
+
+def _package_files_field() -> list[str]:
+    data = json.loads((REPO / "package.json").read_text())
+    files = data["files"]
+    assert isinstance(files, list)
+    return files
+
+
+def _npm_pack_paths() -> list[str]:
+    result = subprocess.run(
+        ["npm", "pack", "--dry-run", "--json"],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    listing = payload[0] if isinstance(payload, list) else payload
+    return [entry["path"] if isinstance(entry, dict) else entry for entry in listing["files"]]
+
+
+def test_npm_files_field_ships_pidash_pidiff_without_swallowing_node_modules() -> None:
+    files = _package_files_field()
+    assert npm_files_field_ships_pidash_pidiff(files) is True
+    for entry in NPM_FILES_REQUIRED:
+        assert entry in files
+    for glob in NPM_FILES_FORBIDDEN_TREES:
+        assert glob not in files
+
+
+def test_npm_pack_includes_pidash_pidiff_daemons_and_ui_source() -> None:
+    paths = _npm_pack_paths()
+    assert npm_pack_paths_include_pidash_pidiff_runtime(paths) is True
+    for required in NPM_PACK_REQUIRED_PATHS:
+        assert required in paths
+    dist_built = (REPO / "extensions/pidash/pidash-ui/dist/index.html").is_file() and (
+        REPO / "extensions/pidiff/pidiff-ui/dist/index.html"
+    ).is_file()
+    assert npm_pack_paths_include_ui_dist_when_built(paths, dist_built) is True

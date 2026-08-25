@@ -6,7 +6,7 @@ When generating or modifying HTML, frontend, or any browser-viewable files:
 2. Find a free port and launch the server:
 
    ```bash
-   HTTPD=~/.pi/agent/git/github.com/myk-org/pi-config/scripts/httpd.py
+   HTTPD="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/httpd.py"
    PORT=$(uv run python3 $HTTPD --find-port)
    nohup uv run python3 $HTTPD --port $PORT --dir /path/to/serve > ${PROJECT_TMP_DIR}/httpd-$PORT.log 2>&1 &
    disown

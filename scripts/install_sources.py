@@ -13,9 +13,47 @@ PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
 # Preferred source since 4.3.7 — pi-config itself installs from npm, not a
 # git clone under ~/.pi (that tree is package-managed, not a scratch checkout).
 PI_CONFIG_NPM = "npm:pi-orchestrator-config"
-# Throwaway source clone (agents/, symlink script — files npm doesn't ship)
-# lives under $HOME, never under .pi.
-PI_SRC_DIR_MARKER = "$HOME/pi-config-src"
+MYK_PI_TOOLS_INSTALL_CMD = "uv tool install myk-pi-tools"
+# Live npm install tree (pi unpacks packages here — not a git clone).
+PI_NPM_PKG_DIR = "$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
+# Explicit paths — directory globs like extensions/pidash/ pack nested
+# node_modules (files[] overrides gitignore). Same for scripts/ (__pycache__).
+NPM_FILES_REQUIRED = (
+    "scripts/pidash-server.ts",
+    "scripts/pidiff-server.ts",
+    "scripts/daemon-shared.ts",
+    "scripts/serve-ui.ts",
+    "scripts/pidash-discord.ts",
+    "scripts/httpd.py",
+    "scripts/symlink-cli-specialists.sh",
+    "extensions/pidash/pidash-ui/src/",
+    "extensions/pidiff/pidiff-ui/src/",
+    "extensions/pidash/pidash-ui/dist/",
+    "extensions/pidiff/pidiff-ui/dist/",
+)
+# Whole-tree entries swallow node_modules / __pycache__ into the tarball.
+NPM_FILES_FORBIDDEN_TREES = (
+    "extensions/pidash/",
+    "extensions/pidiff/",
+    "scripts/",
+)
+NPM_PACK_REQUIRED_PATHS = (
+    "scripts/pidash-server.ts",
+    "scripts/pidiff-server.ts",
+    "scripts/daemon-shared.ts",
+    "scripts/serve-ui.ts",
+    "scripts/pidash-discord.ts",
+    "scripts/httpd.py",
+    "scripts/symlink-cli-specialists.sh",
+    "extensions/pidash/pidash.ts",
+    "extensions/pidiff/pidiff.ts",
+    "extensions/pidash/pidash-ui/package.json",
+    "extensions/pidiff/pidiff-ui/package.json",
+)
+NPM_PACK_FORBIDDEN_SUBSTRINGS = (
+    "pidash-ui/node_modules",
+    "pidiff-ui/node_modules",
+)
 
 
 def create_logger(name: str = "install") -> logging.Logger:
@@ -48,16 +86,59 @@ def should_migrate_vertex_to_npm(settings_text: str) -> bool:
     """
     has_npm = is_pi_pkg_installed(settings_text, PI_VERTEX_NPM)
     has_legacy = is_pi_pkg_installed(settings_text, PI_VERTEX_GIT)
-    migrate = has_legacy and not has_npm
+    migrate = has_legacy
     log.debug("vertex migration needed=%s legacy=%s npm=%s", migrate, has_legacy, has_npm)
     return migrate
 
 
-def vertex_pi_cmd(installed: bool) -> str:
-    """Install or update command for Vertex Claude from the npm registry."""
+def vertex_pi_cmd(installed: bool, settings_text: str = "") -> str:
+    """Install or update Vertex Claude from npm; drop leftover git-subdir source."""
+    if should_migrate_vertex_to_npm(settings_text):
+        parts = [f"pi uninstall {PI_VERTEX_GIT}"]
+        if not is_pi_pkg_installed(settings_text, PI_VERTEX_NPM):
+            parts.append(f"pi install {PI_VERTEX_NPM}")
+        cmd = " && ".join(parts)
+        log.debug("vertex migrate-to-npm cmd=%s", cmd)
+        return cmd
     action = "update" if installed else "install"
     cmd = f"pi {action} {PI_VERTEX_NPM}"
     log.debug("vertex npm source installed=%s cmd=%s", installed, cmd)
+    return cmd
+
+
+def is_quoted_package_source(settings_text: str, source: str) -> bool:
+    """True when settings.json lists ``source`` as a JSON string (quoted).
+
+    Quoted match keeps ``git:…/pi-config`` from colliding with
+    ``git:…/pi-config/packages/pi-vertex-claude``.
+    """
+    token = f'"{source}"'
+    found = token in settings_text
+    log.debug("quoted package source=%s found=%s", source, found)
+    return found
+
+
+def should_migrate_pi_config_to_npm(settings_text: str) -> bool:
+    """True when the root git package is registered and npm is not."""
+    has_npm = is_pi_pkg_installed(settings_text, PI_CONFIG_NPM)
+    has_legacy = is_quoted_package_source(settings_text, PI_CONFIG_GIT)
+    migrate = has_legacy
+    log.debug("pi-config migration needed=%s legacy=%s npm=%s", migrate, has_legacy, has_npm)
+    return migrate
+
+
+def pi_config_pi_cmd(installed: bool, settings_text: str = "") -> str:
+    """Install or update pi-config from npm; drop leftover root git source."""
+    if should_migrate_pi_config_to_npm(settings_text):
+        parts = [f"pi uninstall {PI_CONFIG_GIT}"]
+        if not is_pi_pkg_installed(settings_text, PI_CONFIG_NPM):
+            parts.append(f"pi install {PI_CONFIG_NPM}")
+        cmd = " && ".join(parts)
+        log.debug("pi-config migrate-to-npm cmd=%s", cmd)
+        return cmd
+    action = "update" if installed else "install"
+    cmd = f"pi {action} {PI_CONFIG_NPM}"
+    log.debug("pi-config npm source installed=%s cmd=%s", installed, cmd)
     return cmd
 
 
@@ -86,14 +167,16 @@ def entrypoint_registers_pi_config_via_npm(entrypoint_text: str) -> bool:
     """pi-config itself must install from npm (via the shared register_pi_pkg
     helper), never clone into .pi."""
     uses_npm_call_site = "register_pi_pkg pi-orchestrator-config" in entrypoint_text
-    uses_git_clone = PI_CONFIG_GIT in entrypoint_text
+    # Exact install of the root git package — not a substring of the vertex
+    # legacy marker git:.../pi-config/packages/pi-vertex-claude.
+    uses_git_install = f"pi install {PI_CONFIG_GIT}" in entrypoint_text
     uses_dotpi_dir = ".pi/agent/git/github.com" in entrypoint_text
-    ok = uses_npm_call_site and not uses_git_clone and not uses_dotpi_dir
+    ok = uses_npm_call_site and not uses_git_install and not uses_dotpi_dir
     log.debug(
-        "entrypoint pi-config npm-check ok=%s call_site=%s git_clone=%s dotpi_dir=%s",
+        "entrypoint pi-config npm-check ok=%s call_site=%s git_install=%s dotpi_dir=%s",
         ok,
         uses_npm_call_site,
-        uses_git_clone,
+        uses_git_install,
         uses_dotpi_dir,
     )
     return ok
@@ -108,13 +191,18 @@ def entrypoint_installs_myk_pi_tools_from_pypi(entrypoint_text: str) -> bool:
     return ok
 
 
-def entrypoint_source_clone_under_home_not_dotpi(entrypoint_text: str) -> bool:
-    """The agents/symlink source clone must live under $HOME, not .pi."""
-    uses_home_src = PI_SRC_DIR_MARKER in entrypoint_text
-    uses_dotpi_dir = ".pi/agent/git/github.com" in entrypoint_text
-    ok = uses_home_src and not uses_dotpi_dir
+def entrypoint_has_no_pi_config_git_clone(entrypoint_text: str) -> bool:
+    """Users must not need a github.com/myk-org/pi-config git clone at runtime."""
+    clones_repo = "github.com/myk-org/pi-config.git" in entrypoint_text
+    home_src = "pi-config-src" in entrypoint_text
+    uses_npm_tree = "node_modules/pi-orchestrator-config" in entrypoint_text
+    ok = uses_npm_tree and not clones_repo and not home_src
     log.debug(
-        "entrypoint source-clone location-check ok=%s home_src=%s dotpi_dir=%s", ok, uses_home_src, uses_dotpi_dir
+        "entrypoint no-git-clone ok=%s npm_tree=%s clones=%s home_src=%s",
+        ok,
+        uses_npm_tree,
+        clones_repo,
+        home_src,
     )
     return ok
 
@@ -141,4 +229,48 @@ def entrypoint_has_single_registration_mechanism(entrypoint_text: str) -> bool:
         uninstall_calls_outside_helper,
         call_sites,
     )
+    return ok
+
+
+def npm_files_field_ships_pidash_pidiff(files: list[str]) -> bool:
+    """Root package.json files must list daemon scripts and full pidash/pidiff
+    trees (plus explicit dist/ so gitignored UI builds still pack).
+    """
+    missing = [entry for entry in NPM_FILES_REQUIRED if entry not in files]
+    forbidden = [entry for entry in NPM_FILES_FORBIDDEN_TREES if entry in files]
+    ok = not missing and not forbidden
+    log.debug(
+        "npm files-field pidash/pidiff ok=%s missing=%s forbidden_trees=%s",
+        ok,
+        missing,
+        forbidden,
+    )
+    return ok
+
+
+def npm_pack_paths_include_pidash_pidiff_runtime(paths: list[str]) -> bool:
+    """Packed tarball must contain daemon entrypoints and UI package manifests,
+    and must not ship UI node_modules.
+    """
+    missing = [p for p in NPM_PACK_REQUIRED_PATHS if p not in paths]
+    leaked = [s for s in NPM_PACK_FORBIDDEN_SUBSTRINGS if any(s in p for p in paths)]
+    ok = not missing and not leaked
+    log.debug("npm pack pidash/pidiff runtime ok=%s missing=%s leaked=%s", ok, missing, leaked)
+    return ok
+
+
+def npm_pack_paths_include_ui_dist_when_built(paths: list[str], dist_built: bool) -> bool:
+    """When UI dist exists on disk, the tarball must include index.html.
+    Unbuilt dist is allowed in unit tests; publish builds first.
+    """
+    if not dist_built:
+        log.debug("npm pack ui-dist check skipped (dist not built)")
+        return True
+    required = (
+        "extensions/pidash/pidash-ui/dist/index.html",
+        "extensions/pidiff/pidiff-ui/dist/index.html",
+    )
+    missing = [p for p in required if p not in paths]
+    ok = not missing
+    log.debug("npm pack ui-dist check ok=%s missing=%s", ok, missing)
     return ok

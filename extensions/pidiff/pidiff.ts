@@ -27,6 +27,7 @@ import {
 } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
 import { setupHeartbeat, setupReconnectPoller } from "../shared/ws-client.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { evaluateSpawnLock } from "./spawn-lock.js";
@@ -140,6 +141,10 @@ export function registerPidiff(pi: ExtensionAPI): void {
   async function connect(ctx: any) {
     log.debug(`connect() called, connected=${connected}, connecting=${connecting}`);
     if (connected || connecting || shuttingDown) return;
+    if (!isLiveExtensionCtx(ctx)) {
+      log.debug("connect() skipped — stale ctx");
+      return;
+    }
     connecting = true;
     lastCtx = ctx;
     if (!lockDir) { log.debug("connect: lockDir not set (session_start not fired yet)"); connecting = false; return; }
@@ -396,7 +401,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
     lastCtx = ctx;
     lockDir = path.join(ctx.cwd, ".pi", "tmp");
     if (!isGitRepo(ctx.cwd)) return;
-    if (!connected && ctx.mode === "tui") connect(ctx);
+    if (!connected && isLiveExtensionCtx(ctx) && ctx.mode === "tui") connect(ctx);
   });
 
   pi.on("agent_end", (_event, ctx) => {
@@ -405,14 +410,23 @@ export function registerPidiff(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", (_event, ctx) => {
-    if (!connected && !shuttingDown && ctx.mode === "tui") connect(ctx);
+    if (!connected && !shuttingDown && isLiveExtensionCtx(ctx) && ctx.mode === "tui") connect(ctx);
   });
 
   const cleanupReconnect = setupReconnectPoller({
     isConnected: () => connected,
     isConnecting: () => connecting,
     isShuttingDown: () => shuttingDown,
-    connect: () => { if (lastCtx?.mode === "tui") connect(lastCtx); },
+    connect: () => {
+      if (!isLiveExtensionCtx(lastCtx)) {
+        if (lastCtx) {
+          log.debug("reconnect poller skipped — stale ctx");
+          lastCtx = null;
+        }
+        return;
+      }
+      if (lastCtx.mode === "tui") connect(lastCtx);
+    },
   });
 
   pi.on("session_shutdown", () => {

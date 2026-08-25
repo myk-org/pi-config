@@ -13,32 +13,22 @@ npm install -g acpx
 # leaving it in place.
 register_pi_pkg() {
     local source="$1" legacy_marker="${2:-}"
+    # Quoted JSON token so git:…/pi-config does not match git:…/pi-config/packages/…
+    if [ -n "$legacy_marker" ] && grep -qF "\"${legacy_marker}\"" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
+        pi uninstall "$legacy_marker" 2>/dev/null || true
+    fi
     if grep -qF "npm:${source}" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
         return 0
     fi
-    if [ -n "$legacy_marker" ] && grep -qF "$legacy_marker" "$HOME/.pi/agent/settings.json" 2>/dev/null; then
-        pi uninstall "$legacy_marker" 2>/dev/null || true
-    fi
     pi install "npm:$source" 2>/dev/null || true
 }
-register_pi_pkg pi-orchestrator-config
+register_pi_pkg pi-orchestrator-config "git:github.com/myk-org/pi-config"
 register_pi_pkg "@myk-org/pi-vertex-claude" "git:github.com/myk-org/pi-config/packages/pi-vertex-claude"
 register_pi_pkg pi-web-access
 
-# Update all installed packages + myk-pi-tools (published on PyPI — no local
-# source clone needed).
+# Update all installed packages + myk-pi-tools (PyPI — no git source).
 pi update --all
 uv tool install --force myk-pi-tools 2>/dev/null || true
-
-# Source clone for files npm doesn't ship (agents/, symlink script). Lives
-# under $HOME, never under .pi — that tree is package-managed, not a scratch
-# git checkout.
-PI_SRC_DIR="$HOME/pi-config-src"
-if [ ! -d "$PI_SRC_DIR" ]; then
-    git clone --depth 1 https://github.com/myk-org/pi-config.git "$PI_SRC_DIR" 2>/dev/null || true
-else
-    git -C "$PI_SRC_DIR" pull --ff-only 2>/dev/null || true
-fi
 
 
 # Fix host-specific paths in mounted .gitconfig (read-only mount, can't write in-place)
@@ -83,10 +73,12 @@ add_to_gitignore '.claude/agents/'
 add_to_gitignore '.gemini/agents/'
 
 # Symlink package agents into PWD for Cursor/Claude/Gemini discovery (container only).
+# Source is the npm unpack of pi-orchestrator-config — never a git clone.
 # Native users place these manually — see README / cli-provider.md.
 # Failures are warn-only: container start must not abort if linking fails.
-AGENTS_SRC="$PI_SRC_DIR/agents"
-SYMLINK_SCRIPT="$PI_SRC_DIR/scripts/symlink-cli-specialists.sh"
+PI_NPM_PKG="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"
+AGENTS_SRC="$PI_NPM_PKG/agents"
+SYMLINK_SCRIPT="$PI_NPM_PKG/scripts/symlink-cli-specialists.sh"
 if [ -d "$AGENTS_SRC" ] && [ -x "$SYMLINK_SCRIPT" ]; then
     if ! "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
         echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
@@ -95,6 +87,8 @@ elif [ -d "$AGENTS_SRC" ] && [ -f "$SYMLINK_SCRIPT" ]; then
     if ! bash "$SYMLINK_SCRIPT" "$AGENTS_SRC" "$PWD"; then
         echo "WARN: failed to symlink CLI specialists from $AGENTS_SRC" >&2
     fi
+else
+    echo "WARN: pi-orchestrator-config npm tree missing at $PI_NPM_PKG — skip CLI specialist symlinks" >&2
 fi
 
 exec pi "$@"

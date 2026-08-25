@@ -343,7 +343,7 @@ Dirs are gitignored in the container (see `add_to_gitignore` in `entrypoint.sh`)
 No auto-sync. Symlink or copy package agents yourself, for example:
 
 ```bash
-PKG="$HOME/.pi/agent/git/github.com/myk-org/pi-config/agents"
+PKG="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/agents"
 mkdir -p .cursor/agents .claude/agents .gemini/agents
 for f in "$PKG"/*.md; do
   ln -sfn "$f" ".cursor/agents/$(basename "$f")"

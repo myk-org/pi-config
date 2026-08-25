@@ -120,13 +120,22 @@ See the [Docker section](#docker-sandboxed-execution) below for the full run com
 
 ### Native (without Docker)
 
-Run the interactive installer — it walks you through each component with multi-select checkboxes:
+Install from npm and PyPI — no git clone of this repo:
+
+```bash
+pi install npm:pi-orchestrator-config
+pi install npm:@myk-org/pi-vertex-claude   # optional Vertex Claude models
+pi install npm:pi-web-access               # optional web search/fetch
+uv tool install myk-pi-tools
+```
+
+Or run the interactive installer (downloads the script only; packages still come from npm/PyPI):
 
 ```bash
 uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
 ```
 
-Or if you already have the repo cloned:
+If you already have the **dev** clone:
 
 ```bash
 uv run scripts/install.py
@@ -738,8 +747,8 @@ Then just run `pi-docker` from any project directory.
 > `pi install` runs on each start.
 > A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
 > If pi misbehaves or the warning persists, verify network connectivity
-> and run `pi install git:github.com/myk-org/pi-config` and
-> `pi install git:github.com/myk-org/pi-config/packages/pi-vertex-claude` manually.
+> and run `pi install npm:pi-orchestrator-config` and
+> `pi install npm:@myk-org/pi-vertex-claude` manually.
 
 ## Discord Bot
 
