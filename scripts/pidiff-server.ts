@@ -534,14 +534,20 @@ function startWatching(sessionId: string, worktreePath: string) {
   const retryKey = `${sessionId}:${worktreePath}`;
   if (!_chokidar) {
     const retries = chokidarRetries.get(retryKey) || 0;
-    if (retries >= MAX_CHOKIDAR_RETRIES) { log(`chokidar failed to load after ${MAX_CHOKIDAR_RETRIES} retries, giving up on ${worktreePath}`); return; }
+    if (retries >= MAX_CHOKIDAR_RETRIES) {
+      slog.error("chokidar failed to load", { worktreePath, retries: MAX_CHOKIDAR_RETRIES });
+      return;
+    }
     chokidarRetries.set(retryKey, retries + 1);
     setTimeout(() => startWatching(sessionId, worktreePath), 1000 * Math.min(retries + 1, 5));
     return;
   }
   chokidarRetries.delete(retryKey);
   const key = `${sessionId}:${worktreePath}`;
-  if (activeWatchers.has(key)) return;
+  if (activeWatchers.has(key)) {
+    slog.debug("startWatching already active", { worktreePath });
+    return;
+  }
 
   let gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
   slog.info("starting chokidar watch", { worktreePath });
@@ -595,7 +601,7 @@ function startWatching(sessionId: string, worktreePath: string) {
       gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
     });
     state.gitignoreWatcher = gitignoreWatcher;
-  } catch (e: any) { log(`gitignore watcher setup failed: ${e.message}`); }
+  } catch (e: any) { slog.error("gitignore watcher setup failed", { err: e.message }); }
 }
 
 function stopWatching(sessionId: string, worktreePath: string) {
