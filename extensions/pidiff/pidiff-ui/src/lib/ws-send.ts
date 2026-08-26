@@ -53,6 +53,20 @@ export function runReconnectWatch(
   for (const msg of restoreWatchMessages(worktreePath, sessionId)) send(msg);
 }
 
+/** Restore watches only on a disconnected→connected edge. Selection changes must not resend. */
+export function restoreWatchesOnReconnect(
+  connected: boolean,
+  wasConnected: boolean,
+  worktreePath: string | undefined,
+  sessionId: string | undefined,
+  send: (msg: object) => unknown,
+): boolean {
+  log.debug("restoreWatchesOnReconnect", { connected, wasConnected });
+  if (!connected || wasConnected) return false;
+  runReconnectWatch(true, worktreePath, sessionId, send);
+  return true;
+}
+
 /** App.tsx reconnect useEffect body. disconnected then connected is a reconnect. */
 export function appReconnectEffect(
   connected: boolean,
@@ -89,6 +103,17 @@ export function clearWsReconnect(timer: WsTimerRef): void {
   log.debug("clearWsReconnect");
   if (timer.current) clearTimeout(timer.current);
   timer.current = null;
+}
+
+/** Unexpected close: log then queue a reconnect that cleanup can cancel. */
+export function queueWsReconnect(
+  tearingDown: { current: boolean },
+  timer: WsTimerRef,
+  connect: () => void,
+  delayMs: number,
+): void {
+  log.debug("queueWsReconnect", { delayMs, teardown: tearingDown.current });
+  scheduleWsReconnect(tearingDown, timer, connect, delayMs);
 }
 
 /** Cleanup close must not reconnect; unexpected close must. */

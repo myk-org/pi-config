@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createLogger } from "../lib/create-logger.ts";
-import { handleWsClose, scheduleWsReconnect, trySendWs, wsEffectCleanup } from "../lib/ws-send.ts";
+import { handleWsClose, queueWsReconnect, trySendWs, wsEffectCleanup } from "../lib/ws-send.ts";
 
 const log = createLogger("pidiff-ui");
 
@@ -43,7 +43,8 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
         setConnected(false);
         wsRef.current = null;
         handleWsClose(tearingDown.current, () => {
-          scheduleWsReconnect(tearingDown, reconnectTimer, connect, 3000);
+          log.debug("ws unexpected close reconnect");
+          queueWsReconnect(tearingDown, reconnectTimer, connect, 3000);
         });
       };
       ws.onerror = () => ws.close();

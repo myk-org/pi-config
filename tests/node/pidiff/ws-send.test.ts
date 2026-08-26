@@ -8,13 +8,14 @@ import { createLogger } from "../../../extensions/pidiff/pidiff-ui/src/lib/creat
 import {
   appReconnectEffect,
   handleWsClose,
+  queueWsReconnect,
   restoreWatchMessages,
+  restoreWatchesOnReconnect,
   runReconnectWatch,
   scheduleWsReconnect,
   trySendWs,
   wsEffectCleanup,
 } from "../../../extensions/pidiff/pidiff-ui/src/lib/ws-send.ts";
-import { AppReconnectWatch } from "../../../extensions/pidiff/pidiff-ui/src/lib/app-reconnect-watch.tsx";
 
 (globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG = true;
 
@@ -138,6 +139,7 @@ describe("scheduleWsReconnect", () => {
     const timer: { current: ReturnType<typeof setTimeout> | null } = { current: null };
     let connects = 0;
     handleWsClose(false, () => {
+      log.debug("ws unexpected close reconnect");
       scheduleWsReconnect(tearingDown, timer, () => { connects += 1; }, 0);
     });
     await new Promise((r) => setTimeout(r, 20));
@@ -145,41 +147,50 @@ describe("scheduleWsReconnect", () => {
   });
 });
 
-describe("AppReconnectWatch", () => {
+describe("restoreWatchesOnReconnect", () => {
   it("App effect skips watch while disconnected", () => {
-    log.debug("AppReconnectWatch disconnected");
+    log.debug("restoreWatchesOnReconnect disconnected");
     const sent: object[] = [];
-    AppReconnectWatch({
-      connected: false,
-      worktreePath: "/tmp/wt",
-      sessionId: "sess",
-      send: (m) => sent.push(m),
-      effectHook: (fn) => { fn(); },
-    });
+    assert.equal(
+      restoreWatchesOnReconnect(false, false, "/tmp/wt", "sess", (m) => sent.push(m)),
+      false,
+    );
     assert.deepEqual(sent, []);
   });
 
   it("App effect restores watches after reconnect", () => {
-    log.debug("AppReconnectWatch reconnect");
+    log.debug("restoreWatchesOnReconnect rising edge");
     const sent: object[] = [];
-    const effectHook = (fn: () => void) => { fn(); };
-    AppReconnectWatch({
-      connected: false,
-      worktreePath: "/tmp/wt",
-      sessionId: "sess",
-      send: (m) => sent.push(m),
-      effectHook,
-    });
-    AppReconnectWatch({
-      connected: true,
-      worktreePath: "/tmp/wt",
-      sessionId: "sess",
-      send: (m) => sent.push(m),
-      effectHook,
-    });
+    restoreWatchesOnReconnect(false, false, "/tmp/wt", "sess", (m) => sent.push(m));
+    assert.equal(
+      restoreWatchesOnReconnect(true, false, "/tmp/wt", "sess", (m) => sent.push(m)),
+      true,
+    );
     assert.deepEqual(sent, [
       { type: "watch", sessionId: "sess" },
       { type: "watch-worktree", worktreePath: "/tmp/wt" },
     ]);
+  });
+
+  it("does not resend watches on worktree selection", () => {
+    log.debug("restoreWatchesOnReconnect selection");
+    const sent: object[] = [];
+    assert.equal(
+      restoreWatchesOnReconnect(true, true, "/tmp/other", "sess", (m) => sent.push(m)),
+      false,
+    );
+    assert.deepEqual(sent, []);
+  });
+});
+
+describe("queueWsReconnect", () => {
+  it("logs then schedules a reconnect", async () => {
+    log.debug("queueWsReconnect");
+    const tearingDown = { current: false };
+    const timer: { current: ReturnType<typeof setTimeout> | null } = { current: null };
+    let connects = 0;
+    queueWsReconnect(tearingDown, timer, () => { connects += 1; }, 0);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(connects, 1);
   });
 });
