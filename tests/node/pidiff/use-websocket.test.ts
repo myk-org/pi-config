@@ -4,10 +4,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToString } from "react-dom/server";
+import { createRoot } from "react-dom/client";
 import { createLogger } from "../../../extensions/pidiff/pidiff-ui/src/lib/create-logger.ts";
 import { useWebSocket } from "../../../extensions/pidiff/pidiff-ui/src/hooks/useWebSocket.ts";
+import { installReactDomShim } from "./react-dom-shim.mjs";
 
 const log = createLogger("pidiff-ui");
 
@@ -53,5 +55,36 @@ describe("useWebSocket send", () => {
     renderToString(createElement(OpenProbe, { ws, onResult: (v) => { ok = v; } }));
     assert.equal(ok, true);
     assert.deepEqual(sent, [JSON.stringify({ type: "request-diffs", mode: "branch" })]);
+  });
+});
+
+describe("useWebSocket cleanup", () => {
+  it("unmount close does not open another socket", async () => {
+    log.debug("useWebSocket unmount cleanup");
+    const sockets: Array<{ close: () => void; onclose?: () => void }> = [];
+    (globalThis as { WebSocket?: unknown }).WebSocket = class {
+      static OPEN = 1;
+      readyState = 0;
+      onclose?: () => void;
+      constructor() {
+        sockets.push(this);
+      }
+      close() {
+        this.readyState = 3;
+        this.onclose?.();
+      }
+    } as unknown as typeof WebSocket;
+    const container = installReactDomShim();
+    function Probe() {
+      log.debug("CleanupProbe");
+      useWebSocket({ reconnectMs: 20 });
+      return null;
+    }
+    const root = createRoot(container);
+    await act(async () => { root.render(createElement(Probe)); });
+    assert.equal(sockets.length, 1);
+    await act(async () => { root.unmount(); });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(sockets.length, 1);
   });
 });

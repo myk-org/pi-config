@@ -4,8 +4,9 @@ import { handleWsClose, queueWsReconnect, trySendWs, wsEffectCleanup } from "../
 
 const log = createLogger("pidiff-ui");
 
-export function useWebSocket(options?: { testWs?: WebSocket | null }) {
+export function useWebSocket(options?: { testWs?: WebSocket | null; reconnectMs?: number }) {
   const skipConnect = Boolean(options && "testWs" in options);
+  const reconnectMs = options?.reconnectMs ?? 3000;
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(options?.testWs ?? null);
   const listenersRef = useRef<Set<(ev: any) => void>>(new Set());
@@ -22,6 +23,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
       return;
     }
     tearingDown.current = false;
+    log.debug("ws effect connect", { reconnectMs });
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${protocol}//${window.location.host}/ws/browser`;
 
@@ -44,7 +46,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
         wsRef.current = null;
         handleWsClose(tearingDown.current, () => {
           log.debug("ws unexpected close reconnect");
-          queueWsReconnect(tearingDown, reconnectTimer, connect, 3000);
+          queueWsReconnect(tearingDown, reconnectTimer, connect, reconnectMs);
         });
       };
       ws.onerror = () => ws.close();
@@ -65,7 +67,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
     return () => {
       wsEffectCleanup(tearingDown, wsRef.current, reconnectTimer);
     };
-  }, [skipConnect]);
+  }, [skipConnect, reconnectMs]);
 
   const send = useCallback((data: object) => {
     return trySendWs(wsRef.current, data, WebSocket.OPEN);

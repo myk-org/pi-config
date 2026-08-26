@@ -152,7 +152,10 @@ describe("restoreWatchesOnReconnect", () => {
     log.debug("restoreWatchesOnReconnect disconnected");
     const sent: object[] = [];
     assert.equal(
-      restoreWatchesOnReconnect(false, false, "/tmp/wt", "sess", (m) => sent.push(m)),
+      restoreWatchesOnReconnect(false, false, "/tmp/wt", "sess", (m) => {
+        log.debug("watch send", m);
+        sent.push(m);
+      }),
       false,
     );
     assert.deepEqual(sent, []);
@@ -161,9 +164,15 @@ describe("restoreWatchesOnReconnect", () => {
   it("App effect restores watches after reconnect", () => {
     log.debug("restoreWatchesOnReconnect rising edge");
     const sent: object[] = [];
-    restoreWatchesOnReconnect(false, false, "/tmp/wt", "sess", (m) => sent.push(m));
+    restoreWatchesOnReconnect(false, false, "/tmp/wt", "sess", (m) => {
+      log.debug("watch send", m);
+      sent.push(m);
+    });
     assert.equal(
-      restoreWatchesOnReconnect(true, false, "/tmp/wt", "sess", (m) => sent.push(m)),
+      restoreWatchesOnReconnect(true, false, "/tmp/wt", "sess", (m) => {
+        log.debug("watch send", m);
+        sent.push(m);
+      }),
       true,
     );
     assert.deepEqual(sent, [
@@ -176,7 +185,10 @@ describe("restoreWatchesOnReconnect", () => {
     log.debug("restoreWatchesOnReconnect selection");
     const sent: object[] = [];
     assert.equal(
-      restoreWatchesOnReconnect(true, true, "/tmp/other", "sess", (m) => sent.push(m)),
+      restoreWatchesOnReconnect(true, true, "/tmp/other", "sess", (m) => {
+        log.debug("watch send", m);
+        sent.push(m);
+      }),
       false,
     );
     assert.deepEqual(sent, []);
