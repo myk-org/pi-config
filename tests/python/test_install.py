@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -284,3 +290,120 @@ def test_package_json_prepack_builds_extension_uis() -> None:
     assert scripts["prepack"] == "npm run build:extension-uis"
     assert "build-extension-uis.sh" in scripts["build:extension-uis"]
     assert "prepublishOnly" not in scripts
+
+
+def _prereqs(*, node: bool = True, git: bool = True, pi: bool = True, uv: bool = True) -> dict[str, bool]:
+    return {"node": node, "git": git, "pi": pi, "uv": uv}
+
+
+def _stub_questionary() -> None:
+    if "questionary" in sys.modules:
+        return
+    q = ModuleType("questionary")
+    q.__dict__.update({
+        "Choice": type("Choice", (), {}),
+        "Style": lambda *_args: None,
+        "confirm": lambda *_args, **_kwargs: None,
+        "checkbox": lambda *_args, **_kwargs: None,
+    })
+    sys.modules["questionary"] = q
+
+
+def _mcpc_tool(monkeypatch: pytest.MonkeyPatch, *, node: bool, which_mcpc: str | None) -> Any:
+    _stub_questionary()
+    install = importlib.import_module("install")
+
+    def fake_which(name: str, *_args: object, **_kwargs: object) -> str | None:
+        if name == "mcpc":
+            return which_mcpc
+        return None
+
+    monkeypatch.setattr(install.shutil, "which", fake_which)
+    for step in install.build_steps(_prereqs(node=node)):
+        for tool in step.tools:
+            if tool.name == "mcpc":
+                return tool
+    raise AssertionError("mcpc tool missing from build_steps")
+
+
+def test_build_steps_emits_mcpc_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _mcpc_tool(monkeypatch, node=True, which_mcpc=None)
+    assert tool.name == "mcpc"
+
+
+def test_build_steps_mcpc_npm_install_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _mcpc_tool(monkeypatch, node=True, which_mcpc=None)
+    assert tool.install_cmd == "npm install -g @apify/mcpc"
+
+
+def test_build_steps_mcpc_installed_when_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _mcpc_tool(monkeypatch, node=True, which_mcpc="/usr/bin/mcpc")
+    assert tool.installed is True
+
+
+def test_build_steps_mcpc_not_installed_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _mcpc_tool(monkeypatch, node=True, which_mcpc=None)
+    assert tool.installed is False
+
+
+def test_build_steps_mcpc_disabled_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _mcpc_tool(monkeypatch, node=False, which_mcpc=None)
+    assert tool.disabled == "requires Node.js"
+
+
+def test_entrypoint_reinstalls_mcpc() -> None:
+    text = (REPO / "entrypoint.sh").read_text()
+    assert "npm install -g @apify/mcpc" in text
+
+
+def test_entrypoint_continues_when_mcpc_npm_install_fails(tmp_path: Path) -> None:
+    """A failed @apify/mcpc reinstall must not abort container start."""
+    log = create_logger("install-test")
+    entrypoint = REPO / "entrypoint.sh"
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir.mkdir()
+    npm_log = tmp_path / "npm.log"
+    update_marker = tmp_path / "reached-pi-update"
+
+    npm = bin_dir / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{npm_log}"\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "@apify/mcpc" ]; then exit 1; fi\n'
+        "done\n"
+        "exit 0\n"
+    )
+    pi = bin_dir / "pi"
+    pi.write_text(f'#!/bin/sh\nif [ "$1" = "update" ]; then : > "{update_marker}"; fi\nexit 0\n')
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\nexit 0\n")
+    git = bin_dir / "git"
+    git.write_text("#!/bin/sh\nexit 0\n")
+    for stub in (npm, pi, uv, git):
+        stub.chmod(0o755)
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["bash", str(entrypoint), "survived"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=15,
+    )
+    log.debug(
+        "entrypoint mcpc-fail-open exit=%s npm_log=%s update=%s stderr=%s",
+        result.returncode,
+        npm_log.exists(),
+        update_marker.exists(),
+        (result.stderr or "").strip()[:200],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "@apify/mcpc" in npm_log.read_text()
+    assert update_marker.is_file()

@@ -19,6 +19,7 @@
  *   /cron <Tab>                  → add, list, list-all, remove
  *   /dream-auto <Tab>            → on, off
  *   /async-kill <Tab>            → all (or type name / id prefix)
+ *   /mcpc <Tab>                  → connect
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -28,6 +29,7 @@ import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { getCronFilePath } from "./cron.js";
+import { mcpcArgumentCompletions } from "./mcpc.js";
 
 // ── Cache infrastructure ────────────────────────────────────────────
 
@@ -265,6 +267,8 @@ function registerCompletions(
         return null;
       }
     },
+
+    "mcpc": mcpcArgumentCompletions,
 
     "dream-auto": (prefix: string) => {
       return filter([

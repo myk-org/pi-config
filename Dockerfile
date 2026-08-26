@@ -96,9 +96,11 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 
 # Install remote uv tools (cached independently of local source changes)
 RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1000 \
-  uv tool install mcp-launchpad --from "mcp-launchpad @ git+https://github.com/kenneth-liao/mcp-launchpad.git" && \
   uv tool install prek && \
   uv tool install mcp-proxy
+
+# MCP CLI — connects servers from ~/.pi/pi-config/mcp.json when that file exists
+RUN npm install -g @apify/mcpc
 
 # myk-pi-tools is installed at runtime by entrypoint.sh from the latest
 # pi-config source (pulled via pi update). No need to bake it into the image.

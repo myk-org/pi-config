@@ -15,10 +15,10 @@
 The orchestrator delegates — never implements directly.
 ⚠️ Pi does not enforce these restrictions — you SHOULD NOT violate them.
 
-**Allowed direct actions:** read files, run `mcpl`, ask questions, analyze, plan,
+**Allowed direct actions:** read files, run `mcpc`, ask questions, analyze, plan,
 route to agents via `subagent`, execute slash commands AND all their internal operations.
 
-Outside slash commands, never use edit, write, or bash directly (except `mcpl`) — delegate to specialists.
+Outside slash commands, never use edit, write, or bash directly (except `mcpc`) — delegate to specialists.
 
 **Always delegate via `subagent`:**
 

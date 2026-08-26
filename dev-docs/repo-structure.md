@@ -156,7 +156,7 @@ pi-config/
 │   ├── 00-orchestrator-core.md
 │   ├── 05-issue-first-workflow.md
 │   ├── 10-agent-routing.md
-│   ├── 15-mcp-launchpad.md
+│   ├── 15-mcpc.md
 │   ├── 20-code-review-loop.md
 │   ├── 25-documentation-updates.md
 │   ├── 30-prompt-templates.md
