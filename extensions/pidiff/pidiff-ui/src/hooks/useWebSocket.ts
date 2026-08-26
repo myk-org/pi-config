@@ -20,7 +20,10 @@ export function useWebSocket(options?: { testWs?: WebSocket | null; reconnectMs?
   useEffect(() => {
     if (skipConnect) {
       log.debug("ws skipConnect");
-      return;
+      return () => {
+        log.debug("ws skipConnect cleanup");
+        setConnected(false);
+      };
     }
     tearingDown.current = false;
     log.debug("ws effect connect", { reconnectMs });
@@ -75,6 +78,8 @@ export function useWebSocket(options?: { testWs?: WebSocket | null; reconnectMs?
     connect();
     return () => {
       cancelled = true;
+      log.debug("ws effect cleanup");
+      setConnected(false);
       wsEffectCleanup(tearingDown, wsRef.current, reconnectTimer);
     };
   }, [skipConnect, reconnectMs]);
