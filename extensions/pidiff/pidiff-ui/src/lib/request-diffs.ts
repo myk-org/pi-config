@@ -72,13 +72,20 @@ export function runAppRefresh(
   selectedFrom: string,
   selectedTo: string,
 ): { skipped: boolean; sent: boolean } {
-  log.info("runAppRefresh", { connected, refreshing, mode });
+  log.debug("runAppRefresh", { connected, refreshing, mode });
   if (!shouldBeginRefresh(connected, refreshing)) {
-    log.warn("runAppRefresh skipped", { connected, refreshing });
+    log.debug("runAppRefresh skipped", { connected, refreshing });
     return { skipped: true, sent: false };
   }
   const refs = commitRefsForRefresh(mode, displayedFrom, displayedTo, selectedFrom, selectedTo);
   const sent = Boolean(send(buildRequestDiffsMessage(mode, refs.from, refs.to)));
-  if (!sent) log.warn("runAppRefresh dropped", { connected });
+  if (!sent) log.error("runAppRefresh dropped", { connected });
   return { skipped: false, sent };
+}
+
+/** True only when the refresh payload reached the socket. */
+export function beginRefreshUi(result: { skipped: boolean; sent: boolean }): boolean {
+  const ok = result.sent && !result.skipped;
+  log.debug("beginRefreshUi", { ...result, ok });
+  return ok;
 }

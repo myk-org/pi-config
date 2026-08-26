@@ -12,6 +12,8 @@ import React, { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { createLogger } from "../../../extensions/pidiff/pidiff-ui/src/lib/create-logger.ts";
 
+(globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG = true;
+
 const log = createLogger("pidiff-ui");
 const here = dirname(fileURLToPath(import.meta.url));
 register(pathToFileURL(join(here, "pierre-mock-loader.mjs")).href);
@@ -48,7 +50,7 @@ describe("App Refresh render", () => {
   });
 
   it("App header Refresh is disabled while disconnected", async () => {
-    log.info("App disconnected Refresh");
+    log.debug("App disconnected Refresh");
     const { App } = await import("../../../extensions/pidiff/pidiff-ui/src/App.tsx");
     const html = renderToString(createElement(App));
     assert.match(html, /data-pidiff-refresh-slot="header"/);

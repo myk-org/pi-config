@@ -60,8 +60,35 @@ export function appReconnectEffect(
   sessionId: string | undefined,
   send: (msg: object) => unknown,
 ): void {
-  log.info("App reconnect effect", { connected });
+  log.debug("App reconnect effect", { connected });
   runReconnectWatch(connected, worktreePath, sessionId, send);
+}
+
+export type WsTimerRef = { current: ReturnType<typeof setTimeout> | null };
+
+/** Schedule reconnect; no-op if cleanup already ran. */
+export function scheduleWsReconnect(
+  tearingDown: { current: boolean },
+  timer: WsTimerRef,
+  connect: () => void,
+  delayMs: number,
+): void {
+  log.debug("scheduleWsReconnect", { delayMs, teardown: tearingDown.current });
+  if (timer.current) clearTimeout(timer.current);
+  timer.current = setTimeout(() => {
+    timer.current = null;
+    if (tearingDown.current) {
+      log.debug("ws reconnect aborted");
+      return;
+    }
+    connect();
+  }, delayMs);
+}
+
+export function clearWsReconnect(timer: WsTimerRef): void {
+  log.debug("clearWsReconnect");
+  if (timer.current) clearTimeout(timer.current);
+  timer.current = null;
 }
 
 /** Cleanup close must not reconnect; unexpected close must. */
@@ -76,12 +103,14 @@ export function handleWsClose(teardown: boolean, reconnect: () => void): boolean
   return true;
 }
 
-/** useWebSocket effect cleanup: mark teardown then close so onclose does not reconnect. */
+/** useWebSocket effect cleanup: mark teardown, cancel reconnect, close socket. */
 export function wsEffectCleanup(
   tearingDown: { current: boolean },
   ws: { close: () => void } | null | undefined,
+  timer?: WsTimerRef,
 ): void {
   tearingDown.current = true;
+  if (timer) clearWsReconnect(timer);
   log.info("ws cleanup");
   ws?.close();
 }

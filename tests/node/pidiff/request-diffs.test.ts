@@ -6,12 +6,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createLogger } from "../../../extensions/pidiff/pidiff-ui/src/lib/create-logger.ts";
 import {
+  beginRefreshUi,
   buildRequestDiffsMessage,
   commitRefsForRefresh,
   refreshButtonState,
   runAppRefresh,
   shouldBeginRefresh,
 } from "../../../extensions/pidiff/pidiff-ui/src/lib/request-diffs.ts";
+
+(globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG = true;
 
 const log = createLogger("pidiff-ui");
 
@@ -99,7 +102,7 @@ describe("shouldBeginRefresh", () => {
 
 describe("runAppRefresh", () => {
   it("skips send while disconnected", () => {
-    log.info("runAppRefresh disconnected");
+    log.debug("runAppRefresh disconnected");
     const sent: object[] = [];
     const result = runAppRefresh(false, false, (m) => sent.push(m), "branch", undefined, undefined, "", "");
     assert.deepEqual(result, { skipped: true, sent: false });
@@ -107,7 +110,7 @@ describe("runAppRefresh", () => {
   });
 
   it("sends request-diffs when connected", () => {
-    log.info("runAppRefresh connected");
+    log.debug("runAppRefresh connected");
     const sent: object[] = [];
     const result = runAppRefresh(true, false, (m) => { sent.push(m); return true; }, "branch", undefined, undefined, "", "");
     assert.deepEqual(result, { skipped: false, sent: true });
@@ -115,9 +118,21 @@ describe("runAppRefresh", () => {
   });
 
   it("keeps commits refs on refresh", () => {
-    log.info("runAppRefresh commits");
+    log.debug("runAppRefresh commits");
     const sent: object[] = [];
     runAppRefresh(true, false, (m) => { sent.push(m); return true; }, "commits", "aa", "bb", "old-a", "old-b");
     assert.deepEqual(sent, [{ type: "request-diffs", mode: "commits", fromRef: "aa", toRef: "bb" }]);
+  });
+});
+
+describe("beginRefreshUi", () => {
+  it("keeps stale when the send is dropped", () => {
+    log.debug("beginRefreshUi dropped");
+    assert.equal(beginRefreshUi({ skipped: false, sent: false }), false);
+  });
+
+  it("applies UI only after a successful send", () => {
+    log.debug("beginRefreshUi sent");
+    assert.equal(beginRefreshUi({ skipped: false, sent: true }), true);
   });
 });

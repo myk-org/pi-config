@@ -7,8 +7,8 @@ import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { createLogger } from "@/lib/create-logger";
-import { runAppRefresh } from "@/lib/request-diffs";
-import { appReconnectEffect } from "@/lib/ws-send";
+import { runAppRefresh, beginRefreshUi } from "@/lib/request-diffs";
+import { AppReconnectWatch } from "@/lib/app-reconnect-watch";
 import { AppRefreshActions } from "@/lib/app-refresh-actions";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
@@ -127,15 +127,6 @@ export function App() {
   const selectedFileRef = useRef<string | null>(null);
   const explorer = useExplorerWidth(280, 180, 600);
   useEffect(() => { modeRef.current = mode; }, [mode]);
-
-  useEffect(() => {
-    appReconnectEffect(
-      connected,
-      activeWorktreeRef.current?.path,
-      activeSessionRef.current?.sessionId,
-      send,
-    );
-  }, [connected, send]);
 
   // ── WebSocket ─────────────────────────────────────────────────────
 
@@ -310,13 +301,12 @@ export function App() {
       commitFrom,
       commitTo,
     );
-    if (result.skipped) return;
+    if (!beginRefreshUi(result)) return;
     setStale(false);
     const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
     if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
     setRefreshing(true);
     log.info("requestDiffs", { mode: modeRef.current, path: activePath || "" });
-    if (!result.sent) setRefreshing(false);
   }, [send, connected, refreshing, commitFrom, commitTo, diffData.fromRef, diffData.toRef]);
 
   // ── File tree ─────────────────────────────────────────────────────
@@ -454,6 +444,12 @@ export function App() {
   return (
     <WorkerPoolContextProvider poolOptions={WORKER_POOL_OPTIONS} highlighterOptions={HIGHLIGHTER_OPTIONS}>
     <div className="flex h-screen flex-col bg-background text-foreground">
+      <AppReconnectWatch
+        connected={connected}
+        worktreePath={activeWorktreeRef.current?.path}
+        sessionId={activeSessionRef.current?.sessionId}
+        send={send}
+      />
 
       {/* ── Header ─────────────────────────────────────────────── */}
       <header className="flex-shrink-0 border-b border-border">

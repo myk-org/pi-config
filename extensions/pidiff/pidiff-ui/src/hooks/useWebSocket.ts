@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createLogger } from "../lib/create-logger.ts";
-import { handleWsClose, trySendWs, wsEffectCleanup } from "../lib/ws-send.ts";
+import { handleWsClose, scheduleWsReconnect, trySendWs, wsEffectCleanup } from "../lib/ws-send.ts";
 
 const log = createLogger("pidiff-ui");
 
@@ -14,6 +14,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
   const hasListeners = useRef(false);
 
   const tearingDown = useRef(false);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (skipConnect) {
@@ -25,6 +26,10 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
     const url = `${protocol}//${window.location.host}/ws/browser`;
 
     function connect() {
+      if (tearingDown.current) {
+        log.debug("ws connect skipped teardown");
+        return;
+      }
       log.debug("ws connect");
       const ws = new WebSocket(url);
       wsRef.current = ws;
@@ -37,7 +42,9 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
         log.debug("ws close");
         setConnected(false);
         wsRef.current = null;
-        handleWsClose(tearingDown.current, () => { setTimeout(connect, 3000); });
+        handleWsClose(tearingDown.current, () => {
+          scheduleWsReconnect(tearingDown, reconnectTimer, connect, 3000);
+        });
       };
       ws.onerror = () => ws.close();
       ws.onmessage = (ev) => {
@@ -55,7 +62,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
 
     connect();
     return () => {
-      wsEffectCleanup(tearingDown, wsRef.current);
+      wsEffectCleanup(tearingDown, wsRef.current, reconnectTimer);
     };
   }, [skipConnect]);
 

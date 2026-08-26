@@ -66,9 +66,12 @@ function slotTree(opts: {
 
 describe("App Refresh slots", () => {
   it("App header slot mounts AppRefreshActions with requestDiffs", () => {
+    log.debug("App header slot");
     assert.match(appSrc, /hasSession=\{Boolean\(activeSession\)\}/);
     assert.match(appSrc, /connected=\{connected\}/);
     assert.match(appSrc, /onRefresh=\{requestDiffs\}/);
+    assert.match(appSrc, /<AppReconnectWatch/);
+    assert.match(appSrc, /beginRefreshUi\(result\)/);
   });
 
   it("App stale banner slot mounts AppRefreshActions with requestDiffs", () => {

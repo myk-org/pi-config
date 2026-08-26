@@ -18,18 +18,20 @@ function fmt(args: unknown[]): string {
 }
 
 export function createLogger(name: string): Logger {
-  const debugOn = typeof globalThis !== "undefined"
-    && Boolean((globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG);
   const emit = (level: string, args: unknown[]) => {
     const bag = (globalThis as { __pidiffUiLogs?: Array<{ name: string; level: string; msg: string }> });
     bag.__pidiffUiLogs ??= [];
     bag.__pidiffUiLogs.push({ name, level, msg: fmt(args) });
   };
   return {
-    debug(...args: unknown[]) { if (debugOn) emit("debug", args); },
+    debug(...args: unknown[]) {
+      if (Boolean((globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG)) emit("debug", args);
+    },
     info(...args: unknown[]) { emit("info", args); },
     warn(...args: unknown[]) { emit("warn", args); },
     error(...args: unknown[]) { emit("error", args); },
-    isDebugEnabled() { return debugOn; },
+    isDebugEnabled() {
+      return Boolean((globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG);
+    },
   };
 }

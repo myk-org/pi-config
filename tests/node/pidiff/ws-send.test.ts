@@ -10,9 +10,13 @@ import {
   handleWsClose,
   restoreWatchMessages,
   runReconnectWatch,
+  scheduleWsReconnect,
   trySendWs,
   wsEffectCleanup,
 } from "../../../extensions/pidiff/pidiff-ui/src/lib/ws-send.ts";
+import { AppReconnectWatch } from "../../../extensions/pidiff/pidiff-ui/src/lib/app-reconnect-watch.tsx";
+
+(globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG = true;
 
 const log = createLogger("pidiff-ui");
 
@@ -38,14 +42,14 @@ describe("trySendWs", () => {
 
 describe("restoreWatchMessages", () => {
   it("restores a session watch when no worktree is selected", () => {
-    log.info("restoreWatchMessages session only");
+    log.debug("restoreWatchMessages session only");
     assert.deepEqual(restoreWatchMessages(undefined, "sess"), [
       { type: "watch", sessionId: "sess" },
     ]);
   });
 
   it("restores session watch before worktree watch", () => {
-    log.info("restoreWatchMessages session then worktree");
+    log.debug("restoreWatchMessages session then worktree");
     assert.deepEqual(restoreWatchMessages("/tmp/wt", "sess"), [
       { type: "watch", sessionId: "sess" },
       { type: "watch-worktree", worktreePath: "/tmp/wt" },
@@ -55,14 +59,14 @@ describe("restoreWatchMessages", () => {
 
 describe("runReconnectWatch", () => {
   it("sends nothing while disconnected", () => {
-    log.info("runReconnectWatch disconnected");
+    log.debug("runReconnectWatch disconnected");
     const sent: object[] = [];
     runReconnectWatch(false, "/tmp/wt", "sess", (m) => sent.push(m));
     assert.deepEqual(sent, []);
   });
 
   it("App reconnect sends session watch before worktree watch", () => {
-    log.info("runReconnectWatch connected");
+    log.debug("runReconnectWatch connected");
     const sent: object[] = [];
     runReconnectWatch(true, "/tmp/wt", "sess", (m) => sent.push(m));
     assert.deepEqual(sent, [
@@ -74,14 +78,14 @@ describe("runReconnectWatch", () => {
 
 describe("appReconnectEffect", () => {
   it("App effect skips watch while disconnected", () => {
-    log.info("appReconnectEffect disconnected");
+    log.debug("appReconnectEffect disconnected");
     const sent: object[] = [];
     appReconnectEffect(false, "/tmp/wt", "sess", (m) => sent.push(m));
     assert.deepEqual(sent, []);
   });
 
   it("App effect restores watches after reconnect", () => {
-    log.info("appReconnectEffect reconnect");
+    log.debug("appReconnectEffect reconnect");
     const sent: object[] = [];
     appReconnectEffect(false, "/tmp/wt", "sess", (m) => sent.push(m));
     appReconnectEffect(true, "/tmp/wt", "sess", (m) => sent.push(m));
@@ -94,7 +98,7 @@ describe("appReconnectEffect", () => {
 
 describe("handleWsClose", () => {
   it("cleanup close does not schedule reconnect", () => {
-    log.info("handleWsClose teardown");
+    log.debug("handleWsClose teardown");
     const tearingDown = { current: false };
     let closed = 0;
     let reconnects = 0;
@@ -107,10 +111,75 @@ describe("handleWsClose", () => {
   });
 
   it("unexpected close schedules reconnect", () => {
-    log.info("handleWsClose unexpected");
+    log.debug("handleWsClose unexpected");
     let reconnects = 0;
     const scheduled = handleWsClose(false, () => { reconnects += 1; });
     assert.equal(scheduled, true);
     assert.equal(reconnects, 1);
+  });
+});
+
+describe("scheduleWsReconnect", () => {
+  it("cleanup cancels a pending reconnect", async () => {
+    log.debug("scheduleWsReconnect cleanup");
+    const tearingDown = { current: false };
+    const timer: { current: ReturnType<typeof setTimeout> | null } = { current: null };
+    let connects = 0;
+    scheduleWsReconnect(tearingDown, timer, () => { connects += 1; }, 30);
+    wsEffectCleanup(tearingDown, { close() {} }, timer);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(connects, 0);
+    assert.equal(timer.current, null);
+  });
+
+  it("unexpected close still reconnects when mounted", async () => {
+    log.debug("scheduleWsReconnect fire");
+    const tearingDown = { current: false };
+    const timer: { current: ReturnType<typeof setTimeout> | null } = { current: null };
+    let connects = 0;
+    handleWsClose(false, () => {
+      scheduleWsReconnect(tearingDown, timer, () => { connects += 1; }, 0);
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(connects, 1);
+  });
+});
+
+describe("AppReconnectWatch", () => {
+  it("App effect skips watch while disconnected", () => {
+    log.debug("AppReconnectWatch disconnected");
+    const sent: object[] = [];
+    AppReconnectWatch({
+      connected: false,
+      worktreePath: "/tmp/wt",
+      sessionId: "sess",
+      send: (m) => sent.push(m),
+      effectHook: (fn) => { fn(); },
+    });
+    assert.deepEqual(sent, []);
+  });
+
+  it("App effect restores watches after reconnect", () => {
+    log.debug("AppReconnectWatch reconnect");
+    const sent: object[] = [];
+    const effectHook = (fn: () => void) => { fn(); };
+    AppReconnectWatch({
+      connected: false,
+      worktreePath: "/tmp/wt",
+      sessionId: "sess",
+      send: (m) => sent.push(m),
+      effectHook,
+    });
+    AppReconnectWatch({
+      connected: true,
+      worktreePath: "/tmp/wt",
+      sessionId: "sess",
+      send: (m) => sent.push(m),
+      effectHook,
+    });
+    assert.deepEqual(sent, [
+      { type: "watch", sessionId: "sess" },
+      { type: "watch-worktree", worktreePath: "/tmp/wt" },
+    ]);
   });
 });
