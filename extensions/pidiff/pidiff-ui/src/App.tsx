@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { MultiFileDiff, WorkerPoolContextProvider } from "@pierre/diffs/react";
 import type { FileContents, WorkerPoolOptions, WorkerInitializationRenderOptions } from "@pierre/diffs/react";
 import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react";
-import { GitBranch, X, Send, Pencil, RefreshCw } from "lucide-react";
+import { GitBranch, X, Send, Pencil } from "lucide-react";
 import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { createLogger } from "@/lib/create-logger";
-import { buildRequestDiffsMessage, refreshButtonState } from "@/lib/request-diffs";
+import { buildRequestDiffsMessage, commitRefsForRefresh } from "@/lib/request-diffs";
+import { PidiffRefreshControl } from "@/lib/refresh-control";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -235,6 +236,8 @@ export function App() {
     modeRef.current = "branch";
     setDiffData({ mode: "branch", files: [], branch: s.branch });
     setCommits(null);
+    setCommitFrom("");
+    setCommitTo("");
     commitsRequested.current = false;
     setStale(false);
     setLoading(true);
@@ -247,6 +250,8 @@ export function App() {
     setMode("branch");
     modeRef.current = "branch";
     setCommits(null);
+    setCommitFrom("");
+    setCommitTo("");
     commitsRequested.current = false;
     // Show stale banner if this tab has pending changes
     setStale(staleWorktrees.has(wt.path));
@@ -284,8 +289,9 @@ export function App() {
     if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
     setRefreshing(true);
     log.info("requestDiffs", { mode: modeRef.current, path: activePath || "" });
-    send(buildRequestDiffsMessage(modeRef.current, commitFrom, commitTo));
-  }, [send, refreshing, commitFrom, commitTo]);
+    const refs = commitRefsForRefresh(modeRef.current, diffData.fromRef, diffData.toRef, commitFrom, commitTo);
+    send(buildRequestDiffsMessage(modeRef.current, refs.from, refs.to));
+  }, [send, refreshing, commitFrom, commitTo, diffData.fromRef, diffData.toRef]);
 
   // ── File tree ─────────────────────────────────────────────────────
 
@@ -461,15 +467,13 @@ export function App() {
                 className="h-6 px-2.5 text-[11px] rounded-none border-0" onClick={() => setDiffStyle("unified")}>Unified</Button>
             </div>
             {!connected && <span className="text-[10px] text-red-400">● disconnected</span>}
-            {activeSession && (() => {
-              const btn = refreshButtonState(refreshing);
-              return (
-              <Button size="sm" variant="outline" className="h-7 gap-1.5 text-[11px]"
-                onClick={requestDiffs} disabled={btn.disabled}>
-                <RefreshCw className={cn("h-3 w-3", btn.spinning && "animate-spin")} /> Refresh
-              </Button>
-              );
-            })()}
+            {activeSession && (
+              <PidiffRefreshControl
+                refreshing={refreshing}
+                onRefresh={requestDiffs}
+                className="h-7 px-2.5 text-[11px] rounded-md border border-border"
+              />
+            )}
             {comments.length > 0 && (
               <Button size="sm" className="h-7 gap-1.5 bg-green-600 hover:bg-green-500 text-white text-[11px]" onClick={publish}>
                 <Send className="h-3 w-3" /> Publish ({comments.length})
@@ -621,10 +625,11 @@ export function App() {
       {stale && (
         <div className="flex items-center justify-between px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/20">
           <span className="text-xs text-amber-400">Files have changed since this diff was loaded</span>
-          <Button size="sm" variant="outline" className="h-6 text-[11px] border-amber-500/30 text-amber-400 hover:bg-amber-500/20"
-            onClick={requestDiffs} disabled={refreshing}>
-            Refresh
-          </Button>
+          <PidiffRefreshControl
+            refreshing={refreshing}
+            onRefresh={requestDiffs}
+            className="h-6 px-2 text-[11px] rounded-md border border-amber-500/30 text-amber-400"
+          />
         </div>
       )}
 

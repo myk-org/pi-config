@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildRequestDiffsMessage,
+  commitRefsForRefresh,
   refreshButtonState,
 } from "../../../extensions/pidiff/pidiff-ui/src/lib/request-diffs.ts";
 
@@ -35,12 +36,16 @@ describe("buildRequestDiffsMessage", () => {
 });
 
 describe("refreshButtonState", () => {
-  it("disables and spins while refreshing without unmounting the body", () => {
-    assert.deepEqual(refreshButtonState(true), {
-      disabled: true,
-      spinning: true,
-      unmountBody: false,
-    });
+  it("disables the control while refreshing", () => {
+    assert.equal(refreshButtonState(true).disabled, true);
+  });
+
+  it("spins the control while refreshing", () => {
+    assert.equal(refreshButtonState(true).spinning, true);
+  });
+
+  it("keeps the body mounted while refreshing", () => {
+    assert.equal(refreshButtonState(true).unmountBody, false);
   });
 
   it("enables the button when idle", () => {
@@ -49,5 +54,18 @@ describe("refreshButtonState", () => {
       spinning: false,
       unmountBody: false,
     });
+  });
+});
+
+describe("commitRefsForRefresh", () => {
+  it("ignores picker SHAs outside commits mode", () => {
+    assert.deepEqual(commitRefsForRefresh("branch", "aa", "bb", "cc", "dd"), { from: "", to: "" });
+  });
+
+  it("prefers displayed comparison refs over leftover picker SHAs", () => {
+    assert.deepEqual(
+      commitRefsForRefresh("commits", "disp-a", "disp-b", "old-a", "old-b"),
+      { from: "disp-a", to: "disp-b" },
+    );
   });
 });

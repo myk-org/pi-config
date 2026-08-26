@@ -18,11 +18,11 @@ export function buildRequestDiffsMessage(
 ): RequestDiffsMessage {
   if (mode === "commits" && commitFrom && commitTo) {
     const msg: RequestDiffsMessage = { type: "request-diffs", mode, fromRef: commitFrom, toRef: commitTo };
-    log.info("request-diffs", { mode, fromRef: commitFrom, toRef: commitTo });
+    log.debug("request-diffs", { mode, fromRef: commitFrom, toRef: commitTo });
     return msg;
   }
   const msg: RequestDiffsMessage = { type: "request-diffs", mode };
-  log.info("request-diffs", { mode });
+  log.debug("request-diffs", { mode });
   return msg;
 }
 
@@ -30,4 +30,22 @@ export function buildRequestDiffsMessage(
 export function refreshButtonState(refreshing: boolean): { disabled: boolean; spinning: boolean; unmountBody: boolean } {
   log.debug("refreshButtonState", { refreshing });
   return { disabled: refreshing, spinning: refreshing, unmountBody: false };
+}
+
+/** Commits-mode refresh uses the on-screen comparison, not leftover picker state. */
+export function commitRefsForRefresh(
+  mode: DiffMode,
+  displayedFrom: string | undefined,
+  displayedTo: string | undefined,
+  selectedFrom: string,
+  selectedTo: string,
+): { from: string; to: string } {
+  if (mode !== "commits") {
+    log.debug("commitRefsForRefresh skipped", { mode });
+    return { from: "", to: "" };
+  }
+  const from = displayedFrom || selectedFrom;
+  const to = displayedTo || selectedTo;
+  log.debug("commitRefsForRefresh", { from, to });
+  return { from, to };
 }
