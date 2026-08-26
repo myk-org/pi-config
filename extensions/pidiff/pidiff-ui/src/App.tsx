@@ -90,7 +90,11 @@ export function App() {
   const [hunkSeparators, setHunkSeparators] = useState<"line-info" | "line-info-basic" | "metadata" | "simple">("line-info");
   const [fontSize, setFontSize] = useState(13);
   const [theme, setTheme] = useState<string>("pierre-dark");
-  const [stale, setStale] = useState(false);
+  const [stale, setStale] = useState(() => {
+    const testStale = Boolean((globalThis as { __pidiffTestStale?: boolean }).__pidiffTestStale);
+    log.debug("App stale init", { testStale });
+    return testStale;
+  });
   const [staleWorktrees, setStaleWorktrees] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
