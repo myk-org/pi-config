@@ -24,6 +24,7 @@ describe("AppReconnectWatch mount", () => {
     };
     const root = createRoot(container);
     await act(async () => {
+      log.debug("act disconnected");
       root.render(createElement(AppReconnectWatch, {
         connected: false,
         worktreePath: "/tmp/wt",
@@ -32,6 +33,7 @@ describe("AppReconnectWatch mount", () => {
       }));
     });
     await act(async () => {
+      log.debug("act connected");
       root.render(createElement(AppReconnectWatch, {
         connected: true,
         worktreePath: "/tmp/wt",
@@ -39,7 +41,10 @@ describe("AppReconnectWatch mount", () => {
         send,
       }));
     });
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      log.debug("act unmount");
+      root.unmount();
+    });
     assert.deepEqual(sent, [
       { type: "watch", sessionId: "sess" },
       { type: "watch-worktree", worktreePath: "/tmp/wt" },

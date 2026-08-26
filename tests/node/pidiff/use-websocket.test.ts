@@ -12,6 +12,7 @@ import { useWebSocket } from "../../../extensions/pidiff/pidiff-ui/src/hooks/use
 import { installReactDomShim } from "./react-dom-shim.mjs";
 
 const log = createLogger("pidiff-ui");
+(globalThis as { __PIDIFF_DEBUG?: boolean }).__PIDIFF_DEBUG = true;
 
 (globalThis as { WebSocket?: typeof WebSocket }).WebSocket = class {
   static OPEN = 1;
@@ -67,9 +68,11 @@ describe("useWebSocket cleanup", () => {
       readyState = 0;
       onclose?: () => void;
       constructor() {
+        log.debug("FakeWs construct");
         sockets.push(this);
       }
       close() {
+        log.debug("FakeWs close");
         this.readyState = 3;
         this.onclose?.();
       }
@@ -81,9 +84,15 @@ describe("useWebSocket cleanup", () => {
       return null;
     }
     const root = createRoot(container);
-    await act(async () => { root.render(createElement(Probe)); });
+    await act(async () => {
+      log.debug("act mount Probe");
+      root.render(createElement(Probe));
+    });
     assert.equal(sockets.length, 1);
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      log.debug("act unmount Probe");
+      root.unmount();
+    });
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(sockets.length, 1);
   });

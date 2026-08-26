@@ -1,5 +1,11 @@
 /** Minimal document so react-dom/client can run useEffect in Node tests. */
+import { createLogger } from "../../../extensions/pidiff/pidiff-ui/src/lib/create-logger.ts";
+
+globalThis.__PIDIFF_DEBUG = true;
+const log = createLogger("pidiff-ui");
+
 function createNode(tag) {
+  log.debug("createNode", tag);
   return {
     nodeType: 1,
     nodeName: String(tag).toUpperCase(),
@@ -32,8 +38,7 @@ function createNode(tag) {
 }
 
 export function installReactDomShim() {
-  globalThis.__pidiffUiLogs ??= [];
-  globalThis.__pidiffUiLogs.push({ name: "pidiff-ui", level: "debug", msg: "installReactDomShim" });
+  log.debug("installReactDomShim");
   function HTMLIFrameElement() {}
   globalThis.window = globalThis;
   globalThis.HTMLIFrameElement = HTMLIFrameElement;

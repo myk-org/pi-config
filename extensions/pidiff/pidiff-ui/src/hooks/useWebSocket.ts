@@ -24,12 +24,13 @@ export function useWebSocket(options?: { testWs?: WebSocket | null; reconnectMs?
     }
     tearingDown.current = false;
     log.debug("ws effect connect", { reconnectMs });
+    let cancelled = false;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${protocol}//${window.location.host}/ws/browser`;
 
     function connect() {
-      if (tearingDown.current) {
-        log.debug("ws connect skipped teardown");
+      if (cancelled || tearingDown.current) {
+        log.debug("ws connect skipped teardown", { cancelled });
         return;
       }
       log.debug("ws connect");
@@ -37,13 +38,21 @@ export function useWebSocket(options?: { testWs?: WebSocket | null; reconnectMs?
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (cancelled) {
+          log.debug("ws open ignored cancelled");
+          return;
+        }
         log.info("ws open");
         setConnected(true);
       };
       ws.onclose = () => {
+        if (cancelled) {
+          log.debug("ws close ignored cancelled");
+          return;
+        }
         log.debug("ws close");
         setConnected(false);
-        wsRef.current = null;
+        if (wsRef.current === ws) wsRef.current = null;
         handleWsClose(tearingDown.current, () => {
           log.debug("ws unexpected close reconnect");
           queueWsReconnect(tearingDown, reconnectTimer, connect, reconnectMs);
@@ -65,6 +74,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null; reconnectMs?
 
     connect();
     return () => {
+      cancelled = true;
       wsEffectCleanup(tearingDown, wsRef.current, reconnectTimer);
     };
   }, [skipConnect, reconnectMs]);
