@@ -26,14 +26,14 @@ describe("PidiffRefreshControl", () => {
     assert.match(html, /data-spinning="true"/);
   });
 
-  it("invokes onRefresh when the idle control is clicked", () => {
+  it("wires the rendered button onClick to onRefresh", () => {
     let clicks = 0;
-    const el = createElement(PidiffRefreshControl, {
+    const vnode = PidiffRefreshControl({
       refreshing: false,
       onRefresh: () => { clicks += 1; },
-    });
-    const onClick = (el.props as { onRefresh: () => void }).onRefresh;
-    onClick();
+    }) as { type: string; props: { onClick: () => void } };
+    assert.equal(vnode.type, "button");
+    vnode.props.onClick();
     assert.equal(clicks, 1);
   });
 });

@@ -198,6 +198,7 @@ export function App() {
           setActiveWorktree(null);
           activeWorktreeRef.current = null;
           setStale(false);
+          setRefreshing(false);
           setStaleWorktrees(new Set());
           setDiffData({ mode: "branch", files: [], branch: "" });
         }
@@ -240,6 +241,7 @@ export function App() {
     setCommitTo("");
     commitsRequested.current = false;
     setStale(false);
+    setRefreshing(false);
     setLoading(true);
     send({ type: "watch", sessionId: s.sessionId });
   }, [send]);
@@ -257,6 +259,7 @@ export function App() {
     setStale(staleWorktrees.has(wt.path));
     // Always load data for the tab (no per-tab caching yet)
     setDiffData({ mode: "branch", files: [], branch: wt.branch });
+    setRefreshing(false);
     setLoading(true);
     send({ type: "watch-worktree", worktreePath: wt.path });
   }, [send, staleWorktrees]);
