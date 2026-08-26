@@ -2,6 +2,8 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+globalThis.__PIDIFF_DEBUG = true;
+
 function createLogger(name) {
   const debugOn = Boolean(globalThis.__PIDIFF_DEBUG);
   const emit = (level, args) => {
@@ -35,7 +37,7 @@ const mocks = {
 };
 
 function existingFile(p) {
-  log.info("existingFile", p);
+  log.debug("existingFile", p);
   try {
     return existsSync(p) && statSync(p).isFile();
   } catch {
@@ -44,7 +46,7 @@ function existingFile(p) {
 }
 
 function aliasUrl(specifier) {
-  log.info("aliasUrl", specifier);
+  log.debug("aliasUrl", specifier);
   let base;
   if (specifier.startsWith("@/")) base = join(uiSrc, specifier.slice(2));
   else if (specifier.startsWith("@ui/")) base = join(sharedUi, specifier.slice(4));
@@ -56,7 +58,7 @@ function aliasUrl(specifier) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
-  log.info("resolve", specifier);
+  log.debug("resolve", specifier);
   const mapped = mocks[specifier];
   if (mapped) return { shortCircuit: true, url: mapped };
   const aliased = aliasUrl(specifier);

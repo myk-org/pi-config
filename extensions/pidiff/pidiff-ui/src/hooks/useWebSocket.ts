@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createLogger } from "../lib/create-logger.ts";
-import { trySendWs } from "../lib/ws-send.ts";
+import { handleWsClose, trySendWs, wsEffectCleanup } from "../lib/ws-send.ts";
 
 const log = createLogger("pidiff-ui");
 
@@ -34,13 +34,10 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
         setConnected(true);
       };
       ws.onclose = () => {
-        const teardown = tearingDown.current;
-        log.debug("ws close", { teardown });
+        log.debug("ws close");
         setConnected(false);
         wsRef.current = null;
-        if (teardown) return;
-        log.info("ws disconnected");
-        setTimeout(connect, 3000);
+        handleWsClose(tearingDown.current, () => { setTimeout(connect, 3000); });
       };
       ws.onerror = () => ws.close();
       ws.onmessage = (ev) => {
@@ -58,9 +55,7 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
 
     connect();
     return () => {
-      tearingDown.current = true;
-      log.debug("ws cleanup");
-      wsRef.current?.close();
+      wsEffectCleanup(tearingDown, wsRef.current);
     };
   }, [skipConnect]);
 

@@ -60,3 +60,25 @@ export function commitRefsForRefresh(
   log.debug("commitRefsForRefresh", { from, to });
   return { from, to };
 }
+
+/** App requestDiffs: skip when disconnected or already refreshing, then send. */
+export function runAppRefresh(
+  connected: boolean,
+  refreshing: boolean,
+  send: (msg: object) => unknown,
+  mode: DiffMode,
+  displayedFrom: string | undefined,
+  displayedTo: string | undefined,
+  selectedFrom: string,
+  selectedTo: string,
+): { skipped: boolean; sent: boolean } {
+  log.info("runAppRefresh", { connected, refreshing, mode });
+  if (!shouldBeginRefresh(connected, refreshing)) {
+    log.warn("runAppRefresh skipped", { connected, refreshing });
+    return { skipped: true, sent: false };
+  }
+  const refs = commitRefsForRefresh(mode, displayedFrom, displayedTo, selectedFrom, selectedTo);
+  const sent = Boolean(send(buildRequestDiffsMessage(mode, refs.from, refs.to)));
+  if (!sent) log.warn("runAppRefresh dropped", { connected });
+  return { skipped: false, sent };
+}

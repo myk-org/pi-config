@@ -26,11 +26,11 @@ export function restoreWatchMessages(
 ): Array<{ type: string; worktreePath?: string; sessionId?: string }> {
   const msgs: Array<{ type: string; worktreePath?: string; sessionId?: string }> = [];
   if (sessionId) {
-    log.info("restoreWatchMessages session", { sessionId });
+    log.debug("restoreWatchMessages session", { sessionId });
     msgs.push({ type: "watch", sessionId });
   }
   if (worktreePath) {
-    log.info("restoreWatchMessages worktree", { worktreePath });
+    log.debug("restoreWatchMessages worktree", { worktreePath });
     msgs.push({ type: "watch-worktree", worktreePath });
   }
   if (msgs.length === 0) log.debug("restoreWatchMessages skipped");
@@ -51,4 +51,37 @@ export function runReconnectWatch(
   });
   if (!connected) return;
   for (const msg of restoreWatchMessages(worktreePath, sessionId)) send(msg);
+}
+
+/** App.tsx reconnect useEffect body. disconnected then connected is a reconnect. */
+export function appReconnectEffect(
+  connected: boolean,
+  worktreePath: string | undefined,
+  sessionId: string | undefined,
+  send: (msg: object) => unknown,
+): void {
+  log.info("App reconnect effect", { connected });
+  runReconnectWatch(connected, worktreePath, sessionId, send);
+}
+
+/** Cleanup close must not reconnect; unexpected close must. */
+export function handleWsClose(teardown: boolean, reconnect: () => void): boolean {
+  log.debug("handleWsClose", { teardown });
+  if (teardown) {
+    log.info("ws cleanup close");
+    return false;
+  }
+  log.warn("ws disconnected");
+  reconnect();
+  return true;
+}
+
+/** useWebSocket effect cleanup: mark teardown then close so onclose does not reconnect. */
+export function wsEffectCleanup(
+  tearingDown: { current: boolean },
+  ws: { close: () => void } | null | undefined,
+): void {
+  tearingDown.current = true;
+  log.info("ws cleanup");
+  ws?.close();
 }

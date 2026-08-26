@@ -4,12 +4,16 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createLogger } from "../../../extensions/pidiff/pidiff-ui/src/lib/create-logger.ts";
 import {
   buildRequestDiffsMessage,
   commitRefsForRefresh,
   refreshButtonState,
+  runAppRefresh,
   shouldBeginRefresh,
 } from "../../../extensions/pidiff/pidiff-ui/src/lib/request-diffs.ts";
+
+const log = createLogger("pidiff-ui");
 
 describe("buildRequestDiffsMessage", () => {
   it("sends branch mode without commit refs", () => {
@@ -90,5 +94,30 @@ describe("shouldBeginRefresh", () => {
 
   it("blocks Refresh while a request is in flight", () => {
     assert.equal(shouldBeginRefresh(true, true), false);
+  });
+});
+
+describe("runAppRefresh", () => {
+  it("skips send while disconnected", () => {
+    log.info("runAppRefresh disconnected");
+    const sent: object[] = [];
+    const result = runAppRefresh(false, false, (m) => sent.push(m), "branch", undefined, undefined, "", "");
+    assert.deepEqual(result, { skipped: true, sent: false });
+    assert.deepEqual(sent, []);
+  });
+
+  it("sends request-diffs when connected", () => {
+    log.info("runAppRefresh connected");
+    const sent: object[] = [];
+    const result = runAppRefresh(true, false, (m) => { sent.push(m); return true; }, "branch", undefined, undefined, "", "");
+    assert.deepEqual(result, { skipped: false, sent: true });
+    assert.deepEqual(sent, [{ type: "request-diffs", mode: "branch" }]);
+  });
+
+  it("keeps commits refs on refresh", () => {
+    log.info("runAppRefresh commits");
+    const sent: object[] = [];
+    runAppRefresh(true, false, (m) => { sent.push(m); return true; }, "commits", "aa", "bb", "old-a", "old-b");
+    assert.deepEqual(sent, [{ type: "request-diffs", mode: "commits", fromRef: "aa", toRef: "bb" }]);
   });
 });

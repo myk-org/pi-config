@@ -7,8 +7,8 @@ import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { createLogger } from "@/lib/create-logger";
-import { buildRequestDiffsMessage, commitRefsForRefresh, shouldBeginRefresh } from "@/lib/request-diffs";
-import { runReconnectWatch } from "@/lib/ws-send";
+import { runAppRefresh } from "@/lib/request-diffs";
+import { appReconnectEffect } from "@/lib/ws-send";
 import { AppRefreshActions } from "@/lib/app-refresh-actions";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
@@ -129,8 +129,7 @@ export function App() {
   useEffect(() => { modeRef.current = mode; }, [mode]);
 
   useEffect(() => {
-    log.info("App reconnect effect", { connected });
-    runReconnectWatch(
+    appReconnectEffect(
       connected,
       activeWorktreeRef.current?.path,
       activeSessionRef.current?.sessionId,
@@ -301,21 +300,23 @@ export function App() {
   }, [commitFrom, commitTo, send]);
 
   const requestDiffs = useCallback(() => {
-    if (!shouldBeginRefresh(connected, refreshing)) {
-      log.warn("requestDiffs skipped", { connected, refreshing });
-      return;
-    }
+    const result = runAppRefresh(
+      connected,
+      refreshing,
+      send,
+      modeRef.current,
+      diffData.fromRef,
+      diffData.toRef,
+      commitFrom,
+      commitTo,
+    );
+    if (result.skipped) return;
     setStale(false);
     const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
     if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
     setRefreshing(true);
     log.info("requestDiffs", { mode: modeRef.current, path: activePath || "" });
-    const refs = commitRefsForRefresh(modeRef.current, diffData.fromRef, diffData.toRef, commitFrom, commitTo);
-    const sent = send(buildRequestDiffsMessage(modeRef.current, refs.from, refs.to));
-    if (!sent) {
-      setRefreshing(false);
-      log.warn("requestDiffs dropped", { connected });
-    }
+    if (!result.sent) setRefreshing(false);
   }, [send, connected, refreshing, commitFrom, commitTo, diffData.fromRef, diffData.toRef]);
 
   // ── File tree ─────────────────────────────────────────────────────

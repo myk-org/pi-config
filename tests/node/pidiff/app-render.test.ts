@@ -48,6 +48,7 @@ describe("App Refresh render", () => {
   });
 
   it("App header Refresh is disabled while disconnected", async () => {
+    log.info("App disconnected Refresh");
     const { App } = await import("../../../extensions/pidiff/pidiff-ui/src/App.tsx");
     const html = renderToString(createElement(App));
     assert.match(html, /data-pidiff-refresh-slot="header"/);
