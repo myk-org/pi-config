@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createDaemonServer } from "./daemon-shared.ts";
 import { isGitIgnoredRelPath, parseGitIgnoredWatchFilter, type GitIgnoredWatchFilter } from "./pidiff-git-ignore.ts";
+import { createLogger } from "../extensions/shared/logger.ts";
 
 const DEFAULT_PORT = 19290;
 const port = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
@@ -26,6 +27,8 @@ if (!PROJECT_CWD) {
 function log(msg: string) {
   console.log(`${new Date().toISOString()} [pidiff] ${msg}`);
 }
+
+const slog = createLogger("pidiff");
 
 // ── Git helpers ─────────────────────────────────────────────────────
 
@@ -439,6 +442,7 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
       const cwd = watchInfo.worktreePath || client.session.cwd;
       const mode: DiffMode = parsed.mode || "branch";
       const refs = parsed.fromRef && parsed.toRef ? { from: parsed.fromRef, to: parsed.toRef } : undefined;
+      slog.debug("request-diffs", { cwd, mode, fromRef: refs?.from, toRef: refs?.to });
       const payload = buildDiffPayload(cwd, mode, refs);
       try { ws.send(JSON.stringify(payload)); } catch {}
       return;
@@ -500,10 +504,10 @@ function getGitIgnoredDirs(worktreePath: string): GitIgnoredWatchFilter {
       stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024,
     }).trim();
     const filter = parseGitIgnoredWatchFilter(raw);
-    log(`gitignored watch filter for ${worktreePath}: topLevel=${[...filter.topLevel].join(",") || "(none)"} nested=${filter.nested.length}`);
+    slog.info("gitignored watch filter", { worktreePath, topLevel: [...filter.topLevel].join(",") || "(none)", nested: filter.nested.length });
     return filter;
   } catch (e: any) {
-    log(`getGitIgnoredDirs error for ${worktreePath}: ${e.message}`);
+    slog.error("getGitIgnoredDirs failed", { worktreePath, err: e.message });
     return { topLevel: new Set(), nested: [] };
   }
 }
@@ -540,7 +544,7 @@ function startWatching(sessionId: string, worktreePath: string) {
   if (activeWatchers.has(key)) return;
 
   let gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
-  log(`starting chokidar watch: ${worktreePath}`);
+  slog.info("starting chokidar watch", { worktreePath });
 
   const watcher = _chokidar.watch(worktreePath, {
     ignoreInitial: true,
@@ -587,7 +591,7 @@ function startWatching(sessionId: string, worktreePath: string) {
       persistent: true,
     });
     gitignoreWatcher.on("change", () => {
-      log(`gitignore changed for ${worktreePath}, refreshing ignored dirs`);
+      slog.info("gitignore changed, refreshing ignored dirs", { worktreePath });
       gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
     });
     state.gitignoreWatcher = gitignoreWatcher;

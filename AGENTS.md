@@ -141,12 +141,16 @@ Writing effective rules:
 
 - **pidiff** runs as a per-project server (one per cwd, not shared).
   Random free port, tracked via `.pi/tmp/pidiff.port` and `.pi/tmp/pidiff.pid`.
+  Header and stale-banner **Refresh** reload the current diff in place (tree and
+  panes stay mounted). Nested gitignores do not skip whole top-level dirs
+  (`extensions/foo/node_modules` does not ignore `extensions/`).
+  Daemon scripts include `scripts/pidiff-git-ignore.ts` (chokidar skip filter).
 - Timers (`setInterval`/`setTimeout`) must not read captured `ctx.mode` unguarded —
   getters call `assertActive()` and crash the process after `/reload`. Use
   `isLiveExtensionCtx` (`extensions/shared/live-ctx.ts`) and clear intervals on
   `session_shutdown`.
 - npm pack of `pi-orchestrator-config` must include daemon scripts
-  (`scripts/pidash-server.ts`, `pidiff-server.ts`, `daemon-shared.ts`,
+  (`scripts/pidash-server.ts`, `pidiff-server.ts`, `pidiff-git-ignore.ts`, `daemon-shared.ts`,
   `serve-ui.ts`, `pidash-discord.ts`, `httpd.py`) and pidash/pidiff UI `src/` + `dist/` —
   never a whole-tree `extensions/pidash/` entry (that packs `node_modules`).
   Pre-publish: `prepack` runs `npm run build:extension-uis` so gitignored `dist/`

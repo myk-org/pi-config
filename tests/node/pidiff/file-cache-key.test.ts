@@ -30,4 +30,20 @@ describe("pierreFileCacheKey", () => {
     const key = pierreFileCacheKey("foo/bar.ts", "hello");
     assert.ok(key.startsWith("foo/bar.ts:"));
   });
+
+  it("is stable for empty contents", () => {
+    assert.equal(pierreFileCacheKey("empty.ts", ""), pierreFileCacheKey("empty.ts", ""));
+  });
+
+  it("distinguishes empty contents from a non-empty file of the same name", () => {
+    assert.notEqual(pierreFileCacheKey("a.ts", ""), pierreFileCacheKey("a.ts", "x"));
+  });
+
+  it("distinguishes empty names that share contents", () => {
+    assert.notEqual(pierreFileCacheKey("", "same"), pierreFileCacheKey("named.ts", "same"));
+  });
+
+  it("does not collide on djb2 pairs such as Aa vs BB", () => {
+    assert.notEqual(pierreFileCacheKey("f.ts", "Aa"), pierreFileCacheKey("f.ts", "BB"));
+  });
 });

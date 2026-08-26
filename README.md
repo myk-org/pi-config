@@ -601,6 +601,7 @@ Pidiff is a per-project diff viewer that opens in your browser, providing rich b
 
 - Branch diff and commit comparison
 - File tree with search and filtering
+- Header **Refresh** (and the stale-file banner) updates the current diff in place — the file tree and panes stay mounted; only the button spins
 - Inline review comments on specific lines
 - Publish review comments back to the pi session
 - Per-project isolation — no port conflicts between sessions

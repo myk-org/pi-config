@@ -6,11 +6,15 @@ import { GitBranch, X, Send, Pencil, RefreshCw } from "lucide-react";
 import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
+import { createLogger } from "@/lib/create-logger";
+import { buildRequestDiffsMessage, refreshButtonState } from "@/lib/request-diffs";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { DiffMode, DiffData, FileDiffData, GitCommit, ReviewComment, PiSession, Worktree } from "@/types";
+
+const log = createLogger("pidiff-ui");
 
 // ── WorkerPool (offloads diff computation to web workers) ───────────
 const WORKER_POOL_OPTIONS: WorkerPoolOptions = {
@@ -279,8 +283,9 @@ export function App() {
     const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
     if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
     setRefreshing(true);
-    send({ type: "request-diffs", mode: modeRef.current });
-  }, [send, refreshing]);
+    log.info("requestDiffs", { mode: modeRef.current, path: activePath || "" });
+    send(buildRequestDiffsMessage(modeRef.current, commitFrom, commitTo));
+  }, [send, refreshing, commitFrom, commitTo]);
 
   // ── File tree ─────────────────────────────────────────────────────
 
@@ -456,12 +461,15 @@ export function App() {
                 className="h-6 px-2.5 text-[11px] rounded-none border-0" onClick={() => setDiffStyle("unified")}>Unified</Button>
             </div>
             {!connected && <span className="text-[10px] text-red-400">● disconnected</span>}
-            {activeSession && (
+            {activeSession && (() => {
+              const btn = refreshButtonState(refreshing);
+              return (
               <Button size="sm" variant="outline" className="h-7 gap-1.5 text-[11px]"
-                onClick={requestDiffs} disabled={refreshing}>
-                <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} /> Refresh
+                onClick={requestDiffs} disabled={btn.disabled}>
+                <RefreshCw className={cn("h-3 w-3", btn.spinning && "animate-spin")} /> Refresh
               </Button>
-            )}
+              );
+            })()}
             {comments.length > 0 && (
               <Button size="sm" className="h-7 gap-1.5 bg-green-600 hover:bg-green-500 text-white text-[11px]" onClick={publish}>
                 <Send className="h-3 w-3" /> Publish ({comments.length})
@@ -716,7 +724,7 @@ export function App() {
                   const oldKey = pierreFileCacheKey(file.name, oldContents);
                   const newKey = pierreFileCacheKey(file.name, newContents);
                   return (
-                    <FileBlock key={`${file.area}-${oldKey}-${newKey}`}
+                    <FileBlock key={`${file.area}-${file.name}`}
                       oldFile={{ name: file.name, contents: oldContents, cacheKey: oldKey }}
                       newFile={{ name: file.name, contents: newContents, cacheKey: newKey }}
                       path={file.name}
