@@ -8,7 +8,8 @@
   "license": "MIT",
   "workspaces": [
     "packages/pi-sidecar",
-    "packages/pi-vertex-claude"
+    "packages/pi-vertex-claude",
+    "extensions/pidiff/pidiff-ui"
   ],
   "files": [
     "extensions/acpx-provider/",
@@ -38,6 +39,7 @@
     "extensions/pitasks/",
     "scripts/pidash-server.ts",
     "scripts/pidiff-server.ts",
+    "scripts/pidiff-git-ignore.ts",
     "scripts/daemon-shared.ts",
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",

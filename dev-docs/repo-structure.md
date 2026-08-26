@@ -183,6 +183,7 @@ pi-config/
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
 │   ├── pidiff-server.ts             # Pidiff per-project server (diff hub with review comments, one per project cwd)
+│   ├── pidiff-git-ignore.ts         # Chokidar gitignore filter (top-level dirs vs nested prefixes)
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
 │   ├── symlink-cli-specialists.sh   # Symlink package agents into .cursor/.claude/.gemini/agents (container entrypoint)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
