@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { MultiFileDiff, WorkerPoolContextProvider } from "@pierre/diffs/react";
 import type { FileContents, WorkerPoolOptions, WorkerInitializationRenderOptions } from "@pierre/diffs/react";
 import { useFileTree, FileTree, useFileTreeSelection } from "@pierre/trees/react";
-import { GitBranch, X, Send, Pencil } from "lucide-react";
+import { GitBranch, X, Send, Pencil, RefreshCw } from "lucide-react";
 import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
+import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -69,6 +70,7 @@ export function App() {
   });
   const [mode, setMode] = useState<DiffMode>("branch");
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [commits, setCommits] = useState<GitCommit[] | null>(null);
   const [commitFrom, setCommitFrom] = useState("");
@@ -109,6 +111,7 @@ export function App() {
   const commitsRequested = useRef(false);
   const activeSessionRef = useRef<PiSession | null>(null);
   const loadingTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const refreshTimeout = useRef<ReturnType<typeof setTimeout>>();
   const modeRef = useRef(mode);
   const scrollLock = useRef(0); // timestamp until which scroll-sync is paused
   const selectedFileRef = useRef<string | null>(null);
@@ -131,8 +134,10 @@ export function App() {
         for (const f of committed) { if (!seen.has(f.name)) allFiles.push(f); }
         setDiffData({ mode: ev.mode || "branch", files: allFiles, branch: ev.branch || "", fromRef: ev.fromRef, toRef: ev.toRef });
         setLoading(false);
+        setRefreshing(false);
         // Don't clear stale here — only Refresh button clears it
         if (loadingTimeout.current) clearTimeout(loadingTimeout.current);
+        if (refreshTimeout.current) clearTimeout(refreshTimeout.current);
       }
       if (ev.type === "commits-list" && ev.commits) {
         setCommits(ev.commits);
@@ -208,6 +213,13 @@ export function App() {
     }
   }, [loading]);
 
+  useEffect(() => {
+    if (refreshing) {
+      refreshTimeout.current = setTimeout(() => setRefreshing(false), 10000);
+      return () => { if (refreshTimeout.current) clearTimeout(refreshTimeout.current); };
+    }
+  }, [refreshing]);
+
   // ── Mode switching ────────────────────────────────────────────────
 
   const switchSession = useCallback((s: PiSession) => {
@@ -260,6 +272,15 @@ export function App() {
     setLoading(true);
     send({ type: "request-diffs", mode: "commits", fromRef: commitFrom, toRef: commitTo });
   }, [commitFrom, commitTo, send]);
+
+  const requestDiffs = useCallback(() => {
+    if (refreshing) return;
+    setStale(false);
+    const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
+    if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
+    setRefreshing(true);
+    send({ type: "request-diffs", mode: modeRef.current });
+  }, [send, refreshing]);
 
   // ── File tree ─────────────────────────────────────────────────────
 
@@ -435,6 +456,12 @@ export function App() {
                 className="h-6 px-2.5 text-[11px] rounded-none border-0" onClick={() => setDiffStyle("unified")}>Unified</Button>
             </div>
             {!connected && <span className="text-[10px] text-red-400">● disconnected</span>}
+            {activeSession && (
+              <Button size="sm" variant="outline" className="h-7 gap-1.5 text-[11px]"
+                onClick={requestDiffs} disabled={refreshing}>
+                <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} /> Refresh
+              </Button>
+            )}
             {comments.length > 0 && (
               <Button size="sm" className="h-7 gap-1.5 bg-green-600 hover:bg-green-500 text-white text-[11px]" onClick={publish}>
                 <Send className="h-3 w-3" /> Publish ({comments.length})
@@ -587,13 +614,7 @@ export function App() {
         <div className="flex items-center justify-between px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/20">
           <span className="text-xs text-amber-400">Files have changed since this diff was loaded</span>
           <Button size="sm" variant="outline" className="h-6 text-[11px] border-amber-500/30 text-amber-400 hover:bg-amber-500/20"
-            onClick={() => {
-              setStale(false);
-              const activePath = activeWorktree?.path || activeSession?.cwd;
-              if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
-              setLoading(true);
-              send({ type: "request-diffs", mode: modeRef.current });
-            }}>
+            onClick={requestDiffs} disabled={refreshing}>
             Refresh
           </Button>
         </div>
@@ -689,26 +710,32 @@ export function App() {
                   return aParts.length - bParts.length;
                 });
 
-                return sorted.map(file => (
-                  <FileBlock key={`${file.area[0]}-${file.name}`}
-                    oldFile={{ name: file.name, contents: file.oldContents || "" }}
-                    newFile={{ name: file.name, contents: file.newContents || "" }}
-                    path={file.name}
-                    diffStyle={diffStyle}
-                    diffIndicators={diffIndicators}
-                    lineDiffType={lineDiffType}
-                    disableBackground={disableBackground}
-                    overflow={overflow}
-                    disableLineNumbers={disableLineNumbers}
-                    hunkSeparators={hunkSeparators}
-                    fontSize={fontSize}
-                    theme={theme}
-                    area={file.area !== "committed" ? file.area : undefined}
-                    comments={comments} openForms={openForms} hasOpenForm={hasOpenForm}
-                    onAddCommentForm={addCommentForm} onSubmitComment={submitComment} onCancelCommentForm={cancelCommentForm}
-                    onEditComment={editComment} onDeleteComment={deleteComment}
-                    onResolveComment={resolveComment} onReplyComment={replyToComment} />
-                ));
+                return sorted.map(file => {
+                  const oldContents = file.oldContents || "";
+                  const newContents = file.newContents || "";
+                  const oldKey = pierreFileCacheKey(file.name, oldContents);
+                  const newKey = pierreFileCacheKey(file.name, newContents);
+                  return (
+                    <FileBlock key={`${file.area}-${oldKey}-${newKey}`}
+                      oldFile={{ name: file.name, contents: oldContents, cacheKey: oldKey }}
+                      newFile={{ name: file.name, contents: newContents, cacheKey: newKey }}
+                      path={file.name}
+                      diffStyle={diffStyle}
+                      diffIndicators={diffIndicators}
+                      lineDiffType={lineDiffType}
+                      disableBackground={disableBackground}
+                      overflow={overflow}
+                      disableLineNumbers={disableLineNumbers}
+                      hunkSeparators={hunkSeparators}
+                      fontSize={fontSize}
+                      theme={theme}
+                      area={file.area !== "committed" ? file.area : undefined}
+                      comments={comments} openForms={openForms} hasOpenForm={hasOpenForm}
+                      onAddCommentForm={addCommentForm} onSubmitComment={submitComment} onCancelCommentForm={cancelCommentForm}
+                      onEditComment={editComment} onDeleteComment={deleteComment}
+                      onResolveComment={resolveComment} onReplyComment={replyToComment} />
+                  );
+                });
               })()}
             </div>
           </main>

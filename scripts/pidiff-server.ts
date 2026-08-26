@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createDaemonServer } from "./daemon-shared.ts";
+import { isGitIgnoredRelPath, parseGitIgnoredWatchFilter, type GitIgnoredWatchFilter } from "./pidiff-git-ignore.ts";
 
 const DEFAULT_PORT = 19290;
 const port = parseInt(process.env.PI_PIDIFF_PORT || "", 10) || DEFAULT_PORT;
@@ -491,25 +492,20 @@ const activeWatchers = new Map<string, { watcher: any; debounceTimer: ReturnType
 const chokidarRetries = new Map<string, number>();
 const MAX_CHOKIDAR_RETRIES = 10;
 
-/** Get top-level gitignored directories for a worktree path. */
-function getGitIgnoredDirs(worktreePath: string): Set<string> {
-  const dirs = new Set<string>();
+/** Gitignored paths for chokidar: whole top-level dirs plus nested prefixes. */
+function getGitIgnoredDirs(worktreePath: string): GitIgnoredWatchFilter {
   try {
     const raw = execFileSync(GIT_BIN, ["ls-files", "-oi", "--directory", "--exclude-standard"], {
       cwd: worktreePath, encoding: "utf-8", timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"], maxBuffer: 5 * 1024 * 1024,
     }).trim();
-    if (raw) {
-      for (const line of raw.split("\n")) {
-        const trimmed = line.replace(/\/$/, "");
-        if (trimmed) {
-          const topLevel = trimmed.split("/")[0];
-          if (topLevel) dirs.add(topLevel);
-        }
-      }
-    }
-  } catch (e: any) { log(`getGitIgnoredDirs error for ${worktreePath}: ${e.message}`); }
-  return dirs;
+    const filter = parseGitIgnoredWatchFilter(raw);
+    log(`gitignored watch filter for ${worktreePath}: topLevel=${[...filter.topLevel].join(",") || "(none)"} nested=${filter.nested.length}`);
+    return filter;
+  } catch (e: any) {
+    log(`getGitIgnoredDirs error for ${worktreePath}: ${e.message}`);
+    return { topLevel: new Set(), nested: [] };
+  }
 }
 
 /** Get the global gitignore file path. */
@@ -543,12 +539,8 @@ function startWatching(sessionId: string, worktreePath: string) {
   const key = `${sessionId}:${worktreePath}`;
   if (activeWatchers.has(key)) return;
 
-  // Load gitignored directories
   let gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
-  log(`starting chokidar watch: ${worktreePath} (${gitIgnoredDirs.size} gitignored dirs: ${[...gitIgnoredDirs].join(", ")})`);
-
-  // Performance-critical dirs always ignored (avoid recursing into huge dirs)
-  const ALWAYS_IGNORED = new Set([".git", "node_modules"]);
+  log(`starting chokidar watch: ${worktreePath}`);
 
   const watcher = _chokidar.watch(worktreePath, {
     ignoreInitial: true,
@@ -557,8 +549,8 @@ function startWatching(sessionId: string, worktreePath: string) {
       const rel = path.relative(worktreePath, filePath);
       if (rel === "") return false;
       if (rel.startsWith("..")) return true;
-      const first = rel.split(path.sep)[0];
-      return ALWAYS_IGNORED.has(first) || gitIgnoredDirs.has(first);
+      const relPosix = rel.split(path.sep).join("/");
+      return isGitIgnoredRelPath(relPosix, gitIgnoredDirs);
     },
     depth: 20,
   });
@@ -597,7 +589,6 @@ function startWatching(sessionId: string, worktreePath: string) {
     gitignoreWatcher.on("change", () => {
       log(`gitignore changed for ${worktreePath}, refreshing ignored dirs`);
       gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
-      log(`refreshed gitignored dirs: ${[...gitIgnoredDirs].join(", ")}`);
     });
     state.gitignoreWatcher = gitignoreWatcher;
   } catch (e: any) { log(`gitignore watcher setup failed: ${e.message}`); }

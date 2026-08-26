@@ -38,6 +38,7 @@
     "extensions/pitasks/",
     "scripts/pidash-server.ts",
     "scripts/pidiff-server.ts",
+    "scripts/pidiff-git-ignore.ts",
     "scripts/daemon-shared.ts",
     "scripts/serve-ui.ts",
     "scripts/pidash-discord.ts",
