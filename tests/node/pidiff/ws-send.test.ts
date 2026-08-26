@@ -4,7 +4,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { restoreWatchMessage, trySendWs } from "../../../extensions/pidiff/pidiff-ui/src/lib/ws-send.ts";
+import { restoreWatchMessages, runReconnectWatch, trySendWs } from "../../../extensions/pidiff/pidiff-ui/src/lib/ws-send.ts";
 
 describe("trySendWs", () => {
   it("returns false when the socket is missing", () => {
@@ -26,18 +26,34 @@ describe("trySendWs", () => {
   });
 });
 
-describe("restoreWatchMessage", () => {
-  it("restores a worktree watch when a worktree is selected", () => {
-    assert.deepEqual(restoreWatchMessage("/tmp/wt", "sess"), {
-      type: "watch-worktree",
-      worktreePath: "/tmp/wt",
-    });
+describe("restoreWatchMessages", () => {
+  it("restores a session watch when no worktree is selected", () => {
+    assert.deepEqual(restoreWatchMessages(undefined, "sess"), [
+      { type: "watch", sessionId: "sess" },
+    ]);
   });
 
-  it("restores a session watch when no worktree is selected", () => {
-    assert.deepEqual(restoreWatchMessage(undefined, "sess"), {
-      type: "watch",
-      sessionId: "sess",
-    });
+  it("restores session watch before worktree watch", () => {
+    assert.deepEqual(restoreWatchMessages("/tmp/wt", "sess"), [
+      { type: "watch", sessionId: "sess" },
+      { type: "watch-worktree", worktreePath: "/tmp/wt" },
+    ]);
+  });
+});
+
+describe("runReconnectWatch", () => {
+  it("sends nothing while disconnected", () => {
+    const sent: object[] = [];
+    runReconnectWatch(false, "/tmp/wt", "sess", (m) => sent.push(m));
+    assert.deepEqual(sent, []);
+  });
+
+  it("App reconnect sends session watch before worktree watch", () => {
+    const sent: object[] = [];
+    runReconnectWatch(true, "/tmp/wt", "sess", (m) => sent.push(m));
+    assert.deepEqual(sent, [
+      { type: "watch", sessionId: "sess" },
+      { type: "watch-worktree", worktreePath: "/tmp/wt" },
+    ]);
   });
 });

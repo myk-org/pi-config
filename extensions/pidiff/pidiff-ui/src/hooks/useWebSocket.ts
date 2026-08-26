@@ -13,11 +13,14 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
   const earlyMessages = useRef<any[]>([]);
   const hasListeners = useRef(false);
 
+  const tearingDown = useRef(false);
+
   useEffect(() => {
     if (skipConnect) {
       log.debug("ws skipConnect");
       return;
     }
+    tearingDown.current = false;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${protocol}//${window.location.host}/ws/browser`;
 
@@ -31,9 +34,12 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
         setConnected(true);
       };
       ws.onclose = () => {
-        log.warn("ws close");
+        const teardown = tearingDown.current;
+        log.debug("ws close", { teardown });
         setConnected(false);
         wsRef.current = null;
+        if (teardown) return;
+        log.info("ws disconnected");
         setTimeout(connect, 3000);
       };
       ws.onerror = () => ws.close();
@@ -51,7 +57,11 @@ export function useWebSocket(options?: { testWs?: WebSocket | null }) {
     }
 
     connect();
-    return () => { wsRef.current?.close(); };
+    return () => {
+      tearingDown.current = true;
+      log.debug("ws cleanup");
+      wsRef.current?.close();
+    };
   }, [skipConnect]);
 
   const send = useCallback((data: object) => {

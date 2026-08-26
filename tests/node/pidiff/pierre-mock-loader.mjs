@@ -2,6 +2,24 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+function createLogger(name) {
+  const debugOn = Boolean(globalThis.__PIDIFF_DEBUG);
+  const emit = (level, args) => {
+    globalThis.__pidiffUiLogs ??= [];
+    const msg = args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+    globalThis.__pidiffUiLogs.push({ name, level, msg });
+  };
+  return {
+    debug: (...args) => { if (debugOn) emit("debug", args); },
+    info: (...args) => emit("info", args),
+    warn: (...args) => emit("warn", args),
+    error: (...args) => emit("error", args),
+    isDebugEnabled: () => debugOn,
+  };
+}
+
+const log = createLogger("pidiff-ui");
+
 const dir = dirname(fileURLToPath(import.meta.url));
 const repo = join(dir, "../../..");
 const uiSrc = join(repo, "extensions/pidiff/pidiff-ui/src");
@@ -17,6 +35,7 @@ const mocks = {
 };
 
 function existingFile(p) {
+  log.info("existingFile", p);
   try {
     return existsSync(p) && statSync(p).isFile();
   } catch {
@@ -25,6 +44,7 @@ function existingFile(p) {
 }
 
 function aliasUrl(specifier) {
+  log.info("aliasUrl", specifier);
   let base;
   if (specifier.startsWith("@/")) base = join(uiSrc, specifier.slice(2));
   else if (specifier.startsWith("@ui/")) base = join(sharedUi, specifier.slice(4));
@@ -36,6 +56,7 @@ function aliasUrl(specifier) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
+  log.info("resolve", specifier);
   const mapped = mocks[specifier];
   if (mapped) return { shortCircuit: true, url: mapped };
   const aliased = aliasUrl(specifier);

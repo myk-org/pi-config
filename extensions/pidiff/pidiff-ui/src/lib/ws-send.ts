@@ -19,19 +19,36 @@ export function trySendWs(
   return true;
 }
 
-/** After reconnect, restore the selected worktree watch or the session root watch. */
-export function restoreWatchMessage(
+/** After reconnect, bind the active session first, then the worktree. */
+export function restoreWatchMessages(
   worktreePath: string | undefined,
   sessionId: string | undefined,
-): { type: string; worktreePath?: string; sessionId?: string } | null {
-  if (worktreePath) {
-    log.info("restoreWatchMessage worktree", { worktreePath });
-    return { type: "watch-worktree", worktreePath };
-  }
+): Array<{ type: string; worktreePath?: string; sessionId?: string }> {
+  const msgs: Array<{ type: string; worktreePath?: string; sessionId?: string }> = [];
   if (sessionId) {
-    log.info("restoreWatchMessage session", { sessionId });
-    return { type: "watch", sessionId };
+    log.info("restoreWatchMessages session", { sessionId });
+    msgs.push({ type: "watch", sessionId });
   }
-  log.debug("restoreWatchMessage skipped");
-  return null;
+  if (worktreePath) {
+    log.info("restoreWatchMessages worktree", { worktreePath });
+    msgs.push({ type: "watch-worktree", worktreePath });
+  }
+  if (msgs.length === 0) log.debug("restoreWatchMessages skipped");
+  return msgs;
+}
+
+/** App reconnect effect: send session watch, then worktree watch. */
+export function runReconnectWatch(
+  connected: boolean,
+  worktreePath: string | undefined,
+  sessionId: string | undefined,
+  send: (msg: object) => unknown,
+): void {
+  log.info("runReconnectWatch", {
+    connected,
+    hasWorktree: Boolean(worktreePath),
+    sessionId: sessionId || "",
+  });
+  if (!connected) return;
+  for (const msg of restoreWatchMessages(worktreePath, sessionId)) send(msg);
 }

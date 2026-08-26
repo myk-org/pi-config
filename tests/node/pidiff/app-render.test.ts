@@ -47,6 +47,13 @@ describe("App Refresh render", () => {
     assert.match(html, /data-pidiff-refresh-slot="header"/);
   });
 
+  it("App header Refresh is disabled while disconnected", async () => {
+    const { App } = await import("../../../extensions/pidiff/pidiff-ui/src/App.tsx");
+    const html = renderToString(createElement(App));
+    assert.match(html, /data-pidiff-refresh-slot="header"/);
+    assert.match(html, /disabled/);
+  });
+
   it("App stale banner mounts a Refresh control", async () => {
     (globalThis as { __pidiffTestStale?: boolean }).__pidiffTestStale = true;
     log.debug("render App stale banner");
