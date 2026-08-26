@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { createLogger } from "@/lib/create-logger";
 import { buildRequestDiffsMessage, commitRefsForRefresh } from "@/lib/request-diffs";
-import { PidiffRefreshControl } from "@/lib/refresh-control";
+import { AppRefreshActions } from "@/lib/app-refresh-actions";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -470,13 +470,12 @@ export function App() {
                 className="h-6 px-2.5 text-[11px] rounded-none border-0" onClick={() => setDiffStyle("unified")}>Unified</Button>
             </div>
             {!connected && <span className="text-[10px] text-red-400">● disconnected</span>}
-            {activeSession && (
-              <PidiffRefreshControl
-                refreshing={refreshing}
-                onRefresh={requestDiffs}
-                className="h-7 px-2.5 text-[11px] rounded-md border border-border"
-              />
-            )}
+            <AppRefreshActions
+              hasSession={Boolean(activeSession)}
+              stale={false}
+              refreshing={refreshing}
+              onRefresh={requestDiffs}
+            />
             {comments.length > 0 && (
               <Button size="sm" className="h-7 gap-1.5 bg-green-600 hover:bg-green-500 text-white text-[11px]" onClick={publish}>
                 <Send className="h-3 w-3" /> Publish ({comments.length})
@@ -625,16 +624,12 @@ export function App() {
       </header>
 
       {/* Stale banner */}
-      {stale && (
-        <div className="flex items-center justify-between px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/20">
-          <span className="text-xs text-amber-400">Files have changed since this diff was loaded</span>
-          <PidiffRefreshControl
-            refreshing={refreshing}
-            onRefresh={requestDiffs}
-            className="h-6 px-2 text-[11px] rounded-md border border-amber-500/30 text-amber-400"
-          />
-        </div>
-      )}
+      <AppRefreshActions
+        hasSession={false}
+        stale={stale}
+        refreshing={refreshing}
+        onRefresh={requestDiffs}
+      />
 
       {/* ── Body ────────────────────────────────────────────────── */}
       {!activeSession ? (

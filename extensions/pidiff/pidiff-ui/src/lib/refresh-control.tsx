@@ -10,17 +10,20 @@ export function PidiffRefreshControl({
   refreshing,
   onRefresh,
   className,
+  slot,
 }: {
   refreshing: boolean;
   onRefresh: () => void;
   className?: string;
+  slot?: "header" | "banner";
 }) {
   const btn = refreshButtonState(refreshing);
-  log.debug("PidiffRefreshControl render", { refreshing, disabled: btn.disabled });
+  log.debug("PidiffRefreshControl render", { refreshing, disabled: btn.disabled, slot: slot ?? "" });
   return (
     <button
       type="button"
       data-pidiff-refresh="true"
+      data-pidiff-refresh-slot={slot ?? ""}
       data-spinning={btn.spinning ? "true" : "false"}
       disabled={btn.disabled}
       onClick={onRefresh}
