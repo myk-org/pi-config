@@ -26,10 +26,21 @@ export function buildRequestDiffsMessage(
   return msg;
 }
 
+/** True when Refresh can send a request-diffs payload. */
+export function shouldBeginRefresh(connected: boolean, refreshing: boolean): boolean {
+  const ok = connected && !refreshing;
+  log.debug("shouldBeginRefresh", { connected, refreshing, ok });
+  return ok;
+}
+
 /** Refresh keeps the current tree/panes; only the button is busy. */
-export function refreshButtonState(refreshing: boolean): { disabled: boolean; spinning: boolean; unmountBody: boolean } {
-  log.debug("refreshButtonState", { refreshing });
-  return { disabled: refreshing, spinning: refreshing, unmountBody: false };
+export function refreshButtonState(
+  refreshing: boolean,
+  connected = true,
+): { disabled: boolean; spinning: boolean; unmountBody: boolean } {
+  const disabled = refreshing || !connected;
+  log.debug("refreshButtonState", { refreshing, connected, disabled });
+  return { disabled, spinning: refreshing, unmountBody: false };
 }
 
 /** Commits-mode refresh uses the on-screen comparison, not leftover picker state. */

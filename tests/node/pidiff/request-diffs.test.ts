@@ -8,6 +8,7 @@ import {
   buildRequestDiffsMessage,
   commitRefsForRefresh,
   refreshButtonState,
+  shouldBeginRefresh,
 } from "../../../extensions/pidiff/pidiff-ui/src/lib/request-diffs.ts";
 
 describe("buildRequestDiffsMessage", () => {
@@ -55,6 +56,11 @@ describe("refreshButtonState", () => {
       unmountBody: false,
     });
   });
+
+  it("disables the control while the socket is down", () => {
+    assert.equal(refreshButtonState(false, false).disabled, true);
+    assert.equal(refreshButtonState(false, false).spinning, false);
+  });
 });
 
 describe("commitRefsForRefresh", () => {
@@ -67,5 +73,19 @@ describe("commitRefsForRefresh", () => {
       commitRefsForRefresh("commits", "disp-a", "disp-b", "old-a", "old-b"),
       { from: "disp-a", to: "disp-b" },
     );
+  });
+});
+
+describe("shouldBeginRefresh", () => {
+  it("allows Refresh when the socket is open", () => {
+    assert.equal(shouldBeginRefresh(true, false), true);
+  });
+
+  it("blocks Refresh while disconnected", () => {
+    assert.equal(shouldBeginRefresh(false, false), false);
+  });
+
+  it("blocks Refresh while a request is in flight", () => {
+    assert.equal(shouldBeginRefresh(true, true), false);
   });
 });

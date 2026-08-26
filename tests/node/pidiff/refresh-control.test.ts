@@ -4,8 +4,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createElement } from "../../../extensions/pidiff/pidiff-ui/node_modules/react/index.js";
-import { renderToString } from "../../../extensions/pidiff/pidiff-ui/node_modules/react-dom/server.node.js";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 import { PidiffRefreshControl } from "../../../extensions/pidiff/pidiff-ui/src/lib/refresh-control.tsx";
 
 describe("PidiffRefreshControl", () => {
@@ -35,5 +35,17 @@ describe("PidiffRefreshControl", () => {
     assert.equal(vnode.type, "button");
     vnode.props.onClick();
     assert.equal(clicks, 1);
+  });
+
+  it("renders a disabled control while disconnected", () => {
+    const html = renderToString(
+      createElement(PidiffRefreshControl, {
+        refreshing: false,
+        connected: false,
+        onRefresh: () => {},
+      }),
+    );
+    assert.match(html, /disabled/);
+    assert.doesNotMatch(html, /data-spinning="true"/);
   });
 });

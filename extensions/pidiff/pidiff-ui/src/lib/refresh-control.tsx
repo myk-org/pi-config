@@ -11,14 +11,21 @@ export function PidiffRefreshControl({
   onRefresh,
   className,
   slot,
+  connected = true,
 }: {
   refreshing: boolean;
   onRefresh: () => void;
   className?: string;
   slot?: "header" | "banner";
+  connected?: boolean;
 }) {
-  const btn = refreshButtonState(refreshing);
-  log.debug("PidiffRefreshControl render", { refreshing, disabled: btn.disabled, slot: slot ?? "" });
+  const btn = refreshButtonState(refreshing, connected);
+  log.debug("PidiffRefreshControl render", {
+    refreshing,
+    connected,
+    disabled: btn.disabled,
+    slot: slot ?? "",
+  });
   return (
     <button
       type="button"

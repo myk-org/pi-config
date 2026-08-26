@@ -10,18 +10,21 @@ export function AppRefreshActions({
   stale,
   refreshing,
   onRefresh,
+  connected,
 }: {
   hasSession: boolean;
   stale: boolean;
   refreshing: boolean;
   onRefresh: () => void;
+  connected: boolean;
 }) {
-  log.debug("AppRefreshActions", { hasSession, stale, refreshing });
+  log.debug("AppRefreshActions", { hasSession, stale, refreshing, connected });
   return (
     <>
       {hasSession && (
         <PidiffRefreshControl
           slot="header"
+          connected={connected}
           refreshing={refreshing}
           onRefresh={onRefresh}
           className="h-7 px-2.5 text-[11px] rounded-md border border-border"
@@ -32,6 +35,7 @@ export function AppRefreshActions({
           <span className="text-xs text-amber-400">Files have changed since this diff was loaded</span>
           <PidiffRefreshControl
             slot="banner"
+            connected={connected}
             refreshing={refreshing}
             onRefresh={onRefresh}
             className="h-6 px-2 text-[11px] rounded-md border border-amber-500/30 text-amber-400"

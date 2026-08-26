@@ -7,7 +7,7 @@ import { themeToTreeStyles } from "@pierre/trees";
 import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { createLogger } from "@/lib/create-logger";
-import { buildRequestDiffsMessage, commitRefsForRefresh } from "@/lib/request-diffs";
+import { buildRequestDiffsMessage, commitRefsForRefresh, shouldBeginRefresh } from "@/lib/request-diffs";
 import { AppRefreshActions } from "@/lib/app-refresh-actions";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
@@ -286,15 +286,22 @@ export function App() {
   }, [commitFrom, commitTo, send]);
 
   const requestDiffs = useCallback(() => {
-    if (refreshing) return;
+    if (!shouldBeginRefresh(connected, refreshing)) {
+      log.warn("requestDiffs skipped", { connected, refreshing });
+      return;
+    }
     setStale(false);
     const activePath = activeWorktreeRef.current?.path || activeSessionRef.current?.cwd;
     if (activePath) setStaleWorktrees(prev => { const next = new Set(prev); next.delete(activePath); return next; });
     setRefreshing(true);
     log.info("requestDiffs", { mode: modeRef.current, path: activePath || "" });
     const refs = commitRefsForRefresh(modeRef.current, diffData.fromRef, diffData.toRef, commitFrom, commitTo);
-    send(buildRequestDiffsMessage(modeRef.current, refs.from, refs.to));
-  }, [send, refreshing, commitFrom, commitTo, diffData.fromRef, diffData.toRef]);
+    const sent = send(buildRequestDiffsMessage(modeRef.current, refs.from, refs.to));
+    if (!sent) {
+      setRefreshing(false);
+      log.warn("requestDiffs dropped", { connected });
+    }
+  }, [send, connected, refreshing, commitFrom, commitTo, diffData.fromRef, diffData.toRef]);
 
   // ── File tree ─────────────────────────────────────────────────────
 
@@ -474,6 +481,7 @@ export function App() {
               hasSession={Boolean(activeSession)}
               stale={false}
               refreshing={refreshing}
+              connected={connected}
               onRefresh={requestDiffs}
             />
             {comments.length > 0 && (
@@ -628,6 +636,7 @@ export function App() {
         hasSession={false}
         stale={stale}
         refreshing={refreshing}
+        connected={connected}
         onRefresh={requestDiffs}
       />
 

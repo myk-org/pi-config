@@ -13,6 +13,7 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 ## pi-sidecar (Monorepo Workspace)
 
 pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is the ONLY external consumer of pi-config extensions (acpx-provider, cli-provider, providers).
+`extensions/pidiff/pidiff-ui` is also a workspace so root `npm install` provides React for Node pidiff-ui tests.
 
 **When changing pi-config code, you MUST verify pi-sidecar is not broken:**
 
@@ -142,7 +143,8 @@ Writing effective rules:
 - **pidiff** runs as a per-project server (one per cwd, not shared).
   Random free port, tracked via `.pi/tmp/pidiff.port` and `.pi/tmp/pidiff.pid`.
   Header and stale-banner **Refresh** reload the current diff in place (tree and
-  panes stay mounted). Nested gitignores do not skip whole top-level dirs
+  panes stay mounted). Refresh is disabled while the WebSocket is down.
+  Nested gitignores do not skip whole top-level dirs
   (`extensions/foo/node_modules` does not ignore `extensions/`).
   Daemon scripts include `scripts/pidiff-git-ignore.ts` (chokidar skip filter).
 - Timers (`setInterval`/`setTimeout`) must not read captured `ctx.mode` unguarded —

@@ -8,7 +8,8 @@
   "license": "MIT",
   "workspaces": [
     "packages/pi-sidecar",
-    "packages/pi-vertex-claude"
+    "packages/pi-vertex-claude",
+    "extensions/pidiff/pidiff-ui"
   ],
   "files": [
     "extensions/acpx-provider/",
