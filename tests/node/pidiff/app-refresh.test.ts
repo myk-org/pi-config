@@ -133,6 +133,18 @@ describe("App Refresh slots", () => {
       }),
     );
     assert.match(html, /disabled/);
+  });
+
+  it("disconnected header Refresh does not spin", () => {
+    const html = renderToString(
+      createElement(AppRefreshActions, {
+        hasSession: true,
+        stale: false,
+        refreshing: false,
+        connected: false,
+        onRefresh: () => {},
+      }),
+    );
     assert.doesNotMatch(html, /data-spinning="true"/);
   });
 

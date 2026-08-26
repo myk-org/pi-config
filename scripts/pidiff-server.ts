@@ -601,7 +601,7 @@ function startWatching(sessionId: string, worktreePath: string) {
       gitIgnoredDirs = getGitIgnoredDirs(worktreePath);
     });
     state.gitignoreWatcher = gitignoreWatcher;
-  } catch (e: any) { slog.error("gitignore watcher setup failed", { err: e.message }); }
+  } catch (e: any) { slog.warn("gitignore watcher setup failed", { err: e.message }); }
 }
 
 function stopWatching(sessionId: string, worktreePath: string) {

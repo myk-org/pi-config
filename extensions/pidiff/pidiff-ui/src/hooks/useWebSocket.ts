@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createLogger } from "../lib/create-logger.ts";
+import { trySendWs } from "../lib/ws-send.ts";
 
 const log = createLogger("pidiff-ui");
 
@@ -16,11 +17,16 @@ export function useWebSocket() {
     const url = `${protocol}//${window.location.host}/ws/browser`;
 
     function connect() {
+      log.debug("ws connect");
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        log.info("ws open");
+        setConnected(true);
+      };
       ws.onclose = () => {
+        log.warn("ws close");
         setConnected(false);
         wsRef.current = null;
         setTimeout(connect, 3000);
@@ -44,15 +50,7 @@ export function useWebSocket() {
   }, []);
 
   const send = useCallback((data: object) => {
-    const type = (data as { type?: string }).type ?? "";
-    const open = wsRef.current?.readyState === WebSocket.OPEN;
-    log.debug("ws send", { open, type });
-    if (!open || !wsRef.current) {
-      log.warn("ws send dropped", { type });
-      return false;
-    }
-    wsRef.current.send(JSON.stringify(data));
-    return true;
+    return trySendWs(wsRef.current, data, WebSocket.OPEN);
   }, []);
 
   const onMessage = useCallback((cb: (ev: any) => void) => {

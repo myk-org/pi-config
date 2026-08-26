@@ -59,6 +59,9 @@ describe("refreshButtonState", () => {
 
   it("disables the control while the socket is down", () => {
     assert.equal(refreshButtonState(false, false).disabled, true);
+  });
+
+  it("does not spin while the socket is down", () => {
     assert.equal(refreshButtonState(false, false).spinning, false);
   });
 });

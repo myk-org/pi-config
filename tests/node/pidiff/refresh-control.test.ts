@@ -46,6 +46,16 @@ describe("PidiffRefreshControl", () => {
       }),
     );
     assert.match(html, /disabled/);
+  });
+
+  it("does not spin while disconnected", () => {
+    const html = renderToString(
+      createElement(PidiffRefreshControl, {
+        refreshing: false,
+        connected: false,
+        onRefresh: () => {},
+      }),
+    );
     assert.doesNotMatch(html, /data-spinning="true"/);
   });
 });

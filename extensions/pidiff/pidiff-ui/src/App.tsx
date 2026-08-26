@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { pierreFileCacheKey } from "@/lib/file-cache-key";
 import { createLogger } from "@/lib/create-logger";
 import { buildRequestDiffsMessage, commitRefsForRefresh, shouldBeginRefresh } from "@/lib/request-diffs";
+import { restoreWatchMessage } from "@/lib/ws-send";
 import { AppRefreshActions } from "@/lib/app-refresh-actions";
 import { Button } from "@ui/button";
 import { Separator } from "@ui/separator";
@@ -126,6 +127,12 @@ export function App() {
   const selectedFileRef = useRef<string | null>(null);
   const explorer = useExplorerWidth(280, 180, 600);
   useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  useEffect(() => {
+    if (!connected) return;
+    const msg = restoreWatchMessage(activeWorktreeRef.current?.path, activeSessionRef.current?.sessionId);
+    if (msg) send(msg);
+  }, [connected, send]);
 
   // ── WebSocket ─────────────────────────────────────────────────────
 
