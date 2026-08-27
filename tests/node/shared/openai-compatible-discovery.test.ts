@@ -180,6 +180,20 @@ describe("OpenAI-compatible provider discovery", () => {
       );
     });
     assert.equal(rendered.render(80).join("\n").trimEnd(), "Providers: relay (2)");
+  });
+
+  it("invalidates the durable discovery summary renderer", () => {
+    const renderers: Array<{ type: string; render: any }> = [];
+    installOpenAiCompatibleDiscovery({
+      on: () => {},
+      registerEntryRenderer: (type: string, render: any) => renderers.push({ type, render }),
+    } as any);
+
+    const rendered = renderers[0].render(
+      { data: { summary: "Providers: relay (2)" } },
+      {},
+      { fg: (_color: string, text: string) => text },
+    );
     assert.doesNotThrow(() => rendered.invalidate());
   });
 

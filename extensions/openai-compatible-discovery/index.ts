@@ -133,6 +133,7 @@ interface OpenAiCompatibleDiscoverySummary {
 
 /** A renderer component without a runtime dependency on Pi's TUI package. */
 function discoverySummaryComponent(summary: string, theme: { fg: (color: "muted", text: string) => string }) {
+  log.debug("rendering discovery summary", { summary });
   return {
     render: (_width: number): string[] => [theme.fg("muted", summary)],
     invalidate: (): void => {},
