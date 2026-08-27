@@ -37,6 +37,7 @@ Resolution behavior by source:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -50,12 +51,19 @@ from typing import Any
 
 from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
 
+log = logging.getLogger(__name__)
+
 # Lazy reply patterns that indicate the AI didn't write a real response
 _INTERNAL_ISSUE_REFERENCE = re.compile(r"\binternal\s+(?:issue\s+)?#\d+\b", re.IGNORECASE)
 _GITHUB_ISSUE_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+(?:[/?#]|\b)", re.IGNORECASE)
-_ISSUE_SPEC_UPDATE = re.compile(
-    r"\b(?:updated|update|amended|clarified|revised|changed)\b[\s\S]{0,120}\bissue\s+spec(?:ification)?\b"
-    r"|\bissue\s+spec(?:ification)?\b[\s\S]{0,120}\b(?:updated|update|amended|clarified|revised|changed)\b",
+_COMPLETED_ISSUE_SPEC_UPDATE = re.compile(
+    r"\b(?:(?:have|has)\s+)?(?:updated|amended|clarified|revised|changed)\s+(?:the\s+)?issue\s+spec(?:ification)?\b"
+    r"|\bissue\s+spec(?:ification)?\s+(?:was|has\s+been|is)\s+(?:updated|amended|clarified|revised|changed)\b",
+    re.IGNORECASE,
+)
+_UNAFFIRMATIVE_SPEC_RESOLUTION = re.compile(
+    r"\b(?:not|never|no|cannot|can't|won't|wasn't|weren't|hasn't|haven't|if|unless|conditional(?:ly)?|"
+    r"will|would|could|might|may|future|planned?|planning|proposed?|hypothetical(?:ly)?|should|recommend(?:ed|ation)?|suggest(?:ed|ion)?)\b",
     re.IGNORECASE,
 )
 
@@ -81,16 +89,24 @@ _LAZY_REPLY_PATTERNS = [
 
 
 def is_linked_issue_spec_resolution(reply: str) -> bool:
-    """Return whether a reply documents a spec update with an issue reference.
+    """Return whether a reply affirms a completed spec update linked to an issue.
 
-    A bare issue number, PR URL, or "by design" rationale is insufficient: the
-    reply must explicitly say the issue specification was updated and link it
-    to either an internal issue reference or a GitHub issue URL.
+    The completed update and an allowed internal or GitHub issue reference must
+    appear in the same statement. Negated, conditional, future, hypothetical,
+    proposed, and recommended statements are deliberately rejected.
     """
-    return bool(
-        _ISSUE_SPEC_UPDATE.search(reply)
-        and (_INTERNAL_ISSUE_REFERENCE.search(reply) or _GITHUB_ISSUE_URL.search(reply))
-    )
+    for statement in re.split(r"(?<=[.;!?])\s+|\n+", reply):
+        has_issue_reference = bool(_INTERNAL_ISSUE_REFERENCE.search(statement) or _GITHUB_ISSUE_URL.search(statement))
+        if (
+            has_issue_reference
+            and _COMPLETED_ISSUE_SPEC_UPDATE.search(statement)
+            and not _UNAFFIRMATIVE_SPEC_RESOLUTION.search(statement)
+        ):
+            log.debug("Accepted linked completed issue-spec resolution")
+            return True
+
+    log.debug("Rejected linked issue-spec resolution")
+    return False
 
 
 def validate_reply(reply: str, path: str, status: str) -> str | None:
