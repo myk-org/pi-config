@@ -17,6 +17,8 @@ from myk_pi_tools.reviews.post import is_linked_issue_spec_resolution
     [
         "Updated the issue spec in internal #782; this finding is resolved by that specification.",
         "The issue specification was updated: https://github.com/myk-org/pi-config/issues/782.",
+        "The issue spec was updated: https://github.com/will/example/issues/782.",
+        "The issue specification was updated: https://github.com/example/may/issues/782.",
     ],
 )
 def test_linked_issue_spec_resolution_accepts_explicit_completed_issue_reference(reply: str) -> None:

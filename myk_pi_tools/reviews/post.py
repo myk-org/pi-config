@@ -97,10 +97,11 @@ def is_linked_issue_spec_resolution(reply: str) -> bool:
     """
     for statement in re.split(r"(?<=[.;!?])\s+|\n+", reply):
         has_issue_reference = bool(_INTERNAL_ISSUE_REFERENCE.search(statement) or _GITHUB_ISSUE_URL.search(statement))
+        prose = _GITHUB_ISSUE_URL.sub("", _INTERNAL_ISSUE_REFERENCE.sub("", statement))
         if (
             has_issue_reference
             and _COMPLETED_ISSUE_SPEC_UPDATE.search(statement)
-            and not _UNAFFIRMATIVE_SPEC_RESOLUTION.search(statement)
+            and not _UNAFFIRMATIVE_SPEC_RESOLUTION.search(prose)
         ):
             log.debug("Accepted linked completed issue-spec resolution")
             return True
