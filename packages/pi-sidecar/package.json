@@ -1,6 +1,6 @@
 {
   "name": "@myk-org/pi-sidecar",
-  "version": "4.3.8",
+  "version": "4.3.9",
   "description": "Standalone HTTP sidecar wrapping the Pi coding agent SDK",
   "license": "Apache-2.0",
   "repository": {
