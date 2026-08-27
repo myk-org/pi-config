@@ -4,6 +4,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
+import { createLogger } from "./logger.js";
+
+const log = createLogger("openai-compatible-discovery");
 
 export const OPENAI_COMPATIBLE_DISCOVERY_TTL_MS = 5 * 60 * 1000;
 
@@ -85,6 +88,7 @@ export function formatOpenAiCompatibleDiscoverySummary(
   providerId: string,
   discoveredModelCount: number,
 ): string {
+  log.debug("formatting discovery summary", { providerId, discoveredModelCount });
   return `Providers: ${providerId} (${discoveredModelCount})`;
 }
 

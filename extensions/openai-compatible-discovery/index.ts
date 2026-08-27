@@ -1,6 +1,5 @@
 import type { AuthResult, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { createRuntimeProvider } from "../shared/create-runtime-provider.js";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -132,11 +131,19 @@ interface OpenAiCompatibleDiscoverySummary {
   summary: string;
 }
 
+/** A renderer component without a runtime dependency on Pi's TUI package. */
+function discoverySummaryComponent(summary: string, theme: { fg: (color: "muted", text: string) => string }) {
+  return {
+    render: (_width: number): string[] => [theme.fg("muted", summary)],
+    invalidate: (): void => {},
+  };
+}
+
 export default function (pi: ExtensionAPI) {
   if (typeof pi.registerEntryRenderer === "function") {
     pi.registerEntryRenderer<OpenAiCompatibleDiscoverySummary>(
       "openai-compatible-discovery-summary",
-      (entry, _options, theme) => new Text(theme.fg("muted", entry.data?.summary ?? ""), 0, 0),
+      (entry, _options, theme) => discoverySummaryComponent(entry.data?.summary ?? "", theme),
     );
   }
 

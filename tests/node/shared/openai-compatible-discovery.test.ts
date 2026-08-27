@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import installOpenAiCompatibleDiscovery from "../../../extensions/openai-compatible-discovery/index.js";
 import {
+  findEligibleOpenAiCompatibleProviderConfigs,
   findEligibleOpenAiCompatibleProviderConfigsResult,
   formatOpenAiCompatibleDiscoverySummary,
   materializeOpenAiCompatibleModels,
@@ -50,6 +51,22 @@ describe("OpenAI-compatible provider discovery", () => {
     assert.deepEqual(findEligibleOpenAiCompatibleProviderConfigsResult().providers, [{ id: "gateway", headers: undefined }]);
   });
 
+  it("maps eligible provider configuration objects through the public wrapper", () => {
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
+      gateway: {
+        api: "openai-completions",
+        discoverModels: true,
+        headers: { "X-Gateway": "relay" },
+      },
+      disabled: { api: "openai-completions" },
+    } }));
+
+    assert.deepEqual(findEligibleOpenAiCompatibleProviderConfigs(), [{
+      id: "gateway",
+      headers: { "X-Gateway": "relay" },
+    }]);
+  });
+
   it("augments the configured provider so the ordinary picker renders its exact source key", async () => {
     const modelsJson = JSON.stringify({ providers: { litellm: { api: "openai-completions", discoverModels: true } } });
     writeFileSync(join(agentDir, "models.json"), modelsJson);
@@ -76,11 +93,10 @@ describe("OpenAI-compatible provider discovery", () => {
     ]);
   });
 
-  it("materializes an opaque discovered model with Pi's complete contract and routes it through the source provider", async () => {
+  it("materializes an opaque discovered model with Pi's complete contract", async () => {
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { genericKey: { api: "openai-completions", discoverModels: true } } }));
     let sessionStart: any;
-    const calls: unknown[][] = [];
-    const source = sourceProvider("genericKey", (...args: unknown[]) => { calls.push(args); return "source-result"; });
+    const source = sourceProvider("genericKey");
     const registered: any[] = [];
     globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "opaque-discovered-model" }] }));
     installOpenAiCompatibleDiscovery({
@@ -105,8 +121,6 @@ describe("OpenAI-compatible provider discovery", () => {
       maxTokens: 16_384,
     });
     assert.equal(model.input.includes("image"), true);
-    assert.equal(registered[0].stream(model, "context"), "source-result");
-    assert.deepEqual(calls, [[model, "context", undefined]]);
   });
 
   it("routes a selected discovered model through the original configured provider", async () => {
@@ -166,6 +180,7 @@ describe("OpenAI-compatible provider discovery", () => {
       );
     });
     assert.equal(rendered.render(80).join("\n").trimEnd(), "Providers: relay (2)");
+    assert.doesNotThrow(() => rendered.invalidate());
   });
 
   it("does not append a prior session's summary when new-session discovery fails", async () => {
