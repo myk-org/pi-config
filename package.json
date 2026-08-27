@@ -15,6 +15,7 @@
     "extensions/acpx-provider/",
     "extensions/cli-provider/",
     "extensions/providers/",
+    "extensions/openai-compatible-discovery/",
     "extensions/shared/",
     "extensions/orchestrator/",
     "extensions/coms/",

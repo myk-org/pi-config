@@ -95,6 +95,8 @@ pi-config/
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/tmp/ lockfiles)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
+│   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
+│   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── oneshot.ts               # Argv oneshot helpers (`pi -p` / `--mode json` skip register)
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
@@ -106,6 +108,7 @@ pi-config/
 │   │   ├── stream-builder.ts        # StreamAssembler — unified thinking/text event→pi stream mapping
 │   │   ├── session-cwd.ts           # Per-turn CLI/ACPX spawn cwd ALS (#768; same Symbol.for as sidecar copy)
 │   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
+│   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
@@ -234,7 +237,7 @@ pi-config/
 │   │   ├── providers/               # Driver schema, restore-default-model, initialized-reset tests
 │   │   ├── orchestrator/            # Orchestrator extension tests
 │   │   ├── pidiff/                  # Pidiff extension tests
-│   │   └── shared/                  # Shared tests (oneshot via utils.test, coms-shared, daemon-manager, create-runtime-provider, models-dev)
+│   │   └── shared/                  # Shared tests (oneshot, coms, daemon, runtime provider, models.dev, OpenAI-compatible discovery)
 │   └── python/                      # Python tests (pytest)
 ├── package.json                     # Node.js dependencies (extensions)
 ├── tox.toml                         # Test runner config (Python + Node environments)

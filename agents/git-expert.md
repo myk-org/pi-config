@@ -55,7 +55,23 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 ## Protection Rules
 
 - NEVER commit or push to main/master branch (unless `allow_push_to_protected_branches` is `true` — see Project Settings)
-- NEVER commit to already-merged branches
+- Before every commit on a non-main/master branch, check whether that branch was merged:
+
+  ```bash
+  current_branch=$(git branch --show-current)
+  remote_ref="refs/remotes/origin/$current_branch"
+  if git show-ref --verify --quiet "$remote_ref" \
+    && git merge-base --is-ancestor "$remote_ref" refs/remotes/origin/main; then
+    echo "BLOCK: origin/$current_branch is already merged into origin/main"
+    exit 1
+  fi
+  ```
+
+  Block only when both conditions succeed:
+  `refs/remotes/origin/<current-branch>` exists, and that remote tip is an ancestor of
+  `refs/remotes/origin/main`. Do not treat `HEAD == origin/main`, a fresh branch created
+  from main, or a branch tracking `origin/main` as merged. If the matching remote ref does
+  not exist, continue with the commit.
 - NEVER use `--no-verify` flag
 - Branch prefixes: `feature/`, `fix/`, `hotfix/`, `refactor/`
 
