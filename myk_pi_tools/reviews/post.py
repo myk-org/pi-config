@@ -37,7 +37,9 @@ Resolution behavior by source:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -49,7 +51,22 @@ from typing import Any
 
 from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
 
+log = logging.getLogger(__name__)
+
 # Lazy reply patterns that indicate the AI didn't write a real response
+_INTERNAL_ISSUE_REFERENCE = re.compile(r"\binternal\s+(?:issue\s+)?#\d+\b", re.IGNORECASE)
+_GITHUB_ISSUE_URL = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+(?:[/?#]|\b)", re.IGNORECASE)
+_COMPLETED_ISSUE_SPEC_UPDATE = re.compile(
+    r"\b(?:(?:have|has)\s+)?(?:updated|amended|clarified|revised|changed)\s+(?:the\s+)?issue\s+spec(?:ification)?\b"
+    r"|\bissue\s+spec(?:ification)?\s+(?:was|has\s+been|is)\s+(?:updated|amended|clarified|revised|changed)\b",
+    re.IGNORECASE,
+)
+_UNAFFIRMATIVE_SPEC_RESOLUTION = re.compile(
+    r"\b(?:not|never|no|cannot|can't|won't|wasn't|weren't|hasn't|haven't|if|unless|conditional(?:ly)?|"
+    r"will|would|could|might|may|future|planned?|planning|proposed?|hypothetical(?:ly)?|should|recommend(?:ed|ation)?|suggest(?:ed|ion)?)\b",
+    re.IGNORECASE,
+)
+
 _LAZY_REPLY_PATTERNS = [
     "previously addressed",
     "see earlier replies",
@@ -69,6 +86,28 @@ _LAZY_REPLY_PATTERNS = [
     "see previous comment",
     "see consolidated",
 ]
+
+
+def is_linked_issue_spec_resolution(reply: str) -> bool:
+    """Return whether a reply affirms a completed spec update linked to an issue.
+
+    The completed update and an allowed internal or GitHub issue reference must
+    appear in the same statement. Negated, conditional, future, hypothetical,
+    proposed, and recommended statements are deliberately rejected.
+    """
+    for statement in re.split(r"(?<=[.;!?])\s+|\n+", reply):
+        has_issue_reference = bool(_INTERNAL_ISSUE_REFERENCE.search(statement) or _GITHUB_ISSUE_URL.search(statement))
+        prose = _GITHUB_ISSUE_URL.sub("", _INTERNAL_ISSUE_REFERENCE.sub("", statement))
+        if (
+            has_issue_reference
+            and _COMPLETED_ISSUE_SPEC_UPDATE.search(statement)
+            and not _UNAFFIRMATIVE_SPEC_RESOLUTION.search(prose)
+        ):
+            log.debug("Accepted linked completed issue-spec resolution")
+            return True
+
+    log.debug("Rejected linked issue-spec resolution")
+    return False
 
 
 def validate_reply(reply: str, path: str, status: str) -> str | None:
@@ -576,9 +615,9 @@ def run(json_path: str) -> None:
         )
         sys.exit(1)
 
-    # Enforce: Qodo sticky findings MUST have status "addressed" (code was changed).
-    # "skipped", "not_addressed", or any other status is rejected.
-    # This is enforced in code because LLMs find ways to bypass prompt rules.
+    # Enforce: Qodo sticky findings require a code fix unless a skipped reply
+    # truthfully documents a linked issue-spec update. This is enforced in code
+    # because LLMs find ways to bypass prompt rules.
     sticky_errors: list[str] = []
     for cat in categories:
         for comment in data.get(cat, []):
@@ -590,14 +629,17 @@ def run(json_path: str) -> None:
                 continue  # Not processed yet — OK
             if comment.get("is_auto_skipped"):
                 continue  # Auto-skipped from previous cycle — OK
-            if status != "addressed":
+            reply = str(comment.get("reply") or "")
+            is_linked_spec_skip = status == "skipped" and is_linked_issue_spec_resolution(reply)
+            if status != "addressed" and not is_linked_spec_skip:
                 path = comment.get("path", "unknown")
                 line = comment.get("line", "")
                 location = f"{path}:{line}" if line else path
                 sticky_errors.append(
                     f"{location}: Qodo sticky ({comment_type}) has status '{status}' — "
-                    f"MUST be 'addressed'. Qodo sticky findings require a code fix. "
-                    f"Fix the code, commit, then set status to 'addressed'."
+                    f"MUST be 'addressed', unless status is 'skipped' with a reply that "
+                    f"explicitly documents an issue-spec update and references an internal issue "
+                    f"(for example, internal #782) or a GitHub issue URL."
                 )
     if sticky_errors:
         eprint(f"\n{'=' * 70}")
@@ -607,14 +649,15 @@ def run(json_path: str) -> None:
             eprint(f"  ✗ {err}")
         eprint(
             "\n"
-            "Qodo sticky findings MUST be fixed with code changes.\n"
-            "  - 'skipped' is NOT allowed — fix the code\n"
+            "Qodo sticky findings MUST be fixed with code changes, except for a documented "
+            "issue-spec resolution.\n"
             "  - 'not_addressed' is NOT allowed — fix the code\n"
-            "  - 'by design' is NOT a valid reason — fix the code or update the issue spec\n"
-            "  - If the issue spec needs updating, do it AND fix the code, then set 'addressed'\n"
+            "  - 'by design' is NOT a valid reason\n"
+            "  - 'skipped' is allowed only when its reply explicitly says the issue spec was "
+            "updated and includes internal #<number> or a GitHub /issues/<number> URL\n"
+            "  - Otherwise, fix the code and set status to 'addressed'\n"
             "\n"
-            "NEVER set a Qodo sticky finding to anything other than 'addressed'.\n"
-            "This is enforced in code and cannot be bypassed."
+            "This validation is enforced in code and cannot be bypassed."
         )
         sys.exit(1)
 

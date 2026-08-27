@@ -34,7 +34,7 @@
     "group": "Git"
   },
   "review_loop_enforcement": {
-    "description": "Enforce code review loop before commits",
+    "description": "Enable automatic review-agent dispatch and require a clean review before commits; false disables automatic dispatch",
     "type": "bool",
     "env": "PI_REVIEW_LOOP_ENFORCEMENT",
     "default": false,

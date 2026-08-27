@@ -1,4 +1,8 @@
-# Code Review Loop (MANDATORY)
+# Code Review Loop
+
+{{IF:review_loop_enforcement}}
+
+## Mandatory review loop
 
 After ANY code change, send to ALL 6 agents (5 reviewers + test-automator) IN PARALLEL. **Never skip the first review.**
 
@@ -259,3 +263,9 @@ stop looping Stage 2.
 
 Don't polish code that doesn't meet spec — it wastes work.
 Parallel mode (all 6 agents at once) remains default for manual reviews.
+{{/IF}}
+
+{{IFNOT:review_loop_enforcement}}
+Automatic review-agent and test-agent dispatch is disabled. Manual code reviews and test runs are optional.
+No review state, cycle, or result is required before git commit.
+{{/IFNOT}}

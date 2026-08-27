@@ -10,79 +10,79 @@ A [pi package](https://github.com/badlogic/pi-mono) that implements an **orchest
 
 Single extension that provides:
 
-| Feature | Description |
-|---------|-------------|
-| **Subagent tool** | Delegate tasks to specialist agents (single, parallel, chain, async modes); optional `model` param for model override |
-| **`list_models`** | List available models and providers for subagent model override |
-| **Async background agents** | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`) |
-| **CLI / ACPX providers** | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable. Missing context window / maxTokens / cost filled from models.dev (`~/.pi/pi-config/models.dev.json`, 1-day refresh). Cold-start default restore (#753): gates `startup`\|`new`, empty `enabledModels`, trusted project merge — see `dev-docs/cli-provider.md`. Headless Cursor `--approve-mcps` when `CLI_APPROVE_MCPS` is set (`false` opts out) or the process is a sidecar (`SIDECAR_PORT`; `startSidecar()` stamps it while running and restores it on `close()`). Executable sidecar consumers should call `bindSidecarListenExit()` so bind/`stopped` fatals exit 1. Headless Gemini defaults `GEMINI_CLI_TRUST_WORKSPACE=true` and preserves an explicit parent value (including `false`). |
-| **`/btw` command** | Quick side questions without polluting conversation history — ephemeral overlay |
-| **`/async-status` command** | Show status of background agents — select one for live output streaming |
-| **`/async-kill` command** | Kill async agents (overlay picker or by name/id) |
-| **`ask_user` tool** | Structured user input with options and free-text — used by workflows |
-| **Python/pip enforcement** | Auto-fixes `python`/`python3` → `uv run python`; blocks `pip`/`pip3` — requires `uv` |
-| **Git protection** | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .` |
-| **Remote script exec block** | Blocks `curl \| bash`, `eval $(curl)`, etc. Allows safe `VAR=$(curl ...)` variable assignments |
-| **Dangerous command gate** | Confirms `rm -rf`, `sudo`, `mkfs`, etc. |
-| **Rule injection** | Injects orchestrator routing rules into system prompt |
-| **Git status** | Live git status in status line with colored icons — updates after every tool call. Shows clickable `#N` when the branch has an open PR. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
-| **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
-| **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
-| **Pidash dashboard** | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display |
-| **Pidiff viewer** | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
-| **Dreaming** | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory |
-| **Memory enforcement** | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules. Dreaming-safe via *(enforced)* marker |
-| **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
-| **Task tracking** | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT) |
-| **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
-| **Inter-agent communication** | P2P (`/coms`) agent communication — on-demand activation via slash command |
-| **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings`, `/mcpc connect` — with autocomplete argument hints |
-| **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
-| **Command arg completions** | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more |
-| **Discord bot** | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions |
+| Feature                                  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Subagent tool**                        | Delegate tasks to specialist agents (single, parallel, chain, async modes); optional `model` param for model override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **`list_models`**                        | List available models and providers for subagent model override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Async background agents**              | Spawn agents in background with `async: true` — results surface automatically when complete. Fullscreen overlay dashboard with live output, keyboard nav, and kill support (`/async-status`, `/async-kill`). On **acpx** parents, optional async is coerced to sync; dream/cron need `internal_operations_provider` + `internal_operations_model`. `cli-*` providers support async natively (see `dev-docs/cli-provider.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **CLI / ACPX providers**                 | Optional `cli_agents` / `acpx_agents` register `cli-*` / `acpx-*` via native `createProvider` (pi ≥ 0.84): `/login cli-<agent>` or `/login acpx-<agent>`, model refresh, filter when unavailable. Missing context window / maxTokens / cost filled from models.dev (`~/.pi/pi-config/models.dev.json`, 1-day refresh). Cold-start default restore (#753): gates `startup`\|`new`, empty `enabledModels`, trusted project merge — see `dev-docs/cli-provider.md`. Headless Cursor `--approve-mcps` when `CLI_APPROVE_MCPS` is set (`false` opts out) or the process is a sidecar (`SIDECAR_PORT`; `startSidecar()` stamps it while running and restores it on `close()`). Executable sidecar consumers should call `bindSidecarListenExit()` so bind/`stopped` fatals exit 1. Headless Gemini defaults `GEMINI_CLI_TRUST_WORKSPACE=true` and preserves an explicit parent value (including `false`). |
+| **`/btw` command**                       | Quick side questions without polluting conversation history — ephemeral overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **`/async-status` command**              | Show status of background agents — select one for live output streaming                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **`/async-kill` command**                | Kill async agents (overlay picker or by name/id)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`ask_user` tool**                      | Structured user input with options and free-text — used by workflows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Python/pip enforcement**               | Auto-fixes `python`/`python3` → `uv run python`; blocks `pip`/`pip3` — requires `uv`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Git protection**                       | Blocks commits/pushes to main/master, merged branches, `--no-verify`, `git add .`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Remote script exec block**             | Blocks `curl \| bash`, `eval $(curl)`, etc. Allows safe `VAR=$(curl ...)` variable assignments                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Dangerous command gate**               | Confirms `rm -rf`, `sudo`, `mkfs`, etc.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Rule injection**                       | Injects orchestrator routing rules into system prompt                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Git status**                           | Live git status in status line with colored icons — updates after every tool call. Shows clickable `#N` when the branch has an open PR. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Desktop notifications**                | Notifies via `notify-send` on task completion, waiting for input, and action required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **File preview**                         | Serves generated HTML/frontend files via HTTP for browser preview from container                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Pidash dashboard**                     | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Pidiff viewer**                        | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Dreaming**                             | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Memory enforcement**                   | Code-enforced memory entries — triggers on bash/tool/file events, actions: block, run_after, warn. LLM cannot ignore enforced rules. Dreaming-safe via _(enforced)_ marker                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Upgrade changelog**                    | Shows release notes on session start after pi-config version upgrade                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Task tracking**                        | Structured task lists for multi-step workflows — live widget, progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Neovim integration**                   | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Inter-agent communication**            | P2P (`/coms`) agent communication — on-demand activation via slash command                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Slash commands**                       | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/query-db`, `/btw`, `/async-status`, `/async-kill`, `/status`, `/dream`, `/remember`, `/coms`, `/pi-config-settings`, `/mcpc connect` — with autocomplete argument hints                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **GitHub autocomplete**                  | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Command arg completions**              | Tab-complete arguments for slash commands — providers and models for `/external-ai`, branches for `/review-local`, PR numbers for `/pr-review`, and more                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Discord bot**                          | Control pi sessions from your phone via Discord DMs — send prompts, answer ask_user dialogs, switch sessions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ### Agents (26)
 
-| Category | Agents |
-|----------|--------|
-| Languages | python-expert, go-expert, ts-expert, java-expert, bash-expert |
-| Infrastructure | docker-expert, kubernetes-expert, jenkins-expert |
-| Dev workflow | git-expert, github-expert, test-runner, test-automator, debugger |
-| Documentation | technical-documentation-writer, api-documenter, docs-fetcher |
-| Code review | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, code-reviewer-docs, code-reviewer-spec |
-| Security | security-auditor |
-| Workflow | scout, planner, worker, reviewer |
+| Category       | Agents                                                                                                          |
+| -------------- | --------------------------------------------------------------------------------------------------------------- |
+| Languages      | python-expert, go-expert, ts-expert, java-expert, bash-expert                                                   |
+| Infrastructure | docker-expert, kubernetes-expert, jenkins-expert                                                                |
+| Dev workflow   | git-expert, github-expert, test-runner, test-automator, debugger                                                |
+| Documentation  | technical-documentation-writer, api-documenter, docs-fetcher                                                    |
+| Code review    | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, code-reviewer-docs, code-reviewer-spec |
+| Security       | security-auditor                                                                                                |
+| Workflow       | scout, planner, worker, reviewer                                                                                |
 
 ### Prompt Templates
 
-| Prompt | Description |
-|--------|-------------|
-| `/implement <task>` | scout → planner → worker |
-| `/scout-and-plan <task>` | scout → planner |
-| `/implement-and-review <task>` | worker → 5 reviewers → worker |
-| `/pr-review [number\|url]` | Fetch PR diff, check past review comments, review with guidelines, post and track comments |
-| `/issue-review` | Review a GitHub issue spec and fix it |
-| `/release [flags]` | Create GitHub release with changelog and version bumping |
-| `/review-local [branch]` | Review local uncommitted or branch changes |
-| `/review-handler [url] [--autorabbit] [--autoqodo]` | Process PR review comments, fix approved items |
-| `/domain-model [focus area]` | Scan codebase and build/update a CONTEXT.md domain glossary for consistent AI vocabulary |
-| `/refine-review <url>` | Refine and improve existing PR review comments |
-| `/coderabbit-rate-limit [number\|url]` | Handle CodeRabbit rate limiting on PRs |
-| `/create-coms-feature-manager` | Generate a coms feature-manager prompt customized for the current project (source template: `templates/coms-feature-manager-prompt.md`) |
-| `/query-db <command>` | Query the review comments database |
-| `/external-ai <agent> [--model <model>] [--session-id <id>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access |
-| `/external-ai-models-refresh` | Refresh cached AI CLI models for autocomplete |
-| `/dream` | Run memory consolidation — extract, deduplicate, maintain topic-based memory |
-| `/remember <what>` | Save a memory for future sessions |
-| `/dream-auto` | Toggle automatic memory dreaming (every 3h + session end) |
-| `/cron add\|list\|list-all\|remove` | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). `/cron list` and `/cron list-all` open overlay UI (view / remove; list-all = all sessions). Tasks run while pi is active, survive `/reload`, and stop on exit |
-| `/async-kill [name\|id\|all]` | Kill async agents (overlay picker or by name/id) |
-| `/pi-config-settings [project\|global]` | Interactive TUI settings editor — browse all pi-config settings with scope indicators, smart pickers for providers/models, and immediate save |
-| `/status` | Unified session snapshot — async agents, cron tasks, git branch, context usage |
-| `/nvim-changed-files` | Send git changed files to nvim's quickfix list (only inside nvim) |
-| `/pidiff start\|stop\|restart\|status` | Manage the pidiff diff viewer server (per-project) |
-| `/coms start\|stop\|status` | P2P local agent communication (Unix socket) |
-| `/mcpc connect` | Connect MCP servers from `~/.pi/pi-config/mcp.json` (`mcpc connect --stdio`). Run after editing that file. |
+| Prompt                                                                                          | Description                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/implement <task>`                                                                             | scout → planner → worker                                                                                                                                                                                                                                                                              |
+| `/scout-and-plan <task>`                                                                        | scout → planner                                                                                                                                                                                                                                                                                       |
+| `/implement-and-review <task>`                                                                  | worker → 5 reviewers → worker                                                                                                                                                                                                                                                                         |
+| `/pr-review [number\|url]`                                                                      | Fetch PR diff, check past review comments, review with guidelines, post and track comments                                                                                                                                                                                                            |
+| `/issue-review`                                                                                 | Review a GitHub issue spec and fix it                                                                                                                                                                                                                                                                 |
+| `/release [flags]`                                                                              | Create GitHub release with changelog and version bumping                                                                                                                                                                                                                                              |
+| `/review-local [branch]`                                                                        | Review local uncommitted or branch changes                                                                                                                                                                                                                                                            |
+| `/review-handler [url] [--autorabbit] [--autoqodo]`                                             | Process PR review comments, fix approved items                                                                                                                                                                                                                                                        |
+| `/domain-model [focus area]`                                                                    | Scan codebase and build/update a CONTEXT.md domain glossary for consistent AI vocabulary                                                                                                                                                                                                              |
+| `/refine-review <url>`                                                                          | Refine and improve existing PR review comments                                                                                                                                                                                                                                                        |
+| `/coderabbit-rate-limit [number\|url]`                                                          | Handle CodeRabbit rate limiting on PRs                                                                                                                                                                                                                                                                |
+| `/create-coms-feature-manager`                                                                  | Generate a coms feature-manager prompt customized for the current project (source template: `templates/coms-feature-manager-prompt.md`)                                                                                                                                                               |
+| `/query-db <command>`                                                                           | Query the review comments database                                                                                                                                                                                                                                                                    |
+| `/external-ai <agent> [--model <model>] [--session-id <id>] [--fix\|--peer\|--resume] <prompt>` | Run prompts via AI CLIs directly (cursor, claude, gemini) — full model access                                                                                                                                                                                                                         |
+| `/external-ai-models-refresh`                                                                   | Refresh cached AI CLI models for autocomplete                                                                                                                                                                                                                                                         |
+| `/dream`                                                                                        | Run memory consolidation — extract, deduplicate, maintain topic-based memory                                                                                                                                                                                                                          |
+| `/remember <what>`                                                                              | Save a memory for future sessions                                                                                                                                                                                                                                                                     |
+| `/dream-auto`                                                                                   | Toggle automatic memory dreaming (every 3h + session end)                                                                                                                                                                                                                                             |
+| `/cron add\|list\|list-all\|remove`                                                             | Schedule recurring tasks within the pi session (e.g., `/cron add every 2h check for new issues`, `/cron add at 12:00 /review-handler`). `/cron list` and `/cron list-all` open overlay UI (view / remove; list-all = all sessions). Tasks run while pi is active, survive `/reload`, and stop on exit |
+| `/async-kill [name\|id\|all]`                                                                   | Kill async agents (overlay picker or by name/id)                                                                                                                                                                                                                                                      |
+| `/pi-config-settings [project\|global]`                                                         | Interactive TUI settings editor — browse all pi-config settings with scope indicators, smart pickers for providers/models, and immediate save                                                                                                                                                         |
+| `/status`                                                                                       | Unified session snapshot — async agents, cron tasks, git branch, context usage                                                                                                                                                                                                                        |
+| `/nvim-changed-files`                                                                           | Send git changed files to nvim's quickfix list (only inside nvim)                                                                                                                                                                                                                                     |
+| `/pidiff start\|stop\|restart\|status`                                                          | Manage the pidiff diff viewer server (per-project)                                                                                                                                                                                                                                                    |
+| `/coms start\|stop\|status`                                                                     | P2P local agent communication (Unix socket)                                                                                                                                                                                                                                                           |
+| `/mcpc connect`                                                                                 | Connect MCP servers from `~/.pi/pi-config/mcp.json` (`mcpc connect --stdio`). Run after editing that file.                                                                                                                                                                                            |
 
 ### Inter-Agent Communication (coms)
 
@@ -98,12 +98,12 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 
 **Tools available once activated:**
 
-| Tool | Description |
-|------|-------------|
-| `*_list` | List peer agents with names, models, context usage, queue depth |
-| `*_send` | Send a prompt to a peer agent |
-| `*_get` | Non-blocking poll for a response |
-| `*_await` | Block until response arrives |
+| Tool      | Description                                                     |
+| --------- | --------------------------------------------------------------- |
+| `*_list`  | List peer agents with names, models, context usage, queue depth |
+| `*_send`  | Send a prompt to a peer agent                                   |
+| `*_get`   | Non-blocking poll for a response                                |
+| `*_await` | Block until response arrives                                    |
 
 Forked from [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-code) coms extensions. We own these files — FIFO message queue, structured task delegation via coms protocol.
 
@@ -216,25 +216,44 @@ Run scout and planner in a chain to analyze the auth module
 
 ```bash
 # Discover available models
-list_models(provider="litellm")
+list_models(provider="my-provider")
 
 # Run agent with explicit model
-subagent(agent="worker", task="...", model="litellm/claude-opus-4-6-1m")
+subagent(agent="worker", task="...", model="my-provider/model-id")
 
 # Parallel tasks with per-task models
-subagent(tasks=[{agent: "worker", task: "...", model: "litellm/claude-opus-4-6-1m", cwd: "..."}])
+subagent(tasks=[{agent: "worker", task: "...", model: "my-provider/model-id", cwd: "..."}])
 ```
+
+### OpenAI-compatible model discovery
+
+Set `discoverModels: true` on a static `openai-completions` provider in `models.json` to load
+its `/v1/models` catalog at interactive session start. Discovery never writes `models.json`. It
+augments the configured provider in Pi's runtime registry, so Pi's ordinary `/model` picker
+displays each result under the exact configured provider key, for example
+`chatgpt-image-latest [litellm]`. The selected model keeps that same provider key and streams
+through the configured provider. Existing static models remain available. Only exact duplicate
+returned IDs are deduplicated.
+
+After discovery and runtime registration both succeed, Pi appends a durable transcript entry such
+as `Providers: litellm (242)`. The key and count come from that session's configured provider and
+discovery response. Failed discovery or registration appends no entry, so a prior session's count
+is never presented as current.
+
+Each returned string ID remains selectable, including opaque, blank, and whitespace-preserved IDs.
+Discovery materializes a complete Pi `Model` object for every result. It uses source metadata for
+`name`, `reasoning`, `input`, `cost`, `contextWindow`, and `maxTokens` when the response provides
+it. Missing or invalid metadata uses Pi's static-model compatibility defaults: `reasoning: false`,
+zero costs, `contextWindow: 128000`, and `maxTokens: 16384`. Unknown input declares
+`['text', 'image']` so Pi can safely inspect `model.input`. That declaration only satisfies Pi's
+model contract. It does not filter discovery results or claim that the endpoint accepts image input.
 
 ## Code Review Loop
 
-After any code change, the orchestrator runs 6 agents **in parallel** (5 reviewers + test-automator):
+`review_loop_enforcement` controls automatic review-agent dispatch and commit enforcement.
 
-1. **code-reviewer-quality** — Code quality & maintainability
-2. **code-reviewer-guidelines** — Project guidelines adherence
-3. **code-reviewer-security** — Bugs, logic errors, security
-4. **code-reviewer-docs** — Documentation quality, completeness, accuracy
-5. **code-reviewer-spec** — Code/PR/issue spec alignment
-6. **test-automator** — Runs project tests (pytest, node tests, pre-commit)
+- `true` automatically dispatches 6 agents in parallel (5 reviewers + `test-automator`) after code changes and requires a clean review before commits.
+- `false` disables automatic review-agent and test-agent dispatch. Manual reviews and test runs are optional. No review state, cycle, or result is required before commit.
 
 When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
 (`tests_passed: true` in `pi-config-review-state.jsonl`), OR after `review_loop_max_cycles` total cycles (default `3`,
@@ -275,10 +294,10 @@ See `dev-docs/project-settings.md` for the full settings table.
 
 These are set automatically by the orchestrator when spawning reviewer agents:
 
-| Variable | Description |
-|----------|-------------|
-| `PI_REVIEW_BASE_BRANCH` | Base branch for diff comparison (auto-detected from PR or falls back to main) |
-| `PI_HAS_PR` | `true` if a PR exists for the current branch, `false` for pre-push reviews. When `false`, reviewers skip Review History and `code-reviewer-spec` runs a reduced flow (issue-only checks) |
+| Variable                | Description                                                                                                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PI_REVIEW_BASE_BRANCH` | Base branch for diff comparison (auto-detected from PR or falls back to main)                                                                                                            |
+| `PI_HAS_PR`             | `true` if a PR exists for the current branch, `false` for pre-push reviews. When `false`, reviewers skip Review History and `code-reviewer-spec` runs a reduced flow (issue-only checks) |
 
 #### Per-Project Resource Management
 
@@ -300,11 +319,11 @@ Priority: project > user > package (bundled).
 
 The orchestrator loads rules from three directories (later layers override same-filename entries):
 
-| Layer | Path | Scope | Number range |
-|-------|------|-------|--------------|
-| Package | `<pi-config>/rules/` | All users, all projects | `00-69` |
-| User | `~/.pi/agent/rules/` | All projects for this user | `70-89` |
-| Project | `<project>/.pi/rules/` | Current project only | `90-99` |
+| Layer   | Path                   | Scope                      | Number range |
+| ------- | ---------------------- | -------------------------- | ------------ |
+| Package | `<pi-config>/rules/`   | All users, all projects    | `00-69`      |
+| User    | `~/.pi/agent/rules/`   | All projects for this user | `70-89`      |
+| Project | `<project>/.pi/rules/` | Current project only       | `90-99`      |
 
 To add a custom rule, create a `.md` file in the appropriate directory:
 
@@ -363,10 +382,10 @@ The `generate_image` tool creates images from structured descriptions via Gemini
 
 Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
 
-| Setting / Variable | Description |
-|----------|-------------|
-| `image_model` / `PI_IMAGE_MODEL` | Google/Gemini image model for `generate_image` (Settings TUI filters to google; empty = disabled). |
-| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key (env only) |
+| Setting / Variable                   | Description                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `image_model` / `PI_IMAGE_MODEL`     | Google/Gemini image model for `generate_image` (Settings TUI filters to google; empty = disabled). |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key (env only)                                                                          |
 
 **Usage:** Ask naturally — "generate an image of a sunset" — or use structured params: `subject`, `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio`.
 
@@ -629,64 +648,64 @@ PI_PIDIFF_ENABLE=false pi
 
 ### Optional mounts
 
-| Mount | Purpose |
-|---|---|
-| `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
-| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
-| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro` | Cursor CLI auth (for acpx-cursor / cli-cursor models) |
-| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro` | Claude CLI auth (for acpx-claude / cli-claude models) |
-| `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
-| `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
-| `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
-| `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
-| `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
+| Mount                                                                                                                           | Purpose                                               |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `-v "$HOME/.agents":"$HOME/.agents":rw`                                                                                         | User-level skills (install/uninstall from container)  |
+| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI)           |
+| `-v "$HOME/.config/cursor/auth.json":"$HOME/.config/cursor/auth.json":ro`                                                       | Cursor CLI auth (for acpx-cursor / cli-cursor models) |
+| `-v "$HOME/.claude/credentials.json":"$HOME/.claude/credentials.json":ro`                                                       | Claude CLI auth (for acpx-claude / cli-claude models) |
+| `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro`                                                                       | GitLab CLI config (auth tokens, host settings)        |
+| `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw`                                                                                 | CodeRabbit CLI auth and review data                   |
+| `-v "$HOME/screenshots":"$HOME/screenshots"`                                                                                    | Share screenshots/images with the agent               |
+| `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)`                          | Docker container inspection via `docker-safe`         |
+| `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro`                                                                 | Podman container inspection via `docker-safe`         |
 
 ### What's in the image
 
-| Tool | Purpose |
-|---|---|
-| `pi` | Coding agent |
-| `git` | Version control |
-| `gh` | GitHub CLI (PRs, issues) |
-| `glab` | GitLab CLI (MRs, issues, pipelines) — install [gitlab-cli-skills](https://github.com/vince-winkintel/gitlab-cli-skills) for full agent support |
-| `gcc` | C compiler — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
-| `uv` / `uvx` | Python execution (enforced by orchestrator) |
-| `go` | Go development and code review |
-| `libxml2-dev` | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
-| `mcpc` | MCP CLI (`npm: @apify/mcpc`). Put servers in `~/.pi/pi-config/mcp.json` (already on the `~/.pi` mount). Pi runs `mcpc connect … --stdio` on start. After editing the file, `/mcpc connect`. `entrypoint.sh` reinstalls `@apify/mcpc` on every start so `PI_HOST_USER` host `.npm-global` mapping does not hide the image copy. |
-| `myk-pi-tools` | PR review, release, and other CLI utilities |
-| `prek` | Pre-commit hook runner |
-| `acpx` | Agent proxy for remote models |
-| `kubectl` / `oc` | Kubernetes and OpenShift CLI |
-| `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
-| `procps` | Process utilities (ps, top, pgrep, pkill) |
-| `passwd` | `usermod`/`groupmod` — init remaps user `node` to `PI_HOST_UID`/`PI_HOST_GID` |
-| `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
-| `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
-| `jq` | JSON processing |
-| `rg` (ripgrep) | Fast recursive search |
-| `cr` | CodeRabbit CLI — local AI code reviews |
-| `curl` | HTTP requests |
+| Tool                | Purpose                                                                                                                                                                                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pi`                | Coding agent                                                                                                                                                                                                                                                                                                                   |
+| `git`               | Version control                                                                                                                                                                                                                                                                                                                |
+| `gh`                | GitHub CLI (PRs, issues)                                                                                                                                                                                                                                                                                                       |
+| `glab`              | GitLab CLI (MRs, issues, pipelines) — install [gitlab-cli-skills](https://github.com/vince-winkintel/gitlab-cli-skills) for full agent support                                                                                                                                                                                 |
+| `gcc`               | C compiler — needed for building Python C extensions (e.g. ovirt-engine-sdk-python)                                                                                                                                                                                                                                            |
+| `uv` / `uvx`        | Python execution (enforced by orchestrator)                                                                                                                                                                                                                                                                                    |
+| `go`                | Go development and code review                                                                                                                                                                                                                                                                                                 |
+| `libxml2-dev`       | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python)                                                                                                                                                                                                                                       |
+| `mcpc`              | MCP CLI (`npm: @apify/mcpc`). Put servers in `~/.pi/pi-config/mcp.json` (already on the `~/.pi` mount). Pi runs `mcpc connect … --stdio` on start. After editing the file, `/mcpc connect`. `entrypoint.sh` reinstalls `@apify/mcpc` on every start so `PI_HOST_USER` host `.npm-global` mapping does not hide the image copy. |
+| `myk-pi-tools`      | PR review, release, and other CLI utilities                                                                                                                                                                                                                                                                                    |
+| `prek`              | Pre-commit hook runner                                                                                                                                                                                                                                                                                                         |
+| `acpx`              | Agent proxy for remote models                                                                                                                                                                                                                                                                                                  |
+| `kubectl` / `oc`    | Kubernetes and OpenShift CLI                                                                                                                                                                                                                                                                                                   |
+| `agent-browser`     | Browser automation CLI (navigate, click, screenshot, forms)                                                                                                                                                                                                                                                                    |
+| `procps`            | Process utilities (ps, top, pgrep, pkill)                                                                                                                                                                                                                                                                                      |
+| `passwd`            | `usermod`/`groupmod` — init remaps user `node` to `PI_HOST_UID`/`PI_HOST_GID`                                                                                                                                                                                                                                                  |
+| `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper)                                                                                                                                                                                                                                                                      |
+| `docker-safe`       | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats)                                                                                                                                                                                                                                              |
+| `jq`                | JSON processing                                                                                                                                                                                                                                                                                                                |
+| `rg` (ripgrep)      | Fast recursive search                                                                                                                                                                                                                                                                                                          |
+| `cr`                | CodeRabbit CLI — local AI code reviews                                                                                                                                                                                                                                                                                         |
+| `curl`              | HTTP requests                                                                                                                                                                                                                                                                                                                  |
 
 #### `myk-pi-tools` subcommands
 
-| Command | Description |
-|---------|-------------|
-| `myk-pi-tools pr diff` | Fetch PR diff and metadata |
-| `myk-pi-tools pr info` | Fetch PR information as structured JSON |
-| `myk-pi-tools pr post-comment` | Post inline comments to a PR |
-| `myk-pi-tools pr store-pr-review` | Store posted PR review comments to `pr-reviews.db` |
-| `myk-pi-tools pr update-resolution` | Update resolution status for a previously posted review comment. Used by Phase 1c of `/pr-review` to persist LLM evaluation verdicts |
-| `myk-pi-tools pr get-review-history` | Return complete review history for a PR as JSON (posted, skipped, resolved findings). Used by reviewers to avoid re-raising dismissed findings |
-| `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR |
-| `myk-pi-tools pr claude-md` | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository |
-| `myk-pi-tools release create` | Create a GitHub release with changelog |
-| `myk-pi-tools db` | Review database query commands |
-| `myk-pi-tools reviews` | Review handling commands |
-| `myk-pi-tools memory` | Project memory commands — persistent per-repo learning |
-| `myk-pi-tools ai-cli` | AI CLI commands (cursor, claude, gemini) |
-| `myk-pi-tools coderabbit` | CodeRabbit commands (check, trigger, retry) |
-| `myk-pi-tools settings get [key ...]` | Resolve settings (project → global → env → default). No args = all keys |
+| Command                                | Description                                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `myk-pi-tools pr diff`                 | Fetch PR diff and metadata                                                                                                                     |
+| `myk-pi-tools pr info`                 | Fetch PR information as structured JSON                                                                                                        |
+| `myk-pi-tools pr post-comment`         | Post inline comments to a PR                                                                                                                   |
+| `myk-pi-tools pr store-pr-review`      | Store posted PR review comments to `pr-reviews.db`                                                                                             |
+| `myk-pi-tools pr update-resolution`    | Update resolution status for a previously posted review comment. Used by Phase 1c of `/pr-review` to persist LLM evaluation verdicts           |
+| `myk-pi-tools pr get-review-history`   | Return complete review history for a PR as JSON (posted, skipped, resolved findings). Used by reviewers to avoid re-raising dismissed findings |
+| `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR                                                                                                |
+| `myk-pi-tools pr claude-md`            | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository                                                                                |
+| `myk-pi-tools release create`          | Create a GitHub release with changelog                                                                                                         |
+| `myk-pi-tools db`                      | Review database query commands                                                                                                                 |
+| `myk-pi-tools reviews`                 | Review handling commands                                                                                                                       |
+| `myk-pi-tools memory`                  | Project memory commands — persistent per-repo learning                                                                                         |
+| `myk-pi-tools ai-cli`                  | AI CLI commands (cursor, claude, gemini)                                                                                                       |
+| `myk-pi-tools coderabbit`              | CodeRabbit commands (check, trigger, retry)                                                                                                    |
+| `myk-pi-tools settings get [key ...]`  | Resolve settings (project → global → env → default). No args = all keys                                                                        |
 
 ### What's protected
 
@@ -702,7 +721,7 @@ PI_PIDIFF_ENABLE=false pi
 **Network** — `--network host` shares the host network stack,
 so the container can reach any service your host can (LAN, localhost),
 and the host can reach services started inside the container.
-This is required for local MCP servers, LiteLLM proxy, and file preview
+This is required for local MCP servers, OpenAI-compatible proxy, and file preview
 (agents serve generated HTML/frontend files via HTTP for browser access).
 If your LLM provider is cloud-based, you don't use local MCPs,
 and you don't need file preview, you can omit `--network host`.
@@ -785,15 +804,15 @@ Control your pi sessions from your phone via Discord DMs.
 
 ### Discord Commands
 
-| Command | Description |
-|---------|-------------|
-| `!sessions` | List active pi sessions |
-| `!watch N` | Watch/switch to session N |
-| `!status` | Show current session info |
-| `!abort` | Abort current operation |
-| `!help` | Show commands |
-| Any text | Send as prompt to watched session |
-| `/command` | Forward slash command to pi session |
+| Command     | Description                         |
+| ----------- | ----------------------------------- |
+| `!sessions` | List active pi sessions             |
+| `!watch N`  | Watch/switch to session N           |
+| `!status`   | Show current session info           |
+| `!abort`    | Abort current operation             |
+| `!help`     | Show commands                       |
+| Any text    | Send as prompt to watched session   |
+| `/command`  | Forward slash command to pi session |
 
 ### How It Works
 
@@ -823,10 +842,10 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 A standalone HTTP sidecar wrapping the Pi SDK, living under `packages/pi-sidecar/`.
 
-| Package | Language | Registry |
-|---------|----------|----------|
-| `@myk-org/pi-sidecar` | TypeScript | npm |
-| `pi-sidecar-client` | Python | PyPI |
+| Package               | Language   | Registry |
+| --------------------- | ---------- | -------- |
+| `@myk-org/pi-sidecar` | TypeScript | npm      |
+| `pi-sidecar-client`   | Python     | PyPI     |
 
 CLI commands: `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
 
@@ -837,9 +856,9 @@ See [`packages/pi-sidecar/CONSUMER-GUIDE.md`](packages/pi-sidecar/CONSUMER-GUIDE
 
 Google Vertex AI Claude provider for Pi, living under `packages/pi-vertex-claude/`.
 
-| Package | Language | Registry |
-|---------|----------|----------|
-| `@myk-org/pi-vertex-claude` | TypeScript | npm |
+| Package                     | Language   | Registry |
+| --------------------------- | ---------- | -------- |
+| `@myk-org/pi-vertex-claude` | TypeScript | npm      |
 
 See [`packages/pi-vertex-claude/README.md`](packages/pi-vertex-claude/README.md) for full documentation.
 

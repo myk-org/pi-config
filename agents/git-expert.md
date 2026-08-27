@@ -55,7 +55,36 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 ## Protection Rules
 
 - NEVER commit or push to main/master branch (unless `allow_push_to_protected_branches` is `true` — see Project Settings)
-- NEVER commit to already-merged branches
+- Before every commit on a non-main/master branch, check whether that branch was merged:
+
+  ```bash
+  current_branch=$(git branch --show-current)
+  remote_ref="refs/remotes/origin/$current_branch"
+  default_ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || true)
+  if ! git show-ref --verify --quiet "$default_ref"; then
+    if git show-ref --verify --quiet refs/remotes/origin/main; then
+      default_ref=refs/remotes/origin/main
+    elif git show-ref --verify --quiet refs/remotes/origin/master; then
+      default_ref=refs/remotes/origin/master
+    else
+      echo "BLOCK: cannot resolve origin's default branch"
+      exit 1
+    fi
+  fi
+
+  if git show-ref --verify --quiet "$remote_ref" \
+    && git merge-base --is-ancestor "$remote_ref" "$default_ref" \
+    && [ "$(git rev-parse "$remote_ref")" != "$(git rev-parse "$default_ref")" ]; then
+    echo "BLOCK: origin/$current_branch is already merged into ${default_ref#refs/remotes/origin/}"
+    exit 1
+  fi
+  ```
+
+  Resolve the default branch from `refs/remotes/origin/HEAD`. If that symbolic ref is unavailable
+  or invalid, fall back to `refs/remotes/origin/main`, then `refs/remotes/origin/master`; block the
+  commit if neither exists. Block only when `refs/remotes/origin/<current-branch>` exists, its tip
+  is an ancestor of the resolved default tip, and the two tips are not equal. A fresh pushed branch
+  at the default tip is allowed. If the matching remote ref does not exist, continue with the commit.
 - NEVER use `--no-verify` flag
 - Branch prefixes: `feature/`, `fix/`, `hotfix/`, `refactor/`
 

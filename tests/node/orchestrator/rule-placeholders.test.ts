@@ -565,6 +565,43 @@ describe("assembleRuleText", () => {
 		assert.match(on, /max cycles: 3/i);
 	});
 
+	it("assembles the code review rule without mandatory dispatch when enforcement is disabled", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join, dirname } = await import("node:path");
+		const { fileURLToPath } = await import("node:url");
+		const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+		const reviewLoop = readFileSync(join(root, "rules/20-code-review-loop.md"), "utf-8");
+		const off = assembleRuleText(["# Unrelated rule\nKeep this content.", reviewLoop], baseOpts({ resolve: () => false }));
+
+		assert.match(off, /Keep this content/);
+		assert.match(off, /Manual code reviews and test runs are optional/);
+		assert.match(off, /No review state, cycle, or result is required before git commit/);
+		assert.doesNotMatch(off, /Send ALL 6 agents IN PARALLEL/);
+		assert.doesNotMatch(off, /All 6 MUST be invoked/);
+		assert.doesNotMatch(off, /Never skip code review/);
+		assert.doesNotMatch(off, /test-automator/);
+	});
+
+	it("assembles the complete enforced review workflow without changing unrelated content", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join, dirname } = await import("node:path");
+		const { fileURLToPath } = await import("node:url");
+		const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+		const reviewLoop = readFileSync(join(root, "rules/20-code-review-loop.md"), "utf-8");
+		const on = assembleRuleText(["# Unrelated rule\nKeep this content.", reviewLoop], baseOpts({
+			resolve: (key) => key === "review_loop_enforcement",
+			reviewLoopMaxCycles: 3,
+		}));
+
+		assert.match(on, /Keep this content/);
+		assert.match(on, /Send ALL 6 agents IN PARALLEL/);
+		assert.match(on, /All 6 MUST be invoked/);
+		assert.match(on, /MUST loop until clean or the max cycle cap is reached/);
+		assert.match(on, /tests_passed: true/);
+		assert.match(on, /Baseline Test Comparison/);
+		assert.match(on, /Staged Review Mode/);
+	});
+
 	it("does not cross-file match IF open/close (per-body evaluation)", () => {
 		const warnings: string[] = [];
 		const contents = [
