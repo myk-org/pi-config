@@ -73,17 +73,31 @@ describe("CLI/ACPX provider discovery summary (#788)", () => {
     assert.deepEqual(appended, []);
   });
 
-  it("registers a renderer that renders and invalidates persisted summaries", async () => {
+  it("registers a renderer", async () => {
     const { renderers } = await installDiscoverySummaryExtension();
 
-    assert.equal(renderers.length, 1);
-    assert.equal(renderers[0].type, "provider-discovery-summary");
+    assert.deepEqual(renderers.map(({ type }) => type), ["provider-discovery-summary"]);
+  });
+
+  it("renders a persisted summary", async () => {
+    const { renderers } = await installDiscoverySummaryExtension();
     const component = renderers[0].render(
       { data: { summary: "Providers: cli-codex (2)" } },
       {},
       { fg: (_color: string, text: string) => text },
     );
+
     assert.deepEqual(component.render(80), ["Providers: cli-codex (2)"]);
+  });
+
+  it("invokes invalidate", async () => {
+    const { renderers } = await installDiscoverySummaryExtension();
+    const component = renderers[0].render(
+      { data: { summary: "Providers: cli-codex (2)" } },
+      {},
+      { fg: (_color: string, text: string) => text },
+    );
+
     assert.doesNotThrow(() => component.invalidate());
   });
 });
