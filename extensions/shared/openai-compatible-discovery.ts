@@ -30,6 +30,10 @@ export interface OpenAiCompatibleModelRecord {
   cost?: unknown;
   contextWindow?: unknown;
   maxTokens?: unknown;
+  /** LiteLLM's generic input capacity alias. */
+  max_input_tokens?: unknown;
+  /** LiteLLM's generic output capacity alias. */
+  max_output_tokens?: unknown;
 }
 
 /** Pi's models.json defaults for omitted static-model metadata. */
@@ -477,8 +481,22 @@ export function materializeOpenAiCompatibleModels(
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
       cost: materializeCost(record.cost),
-      contextWindow: positiveFiniteNumber(record.contextWindow, PI_STATIC_MODEL_DEFAULTS.contextWindow),
-      maxTokens: positiveFiniteNumber(record.maxTokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
+      // Native Pi metadata wins. LiteLLM commonly exposes only generic input
+      // and output capacities, whose combined capacity is Pi's context window.
+      contextWindow: positiveFiniteNumber(
+        record.contextWindow,
+        (() => {
+          const input = positiveFiniteNumber(record.max_input_tokens, 0);
+          const output = positiveFiniteNumber(record.max_output_tokens, 0);
+          return input > 0 && output > 0
+            ? input + output
+            : PI_STATIC_MODEL_DEFAULTS.contextWindow;
+        })(),
+      ),
+      maxTokens: positiveFiniteNumber(
+        record.maxTokens,
+        positiveFiniteNumber(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
+      ),
     });
   }
   return models;

@@ -1732,6 +1732,20 @@ describe("injectGhBodySignature", () => {
     assert.equal(out, `gh issue create --title t --body 'short body${FOOTER}'`);
   });
 
+  it("replaces a literal $PI_MODEL footer with the resolved signature without duplicating it", () => {
+    const cmd = 'gh issue create --body "hello\n\n---\n*Assisted-by: PI ($PI_MODEL)*"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh issue create --body "hello${FOOTER}"`);
+    assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
+  });
+
+  it("replaces a literal ${PI_MODEL} footer with the resolved signature without duplicating it", () => {
+    const cmd = 'gh pr create --body "hello\n\n---\n*Assisted-by: PI (${PI_MODEL})*"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr create --body "hello${FOOTER}"`);
+    assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
+  });
+
   it("skips when Assisted-by already present in body", () => {
     const cmd = 'gh pr create --body "hello\n\n---\n*Assisted-by: PI (old)*"';
     assert.equal(injectGhBodySignature(cmd, SIG), cmd);

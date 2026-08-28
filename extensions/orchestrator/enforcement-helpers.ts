@@ -810,6 +810,15 @@ function bodyAlreadySigned(text: string): boolean {
   return /\*Assisted-by:/.test(text) || /(?:^|\n|\\n)Assisted-by:\s/.test(text);
 }
 
+/** Unresolved model placeholders are stale template footers, not signatures. */
+function replaceUnresolvedModelFooters(payload: string): string {
+  const unresolvedFooter = /(?:\n|\\n){2}---(?:\n|\\n)\*Assisted-by: PI \((?:\$PI_MODEL|\$\{PI_MODEL\})\)\*/g;
+  const replaced = payload.replace(unresolvedFooter, "");
+  if (replaced !== payload)
+    enfLog.debug("injectGhBodySignature replaced unresolved PI_MODEL footer");
+  return replaced;
+}
+
 /** Index of the matching closer for a quote at `openIdx`, honoring POSIX escapes. */
 function matchingQuoteIndex(s: string, openIdx: number): number | null {
   const q = s[openIdx];
@@ -888,14 +897,23 @@ export function injectGhBodySignature(command: string, signature: string): strin
     enfLog.debug("injectGhBodySignature skip not a gh body command");
     return command;
   }
-  if (bodyAlreadySigned(command)) {
-    enfLog.debug("injectGhBodySignature skip already present");
-    return command;
-  }
   const footer = commentSignatureFooter(signature);
   const span = findLastQuotedBodySpan(command);
   if (!span) {
     enfLog.debug("injectGhBodySignature no quoted --body found");
+    return command;
+  }
+
+  const payload = command.slice(span.open + 1, span.close);
+  const normalizedPayload = replaceUnresolvedModelFooters(payload);
+  if (normalizedPayload !== payload) {
+    // Re-parse positions after removal so command-substitution heredocs still
+    // receive their footer before the closing delimiter.
+    const normalizedCommand = command.slice(0, span.open + 1) + normalizedPayload + command.slice(span.close);
+    return injectGhBodySignature(normalizedCommand, signature);
+  }
+  if (bodyAlreadySigned(payload)) {
+    enfLog.debug("injectGhBodySignature skip already present in body");
     return command;
   }
 
@@ -911,7 +929,6 @@ export function injectGhBodySignature(command: string, signature: string): strin
     }
   }
 
-  const payload = command.slice(span.open + 1, span.close);
   if (payload.startsWith("$(")) {
     enfLog.warn("injectGhBodySignature --body command subst without heredoc match");
     return command;

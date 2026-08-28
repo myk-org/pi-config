@@ -86,6 +86,22 @@ const acpxInstances = new Map<string, ProviderInstance>();
 
 let projectCwd = "";
 
+interface ProviderDiscoverySummary {
+  summary: string;
+}
+
+/** Render durable discovery entries without adding a TUI package dependency. */
+function providerDiscoverySummaryComponent(
+  summary: string,
+  theme: { fg: (color: "muted", text: string) => string },
+) {
+  log.debug("rendering CLI/ACPX discovery summary", { summary });
+  return {
+    render: (_width: number): string[] => [theme.fg("muted", summary)],
+    invalidate: (): void => {},
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Configured Gates
 // ---------------------------------------------------------------------------
@@ -295,6 +311,13 @@ log.debug("providers module loaded");
 const cwdHookBound = new WeakSet<object>();
 
 export default async function (pi: ExtensionAPI) {
+  if (typeof pi.registerEntryRenderer === "function") {
+    pi.registerEntryRenderer<ProviderDiscoverySummary>(
+      "provider-discovery-summary",
+      (entry, _options, theme) => providerDiscoverySummaryComponent(entry.data?.summary ?? "", theme),
+    );
+  }
+
   // pi --help / --version — skip discovery
   if (isPiMetaInvocation()) return;
 
@@ -578,9 +601,22 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_start", (event, ctx) => {
     const reason = typeof event?.reason === "string" ? event.reason : "";
+    const summary = `Providers: ${providerSummaryParts.join(", ")}`;
+    // Entries survive reload/resume. Only append for a newly started session;
+    // its persisted entry renders on later lifecycle events without duplication.
+    if (providerSummaryParts.length > 0 && (reason === "startup" || reason === "new")) {
+      try {
+        pi.appendEntry<ProviderDiscoverySummary>("provider-discovery-summary", { summary });
+        log.info("persisted CLI/ACPX discovery summary", { reason, summary });
+      } catch (err) {
+        log.warn("provider discovery summary append failed", err instanceof Error ? err.name : typeof err);
+      }
+    } else if (providerSummaryParts.length > 0) {
+      log.debug("provider discovery summary retained", { reason: reason || "unknown" });
+    }
     if (providerSummaryParts.length > 0 && ctx.hasUI) {
       try {
-        ctx.ui.notify(`Providers: ${providerSummaryParts.join(", ")}`, "info");
+        ctx.ui.notify(summary, "info");
       } catch (err) {
         log.debug(
           "providers notify skipped",
