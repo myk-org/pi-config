@@ -269,6 +269,39 @@ describe("OpenAI-compatible discovery helpers", () => {
     assert.equal(formatOpenAiCompatibleDiscoverySummary("my-openai-relay", 242), "Providers: my-openai-relay (242)");
   });
 
+  function materializeLiteLlmCapacityModel() {
+    return materializeOpenAiCompatibleModels(
+      [{
+        id: "gpt-5.6-terra",
+        object: "model",
+        owned_by: "openai",
+        mode: "chat",
+        max_input_tokens: 922_000,
+        max_output_tokens: 128_000,
+      }],
+      "https://gateway.example/v1",
+      "litellm",
+    )[0];
+  }
+
+  it("maps LiteLLM capacity into Pi context window", () => {
+    assert.equal(materializeLiteLlmCapacityModel().contextWindow, 1_050_000);
+  });
+
+  it("maps LiteLLM output capacity into Pi output limit", () => {
+    assert.equal(materializeLiteLlmCapacityModel().maxTokens, 128_000);
+  });
+
+  it("falls back to the static context window when LiteLLM capacity sum overflows", () => {
+    const [model] = materializeOpenAiCompatibleModels(
+      [{ id: "overflow", max_input_tokens: Number.MAX_VALUE, max_output_tokens: Number.MAX_VALUE }],
+      "https://gateway.example/v1",
+      "litellm",
+    );
+
+    assert.equal(model.contextWindow, 128_000);
+  });
+
   it("retains only exact duplicate returned IDs", () => {
     assert.deepEqual(materializeOpenAiCompatibleModels(
       [{ id: "x" }, { id: "x" }, { id: " x " }, { id: "" }], "https://gateway.example/v1", "generic",
