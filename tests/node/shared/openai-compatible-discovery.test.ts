@@ -269,8 +269,8 @@ describe("OpenAI-compatible discovery helpers", () => {
     assert.equal(formatOpenAiCompatibleDiscoverySummary("my-openai-relay", 242), "Providers: my-openai-relay (242)");
   });
 
-  it("maps LiteLLM max input and output capacity into Pi context and output limits", () => {
-    const [model] = materializeOpenAiCompatibleModels(
+  function materializeLiteLlmCapacityModel() {
+    return materializeOpenAiCompatibleModels(
       [{
         id: "gpt-5.6-terra",
         object: "model",
@@ -281,10 +281,25 @@ describe("OpenAI-compatible discovery helpers", () => {
       }],
       "https://gateway.example/v1",
       "litellm",
+    )[0];
+  }
+
+  it("maps LiteLLM capacity into Pi context window", () => {
+    assert.equal(materializeLiteLlmCapacityModel().contextWindow, 1_050_000);
+  });
+
+  it("maps LiteLLM output capacity into Pi output limit", () => {
+    assert.equal(materializeLiteLlmCapacityModel().maxTokens, 128_000);
+  });
+
+  it("falls back to the static context window when LiteLLM capacity sum overflows", () => {
+    const [model] = materializeOpenAiCompatibleModels(
+      [{ id: "overflow", max_input_tokens: Number.MAX_VALUE, max_output_tokens: Number.MAX_VALUE }],
+      "https://gateway.example/v1",
+      "litellm",
     );
 
-    assert.equal(model.contextWindow, 1_050_000);
-    assert.equal(model.maxTokens, 128_000);
+    assert.equal(model.contextWindow, 128_000);
   });
 
   it("retains only exact duplicate returned IDs", () => {

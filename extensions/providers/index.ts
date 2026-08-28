@@ -27,7 +27,6 @@ import type {
   StreamOptions,
 } from "@earendil-works/pi-ai";
 import { createLogger } from "../shared/logger.js";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { asStringArray, getSetting } from "../orchestrator/project-settings.js";
@@ -80,6 +79,8 @@ const DISCOVERY_TIMEOUT_MS = 30_000;
 
 const registry = new ProviderDriverRegistry();
 
+let createAssistantMessageEventStream: () => AssistantMessageEventStream;
+
 /** Track which instances are CLI vs ACPX for configured gates. */
 const cliInstances = new Map<string, ProviderInstance>();
 const acpxInstances = new Map<string, ProviderInstance>();
@@ -97,8 +98,13 @@ function providerDiscoverySummaryComponent(
 ) {
   log.debug("rendering CLI/ACPX discovery summary", { summary });
   return {
-    render: (_width: number): string[] => [theme.fg("muted", summary)],
-    invalidate: (): void => {},
+    render: (_width: number): string[] => {
+      log.debug("rendered CLI/ACPX discovery summary");
+      return [theme.fg("muted", summary)];
+    },
+    invalidate: (): void => {
+      log.debug("invalidated CLI/ACPX discovery summary");
+    },
   };
 }
 
@@ -310,7 +316,10 @@ log.debug("providers module loaded");
 
 const cwdHookBound = new WeakSet<object>();
 
-export default async function (pi: ExtensionAPI) {
+export default async function (
+  pi: ExtensionAPI,
+  testOptions?: { providerSummaryParts?: readonly string[] },
+) {
   if (typeof pi.registerEntryRenderer === "function") {
     pi.registerEntryRenderer<ProviderDiscoverySummary>(
       "provider-discovery-summary",
@@ -342,6 +351,9 @@ export default async function (pi: ExtensionAPI) {
     return;
   }
   markProvidersInitialized();
+  if (!testOptions?.providerSummaryParts) {
+    ({ createAssistantMessageEventStream } = await import("@earendil-works/pi-ai"));
+  }
   log.debug(
     "providers factory: proceeding after reset / first load — re-entering discovery",
   );
@@ -571,15 +583,20 @@ export default async function (pi: ExtensionAPI) {
 
   // Show discovery summary on session start; restore saved default model when
   // findInitialModel raced hasConfiguredAuth false → wrong initial model (#753).
-  const providerSummaryParts: string[] = [];
-  for (const [agent, inst] of cliInstances) {
-    const count = inst.snapshot.getSnapshot().models.length;
-    providerSummaryParts.push(`cli-${agent} (${count})`);
-  }
-  for (const [agent, inst] of acpxInstances) {
-    const count = inst.snapshot.getSnapshot().models.length;
-    providerSummaryParts.push(`acpx-${agent} (${count})`);
-  }
+  const providerSummaryParts = testOptions?.providerSummaryParts
+    ? [...testOptions.providerSummaryParts]
+    : (() => {
+      const parts: string[] = [];
+      for (const [agent, inst] of cliInstances) {
+        const count = inst.snapshot.getSnapshot().models.length;
+        parts.push(`cli-${agent} (${count})`);
+      }
+      for (const [agent, inst] of acpxInstances) {
+        const count = inst.snapshot.getSnapshot().models.length;
+        parts.push(`acpx-${agent} (${count})`);
+      }
+      return parts;
+    })();
 
   // Fire-and-forget restore so session_start is not blocked by retries (#753).
   // Omit registeredProviders: cli/acpx-only lists falsely fail-fast native defaults.

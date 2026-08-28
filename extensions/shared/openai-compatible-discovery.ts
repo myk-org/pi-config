@@ -465,6 +465,7 @@ export function materializeOpenAiCompatibleModels(
   baseUrl: string,
   providerId: string,
 ): Model<Api>[] {
+  log.debug("materializing OpenAI-compatible models", { providerId, recordCount: records.length });
   const models: Model<Api>[] = [];
   const seenIds = new Set<string>();
   for (const record of records) {
@@ -488,9 +489,8 @@ export function materializeOpenAiCompatibleModels(
         (() => {
           const input = positiveFiniteNumber(record.max_input_tokens, 0);
           const output = positiveFiniteNumber(record.max_output_tokens, 0);
-          return input > 0 && output > 0
-            ? input + output
-            : PI_STATIC_MODEL_DEFAULTS.contextWindow;
+          const capacity = input > 0 && output > 0 ? input + output : 0;
+          return positiveFiniteNumber(capacity, PI_STATIC_MODEL_DEFAULTS.contextWindow);
         })(),
       ),
       maxTokens: positiveFiniteNumber(
