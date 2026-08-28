@@ -29,4 +29,12 @@ describe("CLI/ACPX provider discovery summary (#788)", () => {
       "CLI/ACPX discovery must append a durable custom transcript entry rather than only notify",
     );
   });
+
+  it("does not notify the summary after persisting it", () => {
+    assert.doesNotMatch(
+      providersExtension,
+      /ctx\.ui\.notify\(summary,\s*["']info["']\)/,
+      "the durable transcript entry is the sole visible CLI/ACPX discovery summary",
+    );
+  });
 });

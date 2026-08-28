@@ -614,16 +614,6 @@ export default async function (pi: ExtensionAPI) {
     } else if (providerSummaryParts.length > 0) {
       log.debug("provider discovery summary retained", { reason: reason || "unknown" });
     }
-    if (providerSummaryParts.length > 0 && ctx.hasUI) {
-      try {
-        ctx.ui.notify(summary, "info");
-      } catch (err) {
-        log.debug(
-          "providers notify skipped",
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
     applyCliAcpxThinking(
       ctx.model
         ? { id: ctx.model.id, provider: String(ctx.model.provider) }
