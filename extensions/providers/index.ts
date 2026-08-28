@@ -595,6 +595,9 @@ export default async function (
         const count = inst.snapshot.getSnapshot().models.length;
         parts.push(`acpx-${agent} (${count})`);
       }
+      log.debug("built CLI/ACPX provider discovery summary", {
+        providerCount: parts.length,
+      });
       return parts;
     })();
 
