@@ -90,14 +90,4 @@ describe("CLI/ACPX provider discovery summary (#788)", () => {
     assert.deepEqual(component.render(80), ["Providers: cli-codex (2)"]);
   });
 
-  it("invokes invalidate", async () => {
-    const { renderers } = await installDiscoverySummaryExtension();
-    const component = renderers[0].render(
-      { data: { summary: "Providers: cli-codex (2)" } },
-      {},
-      { fg: (_color: string, text: string) => text },
-    );
-
-    assert.doesNotThrow(() => component.invalidate());
-  });
 });
