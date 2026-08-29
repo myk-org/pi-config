@@ -161,6 +161,9 @@ Writing effective rules:
   skip register via `extensions/shared/oneshot.ts`; shutdown dream also skipped.
   See `dev-docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.
 - Extension commands: see `dev-docs/extension-commands.md`
+- COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
+  `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
+  expire after five minutes.
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
 - CLI/ACPX model metadata (context window, maxTokens, cost): cached from
@@ -212,7 +215,7 @@ agents/`httpd.py` from the npm unpack.
 
 ## Boundaries
 
-- ✅ Always: run `tox` before committing, update AGENTS.md/README.md when structure changes
+- ✅ Always: run `tox` before committing; update AGENTS.md/README.md when structure changes
 - ✅ Always: use `uv run` for Python, never bare `python`/`pip`
 - ⚠️ Ask first: modifying rules (affects all users), changing enforcement logic
 - 🚫 Never: `git add .`, `--no-verify`, commit to main/protected branches, edit `docs/` manually,

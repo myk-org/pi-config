@@ -37,6 +37,8 @@ import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueR
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const log = createLogger("coms");
+const RECOVERY_PREVIEW_TTL_MS = 5 * 60 * 1000;
+const MAX_RECOVERY_PREVIEWS_PER_SESSION = 20;
 let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
 let MAX_HOPS = 5;
 
@@ -618,8 +620,27 @@ export default function (pi: ExtensionAPI) {
 	/** Track pending (unresponded) outbound msg_ids per target name. */
 	const pendingOutbound: Map<string, Set<string>> = new Map();
 	const inboundQueue: Map<string, InboundContext> = new Map();
-	/** Destructive recovery is valid only after an explicit inspect preview. */
-	const queueRecoveryPreviews = new Map<string, { targetSession: string; itemIds: string[] }>();
+	/** Destructive recovery is valid only after an explicit, short-lived inspect preview. */
+	const queueRecoveryPreviews = new Map<string, { targetSession: string; itemIds: string[]; expiresAt: number }>();
+
+	function pruneQueueRecoveryPreviews(now = Date.now()): void {
+		let removed = 0;
+		for (const [previewId, preview] of queueRecoveryPreviews) {
+			if (preview.expiresAt <= now) {
+				queueRecoveryPreviews.delete(previewId);
+				removed++;
+			}
+		}
+		if (removed) log.debug("recovery_previews_pruned", { removed, remaining: queueRecoveryPreviews.size });
+	}
+
+	function retainQueueRecoveryPreview(previewId: string, targetSession: string, itemIds: string[]): void {
+		pruneQueueRecoveryPreviews();
+		const sessionPreviews = [...queueRecoveryPreviews.entries()].filter(([, preview]) => preview.targetSession === targetSession);
+		for (const [expiredId] of sessionPreviews.slice(0, Math.max(0, sessionPreviews.length - MAX_RECOVERY_PREVIEWS_PER_SESSION + 1))) queueRecoveryPreviews.delete(expiredId);
+		queueRecoveryPreviews.set(previewId, { targetSession, itemIds, expiresAt: Date.now() + RECOVERY_PREVIEW_TTL_MS });
+		log.debug("recovery_preview_retained", { session: targetSession, count: itemIds.length, active: queueRecoveryPreviews.size });
+	}
 	let server: net.Server | null = null;
 	let fsWatcher: fs.FSWatcher | null = null;
 	let pingWorker: Worker | null = null;
@@ -963,6 +984,7 @@ export default function (pi: ExtensionAPI) {
 	// ━━ queue_manage handler ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// Only the message OWNER (sender_session match) can manage their messages.
 	function handleQueueManage(socket: net.Socket, env: QueueManageEnvelope): void {
+		pruneQueueRecoveryPreviews();
 		const action = env.action;
 		let affected = 0;
 		let error: string | null = null;
@@ -1017,11 +1039,14 @@ export default function (pi: ExtensionAPI) {
 					position: index + 1, deliveryState: "queued",
 				}));
 				const outcome = clearLocalQueue(items, storedPreview.itemIds);
-				for (const item of outcome.cleared) {
-					const inbound = inboundQueue.get(item.id);
-					if (inbound && isOwned(inbound)) { dropInbound(inbound); affected++; }
+				if (outcome.outcome === "partial") {
+					error = "preview_stale";
+				} else {
+					for (const item of outcome.cleared) {
+						const inbound = inboundQueue.get(item.id);
+						if (inbound && isOwned(inbound)) { dropInbound(inbound); affected++; }
+					}
 				}
-				if (outcome.outcome === "partial") error = "preview_stale";
 				queueRecoveryPreviews.delete(env.preview_id);
 			}
 		} else if (action === "inspect") {
@@ -1030,7 +1055,7 @@ export default function (pi: ExtensionAPI) {
 				position: index + 1, deliveryState: "queued",
 			}));
 			const preview = buildQueuePreview("local", items, Date.now(), ulid());
-			queueRecoveryPreviews.set(preview.previewId, { targetSession: env.sender_session, itemIds: preview.items.map(item => item.id) });
+			retainQueueRecoveryPreview(preview.previewId, env.sender_session, preview.items.map(item => item.id));
 			try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected: 0, error: null, preview }) + "\n"); } catch {}
 			log.info("recovery_preview", { provider: "local", sender: env.sender_name, count: preview.items.length });
 			return;
@@ -1056,7 +1081,8 @@ export default function (pi: ExtensionAPI) {
 		} catch { /* ignore */ }
 
 		maybeRefreshWidget();
-		log.info("recovery_local_result", { action, affected, outcome: error ? "failure" : "success", error });
+		const recoveryLog = error === "preview_required" || error === "invalid_preview" || error === "preview_stale" ? log.warn : error ? log.error : log.info;
+		recoveryLog("recovery_local_result", { action, affected, outcome: error ? "failure" : "success", error });
 	}
 
 	// ━━ task_manage handler — remote task operations from peers ━━━━━━━━━━━
@@ -3246,6 +3272,8 @@ Do not respond to this message.`;
 			try { removeRegistryEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
 			log.info("shutdown", ident.coms_session_id);
 		}
+		queueRecoveryPreviews.clear();
+		log.debug("recovery_previews_cleared", { reason: "shutdown" });
 		if (currentCtx?.hasUI) {
 			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
 			try { currentCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }

@@ -840,7 +840,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.84.0**)
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.84.4**)
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)
