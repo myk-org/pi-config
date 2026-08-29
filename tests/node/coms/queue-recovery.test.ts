@@ -75,9 +75,11 @@ describe("RPC queue previews", () => {
     assert.deepEqual(result, { outcome: "unavailable", provider: "rpc", previewId: "", items: [], reason: "preview pipe broken" });
   });
 
-  it("returns body-free steering metadata", async () => {
+  it("returns body-free steering metadata with an unknown enqueue age", async () => {
     const result = await previewRpcQueue({ clearQueueIfSnapshot: async () => ({}), previewQueue: async () => rpcPreview(["secret steering"], []) });
-    assert.deepEqual(result.items.map(item => item.id), ["steering-1"]);
+    assert.deepEqual(result.items.map(item => ({ id: item.id, queuedAt: item.queuedAt, ageMs: item.ageMs })), [
+      { id: "steering-1", queuedAt: null, ageMs: null },
+    ]);
     assert.equal(JSON.stringify(result).includes("secret steering"), false);
   });
 
@@ -140,12 +142,13 @@ describe("RPC queue clearing", () => {
     assert.equal(host.clearCalls, 1);
   });
 
-  it("relays the host's atomic stale result without a client-side preview check", async () => {
+  it("returns previewed items as untouched when the host reports an atomic stale result", async () => {
     const host = atomicProvider();
     const preview = await previewRpcQueue(host.provider);
     host.setCurrent(rpcPreview(["changed"]));
     const result = await clearRpcQueue(host.provider, preview.previewId);
     assert.equal(result.outcome, "stale_preview");
+    assert.deepEqual(result.untouched, preview.items.map(({ ageMs: _ageMs, ...item }) => item));
     assert.equal(host.clearCalls, 1);
   });
 

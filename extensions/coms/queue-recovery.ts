@@ -26,13 +26,15 @@ export interface QueueRecoveryItem {
   id: string;
   sender: string;
   target: string;
-  queuedAt: string;
+  /** `null` when the queue source does not expose an enqueue timestamp. */
+  queuedAt: string | null;
   position: number;
   deliveryState: QueueDeliveryState;
 }
 
 export interface QueuePreviewItem extends QueueRecoveryItem {
-  ageMs: number;
+  /** `null` when `queuedAt` is unknown. */
+  ageMs: number | null;
 }
 
 export interface QueueRecoveryPreview {
@@ -148,13 +150,17 @@ export async function previewRpcQueue(provider: RpcQueueRecoveryProvider | undef
 
 export function buildQueuePreview(provider: "local" | "rpc", items: QueueRecoveryItem[], now = Date.now(), previewId = `queue-preview-${now}`): QueueRecoveryPreview {
   log.debug("recovery_preview_built", { provider, count: items.length });
-  return { outcome: "supported", provider, previewId, items: items.map(item => ({ ...item, ageMs: Math.max(0, now - Date.parse(item.queuedAt)) })) };
+  return {
+    outcome: "supported",
+    provider,
+    previewId,
+    items: items.map(item => ({ ...item, ageMs: item.queuedAt === null ? null : Math.max(0, now - Date.parse(item.queuedAt)) })),
+  };
 }
 
 function rpcItems(kind: "steering" | "follow_up", messages: string[]): QueueRecoveryItem[] {
-  const queuedAt = new Date(0).toISOString();
-  log.debug("recovery_rpc_items", { kind, count: messages.length });
-  return messages.map((_message, index) => ({ id: `${kind}-${index + 1}`, sender: "pi-rpc", target: "local", queuedAt, position: index + 1, deliveryState: "queued" }));
+  log.debug("recovery_rpc_items", { kind, count: messages.length, queuedAt: "unknown" });
+  return messages.map((_message, index) => ({ id: `${kind}-${index + 1}`, sender: "pi-rpc", target: "local", queuedAt: null, position: index + 1, deliveryState: "queued" }));
 }
 
 /** Clears only the exact RPC queue snapshot represented by a live preview token. */
@@ -175,7 +181,7 @@ export async function clearRpcQueue(provider: RpcQueueRecoveryProvider | undefin
     const response = await provider.clearQueueIfSnapshot(preview.snapshot);
     if (response && typeof response === "object" && (response as any).outcome === "stale_preview") {
       log.warn("recovery_rpc_clear_denied", { operation: "clear", reason: "stale_preview" });
-      return { outcome: "stale_preview", cleared: [], untouched: [], reason: "RPC queue changed after preview" };
+      return { outcome: "stale_preview", cleared: [], untouched: preview.items, reason: "RPC queue changed after preview" };
     }
     if (!validRpcQueue(response)) {
       log.warn("recovery_rpc_clear_indeterminate", { operation: "clear", attempted: preview.items.length });
