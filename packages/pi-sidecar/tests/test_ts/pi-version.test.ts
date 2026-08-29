@@ -66,6 +66,10 @@ describe("extractPiVersionToken", () => {
 });
 
 describe("MIN_PI_VERSION", () => {
+  it("requires Pi 0.84.4", () => {
+    assert.equal(MIN_PI_VERSION, "0.84.4");
+  });
+
   it("is a valid x.y.z version string", () => {
     assert.match(MIN_PI_VERSION, /^\d+\.\d+\.\d+$/);
   });
@@ -96,7 +100,7 @@ describe("assertPiVersionFloor", () => {
     if (compareVersions(installed!, MIN_PI_VERSION) >= 0) {
       assert.doesNotThrow(() => assertPiVersionFloor());
     } else {
-      assert.throws(() => assertPiVersionFloor(), /below the required floor/);
+      assert.throws(() => assertPiVersionFloor(), new RegExp(`below the required floor ${MIN_PI_VERSION}`));
     }
   });
 });
