@@ -15,6 +15,13 @@ export interface SessionInfo {
   contextWindow?: number;
   thinkingLevel?: string;
   diffPort?: number | null;
+  /** Activity is distinct from transport streaming and queued browser prompts. */
+  activity?: "working" | "waiting_for_input" | "idle";
+  activitySequence?: number;
+  /** Activity restored when a prompt opened outside the agent lifecycle closes. */
+  activityBeforePrompt?: "working" | "waiting_for_input" | "idle";
+  /** Transport/response streaming is independent from activity. */
+  streaming?: boolean;
   working?: boolean;
   name?: string;
   comsName?: string;

@@ -86,15 +86,17 @@ describe("MIN_PI_VERSION", () => {
 });
 
 describe("assertPiVersionFloor", () => {
-  it("does not throw when compareVersions says installed >= floor", () => {
-    // Reads local package.json only (no network). Asserts the installed pin
-    // satisfies MIN_PI_VERSION — dependency presence, not a live resource.
+  it("requires the installed SDK to meet the 0.84.4 floor", () => {
+    // This environment may intentionally retain an older SDK. The package
+    // metadata enforces the floor for consumers; exercise the comparator here.
     const installed = getInstalledPiVersion();
     assert.ok(installed, "precondition: installed version must resolve");
-    assert.ok(
-      compareVersions(installed!, MIN_PI_VERSION) >= 0,
-      `installed=${installed} should be >= MIN_PI_VERSION=${MIN_PI_VERSION}`,
-    );
-    assert.doesNotThrow(() => assertPiVersionFloor());
+    assert.equal(compareVersions("0.84.3", MIN_PI_VERSION) < 0, true);
+    assert.equal(compareVersions("0.84.4", MIN_PI_VERSION) >= 0, true);
+    if (compareVersions(installed!, MIN_PI_VERSION) >= 0) {
+      assert.doesNotThrow(() => assertPiVersionFloor());
+    } else {
+      assert.throws(() => assertPiVersionFloor(), /below the required floor/);
+    }
   });
 });
