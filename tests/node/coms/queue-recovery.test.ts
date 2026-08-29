@@ -5,6 +5,7 @@ import {
   clearLocalQueue,
   clearRpcQueue,
   previewRpcQueue,
+  rpcQueueSnapshot,
   type QueueRecoveryItem,
 } from "../../../extensions/coms/queue-recovery.js";
 
@@ -16,6 +17,22 @@ const items: QueueRecoveryItem[] = [
 
 function rpcPreview(steering = ["steering"], followUp = ["follow-up"]) {
   return { steering, followUp };
+}
+
+function atomicProvider(initial = rpcPreview()) {
+  let current = initial;
+  let clearCalls = 0;
+  return {
+    provider: {
+      previewQueue: async () => current,
+      clearQueueIfSnapshot: async (expectedSnapshot: string) => {
+        clearCalls++;
+        return rpcQueueSnapshot(current) === expectedSnapshot ? current : { outcome: "stale_preview" };
+      },
+    },
+    setCurrent: (value: ReturnType<typeof rpcPreview>) => { current = value; },
+    get clearCalls() { return clearCalls; },
+  };
 }
 
 describe("queue recovery previews", () => {
@@ -49,25 +66,53 @@ describe("RPC queue previews", () => {
   });
 
   it("reports malformed preview output", async () => {
-    const result = await previewRpcQueue({ clearQueue: async () => ({}), previewQueue: async () => ({ steering: "wrong", followUp: [] }) });
+    const result = await previewRpcQueue({ clearQueueIfSnapshot: async () => ({}), previewQueue: async () => ({ steering: "wrong", followUp: [] }) });
     assert.equal(result.outcome, "malformed");
   });
 
   it("reports a preview provider exception", async () => {
-    const result = await previewRpcQueue({ clearQueue: async () => ({}), previewQueue: async () => { throw new Error("preview pipe broken"); } });
+    const result = await previewRpcQueue({ clearQueueIfSnapshot: async () => ({}), previewQueue: async () => { throw new Error("preview pipe broken"); } });
     assert.deepEqual(result, { outcome: "unavailable", provider: "rpc", previewId: "", items: [], reason: "preview pipe broken" });
   });
 
   it("returns body-free steering metadata", async () => {
-    const result = await previewRpcQueue({ clearQueue: async () => ({}), previewQueue: async () => rpcPreview(["secret steering"], []) });
+    const result = await previewRpcQueue({ clearQueueIfSnapshot: async () => ({}), previewQueue: async () => rpcPreview(["secret steering"], []) });
     assert.deepEqual(result.items.map(item => item.id), ["steering-1"]);
     assert.equal(JSON.stringify(result).includes("secret steering"), false);
   });
 
   it("returns body-free follow-up metadata", async () => {
-    const result = await previewRpcQueue({ clearQueue: async () => ({}), previewQueue: async () => rpcPreview([], ["secret follow-up"]) });
+    const result = await previewRpcQueue({ clearQueueIfSnapshot: async () => ({}), previewQueue: async () => rpcPreview([], ["secret follow-up"]) });
     assert.deepEqual(result.items.map(item => item.id), ["follow_up-1"]);
     assert.equal(JSON.stringify(result).includes("secret follow-up"), false);
+  });
+
+  it("uses a collision-resistant, unambiguously framed digest", () => {
+    // These distinct eight-byte messages collide under the replaced 32-bit FNV fingerprint.
+    const first = rpcQueueSnapshot(rpcPreview(["jYM91QWw"], []));
+    const second = rpcQueueSnapshot(rpcPreview(["WbVUq2c1"], []));
+    assert.notEqual(first, second);
+    assert.match(first ?? "", /^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("distinguishes queue boundaries while digesting", () => {
+    assert.notEqual(rpcQueueSnapshot(rpcPreview(["a", "bc"], [])), rpcQueueSnapshot(rpcPreview(["ab", "c"], [])));
+  });
+
+  it("expires RPC preview tokens without invoking the host clear", async () => {
+    const host = atomicProvider();
+    const preview = await previewRpcQueue(host.provider, now);
+    const result = await clearRpcQueue(host.provider, preview.previewId, now + 5 * 60 * 1000);
+    assert.equal(result.outcome, "invalid_preview");
+    assert.equal(host.clearCalls, 0);
+  });
+
+  it("evicts the oldest RPC preview after the per-provider limit", async () => {
+    const host = atomicProvider();
+    const previews = await Promise.all(Array.from({ length: 21 }, (_, index) => previewRpcQueue(host.provider, now + index)));
+    const result = await clearRpcQueue(host.provider, previews[0].previewId, now + 21);
+    assert.equal(result.outcome, "invalid_preview");
+    assert.equal(host.clearCalls, 0);
   });
 });
 
@@ -77,71 +122,60 @@ describe("RPC queue clearing", () => {
     assert.deepEqual(result, { outcome: "unavailable", cleared: [], untouched: [], reason: "RPC queue recovery is unavailable" });
   });
 
-  it("rejects an omitted preview token without clearing", async () => {
-    let clearCalls = 0;
-    const provider = { previewQueue: async () => rpcPreview(), clearQueue: async () => { clearCalls++; return rpcPreview(); } };
-    const result = await clearRpcQueue(provider, undefined as unknown as string);
-    assert.equal(result.outcome, "invalid_preview");
-    assert.equal(clearCalls, 0);
-  });
-
-  it("rejects an empty preview token without clearing", async () => {
-    let clearCalls = 0;
-    const provider = { previewQueue: async () => rpcPreview(), clearQueue: async () => { clearCalls++; return rpcPreview(); } };
-    const result = await clearRpcQueue(provider, "");
-    assert.equal(result.outcome, "invalid_preview");
-    assert.equal(clearCalls, 0);
-  });
-
-  it("rejects a fabricated preview token without clearing", async () => {
-    let clearCalls = 0;
-    const provider = { previewQueue: async () => rpcPreview(), clearQueue: async () => { clearCalls++; return rpcPreview(); } };
-    const result = await clearRpcQueue(provider, "fabricated");
-    assert.equal(result.outcome, "invalid_preview");
-    assert.equal(clearCalls, 0);
-  });
+  for (const previewId of [undefined, "", "fabricated"] as const) {
+    it(`rejects ${previewId === undefined ? "an omitted" : previewId === "" ? "an empty" : "a fabricated"} preview token without clearing`, async () => {
+      const host = atomicProvider();
+      const result = await clearRpcQueue(host.provider, previewId as string);
+      assert.equal(result.outcome, "invalid_preview");
+      assert.equal(host.clearCalls, 0);
+    });
+  }
 
   it("rejects a reused preview token without clearing", async () => {
-    let clearCalls = 0;
-    const provider = { previewQueue: async () => rpcPreview(), clearQueue: async () => { clearCalls++; return rpcPreview(); } };
-    const preview = await previewRpcQueue(provider);
-    await clearRpcQueue(provider, preview.previewId);
-    const result = await clearRpcQueue(provider, preview.previewId);
+    const host = atomicProvider();
+    const preview = await previewRpcQueue(host.provider);
+    await clearRpcQueue(host.provider, preview.previewId);
+    const result = await clearRpcQueue(host.provider, preview.previewId);
     assert.equal(result.outcome, "invalid_preview");
-    assert.equal(clearCalls, 1);
+    assert.equal(host.clearCalls, 1);
   });
 
-  it("rejects a stale preview token without clearing", async () => {
-    let clearCalls = 0;
-    let current = rpcPreview();
-    const provider = { previewQueue: async () => current, clearQueue: async () => { clearCalls++; return rpcPreview(); } };
-    const preview = await previewRpcQueue(provider);
-    current = rpcPreview(["changed"]);
-    const result = await clearRpcQueue(provider, preview.previewId);
+  it("relays the host's atomic stale result without a client-side preview check", async () => {
+    const host = atomicProvider();
+    const preview = await previewRpcQueue(host.provider);
+    host.setCurrent(rpcPreview(["changed"]));
+    const result = await clearRpcQueue(host.provider, preview.previewId);
     assert.equal(result.outcome, "stale_preview");
-    assert.equal(clearCalls, 0);
+    assert.equal(host.clearCalls, 1);
   });
 
-  it("rejects malformed clear_queue responses", async () => {
-    const provider = { previewQueue: async () => rpcPreview(), clearQueue: async () => ({ steering: "wrong", followUp: [] }) };
+  it("returns an indeterminate audit result when the host response is malformed after clear", async () => {
+    let clearCalls = 0;
+    const provider = {
+      previewQueue: async () => rpcPreview(["s1"], ["f1"]),
+      clearQueueIfSnapshot: async () => { clearCalls++; return { steering: "wrong", followUp: [] }; },
+    };
     const preview = await previewRpcQueue(provider);
     const result = await clearRpcQueue(provider, preview.previewId);
-    assert.equal(result.outcome, "malformed");
-    assert.equal(result.cleared.length, 0);
+    assert.equal(clearCalls, 1);
+    assert.equal(result.outcome, "indeterminate");
+    assert.deepEqual(result.attempted?.items.map(item => item.id), ["steering-1", "follow_up-1"]);
+    assert.match(result.attempted?.snapshot ?? "", /^sha256:[a-f0-9]{64}$/);
   });
 
   it("reports failures without claiming messages were cleared", async () => {
-    const provider = { previewQueue: async () => rpcPreview(), clearQueue: async () => { throw new Error("broken pipe"); } };
+    const provider = { previewQueue: async () => rpcPreview(), clearQueueIfSnapshot: async () => { throw new Error("broken pipe"); } };
     const preview = await previewRpcQueue(provider);
     const result = await clearRpcQueue(provider, preview.previewId);
     assert.deepEqual(result, { outcome: "failure", cleared: [], untouched: [], reason: "broken pipe" });
   });
 
-  it("clears a valid preview token", async () => {
-    const provider = { previewQueue: async () => rpcPreview(["s1"], ["f1", "f2"]), clearQueue: async () => rpcPreview(["s1"], ["f1", "f2"]) };
-    const preview = await previewRpcQueue(provider);
-    const result = await clearRpcQueue(provider, preview.previewId);
+  it("clears a valid preview token through the atomic provider operation", async () => {
+    const host = atomicProvider(rpcPreview(["s1"], ["f1", "f2"]));
+    const preview = await previewRpcQueue(host.provider);
+    const result = await clearRpcQueue(host.provider, preview.previewId);
     assert.equal(result.outcome, "success");
     assert.deepEqual(result.cleared.map(item => item.id), ["steering-1", "follow_up-1", "follow_up-2"]);
+    assert.equal(host.clearCalls, 1);
   });
 });

@@ -15,9 +15,14 @@ body-free item metadata. The test must invoke the registered tool's `execute`, n
 6. Reject `coms_send.clearPrevious` and inspect afterward to prove its queued message remains intact.
 7. Generate more than the per-session preview limit and verify the oldest token is invalid; this exercises bounded preview lifecycle pruning/eviction.
 8. Exercise `previewRpcQueue` directly for unavailable, malformed, provider exception, steering, follow-up, and body-free output.
-9. Require an issued RPC preview token for `clearRpcQueue`; cover missing, fabricated, reused, stale, malformed, exception, and
-   valid-token outcomes while asserting rejected tokens never call `clearQueue`.
-10. Preserve partial local recovery outcomes through an atomic stale-preview clear: no queue entry may be removed when the preview snapshot is stale.
+9. Require an issued RPC preview token for `clearRpcQueue`; cover missing, fabricated, expired, evicted, reused, stale, malformed,
+   exception, and valid-token outcomes while asserting invalid tokens never call the host clear.
+10. Verify RPC snapshots use a collision-resistant SHA-256 digest with unambiguous framing, including a regression pair that collides
+   under the replaced 32-bit fingerprint.
+11. Require `clearQueueIfSnapshot` to validate and clear atomically in the host. Do not call an unconditional clear after a client-side preview.
+12. Return an `indeterminate` result with body-free attempted snapshot metadata when a host clear response is malformed after the host may
+   have destroyed messages.
+13. Preserve partial local recovery outcomes through an atomic stale-preview clear: no queue entry may be removed when the preview snapshot is stale.
 
 ## Commands
 

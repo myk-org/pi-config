@@ -112,7 +112,9 @@ body-free preview. Then pass its `preview_id` to `coms_queue_clear`.
 Reconnects and timeouts never clear queues. This recovers the local P2P coms
 queue. Pi RPC hosts may separately offer `clear_queue` for their steering and
 follow-up queue. It is a distinct queue and must also be previewed and cleared
-explicitly.
+explicitly. RPC preview tokens expire after five minutes, retain at most 20
+entries per provider, and require a host-side atomic snapshot comparison before
+clearing.
 
 Forked from [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-code) coms extensions. We own these files — FIFO message queue, structured task delegation via coms protocol.
 

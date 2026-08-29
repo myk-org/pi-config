@@ -163,7 +163,8 @@ Writing effective rules:
 - Extension commands: see `dev-docs/extension-commands.md`
 - COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
-  expire after five minutes.
+  expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic
+  `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
 - CLI/ACPX model metadata (context window, maxTokens, cost): cached from
