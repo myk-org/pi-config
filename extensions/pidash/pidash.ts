@@ -127,6 +127,7 @@ export function registerPidash(
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
   let activitySequence = 0;
   let activity: "working" | "waiting_for_input" | "idle" = "idle";
+  let activityBeforePrompt: "working" | "waiting_for_input" | "idle" | null = null;
   let connectionGeneration = 0;
   let execCtx: any = null;
   let comsIdentityName: string | undefined;
@@ -542,7 +543,7 @@ export function registerPidash(
         let thinking = "medium";
         try {
           thinking = (pi as any).getThinkingLevel?.() || "medium";
-        } catch (e: any) { log.debug(`getThinkingLevel failed: ${e?.message || e}`); }
+        } catch (e: any) { log.debug(`getThinkingLevel failed: session=${sessionId} error=${e?.message || e}`); }
         const reg = JSON.stringify({
           type: "register",
           pid: process.pid,
@@ -558,6 +559,7 @@ export function registerPidash(
           startedAt: new Date().toISOString(),
           activity,
           activitySequence,
+          activityBeforePrompt: activityBeforePrompt || undefined,
           streaming: isStreaming,
           sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
           thinkingLevel: thinking,
@@ -643,9 +645,14 @@ export function registerPidash(
       let payload: any = { type, ...event, timestamp: Date.now() };
       if (["agent_start", "agent_end", "agent_settled", "ui_prompt_start", "ui_prompt_end"].includes(type)) {
         payload.activitySequence = ++activitySequence;
-        if (type === "agent_start" || type === "ui_prompt_end") activity = "working";
-        else if (type === "ui_prompt_start") activity = "waiting_for_input";
-        else if (type === "agent_end") activity = "idle";
+        if (type === "agent_start") activity = "working";
+        else if (type === "ui_prompt_start") {
+          activityBeforePrompt = activity;
+          activity = "waiting_for_input";
+        } else if (type === "ui_prompt_end") {
+          activity = activityBeforePrompt ?? "working";
+          activityBeforePrompt = null;
+        } else if (type === "agent_end") activity = "idle";
         log.debug(`activity event forwarded: ${type} activity=${activity} sequence=${payload.activitySequence}`);
       }
 
@@ -875,6 +882,7 @@ export function registerPidash(
       eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
       activitySequence = 0;
       activity = "idle";
+      activityBeforePrompt = null;
       ws.send(JSON.stringify({
         type: "session_switch",
         sessionId,

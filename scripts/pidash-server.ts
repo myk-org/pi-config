@@ -14,6 +14,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { createDaemonServer } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
+import { disconnectPidashSession, registerPidashSession, type PiClient } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
@@ -35,15 +36,6 @@ function log(msg: string) {
 const piEventHooks: Array<(sessionId: string, event: any) => void> = [];
 
 // ── Session state ───────────────────────────────────────────────────
-
-interface PiClient {
-  ws: any;
-  session: SessionInfo;
-  eventBuffer: string[];
-  replaying: boolean;
-  connectionGeneration: number;
-}
-
 
 
 // Async agent state (managed outside daemon-shared — uses its own WebSocket server)
@@ -67,54 +59,9 @@ function sendToWatchers(sessionId: string, event: object) {
 
 function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void): void {
   if (parsed.type === "register") {
-    const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
-    const session: SessionInfo = {
-      sessionId,
-      pid: parsed.pid,
-      cwd: parsed.cwd || "",
-      branch: parsed.branch || "",
-      model: parsed.model || "",
-      startedAt: parsed.startedAt || new Date().toISOString(),
-      lastActivity: Date.now(),
-      active: true,
-      sessionFile: parsed.sessionFile || "",
-      gitDirty: parsed.gitDirty || false,
-      gitChanges: parsed.gitChanges || 0,
-      container: parsed.container || false,
-      contextWindow: parsed.contextWindow || 0,
-      diffPort: parsed.diffPort || null,
-      thinkingLevel: parsed.thinkingLevel || "medium",
-      name: parsed.name || undefined,
-      comsName: parsed.comsName || undefined,
-      comsPurpose: parsed.comsPurpose || undefined,
-      comsProject: parsed.comsProject || undefined,
-      ...initialActivityState(),
-      activity: parsed.activity === "working" || parsed.activity === "waiting_for_input" ? parsed.activity : "idle",
-      activitySequence: Number.isSafeInteger(parsed.activitySequence) ? parsed.activitySequence : 0,
-      streaming: false,
-      working: parsed.activity === "working",
-    };
-    // Re-registration: update existing inactive session (keep event buffer)
-    const existing = piClients.get(sessionId);
-    let piClient: PiClient;
-    if (existing) {
-      if (!session.name && existing.session.name) session.name = existing.session.name;
-      if (!session.comsName && existing.session.comsName) session.comsName = existing.session.comsName;
-      if (!session.comsPurpose && existing.session.comsPurpose) session.comsPurpose = existing.session.comsPurpose;
-      if (!session.comsProject && existing.session.comsProject) session.comsProject = existing.session.comsProject;
-      existing.ws = ws;
-      existing.session = session;
-      existing.eventBuffer = []; // Clear stale buffer — extension will replay current events
-      existing.replaying = true;
-      existing.connectionGeneration++;
-      piClient = existing;
-    } else {
-      piClient = { ws, session, eventBuffer: [], replaying: true, connectionGeneration: 1 };
-    }
+    const piClient = registerPidashSession(piClients, ws, parsed, broadcastToBrowsers);
     setPiClient(piClient);
-    piClients.set(sessionId, piClient);
-    log(`session registered: ${sessionId}, cwd: ${parsed.cwd}`);
-    broadcastToBrowsers({ type: "session_added", session });
+    log(`session registered: ${piClient.session.sessionId}, cwd: ${parsed.cwd}`);
     // replaying flag cleared when extension sends replay_complete
     return;
   }
@@ -157,6 +104,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.lastActivity = Date.now();
     piClient.session.activity = "idle";
     piClient.session.activitySequence = 0;
+    piClient.session.activityBeforePrompt = undefined;
     piClient.session.streaming = false;
     piClient.session.working = false;
     piClient.eventBuffer.length = 0; // Clear buffer to prevent cross-session replay
@@ -200,6 +148,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
         activity: piClient.session.activity || (piClient.session.working ? "working" : "idle"),
         streaming: piClient.session.streaming || false,
         sequence: piClient.session.activitySequence || 0,
+        activityBeforePrompt: piClient.session.activityBeforePrompt,
       } as const;
       if (!Number.isSafeInteger(event.sequence) || event.sequence < 1 || !shouldAcceptActivityEvent(previous, event)) {
         activityLog.warn(`stale activity event ignored: session=${piClient.session.sessionId} type=${event.type} sequence=${parsed.activitySequence} current=${previous.sequence}`);
@@ -207,6 +156,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
         const next = applyActivityEvent(previous, event);
         piClient.session.activity = next.activity;
         piClient.session.activitySequence = next.sequence;
+        piClient.session.activityBeforePrompt = next.activityBeforePrompt;
         piClient.session.streaming = next.streaming;
         piClient.session.working = next.activity === "working";
         activityLog.info(`activity transition: session=${piClient.session.sessionId} ${previous.activity}->${next.activity} sequence=${next.sequence}`);
@@ -338,29 +288,17 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start }
   onPiMessage: handlePiMessage,
 
   onPiClose: (piClient, ws) => {
-    if (piClient.ws !== ws) {
-      activityLog.debug(`stale connection close ignored: session=${piClient.session.sessionId}`);
-      return;
-    }
-    piClient.session.active = false;
-    piClient.session.activity = "idle";
-    piClient.session.streaming = false;
-    piClient.session.working = false;
-    piClient.ws = null;
-    log(`session disconnected: ${piClient.session.sessionId} (kept as inactive)`);
-    sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
+    disconnectPidashSession(piClient, ws, "close", event => {
+      log(`session disconnected: ${piClient.session.sessionId} (kept as inactive)`);
+      sendToWatchers(piClient.session.sessionId, event);
+    });
   },
 
   onPiError: (piClient, ws) => {
-    if (piClient.ws !== ws) {
-      activityLog.debug(`stale connection error ignored: session=${piClient.session.sessionId}`);
-      return;
-    }
-    piClient.session.active = false;
-    piClient.session.activity = "idle";
-    piClient.session.streaming = false;
-    piClient.session.working = false;
-    piClient.ws = null;
+    disconnectPidashSession(piClient, ws, "error", event => {
+      log(`session errored: ${piClient.session.sessionId} (kept as inactive)`);
+      sendToWatchers(piClient.session.sessionId, event);
+    });
   },
 
   onBrowserWatch: (ws, watchId, client) => {

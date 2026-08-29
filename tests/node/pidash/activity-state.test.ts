@@ -9,15 +9,26 @@ import {
 import { sessionActivityDisplay } from "../../../extensions/pidash/pidash-ui/src/lib/activity-display.ts";
 
 describe("pidash activity state", () => {
-  it("moves from work to prompt wait and back without changing streaming", () => {
-    let state = initialActivityState();
-    state = applyActivityEvent(state, { type: "agent_start", sequence: 1 });
+  it("enters prompt wait during active work", () => {
+    let state = applyActivityEvent(initialActivityState(), { type: "agent_start", sequence: 1 });
     state = applyActivityEvent(state, { type: "ui_prompt_start", sequence: 2 });
     assert.equal(state.activity, "waiting_for_input");
     assert.equal(state.streaming, true);
+  });
+
+  it("restores active work after a prompt closes", () => {
+    let state = applyActivityEvent(initialActivityState(), { type: "agent_start", sequence: 1 });
+    state = applyActivityEvent(state, { type: "ui_prompt_start", sequence: 2 });
     state = applyActivityEvent(state, { type: "ui_prompt_end", sequence: 3 });
     assert.equal(state.activity, "working");
     assert.equal(state.streaming, true);
+  });
+
+  it("restores idle after a command prompt closes", () => {
+    let state = applyActivityEvent(initialActivityState(), { type: "ui_prompt_start", sequence: 1 });
+    state = applyActivityEvent(state, { type: "ui_prompt_end", sequence: 2 });
+    assert.equal(state.activity, "idle");
+    assert.equal(state.streaming, false);
   });
 
   it("becomes idle only when the agent ends", () => {
@@ -52,8 +63,11 @@ describe("pidash activity display", () => {
     assert.doesNotMatch(wait.indicatorClassName, /animate-pulse|animate-ping/);
   });
 
-  it("keeps active work and idle distinct", () => {
+  it("labels active work", () => {
     assert.equal(sessionActivityDisplay({ active: true, activity: "working" }).label, "working");
+  });
+
+  it("labels active idle", () => {
     assert.equal(sessionActivityDisplay({ active: true, activity: "idle" }).label, "idle");
   });
 });
