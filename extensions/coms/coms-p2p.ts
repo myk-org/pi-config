@@ -32,6 +32,7 @@ import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
 import { probeStaleSocket } from "./probe-socket.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
+import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem } from "./queue-recovery.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -89,9 +90,10 @@ interface TaskUpdateEnvelope extends Envelope {
 
 interface QueueManageEnvelope extends Envelope {
 	type: "queue_manage";
-	action: "delete" | "edit" | "clear" | "prioritize";
+	action: "inspect" | "delete" | "edit" | "clear" | "prioritize";
 	target_msg_id?: string;
 	new_content?: string;
+	preview_id?: string;
 	sender_name: string;
 }
 
@@ -157,6 +159,8 @@ interface PendingReply {
 	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
 	target_name?: string;
 	created_at: string;
+	/** Creation time drives body-free recovery previews. */
+	queued_at?: string;
 }
 
 interface InboundContext {
@@ -169,6 +173,7 @@ interface InboundContext {
 	prompt: string;
 	tasks?: Array<{ subject: string; description: string }> | null;
 	response_schema?: object | null;
+	queued_at: string;
 	fulfilled: boolean;
 	/** How many times this inbound was re-injected due to mixed-turn conflict */
 	mixedTurnRetries?: number;
@@ -613,6 +618,8 @@ export default function (pi: ExtensionAPI) {
 	/** Track pending (unresponded) outbound msg_ids per target name. */
 	const pendingOutbound: Map<string, Set<string>> = new Map();
 	const inboundQueue: Map<string, InboundContext> = new Map();
+	/** Destructive recovery is valid only after an explicit inspect preview. */
+	const queueRecoveryPreviews = new Map<string, { targetSession: string; itemIds: string[] }>();
 	let server: net.Server | null = null;
 	let fsWatcher: fs.FSWatcher | null = null;
 	let pingWorker: Worker | null = null;
@@ -700,9 +707,11 @@ export default function (pi: ExtensionAPI) {
 			prompt: env.prompt,
 			tasks: Array.isArray(env.tasks) ? env.tasks : null,
 			response_schema: env.response_schema ?? null,
+			queued_at: nowIso(),
 			fulfilled: false,
 		};
 		inboundQueue.set(env.msg_id, inbound);
+		log.debug("recovery_inbound_enqueued", { msgId: env.msg_id, sender: env.sender_name, state: "queued" });
 		maybeRefreshWidget();
 
 		// 3. If already processing another inbound, just queue — agent_end will drain FIFO.
@@ -980,19 +989,51 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		if (action === "delete" && env.target_msg_id) {
+			const preview = env.preview_id ? queueRecoveryPreviews.get(env.preview_id) : undefined;
 			const ib = inboundQueue.get(env.target_msg_id);
-			if (!ib) { error = "not_found"; }
+			if (!env.preview_id) { error = "preview_required"; }
+			else if (!preview || preview.targetSession !== env.sender_session || !preview.itemIds.includes(env.target_msg_id)) { error = "invalid_preview"; }
+			else if (!ib) { error = "not_found"; }
 			else if (!isOwned(ib)) { error = "not_owned"; }
-			else { dropInbound(ib); affected++; }
+			else { dropInbound(ib); queueRecoveryPreviews.delete(env.preview_id); affected++; }
 		} else if (action === "edit" && env.target_msg_id && typeof env.new_content === "string") {
 			const ib = inboundQueue.get(env.target_msg_id);
 			if (!ib) { error = "not_found"; }
 			else if (!isOwned(ib)) { error = "not_owned"; }
 			else { ib.prompt = env.new_content; affected++; }
 		} else if (action === "clear") {
-			for (const ib of [...inboundQueue.values()]) {
-				if (isOwned(ib)) { dropInbound(ib); affected++; }
+			if (!env.preview_id) {
+				error = "preview_required";
+			} else {
+				const storedPreview = queueRecoveryPreviews.get(env.preview_id);
+				if (!storedPreview || storedPreview.targetSession !== env.sender_session) {
+					error = "invalid_preview";
+					try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n"); } catch {}
+					log.warn("recovery_clear_denied", { sender: env.sender_name, reason: error });
+					return;
+				}
+				const items = [...inboundQueue.values()].filter(isOwned).map((ib, index): QueueRecoveryItem => ({
+					id: ib.msg_id, sender: ib.sender_name, target: identity?.name ?? "local", queuedAt: ib.queued_at,
+					position: index + 1, deliveryState: "queued",
+				}));
+				const outcome = clearLocalQueue(items, storedPreview.itemIds);
+				for (const item of outcome.cleared) {
+					const inbound = inboundQueue.get(item.id);
+					if (inbound && isOwned(inbound)) { dropInbound(inbound); affected++; }
+				}
+				if (outcome.outcome === "partial") error = "preview_stale";
+				queueRecoveryPreviews.delete(env.preview_id);
 			}
+		} else if (action === "inspect") {
+			const items = [...inboundQueue.values()].filter(isOwned).map((ib, index): QueueRecoveryItem => ({
+				id: ib.msg_id, sender: ib.sender_name, target: identity?.name ?? "local", queuedAt: ib.queued_at,
+				position: index + 1, deliveryState: "queued",
+			}));
+			const preview = buildQueuePreview("local", items, Date.now(), ulid());
+			queueRecoveryPreviews.set(preview.previewId, { targetSession: env.sender_session, itemIds: preview.items.map(item => item.id) });
+			try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected: 0, error: null, preview }) + "\n"); } catch {}
+			log.info("recovery_preview", { provider: "local", sender: env.sender_name, count: preview.items.length });
+			return;
 		} else if (action === "prioritize" && env.target_msg_id) {
 			const ib = inboundQueue.get(env.target_msg_id);
 			if (!ib) { error = "not_found"; }
@@ -1015,7 +1056,7 @@ export default function (pi: ExtensionAPI) {
 		} catch { /* ignore */ }
 
 		maybeRefreshWidget();
-		log.debug("queue_manage", action, "target", env.target_msg_id, "affected", affected, "error", error);
+		log.info("recovery_local_result", { action, affected, outcome: error ? "failure" : "success", error });
 	}
 
 	// ━━ task_manage handler — remote task operations from peers ━━━━━━━━━━━
@@ -1344,7 +1385,9 @@ export default function (pi: ExtensionAPI) {
 - coms_list — see connected peers
 - coms_send — send a message to a peer
 - coms_get — check status of a sent message
-- coms_queue_delete / coms_queue_edit / coms_queue_clear / coms_queue_prioritize — manage queued messages
+- coms_queue_inspect — preview owned inbound queue items before recovery (no message bodies)
+- coms_queue_clear — irreversibly clear only a prior inspect preview; never clears automatically
+- coms_queue_delete / coms_queue_edit / coms_queue_prioritize — manage queued messages
 - coms_tasks_create — create tasks on a peer's task list with auto-report and auto-message
 - coms_task_delete — delete a task you created on a peer's task list
 - coms_task_list — list tasks on a peer's task list without sending a message
@@ -1886,7 +1929,7 @@ Do not respond to this message.`;
 				subject: Type.String({ description: "Brief task title" }),
 				description: Type.String({ description: "Detailed task description" }),
 			}), { description: "Optional structured tasks to create in the peer's task list." })),
-			clearPrevious: Type.Optional(Type.Boolean({ description: "If true, clear all your prior pending messages on the receiver before delivering this one." })),
+			clearPrevious: Type.Optional(Type.Boolean({ description: "Deprecated and rejected: inspect with coms_queue_inspect, then explicitly clear using preview_id." })),
 		}),
 		async execute(_callId, params) {
 			if (!identity) {
@@ -1906,7 +1949,7 @@ Do not respond to this message.`;
 			}
 			// Clear sender's prior pending messages on the receiver before delivering
 			if (params.clearPrevious) {
-				try { await sendQueueManage(target, "clear"); } catch { /* best-effort */ }
+				throw new Error("coms_send clearPrevious is no longer allowed. Inspect with coms_queue_inspect, then explicitly clear with its preview_id.");
 			}
 			const hops = currentInbound ? currentInbound.hops + 1 : 0;
 			if (hops >= MAX_HOPS) {
@@ -2091,7 +2134,7 @@ Do not respond to this message.`;
 	// ━━ coms queue management tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 	/** Send a queue_manage envelope to a peer. Only affects messages owned by this session. */
-	async function sendQueueManage(target: { name: string; endpoint: string }, action: string, targetMsgId?: string, newContent?: string): Promise<{ affected?: number; error?: string | null }> {
+	async function sendQueueManage(target: { name: string; endpoint: string }, action: string, targetMsgId?: string, newContent?: string, previewId?: string): Promise<{ affected?: number; error?: string | null; preview?: unknown }> {
 		if (!identity) throw new Error("coms not initialised");
 		const ack = await sendEnvelope(target.endpoint, {
 			type: "queue_manage",
@@ -2103,23 +2146,45 @@ Do not respond to this message.`;
 			action,
 			target_msg_id: targetMsgId,
 			new_content: newContent,
+			preview_id: previewId,
 			sender_name: identity.name,
 		});
-		return { affected: ack?.affected, error: ack?.error };
+		return { affected: ack?.affected, error: ack?.error, preview: ack?.preview };
 	}
 
 	pi.registerTool({
-		name: "coms_queue_delete",
-		label: "Coms Queue Delete",
-		description: "Delete your message from a peer's queue. Only works on your own pending messages.",
+		name: "coms_queue_inspect",
+		label: "Coms Queue Inspect",
+		description: "Preview your queued inbound messages on a peer before any irreversible recovery. Returns IDs, sender, target, age, FIFO position, and delivery state, never full message bodies. Pass preview_id to coms_queue_clear.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
-			msg_id: Type.String({ description: "The msg_id to delete from the peer's queue." }),
 		}),
 		async execute(_callId, params) {
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
-			const result = await sendQueueManage(target, "delete", params.msg_id);
+			const result = await sendQueueManage(target, "inspect");
+			if (result.error || !result.preview) throw new Error(`coms_queue_inspect failed: ${result.error ?? "malformed preview"}`);
+			log.info("recovery_inspect_requested", { target: target.name });
+			return {
+				content: [{ type: "text" as const, text: `coms_queue_inspect → ${target.name}\nReview this preview before clearing. No message bodies are shown.` }],
+				details: result.preview,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_queue_delete",
+		label: "Coms Queue Delete",
+		description: "Irreversibly delete one of your messages shown by coms_queue_inspect. Only the owner may delete it.",
+		parameters: Type.Object({
+			target: Type.String({ description: "Peer name or session_id." }),
+			msg_id: Type.String({ description: "The inspected msg_id to delete from the peer's queue." }),
+			preview_id: Type.String({ description: "previewId returned by coms_queue_inspect for this peer." }),
+		}),
+		async execute(_callId, params) {
+			const target = await resolveTarget(params.target);
+			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
+			const result = await sendQueueManage(target, "delete", params.msg_id, undefined, params.preview_id);
 			if (result.error) throw new Error(`coms_queue_delete failed: ${result.error}`);
 			return { content: [{ type: "text" as const, text: `coms_queue_delete → ${target.name}\nmsg_id: ${params.msg_id}` }] };
 		},
@@ -2146,15 +2211,18 @@ Do not respond to this message.`;
 	pi.registerTool({
 		name: "coms_queue_clear",
 		label: "Coms Queue Clear",
-		description: "Delete ALL your pending messages from a peer's queue. Only affects your own messages.",
+		description: "Irreversibly clear only the messages shown by a preceding coms_queue_inspect preview. Ownership is enforced by the peer; untouched messages retain FIFO order.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name or session_id." }),
+			preview_id: Type.String({ description: "previewId returned by coms_queue_inspect for this peer." }),
 		}),
 		async execute(_callId, params) {
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
-			await sendQueueManage(target, "clear");
-			return { content: [{ type: "text" as const, text: `coms_queue_clear → ${target.name}` }] };
+			const result = await sendQueueManage(target, "clear", undefined, undefined, params.preview_id);
+			if (result.error) throw new Error(`coms_queue_clear failed: ${result.error}`);
+			log.info("recovery_clear_requested", { target: target.name, affected: result.affected ?? 0 });
+			return { content: [{ type: "text" as const, text: `coms_queue_clear → ${target.name}\ncleared: ${result.affected ?? 0}` }], details: { affected: result.affected ?? 0, preview_id: params.preview_id } };
 		},
 	});
 

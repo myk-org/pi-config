@@ -52,6 +52,12 @@ afterEach(() => {
   cleanupFns = [];
 });
 
+describe("minimum Pi version", () => {
+  it("requires Pi 0.84.4", () => {
+    assert.equal(MIN_PI_VERSION, "0.84.4");
+  });
+});
+
 describe("compareSemver", () => {
   it("orders patch releases", () => {
     assert.equal(compareSemver("0.84.2", "0.84.3"), -1);

@@ -5,7 +5,7 @@ import { logger } from "./logger.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 
 /** Minimum @earendil-works/pi-coding-agent version the sidecar supports (same floor as pi-config orchestrator). */
-export const MIN_PI_VERSION = "0.84.0";
+export const MIN_PI_VERSION = "0.84.4";
 
 /** Not a real override — resolveExtensionPathDetailed() requires an env var name; this one is never set. */
 const UNUSED_ENV_VAR = "__SIDECAR_PI_VERSION_PACKAGE_JSON_INTERNAL__";

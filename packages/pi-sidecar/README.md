@@ -2,7 +2,7 @@
 
 A standalone HTTP service that wraps the
 [Pi coding agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
-(requires `@earendil-works/pi-coding-agent` ≥ 0.84.0), exposing AI sessions over a
+(requires `@earendil-works/pi-coding-agent` ≥ 0.84.4), exposing AI sessions over a
 simple JSON API. Ships with a Python client for easy integration.
 
 📖 **[Full Documentation](https://myk-org.github.io/pi-config/)**

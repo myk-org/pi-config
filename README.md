@@ -104,6 +104,15 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 | `*_send`  | Send a prompt to a peer agent                                   |
 | `*_get`   | Non-blocking poll for a response                                |
 | `*_await` | Block until response arrives                                    |
+| `coms_queue_inspect` | Preview owned queued P2P messages before recovery             |
+| `coms_queue_clear` | Irreversibly clear only an inspect preview                     |
+
+Queue recovery is explicit. Run `coms_queue_inspect` first and review its
+body-free preview. Then pass its `preview_id` to `coms_queue_clear`.
+Reconnects and timeouts never clear queues. This recovers the local P2P coms
+queue. Pi RPC hosts may separately offer `clear_queue` for their steering and
+follow-up queue. It is a distinct queue and must also be previewed and cleared
+explicitly.
 
 Forked from [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-code) coms extensions. We own these files — FIFO message queue, structured task delegation via coms protocol.
 

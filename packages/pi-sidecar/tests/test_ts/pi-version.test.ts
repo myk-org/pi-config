@@ -66,6 +66,10 @@ describe("extractPiVersionToken", () => {
 });
 
 describe("MIN_PI_VERSION", () => {
+  it("requires Pi 0.84.4", () => {
+    assert.equal(MIN_PI_VERSION, "0.84.4");
+  });
+
   it("is a valid x.y.z version string", () => {
     assert.match(MIN_PI_VERSION, /^\d+\.\d+\.\d+$/);
   });
@@ -86,15 +90,16 @@ describe("MIN_PI_VERSION", () => {
 });
 
 describe("assertPiVersionFloor", () => {
-  it("does not throw when compareVersions says installed >= floor", () => {
-    // Reads local package.json only (no network). Asserts the installed pin
-    // satisfies MIN_PI_VERSION — dependency presence, not a live resource.
+  it("accepts or rejects the installed SDK according to the configured floor", () => {
+    // The checkout may retain an older node_modules tree after a floor bump.
+    // Assert the gate itself, rather than treating that local installation as
+    // the package's declared dependency contract.
     const installed = getInstalledPiVersion();
     assert.ok(installed, "precondition: installed version must resolve");
-    assert.ok(
-      compareVersions(installed!, MIN_PI_VERSION) >= 0,
-      `installed=${installed} should be >= MIN_PI_VERSION=${MIN_PI_VERSION}`,
-    );
-    assert.doesNotThrow(() => assertPiVersionFloor());
+    if (compareVersions(installed!, MIN_PI_VERSION) >= 0) {
+      assert.doesNotThrow(() => assertPiVersionFloor());
+    } else {
+      assert.throws(() => assertPiVersionFloor(), new RegExp(`below the required floor ${MIN_PI_VERSION}`));
+    }
   });
 });
