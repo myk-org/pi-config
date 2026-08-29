@@ -7,6 +7,8 @@ export interface Logger {
   isDebugEnabled(): boolean;
 }
 
+const MAX_LOG_RECORDS = 200;
+
 function fmt(args: unknown[]): string {
   return args.map(arg => {
     if (typeof arg === "string") return arg;
@@ -17,8 +19,9 @@ function fmt(args: unknown[]): string {
 export function createLogger(name: string): Logger {
   const emit = (level: string, args: unknown[]) => {
     const state = globalThis as { __pidashUiLogs?: Array<{ name: string; level: string; msg: string }> };
-    state.__pidashUiLogs ??= [];
-    state.__pidashUiLogs.push({ name, level, msg: fmt(args) });
+    const logs = state.__pidashUiLogs ??= [];
+    logs.push({ name, level, msg: fmt(args) });
+    if (logs.length > MAX_LOG_RECORDS) logs.splice(0, logs.length - MAX_LOG_RECORDS);
   };
   return {
     debug(...args: unknown[]) {

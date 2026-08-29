@@ -35,6 +35,27 @@ describe("pidash session registration", () => {
     assert.equal(updates.length, 2);
   });
 
+  it("ignores an old socket closing after its replacement connects", () => {
+    const updates: any[] = [];
+    const state = createPidashSessionState(event => updates.push(event));
+    const oldSocket = {};
+    const replacementSocket = {};
+    const client = state.register(oldSocket, registration());
+    state.register(replacementSocket, registration({
+      activity: "waiting_for_input",
+      activityBeforePrompt: "working",
+    }));
+
+    state.disconnect(client, oldSocket, "close");
+
+    assert.equal(client.ws, replacementSocket);
+    assert.equal(client.session.active, true);
+    assert.equal(client.session.activity, "waiting_for_input");
+    assert.equal(client.session.activityBeforePrompt, "working");
+    assert.equal(updates.length, 2);
+    assert.equal(updates.some(update => update.type === "session_updated"), false);
+  });
+
   it("broadcasts an inactive update after an error cleanup", () => {
     const updates: any[] = [];
     const state = createPidashSessionState(event => updates.push(event));

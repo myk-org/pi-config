@@ -2,6 +2,7 @@ import type { SessionActivity } from "../../../activity-state.ts";
 import { createLogger } from "./create-logger.ts";
 
 const log = createLogger("pidash-ui");
+const warnedActivities = new Set<string>();
 
 interface ActivitySession {
   active: boolean;
@@ -25,6 +26,9 @@ export function sessionActivityDisplay(session: ActivitySession): {
   if (activity === "waiting_for_input") {
     return { label: "waiting for input", isWorking: false, indicatorClassName: "bg-cyan-400", badgeClassName: "bg-cyan-500/15 text-cyan-400" };
   }
-  if (activity !== "idle") log.warn(`unknown session activity display: activity=${activity}`);
+  if (activity !== "idle" && !warnedActivities.has(activity)) {
+    warnedActivities.add(activity);
+    log.warn(`unknown session activity display: activity=${activity}`);
+  }
   return { label: "idle", isWorking: false, indicatorClassName: "bg-green-500", badgeClassName: "bg-green-500/15 text-green-500" };
 }

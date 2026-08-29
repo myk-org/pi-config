@@ -97,6 +97,7 @@ export function createPidashSessionState(
   broadcast: (event: object) => void,
   sessions = new Map<string, PiClient>(),
 ) {
+  log.debug(`session state created: sessions=${sessions.size}`);
   return {
     sessions,
     register: (ws: any, parsed: any) => registerPidashSession(sessions, ws, parsed, broadcast),

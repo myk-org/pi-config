@@ -70,4 +70,19 @@ describe("pidash activity display", () => {
   it("labels active idle", () => {
     assert.equal(sessionActivityDisplay({ active: true, activity: "idle" }).label, "idle");
   });
+
+  it("warns once for a repeated unknown activity", () => {
+    type Bag = { __pidashUiLogs?: Array<{ level: string; msg: string }> };
+    const bag = globalThis as Bag;
+    bag.__pidashUiLogs = [];
+
+    sessionActivityDisplay({ active: true, activity: "unknown" as any });
+    sessionActivityDisplay({ active: true, activity: "unknown" as any });
+
+    assert.deepEqual(bag.__pidashUiLogs, [{
+      name: "pidash-ui",
+      level: "warn",
+      msg: "unknown session activity display: activity=unknown",
+    }]);
+  });
 });
