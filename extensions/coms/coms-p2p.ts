@@ -32,7 +32,7 @@ import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
 import { probeStaleSocket } from "./probe-socket.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
-import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem } from "./queue-recovery.js";
+import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2163,11 +2163,26 @@ Do not respond to this message.`;
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 			const result = await sendQueueManage(target, "inspect");
-			if (result.error || !result.preview) throw new Error(`coms_queue_inspect failed: ${result.error ?? "malformed preview"}`);
-			log.info("recovery_inspect_requested", { target: target.name });
+			const preview = result.preview as QueueRecoveryPreview | undefined;
+			if (result.error || !preview || preview.outcome !== "supported" || !preview.previewId || !Array.isArray(preview.items)) {
+				throw new Error(`coms_queue_inspect failed: ${result.error ?? "malformed preview"}`);
+			}
+			log.info("recovery_inspect_requested", { target: target.name, previewId: preview.previewId, count: preview.items.length });
+			const itemLines = preview.items.map(item =>
+				`- id: ${item.id} | sender: ${item.sender} | target: ${item.target} | age_ms: ${item.ageMs} | position: ${item.position} | delivery_state: ${item.deliveryState}`,
+			);
 			return {
-				content: [{ type: "text" as const, text: `coms_queue_inspect → ${target.name}\nReview this preview before clearing. No message bodies are shown.` }],
-				details: result.preview,
+				content: [{
+					type: "text" as const,
+					text: [
+						`coms_queue_inspect → ${target.name}`,
+						"Review this preview before clearing. No message bodies are shown.",
+						`preview_id: ${preview.previewId}`,
+						`items: ${preview.items.length}`,
+						...itemLines,
+					].join("\n"),
+				}],
+				details: preview,
 			};
 		},
 	});
