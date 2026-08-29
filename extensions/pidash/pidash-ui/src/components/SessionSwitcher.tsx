@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionInfo } from "@/types";
+import { sessionActivityDisplay } from "@/lib/activity-display";
 
 interface Props {
   sessions: SessionInfo[];
@@ -66,6 +67,7 @@ export function SessionSwitcher({ sessions, activeSessionId, onSelect, onClose }
             const name = (s.cwd || "").split("/").pop() || s.cwd;
             const isActive = s.sessionId === activeSessionId;
             const isSelected = i === selectedIdx;
+            const status = sessionActivityDisplay(s);
             return (
               <div
                 key={s.sessionId}
@@ -75,15 +77,13 @@ export function SessionSwitcher({ sessions, activeSessionId, onSelect, onClose }
                 onClick={() => { onSelect(s); onClose(); }}
                 onMouseEnter={() => setSelectedIdx(i)}
               >
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.active ? (s.working ? "bg-yellow-400 animate-pulse" : "bg-green-500") : "bg-orange-400"}`} />
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${status.indicatorClassName}`} aria-label={status.label} />
                 <span className="text-sm font-medium flex-1 truncate">{name}</span>
                 <span className="text-xs text-muted-foreground truncate max-w-[200px]">
                   {s.model || "—"}{s.branch ? ` · ${s.branch}` : ""}
                 </span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                  s.active ? (s.working ? "bg-yellow-500/15 text-yellow-400" : "bg-green-500/15 text-green-500") : "bg-orange-400/15 text-orange-400"
-                }`}>
-                  {s.active ? (s.working ? "active" : "idle") : "offline"}
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${status.badgeClassName}`}>
+                  {status.label}
                 </span>
                 {isActive && <span className="text-primary text-sm">✓</span>}
               </div>

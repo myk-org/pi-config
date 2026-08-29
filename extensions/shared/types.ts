@@ -15,6 +15,11 @@ export interface SessionInfo {
   contextWindow?: number;
   thinkingLevel?: string;
   diffPort?: number | null;
+  /** Activity is distinct from transport streaming and queued browser prompts. */
+  activity?: "working" | "waiting_for_input" | "idle";
+  activitySequence?: number;
+  /** Transport/response streaming is independent from activity. */
+  streaming?: boolean;
   working?: boolean;
   name?: string;
   comsName?: string;

@@ -125,6 +125,9 @@ export function registerPidash(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const sessionId = `${process.pid}:${process.cwd()}`;
   const eventBuffer: string[] = []; // Buffer events for replay on daemon reconnect
+  let activitySequence = 0;
+  let activity: "working" | "waiting_for_input" | "idle" = "idle";
+  let connectionGeneration = 0;
   let execCtx: any = null;
   let comsIdentityName: string | undefined;
   let comsIdentityPurpose: string | undefined;
@@ -523,6 +526,7 @@ export function registerPidash(
       const WebSocket = _require("ws");
       log.debug("creating WebSocket client...");
       const wsClient = new WebSocket(`ws://127.0.0.1:${pidashPort}/ws/pi`);
+      const thisConnectionGeneration = ++connectionGeneration;
 
       wsClient.on("open", () => {
         log.debug("WebSocket connected!");
@@ -538,11 +542,12 @@ export function registerPidash(
         let thinking = "medium";
         try {
           thinking = (pi as any).getThinkingLevel?.() || "medium";
-        } catch (e: any) { console.debug("[pidash] getThinkingLevel failed:", e?.message || e); }
+        } catch (e: any) { log.debug(`getThinkingLevel failed: ${e?.message || e}`); }
         const reg = JSON.stringify({
           type: "register",
           pid: process.pid,
           sessionId,
+          connectionGeneration: thisConnectionGeneration,
           cwd: ctx.cwd,
           branch: git.branch,
           gitDirty: git.dirty,
@@ -551,6 +556,9 @@ export function registerPidash(
           model: m?.name || m?.id || "",
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
+          activity,
+          activitySequence,
+          streaming: isStreaming,
           sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
           thinkingLevel: thinking,
           diffPort,
@@ -633,6 +641,13 @@ export function registerPidash(
       if (shuttingDown) return;
       lastCtx = ctx;
       let payload: any = { type, ...event, timestamp: Date.now() };
+      if (["agent_start", "agent_end", "agent_settled", "ui_prompt_start", "ui_prompt_end"].includes(type)) {
+        payload.activitySequence = ++activitySequence;
+        if (type === "agent_start" || type === "ui_prompt_end") activity = "working";
+        else if (type === "ui_prompt_start") activity = "waiting_for_input";
+        else if (type === "agent_end") activity = "idle";
+        log.debug(`activity event forwarded: ${type} activity=${activity} sequence=${payload.activitySequence}`);
+      }
 
       // Optimize message_update: strip the full accumulated partial message
       // to prevent events growing larger as streaming progresses.
@@ -697,6 +712,8 @@ export function registerPidash(
     forward("agent_start");
     forward("agent_end");
     forward("agent_settled");
+    forward("ui_prompt_start");
+    forward("ui_prompt_end");
 
     // Track streaming state for prompt-queued feedback
     pi.on("agent_start", () => { if (shuttingDown) return; isStreaming = true; });
@@ -856,6 +873,8 @@ export function registerPidash(
       }
       // Already connected — session switched (e.g., /resume, /new)
       eventBuffer.length = 0; // Clear stale events to prevent cross-session replay on reconnect
+      activitySequence = 0;
+      activity = "idle";
       ws.send(JSON.stringify({
         type: "session_switch",
         sessionId,

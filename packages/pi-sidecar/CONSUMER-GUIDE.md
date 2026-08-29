@@ -335,5 +335,5 @@ sidecar pulls the full set.
 
 `@myk-org/pi-vertex-claude` is standalone: it does not depend on
 `pi-orchestrator-config`. Its peer deps require
-`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=0.84.0` — same
+`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=0.84.4` — same
 floor as sidecar.

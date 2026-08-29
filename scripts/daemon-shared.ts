@@ -23,9 +23,9 @@ export interface DaemonServerOptions {
   /** Called when a pi session WebSocket sends a message */
   onPiMessage: (ws: any, parsed: any, getPiClient: () => any, setPiClient: (c: any) => void) => void;
   /** Called when a pi session WebSocket closes */
-  onPiClose: (piClient: any) => void;
+  onPiClose: (piClient: any, ws: any) => void;
   /** Called when a pi session WebSocket errors */
-  onPiError?: (piClient: any) => void;
+  onPiError?: (piClient: any, ws: any) => void;
   /** Called when a browser WebSocket connects (after adding to set) */
   onBrowserConnect?: (ws: any) => void;
   /** Called when a browser WebSocket sends a message */
@@ -111,10 +111,10 @@ export function createDaemonServer(opts: DaemonServerOptions) {
       const c = piClient;
       piClient = null;
       try {
-        if (kind === "error" && onPiError) onPiError(c);
+        if (kind === "error" && onPiError) onPiError(c, ws);
       } catch (e: any) { log(`onPiError callback error: ${e.message}`); }
       try {
-        onPiClose(c);
+        onPiClose(c, ws);
       } catch (e: any) { log(`onPiClose callback error: ${e.message}`); }
     }
     ws.on("close", () => cleanup("close"));
