@@ -2,6 +2,13 @@
 
 Best practices for integrating `@myk-org/pi-sidecar` into your project.
 
+## Prerequisites
+
+`@myk-org/pi-sidecar` package metadata requires `@earendil-works/pi-coding-agent`
+and `@earendil-works/pi-ai` version `>=0.84.4`. At startup, the sidecar checks
+only the `pi-coding-agent` floor. Upgrade both dependencies before starting the
+service if either is older.
+
 ## Installation
 
 ### Node.js (TypeScript server wrapper)

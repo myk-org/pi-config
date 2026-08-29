@@ -84,6 +84,11 @@ export function useMessageHandler(
           setStreaming(true);
           setQueuedCount(0);
           break;
+        case "ui_prompt_start":
+          // Pi is awaiting an interactive prompt. Streaming and queued browser prompts remain independent.
+          break;
+        case "ui_prompt_end":
+          break;
         case "agent_end":
           setQueuedCount(0);
           setStreamingBehavior(null);

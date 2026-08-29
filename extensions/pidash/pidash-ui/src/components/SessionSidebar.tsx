@@ -6,6 +6,7 @@ import { ScrollArea } from "@ui/scroll-area";
 import { NotificationSettings } from "@/components/NotificationSettings";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, NotificationPreferences } from "@/types";
+import { sessionActivityDisplay } from "@/lib/activity-display";
 
 function ago(iso: string): string {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -151,6 +152,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
               {/* Sessions in this group */}
               {isExpanded && group.sessions.map((s) => {
                 const isActive = s.sessionId === activeSessionId;
+                const status = sessionActivityDisplay(s);
                 return (
                   <div
                     key={s.sessionId}
@@ -164,11 +166,14 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                   >
                     <div className={cn("text-xs font-medium truncate flex items-center gap-1.5", s.active ? "text-primary" : "text-muted-foreground")}>
                       {!s.active && <Pause className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
-                      {s.active && s.working && (
-                        <span className="relative flex h-2 w-2 flex-shrink-0">
+                      {s.active && status.isWorking && (
+                        <span className="relative flex h-2 w-2 flex-shrink-0" aria-label="working">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
                         </span>
+                      )}
+                      {s.active && s.activity === "waiting_for_input" && (
+                        <span className="h-2 w-2 flex-shrink-0 rounded-full bg-cyan-400" aria-label="waiting for input" />
                       )}
                       {editingSessionId === s.sessionId ? (
                         <input
@@ -213,6 +218,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                         </span>
                       )}
                       <span>{ago(s.startedAt)}</span>
+                      {s.activity === "waiting_for_input" && <span className="text-cyan-400">waiting for input</span>}
                       {s.container && <Badge variant="outline" className="text-[8px] px-1 py-0 h-3">📦</Badge>}
                     </div>
                   </div>
