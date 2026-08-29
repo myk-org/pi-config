@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 interface PackFile {
   path: string;
@@ -22,11 +22,17 @@ function runRootNpmPackJson(): ReturnType<typeof spawnSync> {
 }
 
 describe("root npm pack JSON output", () => {
-  it("keeps stdout parseable JSON and reports UI build diagnostics on stderr", () => {
+  it("keeps stdout parseable JSON", () => {
     const result = runRootNpmPackJson();
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.doesNotThrow(() => JSON.parse(result.stdout), result.stdout);
+  });
+
+  it("reports UI build diagnostics on stderr", () => {
+    const result = runRootNpmPackJson();
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stderr, /Building extensions\/pidash\/pidash-ui/);
   });
 
