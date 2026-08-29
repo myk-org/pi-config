@@ -22,23 +22,20 @@ function runRootNpmPackJson(): ReturnType<typeof spawnSync> {
 }
 
 describe("root npm pack JSON output", () => {
+  const result = runRootNpmPackJson();
+
   it("keeps stdout parseable JSON", () => {
-    const result = runRootNpmPackJson();
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.doesNotThrow(() => JSON.parse(result.stdout), result.stdout);
   });
 
   it("reports UI build diagnostics on stderr", () => {
-    const result = runRootNpmPackJson();
-
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stderr, /Building extensions\/pidash\/pidash-ui/);
   });
 
   it("lists required runtime and built UI files", () => {
-    const result = runRootNpmPackJson();
-
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const payload: unknown = JSON.parse(result.stdout);
     const pack = (Array.isArray(payload) ? payload[0] : payload) as PackResult;
