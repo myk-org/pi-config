@@ -16,15 +16,29 @@ beforeEach(() => {
 });
 
 describe("pidash UI createLogger", () => {
-  it("captures formatted info warn and error records", () => {
+  it("captures formatted info records", () => {
     const log = createLogger("pidash-ui");
     log.info("connected", { sessionId: "s-1" });
-    log.warn("retrying");
-    log.error("failed");
 
     assert.deepEqual(bag().__pidashUiLogs, [
       { name: "pidash-ui", level: "info", msg: 'connected {"sessionId":"s-1"}' },
+    ]);
+  });
+
+  it("captures formatted warn records", () => {
+    const log = createLogger("pidash-ui");
+    log.warn("retrying");
+
+    assert.deepEqual(bag().__pidashUiLogs, [
       { name: "pidash-ui", level: "warn", msg: "retrying" },
+    ]);
+  });
+
+  it("captures formatted error records", () => {
+    const log = createLogger("pidash-ui");
+    log.error("failed");
+
+    assert.deepEqual(bag().__pidashUiLogs, [
       { name: "pidash-ui", level: "error", msg: "failed" },
     ]);
   });
