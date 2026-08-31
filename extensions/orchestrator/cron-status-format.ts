@@ -3,10 +3,10 @@
  */
 
 export interface CronStatusTaskView {
-  /** Unique overlay row id (e.g. "1" or "cron-123-abc.json:1"). */
+  /** Unique scope-qualified overlay row id (e.g. "session:<uuid>"). */
   id: string;
-  /** Numeric cron task id within its session file. */
-  taskId: number;
+  /** Stable UUID within its session or project scope. */
+  taskId: string | number;
   description: string;
   task: string;
   intervalMs?: number;
@@ -15,7 +15,7 @@ export interface CronStatusTaskView {
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
-  /** Shown in list-all rows (e.g. "this session", "PID 42"). */
+  /** Optional scope and leader-state label shown in overlay rows. */
   sessionLabel?: string;
   isLocal?: boolean;
   cronFile?: string;
@@ -91,7 +91,7 @@ export function formatNextRunLabel(
 /** Map a CronTask-like object into an overlay row view. */
 export function toCronStatusTaskView(
   task: {
-    id: number;
+    id: string | number;
     description: string;
     task: string;
     intervalMs?: number;
@@ -110,7 +110,7 @@ export function toCronStatusTaskView(
 ): CronStatusTaskView {
   return {
     id: opts.overlayId,
-    taskId: task.id,
+    taskId: opts.overlayId,
     description: task.description,
     task: task.task,
     intervalMs: task.intervalMs,
