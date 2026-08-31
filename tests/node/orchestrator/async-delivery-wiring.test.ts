@@ -29,6 +29,7 @@ function harness() {
   };
   const api = registerAsyncAgents(pi as any, () => {}, {
     spawnProcess: () => Object.assign(new EventEmitter(), { stderr: { pipe() {} } }),
+    discoverAgents: () => ({ agents: [{ name: "worker" }], sources: [] }),
   });
   let overlayOpens = 0;
   const ctx = {
@@ -94,8 +95,9 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       const replyPromise = new Promise<any>(resolve => h.events.once("subagents:rpc:spawn:reply:spawn-1", resolve));
       h.events.emit("subagents:rpc:spawn", { requestId: "spawn-1", type: "worker", prompt: "runtime RPC test", options: { cwd: h.cwd } });
       const reply = await replyPromise;
-      assert.equal(reply.success, false);
-      assert.match(reply.error, /No "exports" main defined/);
+      assert.equal(reply.success, true);
+      assert.equal(typeof reply.data.id, "string");
+      assert.match(reply.data.id, /^worker-/);
     } finally { h.restore(); }
   });
 });

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "./agents.js";
+import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
@@ -117,7 +117,10 @@ export function formatDuration(ms: number): string {
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
-  runtime: { spawnProcess?: typeof spawn } = {},
+  runtime: {
+    spawnProcess?: typeof spawn;
+    discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
+  } = {},
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
@@ -1586,7 +1589,7 @@ export function registerAsyncAgents(
 
       const cwd = options?.cwd || ctx.cwd;
       log.debug("rpc_spawn_requested", { type, customCwd: Boolean(options?.cwd) });
-      const { discoverAgents } = await import("./agents.js");
+      const discoverAgents = runtime.discoverAgents ?? (await import("./agents.js")).discoverAgents;
       const discovery = discoverAgents(cwd, "both");
       const agents = discovery.agents;
 
