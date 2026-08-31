@@ -1369,6 +1369,7 @@ export function registerAsyncAgents(
   // /async-status — fullscreen overlay list → live output detail
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
+    log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size });
     const { openAsyncStatusOverlay } = await import("./async-status-ui.js");
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
@@ -1584,6 +1585,7 @@ export function registerAsyncAgents(
       if (!prompt || typeof prompt !== "string") throw new Error("Missing or invalid 'prompt' parameter");
 
       const cwd = options?.cwd || ctx.cwd;
+      log.debug("rpc_spawn_requested", { type, customCwd: Boolean(options?.cwd) });
       const { discoverAgents } = await import("./agents.js");
       const discovery = discoverAgents(cwd, "both");
       const agents = discovery.agents;

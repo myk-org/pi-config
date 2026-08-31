@@ -11,6 +11,8 @@ const reviewerOutput = JSON.stringify({ findings: Array.from({ length: 100 }, ()
 function harness() {
   const cwd = mkdtempSync(join(tmpdir(), "async-delivery-runtime-"));
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
+  const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+  const events = new EventEmitter();
   const messages: any[] = [];
   let rejectedSends = 0;
   const intervals: Array<() => void> = [];
@@ -21,14 +23,24 @@ function harness() {
   }) as typeof setInterval;
   const pi = {
     on(event: string, handler: (event: unknown, ctx: any) => void) { (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler); },
-    registerCommand() {},
+    registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, command); },
     sendMessage(message: any) { if (rejectedSends-- > 0) throw new Error("temporary delivery failure"); messages.push(message); },
-    events: { emit() {}, on() {} },
+    events,
   };
   const api = registerAsyncAgents(pi as any, () => {}, {
     spawnProcess: () => Object.assign(new EventEmitter(), { stderr: { pipe() {} } }),
   });
-  const ctx = { cwd, hasUI: true, ui: { theme: { fg: (_: string, value: string) => value } }, sessionManager: { getCwd: () => cwd, getSessionId: () => "test" } };
+  let overlayOpens = 0;
+  const ctx = {
+    cwd,
+    hasUI: true,
+    ui: {
+      theme: { fg: (_: string, value: string) => value },
+      custom: async () => { overlayOpens++; return null; },
+      notify() {},
+    },
+    sessionManager: { getCwd: () => cwd, getSessionId: () => "test" },
+  };
   handlers.get("session_start")![0]({}, ctx);
   const resultDir = () => join(cwd, ".pi", "tmp", readdirSync(join(cwd, ".pi", "tmp")).find(name => name.startsWith(`async-results-pid-${process.pid}`))!);
   const result = (id: string, output = reviewerOutput) => {
@@ -36,7 +48,7 @@ function harness() {
     writeFileSync(join(resultDir(), `${id}.json`), JSON.stringify({ id, agent: "code-reviewer-runtime", task: "review", success: true, output, durationMs: 1, exitCode: 0 }));
   };
   const spawn = (groupId?: string) => api.spawnAsyncAgent("code-reviewer-runtime", "review", cwd, [{ name: "code-reviewer-runtime" } as any], { groupId });
-  return { cwd, api, intervals, messages, result, spawn, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
+  return { cwd, api, commands, ctx, events, intervals, messages, overlayOpens: () => overlayOpens, result, spawn, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
 }
 
 async function settled() { await new Promise(resolve => setTimeout(resolve, 180)); }
@@ -65,5 +77,25 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   it("executes killed delivery through registered async agents", () => {
     const h = harness();
     try { const job = h.spawn(); const killed = h.api.killAsyncAgent(job.id); assert.deepEqual(killed.killed, ["code-reviewer-runtime"]); assert.match(h.messages[0].content, /Killed by user/); } finally { h.restore(); }
+  });
+
+  it("opens async status overlay through registered command", async () => {
+    const h = harness();
+    try {
+      h.spawn();
+      await h.commands.get("async-status")!.handler("", h.ctx);
+      assert.equal(h.overlayOpens(), 1);
+    } finally { h.restore(); }
+  });
+
+  it("replies to registered RPC spawn request", async () => {
+    const h = harness();
+    try {
+      const replyPromise = new Promise<any>(resolve => h.events.once("subagents:rpc:spawn:reply:spawn-1", resolve));
+      h.events.emit("subagents:rpc:spawn", { requestId: "spawn-1", type: "worker", prompt: "runtime RPC test", options: { cwd: h.cwd } });
+      const reply = await replyPromise;
+      assert.equal(reply.success, false);
+      assert.match(reply.error, /No "exports" main defined/);
+    } finally { h.restore(); }
   });
 });
