@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatAsyncResultOutput } from "../../../extensions/orchestrator/async-result-format.js";
+import { formatAsyncResultOutput, reviewerOutputArchivePath } from "../../../extensions/orchestrator/async-result-format.js";
 
 const outputPath = "/project/.pi/tmp/code-reviewer-docs-1/output.log";
 const oversizedReviewerJson = JSON.stringify({
@@ -10,6 +10,13 @@ const oversizedReviewerJson = JSON.stringify({
 });
 
 describe("formatAsyncResultOutput (issue #801)", () => {
+  it("uses a cleanup-safe archive path for reviewer output", () => {
+    assert.equal(
+      reviewerOutputArchivePath("/project/.pi/tmp", "code-reviewer-docs-1"),
+      "/project/.pi/tmp/reviewer-results/code-reviewer-docs-1.json",
+    );
+  });
+
   it("replaces oversized reviewer JSON with valid, content-free metadata", () => {
     const delivered = formatAsyncResultOutput("code-reviewer-docs", oversizedReviewerJson, outputPath);
 
@@ -33,8 +40,22 @@ describe("formatAsyncResultOutput (issue #801)", () => {
     assert.equal(formatAsyncResultOutput("code-reviewer-docs", output, outputPath), output);
   });
 
-  it("retains bounded text for invalid reviewer output", () => {
-    const output = "not JSON ".repeat(400);
+  it("retains bounded text for schema-invalid reviewer JSON", () => {
+    const output = JSON.stringify({ error: "diagnostic detail ".repeat(400) });
     assert.equal(formatAsyncResultOutput("code-reviewer-docs", output, outputPath), output.slice(0, 3000));
+  });
+
+  it("keeps reviewer metadata valid and within a custom delivery budget", () => {
+    const longOutputPath = `/${"project/".repeat(200)}output.log`;
+    const delivered = formatAsyncResultOutput(
+      "code-reviewer-docs",
+      oversizedReviewerJson,
+      longOutputPath,
+      500,
+    );
+
+    assert.ok(delivered.length <= 500);
+    assert.doesNotThrow(() => JSON.parse(delivered));
+    assert.ok(!delivered.includes("Sensitive finding detail"));
   });
 });

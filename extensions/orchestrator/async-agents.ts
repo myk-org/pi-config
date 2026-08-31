@@ -22,7 +22,7 @@ import {
   getMainBranch,
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
-import { formatAsyncResultOutput } from "./async-result-format.js";
+import { formatAsyncResultOutput, reviewerOutputArchivePath } from "./async-result-format.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 const log = createLogger("async_agents");
 
@@ -126,6 +126,26 @@ export function registerAsyncAgents(
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
+  function resultOutputPath(job: Pick<AsyncJob, "agent" | "id" | "workerDir">): string {
+    const workerOutputPath = path.join(job.workerDir, "output.log");
+    const outputPath = job.agent.startsWith("code-reviewer-")
+      ? reviewerOutputArchivePath(PROJECT_TMP_DIR, job.id)
+      : workerOutputPath;
+    log.debug("async_result_output_path", { agent: job.agent, archived: outputPath !== workerOutputPath });
+    return outputPath;
+  }
+
+  function preserveReviewerOutput(job: Pick<AsyncJob, "agent" | "id">, output: string): void {
+    if (!job.agent.startsWith("code-reviewer-")) return;
+    const outputPath = reviewerOutputArchivePath(PROJECT_TMP_DIR, job.id);
+    try {
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(outputPath, output, { mode: 0o600 });
+      log.info("preserved_reviewer_output", { agent: job.agent, bytes: Buffer.byteLength(output, "utf8") });
+    } catch (e: any) {
+      log.error(`preserve reviewer output failed for ${job.id}: ${e?.message}`);
+    }
+  }
 
   const asyncState: AsyncState = {
     jobs: new Map(),
@@ -398,7 +418,7 @@ export function registerAsyncAgents(
             const output = formatAsyncResultOutput(
               job.agent,
               job.output || "",
-              path.join(job.workerDir, "output.log"),
+              resultOutputPath(job),
               maxOutput,
             );
             // Emit lifecycle events
@@ -487,6 +507,7 @@ export function registerAsyncAgents(
       try {
         const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
         j.output = data.output;
+        preserveReviewerOutput(j, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
         j.exitCode = data.exitCode;
         j.durationMs = data.durationMs;
         if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
@@ -558,7 +579,7 @@ export function registerAsyncAgents(
       const output = formatAsyncResultOutput(
         j.agent,
         j.output || "",
-        path.join(j.workerDir, "output.log"),
+        resultOutputPath(j),
       );
       let autoCompleteError = "";
       // Auto-complete linked task directly in the store file (no AI involvement)
@@ -649,6 +670,7 @@ export function registerAsyncAgents(
       job.exitCode = data.exitCode;
       job.durationMs = data.durationMs;
       job.updatedAt = Date.now();
+      preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
 
       // Notify terminal per-agent (lightweight, non-conversational)
       const displayName = job.name || data.agent;
@@ -716,7 +738,7 @@ export function registerAsyncAgents(
         existing.output = formatAsyncResultOutput(
           job.agent,
           data.output || "",
-          path.join(job.workerDir, "output.log"),
+          resultOutputPath(job),
         );
         existing.state = job.status;
         existing.exitCode = job.exitCode;
@@ -766,7 +788,7 @@ export function registerAsyncAgents(
         const output = formatAsyncResultOutput(
           job.agent,
           data.output || "",
-          path.join(job.workerDir, "output.log"),
+          resultOutputPath(job),
           maxOutput,
         );
         const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
@@ -834,7 +856,7 @@ export function registerAsyncAgents(
         setTimeout(() => processResultFile(resultPath), 100);
       });
       if (asyncState.watcher.unref) asyncState.watcher.unref();
-    } catch (e: any) { console.debug("[async-agents] watcher setup failed:", e?.message || e); }
+    } catch (e: any) { log.error(`watcher setup failed: ${e?.message || e}`); }
   }
 
   function spawnAsyncAgent(
@@ -863,7 +885,7 @@ export function registerAsyncAgents(
       } catch { /* retry */ }
     }
     if (!parentStartTime) {
-      console.debug("[async-agents] WARNING: could not read /proc/self/stat starttime after 3 attempts");
+      log.warn("async-spawn: could not read /proc/self/stat starttime after 3 attempts");
     }
     const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd, options?.explicit);
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
@@ -931,6 +953,9 @@ export function registerAsyncAgents(
       model: effectiveModel,
       contextWindow: asyncState.lastCtx?.model?.contextWindow || 0,
       resultPath,
+      reviewerOutputPath: agentName.startsWith("code-reviewer-")
+        ? reviewerOutputArchivePath(PROJECT_TMP_DIR, id)
+        : undefined,
       workerDir,
       sessionId: `${process.pid}:${process.cwd()}`,
       piCommand: inv.command,
@@ -1224,7 +1249,7 @@ export function registerAsyncAgents(
           try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
         } catch {} // skip unreadable dirs
       }
-    } catch (e: any) { console.debug("[async-agents] zombie cleanup failed:", e?.message?.slice(0, 100)); }
+    } catch (e: any) { log.error(`zombie cleanup failed: ${e?.message?.slice(0, 100)}`); }
 
     // Clean up stale result directories from dead sessions
     try {
@@ -1315,13 +1340,13 @@ export function registerAsyncAgents(
           log.info(`restored job: ${id} state=${job.status}`);
         }
       }
-    } catch (e: any) { console.debug("[async-agents] job restore failed:", e?.message || e); }
+    } catch (e: any) { log.error(`job restore failed: ${e?.message || e}`); }
 
     // Start poller if we have jobs or unprocessed result files
     let hasResultFiles = false;
     try {
       hasResultFiles = fs.existsSync(ASYNC_RESULTS_DIR) && fs.readdirSync(ASYNC_RESULTS_DIR).some(f => f.endsWith(".json"));
-    } catch (e: any) { console.debug("[async-agents] result files check failed:", e?.message || e); }
+    } catch (e: any) { log.error(`result files check failed: ${e?.message || e}`); }
     if (asyncState.jobs.size > 0 || hasResultFiles) {
       ensureAsyncPoller();
     }
@@ -1435,7 +1460,7 @@ export function registerAsyncAgents(
         const output = formatAsyncResultOutput(
           job.agent,
           rawOutput,
-          path.join(job.workerDir, "output.log"),
+          resultOutputPath(job),
         );
         const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
         if (wasAlreadyDelivered(job.id)) {

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -55,6 +56,7 @@ LOW_PRIORITY_KEYWORDS = re.compile(
 
 # Track temp files for cleanup
 TEMP_FILES: list[Path] = []
+log = logging.getLogger(__name__)
 
 
 def cleanup() -> None:
@@ -1523,6 +1525,7 @@ def run(
                 print_stderr(f"Found {len(specific_threads)} comment(s) from review {review_id}")
 
             elif parse_pr_url(review_url) is None or "#" in review_url:
+                log.warning("unrecognized review URL fragment", extra={"review_url": review_url})
                 print_stderr(f"Warning: Unrecognized URL fragment in: {review_url}")
 
         # Merge specific threads with all threads, deduplicating

@@ -40,3 +40,10 @@ def test_unknown_explicit_pr_url_fragment_warns(tmp_path: Path, capsys: pytest.C
 
     assert isinstance(result, dict)
     assert "Warning: Unrecognized URL fragment" in capsys.readouterr().err
+
+
+def test_malformed_review_url_warns(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    result = _run_fetch("not-a-pull-request-url", tmp_path)
+
+    assert isinstance(result, dict)
+    assert "Warning: Unrecognized URL fragment in: not-a-pull-request-url" in capsys.readouterr().err

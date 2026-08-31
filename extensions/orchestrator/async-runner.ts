@@ -9,6 +9,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { getSetting } from "./project-settings.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("async_agents");
 
 interface RunConfig {
   id: string;
@@ -20,6 +23,7 @@ interface RunConfig {
   tools?: string[];
   systemPrompt?: string;
   resultPath: string;
+  reviewerOutputPath?: string;
   workerDir: string;
   sessionId?: string;
   piCommand: string;
@@ -157,7 +161,7 @@ async function run(config: RunConfig): Promise<void> {
           if (pidashWs?.readyState === 1) {
             pidashWs.send(JSON.stringify({ type: "async_event", id: config.id, event: ev }));
           }
-        } catch (e: any) { console.debug("[async-runner] event processing failed:", e?.message || e); }
+        } catch (e: any) { log.error(`event processing failed: ${e?.message || e}`); }
       }
 
       // Update status periodically (every ~10 lines)
@@ -193,7 +197,7 @@ async function run(config: RunConfig): Promise<void> {
           if (p.type === "text") finalOutput = p.text;
         }
       }
-    } catch (e: any) { console.debug("[async-runner] final line parse failed:", e?.message || e); }
+    } catch (e: any) { log.error(`final line parse failed: ${e?.message || e}`); }
   }
 
   // Write final status
@@ -283,7 +287,19 @@ async function run(config: RunConfig): Promise<void> {
   }
 
   // End the output stream after all retries are done
-  outputStream.end();
+  await new Promise<void>((resolve, reject) => {
+    outputStream.once("error", reject);
+    outputStream.end(resolve);
+  });
+  if (config.reviewerOutputPath && config.agent.startsWith("code-reviewer-")) {
+    try {
+      fs.mkdirSync(path.dirname(config.reviewerOutputPath), { recursive: true, mode: 0o700 });
+      fs.copyFileSync(outputPath, config.reviewerOutputPath);
+      log.info("archived_reviewer_output", { agent: config.agent, outputPath: config.reviewerOutputPath });
+    } catch (err) {
+      log.error("archive_reviewer_output_failed", err);
+    }
+  }
 
   // Write result for the watcher to pick up
   writeJson(config.resultPath, {
