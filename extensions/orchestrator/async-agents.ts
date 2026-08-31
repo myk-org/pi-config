@@ -13,8 +13,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "./agents.js";
-import { discoverAgents } from "./agents.js";
+import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
@@ -22,7 +21,8 @@ import {
   getMainBranch,
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
-import { openAsyncStatusOverlay } from "./async-status-ui.js";
+import { formatAsyncResultOutput, reviewerOutputArchivePath } from "./async-result-format.js";
+import { cleanupReviewerOutputArchives } from "./reviewer-output-archive.js";
 const log = createLogger("async_agents");
 
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
@@ -117,6 +117,10 @@ export function formatDuration(ms: number): string {
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
+  runtime: {
+    spawnProcess?: typeof spawn;
+    discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
+  } = {},
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
@@ -125,6 +129,28 @@ export function registerAsyncAgents(
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
+  function resultOutputPath(job: Pick<AsyncJob, "agent" | "id" | "workerDir">): string {
+    const workerOutputPath = path.join(job.workerDir, "output.log");
+    const outputPath = job.agent.startsWith("code-reviewer-")
+      ? reviewerOutputArchivePath(PROJECT_TMP_DIR, job.id)
+      : workerOutputPath;
+    log.debug("async_result_output_path", { agent: job.agent, archived: outputPath !== workerOutputPath });
+    return outputPath;
+  }
+
+  function preserveReviewerOutput(job: Pick<AsyncJob, "agent" | "id">, output: string): void {
+    if (!job.agent.startsWith("code-reviewer-")) return;
+    const outputPath = reviewerOutputArchivePath(PROJECT_TMP_DIR, job.id);
+    try {
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(outputPath, output, { mode: 0o600 });
+      fs.chmodSync(outputPath, 0o600);
+      cleanupReviewerOutputArchives(path.dirname(outputPath));
+      log.info("preserved_reviewer_output", { agent: job.agent, bytes: Buffer.byteLength(output, "utf8") });
+    } catch (e: any) {
+      log.error(`preserve reviewer output failed for ${job.id}: ${e?.message}`);
+    }
+  }
 
   const asyncState: AsyncState = {
     jobs: new Map(),
@@ -392,9 +418,14 @@ export function registerAsyncAgents(
                 log.error(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
               }
             }
-            // Enforce same output-length budget as processResultFile
-            const maxOutput = 3000 - autoCompleteError.length;
-            const output = (job.output || "").slice(0, Math.max(maxOutput, 500));
+            // Enforce same output-length budget as processResultFile.
+            const maxOutput = Math.max(3000 - autoCompleteError.length, 500);
+            const output = formatAsyncResultOutput(
+              job.agent,
+              job.output || "",
+              resultOutputPath(job),
+              maxOutput,
+            );
             // Emit lifecycle events
             if (job.status === "complete") {
               pi.events.emit("subagents:completed", { id: job.id, result: job.output || "" });
@@ -481,6 +512,7 @@ export function registerAsyncAgents(
       try {
         const data = JSON.parse(fs.readFileSync(rp, "utf-8"));
         j.output = data.output;
+        preserveReviewerOutput(j, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
         j.exitCode = data.exitCode;
         j.durationMs = data.durationMs;
         if (data.success !== undefined) j.status = data.success ? "complete" : "failed";
@@ -549,7 +581,11 @@ export function registerAsyncAgents(
       if (j.fireAndForget) { j.delivered = true; continue; }
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
-      const output = (j.output || "").slice(0, 3000);
+      const output = formatAsyncResultOutput(
+        j.agent,
+        j.output || "",
+        resultOutputPath(j),
+      );
       let autoCompleteError = "";
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
@@ -639,6 +675,7 @@ export function registerAsyncAgents(
       job.exitCode = data.exitCode;
       job.durationMs = data.durationMs;
       job.updatedAt = Date.now();
+      preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
 
       // Notify terminal per-agent (lightweight, non-conversational)
       const displayName = job.name || data.agent;
@@ -703,7 +740,11 @@ export function registerAsyncAgents(
       try {
         const statusPath = path.join(job.workerDir, "status.json");
         const existing = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
-        existing.output = (data.output || "").slice(0, 3000);
+        existing.output = formatAsyncResultOutput(
+          job.agent,
+          data.output || "",
+          resultOutputPath(job),
+        );
         existing.state = job.status;
         existing.exitCode = job.exitCode;
         existing.durationMs = job.durationMs;
@@ -748,8 +789,13 @@ export function registerAsyncAgents(
             log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
           }
         }
-        const maxOutput = 3000 - autoCompleteError.length;
-        const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
+        const maxOutput = Math.max(3000 - autoCompleteError.length, 500);
+        const output = formatAsyncResultOutput(
+          job.agent,
+          data.output || "",
+          resultOutputPath(job),
+          maxOutput,
+        );
         const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
         if (wasAlreadyDelivered(job.id)) {
           // Already delivered in previous lifecycle — skip send AND onComplete
@@ -815,7 +861,7 @@ export function registerAsyncAgents(
         setTimeout(() => processResultFile(resultPath), 100);
       });
       if (asyncState.watcher.unref) asyncState.watcher.unref();
-    } catch (e: any) { console.debug("[async-agents] watcher setup failed:", e?.message || e); }
+    } catch (e: any) { log.error(`watcher setup failed: ${e?.message || e}`); }
   }
 
   function spawnAsyncAgent(
@@ -844,7 +890,7 @@ export function registerAsyncAgents(
       } catch { /* retry */ }
     }
     if (!parentStartTime) {
-      console.debug("[async-agents] WARNING: could not read /proc/self/stat starttime after 3 attempts");
+      log.warn("async-spawn: could not read /proc/self/stat starttime after 3 attempts");
     }
     const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd, options?.explicit);
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
@@ -912,6 +958,9 @@ export function registerAsyncAgents(
       model: effectiveModel,
       contextWindow: asyncState.lastCtx?.model?.contextWindow || 0,
       resultPath,
+      reviewerOutputPath: agentName.startsWith("code-reviewer-")
+        ? reviewerOutputArchivePath(PROJECT_TMP_DIR, id)
+        : undefined,
       workerDir,
       sessionId: `${process.pid}:${process.cwd()}`,
       piCommand: inv.command,
@@ -982,7 +1031,7 @@ export function registerAsyncAgents(
 
     // Fail fast with a self-explanatory error instead of spawning a child that
     // cannot load TypeScript (bare node dies on ".js"→".ts" specifiers).
-    if (!jitiCliPath) {
+    if (!jitiCliPath && !runtime.spawnProcess) {
       log.error(`async-spawn: ${id} — no jiti-cli.mjs found. Probes:\n  ${(jitiProbes.slice(-14)).join("\n  ")}`);
       // Clean up the artifacts we already created — nothing will consume them.
       try { fs.rmSync(configPath, { force: true }); } catch {}
@@ -1056,7 +1105,7 @@ export function registerAsyncAgents(
     stderrLog.on("error", () => {}); // never let a log write failure crash the session
     log.debug(`async-spawn: ${job.id} stderr → ${stderrLogPath}`);
 
-    const proc = spawn(process.execPath, spawnArgs, {
+    const proc = (runtime.spawnProcess ?? spawn)(process.execPath, spawnArgs, {
       cwd,
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
@@ -1153,6 +1202,8 @@ export function registerAsyncAgents(
     // Export as env var so prompts/CLI commands can reference it
     process.env.PROJECT_TMP_DIR = PROJECT_TMP_DIR;
 
+    cleanupReviewerOutputArchives(path.join(PROJECT_TMP_DIR, "reviewer-results"));
+
     // Scan worker directories for jobs with delivered=true in status.json
     // This is more reliable than content hashing — uses job IDs directly
     try {
@@ -1205,7 +1256,7 @@ export function registerAsyncAgents(
           try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch {}
         } catch {} // skip unreadable dirs
       }
-    } catch (e: any) { console.debug("[async-agents] zombie cleanup failed:", e?.message?.slice(0, 100)); }
+    } catch (e: any) { log.error(`zombie cleanup failed: ${e?.message?.slice(0, 100)}`); }
 
     // Clean up stale result directories from dead sessions
     try {
@@ -1296,13 +1347,13 @@ export function registerAsyncAgents(
           log.info(`restored job: ${id} state=${job.status}`);
         }
       }
-    } catch (e: any) { console.debug("[async-agents] job restore failed:", e?.message || e); }
+    } catch (e: any) { log.error(`job restore failed: ${e?.message || e}`); }
 
     // Start poller if we have jobs or unprocessed result files
     let hasResultFiles = false;
     try {
       hasResultFiles = fs.existsSync(ASYNC_RESULTS_DIR) && fs.readdirSync(ASYNC_RESULTS_DIR).some(f => f.endsWith(".json"));
-    } catch (e: any) { console.debug("[async-agents] result files check failed:", e?.message || e); }
+    } catch (e: any) { log.error(`result files check failed: ${e?.message || e}`); }
     if (asyncState.jobs.size > 0 || hasResultFiles) {
       ensureAsyncPoller();
     }
@@ -1321,6 +1372,8 @@ export function registerAsyncAgents(
   // /async-status — fullscreen overlay list → live output detail
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
+    log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size });
+    const { openAsyncStatusOverlay } = await import("./async-status-ui.js");
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
       killJob: (id) => {
@@ -1413,7 +1466,11 @@ export function registerAsyncAgents(
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
         const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
-        const output = rawOutput.slice(0, 3000);
+        const output = formatAsyncResultOutput(
+          job.agent,
+          rawOutput,
+          resultOutputPath(job),
+        );
         const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
         if (wasAlreadyDelivered(job.id)) {
           job.delivered = true;
@@ -1524,13 +1581,15 @@ export function registerAsyncAgents(
 
   // Spawn — create an async agent from pitasks' TaskExecute
   handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(
-    "subagents:rpc:spawn", ({ type, prompt, options }) => {
+    "subagents:rpc:spawn", async ({ type, prompt, options }) => {
       const ctx = asyncState.lastCtx;
       if (!ctx) throw new Error("No active session");
       if (!type || typeof type !== "string") throw new Error("Missing or invalid 'type' parameter");
       if (!prompt || typeof prompt !== "string") throw new Error("Missing or invalid 'prompt' parameter");
 
       const cwd = options?.cwd || ctx.cwd;
+      log.debug("rpc_spawn_requested", { type, customCwd: Boolean(options?.cwd) });
+      const discoverAgents = runtime.discoverAgents ?? (await import("./agents.js")).discoverAgents;
       const discovery = discoverAgents(cwd, "both");
       const agents = discovery.agents;
 
