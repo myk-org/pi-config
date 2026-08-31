@@ -5,11 +5,26 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import {
 	pendingReminderContent,
 	staleReminderContent,
 	shouldFireReminder,
 } from "../../../extensions/pitasks/reminders.js";
+
+describe("TaskCreate guidance", () => {
+	it("describes agentType as non-executing optional metadata", () => {
+		let taskCreate: any;
+		const pi = { registerTool: (tool: any) => { if (tool.name === "TaskCreate") taskCreate = tool; } };
+		registerTaskTools(pi as any, () => new TaskStore(), { update() {} } as any);
+
+		const agentTypeDescription = taskCreate.parameters.properties.agentType.description;
+		assert.doesNotMatch(taskCreate.description, /TaskExecute|general-purpose|Explore/);
+		assert.doesNotMatch(agentTypeDescription, /TaskExecute|general-purpose|Explore/);
+		assert.match(agentTypeDescription, /optional descriptive metadata/i);
+		assert.match(agentTypeDescription, /does not dispatch or execute an agent/i);
+	});
+});
 
 describe("pitasks exported API pattern", () => {
 	it("TaskStore.create returns task with correct subject", () => {
