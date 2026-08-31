@@ -27,6 +27,7 @@ type StartTokenDeps = { readFileSync: (path: string, encoding: BufferEncoding) =
 const startTokenDeps: StartTokenDeps = { readFileSync: fs.readFileSync, execFileSync, platform: process.platform };
 const log = createLogger("cron_store");
 const STALE_LOCK_MS = 30_000;
+const leaderOwners = new Map<string, CronLockOwner>();
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 function sleep(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
 
@@ -102,11 +103,12 @@ function reclaimStaleLock(dir: string, instanceId: string, kind: "leader" | "mut
   catch (error: any) { log.warn(`cron_${kind}_lock_reclaim`, { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "remove_error" }); restoreClaim(claim, dir); return false; }
 }
 function safelyRemoveLock(dir: string, expected?: CronLockOwner): boolean {
-  if (expected && !sameOwner(readOwner(dir), expected)) return false;
+  if (expected && !sameOwner(readOwner(dir), expected)) { log.debug("cron_lock_remove", { dir, outcome: "not_owner" }); return false; }
   const claim = `${dir}.claim-${randomUUID()}`;
-  try { fs.renameSync(dir, claim); } catch { return false; }
-  if (expected && !sameOwner(readOwner(claim), expected)) { restoreClaim(claim, dir); return false; }
-  try { fs.rmSync(claim, { recursive: true, force: false }); return true; } catch { restoreClaim(claim, dir); return false; }
+  try { fs.renameSync(dir, claim); } catch (error: any) { log.warn("cron_lock_remove", { dir, outcome: "claim_failed", reason: error?.code || "rename_error" }); return false; }
+  if (expected && !sameOwner(readOwner(claim), expected)) { restoreClaim(claim, dir); log.warn("cron_lock_remove", { dir, outcome: "claim_not_owned" }); return false; }
+  try { fs.rmSync(claim, { recursive: true, force: false }); log.info("cron_lock_remove", { dir, outcome: "removed" }); return true; }
+  catch (error: any) { restoreClaim(claim, dir); log.warn("cron_lock_remove", { dir, outcome: "remove_failed", reason: error?.code || "remove_error" }); return false; }
 }
 function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boolean, deps = startTokenDeps): CronLockOwner | null {
   const token = resolveProcessStartToken(process.pid, deps);
@@ -119,7 +121,7 @@ function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boo
     fs.writeFileSync(owner.fd, serializedOwner(owner));
     const acquired = sameOwner(readOwner(dir), owner);
     log.info("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: acquired ? "acquired" : "verification_failed" });
-    if (acquired) return owner;
+    if (acquired) { leaderOwners.set(dir, owner); return owner; }
     safelyRemoveLock(dir, owner);
     if (owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
     return null;
@@ -196,7 +198,11 @@ export function refreshLeaderLock(store: string, owner: CronLockOwner): boolean 
   } catch { return false; }
 }
 export function releaseLeaderLock(store: string, owner: CronLockOwner) {
-  const released = safelyRemoveLock(lockPath(store, "leader"), owner);
-  if (released && owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
+  const dir = lockPath(store, "leader");
+  const locallyOwned = leaderOwners.get(dir) === owner;
+  const released = safelyRemoveLock(dir, owner);
+  if (locallyOwned && owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
+  if (locallyOwned) leaderOwners.delete(dir);
+  (released ? log.info : log.warn)("cron_leader_lock_release", { dir, instance_id: owner.instance_id, outcome: released ? "released" : "path_retained" });
   return released;
 }

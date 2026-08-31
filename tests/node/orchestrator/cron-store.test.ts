@@ -124,9 +124,25 @@ describe("durable cron store", () => {
     }
     child.stdin.write("release\n");
     await new Promise<void>((resolve, reject) => child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`leader exited ${code}`))));
-    const owner = acquireLeaderLock(store, "follower");
+  });
+
+  it("hands leadership to a follower after the owner releases", () => {
+    const store = tempStore();
+    const owner = acquireLeaderLock(store, "leader");
     assert.ok(owner);
-    releaseLeaderLock(store, owner);
+    assert.equal(releaseLeaderLock(store, owner), true);
+    const follower = acquireLeaderLock(store, "follower");
+    assert.ok(follower);
+    releaseLeaderLock(store, follower);
+  });
+
+  it("closes a locally owned descriptor when lock removal fails", () => {
+    const store = tempStore();
+    const owner = acquireLeaderLock(store, "owner");
+    assert.ok(owner?.fd !== undefined);
+    fs.rmSync(`${store}.leader.lock`, { recursive: true });
+    assert.equal(releaseLeaderLock(store, owner!), false);
+    assert.throws(() => fs.fstatSync(owner!.fd!), { code: "EBADF" });
   });
 
   it("allows only its owner to refresh or release a leader lock", () => {
@@ -136,6 +152,7 @@ describe("durable cron store", () => {
     assert.equal(acquireLeaderLock(store, "two"), null);
     assert.equal(refreshLeaderLock(store, { ...first, instance_id: "not-owner" }), false);
     releaseLeaderLock(store, { ...first, instance_id: "not-owner" });
+    assert.doesNotThrow(() => fs.fstatSync(first!.fd!), "a non-owner probe must not close the owner's descriptor");
     assert.equal(acquireLeaderLock(store, "two"), null);
     assert.equal(refreshLeaderLock(store, first!), true);
     releaseLeaderLock(store, first);

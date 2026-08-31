@@ -154,13 +154,15 @@ interface RegistryEntry {
 }
 
 interface PendingReply {
-	resolve: (value: any) => void;
-	reject: (err: Error) => void;
-	timer: NodeJS.Timeout | null;
-	promise: Promise<{ response?: any; error?: string | null; queued_msg_ids?: string[] }>;
+	resolve?: (value: any) => void;
+	reject?: (err: Error) => void;
+	timer?: NodeJS.Timeout | null;
+	promise?: Promise<{ response?: any; error?: string | null; queued_msg_ids?: string[] }>;
 	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
+	target_session?: string;
 	target_name?: string;
-	created_at: string;
+	sent_at?: number;
+	created_at?: string;
 	/** Creation time drives body-free recovery previews. */
 	queued_at?: string;
 }
@@ -552,6 +554,7 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 				// The response is complete. Destroy the outbound client now instead of
 				// waiting for the peer's half-close, which can outlive a test session.
 				try { sock.destroy(); } catch { /* ignore */ }
+				log.debug("coms_envelope_sent", { type: envelope.type, has_msg_id: !!envelope.msg_id });
 				if (settled) return;
 				settled = true;
 				if (parsed && parsed.type === "nack") {
@@ -798,7 +801,7 @@ export default function (pi: ExtensionAPI) {
 			const queuedMsgIds: string[] = Array.isArray(env.queued_msg_ids) ? env.queued_msg_ids.filter((id: unknown) => typeof id === "string") : [];
 			pending.result = { response: env.response, error: env.error ?? null, queued_msg_ids: queuedMsgIds };
 			try {
-				pending.resolve(pending.result);
+				pending.resolve?.(pending.result);
 			} catch (e: any) {
 				log.error("resolve_failed", env.msg_id, e?.message);
 			}
@@ -3298,7 +3301,7 @@ Do not respond to this message.`;
 		}
 		for (const pending of pendingReplies.values()) {
 			if (pending.timer) clearTimeout(pending.timer);
-			pending.resolve({ error: "session_closed" });
+			if (pending.resolve) pending.resolve({ error: "session_closed" });
 		}
 		pendingReplies.clear();
 		pendingOutbound.clear();

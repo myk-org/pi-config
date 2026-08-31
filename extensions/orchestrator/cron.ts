@@ -80,8 +80,11 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     for (const id of [...timers.keys()]) stop(id);
     for (const watcher of watchers) try { watcher.close(); } catch (error: any) { log.warn("cron_watcher_close_failed", { code: error?.code }); }
     watchers = [];
-    if (releaseLocks) for (const [file, owner] of owned) releaseLeaderLock(file, owner);
-    owned.clear();
+    if (releaseLocks) for (const [file, owner] of owned) {
+      releaseLeaderLock(file, owner);
+      owned.delete(file);
+    }
+    else owned.clear();
   }
   const stores = () => ctx ? [{ scope: "project" as const, file: projectStore(ctx.cwd) }] : [];
   function updateStatus() {

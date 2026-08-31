@@ -93,13 +93,28 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 
 	it("waits for ping worker graceful shutdown", async () => {
 		const { peer } = await startShutdownPeer();
-		await peer.shutdown?.();
+		let finished = false;
+		const shutdown = peer.shutdown?.().then(() => { finished = true; });
+		await Promise.resolve();
+		assert.equal(finished, false, "shutdown waits for the worker exit");
+		await shutdown;
+		assert.equal(finished, true);
 	});
 
 	it("removes the ping socket during graceful shutdown", async () => {
 		const { peer, sockets } = await startShutdownPeer();
 		await peer.shutdown?.();
 		assert.equal(readdirSync(sockets).some((file) => file.endsWith(".ping")), false);
+	});
+
+	it("shuts down after task creation leaves a metadata-only reply", async () => {
+		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const sender = await startPeer("sender", "metadata-sender");
+		await startPeer("receiver", "metadata-receiver");
+		await sender.tools.get("coms_tasks_create").execute("create-task", { target: "receiver", tasks: [{ subject: "task", description: "task" }] });
+		await assert.doesNotReject(sender.shutdown?.());
 	});
 
 	it("renders body-free preview metadata", async () => {
