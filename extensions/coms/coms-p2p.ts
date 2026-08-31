@@ -549,7 +549,9 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 				sock.write(JSON.stringify(envelope) + "\n");
 				const line = await readOneLine(sock);
 				const parsed = JSON.parse(line);
-				try { sock.end(); } catch { /* ignore */ }
+				// The response is complete. Destroy the outbound client now instead of
+				// waiting for the peer's half-close, which can outlive a test session.
+				try { sock.destroy(); } catch { /* ignore */ }
 				if (settled) return;
 				settled = true;
 				if (parsed && parsed.type === "nack") {
@@ -642,6 +644,7 @@ export default function (pi: ExtensionAPI) {
 		log.debug("recovery_preview_retained", { session: targetSession, count: itemIds.length, active: queueRecoveryPreviews.size });
 	}
 	let server: net.Server | null = null;
+	const connections = new Set<net.Socket>();
 	let fsWatcher: fs.FSWatcher | null = null;
 	let pingWorker: Worker | null = null;
 	let pingWorkerReady = false;
@@ -892,6 +895,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function connHandler(socket: net.Socket): void {
+		connections.add(socket);
+		socket.once("close", () => connections.delete(socket));
 		let buf = "";
 		let handled = false;
 		const onData = (chunk: Buffer) => {
@@ -1030,7 +1035,7 @@ export default function (pi: ExtensionAPI) {
 				const storedPreview = queueRecoveryPreviews.get(env.preview_id);
 				if (!storedPreview || storedPreview.targetSession !== env.sender_session) {
 					error = "invalid_preview";
-					try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n"); } catch {}
+					try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n"); socket.end(); } catch {}
 					log.warn("recovery_clear_denied", { sender: env.sender_name, reason: error });
 					return;
 				}
@@ -1056,7 +1061,7 @@ export default function (pi: ExtensionAPI) {
 			}));
 			const preview = buildQueuePreview("local", items, Date.now(), ulid());
 			retainQueueRecoveryPreview(preview.previewId, env.sender_session, preview.items.map(item => item.id));
-			try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected: 0, error: null, preview }) + "\n"); } catch {}
+			try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected: 0, error: null, preview }) + "\n"); socket.end(); } catch {}
 			log.info("recovery_preview", { provider: "local", sender: env.sender_name, count: preview.items.length });
 			return;
 		} else if (action === "prioritize" && env.target_msg_id) {
@@ -1078,6 +1083,7 @@ export default function (pi: ExtensionAPI) {
 		// Send ack with result — includes error and affected count
 		try {
 			socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n");
+			socket.end();
 		} catch { /* ignore */ }
 
 		maybeRefreshWidget();
@@ -3217,14 +3223,15 @@ Do not respond to this message.`;
 
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
-	async function stopPingWorker(worker: Worker, pingEndpoint?: string): Promise<void> {
+	async function stopPingWorker(worker: Worker): Promise<void> {
 		let timeout: NodeJS.Timeout | undefined;
 		const exited = new Promise<boolean>((resolve) => worker.once("exit", () => resolve(true)));
+		log.info("ping_worker_stop", { outcome: "shutdown_requested" });
 		try { worker.postMessage({ type: "shutdown" }); } catch {}
 		const graceful = await Promise.race([exited, new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), 1_000); })]);
 		if (timeout) clearTimeout(timeout);
 		if (!graceful) try { await worker.terminate(); } catch {}
-		if (pingEndpoint && process.platform !== "win32") try { fs.unlinkSync(pingEndpoint); } catch {}
+		log.info("ping_worker_stop", { outcome: graceful ? "graceful" : "terminated" });
 	}
 	async function cleanShutdown(): Promise<void> {
 		if (shuttingDown) return;
@@ -3267,14 +3274,19 @@ Do not respond to this message.`;
 			}
 		}
 		if (server) {
-			try { server.closeAllConnections?.(); server.close(); server.unref(); } catch { /* ignore */ }
+			const activeServer = server;
 			server = null;
+			try {
+				for (const connection of connections) connection.destroy();
+				connections.clear();
+				activeServer.closeAllConnections?.(); activeServer.close(); activeServer.unref();
+			} catch { /* ignore */ }
 		}
 		if (pingWorker) {
 			const worker = pingWorker;
 			pingWorker = null;
 			pingWorkerReady = false;
-			await stopPingWorker(worker, ident ? `${ident.endpoint}.ping` : undefined);
+			await stopPingWorker(worker);
 			log.info("ping_worker_shutdown", { outcome: "graceful_or_terminated" });
 		}
 		if (ident) {
@@ -3284,6 +3296,12 @@ Do not respond to this message.`;
 			try { removeRegistryEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
 			log.info("shutdown", ident.coms_session_id);
 		}
+		for (const pending of pendingReplies.values()) {
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.resolve({ error: "session_closed" });
+		}
+		pendingReplies.clear();
+		pendingOutbound.clear();
 		queueRecoveryPreviews.clear();
 		process.off("SIGINT", handleSigint);
 		process.off("SIGTERM", handleSigterm);

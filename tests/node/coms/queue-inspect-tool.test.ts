@@ -80,7 +80,7 @@ async function startQueuedPeers() {
 }
 
 describe("coms_queue_inspect execute result", { concurrency: false }, () => {
-	it("gracefully stops the ping worker and removes its socket", async () => {
+	async function startShutdownPeer() {
 		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
 		mkdirSync(join(workspace, ".pi"));
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
@@ -88,6 +88,16 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 		const sockets = join(workspace, "coms", "sockets");
 		for (let attempt = 0; attempt < 20 && !readdirSync(sockets).some((file) => file.endsWith(".ping")); attempt++) await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.ok(readdirSync(sockets).some((file) => file.endsWith(".ping")));
+		return { peer, sockets };
+	}
+
+	it("waits for ping worker graceful shutdown", async () => {
+		const { peer } = await startShutdownPeer();
+		await peer.shutdown?.();
+	});
+
+	it("removes the ping socket during graceful shutdown", async () => {
+		const { peer, sockets } = await startShutdownPeer();
 		await peer.shutdown?.();
 		assert.equal(readdirSync(sockets).some((file) => file.endsWith(".ping")), false);
 	});

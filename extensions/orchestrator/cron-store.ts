@@ -87,18 +87,26 @@ function claimIsOld(claim: string) {
     return old;
   } catch (error: any) { log.warn("cron_lock_claim_stat_failed", { claim, reason: error?.code || "stat_error" }); return false; }
 }
-function restoreOrRemoveClaim(claim: string, dir: string) {
-  try { fs.renameSync(claim, dir); } catch { try { fs.rmSync(claim, { recursive: true, force: true }); } catch {} }
+function restoreClaim(claim: string, dir: string) {
+  try { fs.renameSync(claim, dir); } catch { log.warn("cron_lock_claim_restore_failed", { claim, dir }); }
 }
-/** Atomically detach a lock before inspecting/removing it. Never delete by a stale pathname. */
-function safelyRemoveLock(dir: string, expected?: CronLockOwner): boolean {
+/** Read the canonical record first; detach and delete only that proven-stale record. */
+function reclaimStaleLock(dir: string, instanceId: string, kind: "leader" | "mutation"): boolean {
+  const expected = readOwner(dir);
+  if (!(expected ? ownerIsProvenDead(expected) : claimIsOld(dir))) return false;
   const claim = `${dir}.claim-${randomUUID()}`;
   try { fs.renameSync(dir, claim); } catch { return false; }
   const current = readOwner(claim);
-  if (expected && !sameOwner(current, expected)) { restoreOrRemoveClaim(claim, dir); return false; }
-  try { fs.rmSync(claim, { recursive: true, force: false }); } catch { restoreOrRemoveClaim(claim, dir); return false; }
-  if (expected?.fd !== undefined) try { fs.closeSync(expected.fd); } catch {}
-  return true;
+  if (expected ? !sameOwner(current, expected) : current || !claimIsOld(claim)) { restoreClaim(claim, dir); return false; }
+  try { fs.rmSync(claim, { recursive: true, force: false }); log.info(`cron_${kind}_lock_reclaim`, { dir, instance_id: instanceId, outcome: "reclaimed" }); return true; }
+  catch (error: any) { log.warn(`cron_${kind}_lock_reclaim`, { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "remove_error" }); restoreClaim(claim, dir); return false; }
+}
+function safelyRemoveLock(dir: string, expected?: CronLockOwner): boolean {
+  if (expected && !sameOwner(readOwner(dir), expected)) return false;
+  const claim = `${dir}.claim-${randomUUID()}`;
+  try { fs.renameSync(dir, claim); } catch { return false; }
+  if (expected && !sameOwner(readOwner(claim), expected)) { restoreClaim(claim, dir); return false; }
+  try { fs.rmSync(claim, { recursive: true, force: false }); return true; } catch { restoreClaim(claim, dir); return false; }
 }
 function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boolean, deps = startTokenDeps): CronLockOwner | null {
   const token = resolveProcessStartToken(process.pid, deps);
@@ -111,20 +119,15 @@ function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boo
     fs.writeFileSync(owner.fd, serializedOwner(owner));
     const acquired = sameOwner(readOwner(dir), owner);
     log.info("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: acquired ? "acquired" : "verification_failed" });
-    return acquired ? owner : null;
+    if (acquired) return owner;
+    safelyRemoveLock(dir, owner);
+    if (owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
+    return null;
   } catch (error: any) {
     if (owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
-    if (error?.code !== "EEXIST" || !reclaimStale) { log.debug("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
-    const claim = `${dir}.claim-${randomUUID()}`;
-    try { fs.renameSync(dir, claim); } catch (claimError: any) { log.debug("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "contended", reason: claimError?.code || "rename_error" }); return null; }
-    const current = readOwner(claim);
-    if ((current && ownerIsProvenDead(current)) || (!current && claimIsOld(claim))) {
-      try { fs.rmSync(claim, { recursive: true, force: false }); log.info("cron_leader_lock_reclaim", { dir, instance_id: instanceId, outcome: "reclaimed" }); } catch (removeError: any) { log.warn("cron_leader_lock_reclaim", { dir, instance_id: instanceId, outcome: "failed", reason: removeError?.code || "remove_error" }); restoreOrRemoveClaim(claim, dir); return null; }
-      return acquireDirectoryLock(dir, instanceId, false);
-    }
-    log.debug("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "contended" });
-    restoreOrRemoveClaim(claim, dir);
-    return null;
+    if (error?.code !== "EEXIST" || !reclaimStale) { (error?.code === "EEXIST" ? log.debug : log.warn)("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
+    if (!reclaimStaleLock(dir, instanceId, "leader")) return null;
+    return acquireDirectoryLock(dir, instanceId, false);
   }
 }
 export function readDurableCronStore(store: string): DurableCronEnvelope {
@@ -163,16 +166,8 @@ function acquireMutationLock(dir: string, instanceId = randomUUID()): CronLockOw
     return acquired ? owner : null;
   } catch (error: any) {
     if (error?.code !== "EEXIST") { log.warn("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
-    const claim = `${dir}.claim-${randomUUID()}`;
-    try { fs.renameSync(dir, claim); } catch (claimError: any) { log.debug("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "contended", reason: claimError?.code || "rename_error" }); return null; }
-    const current = readOwner(claim);
-    if ((current && ownerIsProvenDead(current)) || (!current && claimIsOld(claim))) {
-      try { fs.rmSync(claim, { recursive: true, force: false }); log.info("cron_mutation_lock_reclaim", { dir, instance_id: instanceId, outcome: "reclaimed" }); } catch (removeError: any) { log.warn("cron_mutation_lock_reclaim", { dir, instance_id: instanceId, outcome: "failed", reason: removeError?.code || "remove_error" }); restoreOrRemoveClaim(claim, dir); return null; }
-      return acquireMutationLock(dir, instanceId);
-    }
-    log.debug("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "contended" });
-    restoreOrRemoveClaim(claim, dir);
-    return null;
+    if (!reclaimStaleLock(dir, instanceId, "mutation")) return null;
+    return acquireMutationLock(dir, instanceId);
   }
 }
 function releaseMutationLock(dir: string, owner: CronLockOwner) { safelyRemoveLock(dir, owner); }
@@ -200,4 +195,8 @@ export function refreshLeaderLock(store: string, owner: CronLockOwner): boolean 
     return sameOwner(readOwner(dir), owner);
   } catch { return false; }
 }
-export function releaseLeaderLock(store: string, owner: CronLockOwner) { return safelyRemoveLock(lockPath(store, "leader"), owner); }
+export function releaseLeaderLock(store: string, owner: CronLockOwner) {
+  const released = safelyRemoveLock(lockPath(store, "leader"), owner);
+  if (released && owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
+  return released;
+}

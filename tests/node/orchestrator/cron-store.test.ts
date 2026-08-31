@@ -108,6 +108,27 @@ describe("durable cron store", () => {
     assert.deepEqual(readDurableCronStore(store).tasks, [task()]);
   });
 
+  it("keeps the canonical leader lock present during cross-process contention", async () => {
+    const store = tempStore();
+    const fixture = fileURLToPath(new URL("./fixtures/cron-store-leader-worker.ts", import.meta.url));
+    const child = spawn(process.execPath, ["--import", "tsx", fixture, store, "leader"], { stdio: ["pipe", "pipe", "pipe"] });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.once("data", () => resolve());
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`leader exited ${code}`)));
+    });
+    const dir = `${store}.leader.lock`;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      assert.equal(acquireLeaderLock(store, `contender-${attempt}`), null);
+      assert.equal(fs.existsSync(dir), true);
+    }
+    child.stdin.write("release\n");
+    await new Promise<void>((resolve, reject) => child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`leader exited ${code}`))));
+    const owner = acquireLeaderLock(store, "follower");
+    assert.ok(owner);
+    releaseLeaderLock(store, owner);
+  });
+
   it("allows only its owner to refresh or release a leader lock", () => {
     const store = tempStore();
     const first = acquireLeaderLock(store, "one");
