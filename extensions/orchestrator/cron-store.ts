@@ -67,8 +67,10 @@ function ownerIsProvenDead(owner: CronLockOwner): boolean {
 function readOwner(dir: string): CronLockOwner | null {
   try {
     const owner = JSON.parse(fs.readFileSync(ownerPath(dir), "utf8"));
-    return owner && typeof owner.pid === "number" && typeof owner.process_start_token === "string" && typeof owner.instance_id === "string" && typeof owner.heartbeat_at === "string" ? owner : null;
-  } catch { return null; }
+    const valid = owner && typeof owner.pid === "number" && typeof owner.process_start_token === "string" && typeof owner.instance_id === "string" && typeof owner.heartbeat_at === "string";
+    if (!valid) log.warn("cron_lock_owner_invalid", { dir, reason: "invalid_owner" });
+    return valid ? owner : null;
+  } catch (error: any) { log.debug("cron_lock_owner_unreadable", { dir, reason: error?.code || "parse_error" }); return null; }
 }
 function sameOwner(a: CronLockOwner | null, b: CronLockOwner) {
   return !!a && a.instance_id === b.instance_id && a.pid === b.pid && a.process_start_token === b.process_start_token;
@@ -77,7 +79,13 @@ function serializedOwner(owner: CronLockOwner) {
   const { fd: _fd, ...record } = owner;
   return JSON.stringify(record);
 }
-function claimIsOld(claim: string) { try { return Date.now() - fs.statSync(claim).mtimeMs >= STALE_LOCK_MS; } catch { return false; }
+function claimIsOld(claim: string) {
+  try {
+    const ageMs = Date.now() - fs.statSync(claim).mtimeMs;
+    const old = ageMs >= STALE_LOCK_MS;
+    log.debug("cron_lock_claim_age", { claim, age_ms: ageMs, old });
+    return old;
+  } catch (error: any) { log.warn("cron_lock_claim_stat_failed", { claim, reason: error?.code || "stat_error" }); return false; }
 }
 function restoreOrRemoveClaim(claim: string, dir: string) {
   try { fs.renameSync(claim, dir); } catch { try { fs.rmSync(claim, { recursive: true, force: true }); } catch {} }
@@ -95,25 +103,26 @@ function safelyRemoveLock(dir: string, expected?: CronLockOwner): boolean {
 function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boolean, deps = startTokenDeps): CronLockOwner | null {
   const token = resolveProcessStartToken(process.pid, deps);
   // Without a PID-reuse-safe token, durable leadership is disabled rather than unsafe.
-  if (!token) return null;
+  if (!token) { log.warn("cron_leader_lock_unavailable", { dir, instance_id: instanceId, reason: "no_process_token" }); return null; }
   const owner: CronLockOwner = { pid: process.pid, process_start_token: token, instance_id: instanceId, heartbeat_at: new Date().toISOString() };
   try {
     fs.mkdirSync(dir, { mode: 0o700 });
     owner.fd = fs.openSync(ownerPath(dir), "wx", 0o600);
     fs.writeFileSync(owner.fd, serializedOwner(owner));
-    return sameOwner(readOwner(dir), owner) ? owner : null;
+    const acquired = sameOwner(readOwner(dir), owner);
+    log.info("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: acquired ? "acquired" : "verification_failed" });
+    return acquired ? owner : null;
   } catch (error: any) {
     if (owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
-    if (error?.code !== "EEXIST" || !reclaimStale) return null;
-    // Rename is the atomic claim: after it succeeds no refresh/release can
-    // mutate or delete this ownership directory by its old pathname.
+    if (error?.code !== "EEXIST" || !reclaimStale) { log.debug("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
     const claim = `${dir}.claim-${randomUUID()}`;
-    try { fs.renameSync(dir, claim); } catch { return null; }
+    try { fs.renameSync(dir, claim); } catch (claimError: any) { log.debug("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "contended", reason: claimError?.code || "rename_error" }); return null; }
     const current = readOwner(claim);
     if ((current && ownerIsProvenDead(current)) || (!current && claimIsOld(claim))) {
-      try { fs.rmSync(claim, { recursive: true, force: false }); } catch { restoreOrRemoveClaim(claim, dir); return null; }
+      try { fs.rmSync(claim, { recursive: true, force: false }); log.info("cron_leader_lock_reclaim", { dir, instance_id: instanceId, outcome: "reclaimed" }); } catch (removeError: any) { log.warn("cron_leader_lock_reclaim", { dir, instance_id: instanceId, outcome: "failed", reason: removeError?.code || "remove_error" }); restoreOrRemoveClaim(claim, dir); return null; }
       return acquireDirectoryLock(dir, instanceId, false);
     }
+    log.debug("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "contended" });
     restoreOrRemoveClaim(claim, dir);
     return null;
   }
@@ -144,23 +153,24 @@ function atomicWrite(file: string, content: string) {
 }
 function acquireMutationLock(dir: string, instanceId = randomUUID()): CronLockOwner | null {
   const token = resolveProcessStartToken(process.pid);
-  if (!token) return null;
+  if (!token) { log.warn("cron_mutation_lock_unavailable", { dir, instance_id: instanceId, reason: "no_process_token" }); return null; }
   const owner: CronLockOwner = { pid: process.pid, process_start_token: token, instance_id: instanceId, heartbeat_at: new Date().toISOString() };
   try {
     fs.mkdirSync(dir, { mode: 0o700 });
     fs.writeFileSync(ownerPath(dir), serializedOwner(owner), { flag: "wx", mode: 0o600 });
-    return sameOwner(readOwner(dir), owner) ? owner : null;
+    const acquired = sameOwner(readOwner(dir), owner);
+    log.debug("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: acquired ? "acquired" : "verification_failed" });
+    return acquired ? owner : null;
   } catch (error: any) {
-    if (error?.code !== "EEXIST") return null;
-    // Claim the pathname first. A live owner is restored unchanged; only a
-    // process which the OS reports gone is reclaimed.
+    if (error?.code !== "EEXIST") { log.warn("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
     const claim = `${dir}.claim-${randomUUID()}`;
-    try { fs.renameSync(dir, claim); } catch { return null; }
+    try { fs.renameSync(dir, claim); } catch (claimError: any) { log.debug("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "contended", reason: claimError?.code || "rename_error" }); return null; }
     const current = readOwner(claim);
     if ((current && ownerIsProvenDead(current)) || (!current && claimIsOld(claim))) {
-      try { fs.rmSync(claim, { recursive: true, force: false }); } catch { restoreOrRemoveClaim(claim, dir); return null; }
+      try { fs.rmSync(claim, { recursive: true, force: false }); log.info("cron_mutation_lock_reclaim", { dir, instance_id: instanceId, outcome: "reclaimed" }); } catch (removeError: any) { log.warn("cron_mutation_lock_reclaim", { dir, instance_id: instanceId, outcome: "failed", reason: removeError?.code || "remove_error" }); restoreOrRemoveClaim(claim, dir); return null; }
       return acquireMutationLock(dir, instanceId);
     }
+    log.debug("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "contended" });
     restoreOrRemoveClaim(claim, dir);
     return null;
   }

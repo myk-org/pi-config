@@ -146,7 +146,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     if (scope === "session" || owned.has(projectStore(task.cwd))) { task.leader = true; start(task); }
     else election();
     if (scope === "session") persist(task);
-    updateStatus(); return task;
+    updateStatus(); log.info("cron_created", { scope, id: qualifyCronId(task) }); return task;
   }
   function remove(qualified: string) {
     const [kind, id] = qualified.split(":", 2); const scope = kind === "persist" ? "project" : kind as CronScope; if (!id || !["session", "project"].includes(scope)) return false;

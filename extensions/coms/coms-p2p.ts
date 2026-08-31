@@ -3217,11 +3217,21 @@ Do not respond to this message.`;
 
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
+	async function stopPingWorker(worker: Worker, pingEndpoint?: string): Promise<void> {
+		let timeout: NodeJS.Timeout | undefined;
+		const exited = new Promise<boolean>((resolve) => worker.once("exit", () => resolve(true)));
+		try { worker.postMessage({ type: "shutdown" }); } catch {}
+		const graceful = await Promise.race([exited, new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), 1_000); })]);
+		if (timeout) clearTimeout(timeout);
+		if (!graceful) try { await worker.terminate(); } catch {}
+		if (pingEndpoint && process.platform !== "win32") try { fs.unlinkSync(pingEndpoint); } catch {}
+	}
 	async function cleanShutdown(): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		try { pi.events.emit("pidash:coms-identity", { name: null, purpose: null }); } catch {}
 		const ident = identity; // snapshot before nulling
+		const shutdownCtx = currentCtx;
 		identity = null; // null identity so old handlers from previous reload cycles exit via !identity check
 		if (fsWatcher) { try { fsWatcher.close(); } catch { /* ignore */ } fsWatcher = null; }
 		if (keepaliveTimer) { try { clearInterval(keepaliveTimer); } catch { /* ignore */ } keepaliveTimer = null; }
@@ -3261,9 +3271,11 @@ Do not respond to this message.`;
 			server = null;
 		}
 		if (pingWorker) {
-			try { void pingWorker.terminate(); } catch {}
+			const worker = pingWorker;
 			pingWorker = null;
 			pingWorkerReady = false;
+			await stopPingWorker(worker, ident ? `${ident.endpoint}.ping` : undefined);
+			log.info("ping_worker_shutdown", { outcome: "graceful_or_terminated" });
 		}
 		if (ident) {
 			if (process.platform !== "win32") {
@@ -3276,14 +3288,14 @@ Do not respond to this message.`;
 		process.off("SIGINT", handleSigint);
 		process.off("SIGTERM", handleSigterm);
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
-		if (currentCtx?.hasUI) {
-			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
-			try { currentCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
+		if (shutdownCtx?.hasUI) {
+			try { shutdownCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
+			try { shutdownCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
 		}
 	}
 
-	const handleSigint = () => { void cleanShutdown(); };
-	const handleSigterm = () => { void cleanShutdown(); };
+	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
+	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });
 	process.on("SIGINT", handleSigint);
 	process.on("SIGTERM", handleSigterm);

@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Worker } from "node:worker_threads";
 
 interface FakePi {
 	tools: Map<string, any>;
@@ -16,12 +15,6 @@ const peers: FakePi[] = [];
 
 afterEach(async () => {
 	for (const peer of peers.splice(0)) await peer.shutdown?.();
-	for (const handle of (process as any)._getActiveHandles()) {
-		if (handle instanceof Worker) await handle.terminate();
-		if (handle?.constructor?.name === "FSWatcher") handle.close();
-		if (handle?.constructor?.name === "Socket" && !handle._isStdio) handle.destroy();
-	}
-	await new Promise(resolve => setTimeout(resolve, 25));
 	if (workspace) rmSync(workspace, { recursive: true, force: true });
 	workspace = undefined;
 });
@@ -87,6 +80,18 @@ async function startQueuedPeers() {
 }
 
 describe("coms_queue_inspect execute result", { concurrency: false }, () => {
+	it("gracefully stops the ping worker and removes its socket", async () => {
+		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const peer = await startPeer("shutdown", "shutdown-session");
+		const sockets = join(workspace, "coms", "sockets");
+		for (let attempt = 0; attempt < 20 && !readdirSync(sockets).some((file) => file.endsWith(".ping")); attempt++) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.ok(readdirSync(sockets).some((file) => file.endsWith(".ping")));
+		await peer.shutdown?.();
+		assert.equal(readdirSync(sockets).some((file) => file.endsWith(".ping")), false);
+	});
+
 	it("renders body-free preview metadata", async () => {
 		const { sender } = await startQueuedPeers();
 		const inspect = await sender.tools.get("coms_queue_inspect").execute("inspect-1", { target: "receiver" });
