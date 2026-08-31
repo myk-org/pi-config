@@ -1522,7 +1522,7 @@ def run(
                 specific_threads = fetch_review_comments(owner, repo, pr_number, review_id)
                 print_stderr(f"Found {len(specific_threads)} comment(s) from review {review_id}")
 
-            else:
+            elif parse_pr_url(review_url) is None or "#" in review_url:
                 print_stderr(f"Warning: Unrecognized URL fragment in: {review_url}")
 
         # Merge specific threads with all threads, deduplicating

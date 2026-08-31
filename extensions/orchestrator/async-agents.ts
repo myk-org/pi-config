@@ -22,6 +22,7 @@ import {
   getMainBranch,
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
+import { formatAsyncResultOutput } from "./async-result-format.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 const log = createLogger("async_agents");
 
@@ -392,9 +393,14 @@ export function registerAsyncAgents(
                 log.error(`reconcile: auto-complete failed for task #${safeTaskId}: ${e?.message}`);
               }
             }
-            // Enforce same output-length budget as processResultFile
-            const maxOutput = 3000 - autoCompleteError.length;
-            const output = (job.output || "").slice(0, Math.max(maxOutput, 500));
+            // Enforce same output-length budget as processResultFile.
+            const maxOutput = Math.max(3000 - autoCompleteError.length, 500);
+            const output = formatAsyncResultOutput(
+              job.agent,
+              job.output || "",
+              path.join(job.workerDir, "output.log"),
+              maxOutput,
+            );
             // Emit lifecycle events
             if (job.status === "complete") {
               pi.events.emit("subagents:completed", { id: job.id, result: job.output || "" });
@@ -549,7 +555,11 @@ export function registerAsyncAgents(
       if (j.fireAndForget) { j.delivered = true; continue; }
       const resultStatus = j.status === "complete" ? "✅ completed" : "❌ failed";
       const displayName = j.name || j.agent;
-      const output = (j.output || "").slice(0, 3000);
+      const output = formatAsyncResultOutput(
+        j.agent,
+        j.output || "",
+        path.join(j.workerDir, "output.log"),
+      );
       let autoCompleteError = "";
       // Auto-complete linked task directly in the store file (no AI involvement)
       if (j.taskId && j.taskId !== "-1" && j.status === "complete" && j.cwd) {
@@ -703,7 +713,11 @@ export function registerAsyncAgents(
       try {
         const statusPath = path.join(job.workerDir, "status.json");
         const existing = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
-        existing.output = (data.output || "").slice(0, 3000);
+        existing.output = formatAsyncResultOutput(
+          job.agent,
+          data.output || "",
+          path.join(job.workerDir, "output.log"),
+        );
         existing.state = job.status;
         existing.exitCode = job.exitCode;
         existing.durationMs = job.durationMs;
@@ -748,8 +762,13 @@ export function registerAsyncAgents(
             log.error(`auto-complete failed for task #${job.taskId}: ${e?.message}`);
           }
         }
-        const maxOutput = 3000 - autoCompleteError.length;
-        const output = (data.output || "").slice(0, Math.max(maxOutput, 500));
+        const maxOutput = Math.max(3000 - autoCompleteError.length, 500);
+        const output = formatAsyncResultOutput(
+          job.agent,
+          data.output || "",
+          path.join(job.workerDir, "output.log"),
+          maxOutput,
+        );
         const pContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${data.task}\nDuration: ${formatDuration(data.durationMs)}\n\n${output}${autoCompleteError}`;
         if (wasAlreadyDelivered(job.id)) {
           // Already delivered in previous lifecycle — skip send AND onComplete
@@ -1413,7 +1432,11 @@ export function registerAsyncAgents(
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
         const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
-        const output = rawOutput.slice(0, 3000);
+        const output = formatAsyncResultOutput(
+          job.agent,
+          rawOutput,
+          path.join(job.workerDir, "output.log"),
+        );
         const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
         if (wasAlreadyDelivered(job.id)) {
           job.delivered = true;
