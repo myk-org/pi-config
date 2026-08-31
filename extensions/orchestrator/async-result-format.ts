@@ -8,7 +8,9 @@ const MAX_OUTPUT_CHARS = 3000;
 
 /** Return the completed-result archive path, outside cleanup-prone worker directories. */
 export function reviewerOutputArchivePath(projectTmpDir: string, jobId: string): string {
-  return path.join(projectTmpDir, "reviewer-results", `${jobId}.json`);
+  const archivePath = path.join(projectTmpDir, "reviewer-results", `${jobId}.json`);
+  log.debug("reviewer_output_archive_path", { jobId, archivePath });
+  return archivePath;
 }
 
 /**

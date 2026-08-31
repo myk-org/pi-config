@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { getSetting } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
+import { archiveReviewerOutput } from "./reviewer-output-archive.js";
 
 const log = createLogger("async_agents");
 
@@ -76,7 +77,7 @@ async function run(config: RunConfig): Promise<void> {
   writeJson(statusPath, status);
   let lastUsage: any = null;
 
-  const outputStream = fs.createWriteStream(outputPath, { flags: "w" });
+  const outputStream = fs.createWriteStream(outputPath, { flags: "w", mode: 0o600 });
 
   // Connect to pidash server to stream events
   const pidashPort = getSetting(config.cwd, "pidash_port");
@@ -161,7 +162,7 @@ async function run(config: RunConfig): Promise<void> {
           if (pidashWs?.readyState === 1) {
             pidashWs.send(JSON.stringify({ type: "async_event", id: config.id, event: ev }));
           }
-        } catch (e: any) { log.error(`event processing failed: ${e?.message || e}`); }
+        } catch (e: any) { log.warn(`event processing skipped: ${e?.message || e}`); }
       }
 
       // Update status periodically (every ~10 lines)
@@ -293,8 +294,7 @@ async function run(config: RunConfig): Promise<void> {
   });
   if (config.reviewerOutputPath && config.agent.startsWith("code-reviewer-")) {
     try {
-      fs.mkdirSync(path.dirname(config.reviewerOutputPath), { recursive: true, mode: 0o700 });
-      fs.copyFileSync(outputPath, config.reviewerOutputPath);
+      archiveReviewerOutput(outputPath, config.reviewerOutputPath);
       log.info("archived_reviewer_output", { agent: config.agent, outputPath: config.reviewerOutputPath });
     } catch (err) {
       log.error("archive_reviewer_output_failed", err);

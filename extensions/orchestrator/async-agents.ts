@@ -23,6 +23,7 @@ import {
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
 import { formatAsyncResultOutput, reviewerOutputArchivePath } from "./async-result-format.js";
+import { cleanupReviewerOutputArchives } from "./reviewer-output-archive.js";
 import { openAsyncStatusOverlay } from "./async-status-ui.js";
 const log = createLogger("async_agents");
 
@@ -141,6 +142,8 @@ export function registerAsyncAgents(
     try {
       fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
       fs.writeFileSync(outputPath, output, { mode: 0o600 });
+      fs.chmodSync(outputPath, 0o600);
+      cleanupReviewerOutputArchives(path.dirname(outputPath));
       log.info("preserved_reviewer_output", { agent: job.agent, bytes: Buffer.byteLength(output, "utf8") });
     } catch (e: any) {
       log.error(`preserve reviewer output failed for ${job.id}: ${e?.message}`);
@@ -1196,6 +1199,8 @@ export function registerAsyncAgents(
     PROJECT_TMP_DIR = getProjectTmpDir(ctx.cwd);
     // Export as env var so prompts/CLI commands can reference it
     process.env.PROJECT_TMP_DIR = PROJECT_TMP_DIR;
+
+    cleanupReviewerOutputArchives(path.join(PROJECT_TMP_DIR, "reviewer-results"));
 
     // Scan worker directories for jobs with delivered=true in status.json
     // This is more reliable than content hashing — uses job IDs directly
