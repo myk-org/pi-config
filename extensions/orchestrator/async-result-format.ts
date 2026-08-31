@@ -1,5 +1,6 @@
 /** Format async-agent output for bounded delivery and status persistence. */
 
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 
@@ -8,7 +9,12 @@ const MAX_OUTPUT_CHARS = 3000;
 
 /** Return the completed-result archive path, outside cleanup-prone worker directories. */
 export function reviewerOutputArchivePath(projectTmpDir: string, jobId: string): string {
-  const archivePath = path.join(projectTmpDir, "reviewer-results", `${jobId}.json`);
+  const archiveDir = path.resolve(projectTmpDir, "reviewer-results");
+  const filename = `${createHash("sha256").update(jobId).digest("hex")}.json`;
+  const archivePath = path.resolve(archiveDir, filename);
+  if (path.dirname(archivePath) !== archiveDir) {
+    throw new Error("Reviewer archive destination escapes its archive root");
+  }
   log.debug("reviewer_output_archive_path", { jobId, archivePath });
   return archivePath;
 }

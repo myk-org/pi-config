@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { formatAsyncResultOutput, reviewerOutputArchivePath } from "../../../extensions/orchestrator/async-result-format.js";
 
 const outputPath = "/project/.pi/tmp/code-reviewer-docs-1/output.log";
@@ -10,11 +11,22 @@ const oversizedReviewerJson = JSON.stringify({
 });
 
 describe("formatAsyncResultOutput (issue #801)", () => {
-  it("uses a cleanup-safe archive path for reviewer output", () => {
+  it("uses an opaque cleanup-safe archive path for reviewer output", () => {
+    const jobId = "code-reviewer-docs-1";
+    const digest = createHash("sha256").update(jobId).digest("hex");
     assert.equal(
-      reviewerOutputArchivePath("/project/.pi/tmp", "code-reviewer-docs-1"),
-      "/project/.pi/tmp/reviewer-results/code-reviewer-docs-1.json",
+      reviewerOutputArchivePath("/project/.pi/tmp", jobId),
+      `/project/.pi/tmp/reviewer-results/${digest}.json`,
     );
+  });
+
+  it("contains traversal-shaped job identifiers below the archive root", () => {
+    const archivePath = reviewerOutputArchivePath(
+      "/project/.pi/tmp",
+      "code-reviewer-x/../../../../target/file",
+    );
+
+    assert.match(archivePath, /^\/project\/\.pi\/tmp\/reviewer-results\/[a-f0-9]{64}\.json$/);
   });
 
   it("replaces oversized reviewer JSON with valid, content-free metadata", () => {

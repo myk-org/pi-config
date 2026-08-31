@@ -21,7 +21,7 @@ function archive(dir: string, name: string, bytes: number, ageMs = 0): string {
 }
 
 describe("reviewer output archives (issue #803)", () => {
-  it("creates owner-only worker output and durable archives", () => {
+  it("creates owner-only worker output plus durable archives", () => {
     const dir = mkdtempSync(join(tmpdir(), "reviewer-output-"));
     const outputPath = join(dir, "output.log");
     const archivePath = join(dir, "reviewer-results", "job.json");
@@ -61,7 +61,7 @@ describe("reviewer output archives (issue #803)", () => {
     assert.ok(lstatSync(link).isSymbolicLink());
   });
 
-  it("keeps newest archives within count and aggregate-size limits", () => {
+  it("keeps newest archives within count plus aggregate-size limits", () => {
     const dir = mkdtempSync(join(tmpdir(), "reviewer-retention-"));
     const oldest = archive(dir, "oldest.json", 4, 3_000);
     const middle = archive(dir, "middle.json", 4, 2_000);

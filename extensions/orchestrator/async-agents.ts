@@ -14,7 +14,6 @@ const require = createRequire(import.meta.url);
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
-import { discoverAgents } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
@@ -24,7 +23,6 @@ import {
 import { waitForResultFiles } from "./async-wait.js";
 import { formatAsyncResultOutput, reviewerOutputArchivePath } from "./async-result-format.js";
 import { cleanupReviewerOutputArchives } from "./reviewer-output-archive.js";
-import { openAsyncStatusOverlay } from "./async-status-ui.js";
 const log = createLogger("async_agents");
 
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
@@ -119,6 +117,7 @@ export function formatDuration(ms: number): string {
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
+  runtime: { spawnProcess?: typeof spawn } = {},
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
@@ -1029,7 +1028,7 @@ export function registerAsyncAgents(
 
     // Fail fast with a self-explanatory error instead of spawning a child that
     // cannot load TypeScript (bare node dies on ".js"→".ts" specifiers).
-    if (!jitiCliPath) {
+    if (!jitiCliPath && !runtime.spawnProcess) {
       log.error(`async-spawn: ${id} — no jiti-cli.mjs found. Probes:\n  ${(jitiProbes.slice(-14)).join("\n  ")}`);
       // Clean up the artifacts we already created — nothing will consume them.
       try { fs.rmSync(configPath, { force: true }); } catch {}
@@ -1103,7 +1102,7 @@ export function registerAsyncAgents(
     stderrLog.on("error", () => {}); // never let a log write failure crash the session
     log.debug(`async-spawn: ${job.id} stderr → ${stderrLogPath}`);
 
-    const proc = spawn(process.execPath, spawnArgs, {
+    const proc = (runtime.spawnProcess ?? spawn)(process.execPath, spawnArgs, {
       cwd,
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
@@ -1370,6 +1369,7 @@ export function registerAsyncAgents(
   // /async-status — fullscreen overlay list → live output detail
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
+    const { openAsyncStatusOverlay } = await import("./async-status-ui.js");
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
       killJob: (id) => {
@@ -1577,13 +1577,14 @@ export function registerAsyncAgents(
 
   // Spawn — create an async agent from pitasks' TaskExecute
   handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(
-    "subagents:rpc:spawn", ({ type, prompt, options }) => {
+    "subagents:rpc:spawn", async ({ type, prompt, options }) => {
       const ctx = asyncState.lastCtx;
       if (!ctx) throw new Error("No active session");
       if (!type || typeof type !== "string") throw new Error("Missing or invalid 'type' parameter");
       if (!prompt || typeof prompt !== "string") throw new Error("Missing or invalid 'prompt' parameter");
 
       const cwd = options?.cwd || ctx.cwd;
+      const { discoverAgents } = await import("./agents.js");
       const discovery = discoverAgents(cwd, "both");
       const agents = discovery.agents;
 
