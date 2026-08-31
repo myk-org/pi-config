@@ -71,6 +71,14 @@ describe("durable cron store", () => {
     assert.equal(fs.existsSync(`${store}.mutation.lock`), false);
   });
 
+  it("does not reclaim a fresh ownerless leader lock", () => {
+    const store = tempStore();
+    const dir = `${store}.leader.lock`;
+    fs.mkdirSync(dir, { recursive: true });
+    assert.equal(acquireLeaderLock(store, "follower"), null);
+    assert.equal(fs.existsSync(dir), true);
+  });
+
   it("does not reclaim a live mutation owner", () => {
     const store = tempStore();
     writeLockOwner(store, "mutation", { pid: process.pid, process_start_token: processStartToken(), instance_id: "live", heartbeat_at: new Date().toISOString() });
@@ -160,11 +168,33 @@ describe("durable cron store", () => {
     }), "win:133700000000000000");
   });
 
-  it("migrates the early array format and treats corrupt storage as empty", () => {
+  it("migrates the early array format", () => {
     const store = tempStore();
     fs.writeFileSync(store, JSON.stringify([task("legacy")]));
     assert.deepEqual(readDurableCronStore(store), { version: 1, tasks: [task("legacy")] });
+  });
+
+  it("treats corrupt storage as empty", () => {
+    const store = tempStore();
     fs.writeFileSync(store, "not json");
     assert.deepEqual(readDurableCronStore(store), { version: 1, tasks: [] });
+  });
+
+  for (const [kind, record] of [
+    ["leader", undefined], ["leader", "{"], ["leader", JSON.stringify({ pid: 1 })],
+    ["mutation", undefined], ["mutation", "{"], ["mutation", JSON.stringify({ pid: 1 })],
+  ] as const) it(`reclaims an old ${kind} lock with ${record === undefined ? "no" : "invalid"} owner`, () => {
+    const store = tempStore();
+    const dir = `${store}.${kind}.lock`;
+    fs.mkdirSync(dir, { recursive: true });
+    if (record !== undefined) fs.writeFileSync(path.join(dir, "owner.json"), record);
+    fs.utimesSync(dir, new Date(0), new Date(0));
+    if (kind === "leader") {
+      const owner = acquireLeaderLock(store, "reclaimer");
+      assert.ok(owner); releaseLeaderLock(store, owner);
+    } else {
+      mutateDurableCronStore(store, (tasks) => [...tasks, task("recovered")]);
+      assert.deepEqual(readDurableCronStore(store).tasks, [task("recovered")]);
+    }
   });
 });

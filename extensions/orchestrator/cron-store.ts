@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseProcStartTime } from "./utils.js";
+import { createLogger } from "../shared/logger.js";
 
 export type CronScope = "session" | "project";
 export interface DurableCronTask {
@@ -24,6 +25,7 @@ export interface CronLockOwner { pid: number; process_start_token: string; insta
 
 type StartTokenDeps = { readFileSync: (path: string, encoding: BufferEncoding) => string; execFileSync: (file: string, args: readonly string[], options: { encoding: BufferEncoding; windowsHide: boolean }) => string; platform: NodeJS.Platform };
 const startTokenDeps: StartTokenDeps = { readFileSync: fs.readFileSync, execFileSync, platform: process.platform };
+const log = createLogger("cron_store");
 const STALE_LOCK_MS = 30_000;
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 function sleep(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
@@ -32,15 +34,18 @@ function sleep(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
 export function resolveProcessStartToken(pid: number, deps: StartTokenDeps = startTokenDeps): string | null {
   try {
     const procToken = parseProcStartTime(deps.readFileSync(`/proc/${pid}/stat`, "utf8"));
-    if (procToken) return `proc:${procToken}`;
-  } catch {}
-  if (deps.platform !== "win32") return null;
+    if (procToken) { log.debug("cron_process_token", { pid, platform: deps.platform, source: "proc" }); return `proc:${procToken}`; }
+  } catch (error: any) { log.debug("cron_process_token_proc_failed", { pid, platform: deps.platform, code: error?.code }); }
+  if (deps.platform !== "win32") { log.warn("cron_process_token_unavailable", { pid, platform: deps.platform }); return null; }
   try {
     const output = deps.execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToFileTimeUtc()`], { encoding: "utf8", windowsHide: true }).trim();
-    return /^\d{17,}$/.test(output) ? `win:${output}` : null;
-  } catch { return null; }
+    const token = /^\d{17,}$/.test(output) ? `win:${output}` : null;
+    log.debug("cron_process_token_windows", { pid, valid: !!token });
+    return token;
+  } catch (error: any) { log.warn("cron_process_token_windows_failed", { pid, code: error?.code }); return null; }
 }
 export function processStartToken(pid = process.pid): string { return resolveProcessStartToken(pid) || "unknown"; }
+export function durableCronSupported(): boolean { const supported = resolveProcessStartToken(process.pid) !== null; log.debug("durable_cron_supported", { platform: process.platform, supported }); return supported; }
 function lockPath(store: string, kind: "mutation" | "leader") { return `${store}.${kind}.lock`; }
 function ownerPath(dir: string) { return path.join(dir, "owner.json"); }
 /** True only when the OS can prove this record cannot still own the lock. */
@@ -60,7 +65,10 @@ function ownerIsProvenDead(owner: CronLockOwner): boolean {
   return token !== null && token !== owner.process_start_token;
 }
 function readOwner(dir: string): CronLockOwner | null {
-  try { return JSON.parse(fs.readFileSync(ownerPath(dir), "utf8")); } catch { return null; }
+  try {
+    const owner = JSON.parse(fs.readFileSync(ownerPath(dir), "utf8"));
+    return owner && typeof owner.pid === "number" && typeof owner.process_start_token === "string" && typeof owner.instance_id === "string" && typeof owner.heartbeat_at === "string" ? owner : null;
+  } catch { return null; }
 }
 function sameOwner(a: CronLockOwner | null, b: CronLockOwner) {
   return !!a && a.instance_id === b.instance_id && a.pid === b.pid && a.process_start_token === b.process_start_token;
@@ -68,6 +76,8 @@ function sameOwner(a: CronLockOwner | null, b: CronLockOwner) {
 function serializedOwner(owner: CronLockOwner) {
   const { fd: _fd, ...record } = owner;
   return JSON.stringify(record);
+}
+function claimIsOld(claim: string) { try { return Date.now() - fs.statSync(claim).mtimeMs >= STALE_LOCK_MS; } catch { return false; }
 }
 function restoreOrRemoveClaim(claim: string, dir: string) {
   try { fs.renameSync(claim, dir); } catch { try { fs.rmSync(claim, { recursive: true, force: true }); } catch {} }
@@ -100,7 +110,7 @@ function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boo
     const claim = `${dir}.claim-${randomUUID()}`;
     try { fs.renameSync(dir, claim); } catch { return null; }
     const current = readOwner(claim);
-    if (current && ownerIsProvenDead(current)) {
+    if ((current && ownerIsProvenDead(current)) || (!current && claimIsOld(claim))) {
       try { fs.rmSync(claim, { recursive: true, force: false }); } catch { restoreOrRemoveClaim(claim, dir); return null; }
       return acquireDirectoryLock(dir, instanceId, false);
     }
@@ -133,7 +143,9 @@ function atomicWrite(file: string, content: string) {
   fs.renameSync(temp, file);
 }
 function acquireMutationLock(dir: string, instanceId = randomUUID()): CronLockOwner | null {
-  const owner: CronLockOwner = { pid: process.pid, process_start_token: processStartToken(), instance_id: instanceId, heartbeat_at: new Date().toISOString() };
+  const token = resolveProcessStartToken(process.pid);
+  if (!token) return null;
+  const owner: CronLockOwner = { pid: process.pid, process_start_token: token, instance_id: instanceId, heartbeat_at: new Date().toISOString() };
   try {
     fs.mkdirSync(dir, { mode: 0o700 });
     fs.writeFileSync(ownerPath(dir), serializedOwner(owner), { flag: "wx", mode: 0o600 });
@@ -145,7 +157,7 @@ function acquireMutationLock(dir: string, instanceId = randomUUID()): CronLockOw
     const claim = `${dir}.claim-${randomUUID()}`;
     try { fs.renameSync(dir, claim); } catch { return null; }
     const current = readOwner(claim);
-    if (current && ownerIsProvenDead(current)) {
+    if ((current && ownerIsProvenDead(current)) || (!current && claimIsOld(claim))) {
       try { fs.rmSync(claim, { recursive: true, force: false }); } catch { restoreOrRemoveClaim(claim, dir); return null; }
       return acquireMutationLock(dir, instanceId);
     }

@@ -10,7 +10,7 @@ import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { formatCronSchedule, toCronStatusTaskView } from "./cron-status-format.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
-import { acquireLeaderLock, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
+import { acquireLeaderLock, durableCronSupported, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
 
 const log = createLogger("cron");
 export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
@@ -75,9 +75,10 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   currentCronTasks = () => tasks.values();
   const owned = new Map<string, CronLockOwner>(); const instanceId = randomUUID(); let ctx: any; let watchers: fs.FSWatcher[] = []; let health: ReturnType<typeof setInterval> | undefined;
   function cleanupRuntime(releaseLocks = true) {
+    log.debug("cron_cleanup_runtime", { timers: timers.size, watchers: watchers.length, locks: owned.size, releaseLocks });
     if (health) clearInterval(health); health = undefined;
     for (const id of [...timers.keys()]) stop(id);
-    for (const watcher of watchers) try { watcher.close(); } catch {}
+    for (const watcher of watchers) try { watcher.close(); } catch (error: any) { log.warn("cron_watcher_close_failed", { code: error?.code }); }
     watchers = [];
     if (releaseLocks) for (const [file, owner] of owned) releaseLeaderLock(file, owner);
     owned.clear();
@@ -109,8 +110,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   function stop(id: string) { const timer = timers.get(id); if (timer) { clearTimeout(timer as any); clearInterval(timer as any); timers.delete(id); } }
   function start(task: CronTask) {
     stop(task.id); if (durable(task.scope) && !task.leader) return;
-    const schedule = () => { const delay = nextDelay(task); task.nextRun = Date.now() + delay; persist(task); updateStatus(); const timer = setTimeout(() => { try { void execute(task); schedule(); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay); timer.unref?.(); timers.set(task.id, timer); };
-    if (task.intervalMs) { task.nextRun = Date.now() + task.intervalMs; persist(task); updateStatus(); const timer = setInterval(() => { try { void execute(task); task.nextRun = Date.now() + task.intervalMs!; persist(task); updateStatus(); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, task.intervalMs); timer.unref?.(); timers.set(task.id, timer); } else schedule();
+    const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task)) => {
+      const delay = Math.max(0, runAt - Date.now());
+      const timer = setTimeout(async () => { try { await execute(task); schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay);
+      task.nextRun = runAt; persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
+    };
+    schedule();
   }
   function syncStore(scope: "project", file: string) {
     const leader = owned.has(file); const disk = readDurableCronStore(file).tasks;
@@ -131,6 +136,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   }
   function add(scope: CronScope, details: any) {
     if (scope !== "session" && scope !== "project") throw new Error("scope must be session or project");
+    if (durable(scope) && !durableCronSupported()) throw new Error("Persistent cron scheduling is unavailable on this platform");
     validateSchedule(details);
     const task: CronTask = { id: randomUUID(), scope, cwd: ctx?.cwd || process.cwd(), description: details.description || details.task.slice(0, 60), task: details.task, intervalMs: details.interval_seconds !== undefined ? details.interval_seconds * 1000 : undefined, atHour: details.at_hour, atMinute: details.at_minute ?? (details.at_hour !== undefined ? 0 : undefined), createdAt: Date.now(), leader: scope === "session" };
     if (!task.task || (!task.intervalMs && task.atHour === undefined)) throw new Error("task and a schedule are required");
@@ -173,15 +179,18 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       catch (error: any) { log.error("invalid session cron ignored", error?.message || error); }
     }
     const projectCronCount = readDurableCronStore(projectStore(ctx.cwd)).tasks.length;
-    for (const store of stores()) { fs.mkdirSync(path.dirname(store.file), { recursive: true, mode: 0o700 }); try { const w = fs.watch(path.dirname(store.file), () => election()); w.unref?.(); watchers.push(w); } catch (e: any) { log.warn("cron watch failed", e?.message || e); } }
+    const trusted = typeof ctx.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true;
     for (const task of [...tasks.values()]) start(task);
-    election();
+    if (trusted) {
+      for (const store of stores()) { fs.mkdirSync(path.dirname(store.file), { recursive: true, mode: 0o700 }); try { const w = fs.watch(path.dirname(store.file), () => election()); w.unref?.(); watchers.push(w); } catch (e: any) { log.warn("cron_watch_failed", { code: e?.code }); } }
+      election();
+      health = setInterval(() => { try { election(); } catch (error: any) { log.error("cron_election_failed", error?.message || error); } }, 10_000); health.unref?.();
+    } else syncStore("project", projectStore(ctx.cwd));
     if (projectCronCount > 0 && ctx.hasUI) {
-      const leader = owned.has(projectStore(ctx.cwd));
-      ctx.ui.notify(`Loaded ${projectCronCount} project cron${projectCronCount === 1 ? "" : "s"} (${leader ? "executing" : "waiting for leader"}).`, "info");
-      log.info("project_crons_loaded", { count: projectCronCount, leader });
+      const leader = trusted && owned.has(projectStore(ctx.cwd));
+      ctx.ui.notify(`Loaded ${projectCronCount} project cron${projectCronCount === 1 ? "" : "s"} (${leader ? "executing" : trusted ? "waiting for leader" : "untrusted"}).`, "info");
+      log.info("project_crons_loaded", { count: projectCronCount, leader, trusted });
     }
-    health = setInterval(() => { try { election(); } catch (error: any) { log.error("cron_election_failed", error?.message || error); } }, 10_000); health.unref?.();
   });
   pi.on("session_shutdown", (event: any) => {
     cleanupRuntime();

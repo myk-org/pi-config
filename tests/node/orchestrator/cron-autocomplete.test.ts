@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cronRemoveAutocompleteItems, parseCronScope } from "../../../extensions/orchestrator/cron.js";
+import { cronRemoveAutocompleteItems, getCronRemoveAutocompleteItems, parseCronScope } from "../../../extensions/orchestrator/cron.js";
 
 describe("cron remove autocomplete", () => {
+  it("returns the current public items", () => {
+    assert.deepEqual(getCronRemoveAutocompleteItems(), []);
+  });
+
   it("returns unique scope-qualified IDs", () => {
     assert.deepEqual(
       cronRemoveAutocompleteItems([
@@ -19,10 +23,19 @@ describe("cron remove autocomplete", () => {
 });
 
 describe("cron scopes", () => {
-  it("defaults to session and uses --persist for persistence", () => {
+  it("defaults to session scope", () => {
     assert.deepEqual(parseCronScope(["add", "work"]), { scope: "session", rest: ["add", "work"] });
+  });
+
+  it("selects project scope with --persist", () => {
     assert.deepEqual(parseCronScope(["add", "--persist", "work"]), { scope: "project", rest: ["add", "work"] });
+  });
+
+  it("rejects --scope", () => {
     assert.match(parseCronScope(["list", "--scope", "project"]).error!, /--persist/);
+  });
+
+  it("rejects --project", () => {
     assert.match(parseCronScope(["add", "--project"]).error!, /--persist/);
   });
 });

@@ -3257,11 +3257,11 @@ Do not respond to this message.`;
 			}
 		}
 		if (server) {
-			try { server.close(); } catch { /* ignore */ }
+			try { server.closeAllConnections?.(); server.close(); server.unref(); } catch { /* ignore */ }
 			server = null;
 		}
 		if (pingWorker) {
-			try { pingWorker.postMessage({ type: "shutdown" }); } catch {}
+			try { void pingWorker.terminate(); } catch {}
 			pingWorker = null;
 			pingWorkerReady = false;
 		}
@@ -3273,6 +3273,8 @@ Do not respond to this message.`;
 			log.info("shutdown", ident.coms_session_id);
 		}
 		queueRecoveryPreviews.clear();
+		process.off("SIGINT", handleSigint);
+		process.off("SIGTERM", handleSigterm);
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
 		if (currentCtx?.hasUI) {
 			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
@@ -3280,7 +3282,9 @@ Do not respond to this message.`;
 		}
 	}
 
+	const handleSigint = () => { void cleanShutdown(); };
+	const handleSigterm = () => { void cleanShutdown(); };
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });
-	process.on("SIGINT", () => { void cleanShutdown(); });
-	process.on("SIGTERM", () => { void cleanShutdown(); });
+	process.on("SIGINT", handleSigint);
+	process.on("SIGTERM", handleSigterm);
 }

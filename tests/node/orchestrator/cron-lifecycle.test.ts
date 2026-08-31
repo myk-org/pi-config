@@ -14,13 +14,14 @@ function makeCron() {
   const handlers = new Map<string, Function[]>();
   let tool: any;
   const intervals: any[] = [];
+  const timeouts: any[] = [];
   const emitted: Array<{ event: string; data: any }> = [];
   const originalSetInterval = global.setInterval;
   const originalClearInterval = global.clearInterval;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
   (global as any).setInterval = (fn: Function, delay: number) => { const timer = { fn, delay, unref() {} }; intervals.push(timer); return timer; };
-  (global as any).setTimeout = (fn: Function, delay: number) => ({ fn, delay, unref() {} });
+  (global as any).setTimeout = (fn: Function, delay: number) => { const timer = { fn, delay, unref() {} }; timeouts.push(timer); return timer; };
   (global as any).clearInterval = (timer: any) => { timer.cleared = true; };
   (global as any).clearTimeout = (timer: any) => { timer.cleared = true; };
   const pi: any = {
@@ -30,12 +31,12 @@ function makeCron() {
     registerTool(value: any) { tool = value; }, registerCommand() {}, sendUserMessage() {},
   };
   return {
-    pi, handlers, intervals, emitted, tool: () => tool,
+    pi, handlers, intervals, timeouts, emitted, tool: () => tool,
     restore() { global.setInterval = originalSetInterval; global.clearInterval = originalClearInterval; global.setTimeout = originalSetTimeout; global.clearTimeout = originalClearTimeout; },
   };
 }
 
-function context(cwd: string, sessionId = "session-one") { return { cwd, mode: "interactive", hasUI: false, model: {}, sessionManager: { getSessionId: () => sessionId } }; }
+function context(cwd: string, sessionId = "session-one", trusted = true) { return { cwd, mode: "interactive", hasUI: false, model: {}, isProjectTrusted: () => trusted, sessionManager: { getSessionId: () => sessionId } }; }
 
 describe("cron lifecycle", () => {
   it("skips malformed durable records before scheduling timers", () => {
@@ -54,9 +55,9 @@ describe("cron lifecycle", () => {
       h.pi.events.on = h.pi.eventHandler;
       registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(cwd));
-      // One 10s task timer plus the 10s project-leadership health check.
-      assert.equal(h.intervals.filter((timer) => timer.delay === 10_000).length, 2);
-      assert.equal(h.intervals.some((timer) => !Number.isFinite(timer.delay)), false);
+      // One 10s task timeout plus the 10s project-leadership health check.
+      assert.equal(h.timeouts.filter((timer) => timer.delay === 10_000).length, 1);
+      assert.equal(h.timeouts.some((timer) => !Number.isFinite(timer.delay)), false);
     } finally { h.restore(); }
   });
 
@@ -76,6 +77,40 @@ describe("cron lifecycle", () => {
     } finally { h.restore(); }
   });
 
+  it("does not schedule untrusted durable tasks", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "untrusted", scope: "project", cwd, description: "nope", task: "/status", intervalMs: 10_000, createdAt: 1 }] }));
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      const cron = registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd, "session-one", false));
+      assert.equal(cron.getCronTasks()[0]?.leader, false);
+      assert.equal(h.timeouts.length, 0);
+      assert.equal(h.intervals.length, 0);
+    } finally { h.restore(); }
+  });
+
+  it("dispatches one overdue durable occurrence before rescheduling", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "overdue", scope: "project", cwd, description: "overdue", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      const overdue = h.timeouts.find((timer) => timer.delay === 0)!;
+      assert.ok(overdue);
+      await overdue.fn();
+      assert.equal(readDurableCronStore(store).tasks[0].lastRun !== undefined, true);
+      assert.ok(h.timeouts.some((timer) => timer.delay === 10_000));
+    } finally { h.restore(); }
+  });
+
   it("starts a newly added durable task immediately when this process is leader", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
     const h = makeCron();
@@ -84,7 +119,7 @@ describe("cron lifecycle", () => {
       registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(cwd));
       await h.tool().execute("id", { action: "add", persist: true, task: "check", interval_seconds: 10 });
-      assert.ok(h.intervals.some((timer) => timer.delay === 10_000), "the leader schedules the new durable task without waiting for fs.watch");
+      assert.ok(h.timeouts.some((timer) => timer.delay === 10_000), "the leader schedules the new durable task without waiting for fs.watch");
     } finally { h.restore(); }
   });
 
@@ -97,7 +132,7 @@ describe("cron lifecycle", () => {
       h.handlers.get("session_start")![0]({}, context(cwd));
       await h.tool().execute("id", { action: "add", task: "/status", interval_seconds: 10 });
       const before = h.emitted.filter((event) => event.event === "pidash:cron-status").at(-1)!.data;
-      const timer = h.intervals.filter((item) => item.delay === 10_000).at(-1)!;
+      const timer = h.timeouts.filter((item) => item.delay === 10_000).at(-1)!;
       const originalNow = Date.now;
       Date.now = () => 123_456;
       timer.fn();
@@ -119,7 +154,7 @@ describe("cron lifecycle", () => {
       h.handlers.get("session_start")![0]({}, context(cwd));
       await h.tool().execute("id", { action: "add", persist: true, task: "/status", interval_seconds: 10 });
       fs.rmSync(store); fs.mkdirSync(store);
-      const timer = h.intervals.filter((item) => item.delay === 10_000).at(-1)!;
+      const timer = h.timeouts.filter((item) => item.delay === 10_000).at(-1)!;
       assert.doesNotThrow(() => timer.fn());
       assert.doesNotThrow(() => timer.fn());
       assert.equal(timer.cleared, undefined);
@@ -148,7 +183,7 @@ describe("cron lifecycle", () => {
       registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(firstCwd));
       await h.tool().execute("id", { action: "add", persist: true, task: "old project", interval_seconds: 10 });
-      const timer = h.intervals.find((item) => item.delay === 10_000)!;
+      const timer = h.timeouts.find((item) => item.delay === 10_000)!;
       const leaderLock = path.join(firstCwd, ".pi", "cron", "crons.json.leader.lock");
       assert.ok(fs.existsSync(leaderLock));
       h.handlers.get("session_start")![0]({}, context(secondCwd));
@@ -238,16 +273,25 @@ describe("cron lifecycle", () => {
     } finally { h.restore(); }
   });
 
-  it("accepts minimum interval and daily time boundaries", async () => {
+  it("accepts the minimum interval", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
       registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(cwd));
-      for (const params of [
-        { task: "minimum", interval_seconds: 10 }, { task: "start", at_hour: 0, at_minute: 0 }, { task: "end", at_hour: 23, at_minute: 59 },
-      ]) assert.doesNotMatch((await h.tool().execute("id", { action: "add", ...params })).content[0].text, /^Error:/);
+      assert.doesNotMatch((await h.tool().execute("id", { action: "add", task: "minimum", interval_seconds: 10 })).content[0].text, /^Error:/);
+    } finally { h.restore(); }
+  });
+
+  for (const [hour, minute] of [[0, 0], [23, 59]]) it(`accepts daily time ${String(hour).padStart(2, "0")}:${minute}`, async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      assert.doesNotMatch((await h.tool().execute("id", { action: "add", task: "daily", at_hour: hour, at_minute: minute })).content[0].text, /^Error:/);
     } finally { h.restore(); }
   });
 

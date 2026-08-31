@@ -179,6 +179,7 @@ export function registerAsyncAgents(
   function getLiveAsyncCtx(): any | null {
     const ctx = asyncState.lastCtx;
     if (!isLiveExtensionCtx(ctx)) {
+      log.debug("async_context_stale", { hadContext: ctx !== null });
       asyncState.lastCtx = null;
       return null;
     }
@@ -620,7 +621,7 @@ export function registerAsyncAgents(
       // A group may have waited for result files while its session was replaced.
       // Keep persisted/in-memory results for reconciliation rather than sending into it.
       if (!getLiveAsyncCtx()) {
-        log.debug("deliverGroupResults: deferring delivery without a live ctx");
+        log.debug("deliver_group_results_deferred", { groupId: groupJobs[0]?.groupId, jobs: groupJobs.length, deliverableJobs: deliverableJobs.length, status: groupJobs[0]?.status });
         return;
       }
       try {
