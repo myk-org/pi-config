@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Worker } from "node:worker_threads";
 
 interface FakePi {
 	tools: Map<string, any>;
@@ -16,10 +15,6 @@ const peers: FakePi[] = [];
 
 afterEach(async () => {
 	for (const peer of peers.splice(0)) await peer.shutdown?.();
-	for (const worker of (process as any)._getActiveHandles().filter((handle: unknown) => handle instanceof Worker)) {
-		await worker.terminate();
-	}
-	await new Promise(resolve => setTimeout(resolve, 25));
 	if (workspace) rmSync(workspace, { recursive: true, force: true });
 	workspace = undefined;
 });
@@ -52,7 +47,15 @@ async function startPeer(name: string, sessionId: string): Promise<FakePi> {
 	const pi = createPi(name);
 	peers.push(pi);
 	const init = (await import(`../../../extensions/coms/coms-p2p.ts?queue-inspect=${sessionId}`)).default;
-	init(pi as any);
+	const subagentChild = process.env.PI_SUBAGENT_CHILD;
+	try {
+		// This suite exercises the P2P extension itself, not its child-process guard.
+		process.env.PI_SUBAGENT_CHILD = "0";
+		init(pi as any);
+	} finally {
+		if (subagentChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
+		else process.env.PI_SUBAGENT_CHILD = subagentChild;
+	}
 	(globalThis as any).__piConfigSessionId = sessionId;
 	await pi.start({}, {
 		cwd: workspace,
@@ -76,7 +79,44 @@ async function startQueuedPeers() {
 	return { sender, receiver };
 }
 
-describe("coms_queue_inspect execute result", () => {
+describe("coms_queue_inspect execute result", { concurrency: false }, () => {
+	async function startShutdownPeer() {
+		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const peer = await startPeer("shutdown", "shutdown-session");
+		const sockets = join(workspace, "coms", "sockets");
+		for (let attempt = 0; attempt < 20 && !readdirSync(sockets).some((file) => file.endsWith(".ping")); attempt++) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.ok(readdirSync(sockets).some((file) => file.endsWith(".ping")));
+		return { peer, sockets };
+	}
+
+	it("waits for ping worker graceful shutdown", async () => {
+		const { peer } = await startShutdownPeer();
+		let finished = false;
+		const shutdown = peer.shutdown?.().then(() => { finished = true; });
+		await Promise.resolve();
+		assert.equal(finished, false, "shutdown waits for the worker exit");
+		await shutdown;
+		assert.equal(finished, true);
+	});
+
+	it("removes the ping socket during graceful shutdown", async () => {
+		const { peer, sockets } = await startShutdownPeer();
+		await peer.shutdown?.();
+		assert.equal(readdirSync(sockets).some((file) => file.endsWith(".ping")), false);
+	});
+
+	it("shuts down after task creation leaves a metadata-only reply", async () => {
+		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const sender = await startPeer("sender", "metadata-sender");
+		await startPeer("receiver", "metadata-receiver");
+		await sender.tools.get("coms_tasks_create").execute("create-task", { target: "receiver", tasks: [{ subject: "task", description: "task" }] });
+		await assert.doesNotReject(sender.shutdown?.());
+	});
+
 	it("renders body-free preview metadata", async () => {
 		const { sender } = await startQueuedPeers();
 		const inspect = await sender.tools.get("coms_queue_inspect").execute("inspect-1", { target: "receiver" });

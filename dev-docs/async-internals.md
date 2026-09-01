@@ -86,12 +86,12 @@ On acpx parents these agents run **sync** (coerced) instead of being forced asyn
 
 ## Project-Scoped Temp Directories
 
-All async agent temp files live under `.pi/tmp/`:
+All async agent temp files live under `.pi/tmp/`. Session cron files are local state only; project cron tasks use a versioned envelope at `<project>/.pi/cron/crons.json`.
 
 ```text
 .pi/tmp/
 ├── debug.log                                 # Async debug log
-├── cron-<pid>-<suffix>.json                  # Cron task state
+├── cron-<sha256(session-id)>.json            # Session cron state; retained on reload/resume, removed on new/fork/quit
 ├── async-results-pid-<pid>-<starttime>/      # Async agent completion results
 └── worker-<id>/                              # Async agent working dir
     ├── status.json                           # Agent state (running/complete/failed)

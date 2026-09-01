@@ -1,5 +1,5 @@
 /**
- * /cron list + list-all fullscreen overlay — list dashboard → task detail.
+ * /cron list fullscreen overlay for session and project tasks — list dashboard → task detail.
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -25,7 +25,7 @@ export {
 
 export interface CronStatusUiDeps {
   listTasks: () => CronStatusTaskView[];
-  /** Remove by overlay row id. Return true if removed. */
+  /** Remove by scope-qualified task id. Return true if removed. */
   removeTask: (id: string) => boolean;
   title?: string;
   emptyMessage?: string;
@@ -33,7 +33,7 @@ export interface CronStatusUiDeps {
 }
 
 /**
- * Open fullscreen cron list. Loops list → detail until user closes list.
+ * Open fullscreen cron list for the selected scope. Loops list → detail until closed.
  */
 export async function openCronStatusOverlay(
   ctx: ExtensionCommandContext,

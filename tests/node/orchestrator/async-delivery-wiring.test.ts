@@ -75,6 +75,21 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
     try { h.rejectNextSend(); const job = h.spawn(); h.result(job.id); await settled(); assert.equal(h.messages.length, 0); h.intervals[0](); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
   });
 
+  it("persists a result and defers delivery when the captured context becomes stale", async () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      Object.defineProperty(h.ctx, "mode", { get: () => { throw new Error("ctx inactive"); } });
+      Object.defineProperty(h.ctx, "model", { get: () => { throw new Error("ctx inactive"); } });
+      h.result(job.id, "preserve me");
+      await settled();
+      h.intervals[0]();
+      const status = JSON.parse(readFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), "utf8"));
+      assert.equal(status.output, "preserve me");
+      assert.equal(h.messages.length, 0);
+    } finally { h.restore(); }
+  });
+
   it("executes killed delivery through registered async agents", () => {
     const h = harness();
     try { const job = h.spawn(); const killed = h.api.killAsyncAgent(job.id); assert.deepEqual(killed.killed, ["code-reviewer-runtime"]); assert.match(h.messages[0].content, /Killed by user/); } finally { h.restore(); }

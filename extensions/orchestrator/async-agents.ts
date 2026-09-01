@@ -27,9 +27,11 @@ const log = createLogger("async_agents");
 
 export { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
 import { autoCompleteTask, autoMarkInProgress } from "./task-lifecycle.js";
+import { openAsyncStatusOverlay } from "./async-status-ui.js";
 import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 
 const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
   fs.readFileSync(
@@ -174,10 +176,20 @@ export function registerAsyncAgents(
   }
 
   let lastWidgetKey = "";
+  function getLiveAsyncCtx(): any | null {
+    const ctx = asyncState.lastCtx;
+    if (!isLiveExtensionCtx(ctx)) {
+      log.debug("async_context_stale", { hadContext: ctx !== null });
+      asyncState.lastCtx = null;
+      return null;
+    }
+    return ctx;
+  }
+
   function updateAsyncWidget() {
-    if (!asyncState.lastCtx?.hasUI) return;
     try {
-      const ctx = asyncState.lastCtx;
+      const ctx = getLiveAsyncCtx();
+      if (!ctx?.hasUI) return;
       const running = Array.from(asyncState.jobs.values()).filter(j => j.status === "running" || j.status === "queued");
       const names = running.map(j => j.name || j.agent).join(", ");
       const widgetKey = `${running.length}:${names}`;
@@ -207,10 +219,15 @@ export function registerAsyncAgents(
   function ensureAsyncPoller() {
     if (asyncState.poller) return;
     asyncState.poller = setInterval(() => {
-      try {
-        if (!asyncState.lastCtx?.hasUI) return;
-      } catch {
+      const liveCtx = getLiveAsyncCtx();
+      if (!liveCtx) {
         // ctx is stale (session ended) — stop polling
+        if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
+        return;
+      }
+      try {
+        if (!liveCtx.hasUI) return;
+      } catch {
         if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
         return;
       }
@@ -401,7 +418,7 @@ export function registerAsyncAgents(
               deliverGroupResults(groupJobs);
             }
           // Delivery: retry for non-grouped jobs (zombie-ingest path may skip delivery)
-          } else if (asyncState.lastCtx && !job.fireAndForget) {
+          } else if (getLiveAsyncCtx() && !job.fireAndForget) {
             const displayName = job.name || job.agent;
             const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
             const duration = job.durationMs || (job.updatedAt ? job.updatedAt - job.startedAt : 0);
@@ -437,7 +454,7 @@ export function registerAsyncAgents(
               job.delivered = true;
               log.debug(`reconcile: skipping already-delivered result for ${job.id}`);
             } else {
-              log.debug("reconcile_deliver", job.id, "hasCtx", !!asyncState.lastCtx);
+              log.debug("reconcile_deliver", job.id, "hasCtx", true);
               try {
                 pi.sendMessage({
                   customType: "async-agent-result",
@@ -494,8 +511,6 @@ export function registerAsyncAgents(
     if (gid && groupDeliveryInProgress.has(gid)) return;
     if (gid) groupDeliveryInProgress.add(gid);
     try {
-    if (!asyncState.lastCtx) return;
-
     // Ingest any unprocessed result files — zombie/kill paths may trigger delivery
     // before processResultFile() has read all group members' outputs.
     // Wait up to 2s total (not per-job) for all missing result files.
@@ -603,6 +618,12 @@ export function registerAsyncAgents(
     }
 
     if (sections.length > 0) {
+      // A group may have waited for result files while its session was replaced.
+      // Keep persisted/in-memory results for reconciliation rather than sending into it.
+      if (!getLiveAsyncCtx()) {
+        log.debug("deliver_group_results_deferred", { groupId: groupJobs[0]?.groupId, jobs: groupJobs.length, deliverableJobs: deliverableJobs.length, status: groupJobs[0]?.status });
+        return;
+      }
       try {
         pi.sendMessage({
           customType: "async-agent-result",
@@ -649,7 +670,7 @@ export function registerAsyncAgents(
     try {
       const data = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
       const job = asyncState.jobs.get(data.id);
-      log.debug(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!asyncState.lastCtx} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
+      log.debug(`processResultFile: ${path.basename(resultPath)} job=${!!job} delivered=${job?.delivered} hasCtx=${!!getLiveAsyncCtx()} fireAndForget=${job?.fireAndForget} groupId=${job?.groupId}`);
       if (!job) {
         // Orphan result file — job not in current session. Clean up to prevent re-delivery on reload.
         try { fs.unlinkSync(resultPath); } catch (e: any) { log.debug(`orphan cleanup failed: ${resultPath}: ${e?.message}`); }
@@ -694,11 +715,11 @@ export function registerAsyncAgents(
         // Use model context window from the agent's effective model.
         // If agent uses a custom model, we pass its context window via the config.
         // Fall back to orchestrator's model context window.
-        const contextWindow = data.contextWindow || asyncState.lastCtx?.model?.contextWindow || 0;
+        const contextWindow = data.contextWindow || getLiveAsyncCtx()?.model?.contextWindow || 0;
         if (data.lastUsage?.totalTokens && data.lastUsage.totalTokens > 0 && contextWindow > 0) {
           const pct = (data.lastUsage.totalTokens / contextWindow) * 100;
           if (pct > 80) {
-            const sessId = `async-${job.agent}-${djb2Hash(job.agent + ':' + (jobCwd(job)) + ':' + (asyncState.lastCtx?.sessionManager?.getSessionId?.() || '')).toString(36)}`;
+            const sessId = `async-${job.agent}-${djb2Hash(job.agent + ':' + (jobCwd(job)) + ':' + (getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || '')).toString(36)}`;
             try {
               // Find and delete the session file to force fresh on next cycle
               const sessDir = path.join(os.homedir(), '.pi', 'agent', 'sessions');
@@ -776,7 +797,7 @@ export function registerAsyncAgents(
 
       // Non-grouped job: deliver immediately (existing behavior)
       let sendSucceeded = false;
-      if (asyncState.lastCtx && !job.fireAndForget) {
+      if (getLiveAsyncCtx() && !job.fireAndForget) {
         const resultStatus = data.success ? "✅ completed" : "❌ failed";
         let autoCompleteError = "";
         // Auto-complete linked task directly in the store file (no AI involvement)
@@ -852,12 +873,13 @@ export function registerAsyncAgents(
     watchedDir = ASYNC_RESULTS_DIR;
     try {
       fs.mkdirSync(ASYNC_RESULTS_DIR, { recursive: true, mode: 0o700 });
-      asyncState.watcher = fs.watch(ASYNC_RESULTS_DIR, (ev, file) => {
+      const resultsDir = ASYNC_RESULTS_DIR;
+      asyncState.watcher = fs.watch(resultsDir, (ev, file) => {
         if (ev !== "rename" || !file) return;
         const fileName = file.toString();
         log.debug("watcher_event", ev, fileName);
         if (!fileName.endsWith(".json")) return;
-        const resultPath = path.join(ASYNC_RESULTS_DIR, fileName);
+        const resultPath = path.join(resultsDir, fileName);
         setTimeout(() => processResultFile(resultPath), 100);
       });
       if (asyncState.watcher.unref) asyncState.watcher.unref();
@@ -900,8 +922,8 @@ export function registerAsyncAgents(
       parentStartTime,
       taskId: options?.taskId || null,
       cwd,
-      projectCwd: asyncState.lastCtx?.sessionManager?.getCwd?.() || null,
-      sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.() || null,
+      projectCwd: getLiveAsyncCtx()?.sessionManager?.getCwd?.() || null,
+      sessionId: getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
 
     // Track reviewer spawn BEFORE building args — addReviewerPending sets status to
@@ -923,7 +945,7 @@ export function registerAsyncAgents(
     // Deterministic session ID for provider cache affinity + optional session reuse.
     // When persistSession is true, omits --no-session so the session persists to disk.
     // Same agent + cwd gets the same session ID across calls.
-    const parentSessionId = asyncState.lastCtx?.sessionManager?.getSessionId?.() || '';
+    const parentSessionId = getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || '';
     const sessionIdSource = persistSession
       ? agentName + ':' + cwd + ':' + parentSessionId
       : agentName + ':' + task.slice(0, 100);
@@ -956,7 +978,7 @@ export function registerAsyncAgents(
       task,
       cwd,
       model: effectiveModel,
-      contextWindow: asyncState.lastCtx?.model?.contextWindow || 0,
+      contextWindow: getLiveAsyncCtx()?.model?.contextWindow || 0,
       resultPath,
       reviewerOutputPath: agentName.startsWith("code-reviewer-")
         ? reviewerOutputArchivePath(PROJECT_TMP_DIR, id)
@@ -1094,8 +1116,8 @@ export function registerAsyncAgents(
       groupId: options?.groupId,
       taskId: options?.taskId,
       cwd,
-      projectCwd: asyncState.lastCtx?.sessionManager?.getCwd?.(),
-      sessionId: asyncState.lastCtx?.sessionManager?.getSessionId?.(),
+      projectCwd: getLiveAsyncCtx()?.sessionManager?.getCwd?.(),
+      sessionId: getLiveAsyncCtx()?.sessionManager?.getSessionId?.(),
       model: effectiveModel,
     };
     asyncState.jobs.set(id, job);
@@ -1185,7 +1207,7 @@ export function registerAsyncAgents(
 
     // Auto-mark linked task as in_progress AFTER successful spawn
     if (options?.taskId && options.taskId !== "-1") {
-      autoMarkInProgress(options.taskId, asyncState.lastCtx?.sessionManager?.getCwd?.() || cwd, asyncState.lastCtx?.sessionManager?.getSessionId?.() || undefined)
+      autoMarkInProgress(options.taskId, getLiveAsyncCtx()?.sessionManager?.getCwd?.() || cwd, getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || undefined)
         .catch(() => {});  // best-effort, don't block spawn
     }
 
@@ -1194,6 +1216,10 @@ export function registerAsyncAgents(
 
   // Start result watcher on session start
   pi.on("session_start", (_event, ctx) => {
+    if (!isLiveExtensionCtx(ctx)) {
+      log.warn("session_start received a stale ctx; preserving async results for a live session");
+      return;
+    }
     asyncState.lastCtx = ctx;
     deliveredResultIds.clear();
 
@@ -1365,6 +1391,7 @@ export function registerAsyncAgents(
   // Clean up on shutdown
   pi.on("session_shutdown", () => {
     log.info(`shutdown: jobs=${asyncState.jobs.size}`);
+    asyncState.lastCtx = null;
     if (asyncState.poller) { clearInterval(asyncState.poller); asyncState.poller = null; }
     if (asyncState.watcher) { asyncState.watcher.close(); asyncState.watcher = null; }
   });
@@ -1373,7 +1400,6 @@ export function registerAsyncAgents(
   async function handleAsyncStatus(ctx: any): Promise<void> {
     if (!ctx.hasUI) return;
     log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size });
-    const { openAsyncStatusOverlay } = await import("./async-status-ui.js");
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
       killJob: (id) => {
@@ -1461,7 +1487,7 @@ export function registerAsyncAgents(
         if (pending.length === 0) {
           deliverGroupResults(groupJobs);
         }
-      } else if (asyncState.lastCtx && !job.fireAndForget) {
+      } else if (getLiveAsyncCtx() && !job.fireAndForget) {
         // Non-grouped killed job — deliver immediately so AI knows it was killed
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
@@ -1582,7 +1608,7 @@ export function registerAsyncAgents(
   // Spawn — create an async agent from pitasks' TaskExecute
   handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(
     "subagents:rpc:spawn", async ({ type, prompt, options }) => {
-      const ctx = asyncState.lastCtx;
+      const ctx = getLiveAsyncCtx();
       if (!ctx) throw new Error("No active session");
       if (!type || typeof type !== "string") throw new Error("Missing or invalid 'type' parameter");
       if (!prompt || typeof prompt !== "string") throw new Error("Missing or invalid 'prompt' parameter");

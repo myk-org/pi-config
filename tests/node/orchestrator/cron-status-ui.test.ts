@@ -73,7 +73,7 @@ describe("toCronStatusTaskView", () => {
       },
     );
     assert.equal(v.id, "cron-1-abc.json:3");
-    assert.equal(v.taskId, 3);
+    assert.equal(v.taskId, "cron-1-abc.json:3");
     assert.equal(v.isLocal, false);
   });
 });

@@ -154,13 +154,15 @@ interface RegistryEntry {
 }
 
 interface PendingReply {
-	resolve: (value: any) => void;
-	reject: (err: Error) => void;
-	timer: NodeJS.Timeout | null;
-	promise: Promise<{ response?: any; error?: string | null; queued_msg_ids?: string[] }>;
+	resolve?: (value: any) => void;
+	reject?: (err: Error) => void;
+	timer?: NodeJS.Timeout | null;
+	promise?: Promise<{ response?: any; error?: string | null; queued_msg_ids?: string[] }>;
 	result?: { response?: any; error?: string | null; queued_msg_ids?: string[] };
+	target_session?: string;
 	target_name?: string;
-	created_at: string;
+	sent_at?: number;
+	created_at?: string;
 	/** Creation time drives body-free recovery previews. */
 	queued_at?: string;
 }
@@ -549,7 +551,10 @@ function sendEnvelope(endpoint: string, envelope: Envelope | Pong | { type: stri
 				sock.write(JSON.stringify(envelope) + "\n");
 				const line = await readOneLine(sock);
 				const parsed = JSON.parse(line);
-				try { sock.end(); } catch { /* ignore */ }
+				// The response is complete. Destroy the outbound client now instead of
+				// waiting for the peer's half-close, which can outlive a test session.
+				try { sock.destroy(); } catch { /* ignore */ }
+				log.debug("coms_envelope_sent", { type: envelope.type, has_msg_id: !!envelope.msg_id });
 				if (settled) return;
 				settled = true;
 				if (parsed && parsed.type === "nack") {
@@ -642,6 +647,7 @@ export default function (pi: ExtensionAPI) {
 		log.debug("recovery_preview_retained", { session: targetSession, count: itemIds.length, active: queueRecoveryPreviews.size });
 	}
 	let server: net.Server | null = null;
+	const connections = new Set<net.Socket>();
 	let fsWatcher: fs.FSWatcher | null = null;
 	let pingWorker: Worker | null = null;
 	let pingWorkerReady = false;
@@ -795,7 +801,7 @@ export default function (pi: ExtensionAPI) {
 			const queuedMsgIds: string[] = Array.isArray(env.queued_msg_ids) ? env.queued_msg_ids.filter((id: unknown) => typeof id === "string") : [];
 			pending.result = { response: env.response, error: env.error ?? null, queued_msg_ids: queuedMsgIds };
 			try {
-				pending.resolve(pending.result);
+				pending.resolve?.(pending.result);
 			} catch (e: any) {
 				log.error("resolve_failed", env.msg_id, e?.message);
 			}
@@ -892,6 +898,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function connHandler(socket: net.Socket): void {
+		connections.add(socket);
+		socket.once("close", () => connections.delete(socket));
 		let buf = "";
 		let handled = false;
 		const onData = (chunk: Buffer) => {
@@ -1030,7 +1038,7 @@ export default function (pi: ExtensionAPI) {
 				const storedPreview = queueRecoveryPreviews.get(env.preview_id);
 				if (!storedPreview || storedPreview.targetSession !== env.sender_session) {
 					error = "invalid_preview";
-					try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n"); } catch {}
+					try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n"); socket.end(); } catch {}
 					log.warn("recovery_clear_denied", { sender: env.sender_name, reason: error });
 					return;
 				}
@@ -1056,7 +1064,7 @@ export default function (pi: ExtensionAPI) {
 			}));
 			const preview = buildQueuePreview("local", items, Date.now(), ulid());
 			retainQueueRecoveryPreview(preview.previewId, env.sender_session, preview.items.map(item => item.id));
-			try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected: 0, error: null, preview }) + "\n"); } catch {}
+			try { socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected: 0, error: null, preview }) + "\n"); socket.end(); } catch {}
 			log.info("recovery_preview", { provider: "local", sender: env.sender_name, count: preview.items.length });
 			return;
 		} else if (action === "prioritize" && env.target_msg_id) {
@@ -1078,6 +1086,7 @@ export default function (pi: ExtensionAPI) {
 		// Send ack with result — includes error and affected count
 		try {
 			socket.write(JSON.stringify({ type: "ack", msg_id: env.msg_id, affected, error }) + "\n");
+			socket.end();
 		} catch { /* ignore */ }
 
 		maybeRefreshWidget();
@@ -3217,11 +3226,22 @@ Do not respond to this message.`;
 
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
+	async function stopPingWorker(worker: Worker): Promise<void> {
+		let timeout: NodeJS.Timeout | undefined;
+		const exited = new Promise<boolean>((resolve) => worker.once("exit", () => resolve(true)));
+		log.info("ping_worker_stop", { outcome: "shutdown_requested" });
+		try { worker.postMessage({ type: "shutdown" }); } catch {}
+		const graceful = await Promise.race([exited, new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), 1_000); })]);
+		if (timeout) clearTimeout(timeout);
+		if (!graceful) try { await worker.terminate(); } catch {}
+		log.info("ping_worker_stop", { outcome: graceful ? "graceful" : "terminated" });
+	}
 	async function cleanShutdown(): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		try { pi.events.emit("pidash:coms-identity", { name: null, purpose: null }); } catch {}
 		const ident = identity; // snapshot before nulling
+		const shutdownCtx = currentCtx;
 		identity = null; // null identity so old handlers from previous reload cycles exit via !identity check
 		if (fsWatcher) { try { fsWatcher.close(); } catch { /* ignore */ } fsWatcher = null; }
 		if (keepaliveTimer) { try { clearInterval(keepaliveTimer); } catch { /* ignore */ } keepaliveTimer = null; }
@@ -3257,13 +3277,20 @@ Do not respond to this message.`;
 			}
 		}
 		if (server) {
-			try { server.close(); } catch { /* ignore */ }
+			const activeServer = server;
 			server = null;
+			try {
+				for (const connection of connections) connection.destroy();
+				connections.clear();
+				activeServer.closeAllConnections?.(); activeServer.close(); activeServer.unref();
+			} catch { /* ignore */ }
 		}
 		if (pingWorker) {
-			try { pingWorker.postMessage({ type: "shutdown" }); } catch {}
+			const worker = pingWorker;
 			pingWorker = null;
 			pingWorkerReady = false;
+			await stopPingWorker(worker);
+			log.info("ping_worker_shutdown", { outcome: "graceful_or_terminated" });
 		}
 		if (ident) {
 			if (process.platform !== "win32") {
@@ -3272,15 +3299,25 @@ Do not respond to this message.`;
 			try { removeRegistryEntry(ident.project, ident.coms_session_id); } catch { /* ignore */ }
 			log.info("shutdown", ident.coms_session_id);
 		}
+		for (const pending of pendingReplies.values()) {
+			if (pending.timer) clearTimeout(pending.timer);
+			if (pending.resolve) pending.resolve({ error: "session_closed" });
+		}
+		pendingReplies.clear();
+		pendingOutbound.clear();
 		queueRecoveryPreviews.clear();
+		process.off("SIGINT", handleSigint);
+		process.off("SIGTERM", handleSigterm);
 		log.debug("recovery_previews_cleared", { reason: "shutdown" });
-		if (currentCtx?.hasUI) {
-			try { currentCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
-			try { currentCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
+		if (shutdownCtx?.hasUI) {
+			try { shutdownCtx.ui.setWidget("coms-pool", undefined); } catch { /* ignore */ }
+			try { shutdownCtx.ui.setStatus("coms", undefined); } catch { /* ignore */ }
 		}
 	}
 
+	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
+	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
 	pi.on("session_shutdown", async () => { await cleanShutdown(); });
-	process.on("SIGINT", () => { void cleanShutdown(); });
-	process.on("SIGTERM", () => { void cleanShutdown(); });
+	process.on("SIGINT", handleSigint);
+	process.on("SIGTERM", handleSigterm);
 }

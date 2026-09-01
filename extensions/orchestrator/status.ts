@@ -8,6 +8,9 @@ import { tryGetSystemPromptOptions } from "./utils.js";
 import type { AsyncJob } from "./async-agents.js";
 import type { CronTask } from "./cron.js";
 import { getCurrentBranch, runGit } from "./git-helpers.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("status");
 
 function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -67,7 +70,8 @@ export function registerStatus(
         lines.push(`⏰ Cron tasks: ${crons.length} active`);
         for (const t of crons) {
           const last = t.lastRun ? new Date(t.lastRun).toLocaleTimeString() : "never";
-          lines.push(`   • #${t.id} ${formatSchedule(t)} — ${t.description} (last: ${last})`);
+          const leader = t.scope !== "session" ? `, ${t.leader === false ? "non-leader" : "leader"}` : "";
+          lines.push(`   • ${t.scope === "project" ? "persist" : "session"}:${t.id} ${formatSchedule(t)} — ${t.description} (last: ${last}${leader})`);
         }
       } else {
         lines.push("⏰ Cron tasks: none");
@@ -85,7 +89,7 @@ export function registerStatus(
           const stateText = dirtyCount > 0 ? `${dirtyCount} changed file${dirtyCount > 1 ? "s" : ""}` : "clean";
           lines.push(`🔀 Git: ${branch} ${stateIcon} ${stateText} (${repoName})`);
         }
-      } catch (e: any) { console.debug("[status] git status failed:", e?.message || e); }
+      } catch (e: any) { log.debug("status_git_failed", { code: e?.code }); }
 
       // ── Container ──────────────────────────────────────────────────
       if (inContainer) {
@@ -104,6 +108,7 @@ export function registerStatus(
         }
       }
 
+      log.debug("status_rendered", { jobs: jobs.length, crons: crons.length, lines: lines.length });
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });

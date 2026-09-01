@@ -54,7 +54,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   }>({ count: 0, agents: "", jobs: [] });
   const [cronTasks, setCronTasks] = useState<{
     count: number;
-    tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number }>;
+    tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number; leader?: boolean }>;
   }>({ count: 0, tasks: [] });
   const filterRef = useRef<HTMLInputElement>(null);
 
@@ -93,11 +93,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         });
       }
       if (ev.type === "cron-status") {
-        const newCount = ev.count || 0;
-        setCronTasks(prev => {
-          if (prev.count === newCount) return prev;
-          return { count: newCount, tasks: ev.tasks || [] };
-        });
+        setCronTasks({ count: ev.count || 0, tasks: ev.tasks || [] });
       }
     });
   }, [onMessage]);
@@ -291,7 +287,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-foreground truncate">{task.description}</div>
                         <div className="text-muted-foreground text-[10px]">{task.schedule}</div>
-                        <div className="text-muted-foreground text-[10px]">last: {lastRunStr} · next: {nextRunStr}</div>
+                        <div className="text-muted-foreground text-[10px]">last: {lastRunStr} · next: {nextRunStr}{task.leader === false ? " · waiting for leader" : ""}</div>
                       </div>
                       <div className="flex gap-1 shrink-0">
                         <button

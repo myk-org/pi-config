@@ -16,7 +16,7 @@
  *   /review-handler <Tab>        → --autorabbit, --autoqodo
  *   /review-status <Tab>         → active worktree paths
  *   /create-skill <Tab>          → (free-text name)
- *   /cron <Tab>                  → add, list, list-all, remove
+ *   /cron <Tab>                  → add, list, remove
  *   /dream-auto <Tab>            → on, off
  *   /async-kill <Tab>            → all (or type name / id prefix)
  *   /mcpc <Tab>                  → connect
@@ -25,10 +25,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
-import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
-import { getCronFilePath } from "./cron.js";
+import { getCronRemoveAutocompleteItems } from "./cron.js";
 import { mcpcArgumentCompletions } from "./mcpc.js";
 
 // ── Cache infrastructure ────────────────────────────────────────────
@@ -287,36 +286,28 @@ function registerCompletions(
       const parts = prefix.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
       const sub = parts[0]?.toLowerCase();
-
       // First level: subcommands
-      if (parts.length <= 1 && !(["add", "list", "list-all", "remove", "rm", "delete", "kill"].includes(sub))) {
+      if (parts.length <= 1 && !(["add", "list", "list-all", "remove", "rm", "delete"].includes(sub))) {
         return filter([
           { value: "add ", label: "add", description: "Add a scheduled task" },
-          { value: "list", label: "list", description: "List scheduled tasks" },
-          { value: "list-all", label: "list-all", description: "List crons from all sessions" },
+          { value: "list", label: "list", description: "List visible scheduled tasks" },
+          { value: "list-all", label: "list-all", description: "Show session and project cron tasks" },
           { value: "remove ", label: "remove", description: "Remove a scheduled task" },
         ], lastPart);
       }
-      // After "add"
       if (sub === "add" && parts.length <= 2) {
-        return filter([{ value: "every", label: "every", description: "Interval-based (e.g., every 2h)" }, { value: "at", label: "at", description: "Time-based (e.g., at 12:00)" }], lastPart);
+        return filter([
+          { value: "every", label: "every", description: "Interval-based (e.g., every 2h)" },
+          { value: "at", label: "at", description: "Time-based (e.g., at 12:00)" },
+          { value: "--persist", label: "--persist", description: "Keep this cron across Pi sessions" },
+        ], lastPart);
       }
-      // After "remove" — show task IDs (supports multi-select)
-      if (sub === "remove" || sub === "rm" || sub === "delete" || sub === "kill") {
-        try {
-          const cronFile = getCronFilePath();
-          if (!cronFile) return null;
-          const cronTasks = JSON.parse(fs.readFileSync(cronFile, "utf-8"));
-          if (Array.isArray(cronTasks)) {
-            const alreadySelected = new Set(parts.slice(1).filter(p => p !== lastPart));
-            return filter(cronTasks.filter((t: any) => !alreadySelected.has(String(t.id))).map((t: any) => ({
-              value: String(t.id),
-              label: `#${t.id}`,
-              description: t.description || t.task || "",
-            })), lastPart);
-          }
-        } catch (e: any) { console.debug("[autocomplete] cron task fetch failed:", e?.message || e); }
-        return null;
+      if (["add", "list"].includes(sub) && !parts.includes("--persist")) {
+        return filter([{ value: "--persist", label: "--persist", description: "Keep this cron across Pi sessions" }], lastPart);
+      }
+      if (sub === "remove" || sub === "rm" || sub === "delete") {
+        const selected = new Set(parts.slice(1, -1));
+        return filter(getCronRemoveAutocompleteItems().filter((item) => !selected.has(item.value)), lastPart);
       }
       return null;
     },
@@ -357,7 +348,7 @@ function setupPromptTemplateInterceptor(
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler", "cron", "create-skill", "create-coms-feature-manager",
+    "review-local", "release", "review-handler", "create-skill", "create-coms-feature-manager",
     "pi-config-settings",
   ]);
 
@@ -432,7 +423,16 @@ function setupPromptTemplateInterceptor(
         item: AutocompleteItem,
         prefix: string,
       ) {
-        return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        // Suggestions above are for an argument token, but the wrapped provider
+        // only knows its own command completion prefix and can replace `/cron add`.
+        const line = lines[cursorLine] ?? "";
+        // Pi passes the prior provider's prefix here, which can be `add ev`
+        // instead of this provider's `ev`. Derive the active argument token
+        // from the editor text so accepting completion never eats `/cron add`.
+        const start = line.lastIndexOf(" ", Math.max(0, cursorCol - 1)) + 1;
+        const nextLines = [...lines];
+        nextLines[cursorLine] = `${line.slice(0, start)}${item.value}${line.slice(cursorCol)}`;
+        return { lines: nextLines, cursorLine, cursorCol: start + item.value.length };
       },
 
       shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number) {

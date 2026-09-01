@@ -254,10 +254,6 @@ function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; se
     return <CollapsibleMessage msg={msg} searchQuery={searchQuery} />;
   }
 
-  if (msg.role === "system") {
-    return <div className="text-xs text-muted-foreground py-1">{msg.text}</div>;
-  }
-
   return (
     <div>
       <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor(msg.role))}>

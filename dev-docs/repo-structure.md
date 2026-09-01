@@ -39,8 +39,9 @@ pi-config/
 │   │   ├── overlay-dashboard-utils.ts # Pure selection reconcile helpers
 │   │   ├── async-status-ui.ts       # /async-status overlay (uses overlay-dashboard)
 │   │   ├── async-status-parse.ts    # Pure output.log JSONL → display line parser
-│   │   ├── cron-status-ui.ts        # /cron list + list-all overlay (uses overlay-dashboard)
+│   │   ├── cron-status-ui.ts        # /cron list overlay (uses overlay-dashboard)
 │   │   ├── cron-status-format.ts    # Pure cron schedule / next-run display helpers
+│   │   ├── cron-store.ts            # Durable cron envelopes, atomic mutation, and leader locks
 │   │   ├── settings-tui.ts          # /pi-config-settings TUI overlay (uses overlay-dashboard)
 │   │   ├── settings-tui-helpers.ts  # Pure settings helpers (categories, source detection, formatting, file I/O, model-picker resolution: image_model google+image-capable filter + paired agent/internal_operations providers)
 │   │   ├── settings-tui-submenus.ts # Submenu components (input, number, picker, multi-select, overrides)
@@ -48,7 +49,7 @@ pi-config/
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── btw.ts                   # /btw command
-│   │   ├── cron.ts                   # /cron scheduled tasks (interval/time-based)
+│   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
 │   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
