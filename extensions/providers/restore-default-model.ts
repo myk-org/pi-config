@@ -7,7 +7,7 @@
  * On session_start (providers already registered), restore the saved default
  * when current differs (or is missing), unless the user passed --model /
  * --provider / --models, enabledModels scopes the model list, or the session
- * is resume/fork/reload.
+ * is fork/reload.
  *
  * Kept free of @earendil-works/pi-ai so unit tests can import under tsx.
  */
@@ -20,14 +20,14 @@ import { createLogger } from "../shared/logger.js";
 const log = createLogger("providers");
 
 /** session_start reasons where cold-start restore is allowed. */
-export const RESTORE_ALLOWED_REASONS = new Set(["startup", "new"]);
+export const RESTORE_ALLOWED_REASONS = new Set(["startup", "new", "resume"]);
 
 export type RestoreDefaultModelOpts = {
   defaultProvider?: string | null;
   defaultModelId?: string | null;
   currentProvider?: string | null;
   currentModelId?: string | null;
-  /** session_start reason; only "startup" | "new" may restore. */
+  /** session_start reason; only "startup" | "new" | "resume" may restore. */
   reason?: string | null;
   /**
    * CLI argv to scan for --model / --provider / --models (user override).
@@ -78,7 +78,7 @@ export function hasEnabledModelsScope(
  *
  * Gates (all must pass):
  * 1. defaultProvider and defaultModelId both non-empty
- * 2. reason is startup|new
+ * 2. reason is startup|new|resume
  * 3. current missing OR current provider/id ≠ default
  * 4. argv does not contain --model, --provider, or --models
  * 5. enabledModels is missing or empty (non-empty scopes like --models)

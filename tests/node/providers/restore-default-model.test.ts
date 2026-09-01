@@ -75,7 +75,7 @@ describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
     );
   });
 
-  it("skips on resume", () => {
+  it("restores on resume", () => {
     assert.equal(
       shouldRestoreDefaultModel({
         reason: "resume",
@@ -84,7 +84,7 @@ describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
         currentProvider: "bar",
         currentModelId: "bar-model",
       }),
-      false,
+      true,
     );
   });
 
@@ -640,7 +640,7 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     assert.equal(setModelArg, target);
   });
 
-  it("skips on resume", async () => {
+  it("restores on resume", async () => {
     const path = join(dir, "settings.json");
     writeFileSync(
       path,
@@ -663,8 +663,8 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
         return true;
       },
     });
-    assert.equal(ok, false);
-    assert.equal(called, false);
+    assert.equal(ok, true);
+    assert.equal(called, true);
   });
 
   it("skips when current === default", async () => {
