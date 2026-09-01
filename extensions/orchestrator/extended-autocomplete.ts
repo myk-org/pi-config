@@ -423,12 +423,23 @@ function setupPromptTemplateInterceptor(
         item: AutocompleteItem,
         prefix: string,
       ) {
-        // Suggestions above are for an argument token, but the wrapped provider
-        // only knows its own command completion prefix and can replace `/cron add`.
         const line = lines[cursorLine] ?? "";
-        // Pi passes the prior provider's prefix here, which can be `add ev`
-        // instead of this provider's `ev`. Derive the active argument token
-        // from the editor text so accepting completion never eats `/cron add`.
+        // We own only argument suggestions. Delegate slash-command completion
+        // unchanged, otherwise selecting `/pi-config-settings` drops its slash.
+        if (!/^\/\S+\s/.test(line.slice(0, cursorCol))) {
+          const result = current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+          // Some wrapped providers return a bare command value. Keep the slash
+          // that put the editor into command mode so Enter dispatches it.
+          const completed = result.lines[result.cursorLine] ?? "";
+          if (line.startsWith("/") && !completed.startsWith("/")) {
+            const nextLines = [...result.lines];
+            nextLines[result.cursorLine] = `/${completed}`;
+            return { ...result, lines: nextLines, cursorCol: result.cursorCol + 1 };
+          }
+          return result;
+        }
+        // Pi passes the wrapped provider's prefix here, which can be broader
+        // than our argument token. Replace only the current argument token.
         const start = line.lastIndexOf(" ", Math.max(0, cursorCol - 1)) + 1;
         const nextLines = [...lines];
         nextLines[cursorLine] = `${line.slice(0, start)}${item.value}${line.slice(cursorCol)}`;
