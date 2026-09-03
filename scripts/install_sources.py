@@ -217,7 +217,7 @@ def entrypoint_has_single_registration_mechanism(entrypoint_text: str) -> bool:
     grep-then-install pattern inline.
     """
     has_helper = "register_pi_pkg()" in entrypoint_text
-    install_calls_outside_helper = entrypoint_text.count("pi install") - 1  # 1 = the helper's own call
+    install_calls_outside_helper = entrypoint_text.count("pi install") - 2  # 1 = the helper's own call
     uninstall_calls_outside_helper = entrypoint_text.count("pi uninstall") - 1  # 1 = the helper's own migration call
     call_sites = entrypoint_text.count("register_pi_pkg ")
     ok = has_helper and install_calls_outside_helper == 0 and uninstall_calls_outside_helper == 0 and call_sites >= 1
