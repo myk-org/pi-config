@@ -103,7 +103,7 @@ RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1
 RUN npm install -g @apify/mcpc
 
 # Install RTK bin https://github.com/rtk-ai/rtk
-RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+RUN /bin/bash -o pipefail -c "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"
 
 # myk-pi-tools is installed at runtime by entrypoint.sh from the latest
 # pi-config source (pulled via pi update). No need to bake it into the image.
