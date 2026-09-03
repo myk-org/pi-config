@@ -9,12 +9,6 @@ npm install -g @earendil-works/pi-coding-agent
 npm install -g acpx
 npm install -g @apify/mcpc 2>/dev/null || true
 
-# Install https://github.com/dietrichgebert/ponytail
-pi install git:github.com/DietrichGebert/ponytail
-
-# Install https://github.com/rtk-ai/rtk
-rtk init -g --agent pi
-
 # Register pi packages if not already present — single mechanism for all of
 # them. `legacy_marker` catches a stale pre-npm source (e.g. vertex's old
 # racing git-subdir registration) and actively migrates it to npm instead of
