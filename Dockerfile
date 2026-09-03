@@ -102,6 +102,9 @@ RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1
 # MCP CLI — connects servers from ~/.pi/pi-config/mcp.json when that file exists
 RUN npm install -g @apify/mcpc
 
+# Install RTK bin https://github.com/rtk-ai/rtk
+RUN /bin/bash -o pipefail -c "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"
+
 # myk-pi-tools is installed at runtime by entrypoint.sh from the latest
 # pi-config source (pulled via pi update). No need to bake it into the image.
 
@@ -124,8 +127,8 @@ COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 USER root
 # sudo for init-entrypoint (node needs root to chown/symlink host HOME)
 RUN apt-get update && apt-get install -y --no-install-recommends sudo passwd && rm -rf /var/lib/apt/lists/* && \
-    echo 'node ALL=(ALL) NOPASSWD:SETENV: /usr/local/bin/init-entrypoint.sh' >> /etc/sudoers.d/pi-init && \
-    chmod 0440 /etc/sudoers.d/pi-init
+  echo 'node ALL=(ALL) NOPASSWD:SETENV: /usr/local/bin/init-entrypoint.sh' >> /etc/sudoers.d/pi-init && \
+  chmod 0440 /etc/sudoers.d/pi-init
 
 RUN chown node:node /home/node
 
