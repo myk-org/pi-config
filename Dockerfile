@@ -74,6 +74,10 @@ RUN DOCKER_VERSION=$(curl -fsSL https://download.docker.com/linux/static/stable/
 # Copy docker-safe wrapper
 COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 
+# Keep npm current; pin it so container builds remain reproducible.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+  npm install -g npm@12.0.2
+
 # Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli
