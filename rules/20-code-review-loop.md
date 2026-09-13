@@ -4,7 +4,7 @@
 
 ## Mandatory review loop
 
-After ANY code change, send to ALL 6 agents (5 reviewers + test-automator) IN PARALLEL. **Never skip the first review.**
+After ANY code change, send to ALL 6 agents (5 reviewers + test-runner) IN PARALLEL. **Never skip the first review.**
 
 ## Commit enforcement
 
@@ -12,7 +12,7 @@ After ANY code change, send to ALL 6 agents (5 reviewers + test-automator) IN PA
 When `review_loop_enforcement` is enabled, the enforcement rule in `enforcement.ts` blocks `git commit` unless:
 
 - Review status is `clean` (all reviewers returned 0 findings)
-- `tests_passed: true` (test-automator or test command succeeded)
+- `tests_passed: true` (a detected test command, including one run by `test-runner`, succeeded)
 
 **You MUST run the review loop BEFORE attempting `git commit`.** The enforcement rule will reject the commit otherwise.
 Do NOT try to work around it — run the actual review agents to reach `clean` status.
@@ -52,7 +52,7 @@ next resolution layer / default `3` — see `dev-docs/project-settings.md` for t
 Disable the review loop via `review_loop_enforcement: false` — not via max_cycles.
 
 Cap check is after 5a; it only blocks `go to 2` (re-dispatch of step 2 / all 6 agents,
-including test-automator), not completing the current cycle's fix/explain.
+including test-runner), not completing the current cycle's fix/explain.
 
 **After 5a completes on the max cycle, two outcomes** (report them; commit may still be
 allowed via the max-cycle path — see step 6):
@@ -71,7 +71,7 @@ cycle3: dispatch → findings → 5a (fix|explain) → cycle >= max → stop (no
 
 ```text
 1. Specialist writes/fixes code
-2. Send ALL 6 agents IN PARALLEL (async): 5 reviewers + test-automator
+2. Send ALL 6 agents IN PARALLEL (async): 5 reviewers + test-runner
    **On cycle 2+: MANDATORY — include prior cycle findings + responses in each reviewer's prompt (see Step 5a format).**
    Reviewers without this context will blindly repeat the same findings. This is not optional.
 3. Wait for all 6 to complete
@@ -94,7 +94,7 @@ The enforcement rule blocks commits until this is satisfied — if it blocks you
 **After a cap stop:** report the two-outcome result (**Not fixed** → outstanding, **Fixed** → verification
 blocked); commit is allowed when status is `has_findings` or `clean`, no reviewers pending, and
 `cycle >= review_loop_max_cycles` (no `tests_passed` requirement); do **not**
-return to step 2 (re-dispatch of all 6 agents, including test-automator).
+return to step 2 (re-dispatch of all 6 agents, including test-runner).
 {{/IF}}
 
 ## Review Agents
@@ -108,7 +108,7 @@ Six agents run in parallel for comprehensive coverage:
 | `code-reviewer-security` | Bugs, logic errors, and security vulnerabilities |
 | `code-reviewer-docs` | Documentation quality, completeness, and accuracy |
 | `code-reviewer-spec` | Code/PR/issue spec alignment and compliance |
-| `test-automator` | Run project tests (pytest, node tests, pre-commit) |
+| `test-runner` | Run project tests (pytest, node tests, pre-commit) |
 
 **All 6 MUST be invoked as async subagents (`async: true`) in the same assistant turn.
 Do NOT block waiting for results — continue working while they run.**
@@ -171,7 +171,7 @@ Findings that were fixed in code → verify the fix, do not re-raise if correct.
 
 ## Key Rules
 
-Never skip code review — all 6 agents always run (5 reviewers + test-automator).
+Never skip code review — all 6 agents always run (5 reviewers + test-runner).
 Exception: on `chore/bump-version` branches (release version bumps), review dirty-tracking and commit blocking are skipped.
 {{IF:review_loop_enforcement}}
 When `review_loop_enforcement` is enabled: loop, respond to each finding (fix or explain), and re-run all 6 from step 2
@@ -197,12 +197,12 @@ Tests still run and `tests_passed` is still recorded; commit is not blocked by r
 
 - **Bash hook detection:** When any agent runs a test command (`pytest`, `npm test`, `npx tsx --test`, `tox`, `go test`, `vitest`, `jest`, `mocha`),
   the enforcement hook detects it and auto-marks `tests_passed` based on exit code.
-- **Agent completion:** When `test-automator` or `test-runner` agents complete, their result auto-marks `tests_passed`.
+- **Async test agents:** `test-runner` and `test-automator` completion never changes `tests_passed`; agent process completion does not prove its test command passed.
 - **Reset on edit:** Any file edit triggers `markNeedsReview()` (except on `chore/bump-version` branches), which resets `tests_passed: false` —
   preventing stale results.
 
 **Duplicate test run avoidance:** If a specialist already ran tests before the review loop, `tests_passed` may already be `true`.
-Any file edit resets it, so test-automator in the parallel batch always validates the latest code.
+Any file edit resets it, so test-runner in the parallel batch always validates the latest code.
 
 ## Baseline Test Comparison (Step 5)
 

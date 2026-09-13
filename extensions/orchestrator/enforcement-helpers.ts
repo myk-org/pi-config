@@ -939,7 +939,9 @@ export function injectGhBodySignature(command: string, signature: string): strin
 
 /**
  * Detect common test runner commands — require command-start position
- * (after &&, |, ;, or line start) to avoid false positives from install/grep/cat commands.
+ * (after &&, |, ;, a newline, or line start) to avoid false positives from install/grep/cat commands.
+ * `pre-commit` counts only when its `run` subcommand is executed; setup and information
+ * commands must not mark tests as passed.
  * NOTE: For compound commands (e.g., pytest && other_cmd), if the non-test part fails,
  * isError=true marks tests as failed even though pytest passed. This is the conservative/safe
  * direction — re-run the test command standalone to mark tests_passed.
@@ -947,11 +949,14 @@ export function injectGhBodySignature(command: string, signature: string): strin
  * match — we exclude tox with explicit -e to avoid marking lint/docs runs as test passes.
  */
 export function isTestRunnerCommand(command: string): boolean {
-  return /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
+  const result = /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
     || /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?tox\b(?!\s*-e)(?!\s+--(?:help|version|list))/.test(command)
     || /(?:^|[;&|]\s*)go\s+test\b/.test(command)
     || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
-    || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
+    || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command)
+    || /(?:^|[;&|\n]\s*)pre-commit\s+run\b/.test(command);
+  enfLog.debug("isTestRunnerCommand", result);
+  return result;
 }
 
 /** True for release bump branches: chore/bump-version-<digit>... */

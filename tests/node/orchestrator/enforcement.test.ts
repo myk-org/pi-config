@@ -1290,6 +1290,39 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("mocha"), true);
   });
 
+  it("matches direct pre-commit run", () => {
+    assert.equal(isTestRunnerCommand("pre-commit run --all-files"), true);
+  });
+
+  it("matches pre-commit run in compound commands", () => {
+    assert.equal(isTestRunnerCommand("cd /tmp && pre-commit run --all-files"), true);
+    assert.equal(isTestRunnerCommand("pre-commit run --all-files; pytest"), true);
+  });
+
+  it("matches pre-commit run after a newline", () => {
+    assert.equal(isTestRunnerCommand("echo start\npre-commit run --all-files"), true);
+  });
+
+  it("does not match pre-commit setup or information commands", () => {
+    for (const command of [
+      "pre-commit",
+      "pre-commit install",
+      "pre-commit uninstall",
+      "pre-commit autoupdate",
+      "pre-commit validate-config",
+      "pre-commit sample-config",
+      "pre-commit --version",
+      "pre-commit --help",
+    ]) assert.equal(isTestRunnerCommand(command), false, command);
+  });
+
+  it("does not match non-execution pre-commit mentions", () => {
+    assert.equal(isTestRunnerCommand("pip install pre-commit"), false);
+    assert.equal(isTestRunnerCommand("echo pre-commit"), false);
+    assert.equal(isTestRunnerCommand("grep pre-commit requirements.txt"), false);
+    assert.equal(isTestRunnerCommand("cat notes.txt # pre-commit"), false);
+  });
+
   it("does not match pip install pytest", () => {
     assert.equal(isTestRunnerCommand("pip install pytest"), false);
   });

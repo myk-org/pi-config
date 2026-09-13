@@ -289,7 +289,7 @@ export function markTestsPassed(cwd: string): void {
 }
 
 /** Mark that tests have failed. No-op when review status is not being tracked.
- *  Called when a detected test command exits non-zero, or test-automator/test-runner agent fails.
+ *  Called when a detected test command exits non-zero.
  *  Resets to false on any file edit via markNeedsReview(). */
 export function markTestsFailed(cwd: string): void {
   withStateLock(cwd, (state) => {
