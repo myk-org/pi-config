@@ -46,6 +46,7 @@ describe("root npm pack JSON output", () => {
       "extensions/pidiff/pidiff.ts",
       "extensions/pidash/pidash-ui/dist/index.html",
       "extensions/pidiff/pidiff-ui/dist/index.html",
+      "scripts/pidash-session-state.ts",
     ]) {
       assert.ok(paths.includes(requiredPath), `npm pack must include ${requiredPath}`);
     }

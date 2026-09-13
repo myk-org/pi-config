@@ -39,6 +39,7 @@
     "extensions/pidiff/pidiff-ui/dist/",
     "extensions/pitasks/",
     "scripts/pidash-server.ts",
+    "scripts/pidash-session-state.ts",
     "scripts/pidiff-server.ts",
     "scripts/pidiff-git-ignore.ts",
     "scripts/daemon-shared.ts",
