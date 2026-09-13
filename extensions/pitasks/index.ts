@@ -331,7 +331,7 @@ export default function (pi: ExtensionAPI) {
 		shuttingDown = true;
 		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
-		widget.dispose();
+		widget.deactivate();
 		store.setOnChange(() => {});
 		store.close();
 		if (currentWidget === widget) {
@@ -371,7 +371,7 @@ export default function (pi: ExtensionAPI) {
 		shuttingDown = false;
 		agentBusy = false;
 		log.debug("agentBusy", "session_start reset");
-		widget.setUICtx(ctx.ui);
+		widget.reactivate(ctx.ui);
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;
 		log.debug("session_start", reason);

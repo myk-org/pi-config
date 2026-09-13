@@ -187,6 +187,35 @@ describe("pitasks telemetry bridge", () => {
 		}
 	});
 
+	it("reactivates its widget after shutdown and resume", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-"));
+		const taskPath = join(dir, "tasks.json");
+		const piTasks = process.env.PI_TASKS;
+		const handlers = new Map<string, Function>();
+		let registrations = 0;
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = taskPath;
+		try {
+			const api = { on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(api as any);
+			const context = { ui: { setWidget(_name: string, value: any) { if (value) registrations++; } }, sessionManager: { getSessionId: () => "widget-test" } };
+			await handlers.get("session_start")!({ reason: "startup" }, context);
+			taskStore.create("Resume", "body", createdBy);
+			await handlers.get("tool_execution_start")!({}, context);
+			handlers.get("session_shutdown")!();
+			await handlers.get("session_start")!({ reason: "resume" }, context);
+			assert.equal(registrations, 2);
+		} finally {
+			handlers.get("session_shutdown")?.();
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("forwards deactivation to the current widget", async () => {
 		const child = process.env.PI_SUBAGENT_CHILD;
 		const handlers = new Map<string, Function>();

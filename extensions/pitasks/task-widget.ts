@@ -53,6 +53,21 @@ export class TaskWidget {
 	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
 
+	reactivate(ctx: any): void {
+		this.disposed = false;
+		this.uiCtx = ctx;
+		log.debug("widget_reactivated", { taskCount: this.store.list().length });
+	}
+
+	deactivate(): void {
+		log.debug("widget_deactivated", { hadWidget: this.widgetRegistered, hadTimer: !!this.widgetInterval });
+		if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
+		if (this.uiCtx) this.uiCtx.setWidget("tasks", undefined);
+		this.widgetRegistered = false;
+		this.tui = undefined;
+		this.uiCtx = undefined;
+	}
+
 	setActiveTask(taskId: string, active = true): void {
 		const task = this.store.get(taskId);
 		log.debug("task_telemetry_active", { taskId, active, status: task?.status });
@@ -160,6 +175,7 @@ export class TaskWidget {
 	}
 
 	update(): void {
+		log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: this.store.list().length });
 		if (this.disposed || !this.uiCtx) return;
 		const tasks = this.store.list();
 		if (tasks.length === 0) {
@@ -187,11 +203,8 @@ export class TaskWidget {
 	}
 
 	dispose(): void {
+		log.debug("widget_disposed", { hadWidget: this.widgetRegistered, hadTimer: !!this.widgetInterval });
 		this.disposed = true;
-		if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
-		if (this.uiCtx) this.uiCtx.setWidget("tasks", undefined);
-		this.widgetRegistered = false;
-		this.tui = undefined;
-		this.uiCtx = undefined;
+		this.deactivate();
 	}
 }
