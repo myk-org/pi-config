@@ -12,7 +12,7 @@ After ANY code change, send to ALL 6 agents (5 reviewers + test-runner) IN PARAL
 When `review_loop_enforcement` is enabled, the enforcement rule in `enforcement.ts` blocks `git commit` unless:
 
 - Review status is `clean` (all reviewers returned 0 findings)
-- `tests_passed: true` (test-runner or test command succeeded)
+- `tests_passed: true` (a detected test command, including one run by `test-runner`, succeeded)
 
 **You MUST run the review loop BEFORE attempting `git commit`.** The enforcement rule will reject the commit otherwise.
 Do NOT try to work around it — run the actual review agents to reach `clean` status.
@@ -197,7 +197,7 @@ Tests still run and `tests_passed` is still recorded; commit is not blocked by r
 
 - **Bash hook detection:** When any agent runs a test command (`pytest`, `npm test`, `npx tsx --test`, `tox`, `go test`, `vitest`, `jest`, `mocha`),
   the enforcement hook detects it and auto-marks `tests_passed` based on exit code.
-- **Agent completion:** When `test-runner` completes, its result auto-marks `tests_passed`.
+- **Async test agents:** `test-runner` and `test-automator` completion never changes `tests_passed`; agent process completion does not prove its test command passed.
 - **Reset on edit:** Any file edit triggers `markNeedsReview()` (except on `chore/bump-version` branches), which resets `tests_passed: false` —
   preventing stale results.
 
