@@ -266,13 +266,21 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
+    if result.returncode != 0:
+        log.error(
+            "GraphQL request failed",
+            extra={
+                "returncode": result.returncode,
+                "response_bytes": len(stdout_bytes),
+                "stderr_bytes": len(stderr_bytes),
+            },
+        )
+        return False, error_output
+
     log.debug(
         "GraphQL request completed",
         extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes), "stderr_bytes": len(stderr_bytes)},
     )
-
-    if result.returncode != 0:
-        return False, error_output
 
     _, body, _ = _split_http_response(stdout)
     # Validate JSON response - parse the body only, not --include headers.

@@ -39,6 +39,7 @@ export class TaskWidget {
 	private metrics = new Map<string, { startedAt: number; inputTokens: number; outputTokens: number }>();
 	private tui: any;
 	private widgetRegistered = false;
+	private disposed = false;
 
 	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
 		log.debug("widget_created", { taskCount: store.list().length });
@@ -159,7 +160,7 @@ export class TaskWidget {
 	}
 
 	update(): void {
-		if (!this.uiCtx) return;
+		if (this.disposed || !this.uiCtx) return;
 		const tasks = this.store.list();
 		if (tasks.length === 0) {
 			if (this.widgetRegistered) { this.uiCtx.setWidget("tasks", undefined); this.widgetRegistered = false; }
@@ -186,9 +187,11 @@ export class TaskWidget {
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
 		if (this.uiCtx) this.uiCtx.setWidget("tasks", undefined);
 		this.widgetRegistered = false;
 		this.tui = undefined;
+		this.uiCtx = undefined;
 	}
 }

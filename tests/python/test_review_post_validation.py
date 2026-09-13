@@ -116,6 +116,28 @@ def test_run_graphql_returns_safe_diagnostics_for_unparseable_success_response(
     assert run.call_args.args[0] == ["gh", "api", "graphql", "--include", "--input", "-"]
 
 
+def test_run_graphql_logs_failed_subprocess_at_error_with_safe_metadata(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Nonzero GraphQL subprocess results emit an error-level operational event."""
+    monkeypatch.setattr(
+        post.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess(["gh"], 1, stdout=b"response", stderr=b"failure")),
+    )
+
+    with caplog.at_level("DEBUG", logger="myk_pi_tools.reviews.post"):
+        assert post.run_graphql("query", {}) == (False, "response\nfailure")
+
+    record = next(record for record in caplog.records if record.message == "GraphQL request failed")
+    assert record.levelname == "ERROR"
+    assert {field: record.__dict__[field] for field in ("returncode", "response_bytes", "stderr_bytes")} == {
+        "returncode": 1,
+        "response_bytes": 8,
+        "stderr_bytes": 7,
+    }
+
+
 def test_run_graphql_redacts_secret_crossing_preview_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     """Secrets are redacted before a bounded response preview is taken."""
     secret = "reply-secret-crossing-preview-boundary"  # pragma: allowlist secret
