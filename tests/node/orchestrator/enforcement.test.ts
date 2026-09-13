@@ -1290,18 +1290,30 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("mocha"), true);
   });
 
-  it("matches standalone pre-commit commands", () => {
-    assert.equal(isTestRunnerCommand("pre-commit"), true);
+  it("matches direct pre-commit run", () => {
     assert.equal(isTestRunnerCommand("pre-commit run --all-files"), true);
   });
 
-  it("matches pre-commit in compound commands", () => {
+  it("matches pre-commit run in compound commands", () => {
     assert.equal(isTestRunnerCommand("cd /tmp && pre-commit run --all-files"), true);
     assert.equal(isTestRunnerCommand("pre-commit run --all-files; pytest"), true);
   });
 
-  it("matches pre-commit after a newline", () => {
+  it("matches pre-commit run after a newline", () => {
     assert.equal(isTestRunnerCommand("echo start\npre-commit run --all-files"), true);
+  });
+
+  it("does not match pre-commit setup or information commands", () => {
+    for (const command of [
+      "pre-commit",
+      "pre-commit install",
+      "pre-commit uninstall",
+      "pre-commit autoupdate",
+      "pre-commit validate-config",
+      "pre-commit sample-config",
+      "pre-commit --version",
+      "pre-commit --help",
+    ]) assert.equal(isTestRunnerCommand(command), false, command);
   });
 
   it("does not match non-execution pre-commit mentions", () => {
