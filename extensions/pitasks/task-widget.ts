@@ -3,7 +3,10 @@
  * Copied from @tintinweb/pi-tasks (MIT license).
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
+
+const log = createLogger("pitasks");
 
 const SPINNER = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 const DEFAULT_MAX_VISIBLE_TASKS = 10;
@@ -38,25 +41,20 @@ export class TaskWidget {
 	private widgetRegistered = false;
 
 	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
-		this.activateInProgressTasks();
-	}
-
-	private activateInProgressTasks(): void {
-		for (const task of this.store.list()) {
-			if (task.status === "in_progress") this.setActiveTask(task.id);
-		}
+		log.debug("widget_created", { taskCount: store.list().length });
 	}
 
 	setStore(store: TaskStore): void {
 		this.store = store;
 		this.activeTaskIds.clear();
 		this.metrics.clear();
-		this.activateInProgressTasks();
+		log.debug("widget_store_set", { taskCount: store.list().length });
 	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
 
 	setActiveTask(taskId: string, active = true): void {
 		const task = this.store.get(taskId);
+		log.debug("task_telemetry_active", { taskId, active, status: task?.status });
 		if (taskId && active && task) {
 			this.activeTaskIds.add(taskId);
 			const telemetry = task.telemetry ?? { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
@@ -71,6 +69,7 @@ export class TaskWidget {
 	}
 
 	addTokenUsage(inputTokens: number, outputTokens: number): void {
+		log.debug("task_telemetry_usage", { activeTaskCount: this.activeTaskIds.size, inputTokens, outputTokens });
 		for (const id of this.activeTaskIds) {
 			const m = this.metrics.get(id);
 			if (m) {
@@ -88,6 +87,7 @@ export class TaskWidget {
 	}
 
 	private renderWidget(tui: any, theme: any): string[] {
+		log.debug("task_widget_render", { taskCount: this.store.list().length });
 		try { return this.buildWidgetLines(tui, theme); } catch { return []; }
 	}
 

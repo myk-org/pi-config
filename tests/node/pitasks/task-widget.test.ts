@@ -3,129 +3,177 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pitasks, {
+	createTaskForSession,
+	createTasksForSession,
+	deleteTaskForSession,
+	getTaskForSession,
+	listTasksForSession,
+	setTaskTelemetryActive,
+	taskStore,
+	updateTaskForSession,
+	updateTasksForSession,
+} from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
 
-describe("TaskWidget completed metrics", () => {
-	it("keeps completed elapsed time and token counts without rendering task body", () => {
+const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
+const theme = { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text };
+
+function renderer(widget: TaskWidget): () => string[] {
+	let render: (() => string[]) | undefined;
+	widget.setUICtx({
+		setWidget(_name: string, value: any) { if (value) render = value({ terminal: { columns: 200 } }, theme).render; },
+	});
+	widget.update();
+	assert.ok(render);
+	return render;
+}
+
+function withNow(fn: (setNow: (now: number) => void) => void): void {
+	const originalNow = Date.now;
+	let now = 0;
+	Date.now = () => now;
+	try { fn(value => { now = value; }); } finally { Date.now = originalNow; }
+}
+
+describe("TaskWidget rendering", () => {
+	it("renders completed telemetry", () => withNow(setNow => {
 		const store = new TaskStore();
 		const widget = new TaskWidget(store);
-		const task = store.create("Completed task", "SECRET TASK BODY");
-		const originalNow = Date.now;
 		try {
-			Date.now = () => 1_000;
+			const task = store.create("Completed task", "body", createdBy);
+			setNow(1_000); store.update(task.id, { status: "in_progress" }); widget.setActiveTask(task.id); widget.addTokenUsage(1_234, 567);
+			setNow(61_000); store.update(task.id, { status: "completed" }); widget.setActiveTask(task.id, false);
+			assert.match(renderer(widget)().join("\n"), /\(1m · ↑ 1\.2k ↓ 567\)/);
+		} finally { widget.dispose(); }
+	}));
+
+	it("freezes completed elapsed time", () => withNow(setNow => {
+		const store = new TaskStore();
+		const widget = new TaskWidget(store);
+		try {
+			const task = store.create("Completed task", "body", createdBy);
+			setNow(1_000); store.update(task.id, { status: "in_progress" });
+			setNow(61_000); store.update(task.id, { status: "completed" });
+			const render = renderer(widget);
+			const completed = render().join("\n"); setNow(999_999);
+			assert.equal(render().join("\n"), completed);
+		} finally { widget.dispose(); }
+	}));
+
+	it("omits completed task details", () => {
+		const store = new TaskStore();
+		const widget = new TaskWidget(store);
+		try {
+			const task = store.create("Completed task", "SECRET TASK BODY", createdBy);
 			store.update(task.id, { status: "in_progress", activeForm: "leaking active form" });
-			widget.setActiveTask(task.id);
-			widget.addTokenUsage(1_234, 567);
-			Date.now = () => 61_000;
 			store.update(task.id, { status: "completed" });
-			widget.setActiveTask(task.id, false);
-
-			const render = () => (widget as any).buildWidgetLines(
-				{ terminal: { columns: 200 } },
-				{ fg: (_color: string, text: string) => text, strikethrough: (text: string) => text },
-			).join("\n");
-			const completed = render();
-			Date.now = () => 999_999;
-
-			assert.match(completed, /\(1m · ↑ 1\.2k ↓ 567\)/);
-			assert.equal(render(), completed);
-			assert.doesNotMatch(completed, /SECRET TASK BODY|leaking active form/);
-		} finally {
-			Date.now = originalNow;
-			widget.dispose();
-		}
+			assert.doesNotMatch(renderer(widget)().join("\n"), /SECRET TASK BODY|leaking active form/);
+		} finally { widget.dispose(); }
 	});
 });
 
 describe("TaskWidget telemetry lifecycle", () => {
-	it("reactivates persisted in-progress telemetry after reload", () => {
+	it("does not attribute a turn to restored in-progress tasks", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pitasks-"));
 		const path = join(dir, "tasks.json");
-		const originalNow = Date.now;
 		try {
+			const originalNow = Date.now;
 			Date.now = () => 1_000;
 			const store = new TaskStore(path);
-			const task = store.create("Running task", "body", { type: "local", origin: "system", session: "", project: "" });
-			store.update(task.id, { status: "in_progress", telemetry: { startedAt: 1_000, inputTokens: 5, outputTokens: 3 } });
+			const first = store.create("First", "body", createdBy);
+			const second = store.create("Second", "body", createdBy);
+			store.updateTasks([{ id: first.id, fields: { status: "in_progress" } }, { id: second.id, fields: { status: "in_progress" } }]);
 			store.close();
-
-			Date.now = () => 2_000;
 			const reloaded = new TaskStore(path);
 			const widget = new TaskWidget(reloaded);
-			widget.setActiveTask(task.id);
 			widget.addTokenUsage(7, 11);
-			assert.deepEqual(reloaded.get(task.id)?.telemetry, { startedAt: 1_000, inputTokens: 12, outputTokens: 14 });
-			widget.dispose();
-			reloaded.close();
-		} finally {
+			assert.deepEqual(reloaded.get(first.id)?.telemetry, { startedAt: reloaded.get(first.id)?.telemetry?.startedAt, inputTokens: 0, outputTokens: 0 });
+			assert.deepEqual(reloaded.get(second.id)?.telemetry, { startedAt: reloaded.get(second.id)?.telemetry?.startedAt, inputTokens: 0, outputTokens: 0 });
+			widget.dispose(); reloaded.close();
 			Date.now = originalNow;
-			rmSync(dir, { recursive: true, force: true });
-		}
+		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 
-	it("starts a fresh telemetry attempt when a completed task restarts", () => {
+	it("attributes usage to a task explicitly activated after reload", () => {
 		const store = new TaskStore();
+		const task = store.create("Running task", "body", createdBy);
+		store.update(task.id, { status: "in_progress", telemetry: { startedAt: 1_000, inputTokens: 5, outputTokens: 3 } });
 		const widget = new TaskWidget(store);
-		const task = store.create("Restarted task", "body", { type: "local", origin: "system", session: "", project: "" });
-		const originalNow = Date.now;
 		try {
-			Date.now = () => 1_000;
-			store.update(task.id, { status: "in_progress" });
-			widget.setActiveTask(task.id);
-			widget.addTokenUsage(10, 20);
-			Date.now = () => 2_000;
-			store.update(task.id, { status: "completed" });
-			widget.setActiveTask(task.id, false);
+			widget.setActiveTask(task.id); widget.addTokenUsage(7, 11);
+			assert.deepEqual(store.get(task.id)?.telemetry, { startedAt: 1_000, inputTokens: 12, outputTokens: 14 });
+		} finally { widget.dispose(); }
+	});
 
-			Date.now = () => 3_000;
-			store.update(task.id, { status: "in_progress" });
-			widget.setActiveTask(task.id);
-			widget.addTokenUsage(1, 2);
+	it("clears old telemetry when its store changes", () => {
+		const oldStore = new TaskStore();
+		const oldTask = oldStore.create("Old", "body", createdBy);
+		oldStore.update(oldTask.id, { status: "in_progress" });
+		const replacement = new TaskStore();
+		const newTask = replacement.create("New", "body", createdBy);
+		replacement.update(newTask.id, { status: "in_progress" });
+		const widget = new TaskWidget(oldStore);
+		try {
+			widget.setActiveTask(oldTask.id); widget.setStore(replacement); widget.setActiveTask(newTask.id); widget.addTokenUsage(7, 11);
+			assert.deepEqual(oldStore.get(oldTask.id)?.telemetry?.inputTokens, 0);
+			assert.deepEqual(replacement.get(newTask.id)?.telemetry?.inputTokens, 7);
+		} finally { widget.dispose(); }
+	});
+
+	it("starts fresh telemetry when a completed task restarts", () => withNow(setNow => {
+		const store = new TaskStore(); const widget = new TaskWidget(store); const task = store.create("Restarted", "body", createdBy);
+		try {
+			setNow(1_000); store.update(task.id, { status: "in_progress" }); widget.setActiveTask(task.id); widget.addTokenUsage(10, 20);
+			setNow(2_000); store.update(task.id, { status: "completed" }); widget.setActiveTask(task.id, false);
+			setNow(3_000); store.update(task.id, { status: "in_progress" }); widget.setActiveTask(task.id); widget.addTokenUsage(1, 2);
 			assert.deepEqual(store.get(task.id)?.telemetry, { startedAt: 3_000, inputTokens: 1, outputTokens: 2 });
+		} finally { widget.dispose(); }
+	}));
+});
+
+describe("session-targeted task helpers", () => {
+	it("close their temporary stores", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pitasks-session-store-"));
+		const originalClose = TaskStore.prototype.close;
+		let closeCount = 0;
+		TaskStore.prototype.close = function () { closeCount++; return originalClose.call(this); };
+		try {
+			const task = createTaskForSession("session", "Task", "body", createdBy, undefined, dir);
+			createTasksForSession("session", [{ subject: "Task two", description: "body", createdBy }], dir);
+			getTaskForSession("session", task.id, dir);
+			listTasksForSession("session", dir);
+			updateTaskForSession("session", task.id, { status: "in_progress" }, dir);
+			updateTasksForSession("session", [{ id: task.id, fields: { status: "completed" } }], dir);
+			deleteTaskForSession("session", task.id, dir);
+			assert.equal(closeCount, 7);
 		} finally {
-			Date.now = originalNow;
-			widget.dispose();
+			TaskStore.prototype.close = originalClose;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
 
-describe("TaskWidget persisted metrics", () => {
-	it("hydrates completed telemetry with frozen duration after reload", () => {
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-"));
-		const path = join(dir, "tasks.json");
-		const originalNow = Date.now;
+describe("pitasks telemetry bridge", () => {
+	it("forwards activation and deactivation to the current widget", () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		delete process.env.PI_SUBAGENT_CHILD;
 		try {
-			Date.now = () => 1_000;
-			const store = new TaskStore(path);
-			const task = store.create("Persisted task", "body", { type: "local", origin: "system", session: "", project: "" });
-			store.update(task.id, { status: "in_progress" });
-			const widget = new TaskWidget(store);
-			widget.setActiveTask(task.id);
-			widget.addTokenUsage(1_234, 567);
-			Date.now = () => 61_000;
-			store.update(task.id, { status: "completed" });
-			widget.setActiveTask(task.id, false);
-			widget.dispose();
-			store.close();
-
-			const reloaded = new TaskStore(path);
-			assert.deepEqual(reloaded.get(task.id)?.telemetry, { startedAt: 1_000, endedAt: 61_000, inputTokens: 1_234, outputTokens: 567 });
-			const pending = reloaded.create("Queued task", "body", { type: "local", origin: "system", session: "", project: "" });
-			reloaded.update(pending.id, { telemetry: { startedAt: 1_000, inputTokens: 20, outputTokens: 10 } });
-			const reloadedWidget = new TaskWidget(reloaded);
-			const lines = (reloadedWidget as any).buildWidgetLines(
-				{ terminal: { columns: 200 } },
-				{ fg: (_color: string, text: string) => text, strikethrough: (text: string) => text },
-			).join("\n");
-			Date.now = () => 999_999;
-			assert.match(lines, /\(1m · ↑ 1\.2k ↓ 567\)/);
-			assert.match(lines, /#2 Queued task \(1m · ↑ 20 ↓ 10\)/);
-			reloadedWidget.dispose();
-			reloaded.close();
+			const handlers = new Map<string, Function>();
+			const api = { on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(api as any);
+			const ui = { setWidget() {} };
+			return Promise.resolve(handlers.get("session_start")!({ reason: "new" }, { ui, sessionManager: { getSessionId: () => "widget-test" } })).then(() => {
+				const task = taskStore.create("Bridge", "body", createdBy);
+				taskStore.update(task.id, { status: "in_progress" });
+				setTaskTelemetryActive(task.id); setTaskTelemetryActive(task.id, false);
+				assert.ok(taskStore.get(task.id)?.telemetry?.endedAt);
+				handlers.get("session_shutdown")!();
+			});
 		} finally {
-			Date.now = originalNow;
-			rmSync(dir, { recursive: true, force: true });
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
 		}
 	});
 });

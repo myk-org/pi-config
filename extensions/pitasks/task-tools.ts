@@ -367,6 +367,10 @@ Set up task dependencies:
 				},
 			}));
 			const results = store.updateTasks(updates);
+			for (const update of updates) {
+				if (update.fields.status === "in_progress") widget.setActiveTask(update.id);
+				else if (update.fields.status !== undefined) widget.setActiveTask(update.id, false);
+			}
 			widget.update();
 			const lines = results.map(r => r.success ? `#${r.id}: ${r.changedFields?.join(", ") || "no changes"}` : `#${r.id}: not found`);
 			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${lines.join("\n")}`);

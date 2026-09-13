@@ -156,6 +156,7 @@ def _split_http_response(stdout: str) -> tuple[dict[str, str], str, str]:
     offset = 0
     response = _HTTP_RESPONSE.match(stdout)
     if not response:
+        log.debug("No HTTP response headers found", extra={"output_chars": len(stdout)})
         return {}, stdout, "unknown"
     while response:
         offset += response.end()
@@ -169,7 +170,12 @@ def _split_http_response(stdout: str) -> tuple[dict[str, str], str, str]:
         if ":" in line
         for key, value in [line.split(":", 1)]
     }
-    return headers, stdout[offset:], response.group(1)
+    body = stdout[offset:]
+    log.debug(
+        "Parsed HTTP response headers",
+        extra={"status": response.group(1), "header_count": len(headers), "body_chars": len(body)},
+    )
+    return headers, body, response.group(1)
 
 
 def _response_body_bytes(stdout: bytes) -> bytes:
@@ -179,7 +185,9 @@ def _response_body_bytes(stdout: bytes) -> bytes:
     while response:
         offset += response.end()
         response = _HTTP_RESPONSE_BYTES.match(stdout[offset:])
-    return stdout[offset:]
+    body = stdout[offset:]
+    log.debug("Extracted HTTP response body bytes", extra={"body_bytes": len(body)})
+    return body
 
 
 def _redact_response_preview(body: str, secrets: list[str]) -> str:
@@ -196,7 +204,12 @@ def _redact_response_preview(body: str, secrets: list[str]) -> str:
         r"\1[REDACTED]",
         preview,
     )
-    return preview[:1_000]
+    preview = preview[:1_000]
+    log.debug(
+        "Redacted HTTP response preview",
+        extra={"body_chars": len(body), "secret_count": len(secrets), "preview_chars": len(preview)},
+    )
+    return preview
 
 
 def _graphql_parse_error(
@@ -231,6 +244,7 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
     """
     payload = {"query": query, "variables": variables}
     cmd = ["gh", "api", "graphql", "--include", "--input", "-"]
+    log.debug("Running GraphQL request", extra={"variable_count": len(variables)})
 
     try:
         result = subprocess.run(
@@ -252,6 +266,10 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
+    log.debug(
+        "GraphQL request completed",
+        extra={"returncode": result.returncode, "response_bytes": len(stdout_bytes), "stderr_bytes": len(stderr_bytes)},
+    )
 
     if result.returncode != 0:
         return False, error_output
@@ -268,6 +286,7 @@ def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, 
         error_msg = data["errors"][0].get("message", "Unknown error")
         return False, error_msg
 
+    log.debug("GraphQL response parsed", extra={"response_bytes": len(stdout_bytes), "has_errors": False})
     return True, data
 
 

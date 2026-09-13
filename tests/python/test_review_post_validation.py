@@ -183,14 +183,32 @@ def test_run_graphql_parses_valid_included_response(monkeypatch: pytest.MonkeyPa
     assert post.run_graphql("query", {}) == (True, {"data": {"ok": True}})
 
 
-def test_split_http_response_uses_final_response_and_handles_headerless_output() -> None:
-    """Redirect/proxy headers use the final response; missing headers stay diagnosable."""
+def test_split_http_response_selects_final_response_after_redirects() -> None:
+    """Redirect/proxy headers use the final response."""
     headers, body, status = post._split_http_response(
         "HTTP/1.1 302 Found\nLocation: https://api.github.com/graphql\n\n"
         "HTTP/2.0 200 OK\nContent-Type: application/json\n\n{}"
     )
     assert (headers, body, status) == ({"content-type": "application/json"}, "{}", "200")
+
+
+def test_split_http_response_returns_fallback_for_headerless_output() -> None:
+    """Missing headers stay diagnosable."""
     assert post._split_http_response("not json") == ({}, "not json", "unknown")
+
+
+def test_response_helpers_emit_safe_structured_logs(caplog: pytest.LogCaptureFixture) -> None:
+    """Response parsing logs only operational metadata."""
+    with caplog.at_level("DEBUG", logger="myk_pi_tools.reviews.post"):
+        post._split_http_response("HTTP/2.0 200 OK\nContent-Type: application/json\n\n{}")
+        post._response_body_bytes(b"HTTP/2.0 200 OK\n\n{}")
+        post._redact_response_preview('token="secret"', [])
+
+    assert {record.message for record in caplog.records} == {
+        "Parsed HTTP response headers",
+        "Extracted HTTP response body bytes",
+        "Redacted HTTP response preview",
+    }
 
 
 def test_split_http_response_does_not_parse_http_like_body_content() -> None:

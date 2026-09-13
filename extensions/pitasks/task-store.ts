@@ -9,6 +9,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Task, TaskStatus, TaskStoreData } from "./types.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("pitasks");
 
 function sortById(a: Task, b: Task): number {
 	return Number(a.id) - Number(b.id);
@@ -61,6 +64,7 @@ function isProcessRunning(pid: number): boolean {
 
 function normalizeTask(t: any): Task {
 	const now = Date.now();
+	log.debug("task_normalized", { taskId: t.id, hasTelemetry: !!t.telemetry });
 	return {
 		...t,
 		createdBy: t.createdBy && typeof t.createdBy === "object" ? t.createdBy :
@@ -271,6 +275,7 @@ export class TaskStore {
 	}): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
 		return this.withLock(() => {
 			const task = this.tasks.get(id);
+			log.debug("task_updated", { taskId: id, status: fields.status, hasTelemetry: fields.telemetry !== undefined });
 			if (!task) return { task: undefined, changedFields: [], warnings: [] };
 			const changedFields: string[] = [];
 			const warnings: string[] = [];
@@ -348,6 +353,7 @@ export class TaskStore {
 
 	updateTasks(updates: Array<{ id: string; fields: Record<string, any> }>): Array<{ id: string; success: boolean; changedFields?: string[] }> {
 		return this.withLock(() => {
+			log.debug("tasks_updated", { count: updates.length, statusUpdates: updates.filter(update => update.fields.status !== undefined).length });
 			const results: Array<{ id: string; success: boolean; changedFields?: string[] }> = [];
 			for (const { id, fields } of updates) {
 				const task = this.tasks.get(id);

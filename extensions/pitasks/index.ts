@@ -34,6 +34,7 @@ const log = createLogger("pitasks");
 let currentUiCtx: any = null;
 let currentWidget: TaskWidget | null = null;
 export function setTaskTelemetryActive(taskId: string, active = true): void {
+	log.debug("task_telemetry_active", { taskId, active });
 	currentWidget?.setActiveTask(taskId, active);
 }
 
@@ -57,7 +58,9 @@ export function listTasks(): any[] {
 
 /** Update a task — for use by other extensions. */
 export function updateTask(id: string, fields: any): any {
-	return taskStore.update(id, fields);
+	const result = taskStore.update(id, fields);
+	if (result.changedFields.includes("status")) setTaskTelemetryActive(id, fields.status === "in_progress");
+	return result;
 }
 
 /** Delete a task — for use by other extensions. */
@@ -72,7 +75,11 @@ export function createTaskForSession(sessionId: string, subject: string, descrip
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata);
+	try {
+		return store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata);
+	} finally {
+		store.close();
+	}
 }
 
 /** Create multiple tasks on a specific session's store. Used by coms for bulk task creation. */
@@ -80,7 +87,11 @@ export function createTasksForSession(sessionId: string, tasks: Array<{ subject:
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.createTasks(tasks);
+	try {
+		return store.createTasks(tasks);
+	} finally {
+		store.close();
+	}
 }
 
 /** Get a task from a specific session's store. */
@@ -88,7 +99,11 @@ export function getTaskForSession(sessionId: string, taskId: string, targetCwd?:
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.get(taskId);
+	try {
+		return store.get(taskId);
+	} finally {
+		store.close();
+	}
 }
 
 /** List tasks from a specific session's store. */
@@ -96,7 +111,11 @@ export function listTasksForSession(sessionId: string, targetCwd?: string): any[
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.list();
+	try {
+		return store.list();
+	} finally {
+		store.close();
+	}
 }
 
 /** Update a task on a specific session's store. */
@@ -104,7 +123,11 @@ export function updateTaskForSession(sessionId: string, taskId: string, fields: 
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.update(taskId, fields);
+	try {
+		return store.update(taskId, fields);
+	} finally {
+		store.close();
+	}
 }
 
 /** Update multiple tasks on a specific session's store. Used by coms for bulk updates. */
@@ -112,7 +135,11 @@ export function updateTasksForSession(sessionId: string, updates: Array<{ id: st
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.updateTasks(updates);
+	try {
+		return store.updateTasks(updates);
+	} finally {
+		store.close();
+	}
 }
 
 /** Delete a task from a specific session's store. */
@@ -120,7 +147,11 @@ export function deleteTaskForSession(sessionId: string, taskId: string, targetCw
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.delete(taskId);
+	try {
+		return store.delete(taskId);
+	} finally {
+		store.close();
+	}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -144,6 +175,7 @@ export default function (pi: ExtensionAPI) {
 
 	let store = new TaskStore(resolveStorePath());
 	taskStore = store;
+	currentWidget?.dispose();
 	const widget = new TaskWidget(store);
 	currentWidget = widget;
 	const instanceId = Math.random().toString(36).slice(2, 8);
@@ -284,6 +316,9 @@ export default function (pi: ExtensionAPI) {
 		shuttingDown = true;
 		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
+		widget.dispose();
+		store.close();
+		if (currentWidget === widget) currentWidget = null;
 	});
 
 	pi.on("turn_start", async (_event: any, ctx: any) => {
