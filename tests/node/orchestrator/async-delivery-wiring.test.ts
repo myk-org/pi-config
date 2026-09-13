@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { markNeedsReview, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 
 const reviewerOutput = JSON.stringify({ findings: Array.from({ length: 100 }, () => ({ detail: "sensitive ".repeat(80) })) });
 
@@ -44,11 +45,11 @@ function harness() {
   };
   handlers.get("session_start")![0]({}, ctx);
   const resultDir = () => join(cwd, ".pi", "tmp", readdirSync(join(cwd, ".pi", "tmp")).find(name => name.startsWith(`async-results-pid-${process.pid}`))!);
-  const result = (id: string, output = reviewerOutput) => {
-    writeFileSync(join(cwd, ".pi", "tmp", id, "status.json"), JSON.stringify({ runId: id, state: "running" }));
-    writeFileSync(join(resultDir(), `${id}.json`), JSON.stringify({ id, agent: "code-reviewer-runtime", task: "review", success: true, output, durationMs: 1, exitCode: 0 }));
+  const result = (id: string, output = reviewerOutput, agent = "code-reviewer-runtime", status = {}) => {
+    writeFileSync(join(cwd, ".pi", "tmp", id, "status.json"), JSON.stringify({ runId: id, state: "running", ...status }));
+    writeFileSync(join(resultDir(), `${id}.json`), JSON.stringify({ id, agent, task: "review", success: true, output, durationMs: 1, exitCode: 0 }));
   };
-  const spawn = (groupId?: string) => api.spawnAsyncAgent("code-reviewer-runtime", "review", cwd, [{ name: "code-reviewer-runtime" } as any], { groupId });
+  const spawn = (groupId?: string, agent = "code-reviewer-runtime") => api.spawnAsyncAgent(agent, "review", cwd, [{ name: agent } as any], { groupId });
   return { cwd, api, commands, ctx, events, intervals, messages, overlayOpens: () => overlayOpens, result, spawn, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
 }
 
@@ -73,6 +74,45 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   it("formats reconciliation delivery through registered async agents", async () => {
     const h = harness();
     try { h.rejectNextSend(); const job = h.spawn(); h.result(job.id); await settled(); assert.equal(h.messages.length, 0); h.intervals[0](); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
+  });
+
+  it("keeps tests pending after grouped test-runner completion", async () => {
+    const h = harness();
+    try {
+      markNeedsReview(h.cwd);
+      const job = h.spawn("tests", "test-runner");
+      h.result(job.id, "Passed", "test-runner");
+      await settled();
+      assert.match(h.messages[0].content, /test-runner/);
+      assert.equal(readReviewState(h.cwd).tests_passed, false);
+    } finally { h.restore(); }
+  });
+
+  it("keeps tests pending after zombie test-automator result ingestion", () => {
+    const h = harness();
+    try {
+      markNeedsReview(h.cwd);
+      const job = h.spawn(undefined, "test-automator");
+      h.result(job.id, "Passed", "test-automator", { pid: 999_999_999 });
+      h.intervals[0]();
+      assert.match(h.messages[0].content, /test-automator/);
+      assert.equal(readReviewState(h.cwd).tests_passed, false);
+    } finally { h.restore(); }
+  });
+
+  it("keeps tests pending after reconciliation delivery of a test-runner result", async () => {
+    const h = harness();
+    try {
+      markNeedsReview(h.cwd);
+      h.rejectNextSend();
+      const job = h.spawn(undefined, "test-runner");
+      h.result(job.id, "Passed", "test-runner");
+      await settled();
+      assert.equal(h.messages.length, 0);
+      h.intervals[0]();
+      assert.match(h.messages[0].content, /test-runner/);
+      assert.equal(readReviewState(h.cwd).tests_passed, false);
+    } finally { h.restore(); }
   });
 
   it("persists a result and defers delivery when the captured context becomes stale", async () => {

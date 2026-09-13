@@ -16,7 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
-import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
+import { addReviewerPending, recordReviewerResult, countFindings, readReviewState } from "./pi-config-review-state.js";
 import {
   getMainBranch,
 } from "./git-helpers.js";
@@ -337,9 +337,6 @@ export function registerAsyncAgents(
                     const findings = countFindings(typeof data.output === "string" ? data.output : "");
                     try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { zombieSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
                   }
-                  if (job.agent === "test-automator" || job.agent === "test-runner") {
-                    try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { zombieSideEffectsOk = false; log.error(`markTests failed for ${job.agent}: ${e?.message}`); }
-                  }
                   if (zombieSideEffectsOk) job.sideEffectsApplied = true;
                   try { fs.unlinkSync(resultFilePath); } catch {}
                 } catch {
@@ -404,9 +401,6 @@ export function registerAsyncAgents(
             if (job.agent.startsWith("code-reviewer-")) {
               const findings = countFindings(typeof job.output === "string" ? job.output : "");
               try { recordReviewerResult(jobCwd(job), job.agent, findings < 0 ? 1 : findings); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
-            }
-            if (job.agent === "test-automator" || job.agent === "test-runner") {
-              try { job.status === "complete" ? markTestsPassed(jobCwd(job)) : markTestsFailed(jobCwd(job)); } catch (e: any) { sideEffectsOk = false; log.error(`reconcile: markTests failed for ${job.agent}: ${e?.message}`); }
             }
             if (sideEffectsOk) job.sideEffectsApplied = true;
           }
@@ -546,18 +540,6 @@ export function registerAsyncAgents(
         // -1 means invalid JSON output — treat conservatively as having findings
         recordReviewerResult(jobCwd(j), j.agent, findings < 0 ? 1 : findings);
       } catch (e: any) { j.sideEffectsApplied = false; log.error(`recordReviewerResult failed for ${j.agent}: ${e?.message}`); continue; }
-    }
-
-    // Track test agent completions for grouped test-automator/test-runner
-    for (const j of groupJobs) {
-      if (j.agent !== "test-automator" && j.agent !== "test-runner") continue;
-      try {
-        if (j.status === "complete") {
-          markTestsPassed(jobCwd(j));
-        } else if (j.status === "failed") {
-          markTestsFailed(jobCwd(j));
-        }
-      } catch (e: any) { j.sideEffectsApplied = false; log.error(`markTests failed for ${j.agent}: ${e?.message}`); continue; }
     }
 
     // Mark side-effects applied per-job (only if not already marked false by a failed side-effect above)
@@ -736,17 +718,6 @@ export function registerAsyncAgents(
             } catch { /* best-effort */ }
           }
         }
-      }
-
-      // Track test agent completion for review state test tracking
-      if (job.agent === "test-automator" || job.agent === "test-runner") {
-        try {
-          if (data.success) {
-            markTestsPassed(jobCwd(job));
-          } else {
-            markTestsFailed(jobCwd(job));
-          }
-        } catch (e: any) { processResultSideEffectsOk = false; log.error(`markTests(Passed|Failed) failed for ${job.agent}: ${e?.message}`); }
       }
 
       if (processResultSideEffectsOk) job.sideEffectsApplied = true;

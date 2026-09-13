@@ -263,14 +263,16 @@ model contract. It does not filter discovery results or claim that the endpoint 
 
 `review_loop_enforcement` controls automatic review-agent dispatch and commit enforcement.
 
-- `true` automatically dispatches 6 agents in parallel (5 reviewers + `test-automator`) after code changes and requires a clean review before commits.
+- `true` automatically dispatches 6 agents in parallel (5 reviewers + `test-runner`) after code changes and requires a clean review before commits.
 - `false` disables automatic review-agent and test-agent dispatch. Manual reviews and test runs are optional. No review state, cycle, or result is required before commit.
 
 When `review_loop_enforcement` is enabled, the loop stops once all reviewers approve with 0 findings and tests pass
-(`tests_passed: true` in `pi-config-review-state.jsonl`), OR after `review_loop_max_cycles` total cycles (default `3`,
+(`tests_passed: true` in `pi-config-review-state.jsonl`). `tests_passed` is set only by a detected
+successful test command; completion of async `test-runner` or `test-automator` agents does not set it.
+OR after `review_loop_max_cycles` total cycles (default `3`,
 valid integers `1`-`10`; env: digit string `"1"`-`"10"` only (after trim)) — whichever comes first. Each cycle
 always completes fix/explain (5a) before the cap check; the cap only blocks re-dispatch
-(step 2 / all 6 agents, including test-automator), not responding to findings.
+(step 2 / all 6 agents, including test-runner), not responding to findings.
 At cap, report **Not fixed** (explained why not → outstanding) vs **Fixed**
 (verification blocked by the cap — cannot re-dispatch to confirm clean). Invalid values (including non-digit
 forms like `"10.0"` / `"1e1"`) fall through to the next resolution layer / default `3`. Disable the review loop via
