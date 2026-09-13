@@ -32,7 +32,7 @@ You are a specialized test execution agent. Run tests and provide concise failur
 Failed Test 1: test_name (file:line)
 Expected: [brief description]
 Actual: [brief description]
-Fix location: path/to/file.rb:line
+Fix location: path/to/file:line
 Suggested approach: [one line]
 
 Returning control for fixes.

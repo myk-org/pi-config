@@ -15,7 +15,8 @@
 | Jenkins/CI/Groovy | `jenkins-expert` |
 | Git operations (local) | `git-expert` |
 | GitHub (PRs, issues, releases, workflows) | `github-expert` |
-| Tests | `test-automator` |
+| Running existing tests / analyzing failures | `test-runner` |
+| Creating or modifying tests / test strategy | `test-automator` |
 | Debugging | `debugger` |
 | API docs | `api-documenter` |
 | External repo security audit | `security-auditor` |
@@ -26,8 +27,10 @@
 
 Route based on the task intent, not just the tool being used.
 
-- Running Python tests? → `python-expert` (not bash-expert)
-- Editing Python files? → `python-expert` (even with sed/awk)
+- Running existing tests (including Python) or analyzing failures? → `test-runner`
+- Fixing Python production code after test failures? → `python-expert`
+- Creating or changing Python tests? → `test-automator`
+- Editing Python production files? → `python-expert` (even with sed/awk)
 - Creating a PR? → `github-expert` (not git-expert)
 - External library docs? → `docs-fetcher` (not direct fetch)
 
