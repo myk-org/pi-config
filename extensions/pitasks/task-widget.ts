@@ -52,6 +52,7 @@ export class TaskWidget {
 		log.debug("widget_store_set", { taskCount: store.list().length });
 	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
+	getActiveTaskIds(): string[] { return [...this.activeTaskIds]; }
 
 	reactivate(ctx: any): void {
 		this.disposed = false;

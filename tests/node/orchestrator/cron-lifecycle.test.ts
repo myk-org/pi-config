@@ -39,7 +39,7 @@ function makeCron() {
 
 function context(cwd: string, sessionId = "session-one", trusted = true) { return { cwd, mode: "interactive", hasUI: false, model: {}, isProjectTrusted: () => trusted, sessionManager: { getSessionId: () => sessionId } }; }
 
-describe("cron lifecycle", () => {
+describe("cron lifecycle", { concurrency: false }, () => {
   it("skips malformed durable records before scheduling timers", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");

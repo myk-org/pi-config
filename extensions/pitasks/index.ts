@@ -182,6 +182,7 @@ export default function (pi: ExtensionAPI) {
 		return join(process.cwd(), ".pi", "tasks", "tasks.json");
 	}
 
+	const resumedActiveTaskIds = currentWidget?.getActiveTaskIds() ?? [];
 	currentStore?.setOnChange(() => {});
 	currentStore?.close();
 	currentWidget?.dispose();
@@ -189,6 +190,7 @@ export default function (pi: ExtensionAPI) {
 	taskStore = store;
 	currentStore = store;
 	const widget = new TaskWidget(store);
+	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
 	const instanceId = Math.random().toString(36).slice(2, 8);
 	(globalThis as any).__pitasks_active_instance = instanceId;
@@ -372,6 +374,8 @@ export default function (pi: ExtensionAPI) {
 		agentBusy = false;
 		log.debug("agentBusy", "session_start reset");
 		widget.reactivate(ctx.ui);
+		store.reopen();
+		store.setOnChange(() => { widget.update(); });
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;
 		log.debug("session_start", reason);

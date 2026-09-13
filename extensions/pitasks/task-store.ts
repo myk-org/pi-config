@@ -156,6 +156,10 @@ export class TaskStore {
 		if (this._watcher) { this._watcher.close(); this._watcher = null; }
 	}
 
+	reopen(): void {
+		if (!this._watcher) this._startWatcher();
+	}
+
 	private load(): void {
 		if (!this.filePath) return;
 		if (!existsSync(this.filePath)) return;

@@ -187,6 +187,105 @@ describe("pitasks telemetry bridge", () => {
 		}
 	});
 
+	it("refreshes the resumed widget after an external file update", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-watch-"));
+		const taskPath = join(dir, "tasks.json");
+		const piTasks = process.env.PI_TASKS;
+		const handlers = new Map<string, Function>();
+		let renders = 0;
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = taskPath;
+		try {
+			const api = { on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(api as any);
+			const context = { ui: { setWidget(_name: string, value: any) { if (value) value({ terminal: { columns: 200 }, requestRender() { renders++; } }, theme); } }, sessionManager: { getSessionId: () => "widget-test" } };
+			await handlers.get("session_start")!({ reason: "startup" }, context);
+			taskStore.create("Resume", "body", createdBy);
+			await handlers.get("tool_execution_start")!({}, context);
+			handlers.get("session_shutdown")!();
+			await handlers.get("session_start")!({ reason: "resume" }, context);
+			const baseline = renders;
+			const external = new TaskStore(taskPath);
+			external.create("External", "body", createdBy);
+			external.close();
+			await new Promise(resolve => setTimeout(resolve, 100));
+			assert.ok(renders > baseline, "external update should request a resumed widget render");
+		} finally {
+			handlers.get("session_shutdown")?.();
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("attributes a resumed turn only to the task active before shutdown", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-telemetry-"));
+		const taskPath = join(dir, "tasks.json");
+		const piTasks = process.env.PI_TASKS;
+		const handlers = new Map<string, Function>();
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = taskPath;
+		try {
+			const api = { on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } };
+			pitasks(api as any);
+			const context = { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "widget-test" } };
+			await handlers.get("session_start")!({ reason: "startup" }, context);
+			const active = taskStore.create("Active", "body", createdBy);
+			const other = taskStore.create("Other", "body", createdBy);
+			taskStore.updateTasks([{ id: active.id, fields: { status: "in_progress" } }, { id: other.id, fields: { status: "in_progress" } }]);
+			setTaskTelemetryActive(active.id);
+			handlers.get("session_shutdown")!();
+			await handlers.get("session_start")!({ reason: "resume" }, context);
+			await handlers.get("turn_end")!({ message: { role: "assistant", usage: { input: 7, output: 11 } } });
+			assert.deepEqual(taskStore.get(active.id)?.telemetry?.inputTokens, 7);
+			assert.deepEqual(taskStore.get(other.id)?.telemetry?.inputTokens, 0);
+		} finally {
+			handlers.get("session_shutdown")?.();
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves only explicitly active telemetry across extension reload", async () => {
+		const child = process.env.PI_SUBAGENT_CHILD;
+		const dir = mkdtempSync(join(tmpdir(), "pitasks-reload-telemetry-"));
+		const taskPath = join(dir, "tasks.json");
+		const piTasks = process.env.PI_TASKS;
+		const first = new Map<string, Function>();
+		const second = new Map<string, Function>();
+		delete process.env.PI_SUBAGENT_CHILD;
+		process.env.PI_TASKS = taskPath;
+		try {
+			const makeApi = (handlers: Map<string, Function>) => ({ on(name: string, handler: Function) { handlers.set(name, handler); }, registerTool() {}, registerCommand() {}, events: { on() { return () => {}; }, emit() {} } });
+			const context = { ui: { setWidget() {} }, sessionManager: { getSessionId: () => "widget-test" } };
+			pitasks(makeApi(first) as any);
+			await first.get("session_start")!({ reason: "startup" }, context);
+			const active = taskStore.create("Active", "body", createdBy);
+			const other = taskStore.create("Other", "body", createdBy);
+			taskStore.updateTasks([{ id: active.id, fields: { status: "in_progress" } }, { id: other.id, fields: { status: "in_progress" } }]);
+			setTaskTelemetryActive(active.id);
+			pitasks(makeApi(second) as any);
+			await second.get("session_start")!({ reason: "reload" }, context);
+			await second.get("turn_end")!({ message: { role: "assistant", usage: { input: 7, output: 11 } } });
+			assert.equal(taskStore.get(active.id)?.telemetry?.inputTokens, 7);
+			assert.equal(taskStore.get(other.id)?.telemetry?.inputTokens, 0);
+		} finally {
+			second.get("session_shutdown")?.();
+			if (piTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = piTasks;
+			if (child === undefined) delete process.env.PI_SUBAGENT_CHILD;
+			else process.env.PI_SUBAGENT_CHILD = child;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("reactivates its widget after shutdown and resume", async () => {
 		const child = process.env.PI_SUBAGENT_CHILD;
 		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-"));
