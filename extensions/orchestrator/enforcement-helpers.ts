@@ -947,11 +947,14 @@ export function injectGhBodySignature(command: string, signature: string): strin
  * match — we exclude tox with explicit -e to avoid marking lint/docs runs as test passes.
  */
 export function isTestRunnerCommand(command: string): boolean {
-  return /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
+  const result = /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?(?:pytest|vitest|jest|mocha)\b/.test(command)
     || /(?:^|[;&|]\s*)(?:uv\s+run\s+(?:--\S+(?:\s+\S+)?\s+)*)?tox\b(?!\s*-e)(?!\s+--(?:help|version|list))/.test(command)
     || /(?:^|[;&|]\s*)go\s+test\b/.test(command)
     || /(?:^|[;&|]\s*)npm\s+test\b/.test(command)
-    || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command);
+    || /(?:^|[;&|]\s*)npx\s+tsx\s+--test\b/.test(command)
+    || /(?:^|[;&|]\s*)pre-commit(?=\s|[;&|><]|$)/.test(command);
+  enfLog.debug("isTestRunnerCommand", result);
+  return result;
 }
 
 /** True for release bump branches: chore/bump-version-<digit>... */

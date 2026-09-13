@@ -5,21 +5,25 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
-import { markNeedsReview, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { markNeedsReview, markTestsPassed, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
+import { createLogger } from "../../../extensions/shared/logger.js";
 
+const log = createLogger("async-delivery-wiring-test");
 const reviewerOutput = JSON.stringify({ findings: Array.from({ length: 100 }, () => ({ detail: "sensitive ".repeat(80) })) });
 
 function harness() {
+  log.debug("create_harness");
   const cwd = mkdtempSync(join(tmpdir(), "async-delivery-runtime-"));
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const events = new EventEmitter();
   const messages: any[] = [];
   let rejectedSends = 0;
-  const intervals: Array<() => void> = [];
+  let poller: (() => void) | undefined;
   const previousSetInterval = global.setInterval;
   global.setInterval = ((fn: () => void) => {
-    intervals.push(fn);
+    log.debug("register_poller");
+    poller = fn;
     return { unref() {}, [Symbol.toPrimitive]: () => 0 };
   }) as typeof setInterval;
   const pi = {
@@ -45,12 +49,19 @@ function harness() {
   };
   handlers.get("session_start")![0]({}, ctx);
   const resultDir = () => join(cwd, ".pi", "tmp", readdirSync(join(cwd, ".pi", "tmp")).find(name => name.startsWith(`async-results-pid-${process.pid}`))!);
-  const result = (id: string, output = reviewerOutput, agent = "code-reviewer-runtime", status = {}) => {
+  const result = (id: string, output = reviewerOutput, agent = "code-reviewer-runtime", data: { status?: object; success?: boolean; exitCode?: number } = {}) => {
+    const { status = {}, success = true, exitCode = success ? 0 : 1 } = data;
+    log.debug("write_result", { id, agent, success, exitCode });
     writeFileSync(join(cwd, ".pi", "tmp", id, "status.json"), JSON.stringify({ runId: id, state: "running", ...status }));
-    writeFileSync(join(resultDir(), `${id}.json`), JSON.stringify({ id, agent, task: "review", success: true, output, durationMs: 1, exitCode: 0 }));
+    writeFileSync(join(resultDir(), `${id}.json`), JSON.stringify({ id, agent, task: "review", success, output, durationMs: 1, exitCode }));
   };
   const spawn = (groupId?: string, agent = "code-reviewer-runtime") => api.spawnAsyncAgent(agent, "review", cwd, [{ name: agent } as any], { groupId });
-  return { cwd, api, commands, ctx, events, intervals, messages, overlayOpens: () => overlayOpens, result, spawn, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
+  const triggerPoller = () => {
+    log.debug("trigger_poller", { registered: Boolean(poller) });
+    assert.ok(poller, "async poller should be registered");
+    poller();
+  };
+  return { cwd, api, commands, ctx, events, messages, overlayOpens: () => overlayOpens, result, spawn, triggerPoller, rejectNextSend: () => { rejectedSends += 1; }, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
 }
 
 async function settled() { await new Promise(resolve => setTimeout(resolve, 180)); }
@@ -73,45 +84,65 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
 
   it("formats reconciliation delivery through registered async agents", async () => {
     const h = harness();
-    try { h.rejectNextSend(); const job = h.spawn(); h.result(job.id); await settled(); assert.equal(h.messages.length, 0); h.intervals[0](); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
+    try { h.rejectNextSend(); const job = h.spawn(); h.result(job.id); await settled(); assert.equal(h.messages.length, 0); h.triggerPoller(); assert.match(h.messages[0].content, /"truncated":true/); } finally { h.restore(); }
   });
 
-  it("keeps tests pending after grouped test-runner completion", async () => {
+  it("keeps passed tests passed after failed test-runner completion", async () => {
+    log.debug("test_failed_test_runner");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
-      const job = h.spawn("tests", "test-runner");
-      h.result(job.id, "Passed", "test-runner");
+      markTestsPassed(h.cwd);
+      const job = h.spawn(undefined, "test-runner");
+      h.result(job.id, "Failed", "test-runner", { success: false });
       await settled();
       assert.match(h.messages[0].content, /test-runner/);
-      assert.equal(readReviewState(h.cwd).tests_passed, false);
+      assert.equal(readReviewState(h.cwd).tests_passed, true);
     } finally { h.restore(); }
   });
 
-  it("keeps tests pending after zombie test-automator result ingestion", () => {
+  it("keeps passed tests passed after grouped failed test-runner completion", async () => {
+    log.debug("test_grouped_failed_test_runner");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
+      markTestsPassed(h.cwd);
+      const job = h.spawn("tests", "test-runner");
+      h.result(job.id, "Failed", "test-runner", { success: false });
+      await settled();
+      assert.match(h.messages[0].content, /test-runner/);
+      assert.equal(readReviewState(h.cwd).tests_passed, true);
+    } finally { h.restore(); }
+  });
+
+  it("keeps passed tests passed after zombie failed test-automator result ingestion", () => {
+    log.debug("test_zombie_failed_test_automator");
+    const h = harness();
+    try {
+      markNeedsReview(h.cwd);
+      markTestsPassed(h.cwd);
       const job = h.spawn(undefined, "test-automator");
-      h.result(job.id, "Passed", "test-automator", { pid: 999_999_999 });
-      h.intervals[0]();
+      h.result(job.id, "Failed", "test-automator", { success: false, status: { pid: 999_999_999 } });
+      h.triggerPoller();
       assert.match(h.messages[0].content, /test-automator/);
-      assert.equal(readReviewState(h.cwd).tests_passed, false);
+      assert.equal(readReviewState(h.cwd).tests_passed, true);
     } finally { h.restore(); }
   });
 
-  it("keeps tests pending after reconciliation delivery of a test-runner result", async () => {
+  it("keeps passed tests passed after reconciliation delivery of a failed test-runner result", async () => {
+    log.debug("test_reconciliation_failed_test_runner");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
+      markTestsPassed(h.cwd);
       h.rejectNextSend();
       const job = h.spawn(undefined, "test-runner");
-      h.result(job.id, "Passed", "test-runner");
+      h.result(job.id, "Failed", "test-runner", { success: false });
       await settled();
       assert.equal(h.messages.length, 0);
-      h.intervals[0]();
+      h.triggerPoller();
       assert.match(h.messages[0].content, /test-runner/);
-      assert.equal(readReviewState(h.cwd).tests_passed, false);
+      assert.equal(readReviewState(h.cwd).tests_passed, true);
     } finally { h.restore(); }
   });
 
@@ -123,7 +154,7 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       Object.defineProperty(h.ctx, "model", { get: () => { throw new Error("ctx inactive"); } });
       h.result(job.id, "preserve me");
       await settled();
-      h.intervals[0]();
+      h.triggerPoller();
       const status = JSON.parse(readFileSync(join(h.cwd, ".pi", "tmp", job.id, "status.json"), "utf8"));
       assert.equal(status.output, "preserve me");
       assert.equal(h.messages.length, 0);
