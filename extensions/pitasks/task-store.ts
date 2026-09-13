@@ -9,6 +9,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Task, TaskStatus, TaskStoreData } from "./types.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("pitasks");
 
 function sortById(a: Task, b: Task): number {
 	return Number(a.id) - Number(b.id);
@@ -61,6 +64,7 @@ function isProcessRunning(pid: number): boolean {
 
 function normalizeTask(t: any): Task {
 	const now = Date.now();
+	log.debug("task_normalized", { taskId: t.id, hasTelemetry: !!t.telemetry });
 	return {
 		...t,
 		createdBy: t.createdBy && typeof t.createdBy === "object" ? t.createdBy :
@@ -75,6 +79,13 @@ function normalizeTask(t: any): Task {
 		blockedBy: Array.isArray(t.blockedBy) ? t.blockedBy : [],
 		createdAt: typeof t.createdAt === "number" ? t.createdAt : now,
 		updatedAt: typeof t.updatedAt === "number" ? t.updatedAt : now,
+		telemetry: t.telemetry && typeof t.telemetry === "object" &&
+			typeof t.telemetry.startedAt === "number" && typeof t.telemetry.inputTokens === "number" && typeof t.telemetry.outputTokens === "number" ? {
+			startedAt: t.telemetry.startedAt,
+			...(typeof t.telemetry.endedAt === "number" ? { endedAt: t.telemetry.endedAt } : {}),
+			inputTokens: t.telemetry.inputTokens,
+			outputTokens: t.telemetry.outputTokens,
+		} : undefined,
 		statusHistory: t.statusHistory && typeof t.statusHistory === "object" ? {
 			pending_at: typeof t.statusHistory.pending_at === "number" ? new Date(t.statusHistory.pending_at).toISOString() : (t.statusHistory.pending_at || new Date(typeof t.createdAt === "number" ? t.createdAt : now).toISOString()),
 			in_progress_at: typeof t.statusHistory.in_progress_at === "number" ? new Date(t.statusHistory.in_progress_at).toISOString() : (t.statusHistory.in_progress_at || null),
@@ -143,6 +154,10 @@ export class TaskStore {
 
 	close(): void {
 		if (this._watcher) { this._watcher.close(); this._watcher = null; }
+	}
+
+	reopen(): void {
+		if (!this._watcher) this._startWatcher();
 	}
 
 	private load(): void {
@@ -258,11 +273,13 @@ export class TaskStore {
 		activeForm?: string;
 		owner?: string;
 		metadata?: Record<string, any>;
+		telemetry?: Task["telemetry"];
 		addBlocks?: string[];
 		addBlockedBy?: string[];
 	}): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
 		return this.withLock(() => {
 			const task = this.tasks.get(id);
+			log.debug("task_updated", { taskId: id, status: fields.status, hasTelemetry: fields.telemetry !== undefined });
 			if (!task) return { task: undefined, changedFields: [], warnings: [] };
 			const changedFields: string[] = [];
 			const warnings: string[] = [];
@@ -282,8 +299,17 @@ export class TaskStore {
 				changedFields.push("status");
 				const now = Date.now();
 				const isoNow = new Date(now).toISOString();
-				if (fields.status === "in_progress") task.statusHistory.in_progress_at = isoNow;
-				if (fields.status === "completed") task.statusHistory.completed_at = isoNow;
+				if (fields.status === "in_progress") {
+					task.statusHistory.in_progress_at = isoNow;
+					if (!task.telemetry || task.telemetry.endedAt !== undefined) {
+						task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
+					}
+				}
+				if (fields.status === "completed") {
+					task.statusHistory.completed_at = isoNow;
+					if (!task.telemetry) task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
+					if (!task.telemetry.endedAt) task.telemetry.endedAt = now;
+				}
 				if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
 			}
 			if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
@@ -298,6 +324,7 @@ export class TaskStore {
 				}
 				changedFields.push("metadata");
 			}
+			if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
 
 			if (fields.addBlocks?.length) {
 				for (const targetId of fields.addBlocks) {
@@ -330,6 +357,7 @@ export class TaskStore {
 
 	updateTasks(updates: Array<{ id: string; fields: Record<string, any> }>): Array<{ id: string; success: boolean; changedFields?: string[] }> {
 		return this.withLock(() => {
+			log.debug("tasks_updated", { count: updates.length, statusUpdates: updates.filter(update => update.fields.status !== undefined).length });
 			const results: Array<{ id: string; success: boolean; changedFields?: string[] }> = [];
 			for (const { id, fields } of updates) {
 				const task = this.tasks.get(id);
@@ -350,9 +378,19 @@ export class TaskStore {
 				if (fields.status !== undefined) {
 					task.status = fields.status as TaskStatus;
 					changedFields.push("status");
-					const isoNow = new Date().toISOString();
-					if (fields.status === "in_progress") task.statusHistory.in_progress_at = isoNow;
-					if (fields.status === "completed") task.statusHistory.completed_at = isoNow;
+					const now = Date.now();
+					const isoNow = new Date(now).toISOString();
+					if (fields.status === "in_progress") {
+						task.statusHistory.in_progress_at = isoNow;
+						if (!task.telemetry || task.telemetry.endedAt !== undefined) {
+							task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
+						}
+					}
+					if (fields.status === "completed") {
+						task.statusHistory.completed_at = isoNow;
+						if (!task.telemetry) task.telemetry = { startedAt: now, inputTokens: 0, outputTokens: 0 };
+						if (!task.telemetry.endedAt) task.telemetry.endedAt = now;
+					}
 					if (fields.status === "pending") task.statusHistory.pending_at = isoNow;
 				}
 				if (fields.subject !== undefined) { task.subject = fields.subject; changedFields.push("subject"); }
@@ -367,6 +405,7 @@ export class TaskStore {
 					}
 					changedFields.push("metadata");
 				}
+				if (fields.telemetry !== undefined) { task.telemetry = fields.telemetry; changedFields.push("telemetry"); }
 
 				if (fields.addBlocks?.length) {
 					for (const targetId of fields.addBlocks) {

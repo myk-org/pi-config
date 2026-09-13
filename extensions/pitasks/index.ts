@@ -32,7 +32,12 @@ const log = createLogger("pitasks");
 
 // Module-level refs — survive closure replacement on /reload
 let currentUiCtx: any = null;
+let currentStore: TaskStore | null = null;
 let currentWidget: TaskWidget | null = null;
+export function setTaskTelemetryActive(taskId: string, active = true): void {
+	log.debug("task_telemetry_active", { taskId, active });
+	currentWidget?.setActiveTask(taskId, active);
+}
 
 /** Exported store instance — set during extension init. */
 export let taskStore: TaskStore;
@@ -54,7 +59,10 @@ export function listTasks(): any[] {
 
 /** Update a task — for use by other extensions. */
 export function updateTask(id: string, fields: any): any {
-	return taskStore.update(id, fields);
+	log.debug("task_updated", { taskId: id, fieldNames: Object.keys(fields) });
+	const result = taskStore.update(id, fields);
+	if (result.changedFields.includes("status")) setTaskTelemetryActive(id, fields.status === "in_progress");
+	return result;
 }
 
 /** Delete a task — for use by other extensions. */
@@ -66,58 +74,93 @@ export function deleteTask(id: string): boolean {
 
 /** Create a task on a specific session's store. Used by coms for sender-side task creation. */
 export function createTaskForSession(sessionId: string, subject: string, description: string, createdBy?: any, metadata?: Record<string, any>, targetCwd?: string, activeForm?: string): any {
+	log.debug("session_task_created", { sessionId });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata);
+	try {
+		return store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata);
+	} finally {
+		store.close();
+	}
 }
 
 /** Create multiple tasks on a specific session's store. Used by coms for bulk task creation. */
 export function createTasksForSession(sessionId: string, tasks: Array<{ subject: string; description: string; createdBy: any; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>, targetCwd?: string): any[] {
+	log.debug("session_tasks_created", { sessionId, count: tasks.length });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.createTasks(tasks);
+	try {
+		return store.createTasks(tasks);
+	} finally {
+		store.close();
+	}
 }
 
 /** Get a task from a specific session's store. */
 export function getTaskForSession(sessionId: string, taskId: string, targetCwd?: string): any {
+	log.debug("session_task_read", { sessionId, taskId });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.get(taskId);
+	try {
+		return store.get(taskId);
+	} finally {
+		store.close();
+	}
 }
 
 /** List tasks from a specific session's store. */
 export function listTasksForSession(sessionId: string, targetCwd?: string): any[] {
+	log.debug("session_tasks_listed", { sessionId });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.list();
+	try {
+		return store.list();
+	} finally {
+		store.close();
+	}
 }
 
 /** Update a task on a specific session's store. */
 export function updateTaskForSession(sessionId: string, taskId: string, fields: any, targetCwd?: string): any {
+	log.debug("session_task_updated", { sessionId, taskId, fieldNames: Object.keys(fields) });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.update(taskId, fields);
+	try {
+		return store.update(taskId, fields);
+	} finally {
+		store.close();
+	}
 }
 
 /** Update multiple tasks on a specific session's store. Used by coms for bulk updates. */
 export function updateTasksForSession(sessionId: string, updates: Array<{ id: string; fields: Record<string, any> }>, targetCwd?: string): any[] {
+	log.debug("session_tasks_updated", { sessionId, count: updates.length });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.updateTasks(updates);
+	try {
+		return store.updateTasks(updates);
+	} finally {
+		store.close();
+	}
 }
 
 /** Delete a task from a specific session's store. */
 export function deleteTaskForSession(sessionId: string, taskId: string, targetCwd?: string): boolean {
+	log.debug("session_task_deleted", { sessionId, taskId });
 	const base = targetCwd || process.cwd();
 	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
 	const store = new TaskStore(storePath);
-	return store.delete(taskId);
+	try {
+		return store.delete(taskId);
+	} finally {
+		store.close();
+	}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -139,9 +182,15 @@ export default function (pi: ExtensionAPI) {
 		return join(process.cwd(), ".pi", "tasks", "tasks.json");
 	}
 
+	const resumedActiveTaskIds = currentWidget?.getActiveTaskIds() ?? [];
+	currentStore?.setOnChange(() => {});
+	currentStore?.close();
+	currentWidget?.dispose();
 	let store = new TaskStore(resolveStorePath());
 	taskStore = store;
+	currentStore = store;
 	const widget = new TaskWidget(store);
+	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
 	const instanceId = Math.random().toString(36).slice(2, 8);
 	(globalThis as any).__pitasks_active_instance = instanceId;
@@ -154,8 +203,11 @@ export default function (pi: ExtensionAPI) {
 		if (taskScope === "session" && !piTasks) {
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			const path = resolveStorePath(sessionId);
+			store.setOnChange(() => {});
+			store.close();
 			store = new TaskStore(path);
 			taskStore = store;
+			currentStore = store;
 			widget.setStore(store);
 			store.setOnChange(() => { widget.update(); });
 			log.debug("store upgraded", path);
@@ -281,6 +333,13 @@ export default function (pi: ExtensionAPI) {
 		shuttingDown = true;
 		if (gcTimer) { clearInterval(gcTimer); gcTimer = null; }
 		if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
+		widget.deactivate();
+		store.setOnChange(() => {});
+		store.close();
+		if (currentWidget === widget) {
+			currentWidget = null;
+			currentStore = null;
+		}
 	});
 
 	pi.on("turn_start", async (_event: any, ctx: any) => {
@@ -314,7 +373,9 @@ export default function (pi: ExtensionAPI) {
 		shuttingDown = false;
 		agentBusy = false;
 		log.debug("agentBusy", "session_start reset");
-		widget.setUICtx(ctx.ui);
+		widget.reactivate(ctx.ui);
+		store.reopen();
+		store.setOnChange(() => { widget.update(); });
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;
 		log.debug("session_start", reason);

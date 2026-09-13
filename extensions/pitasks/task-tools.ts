@@ -5,8 +5,11 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
 import type { TaskWidget } from "./task-widget.js";
+
+const log = createLogger("pitasks");
 
 function textResult(msg: string) {
 	return { content: [{ type: "text" as const, text: msg }], details: undefined };
@@ -355,6 +358,7 @@ Set up task dependencies:
 			}), { description: "Array of task updates" }),
 		}),
 		async execute(_callId, params) {
+			log.debug("tasks_bulk_updated", { count: params.updates.length });
 			const store = getStore();
 			const updates = params.updates.map(u => ({
 				id: u.taskId,
@@ -367,6 +371,10 @@ Set up task dependencies:
 				},
 			}));
 			const results = store.updateTasks(updates);
+			for (const update of updates) {
+				if (update.fields.status === "in_progress") widget.setActiveTask(update.id);
+				else if (update.fields.status !== undefined) widget.setActiveTask(update.id, false);
+			}
 			widget.update();
 			const lines = results.map(r => r.success ? `#${r.id}: ${r.changedFields?.join(", ") || "no changes"}` : `#${r.id}: not found`);
 			return textResult(`Updated ${results.filter(r => r.success).length} task(s):\n${lines.join("\n")}`);

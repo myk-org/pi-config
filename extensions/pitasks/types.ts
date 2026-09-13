@@ -23,6 +23,12 @@ export interface Task {
 	};
 	createdAt: number;
 	updatedAt: number;
+	telemetry?: {
+		startedAt: number;
+		endedAt?: number;
+		inputTokens: number;
+		outputTokens: number;
+	};
 	statusHistory: {
 		pending_at: string;
 		in_progress_at: string | null;

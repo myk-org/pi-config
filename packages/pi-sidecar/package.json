@@ -27,6 +27,7 @@
   "files": [
     "dist",
     "scripts",
+    "npm-shrinkwrap.json",
     "!dist/*.whl",
     "!dist/*.tar.gz"
   ],
@@ -43,9 +44,11 @@
     "@earendil-works/pi-coding-agent": ">=0.84.4",
     "@myk-org/pi-vertex-claude": ">=4.3.4 <5",
     "acpx": "^0.8.0",
+    "adm-zip": "0.6.0",
     "jiti": "^2.7.0",
+    "pi-orchestrator-config": ">=4.3.4 <5",
     "protobufjs": "7.6.5",
-    "pi-orchestrator-config": ">=4.3.4 <5"
+    "sharp": "0.35.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.4",

@@ -50,7 +50,11 @@ export async function autoCompleteTask(taskId: string, cwd: string, sessionId?: 
   try {
     const task = store.get(taskId);
     if (!task) return false;
-    if (task.status !== "completed") { store.update(taskId, { status: "completed" }); return true; }
+    if (task.status !== "completed") {
+      store.update(taskId, { status: "completed" });
+      (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId, false);
+      return true;
+    }
     return false;
   } catch (e: any) {
     log.debug("autoCompleteTask failed for task", taskId, e?.message?.slice(0, 100));
@@ -89,7 +93,11 @@ export async function autoMarkInProgress(taskId: string, cwd: string, sessionId?
   try {
     const task = store.get(taskId);
     if (!task) return false;
-    if (task.status === "pending") { store.update(taskId, { status: "in_progress" }); return true; }
+    if (task.status === "pending") {
+      store.update(taskId, { status: "in_progress" });
+      (await import("../pitasks/index.js")).setTaskTelemetryActive(taskId);
+      return true;
+    }
     return false;
   } catch (e: any) {
     log.debug("autoMarkInProgress failed for task", taskId, e?.message?.slice(0, 100));

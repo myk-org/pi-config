@@ -3,7 +3,10 @@
  * Copied from @tintinweb/pi-tasks (MIT license).
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
+
+const log = createLogger("pitasks");
 
 const SPINNER = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 const DEFAULT_MAX_VISIBLE_TASKS = 10;
@@ -36,29 +39,61 @@ export class TaskWidget {
 	private metrics = new Map<string, { startedAt: number; inputTokens: number; outputTokens: number }>();
 	private tui: any;
 	private widgetRegistered = false;
+	private disposed = false;
 
-	constructor(private store: TaskStore, private config: Record<string, any> = {}) {}
+	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
+		log.debug("widget_created", { taskCount: store.list().length });
+	}
 
-	setStore(store: TaskStore): void { this.store = store; }
+	setStore(store: TaskStore): void {
+		this.store = store;
+		this.activeTaskIds.clear();
+		this.metrics.clear();
+		log.debug("widget_store_set", { taskCount: store.list().length });
+	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
+	getActiveTaskIds(): string[] { return [...this.activeTaskIds]; }
+
+	reactivate(ctx: any): void {
+		this.disposed = false;
+		this.uiCtx = ctx;
+		log.debug("widget_reactivated", { taskCount: this.store.list().length });
+	}
+
+	deactivate(): void {
+		log.debug("widget_deactivated", { hadWidget: this.widgetRegistered, hadTimer: !!this.widgetInterval });
+		if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
+		if (this.uiCtx) this.uiCtx.setWidget("tasks", undefined);
+		this.widgetRegistered = false;
+		this.tui = undefined;
+		this.uiCtx = undefined;
+	}
 
 	setActiveTask(taskId: string, active = true): void {
-		if (taskId && active) {
+		const task = this.store.get(taskId);
+		log.debug("task_telemetry_active", { taskId, active, status: task?.status });
+		if (taskId && active && task) {
 			this.activeTaskIds.add(taskId);
-			if (!this.metrics.has(taskId)) {
-				this.metrics.set(taskId, { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 });
-			}
+			const telemetry = task.telemetry ?? { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
+			if (!task.telemetry) this.store.update(taskId, { telemetry });
+			this.metrics.set(taskId, telemetry);
 			this.ensureTimer();
 		} else if (taskId) {
 			this.activeTaskIds.delete(taskId);
+			if (task?.telemetry && !task.telemetry.endedAt) this.store.update(taskId, { telemetry: { ...task.telemetry, endedAt: Date.now() } });
 		}
 		this.update();
 	}
 
 	addTokenUsage(inputTokens: number, outputTokens: number): void {
+		log.debug("task_telemetry_usage", { activeTaskCount: this.activeTaskIds.size, inputTokens, outputTokens });
 		for (const id of this.activeTaskIds) {
 			const m = this.metrics.get(id);
-			if (m) { m.inputTokens += inputTokens; m.outputTokens += outputTokens; }
+			if (m) {
+				m.inputTokens += inputTokens;
+				m.outputTokens += outputTokens;
+				this.store.update(id, { telemetry: m });
+			}
 		}
 	}
 
@@ -69,6 +104,7 @@ export class TaskWidget {
 	}
 
 	private renderWidget(tui: any, theme: any): string[] {
+		log.debug("task_widget_render", { taskCount: this.store.list().length });
 		try { return this.buildWidgetLines(tui, theme); } catch { return []; }
 	}
 
@@ -114,29 +150,23 @@ export class TaskWidget {
 				if (openBlockers.length > 0) suffix = theme.fg("dim", ` › blocked by ${openBlockers.map((id: string) => "#" + id).join(", ")}`);
 			}
 
+			const m = task.telemetry ?? this.metrics.get(task.id);
+			const stats = m ? (() => {
+				const elapsed = formatDuration(Math.max(0, (m.endedAt ?? Date.now()) - m.startedAt));
+				const tokenParts = [m.inputTokens > 0 && `↑ ${formatTokens(m.inputTokens)}`, m.outputTokens > 0 && `↓ ${formatTokens(m.outputTokens)}`].filter(Boolean);
+				return ` ${theme.fg("dim", tokenParts.length ? `(${elapsed} · ${tokenParts.join(" ")})` : `(${elapsed})`)}`;
+			})() : "";
+
 			let text: string;
 			if (task.status === "in_progress") {
 				const form = task.activeForm || task.subject;
 				const agentId = task.metadata?.agentId;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
-				const m = this.metrics.get(task.id);
-				let stats = "";
-				if (m) {
-					const elapsed = formatDuration(Date.now() - m.startedAt);
-					const tokenParts: string[] = [];
-					if (m.inputTokens > 0) tokenParts.push(`↑ ${formatTokens(m.inputTokens)}`);
-					if (m.outputTokens > 0) tokenParts.push(`↓ ${formatTokens(m.outputTokens)}`);
-					stats = tokenParts.length > 0
-						? ` ${theme.fg("dim", `(${elapsed} · ${tokenParts.join(" ")})`)}`
-						: ` ${theme.fg("dim", `(${elapsed})`)}`;
-				}
 				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
 			} else if (task.status === "completed") {
-				text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}`;
+				text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
 			} else {
-				const agentSuffix = task.status === "in_progress" && task.metadata?.agentId
-					? theme.fg("dim", ` (agent ${task.metadata.agentId.slice(0, 5)})`) : "";
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}${agentSuffix}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}${stats}`;
 			}
 			lines.push(truncate(text + suffix));
 		}
@@ -146,7 +176,8 @@ export class TaskWidget {
 	}
 
 	update(): void {
-		if (!this.uiCtx) return;
+		log.debug("widget_update", { disposed: this.disposed, hasUi: !!this.uiCtx, taskCount: this.store.list().length });
+		if (this.disposed || !this.uiCtx) return;
 		const tasks = this.store.list();
 		if (tasks.length === 0) {
 			if (this.widgetRegistered) { this.uiCtx.setWidget("tasks", undefined); this.widgetRegistered = false; }
@@ -173,9 +204,8 @@ export class TaskWidget {
 	}
 
 	dispose(): void {
-		if (this.widgetInterval) { clearInterval(this.widgetInterval); this.widgetInterval = undefined; }
-		if (this.uiCtx) this.uiCtx.setWidget("tasks", undefined);
-		this.widgetRegistered = false;
-		this.tui = undefined;
+		log.debug("widget_disposed", { hadWidget: this.widgetRegistered, hadTimer: !!this.widgetInterval });
+		this.disposed = true;
+		this.deactivate();
 	}
 }
