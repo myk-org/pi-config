@@ -1300,6 +1300,10 @@ describe("isTestRunnerCommand", () => {
     assert.equal(isTestRunnerCommand("pre-commit run --all-files; pytest"), true);
   });
 
+  it("matches pre-commit after a newline", () => {
+    assert.equal(isTestRunnerCommand("echo start\npre-commit run --all-files"), true);
+  });
+
   it("does not match non-execution pre-commit mentions", () => {
     assert.equal(isTestRunnerCommand("pip install pre-commit"), false);
     assert.equal(isTestRunnerCommand("echo pre-commit"), false);

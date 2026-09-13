@@ -88,12 +88,12 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   });
 
   it("keeps passed tests passed after failed test-runner completion", async () => {
-    log.debug("test_failed_test_runner");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
       markTestsPassed(h.cwd);
       const job = h.spawn(undefined, "test-runner");
+      log.debug("failed_test_result", { scenario: "test_runner_completion", jobId: job.id, agent: "test-runner", success: false, resultStatus: "failed", deliveryState: "immediate" });
       h.result(job.id, "Failed", "test-runner", { success: false });
       await settled();
       assert.match(h.messages[0].content, /test-runner/);
@@ -102,12 +102,12 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   });
 
   it("keeps passed tests passed after grouped failed test-runner completion", async () => {
-    log.debug("test_grouped_failed_test_runner");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
       markTestsPassed(h.cwd);
       const job = h.spawn("tests", "test-runner");
+      log.debug("failed_test_result", { scenario: "grouped_test_runner_completion", jobId: job.id, agent: "test-runner", success: false, resultStatus: "failed", deliveryState: "grouped" });
       h.result(job.id, "Failed", "test-runner", { success: false });
       await settled();
       assert.match(h.messages[0].content, /test-runner/);
@@ -116,12 +116,12 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   });
 
   it("keeps passed tests passed after zombie failed test-automator result ingestion", () => {
-    log.debug("test_zombie_failed_test_automator");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
       markTestsPassed(h.cwd);
       const job = h.spawn(undefined, "test-automator");
+      log.debug("failed_test_result", { scenario: "zombie_test_automator_ingestion", jobId: job.id, agent: "test-automator", success: false, resultStatus: "failed", deliveryState: "poller" });
       h.result(job.id, "Failed", "test-automator", { success: false, status: { pid: 999_999_999 } });
       h.triggerPoller();
       assert.match(h.messages[0].content, /test-automator/);
@@ -130,13 +130,13 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
   });
 
   it("keeps passed tests passed after reconciliation delivery of a failed test-runner result", async () => {
-    log.debug("test_reconciliation_failed_test_runner");
     const h = harness();
     try {
       markNeedsReview(h.cwd);
       markTestsPassed(h.cwd);
       h.rejectNextSend();
       const job = h.spawn(undefined, "test-runner");
+      log.debug("failed_test_result", { scenario: "test_runner_reconciliation", jobId: job.id, agent: "test-runner", success: false, resultStatus: "failed", deliveryState: "deferred_reconciliation" });
       h.result(job.id, "Failed", "test-runner", { success: false });
       await settled();
       assert.equal(h.messages.length, 0);
