@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -146,38 +147,121 @@ def check_dependencies() -> None:
             sys.exit(1)
 
 
+_HTTP_RESPONSE = re.compile(r"HTTP/\d(?:\.\d)?\s+(\d{3})\b[^\r\n]*(?:\r?\n.*)*?\r?\n\r?\n")
+_HTTP_RESPONSE_BYTES = re.compile(rb"HTTP/\d(?:\.\d)?\s+\d{3}\b[^\r\n]*(?:\r?\n.*)*?\r?\n\r?\n")
+
+
+def _split_http_response(stdout: str) -> tuple[dict[str, str], str, str]:
+    """Return leading final HTTP response headers, body, and status from ``gh api --include`` output."""
+    offset = 0
+    response = _HTTP_RESPONSE.match(stdout)
+    if not response:
+        return {}, stdout, "unknown"
+    while response:
+        offset += response.end()
+        next_response = _HTTP_RESPONSE.match(stdout[offset:])
+        if not next_response:
+            break
+        response = next_response
+    headers = {
+        key.lower(): value.strip()
+        for line in response.group().splitlines()[1:]
+        if ":" in line
+        for key, value in [line.split(":", 1)]
+    }
+    return headers, stdout[offset:], response.group(1)
+
+
+def _response_body_bytes(stdout: bytes) -> bytes:
+    """Return the body following contiguous leading ``gh api --include`` response blocks."""
+    offset = 0
+    response = _HTTP_RESPONSE_BYTES.match(stdout)
+    while response:
+        offset += response.end()
+        response = _HTTP_RESPONSE_BYTES.match(stdout[offset:])
+    return stdout[offset:]
+
+
+def _redact_response_preview(body: str, secrets: list[str]) -> str:
+    """Bound and redact a response preview without retaining request content."""
+    preview = body
+    for secret in secrets:
+        if secret:
+            # JSON escaping is a common form when a proxy reflects the request body.
+            preview = preview.replace(secret, "[REDACTED]").replace(json.dumps(secret)[1:-1], "[REDACTED]")
+    preview = re.sub(
+        r'(?i)((?:["\']?(?:authorization|(?:access[_-]?)?token|(?:api[_-]?)?key|'
+        r'(?:client[_-]?)?secret|password|body|reply)["\']?(?:\s*[=:]\s*|\s+value\s*=\s*)))'
+        r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,}>]+)',
+        r"\1[REDACTED]",
+        preview,
+    )
+    return preview[:1_000]
+
+
+def _graphql_parse_error(
+    stdout: str, response_bytes: int, error: json.JSONDecodeError, variables: dict[str, str]
+) -> str:
+    """Format safe diagnostics for a retryable successful HTTP response parse failure."""
+    headers, body, status = _split_http_response(stdout)
+    request_id = next(
+        (
+            headers[key]
+            for key in ("x-github-request-id", "x-request-id", "x-correlation-id", "request-id")
+            if key in headers
+        ),
+        "unavailable",
+    )
+    preview = _redact_response_preview(body, list(variables.values()))
+    diagnostic = (
+        "Retryable GraphQL response parse failure: endpoint=graphql method=POST "
+        f"status={status} content_type={headers.get('content-type', 'unknown')} "
+        f"response_bytes={response_bytes} request_id={request_id}; "
+        f"body_preview={preview!r}; parser_error={error}; "
+        f"parser_stack={traceback.format_exc().strip()}"
+    )
+    log.warning("%s", diagnostic)
+    return diagnostic
+
+
 def run_graphql(query: str, variables: dict[str, str]) -> tuple[bool, dict[str, Any] | str]:
     """Run a GraphQL query via gh api graphql.
 
     Returns (success, result) where result is parsed JSON on success or error string on failure.
     """
     payload = {"query": query, "variables": variables}
-    cmd = ["gh", "api", "graphql", "--input", "-"]
+    cmd = ["gh", "api", "graphql", "--include", "--input", "-"]
 
     try:
         result = subprocess.run(
             cmd,
-            input=json.dumps(payload),
+            input=json.dumps(payload).encode(),
             capture_output=True,
-            text=True,
             timeout=120,
         )
     except subprocess.TimeoutExpired:
         return False, "GraphQL query timed out after 120 seconds"
 
-    # Use stdout for JSON parsing, combined output for error reporting
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
+    # Preserve raw bytes for exact response-length diagnostics; decode only for parsing/display.
+    stdout_bytes = result.stdout or b""
+    stderr_bytes = result.stderr or b""
+    if isinstance(stdout_bytes, str):  # Compatibility for test doubles.
+        stdout_bytes = stdout_bytes.encode()
+    if isinstance(stderr_bytes, str):
+        stderr_bytes = stderr_bytes.encode()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
     error_output = (stdout + ("\n" + stderr if stderr else "")).strip()
 
     if result.returncode != 0:
         return False, error_output
 
-    # Validate JSON response - parse stdout only
+    _, body, _ = _split_http_response(stdout)
+    # Validate JSON response - parse the body only, not --include headers.
     try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return False, error_output
+        data = json.loads(body)
+    except json.JSONDecodeError as error:
+        return False, _graphql_parse_error(stdout, len(_response_body_bytes(stdout_bytes)), error, variables)
 
     # Check for GraphQL errors
     if data.get("errors") and len(data["errors"]) > 0:

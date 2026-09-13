@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -71,6 +72,132 @@ def _write_sticky_review(tmp_path: Path, *, status: str, reply: str) -> Path:
         encoding="utf-8",
     )
     return review_file
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (
+            "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\nX-GitHub-Request-Id: request-123\r\n\r\n",
+            ("application/json", 0, "request-123", ""),
+        ),
+        (
+            'HTTP/2.0 200 OK\nContent-Type: application/json\n\n{"data":',
+            ("application/json", len(b'{"data":'), "unavailable", '{"data":'),
+        ),
+        (
+            "HTTP/2.0 200 OK\nContent-Type: text/html\nX-Request-ID: request-456\n\n"
+            '<html>upstream failure token="token secret" body="reply secret"</html>',
+            ("text/html", 70, "request-456", "<html>upstream failure token=[REDACTED] body=[REDACTED]</html>"),
+        ),
+    ],
+)
+def test_run_graphql_returns_safe_diagnostics_for_unparseable_success_response(
+    monkeypatch: pytest.MonkeyPatch, response: str, expected: tuple[str, int, str, str]
+) -> None:
+    """Successful but malformed API responses remain actionable and safe to retry."""
+    run = Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr=""))
+    monkeypatch.setattr(post.subprocess, "run", run)
+
+    success, error = post.run_graphql("query { viewer { login } }", {"body": "reply secret", "token": "token secret"})
+
+    content_type, response_bytes, request_id, body_preview = expected
+    assert not success
+    assert isinstance(error, str)
+    assert "Retryable GraphQL response parse failure" in error
+    assert "endpoint=graphql method=POST status=200" in error
+    assert f"content_type={content_type}" in error
+    assert f"response_bytes={response_bytes}" in error
+    assert f"request_id={request_id}" in error
+    assert f"body_preview={body_preview!r}" in error
+    assert "parser_stack=" in error
+    assert "reply secret" not in error
+    assert "token secret" not in error
+    assert run.call_args.args[0] == ["gh", "api", "graphql", "--include", "--input", "-"]
+
+
+def test_run_graphql_redacts_secret_crossing_preview_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Secrets are redacted before a bounded response preview is taken."""
+    secret = "reply-secret-crossing-preview-boundary"  # pragma: allowlist secret
+    response = f"HTTP/2.0 200 OK\nContent-Type: text/html\n\n{'x' * 990}{secret}"
+    monkeypatch.setattr(
+        post.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr="")),
+    )
+
+    success, error = post.run_graphql("query", {"body": secret})
+
+    assert not success
+    assert secret not in error
+    assert secret[:10] not in error
+    assert "[REDACTED]" in error
+
+
+@pytest.mark.parametrize("field", ["access_token", "api_key", "client_secret"])
+def test_run_graphql_redacts_common_response_secret_fields(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    """Response secret fields are redacted even when they were not request variables."""
+    secret = "response-only-secret"  # pragma: allowlist secret
+    response = f'HTTP/2.0 200 OK\nContent-Type: text/html\n\n<{field} value="{secret}">'
+    monkeypatch.setattr(
+        post.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr="")),
+    )
+
+    success, error = post.run_graphql("query", {})
+
+    assert not success
+    assert secret not in error
+    assert "[REDACTED]" in error
+
+
+def test_run_graphql_reports_raw_response_byte_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Diagnostics report the received bytes rather than decoded replacement characters."""
+    response = b"HTTP/2.0 200 OK\r\nContent-Type: text/html\r\n\r\n\xff"
+    monkeypatch.setattr(
+        post.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr=b"")),
+    )
+
+    success, error = post.run_graphql("query", {})
+
+    assert not success
+    assert "response_bytes=1" in error
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_run_graphql_parses_valid_included_response(monkeypatch: pytest.MonkeyPatch, line_ending: str) -> None:
+    """Headers from --include do not prevent valid GraphQL JSON from parsing."""
+    response = (
+        f"HTTP/2.0 200 OK{line_ending}Content-Type: application/json{line_ending}"
+        f'{line_ending}{{"data": {{"ok": true}}}}'
+    )
+    monkeypatch.setattr(
+        post.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess(["gh"], 0, stdout=response, stderr="")),
+    )
+
+    assert post.run_graphql("query", {}) == (True, {"data": {"ok": True}})
+
+
+def test_split_http_response_uses_final_response_and_handles_headerless_output() -> None:
+    """Redirect/proxy headers use the final response; missing headers stay diagnosable."""
+    headers, body, status = post._split_http_response(
+        "HTTP/1.1 302 Found\nLocation: https://api.github.com/graphql\n\n"
+        "HTTP/2.0 200 OK\nContent-Type: application/json\n\n{}"
+    )
+    assert (headers, body, status) == ({"content-type": "application/json"}, "{}", "200")
+    assert post._split_http_response("not json") == ({}, "not json", "unknown")
+
+
+def test_split_http_response_does_not_parse_http_like_body_content() -> None:
+    """Only leading --include blocks are headers; HTTP-like body text remains a body."""
+    body = "invalid\nHTTP/1.1 200 OK\nContent-Type: forged\n\nbody"
+    headers, parsed_body, status = post._split_http_response(f"HTTP/2.0 200 OK\nContent-Type: text/plain\n\n{body}")
+    assert (headers, parsed_body, status) == ({"content-type": "text/plain"}, body, "200")
 
 
 def test_run_allows_valid_linked_issue_spec_skip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

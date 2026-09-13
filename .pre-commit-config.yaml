@@ -37,7 +37,7 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
-        exclude: ^docs/
+        exclude: ^docs/|(^|/)(package-lock|npm-shrinkwrap)\.json$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.14

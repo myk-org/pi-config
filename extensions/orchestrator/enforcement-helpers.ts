@@ -812,7 +812,7 @@ function bodyAlreadySigned(text: string): boolean {
 
 /** Unresolved model placeholders are stale template footers, not signatures. */
 function replaceUnresolvedModelFooters(payload: string): string {
-  const unresolvedFooter = /(?:\n|\\n){2}---(?:\n|\\n)\*Assisted-by: PI \((?:\$PI_MODEL|\$\{PI_MODEL\})\)\*/g;
+  const unresolvedFooter = /(?:\n|\\n){2}---(?:\n|\\n)\*Assisted-by: PI \((?:\$PI_MODEL|\$\{PI_MODEL(?::-unknown)?\})\)\*/g;
   const replaced = payload.replace(unresolvedFooter, "");
   if (replaced !== payload)
     enfLog.debug("injectGhBodySignature replaced unresolved PI_MODEL footer");

@@ -15,6 +15,9 @@ const peers: FakePi[] = [];
 
 afterEach(async () => {
 	for (const peer of peers.splice(0)) await peer.shutdown?.();
+	for (const handle of (process as any)._getActiveHandles()) {
+		if (handle.constructor?.name === "FSWatcher") handle.close();
+	}
 	if (workspace) rmSync(workspace, { recursive: true, force: true });
 	workspace = undefined;
 });

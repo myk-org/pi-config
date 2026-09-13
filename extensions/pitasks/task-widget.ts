@@ -37,20 +37,35 @@ export class TaskWidget {
 	private tui: any;
 	private widgetRegistered = false;
 
-	constructor(private store: TaskStore, private config: Record<string, any> = {}) {}
+	constructor(private store: TaskStore, private config: Record<string, any> = {}) {
+		this.activateInProgressTasks();
+	}
 
-	setStore(store: TaskStore): void { this.store = store; }
+	private activateInProgressTasks(): void {
+		for (const task of this.store.list()) {
+			if (task.status === "in_progress") this.setActiveTask(task.id);
+		}
+	}
+
+	setStore(store: TaskStore): void {
+		this.store = store;
+		this.activeTaskIds.clear();
+		this.metrics.clear();
+		this.activateInProgressTasks();
+	}
 	setUICtx(ctx: any): void { this.uiCtx = ctx; }
 
 	setActiveTask(taskId: string, active = true): void {
-		if (taskId && active) {
+		const task = this.store.get(taskId);
+		if (taskId && active && task) {
 			this.activeTaskIds.add(taskId);
-			if (!this.metrics.has(taskId)) {
-				this.metrics.set(taskId, { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 });
-			}
+			const telemetry = task.telemetry ?? { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
+			if (!task.telemetry) this.store.update(taskId, { telemetry });
+			this.metrics.set(taskId, telemetry);
 			this.ensureTimer();
 		} else if (taskId) {
 			this.activeTaskIds.delete(taskId);
+			if (task?.telemetry && !task.telemetry.endedAt) this.store.update(taskId, { telemetry: { ...task.telemetry, endedAt: Date.now() } });
 		}
 		this.update();
 	}
@@ -58,7 +73,11 @@ export class TaskWidget {
 	addTokenUsage(inputTokens: number, outputTokens: number): void {
 		for (const id of this.activeTaskIds) {
 			const m = this.metrics.get(id);
-			if (m) { m.inputTokens += inputTokens; m.outputTokens += outputTokens; }
+			if (m) {
+				m.inputTokens += inputTokens;
+				m.outputTokens += outputTokens;
+				this.store.update(id, { telemetry: m });
+			}
 		}
 	}
 
@@ -114,29 +133,23 @@ export class TaskWidget {
 				if (openBlockers.length > 0) suffix = theme.fg("dim", ` › blocked by ${openBlockers.map((id: string) => "#" + id).join(", ")}`);
 			}
 
+			const m = task.telemetry ?? this.metrics.get(task.id);
+			const stats = m ? (() => {
+				const elapsed = formatDuration(Math.max(0, (m.endedAt ?? Date.now()) - m.startedAt));
+				const tokenParts = [m.inputTokens > 0 && `↑ ${formatTokens(m.inputTokens)}`, m.outputTokens > 0 && `↓ ${formatTokens(m.outputTokens)}`].filter(Boolean);
+				return ` ${theme.fg("dim", tokenParts.length ? `(${elapsed} · ${tokenParts.join(" ")})` : `(${elapsed})`)}`;
+			})() : "";
+
 			let text: string;
 			if (task.status === "in_progress") {
 				const form = task.activeForm || task.subject;
 				const agentId = task.metadata?.agentId;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
-				const m = this.metrics.get(task.id);
-				let stats = "";
-				if (m) {
-					const elapsed = formatDuration(Date.now() - m.startedAt);
-					const tokenParts: string[] = [];
-					if (m.inputTokens > 0) tokenParts.push(`↑ ${formatTokens(m.inputTokens)}`);
-					if (m.outputTokens > 0) tokenParts.push(`↓ ${formatTokens(m.outputTokens)}`);
-					stats = tokenParts.length > 0
-						? ` ${theme.fg("dim", `(${elapsed} · ${tokenParts.join(" ")})`)}`
-						: ` ${theme.fg("dim", `(${elapsed})`)}`;
-				}
 				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
 			} else if (task.status === "completed") {
-				text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}`;
+				text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
 			} else {
-				const agentSuffix = task.status === "in_progress" && task.metadata?.agentId
-					? theme.fg("dim", ` (agent ${task.metadata.agentId.slice(0, 5)})`) : "";
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}${agentSuffix}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}${stats}`;
 			}
 			lines.push(truncate(text + suffix));
 		}

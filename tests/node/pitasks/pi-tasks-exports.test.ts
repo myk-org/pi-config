@@ -5,12 +5,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import type { Task } from "../../../extensions/pitasks/types.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import {
 	pendingReminderContent,
 	staleReminderContent,
 	shouldFireReminder,
 } from "../../../extensions/pitasks/reminders.js";
+
+const localCreatedBy: Task["createdBy"] = { type: "local", origin: "system", session: "", project: "" };
 
 describe("TaskCreate guidance", () => {
 	it("describes agentType as non-executing optional metadata", () => {
@@ -29,21 +32,21 @@ describe("TaskCreate guidance", () => {
 describe("pitasks exported API pattern", () => {
 	it("TaskStore.create returns task with correct subject", () => {
 		const store = new TaskStore();
-		const task = store.create("Test task", "Description");
+		const task = store.create("Test task", "Description", localCreatedBy);
 		assert.equal(task.subject, "Test task");
 		assert.equal(task.description, "Description");
 	});
 
 	it("TaskStore.create defaults status to pending", () => {
 		const store = new TaskStore();
-		const task = store.create("Task", "desc");
+		const task = store.create("Task", "desc", localCreatedBy);
 		assert.equal(task.status, "pending");
 	});
 
 	it("TaskStore.create generates unique ids across calls", () => {
 		const store = new TaskStore();
-		const t1 = store.create("Task 1", "desc");
-		const t2 = store.create("Task 2", "desc");
+		const t1 = store.create("Task 1", "desc", localCreatedBy);
+		const t2 = store.create("Task 2", "desc", localCreatedBy);
 		assert.ok(t1.id);
 		assert.ok(t2.id);
 		assert.notEqual(t1.id, t2.id);
@@ -51,30 +54,59 @@ describe("pitasks exported API pattern", () => {
 
 	it("TaskStore.get returns created task", () => {
 		const store = new TaskStore();
-		const created = store.create("Find me", "desc");
+		const created = store.create("Find me", "desc", localCreatedBy);
 		const found = store.get(created.id);
 		assert.equal(found?.subject, "Find me");
 	});
 
 	it("TaskStore.list returns all tasks", () => {
 		const store = new TaskStore();
-		store.create("Task 1", "desc1");
-		store.create("Task 2", "desc2");
+		store.create("Task 1", "desc1", localCreatedBy);
+		store.create("Task 2", "desc2", localCreatedBy);
 		const list = store.list();
 		assert.equal(list.length, 2);
 	});
 
-	it("TaskStore.update changes task fields", () => {
+	it("TaskStore.update starts telemetry for in-progress tasks", () => {
 		const store = new TaskStore();
-		const task = store.create("Original", "desc");
-		const result = store.update(task.id, { status: "in_progress" });
-		assert.equal(result.task?.status, "in_progress");
-		assert.ok(result.changedFields.includes("status"));
+		const task = store.create("Original", "desc", localCreatedBy);
+		const originalNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const result = store.update(task.id, { status: "in_progress" });
+			assert.equal(result.task?.status, "in_progress");
+			assert.deepEqual(result.task?.telemetry, { startedAt: 1_000, inputTokens: 0, outputTokens: 0 });
+			assert.ok(result.changedFields.includes("status"));
+		} finally {
+			Date.now = originalNow;
+		}
+	});
+
+	it("TaskStore.updateTasks starts telemetry for auto-managed transitions", () => {
+		const store = new TaskStore();
+		const pending = store.create("Pending", "desc", localCreatedBy);
+		const completed = store.create("Completed", "desc", localCreatedBy);
+		const originalNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			store.update(completed.id, { status: "in_progress" });
+			Date.now = () => 2_000;
+			store.update(completed.id, { status: "completed" });
+			Date.now = () => 3_000;
+			store.updateTasks([
+				{ id: pending.id, fields: { status: "in_progress" } },
+				{ id: completed.id, fields: { status: "in_progress" } },
+			]);
+			assert.deepEqual(store.get(pending.id)?.telemetry, { startedAt: 3_000, inputTokens: 0, outputTokens: 0 });
+			assert.deepEqual(store.get(completed.id)?.telemetry, { startedAt: 3_000, inputTokens: 0, outputTokens: 0 });
+		} finally {
+			Date.now = originalNow;
+		}
 	});
 
 	it("TaskStore.delete removes task", () => {
 		const store = new TaskStore();
-		const task = store.create("Delete me", "desc");
+		const task = store.create("Delete me", "desc", localCreatedBy);
 		const deleted = store.delete(task.id);
 		assert.equal(deleted, true);
 		assert.equal(store.get(task.id), undefined);
@@ -90,7 +122,7 @@ describe("pitasks exported API pattern", () => {
 
 	it("TaskStore.update with metadata merges keys", () => {
 		const store = new TaskStore();
-		const task = store.create("Meta task", "desc", undefined, undefined, { key1: "a" });
+		const task = store.create("Meta task", "desc", localCreatedBy, undefined, { key1: "a" });
 		store.update(task.id, { metadata: { key2: "b" } });
 		const updated = store.get(task.id);
 		assert.equal(updated?.metadata.key1, "a");

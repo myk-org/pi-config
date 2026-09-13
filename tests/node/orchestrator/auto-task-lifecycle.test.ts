@@ -36,14 +36,21 @@ describe("autoCompleteTask", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("completes a pending task in tasks.json", async () => {
+  it("completes a pending task with closed telemetry", async () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Test task" },
     ]);
-    const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
-    assert.equal(result, true);
-    const tasks = readTaskStore(storePath);
-    assert.equal(tasks[0].status, "completed");
+    const originalNow = Date.now;
+    try {
+      Date.now = () => 1_000;
+      const result = await autoCompleteTask("1", tmp, undefined, (p) => new TaskStore(p));
+      assert.equal(result, true);
+      const tasks = readTaskStore(storePath);
+      assert.equal(tasks[0].status, "completed");
+      assert.deepEqual(tasks[0].telemetry, { startedAt: 1_000, endedAt: 1_000, inputTokens: 0, outputTokens: 0 });
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it("completes an in_progress task", async () => {
@@ -122,14 +129,21 @@ describe("autoMarkInProgress", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("marks a pending task as in_progress", async () => {
+  it("marks a pending task as in_progress with fresh telemetry", async () => {
     const storePath = writeTaskStore(tmp, "tasks.json", [
       { id: "1", status: "pending", subject: "Test task" },
     ]);
-    const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
-    assert.equal(result, true);
-    const tasks = readTaskStore(storePath);
-    assert.equal(tasks[0].status, "in_progress");
+    const originalNow = Date.now;
+    try {
+      Date.now = () => 1_000;
+      const result = await autoMarkInProgress("1", tmp, undefined, (p) => new TaskStore(p));
+      assert.equal(result, true);
+      const tasks = readTaskStore(storePath);
+      assert.equal(tasks[0].status, "in_progress");
+      assert.deepEqual(tasks[0].telemetry, { startedAt: 1_000, inputTokens: 0, outputTokens: 0 });
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it("does not mark already in_progress task", async () => {

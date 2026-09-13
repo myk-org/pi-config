@@ -33,6 +33,9 @@ const log = createLogger("pitasks");
 // Module-level refs — survive closure replacement on /reload
 let currentUiCtx: any = null;
 let currentWidget: TaskWidget | null = null;
+export function setTaskTelemetryActive(taskId: string, active = true): void {
+	currentWidget?.setActiveTask(taskId, active);
+}
 
 /** Exported store instance — set during extension init. */
 export let taskStore: TaskStore;
