@@ -20,30 +20,64 @@ afterEach(() => {
   home = undefined;
 });
 
-it("extension and standalone adapters share canonical formatting and filtering", async () => {
-  home = mkdtempSync(join(tmpdir(), "pi-logger-core-"));
+async function adapters(level: "debug" | "info") {
+  home ??= mkdtempSync(join(tmpdir(), "pi-logger-core-"));
   process.env.HOME = home;
-  process.env.PI_LOG_ADAPTER_PARITY = "info";
+  process.env.PI_LOG_ADAPTER_PARITY = level;
 
-  const file = await import(`../../../extensions/shared/file-logger.ts?t=${Date.now()}`);
-  const extension = await import(`../../../extensions/shared/logger.ts?t=${Date.now()}`);
-  const standalone = await import(`../../../extensions/shared/install-logger.mjs?t=${Date.now()}`);
+  const file = await import("../../../extensions/shared/file-logger.ts");
+  const extension = await import("../../../extensions/shared/logger.ts");
+  const standalone = await import("../../../extensions/shared/install-logger.mjs");
+  file.clearLogLevelCache();
   file.setGlobalSessionId("parity-session");
 
-  const args = ["hello\nworld", { count: 2 }, new Error("failed\ncleanly")] as const;
-  const extensionLog = extension.createLogger("adapter_parity", "parity");
-  const standaloneLog = standalone.createLogger("adapter_parity", "parity");
-  extensionLog.debug("filtered");
-  standaloneLog.debug("filtered");
-  extensionLog.error(...args);
-  standaloneLog.error(...args);
+  return {
+    extension: extension.createLogger("adapter_parity", "parity"),
+    standalone: standalone.createLogger("adapter_parity", "parity"),
+    extensionPath: file.getPiLogPath("adapter_parity")!,
+    standalonePath: join(home, ".pi/logs/adapter_parity/install.log"),
+  };
+}
 
-  const normalize = (body: string) => body.replace(/^\S+ /, "").replace(/\\n\s+at .*$/, "");
-  const extensionBody = readFileSync(file.getPiLogPath("adapter_parity"), "utf8");
-  const standaloneBody = readFileSync(join(home, ".pi/logs/adapter_parity/install.log"), "utf8");
-  assert.equal(normalize(extensionBody), normalize(standaloneBody));
-  assert.doesNotMatch(extensionBody, /filtered/);
-  assert.equal(extensionLog.isDebugEnabled(), standaloneLog.isDebugEnabled());
+const normalize = (body: string) => body.replace(/^\S+ /, "").replace(/\\n\s+at .*$/, "");
+
+it("adapters produce identical canonical formatting", async () => {
+  const logs = await adapters("info");
+  const args = ["hello\nworld", { count: 2 }, new Error("failed\ncleanly")] as const;
+
+  logs.extension.error(...args);
+  logs.standalone.error(...args);
+
+  const extensionBody = normalize(readFileSync(logs.extensionPath, "utf8"));
+  const standaloneBody = normalize(readFileSync(logs.standalonePath, "utf8"));
+  assert.equal(extensionBody, standaloneBody);
+  assert.match(extensionBody, /^\[error\] \[parity\] hello\\nworld \{"count":2\} Error: failed\\ncleanly\\n {4}at /);
+  assert.equal(extensionBody.split("\n").length, 2);
+});
+
+it("info level writes info and filters debug for each adapter", async () => {
+  const logs = await adapters("info");
+
+  logs.extension.debug("debug message");
+  logs.extension.info("info message");
+  logs.standalone.debug("debug message");
+  logs.standalone.info("info message");
+
+  for (const path of [logs.extensionPath, logs.standalonePath]) {
+    const body = readFileSync(path, "utf8");
+    assert.match(body, /\[info\] \[parity\] info message/);
+    assert.doesNotMatch(body, /debug message/);
+  }
+});
+
+it("isDebugEnabled reports the configured level for each adapter", async () => {
+  const infoLogs = await adapters("info");
+  assert.equal(infoLogs.extension.isDebugEnabled(), false);
+  assert.equal(infoLogs.standalone.isDebugEnabled(), false);
+
+  const debugLogs = await adapters("debug");
+  assert.equal(debugLogs.extension.isDebugEnabled(), true);
+  assert.equal(debugLogs.standalone.isDebugEnabled(), true);
 });
 
 it("canonical logger swallows destination failures", () => {
