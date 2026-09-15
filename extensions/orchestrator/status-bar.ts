@@ -15,6 +15,7 @@ const SLOTS = {
   crons:  "3-crons",
   dream:  "3b-dream",
   git:    "4-git",
+  graft:  "4b-graft",
   review: "5-review",
 } as const;
 

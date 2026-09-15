@@ -37,6 +37,10 @@
   // Block orchestrator from using edit/write tools directly (must delegate to subagents)
   "orchestrator_edit_write_block": false,
 
+  // Enable local Graft repository graph context (requires Node.js 22+ and `npm install -g @nanonets/graft@latest`)
+  // Graft reads this project and stores its regenerable graph in ./graft/; false keeps it fully inactive.
+  "graft_enable": false,
+
   // ── Dashboard & Diff ──────────────────────────────────────────────────────
 
   // Enable pidash web dashboard

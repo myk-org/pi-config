@@ -78,9 +78,11 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g npm@12.0.2
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
+# Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli
+  npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
+  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest && \
+  graft --version
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)

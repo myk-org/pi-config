@@ -272,6 +272,13 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 disabled=nd,
                 install_cmd="npm install -g agent-browser",
             ),
+            Tool(
+                "graft",
+                "Local repository code graph for the optional Graft extension",
+                installed=bool(shutil.which("graft")),
+                disabled=nd,
+                install_cmd="DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest",
+            ),
         ],
     )
 

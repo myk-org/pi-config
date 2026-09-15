@@ -157,7 +157,7 @@ The installer covers:
 
 - **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
 - **Python Tools** — prek
-- **npm Packages** — mcpc, acpx, agent-browser
+- **npm Packages** — mcpc, acpx, agent-browser, graft
 - **Browser Automation** — playwright + chromium
 - **Environment Setup** — gitignore configuration
 
@@ -404,6 +404,24 @@ Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
 
 In containers, images are auto-served via HTTP for browser preview.
 
+### Graft repository graph (optional)
+
+Set `graft_enable` to `true` in `.pi/pi-config-settings.json` (or set
+`PI_GRAFT_ENABLE=true`) to enable local Graft repository graph context:
+
+```json
+{
+  "graft_enable": true
+}
+```
+
+Graft requires Node.js 22+ and the `graft` CLI. The container includes it; native
+installs can use `uv run scripts/install.py` or `DO_NOT_TRACK=1 npm install -g
+@nanonets/graft@latest`. `DO_NOT_TRACK=1` disables Graft telemetry during installation.
+When enabled, Graft reads the trusted project and writes a regenerable `./graft/`
+cache. Delete that directory or set `graft_enable` to `false` to disable it. If the
+native CLI is unavailable or its installation fails, pi continues without Graft.
+
 ### Cache Miss Notices
 
 Enable `showCacheMissNotices` in pi settings to see transcript notices on significant prompt-cache misses — useful for investigating unexpected token costs:
@@ -424,6 +442,13 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 - **Filesystem isolation** — pi can only read/write the mounted project directory
 - **Consistent tooling** — All required tools pre-installed in a single image
 - **Disposable** — Container is destroyed after each session (`--rm`)
+
+**Graft (optional `graft_enable`):** The image installs `@nanonets/graft` with
+`DO_NOT_TRACK=1` and verifies `graft --version` during the image build. Enable it
+in trusted project or global pi-config settings; it reads the project locally and
+stores its regenerable graph in `./graft/`. Set `graft_enable` to `false` and delete
+that directory to disable and remove the cache. Native installations require Node.js
+22+ and npm; the installer attempts the same installation but failure is non-fatal.
 
 **CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
 `cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and
@@ -691,6 +716,7 @@ PI_PIDIFF_ENABLE=false pi
 | `acpx`              | Agent proxy for remote models                                                                                                                                                                                                                                                                                                  |
 | `kubectl` / `oc`    | Kubernetes and OpenShift CLI                                                                                                                                                                                                                                                                                                   |
 | `agent-browser`     | Browser automation CLI (navigate, click, screenshot, forms)                                                                                                                                                                                                                                                                    |
+| `graft`             | Local repository code graph for opt-in `graft_enable`; graph cache is stored in the mounted project’s `./graft/` directory                                                                                                                                                                                                        |
 | `procps`            | Process utilities (ps, top, pgrep, pkill)                                                                                                                                                                                                                                                                                      |
 | `passwd`            | `usermod`/`groupmod` — init remaps user `node` to `PI_HOST_UID`/`PI_HOST_GID`                                                                                                                                                                                                                                                  |
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper)                                                                                                                                                                                                                                                                      |
