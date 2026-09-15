@@ -18,13 +18,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   acl \
   ca-certificates \
   curl \
+  g++ \
   gcc \
   git \
   gnupg \
   jq \
   libxml2-dev \
+  make \
   openssh-client \
   procps \
+  python3 \
   psmisc \
   ripgrep \
   unzip \
@@ -81,7 +84,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
-  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest && \
+  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --allow-scripts=@nanonets/graft,tree-sitter,tree-sitter-cli,tree-sitter-go,tree-sitter-java,tree-sitter-javascript,tree-sitter-kotlin,tree-sitter-php,tree-sitter-python,@davisvaughan/tree-sitter-r,tree-sitter-swift,tree-sitter-typescript --strict-allow-scripts && \
   graft --version
 
 

@@ -21,6 +21,7 @@ function registeredSession(parsed: any): SessionInfo {
     cwd: parsed.cwd || "",
     branch: parsed.branch || "",
     model: parsed.model || "",
+    reasoning: typeof parsed.reasoning === "boolean" ? parsed.reasoning : undefined,
     startedAt: parsed.startedAt || new Date().toISOString(),
     lastActivity: Date.now(),
     active: true,
@@ -35,6 +36,7 @@ function registeredSession(parsed: any): SessionInfo {
     comsName: parsed.comsName || undefined,
     comsPurpose: parsed.comsPurpose || undefined,
     comsProject: parsed.comsProject || undefined,
+    graftTokenSavings: Number.isSafeInteger(parsed.graftTokenSavings) && parsed.graftTokenSavings >= 0 ? parsed.graftTokenSavings : undefined,
     ...initialActivityState(),
     activity,
     activitySequence: Number.isSafeInteger(parsed.activitySequence) ? parsed.activitySequence : 0,
@@ -71,6 +73,14 @@ export function registerPidashSession(
   log.info(`session registered: session=${session.sessionId} streaming=${session.streaming}`);
   broadcast({ type: "session_added", session });
   return client;
+}
+
+export function updatePidashSession(session: SessionInfo, parsed: any): void {
+  if (typeof parsed.reasoning === "boolean") session.reasoning = parsed.reasoning;
+  if (parsed.graftTokenSavings !== undefined && Number.isSafeInteger(parsed.graftTokenSavings) && parsed.graftTokenSavings >= 0) {
+    session.graftTokenSavings = parsed.graftTokenSavings;
+  }
+  session.lastActivity = Date.now();
 }
 
 export function disconnectPidashSession(
