@@ -69,6 +69,12 @@ describe("Graft opt-in, trust, and startup", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("builds absent graphs only for trusted eligible sessions", async () => { const r = register({ graph: async () => "absent" }); await start(r); assert.deepEqual(r.calls.map(c => c.args), [["build"]]); });
+  it("builds an absent graph once for a fork owner", async () => {
+    const r = register({ graph: async () => "absent" });
+    await r.handlers.get("session_start")![0]({ reason: "fork" }, ctx());
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(r.calls.map(call => call.args), [["build"]]);
+  });
   it("ignores an older overlapping startup result", async () => {
     let release!: (status: "absent") => void;
     const firstGraph = new Promise<"absent">(resolve => { release = resolve; });

@@ -25,7 +25,8 @@ def test_node_gyp_prerequisites_are_installed_before_graft() -> None:
 
 def test_graft_install_derives_strict_script_approval_from_installed_tree() -> None:
     assert "--ignore-scripts" in GRAFT_INSTALL
-    assert "graft-allow-scripts.mjs" in DOCKERFILE
+    assert "scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs" in DOCKERFILE
+    assert "extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/install-logger.mjs" in DOCKERFILE
     command = r'npm rebuild -g @nanonets/graft --allow-scripts="\$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts'
     assert re.search(command, DOCKERFILE)
 

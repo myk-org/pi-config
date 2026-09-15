@@ -127,11 +127,17 @@ describe("InfoBar thinking selector", () => {
     assert.match(view.container.textContent, /1\.3k saved/);
   });
 
-  it("preserves its DOM instance across capability updates", async () => {
-    const view = await renderInfoBar(session({ reasoning: false }));
-    const infoBar = view.container.childNodes[0];
-    await view.rerender(session({ reasoning: true, graftTokenSavings: 1250 }));
-    assert.equal(view.container.childNodes[0], infoBar);
-    assert.match(infoBar.textContent, /1\.3k saved/);
+  it("preserves its component instance across capability updates", async () => {
+    let mounts = 0; let unmounts = 0;
+    const onMessage = () => { mounts++; return () => { unmounts++; }; };
+    const { container } = installReactDomShim();
+    const root = createRoot(container); mounted.push(root);
+    const render = (value: SessionInfo) => root.render(createElement(InfoBar, { session: value, model: value.model, tokens: null, send: () => {}, onMessage }));
+    await act(async () => render(session({ reasoning: false })));
+    await act(async () => render(session({ reasoning: true, graftTokenSavings: 1250 })));
+    assert.deepEqual({ mounts, unmounts }, { mounts: 1, unmounts: 0 });
+    assert.match(container.textContent, /1\.3k saved/);
+    await act(async () => root.unmount()); mounted.pop();
+    assert.equal(unmounts, 1);
   });
 });

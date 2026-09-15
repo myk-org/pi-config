@@ -429,12 +429,21 @@ def test_graft_script_audit_rejects_missing_required_dependency(tmp_path: Path) 
         install._install_script_packages(root, tmp_path / "node_modules")
 
 
-def _run_graft_auditor(root: Path) -> subprocess.CompletedProcess[str]:
+def _run_graft_auditor(root: Path, *, debug: bool = True) -> subprocess.CompletedProcess[str]:
+    env = os.environ | {
+        "HOME": str(root.parents[2]),
+        "PI_LOG_GRAFT_INSTALL": "debug" if debug else "off",
+    }
     return subprocess.run(
         ["node", str(REPO / "scripts/graft-allow-scripts.mjs"), str(root), str(root.parents[1])],
         capture_output=True,
         text=True,
+        env=env,
     )
+
+
+def _graft_auditor_log(root: Path) -> str:
+    return (root.parents[2] / ".pi/logs/graft-install/install.log").read_text()
 
 
 def test_docker_graft_auditor_finds_fully_hoisted_dependency(tmp_path: Path) -> None:
@@ -448,6 +457,23 @@ def test_docker_graft_auditor_finds_fully_hoisted_dependency(tmp_path: Path) -> 
     result = _run_graft_auditor(root)
     assert result.returncode == 0
     assert result.stdout == "native-dependency"
+    assert result.stderr == ""
+    log = _graft_auditor_log(root)
+    assert "[debug] [graft-install]" in log
+    assert '"event":"dependency_resolved"' in log
+    assert '"dependency":"native-dependency"' in log
+    assert str(tmp_path) not in log
+
+
+def test_docker_graft_auditor_debug_logging_is_disabled_by_default(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"dependency": "1"}})
+    _write_package(root / "node_modules/dependency", {"name": "dependency"})
+
+    result = _run_graft_auditor(root, debug=False)
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert not (root.parents[2] / ".pi/logs/graft-install/install.log").exists()
 
 
 def test_docker_graft_auditor_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
@@ -465,6 +491,10 @@ def test_docker_graft_auditor_rejects_missing_required_dependency(tmp_path: Path
     result = _run_graft_auditor(root)
     assert result.returncode != 0
     assert "required Graft dependency is not installed: required" in result.stderr
+    log = _graft_auditor_log(root)
+    assert '"event":"dependency_unresolved"' in log
+    assert '"dependency":"required"' in log
+    assert str(tmp_path) not in log
 
 
 def test_graft_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:

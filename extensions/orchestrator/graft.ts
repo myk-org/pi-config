@@ -51,9 +51,11 @@ function nodes(root: string): number { const graph = wiring(root); return Number
 function savedTokens(output: string): number { return [...output.matchAll(/\[graft\] tokens saved ≈ ([\d,]+)/g)].reduce((total, match) => total + (Number(match[1].replaceAll(",", "")) || 0), 0); }
 function savingsStore(ctx: any, root: string): string {
   let id: unknown = process.env.PI_SUBAGENT_CHILD === "1" ? process.env.__PI_PARENT_SESSION_ID : undefined;
-  try { id ||= ctx.sessionManager?.getSessionId?.(); } catch { return ""; }
-  if (typeof id !== "string" || !id) return "";
+  const source = id ? "parent" : "session";
+  try { id ||= ctx.sessionManager?.getSessionId?.(); } catch { log.debug("savings_store_resolved", { source, available: false }); return ""; }
+  if (typeof id !== "string" || !id) { log.debug("savings_store_resolved", { source, available: false }); return ""; }
   const dir = getProjectTmpDir(root); chmodSync(dir, 0o700);
+  log.debug("savings_store_resolved", { source, available: true });
   return join(dir, `graft-savings-${createHash("sha256").update(id).digest("hex")}.json`);
 }
 function validSavings(value: unknown): number { return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0; }
@@ -236,7 +238,7 @@ export function createGraftIntegration(options: Options) {
       registerTools(); const generation = ++state.generation; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.nodeCount = nodes(root); state.value = "failed"; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
       try { state.store = savingsStore(ctx, root); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
       setState("failed");
-      if (!child && !isEligibleGraftStartup(event, ctx) && !["new", "reload", "resume"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
+      if (!child && !isEligibleGraftStartup(event, ctx) && !["new", "reload", "resume", "fork"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
       if (!child) { const executable = await available(); if (state.generation !== generation || state.root !== root) return; if (!executable) { setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; } }
       const status = await graph(root);
       if (state.generation !== generation || state.root !== root) return;
@@ -269,7 +271,11 @@ export function createGraftIntegration(options: Options) {
     pi.on("before_agent_start", async (event: any, ctx: any) => {
       const started = Date.now(); state.ctx = ctx; const query = text(event?.prompt); const generation = state.generation; const root = state.root;
       state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; const gate = state.gate;
-      const current = () => state.generation === generation && state.root === root && state.gate === gate;
+      const current = () => {
+        const generationMatches = state.generation === generation; const rootMatches = state.root === root; const gateMatches = state.gate === gate;
+        log.debug("retrieval_current", { generationMatches, rootMatches, gateMatches });
+        return generationMatches && rootMatches && gateMatches;
+      };
       const finish = (decision: string, extra = {}) => log.info("prompt_retrieval_exit", { decision, elapsedMs: Date.now() - started, ...extra });
       log.info("prompt_retrieval_enter", { enabled: state.enabled, trusted: trusted(ctx), dirty: state.dirty, refreshing: Boolean(state.refresh), queryLength: query?.length ?? 0 });
       if (!trusted(ctx) || !state.enabled || !state.root || resolveWorktreeRoot(ctx.cwd) !== state.root) { finish("disabled_or_untrusted"); return; }
