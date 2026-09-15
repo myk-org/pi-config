@@ -82,9 +82,13 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g npm@12.0.2
 
 # Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
+COPY scripts/graft-allow-scripts.mjs /usr/local/lib/graft-allow-scripts.mjs
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
-  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --allow-scripts=@nanonets/graft,tree-sitter,tree-sitter-cli,tree-sitter-go,tree-sitter-java,tree-sitter-javascript,tree-sitter-kotlin,tree-sitter-php,tree-sitter-python,@davisvaughan/tree-sitter-r,tree-sitter-swift,tree-sitter-typescript --strict-allow-scripts && \
+  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --ignore-scripts && \
+  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/graft-allow-scripts.mjs "$(npm root -g)/@nanonets/graft")" && \
+  test -n "$GRAFT_ALLOW_SCRIPTS" && \
+  npm rebuild -g @nanonets/graft --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
   graft --version
 
 

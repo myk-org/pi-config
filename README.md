@@ -416,9 +416,12 @@ Set `graft_enable` to `true` in `.pi/pi-config-settings.json` (or set
 }
 ```
 
-Graft requires Node.js 22+ and the `graft` CLI. The container includes it; native
-installs can use `uv run scripts/install.py` or `DO_NOT_TRACK=1 npm install -g
-@nanonets/graft@latest`. `DO_NOT_TRACK=1` disables Graft telemetry during installation.
+Graft requires Node.js 22+, npm 12+, node-gyp prerequisites (Python 3, `make`, and
+G++), and the `graft` CLI. The container includes them; native installs can use
+`uv run scripts/install.py`. The installer downloads `@nanonets/graft@latest` with
+scripts disabled, audits its installed dependency metadata for lifecycle scripts,
+strictly approves only those packages for a scoped rebuild, and verifies `graft
+--version`. `DO_NOT_TRACK=1` disables Graft telemetry during installation.
 When enabled, Graft reads the trusted project and writes a regenerable `./graft/`
 cache. Delete that directory or set `graft_enable` to `false` to disable it. If the
 native CLI is unavailable or its installation fails, pi continues without Graft.
@@ -445,16 +448,18 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 - **Disposable** — Container is destroyed after each session (`--rm`)
 
 **Graft (optional `graft_enable`):** The image installs the latest
-`@nanonets/graft` with `DO_NOT_TRACK=1`. Its npm command strictly approves install
-scripts only for Graft and the native Tree-sitter packages it requires. Other npm
-commands keep npm 12's install-script protections. The image includes Python 3,
+`@nanonets/graft` with `DO_NOT_TRACK=1`. It downloads with scripts disabled, derives
+an exact script allowlist by auditing the installed package's reachable dependency
+metadata, then strictly rebuilds only Graft with those approvals. The allowlist is
+command-scoped and changes with `@latest`; other npm commands keep npm 12's
+install-script protections. The image includes Python 3,
 `make`, and the GCC/G++ toolchain required by node-gyp for Graft and other native
 npm packages; these remain available for reliable package rebuilds. The build then
 verifies `graft --version`. Enable Graft in trusted project or global pi-config
 settings; it reads the project locally and stores its regenerable graph in `./graft/`. Set
 `graft_enable` to `false` and delete that directory to disable and remove the cache.
-Native installations require Node.js 22+ and npm; the installer attempts the same
-installation but failure is non-fatal.
+Native installations require Node.js 22+, npm 12+, Python 3, `make`, and G++; the
+installer uses the same audited strict installation and failure remains non-fatal.
 
 **CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
 `cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and

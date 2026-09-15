@@ -6,26 +6,14 @@ DOCKERFILE = (ROOT / "Dockerfile").read_text()
 GRAFT_INSTALL = next(
     line.strip() for line in DOCKERFILE.splitlines() if "npm install -g" in line and "@nanonets/graft" in line
 )
-# Complete native install-script package list required by @nanonets/graft 0.18.0.
-REQUIRED_ALLOW_SCRIPTS = {
-    "@nanonets/graft",
-    "tree-sitter",
-    "tree-sitter-cli",
-    "tree-sitter-go",
-    "tree-sitter-java",
-    "tree-sitter-javascript",
-    "tree-sitter-kotlin",
-    "tree-sitter-php",
-    "tree-sitter-python",
-    "@davisvaughan/tree-sitter-r",
-    "tree-sitter-swift",
-    "tree-sitter-typescript",
-}
 
 
-def test_graft_install_retains_latest_and_smoke_check() -> None:
+def test_graft_install_retains_latest() -> None:
     assert "@nanonets/graft@latest" in GRAFT_INSTALL
-    assert re.search(r"@nanonets/graft@latest [^\n]+ && \\\n\s+graft --version", DOCKERFILE)
+
+
+def test_graft_install_runs_smoke_check() -> None:
+    assert re.search(r"npm rebuild -g @nanonets/graft [^\n]+ && \\\n\s+graft --version", DOCKERFILE)
 
 
 def test_node_gyp_prerequisites_are_installed_before_graft() -> None:
@@ -35,11 +23,11 @@ def test_node_gyp_prerequisites_are_installed_before_graft() -> None:
     assert DOCKERFILE.index("apt-get install -y") < DOCKERFILE.index("@nanonets/graft@latest")
 
 
-def test_graft_install_strictly_allows_only_required_native_packages() -> None:
-    match = re.search(r"--allow-scripts=([^ ]+)", GRAFT_INSTALL)
-    assert match
-    assert set(match.group(1).split(",")) == REQUIRED_ALLOW_SCRIPTS
-    assert "--strict-allow-scripts" in GRAFT_INSTALL
+def test_graft_install_derives_strict_script_approval_from_installed_tree() -> None:
+    assert "--ignore-scripts" in GRAFT_INSTALL
+    assert "graft-allow-scripts.mjs" in DOCKERFILE
+    command = r'npm rebuild -g @nanonets/graft --allow-scripts="\$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts'
+    assert re.search(command, DOCKERFILE)
 
 
 def test_install_script_approval_is_command_scoped() -> None:
@@ -52,3 +40,4 @@ def test_install_script_approval_is_command_scoped() -> None:
     )
     assert not any(value in DOCKERFILE for value in forbidden)
     assert DOCKERFILE.count("--allow-scripts=") == 1
+    assert "tree-sitter-python" not in DOCKERFILE

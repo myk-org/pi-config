@@ -1,7 +1,7 @@
 /** Opt-in, local Graft graph integration. */
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,16 +18,16 @@ const log = createLogger("graft");
 const TIMEOUT_MS = 45_000;
 const MAX_BUFFER = 64 * 1024;
 const MIN_PROMPT_CHARS = 12;
-const BUILD_LOCK_STALE_MS = 60_000;
+const INTERACTIVE_TIMEOUT_MS = 2_000;
 export const GRAFT_QUERY_TOOLS = ["graft_find_code", "graft_find_all", "graft_file_api", "graft_trace_calls", "graft_repo_map"] as const;
 export function withGraftTools(tools: readonly string[] | undefined, enabled: boolean): string[] | undefined {
   if (!tools?.length || !enabled) return tools ? [...tools] : undefined;
   return [...new Set([...tools, ...GRAFT_QUERY_TOOLS])];
 }
 export type GraftState = "syncing" | "ready" | "stale" | "failed";
-export type GraftRun = (args: readonly string[], options: { cwd: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
+export type GraftRun = (args: readonly string[], options: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type GraphStatus = "fresh" | "stale" | "absent";
-type Options = { enabled: boolean; setting?: (cwd: string) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus>; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; run?: GraftRun };
+type Options = { enabled: boolean; setting?: (cwd: string) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus>; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; run?: GraftRun; interactiveTimeoutMs?: number };
 type StatusTheme = { fg: (color: string, value: string) => string };
 type Hit = { title?: string; pointer?: string; snippet?: string };
 type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
@@ -59,16 +59,29 @@ function savingsStore(ctx: any): string {
 function validSavings(value: unknown): number { return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0; }
 function readSavings(file: string): number {
   if (!file) return 0;
-  let total = 0;
-  try { total = validSavings(JSON.parse(readFileSync(file, "utf8"))?.tokenSavings); } catch {}
-  try { for (const event of readdirSync(`${file}.events`)) try { total += validSavings(JSON.parse(readFileSync(join(`${file}.events`, event), "utf8"))?.delta); } catch {} } catch {}
-  return total;
+  try { return validSavings(JSON.parse(readFileSync(file, "utf8"))?.tokenSavings); } catch { return 0; }
 }
-function writeSavings(file: string, delta: number): void {
-  if (!file || !delta) return;
-  const dir = `${file}.events`;
-  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700); writeFileSync(join(dir, `${process.pid}-${randomUUID()}.json`), JSON.stringify({ delta }), { mode: 0o600, flag: "wx" }); }
-  catch (error: any) { log.warn("savings_persist_failed", { code: error?.code }); }
+function writeSavings(file: string, delta: number): number {
+  if (!file || !delta) return readSavings(file);
+  const lock = `${file}.lock`; const owner = { pid: process.pid, token: randomUUID() };
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      writeFileSync(lock, JSON.stringify(owner), { mode: 0o600, flag: "wx" });
+      const total = readSavings(file) + delta; const tmp = `${file}.${owner.token}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ tokenSavings: total }), { mode: 0o600 }); renameSync(tmp, file);
+      if (lockOwner(lock)?.token === owner.token) unlinkSync(lock);
+      return total;
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") { log.warn("savings_persist_failed", { code: error?.code }); return readSavings(file); }
+      const existing = lockOwner(lock);
+      if (!ownerAlive(existing)) {
+        const claim = `${lock}.claim-${owner.token}`;
+        try { renameSync(lock, claim); if (lockOwner(claim)?.token === existing?.token && !ownerAlive(existing)) unlinkSync(claim); else try { renameSync(claim, lock); } catch {} } catch {}
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+    }
+  }
+  log.warn("savings_persist_failed", { code: "LOCK_BUSY" }); return readSavings(file);
 }
 function toolText(content: unknown): string { return Array.isArray(content) ? content.map((part: any) => typeof part?.text === "string" ? part.text : "").join("\n") : ""; }
 export function classifyToolUse(name: unknown, input: any): "graft" | "source" | null {
@@ -89,13 +102,34 @@ function navigationTool(event: any): boolean {
 }
 function graftGateReason(): string { return "[graft] Project navigation is blocked until Graft retrieval runs for this turn. Use graft_find_code (or graft_repo_map/graft_trace_calls), then inspect its returned file pointers. If Graft has no relevant result, retry the raw navigation."; }
 function diagnostic(stderr: string): string { return text(stderr.split(/\r?\n/, 1)[0], 240) ?? "no diagnostic output"; }
-function lockAlive(lock: string): boolean {
-  try { const pid = Number(readFileSync(lock, "utf8")); if (Date.now() - statSync(lock).mtimeMs > BUILD_LOCK_STALE_MS) return false; process.kill(pid, 0); return true; } catch (error: any) { return error?.code === "EPERM"; }
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("automatic retrieval timed out")), timeoutMs); })]); }
+  finally { if (timer) clearTimeout(timer); }
 }
-function acquireBuildLock(root: string): (() => void) | null {
-  const lock = resolve(root, "graft/.graph/pi-build.lock");
-  try { mkdirSync(dirname(lock), { recursive: true }); } catch { log.warn("build_lock_unavailable", { root }); return () => {}; }
-  for (let attempt = 0; attempt < 2; attempt++) try { const fd = openSync(lock, "wx", 0o600); writeFileSync(fd, String(process.pid)); closeSync(fd); return () => { try { unlinkSync(lock); } catch {} }; } catch (error: any) { if (error?.code !== "EEXIST" || lockAlive(lock)) return null; try { unlinkSync(lock); } catch {} }
+type LockOwner = { pid: number; token: string };
+function lockOwner(lock: string): LockOwner | null { try { const raw = readFileSync(lock, "utf8"); const legacyPid = Number(raw); if (Number.isSafeInteger(legacyPid)) return { pid: legacyPid, token: `legacy-${legacyPid}` }; const owner = JSON.parse(raw); return Number.isSafeInteger(owner?.pid) && typeof owner?.token === "string" ? owner : null; } catch { return null; } }
+function ownerAlive(owner: LockOwner | null): boolean { if (!owner) return false; try { process.kill(owner.pid, 0); return true; } catch (error: any) { return error?.code === "EPERM"; } }
+export function acquireBuildLock(root: string, afterClaim?: () => void): (() => void) | null {
+  const lock = resolve(root, "graft/.graph/pi-build.lock"); const claim = `${lock}.claim`; const owner = { pid: process.pid, token: randomUUID() };
+  try { mkdirSync(dirname(lock), { recursive: true }); } catch { log.warn("build_lock_unavailable", { root }); return null; }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const claimant = lockOwner(claim);
+    if (claimant) { if (ownerAlive(claimant)) return null; try { unlinkSync(claim); } catch { return null; } }
+    try {
+      const fd = openSync(lock, "wx", 0o600); writeFileSync(fd, JSON.stringify(owner)); closeSync(fd);
+      if (lockOwner(claim)) { try { if (lockOwner(lock)?.token === owner.token) unlinkSync(lock); } catch {} return null; }
+      return () => { try { if (lockOwner(lock)?.token === owner.token) unlinkSync(lock); } catch {} };
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") return null;
+      try {
+        renameSync(lock, claim);
+        const claimedOwner = lockOwner(claim);
+        if (ownerAlive(claimedOwner)) { try { renameSync(claim, lock); } catch {} return null; }
+        afterClaim?.(); unlinkSync(claim);
+      } catch { return null; }
+    }
+  }
   return null;
 }
 function trusted(ctx: any): boolean { return typeof ctx?.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true; }
@@ -112,15 +146,15 @@ export function isEligibleGraftStartup(event: any, ctx: any): boolean { return e
 
 export function createGraftIntegration(options: Options) {
   const child = process.env.PI_SUBAGENT_CHILD === "1";
-  const state = { generation: 0, root: "", store: "", enabled: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as GraftState, nodeCount: 0, tokenSavings: 0, graftReads: 0, sourceReads: 0, dirty: false, refresh: undefined as Promise<boolean> | undefined, ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
+  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as GraftState, nodeCount: 0, tokenSavings: 0, graftReads: 0, sourceReads: 0, dirty: false, refresh: undefined as Promise<boolean> | undefined, ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
   const publishSavings = () => {
     if (child || !state.events) return;
     state.events.emit("pidash:graft-savings", { tokenSavings: state.tokenSavings });
     log.debug("savings_published", { tokenSavings: state.tokenSavings });
   };
-  const setState = (value: GraftState) => { state.value = value; if (state.store) state.tokenSavings = readSavings(state.store); setSlot("graft", formatGraftFooter({ state: value, nodeCount: state.nodeCount, tokenSavings: state.tokenSavings }, state.ctx?.ui?.theme), state.ctx); publishSavings(); };
-  const addSavings = (amount: number) => { if (!amount) return; if (state.store) { writeSavings(state.store, amount); state.tokenSavings = readSavings(state.store); } else state.tokenSavings += amount; };
-  const rawRun: GraftRun = options.run ?? (async (args, { cwd }) => { try { const result = await exec("graft", args as string[], { cwd, timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, env: { ...process.env, DO_NOT_TRACK: "1", npm_config_offline: "true" } }); return { stdout: String(result.stdout).slice(0, MAX_BUFFER), stderr: String(result.stderr).slice(0, MAX_BUFFER), code: 0 }; } catch (error: any) { return { stdout: String(error?.stdout ?? "").slice(0, MAX_BUFFER), stderr: String(error?.stderr || error?.message || "").slice(0, MAX_BUFFER), code: Number(error?.code) || 1 }; } });
+  const setState = (value: GraftState) => { state.value = value; setSlot("graft", formatGraftFooter({ state: value, nodeCount: state.nodeCount, tokenSavings: state.tokenSavings }, state.ctx?.ui?.theme), state.ctx); publishSavings(); };
+  const addSavings = (amount: number) => { if (!amount) return; state.tokenSavings = state.store ? writeSavings(state.store, amount) : state.tokenSavings + amount; };
+  const rawRun: GraftRun = options.run ?? (async (args, { cwd, timeoutMs }) => { try { const result = await exec("graft", args as string[], { cwd, timeout: timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_BUFFER, env: { ...process.env, DO_NOT_TRACK: "1", npm_config_offline: "true" } }); return { stdout: String(result.stdout).slice(0, MAX_BUFFER), stderr: String(result.stderr).slice(0, MAX_BUFFER), code: 0 }; } catch (error: any) { return { stdout: String(error?.stdout ?? "").slice(0, MAX_BUFFER), stderr: String(error?.stderr || error?.message || "").slice(0, MAX_BUFFER), code: Number(error?.code) || 1 }; } });
   const run: GraftRun = async (args, options) => {
     const started = Date.now();
     // Do not log ask arguments: they contain the user's prompt.
@@ -151,6 +185,7 @@ export function createGraftIntegration(options: Options) {
         return false;
       }
       state.nodeCount = nodeCount; state.dirty = result.code !== 0;
+      if (!result.code && state.dirtySignal) try { for (const signal of readdirSync(state.dirtySignal)) try { unlinkSync(join(state.dirtySignal, signal)); } catch {} } catch {}
       setState(result.code === 0 ? "ready" : state.nodeCount ? "stale" : "failed");
       log.info("refresh_end", { ok: result.code === 0, nodes: state.nodeCount, elapsedMs: Date.now() - started });
       return result.code === 0;
@@ -159,8 +194,16 @@ export function createGraftIntegration(options: Options) {
     return pending;
   };
   const markDirty = (source: string) => { if (state.dirty) { log.debug("graph_dirty_repeat", { source }); return; } state.dirty = true; setState("stale"); log.info("graph_dirty", { source }); };
+  const consumeDirtySignals = () => {
+    if (child || !state.dirtySignal) return;
+    try { const signals = readdirSync(state.dirtySignal); if (!signals.length) return; markDirty("child"); log.info("child_dirty_consumed", { count: signals.length }); } catch {}
+  };
+  const invalidate = (ctx: any, reason: string) => {
+    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.nodeCount = 0; state.tokenSavings = 0; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+    clearSlot("graft", ctx); publishSavings(); log.info("session_invalidated", { reason });
+  };
   const invoke = async (args: string[]) => {
-    log.info("tool_invoke", { command: args[0], enabled: state.enabled, dirty: state.dirty }); if (!state.enabled) return "Graft is disabled for this project.";
+    log.info("tool_invoke", { command: args[0], enabled: state.enabled, dirty: state.dirty }); if (!state.enabled || !state.root || !trusted(state.ctx) || resolveWorktreeRoot(state.ctx.cwd) !== state.root) return "Graft is disabled or untrusted for this project.";
     if (args[0] === "build") return await refresh() ? "Graft graph rebuilt." : "Graft rebuild was skipped or failed; the existing graph remains available when present.";
     let result = await run(args, { cwd: state.root });
     const scoped = args.indexOf("--in");
@@ -182,11 +225,11 @@ export function createGraftIntegration(options: Options) {
     };
     pi.on("session_start", async (event: any, ctx: any) => {
       state.ctx = ctx; log.info("session_start_enter", { reason: event?.reason, mode: ctx?.mode, trusted: trusted(ctx) });
-      if (!trusted(ctx)) { log.info("session_start_exit", { decision: "untrusted" }); return; }
-      state.enabled = options.setting?.(ctx.cwd) ?? options.enabled;
-      if (!state.enabled) { log.info("session_start_exit", { decision: "disabled" }); return; }
-      registerTools(); state.generation++; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); state.nodeCount = nodes(state.root);
-      try { state.store = savingsStore(ctx); state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
+      if (!trusted(ctx)) { invalidate(ctx, "untrusted"); log.info("session_start_exit", { decision: "untrusted" }); return; }
+      const enabled = options.setting?.(ctx.cwd) ?? options.enabled;
+      if (!enabled) { invalidate(ctx, "disabled"); log.info("session_start_exit", { decision: "disabled" }); return; }
+      registerTools(); state.generation++; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); state.nodeCount = nodes(state.root);
+      try { state.store = savingsStore(ctx); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
       setState(state.value);
       if (!child && !isEligibleGraftStartup(event, ctx) && !["reload", "resume"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
       if (!child && !await available()) { setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; }
@@ -211,8 +254,9 @@ export function createGraftIntegration(options: Options) {
       if (kind === "graft") state.graftReads++; else if (kind === "source") state.sourceReads++;
       addSavings(savings);
       if (kind || savings) { setState(state.dirty || state.value === "stale" ? "stale" : "ready"); log.info("session_metric", { tool: event.toolName, kind, savings, graftReads: state.graftReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings }); }
-      const eligible = !child && state.enabled && !event.isError && ["write", "edit"].includes(event.toolName);
+      const eligible = state.enabled && !event.isError && ["write", "edit"].includes(event.toolName);
       log.info("tool_result", { tool: event.toolName, eligible, kind, savings }); if (!eligible) return;
+      if (child) { try { writeFileSync(join(state.dirtySignal, `${process.pid}-${randomUUID()}`), event.toolName, { mode: 0o600, flag: "wx" }); log.info("child_dirty_signaled", { tool: event.toolName }); } catch (error: any) { log.warn("child_dirty_signal_failed", { code: error?.code }); } return; }
       markDirty(event.toolName); const hint = blastHint(state.root, event.input?.path);
       return hint ? { content: [...(event.content ?? []), { type: "text", text: hint }] } : undefined;
     });
@@ -221,8 +265,8 @@ export function createGraftIntegration(options: Options) {
       state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
       const finish = (decision: string, extra = {}) => log.info("prompt_retrieval_exit", { decision, elapsedMs: Date.now() - started, ...extra });
       log.info("prompt_retrieval_enter", { enabled: state.enabled, trusted: trusted(ctx), dirty: state.dirty, refreshing: Boolean(state.refresh), queryLength: query?.length ?? 0 });
-      if (!trusted(ctx) || !state.enabled) { finish("disabled_or_untrusted"); return; }
-      setState(state.value);
+      if (!trusted(ctx) || !state.enabled || !state.root || resolveWorktreeRoot(ctx.cwd) !== state.root) { finish("disabled_or_untrusted"); return; }
+      consumeDirtySignals(); state.tokenSavings = Math.max(state.tokenSavings, readSavings(state.store)); setState(state.value);
       if (!["ready", "stale"].includes(state.value)) {
         const status = await graph(state.root);
         if (status === "fresh") setState("ready"); else if (status === "stale") setState("stale"); else { finish("graph_absent"); return; }
@@ -232,15 +276,15 @@ export function createGraftIntegration(options: Options) {
       state.gate.active = true;
       let hits: Hit[] = [];
       try {
-        if (options.retrieve) hits = (await options.retrieve(query, state.root)).pointers.map(pointer => ({ title: pointer, pointer }));
-        else { const result = await run(["ask", query, ".", "--json", "-n", "3"], { cwd: state.root }); if (result.code) { state.gate.active = false; finish("ask_failed", { diagnostic: diagnostic(result.stderr) }); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${diagnostic(result.stderr)}. Raw navigation is available.` }; } const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); try { hits = relevant(JSON.parse(result.stdout.replace(/^\[graft\] tokens saved ≈ [\d,]+\s*$/gm, "").trim())); } catch { state.gate.active = false; finish("invalid_ask_json"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval returned malformed output. Raw navigation is available.` }; } }
+        if (options.retrieve) hits = (await withTimeout(options.retrieve(query, state.root), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS)).pointers.map(pointer => ({ title: pointer, pointer }));
+        else { const result = await withTimeout(run(["ask", query, ".", "--json", "-n", "3"], { cwd: state.root, timeoutMs: options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS }), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS); if (result.code) { state.gate.active = false; finish("ask_failed", { diagnostic: diagnostic(result.stderr) }); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${diagnostic(result.stderr)}. Raw navigation is available.` }; } const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); try { hits = relevant(JSON.parse(result.stdout.replace(/^\[graft\] tokens saved ≈ [\d,]+\s*$/gm, "").trim())); } catch { state.gate.active = false; finish("invalid_ask_json"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval returned malformed output. Raw navigation is available.` }; } }
       } catch (error: any) { state.gate.active = false; finish("ask_error"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Raw navigation is available.` }; }
       if (!hits.length) { state.gate.active = false; finish("guidance_only_no_relevant_hits"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` }; }
       hits.forEach(hit => { const path = pointerPath(hit.pointer!); if (path) state.gate.pointers.add(path); });
       state.gate.retrieved = true; finish("injected", { hits: hits.length });
       return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] starting points for this task:\n${pointerText(hits)}` };
     });
-    pi.on("agent_end", (_event: any, ctx: any) => { state.ctx = ctx; const shouldRefresh = !child && trusted(ctx) && state.enabled && state.dirty && !state.refresh; log.info("agent_end", { dirty: state.dirty, refreshing: Boolean(state.refresh), shouldRefresh }); if (shouldRefresh) void refresh(); });
+    pi.on("agent_end", (_event: any, ctx: any) => { state.ctx = ctx; consumeDirtySignals(); const shouldRefresh = !child && trusted(ctx) && state.enabled && state.dirty && !state.refresh; log.info("agent_end", { dirty: state.dirty, refreshing: Boolean(state.refresh), shouldRefresh }); if (shouldRefresh) void refresh(); });
     pi.on("session_shutdown", () => { log.info("session_shutdown", { state: state.value, dirty: state.dirty, graftReads: state.graftReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings }); clearSlot("graft", state.ctx); });
   };
   return { register };

@@ -309,6 +309,27 @@ def _stub_questionary() -> None:
     sys.modules["questionary"] = q
 
 
+def _tool(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    *,
+    node: bool = True,
+    installed: str | None = None,
+) -> Any:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(
+        install.shutil,
+        "which",
+        lambda candidate, *_args, **_kwargs: installed if candidate == name else None,
+    )
+    for step in install.build_steps(_prereqs(node=node)):
+        for tool in step.tools:
+            if tool.name == name:
+                return tool
+    raise AssertionError(f"{name} tool missing from build_steps")
+
+
 def _mcpc_tool(monkeypatch: pytest.MonkeyPatch, *, node: bool, which_mcpc: str | None) -> Any:
     _stub_questionary()
     install = importlib.import_module("install")
@@ -349,6 +370,37 @@ def test_build_steps_mcpc_not_installed_when_missing(monkeypatch: pytest.MonkeyP
 def test_build_steps_mcpc_disabled_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = _mcpc_tool(monkeypatch, node=False, which_mcpc=None)
     assert tool.disabled == "requires Node.js"
+
+
+def test_graft_native_install_uses_audited_strict_npm12_installer(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _tool(monkeypatch, "graft")
+    assert tool.install_fn
+    assert tool.install_cmd == "DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)"
+
+
+def test_graft_script_audit_includes_only_reachable_lifecycle_packages(tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    root = tmp_path / "node_modules/@nanonets/graft"
+    dependency = root / "node_modules/native-dependency"
+    unrelated = root / "node_modules/unrelated"
+    for path, manifest in (
+        (root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}}),
+        (dependency, {"name": "native-dependency", "scripts": {"install": "build"}}),
+        (unrelated, {"name": "unrelated", "scripts": {"install": "bad"}}),
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "package.json").write_text(json.dumps(manifest))
+
+    assert install._install_script_packages(root) == ["native-dependency"]
+
+
+def test_graft_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install.shutil, "which", lambda name: None if name == "make" else f"/usr/bin/{name}")
+    with pytest.raises(RuntimeError, match="make"):
+        install.install_graft()
 
 
 def test_entrypoint_reinstalls_mcpc() -> None:

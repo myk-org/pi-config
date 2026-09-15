@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import platform
 import shutil
@@ -108,6 +109,59 @@ def _gitignore_path() -> str:
 
 
 # ── Install Command Builders ──────────────────────────────────────────────
+
+
+def _install_script_packages(package_dir: Path) -> list[str]:
+    seen: set[Path] = set()
+    allowed: set[str] = set()
+
+    def inspect(path: Path) -> None:
+        real = path.resolve()
+        if real in seen:
+            return
+        seen.add(real)
+        manifest = json.loads((real / "package.json").read_text())
+        scripts = manifest.get("scripts", {})
+        lifecycle_hook = {"preinstall", "install", "postinstall"} & scripts.keys()
+        default_node_gyp_hook = "install" not in scripts and (real / "binding.gyp").is_file()
+        if lifecycle_hook or default_node_gyp_hook:
+            allowed.add(manifest["name"])
+        modules = real / "node_modules"
+        if not modules.is_dir():
+            return
+        dependencies = manifest.get("dependencies", {}) | manifest.get("optionalDependencies", {})
+        for name in dependencies:
+            child = modules / name
+            if not child.exists():
+                child = package_dir.parent.parent / name
+            inspect(child)
+
+    inspect(package_dir)
+    log.debug("graft install-script audit packages=%s", len(allowed))
+    return sorted(allowed)
+
+
+def install_graft() -> None:
+    missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
+    if missing:
+        log.warning("graft prerequisites missing=%s", ",".join(missing))
+        raise RuntimeError(f"Graft requires node-gyp prerequisites: {', '.join(missing)}")
+    npm_major = int(_run_quiet(["npm", "--version"]).split(".", 1)[0])
+    if npm_major < 12:
+        log.warning("graft secure install unsupported npm-major=%s", npm_major)
+        raise RuntimeError("Graft secure installation requires npm 12+")
+    env = os.environ | {"DO_NOT_TRACK": "1"}
+    subprocess.run(["npm", "install", "-g", "@nanonets/graft@latest", "--ignore-scripts"], check=True, env=env)
+    allowed = ",".join(_install_script_packages(Path(_run_quiet(["npm", "root", "-g"])) / "@nanonets/graft"))
+    if not allowed:
+        raise RuntimeError("Graft dependency audit found no install scripts")
+    subprocess.run(
+        ["npm", "rebuild", "-g", "@nanonets/graft", f"--allow-scripts={allowed}", "--strict-allow-scripts"],
+        check=True,
+        env=env,
+    )
+    subprocess.run(["graft", "--version"], check=True, env=env)
+    log.info("graft installation verified")
 
 
 # ── Prerequisites ──────────────────────────────────────────────────────────
@@ -277,7 +331,8 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 "Local repository code graph for the optional Graft extension",
                 installed=bool(shutil.which("graft")),
                 disabled=nd,
-                install_cmd="DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest",
+                install_cmd="DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)",
+                install_fn=install_graft,
             ),
         ],
     )

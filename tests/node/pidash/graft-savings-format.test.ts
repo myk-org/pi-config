@@ -16,4 +16,19 @@ describe("Graft savings formatting", () => {
     assert.equal(formatExactTotal(undefined), undefined);
     assert.equal(formatExactTotal(1_098_359), "1,098,359");
   });
+
+  it("records debug formatter paths without values in the browser", () => {
+    const state = globalThis as typeof globalThis & {
+      __PIDASH_DEBUG?: boolean;
+      __pidashUiLogs?: Array<{ msg: string }>;
+    };
+    state.__PIDASH_DEBUG = true;
+    state.__pidashUiLogs = [];
+    formatCompactTotal(1_234);
+    formatExactTotal(5_678);
+    assert.deepEqual(state.__pidashUiLogs.map(({ msg }) => msg), ["formatCompactTotal compact", "formatExactTotal present"]);
+    assert.doesNotMatch(JSON.stringify(state.__pidashUiLogs), /1234|5678/);
+    delete state.__PIDASH_DEBUG;
+    delete state.__pidashUiLogs;
+  });
 });

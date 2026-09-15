@@ -1,7 +1,7 @@
 /** Graft integration contract for #820. Run: npx tsx --test tests/node/orchestrator/graft.test.ts */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as graft from "../../../extensions/orchestrator/graft.js";
@@ -21,7 +21,9 @@ function runner(results: Array<{ stdout?: string; stderr?: string; code?: number
   const run: GraftRun = async (args, { cwd }) => { calls.push({ args, cwd }); const next = results.shift() ?? {}; return { stdout: next.stdout ?? "", stderr: next.stderr ?? "", code: next.code ?? 0 }; };
   return { run, calls };
 }
-function ctx(cwd = "/trusted/project", trusted = true, sessionId = "session-a") {
+const defaultRoot = mkdtempSync(join(tmpdir(), "graft-default-"));
+let defaultSession = 0;
+function ctx(cwd = defaultRoot, trusted = true, sessionId = `session-${++defaultSession}`) {
   const status: Array<{ key: string; text: string | undefined }> = [];
   return { cwd, status, sessionManager: { getSessionId: () => sessionId }, isProjectTrusted: () => trusted, ui: { setStatus: (key: string, text: string | undefined) => status.push({ key, text }) } };
 }
@@ -47,6 +49,23 @@ describe("Graft opt-in, trust, and startup", () => {
     const disabled = register({ setting: () => false }); await start(disabled); assert.equal(disabled.tools.size, 0);
     const enabled = register({ setting: () => true }); await start(enabled); assert.ok(enabled.tools.size > 0);
     const untrusted = register({ setting: () => true }); await start(untrusted, ctx("/untrusted/project", false)); assert.equal(untrusted.tools.size, 0); assert.equal(untrusted.calls.length, 0);
+  });
+  for (const transition of ["untrusted", "disabled"] as const) it(`invalidates tools and status on a ${transition} session transition`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-transition-"));
+    try {
+      let enabled = true;
+      const r = register({ setting: () => enabled }); const oldCtx = await start(r, ctx(root));
+      assert.ok(r.tools.size > 0);
+      enabled = transition !== "disabled";
+      const nextCtx = ctx(join(root, "next"), transition !== "untrusted");
+      await r.handlers.get("session_start")![0]({ reason: "new" }, nextCtx);
+      const result = await r.tools.get("graft_repo_map")!.execute("id", {}, undefined, undefined, nextCtx);
+      assert.match(result.content[0].text, /disabled|untrusted/i);
+      assert.equal(r.calls.length, 0);
+      assert.deepEqual(nextCtx.status.at(-1), { key: "4b-graft", text: undefined });
+      assert.deepEqual(r.emitted.filter(item => item.event === "pidash:graft-savings").at(-1)?.data, { tokenSavings: 0 });
+      void oldCtx;
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("builds absent graphs only for trusted eligible sessions", async () => { const r = register({ graph: async () => "absent" }); await start(r); assert.deepEqual(r.calls.map(c => c.args), [["build"]]); });
   it("probes the Graft version before graph work and stops when unavailable", async () => {
@@ -107,12 +126,20 @@ describe("Graft retrieval and accounting", () => {
   it("blocks raw navigation only while retrieval is pending", async () => {
     let release!: (value: { pointers: string[] }) => void;
     const pending = new Promise<{ pointers: string[] }>(resolve => { release = resolve; });
-    const r = register({ retrieve: async () => pending }); const c = await start(r);
+    const r = register({ retrieve: async () => pending, interactiveTimeoutMs: 1_000 }); const c = await start(r);
     const retrieval = r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
     await new Promise(resolve => setImmediate(resolve));
     assert.match((await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c))?.reason ?? "", /graft_find_code/i);
     assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "git status --short" } }, c), undefined);
     release({ pointers: [] }); await retrieval;
+    assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
+  });
+  it("fails automatic retrieval open at the interactive deadline", async () => {
+    const r = register({ retrieve: async () => new Promise(() => {}), interactiveTimeoutMs: 20 }); const c = await start(r);
+    const started = Date.now();
+    const result = await r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
+    assert.ok(Date.now() - started < 250);
+    assert.match(result.systemPrompt, /timed out/i);
     assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
   });
   it("does not gate navigation when the graph is unavailable", async () => {
@@ -169,7 +196,9 @@ describe("Graft retrieval and accounting", () => {
       delete process.env.PI_SUBAGENT_CHILD; delete process.env.__PI_PARENT_SESSION_ID;
       await parent.handlers.get("before_agent_start")![0]({ prompt: "yes", systemPrompt: "base" }, parentCtx);
       assert.match(parentCtx.status.at(-1)?.text ?? "", /~500 tok saved/);
-      assert.equal(readdirSync(join(root, ".pi/tmp")).filter(name => name.startsWith("graft-savings-") && !name.includes(".events")).length, 0);
+      const stores = readdirSync(join(root, ".pi/tmp"));
+      assert.equal(stores.filter(name => name.startsWith("graft-savings-") && name.endsWith(".json")).length, 1);
+      assert.equal(stores.some(name => name.includes(".events")), false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("does not lose deltas from independently initialized writers", async () => {
@@ -191,9 +220,9 @@ describe("Graft retrieval and accounting", () => {
     const root = mkdtempSync(join(tmpdir(), "graft-prompt-"));
     try {
       const output = `${JSON.stringify({ coverage: .9, hits: [{ title: "answer", pointer: "src/a.ts:1" }] })}\n[graft] tokens saved ≈ 450`;
-      const r = register({ results: [{ stdout: output }] }); const c = await start(r, ctx(root));
+      const r = register({ results: [{ stdout: output }] }); const c = await start(r, ctx(root, true, "prompt-session"));
       await r.handlers.get("before_agent_start")![0]({ prompt: "Explain this implementation in detail", systemPrompt: "base" }, c);
-      const restored = register(); const restoredCtx = ctx(root); await restored.handlers.get("session_start")![0]({ reason: "reload" }, restoredCtx);
+      const restored = register(); const restoredCtx = ctx(root, true, "prompt-session"); await restored.handlers.get("session_start")![0]({ reason: "reload" }, restoredCtx);
       assert.match(restoredCtx.status.at(-1)?.text ?? "", /~450 tok saved/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -212,10 +241,10 @@ describe("Graft retrieval and accounting", () => {
     try {
       const first = register(); const firstCtx = await start(first, ctx(root, true, "secret-session-id"));
       first.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "map\n[graft] tokens saved ≈ 400" }], isError: false }, firstCtx);
-      const dir = join(root, ".pi/tmp"); const files = readdirSync(dir).filter(file => file.startsWith("graft-savings-") && file.endsWith(".events"));
+      const dir = join(root, ".pi/tmp"); const files = readdirSync(dir).filter(file => file.startsWith("graft-savings-") && file.endsWith(".json"));
       assert.equal(files.length, 1); assert.doesNotMatch(files[0], /secret-session-id/);
-      assert.equal(statSync(dir).mode & 0o777, 0o700); assert.equal(statSync(join(dir, files[0])).mode & 0o777, 0o700);
-      assert.equal(statSync(join(dir, files[0], readdirSync(join(dir, files[0]))[0])).mode & 0o777, 0o600);
+      assert.equal(statSync(dir).mode & 0o777, 0o700); assert.equal(statSync(join(dir, files[0])).mode & 0o777, 0o600);
+      assert.equal(readdirSync(dir).some(file => file.includes(".events")), false);
       const fresh = register(); const freshCtx = ctx(root, true, "new-session"); await fresh.handlers.get("session_start")![0]({ reason: "startup" }, freshCtx);
       assert.doesNotMatch(freshCtx.status.at(-1)?.text ?? "", /tok saved/);
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -225,9 +254,8 @@ describe("Graft retrieval and accounting", () => {
     try {
       const seeded = register(); const seededCtx = await start(seeded, ctx(root));
       seeded.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 100" }], isError: false }, seededCtx);
-      const events = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".events"))!);
-      writeFileSync(join(events, "corrupt.json"), "{broken", { mode: 0o600 });
-      for (const event of readdirSync(events)) if (event !== "corrupt.json") rmSync(join(events, event));
+      const store = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".json"))!);
+      writeFileSync(store, "{broken", { mode: 0o600 });
       const restored = register(); const restoredCtx = ctx(root); await restored.handlers.get("session_start")![0]({ reason: "reload" }, restoredCtx);
       assert.doesNotMatch(restoredCtx.status.at(-1)?.text ?? "", /tok saved/);
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -235,9 +263,9 @@ describe("Graft retrieval and accounting", () => {
   it("accumulates and persists savings after restoration", async () => {
     const root = mkdtempSync(join(tmpdir(), "graft-session-"));
     try {
-      const first = register(); const c1 = await start(first, ctx(root)); first.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 250" }], isError: false }, c1);
-      const second = register(); const c2 = ctx(root); await second.handlers.get("session_start")![0]({ reason: "reload" }, c2); second.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 350" }], isError: false }, c2);
-      const third = register(); const c3 = ctx(root); await third.handlers.get("session_start")![0]({ reason: "reload" }, c3);
+      const first = register(); const c1 = await start(first, ctx(root, true, "aggregate-session")); first.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 250" }], isError: false }, c1);
+      const second = register(); const c2 = ctx(root, true, "aggregate-session"); await second.handlers.get("session_start")![0]({ reason: "reload" }, c2); second.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 350" }], isError: false }, c2);
+      const third = register(); const c3 = ctx(root, true, "aggregate-session"); await third.handlers.get("session_start")![0]({ reason: "reload" }, c3);
       assert.match(c3.status.at(-1)?.text ?? "", /~600 tok saved/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -342,6 +370,42 @@ describe("Graft retrieval and accounting", () => {
       r.handlers.get("agent_end")![0]({}, c); await new Promise(resolve => setImmediate(resolve));
       assert.deepEqual(r.calls.map(call => call.args), [["build"]], toolName);
     }
+  });
+  for (const mode of ["sync", "async"] as const) it(`lets the parent consume ${mode} child edit notifications and own the rebuild`, async () => {
+    const root = mkdtempSync(join(tmpdir(), `graft-${mode}-child-`));
+    try {
+      const parent = register(); const parentCtx = await start(parent, ctx(root, true, "parent"));
+      process.env.PI_SUBAGENT_CHILD = "1"; process.env.__PI_PARENT_SESSION_ID = "parent";
+      const child = register(); const childCtx = await start(child, ctx(root, true, `${mode}-child`));
+      child.handlers.get("tool_result")![0]({ toolName: mode === "sync" ? "write" : "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
+      child.handlers.get("agent_end")![0]({}, childCtx); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(child.calls.some(call => call.args[0] === "build"), false);
+      delete process.env.PI_SUBAGENT_CHILD; delete process.env.__PI_PARENT_SESSION_ID;
+      parent.handlers.get("agent_end")![0]({}, parentCtx); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(parent.calls.map(call => call.args), [["build"]]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Graft build locking", () => {
+  it("does not evict an old lock while its owner is alive", () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-lock-live-"));
+    try {
+      const lock = join(root, "graft/.graph/pi-build.lock"); mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "owner" })); utimesSync(lock, 0, 0);
+      assert.equal(graft.acquireBuildLock(root), null);
+      assert.equal(existsSync(lock), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("preserves a replacement lock created during dead-owner reclamation", () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-lock-race-"));
+    try {
+      const lock = join(root, "graft/.graph/pi-build.lock"); mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      writeFileSync(lock, JSON.stringify({ pid: 999_999_999, token: "dead" }));
+      const release = graft.acquireBuildLock(root, () => writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "replacement" }), { flag: "wx" }));
+      assert.equal(release, null);
+      assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "replacement");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 
