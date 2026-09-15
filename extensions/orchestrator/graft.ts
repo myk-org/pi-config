@@ -1,7 +1,7 @@
 /** Opt-in, local Graft graph integration. */
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -49,11 +49,11 @@ function projectPath(root: string, value: unknown): string | null {
 function wiring(root: string): any | null { try { return JSON.parse(readFileSync(resolve(root, "graft/.graph/wiring.json"), "utf8")); } catch { return null; } }
 function nodes(root: string): number { const graph = wiring(root); return Number.isSafeInteger(graph?.meta?.nodeCount) ? graph.meta.nodeCount : graph?.nodes?.length ?? 0; }
 function savedTokens(output: string): number { return [...output.matchAll(/\[graft\] tokens saved ≈ ([\d,]+)/g)].reduce((total, match) => total + (Number(match[1].replaceAll(",", "")) || 0), 0); }
-function savingsStore(ctx: any): string {
+function savingsStore(ctx: any, root: string): string {
   let id: unknown = process.env.PI_SUBAGENT_CHILD === "1" ? process.env.__PI_PARENT_SESSION_ID : undefined;
   try { id ||= ctx.sessionManager?.getSessionId?.(); } catch { return ""; }
   if (typeof id !== "string" || !id) return "";
-  const dir = getProjectTmpDir(ctx.cwd); chmodSync(dir, 0o700);
+  const dir = getProjectTmpDir(root); chmodSync(dir, 0o700);
   return join(dir, `graft-savings-${createHash("sha256").update(id).digest("hex")}.json`);
 }
 function validSavings(value: unknown): number { return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0; }
@@ -63,22 +63,26 @@ function readSavings(file: string): number {
 }
 function writeSavings(file: string, delta: number): number {
   if (!file || !delta) return readSavings(file);
-  const lock = `${file}.lock`; const owner = { pid: process.pid, token: randomUUID() };
+  const lock = `${file}.lock`; const owner = { pid: process.pid, token: randomUUID() }; const ownerTmp = `${lock}.${owner.token}.tmp`; const valueTmp = `${file}.${owner.token}.tmp`;
   for (let attempt = 0; attempt < 100; attempt++) {
+    let acquired = false;
     try {
-      writeFileSync(lock, JSON.stringify(owner), { mode: 0o600, flag: "wx" });
-      const total = readSavings(file) + delta; const tmp = `${file}.${owner.token}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ tokenSavings: total }), { mode: 0o600 }); renameSync(tmp, file);
-      if (lockOwner(lock)?.token === owner.token) unlinkSync(lock);
+      writeFileSync(ownerTmp, JSON.stringify(owner), { mode: 0o600, flag: "wx" }); linkSync(ownerTmp, lock); acquired = true; unlinkSync(ownerTmp);
+      const total = readSavings(file) + delta;
+      writeFileSync(valueTmp, JSON.stringify({ tokenSavings: total }), { mode: 0o600 }); renameSync(valueTmp, file);
       return total;
     } catch (error: any) {
       if (error?.code !== "EEXIST") { log.warn("savings_persist_failed", { code: error?.code }); return readSavings(file); }
       const existing = lockOwner(lock);
-      if (!ownerAlive(existing)) {
+      if (existing && !ownerAlive(existing)) {
         const claim = `${lock}.claim-${owner.token}`;
-        try { renameSync(lock, claim); if (lockOwner(claim)?.token === existing?.token && !ownerAlive(existing)) unlinkSync(claim); else try { renameSync(claim, lock); } catch {} } catch {}
+        try { renameSync(lock, claim); if (lockOwner(claim)?.token === existing.token && !ownerAlive(existing)) unlinkSync(claim); else try { renameSync(claim, lock); } catch {} } catch {}
       }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+    } finally {
+      try { unlinkSync(ownerTmp); } catch {}
+      try { unlinkSync(valueTmp); } catch {}
+      if (acquired) try { if (lockOwner(lock)?.token === owner.token) unlinkSync(lock); } catch {}
     }
   }
   log.warn("savings_persist_failed", { code: "LOCK_BUSY" }); return readSavings(file);
@@ -103,9 +107,10 @@ function navigationTool(event: any): boolean {
 function graftGateReason(): string { return "[graft] Project navigation is blocked until Graft retrieval runs for this turn. Use graft_find_code (or graft_repo_map/graft_trace_calls), then inspect its returned file pointers. If Graft has no relevant result, retry the raw navigation."; }
 function diagnostic(stderr: string): string { return text(stderr.split(/\r?\n/, 1)[0], 240) ?? "no diagnostic output"; }
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("automatic retrieval timed out")), timeoutMs); })]); }
-  finally { if (timer) clearTimeout(timer); }
+  let timer: NodeJS.Timeout | undefined; let timedOut = false;
+  log.debug("retrieval_timeout_setup", { timeoutMs });
+  try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; log.warn("retrieval_timeout", { timeoutMs }); reject(new Error("automatic retrieval timed out")); }, timeoutMs); })]); }
+  finally { if (timer) clearTimeout(timer); log.debug("retrieval_timeout_cleanup", { timeoutMs, timedOut }); }
 }
 type LockOwner = { pid: number; token: string };
 function lockOwner(lock: string): LockOwner | null { try { const raw = readFileSync(lock, "utf8"); const legacyPid = Number(raw); if (Number.isSafeInteger(legacyPid)) return { pid: legacyPid, token: `legacy-${legacyPid}` }; const owner = JSON.parse(raw); return Number.isSafeInteger(owner?.pid) && typeof owner?.token === "string" ? owner : null; } catch { return null; } }
@@ -228,12 +233,13 @@ export function createGraftIntegration(options: Options) {
       if (!trusted(ctx)) { invalidate(ctx, "untrusted"); log.info("session_start_exit", { decision: "untrusted" }); return; }
       const enabled = options.setting?.(ctx.cwd) ?? options.enabled;
       if (!enabled) { invalidate(ctx, "disabled"); log.info("session_start_exit", { decision: "disabled" }); return; }
-      registerTools(); state.generation++; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); state.nodeCount = nodes(state.root);
-      try { state.store = savingsStore(ctx); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
-      setState(state.value);
-      if (!child && !isEligibleGraftStartup(event, ctx) && !["reload", "resume"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
-      if (!child && !await available()) { setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; }
-      const status = await graph(state.root);
+      registerTools(); const generation = ++state.generation; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.nodeCount = nodes(root); state.value = "failed"; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+      try { state.store = savingsStore(ctx, root); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
+      setState("failed");
+      if (!child && !isEligibleGraftStartup(event, ctx) && !["new", "reload", "resume"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
+      if (!child) { const executable = await available(); if (state.generation !== generation || state.root !== root) return; if (!executable) { setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; } }
+      const status = await graph(root);
+      if (state.generation !== generation || state.root !== root) return;
       if (status === "fresh") setState("ready");
       else { setState(state.nodeCount ? "stale" : "failed"); if (!child) void refresh(); }
       log.info("session_start_exit", { decision: status, nodes: state.nodeCount });
@@ -256,19 +262,21 @@ export function createGraftIntegration(options: Options) {
       if (kind || savings) { setState(state.dirty || state.value === "stale" ? "stale" : "ready"); log.info("session_metric", { tool: event.toolName, kind, savings, graftReads: state.graftReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings }); }
       const eligible = state.enabled && !event.isError && ["write", "edit"].includes(event.toolName);
       log.info("tool_result", { tool: event.toolName, eligible, kind, savings }); if (!eligible) return;
-      if (child) { try { writeFileSync(join(state.dirtySignal, `${process.pid}-${randomUUID()}`), event.toolName, { mode: 0o600, flag: "wx" }); log.info("child_dirty_signaled", { tool: event.toolName }); } catch (error: any) { log.warn("child_dirty_signal_failed", { code: error?.code }); } return; }
+      if (child) { if (!state.dirtySignal) { log.warn("child_dirty_signal_unavailable", { tool: event.toolName }); return; } try { writeFileSync(join(state.dirtySignal, `${process.pid}-${randomUUID()}`), event.toolName, { mode: 0o600, flag: "wx" }); log.info("child_dirty_signaled", { tool: event.toolName }); } catch (error: any) { log.warn("child_dirty_signal_failed", { code: error?.code }); } return; }
       markDirty(event.toolName); const hint = blastHint(state.root, event.input?.path);
       return hint ? { content: [...(event.content ?? []), { type: "text", text: hint }] } : undefined;
     });
     pi.on("before_agent_start", async (event: any, ctx: any) => {
-      const started = Date.now(); state.ctx = ctx; const query = text(event?.prompt);
-      state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+      const started = Date.now(); state.ctx = ctx; const query = text(event?.prompt); const generation = state.generation; const root = state.root;
+      state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; const gate = state.gate;
+      const current = () => state.generation === generation && state.root === root && state.gate === gate;
       const finish = (decision: string, extra = {}) => log.info("prompt_retrieval_exit", { decision, elapsedMs: Date.now() - started, ...extra });
       log.info("prompt_retrieval_enter", { enabled: state.enabled, trusted: trusted(ctx), dirty: state.dirty, refreshing: Boolean(state.refresh), queryLength: query?.length ?? 0 });
       if (!trusted(ctx) || !state.enabled || !state.root || resolveWorktreeRoot(ctx.cwd) !== state.root) { finish("disabled_or_untrusted"); return; }
       consumeDirtySignals(); state.tokenSavings = Math.max(state.tokenSavings, readSavings(state.store)); setState(state.value);
       if (!["ready", "stale"].includes(state.value)) {
-        const status = await graph(state.root);
+        const status = await graph(root);
+        if (!current()) return;
         if (status === "fresh") setState("ready"); else if (status === "stale") setState("stale"); else { finish("graph_absent"); return; }
       }
       const guidance = forceUseGuidance(state.value === "stale");
@@ -276,9 +284,9 @@ export function createGraftIntegration(options: Options) {
       state.gate.active = true;
       let hits: Hit[] = [];
       try {
-        if (options.retrieve) hits = (await withTimeout(options.retrieve(query, state.root), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS)).pointers.map(pointer => ({ title: pointer, pointer }));
-        else { const result = await withTimeout(run(["ask", query, ".", "--json", "-n", "3"], { cwd: state.root, timeoutMs: options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS }), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS); if (result.code) { state.gate.active = false; finish("ask_failed", { diagnostic: diagnostic(result.stderr) }); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${diagnostic(result.stderr)}. Raw navigation is available.` }; } const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); try { hits = relevant(JSON.parse(result.stdout.replace(/^\[graft\] tokens saved ≈ [\d,]+\s*$/gm, "").trim())); } catch { state.gate.active = false; finish("invalid_ask_json"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval returned malformed output. Raw navigation is available.` }; } }
-      } catch (error: any) { state.gate.active = false; finish("ask_error"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Raw navigation is available.` }; }
+        if (options.retrieve) { const result = await withTimeout(options.retrieve(query, root), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS); if (!current()) return; hits = result.pointers.map(pointer => ({ title: pointer, pointer })); }
+        else { const result = await withTimeout(run(["ask", query, ".", "--json", "-n", "3"], { cwd: root, timeoutMs: options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS }), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS); if (!current()) return; if (result.code) { state.gate.active = false; finish("ask_failed", { diagnostic: diagnostic(result.stderr) }); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${diagnostic(result.stderr)}. Raw navigation is available.` }; } const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); try { hits = relevant(JSON.parse(result.stdout.replace(/^\[graft\] tokens saved ≈ [\d,]+\s*$/gm, "").trim())); } catch { state.gate.active = false; finish("invalid_ask_json"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval returned malformed output. Raw navigation is available.` }; } }
+      } catch (error: any) { if (!current()) return; state.gate.active = false; finish("ask_error"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Raw navigation is available.` }; }
       if (!hits.length) { state.gate.active = false; finish("guidance_only_no_relevant_hits"); return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` }; }
       hits.forEach(hit => { const path = pointerPath(hit.pointer!); if (path) state.gate.pointers.add(path); });
       state.gate.retrieved = true; finish("injected", { hits: hits.length });

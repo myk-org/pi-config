@@ -72,21 +72,33 @@ describe("InfoBar thinking selector", () => {
     assert.equal(elements(view.container, "button").some((item: any) => item.getAttribute("aria-haspopup") === "menu"), true);
   });
 
-  it("supports keyboard navigation, selection dispatch, and trigger focus restoration", async () => {
-    const sent: object[] = [];
-    const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }), (data) => sent.push(data));
+  it("supports keyboard navigation", async () => {
+    const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }));
     const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
-    assert.ok(trigger);
-
     await act(async () => key(trigger, "ArrowDown"));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
     assert.equal(view.document.activeElement.textContent.trim(), "medium");
-
     await act(async () => key(view.document.activeElement, "End"));
     assert.equal(view.document.activeElement.textContent.trim(), "max");
-    await act(async () => view.document.activeElement.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  });
 
+  it("dispatches keyboard selection", async () => {
+    const sent: object[] = [];
+    const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }), (data) => sent.push(data));
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    await act(async () => key(trigger, "ArrowDown"));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
+    await act(async () => key(view.document.activeElement, "End"));
+    await act(async () => view.document.activeElement.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     assert.deepEqual(sent, [{ type: "pidash-command", sessionId: "selected", command: "set-thinking", level: "max" }]);
+  });
+
+  it("restores trigger focus after selection", async () => {
+    const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }));
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    await act(async () => key(trigger, "ArrowDown"));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
+    await act(async () => view.document.activeElement.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     assert.equal(view.document.activeElement, trigger);
     assert.equal(trigger.getAttribute("aria-expanded"), "false");
   });
@@ -102,11 +114,24 @@ describe("InfoBar thinking selector", () => {
     assert.equal(trigger.getAttribute("aria-expanded"), "false");
   });
 
-  it("updates reasoning visibility and Graft savings without remounting", async () => {
+  it("updates reasoning visibility", async () => {
     const view = await renderInfoBar(session({ reasoning: false, thinkingLevel: "xhigh" }));
-    await view.rerender(session({ reasoning: true, thinkingLevel: "xhigh", graftTokenSavings: 1250 }));
+    await view.rerender(session({ reasoning: true, thinkingLevel: "xhigh" }));
     const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
     assert.match(trigger?.textContent ?? "", /xhigh/);
+  });
+
+  it("updates Graft savings", async () => {
+    const view = await renderInfoBar(session({ reasoning: false, thinkingLevel: "xhigh" }));
+    await view.rerender(session({ reasoning: true, thinkingLevel: "xhigh", graftTokenSavings: 1250 }));
     assert.match(view.container.textContent, /1\.3k saved/);
+  });
+
+  it("preserves its DOM instance across capability updates", async () => {
+    const view = await renderInfoBar(session({ reasoning: false }));
+    const infoBar = view.container.childNodes[0];
+    await view.rerender(session({ reasoning: true, graftTokenSavings: 1250 }));
+    assert.equal(view.container.childNodes[0], infoBar);
+    assert.match(infoBar.textContent, /1\.3k saved/);
   });
 });

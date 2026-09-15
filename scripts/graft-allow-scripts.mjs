@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 const installHooks = ["preinstall", "install", "postinstall"];
 const seen = new Set();
 const allowed = new Set();
 
-const root = process.argv[2].split("/node_modules/", 1)[0] + "/node_modules";
+const installRoot = realpathSync(process.argv[3]);
+
+function resolveDependency(packageDir, name) {
+  for (let directory = packageDir; directory.startsWith(installRoot); directory = dirname(directory)) {
+    const dependency = directory === installRoot ? join(directory, name) : join(directory, "node_modules", name);
+    if (existsSync(dependency) && !relative(installRoot, dependency).startsWith("..")) return dependency;
+    if (directory === installRoot) break;
+  }
+}
 
 function inspect(packageDir) {
   const real = realpathSync(packageDir);
@@ -15,9 +23,13 @@ function inspect(packageDir) {
   const manifest = JSON.parse(readFileSync(join(real, "package.json"), "utf8"));
   const scripts = manifest.scripts ?? {};
   if (installHooks.some(hook => scripts[hook]) || !("install" in scripts) && existsSync(join(real, "binding.gyp"))) allowed.add(manifest.name);
-  for (const name of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) {
-    let dependency = join(real, "node_modules", name);
-    try { realpathSync(dependency); } catch { dependency = join(root, name); }
+  const optional = manifest.optionalDependencies ?? {};
+  for (const name of Object.keys({ ...manifest.dependencies, ...optional })) {
+    const dependency = resolveDependency(real, name);
+    if (!dependency) {
+      if (name in optional) continue;
+      throw new Error(`required Graft dependency is not installed: ${name}`);
+    }
     inspect(dependency);
   }
 }

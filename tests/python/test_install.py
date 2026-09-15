@@ -378,21 +378,93 @@ def test_graft_native_install_uses_audited_strict_npm12_installer(monkeypatch: p
     assert tool.install_cmd == "DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)"
 
 
+def _write_package(path: Path, manifest: dict[str, Any]) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "package.json").write_text(json.dumps(manifest))
+
+
 def test_graft_script_audit_includes_only_reachable_lifecycle_packages(tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     root = tmp_path / "node_modules/@nanonets/graft"
-    dependency = root / "node_modules/native-dependency"
-    unrelated = root / "node_modules/unrelated"
-    for path, manifest in (
-        (root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}}),
-        (dependency, {"name": "native-dependency", "scripts": {"install": "build"}}),
-        (unrelated, {"name": "unrelated", "scripts": {"install": "bad"}}),
-    ):
-        path.mkdir(parents=True, exist_ok=True)
-        (path / "package.json").write_text(json.dumps(manifest))
+    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+    _write_package(
+        root / "node_modules/native-dependency",
+        {"name": "native-dependency", "scripts": {"install": "build"}},
+    )
+    _write_package(root / "node_modules/unrelated", {"name": "unrelated", "scripts": {"install": "bad"}})
 
-    assert install._install_script_packages(root) == ["native-dependency"]
+    assert install._install_script_packages(root, tmp_path / "node_modules") == ["native-dependency"]
+
+
+def test_graft_script_audit_finds_fully_hoisted_required_dependency(tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+    _write_package(
+        tmp_path / "node_modules/native-dependency",
+        {"name": "native-dependency", "scripts": {"install": "build"}},
+    )
+
+    assert install._install_script_packages(root, tmp_path / "node_modules") == ["native-dependency"]
+
+
+def test_graft_script_audit_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "optionalDependencies": {"other-platform": "1"}})
+
+    assert install._install_script_packages(root, tmp_path / "node_modules") == []
+
+
+def test_graft_script_audit_rejects_missing_required_dependency(tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"required": "1"}})
+
+    with pytest.raises(FileNotFoundError, match="required"):
+        install._install_script_packages(root, tmp_path / "node_modules")
+
+
+def _run_graft_auditor(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["node", str(REPO / "scripts/graft-allow-scripts.mjs"), str(root), str(root.parents[1])],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_docker_graft_auditor_finds_fully_hoisted_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+    _write_package(
+        tmp_path / "node_modules/native-dependency",
+        {"name": "native-dependency", "scripts": {"install": "build"}},
+    )
+
+    result = _run_graft_auditor(root)
+    assert result.returncode == 0
+    assert result.stdout == "native-dependency"
+
+
+def test_docker_graft_auditor_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "optionalDependencies": {"other-platform": "1"}})
+
+    result = _run_graft_auditor(root)
+    assert result.returncode == 0
+
+
+def test_docker_graft_auditor_rejects_missing_required_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@nanonets/graft"
+    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"required": "1"}})
+
+    result = _run_graft_auditor(root)
+    assert result.returncode != 0
+    assert "required Graft dependency is not installed: required" in result.stderr
 
 
 def test_graft_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:

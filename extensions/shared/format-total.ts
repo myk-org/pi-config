@@ -9,8 +9,3 @@ export function formatCompactTotal(value: number | undefined): string | undefine
   if (value < 1_000) return String(value);
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value).replace("K", "k");
 }
-
-export function formatExactTotal(value: number | undefined): string | undefined {
-  log.debug("formatExactTotal", value === undefined ? "absent" : "present");
-  return value?.toLocaleString("en-US");
-}

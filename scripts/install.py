@@ -111,7 +111,7 @@ def _gitignore_path() -> str:
 # ── Install Command Builders ──────────────────────────────────────────────
 
 
-def _install_script_packages(package_dir: Path) -> list[str]:
+def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]:
     seen: set[Path] = set()
     allowed: set[str] = set()
 
@@ -126,14 +126,26 @@ def _install_script_packages(package_dir: Path) -> list[str]:
         default_node_gyp_hook = "install" not in scripts and (real / "binding.gyp").is_file()
         if lifecycle_hook or default_node_gyp_hook:
             allowed.add(manifest["name"])
-        modules = real / "node_modules"
-        if not modules.is_dir():
-            return
-        dependencies = manifest.get("dependencies", {}) | manifest.get("optionalDependencies", {})
+        optional = manifest.get("optionalDependencies", {})
+        dependencies = manifest.get("dependencies", {}) | optional
         for name in dependencies:
-            child = modules / name
-            if not child.exists():
-                child = package_dir.parent.parent / name
+            child = next(
+                (
+                    candidate
+                    for candidate in (
+                        real / "node_modules" / name,
+                        *(parent / "node_modules" / name for parent in real.parents),
+                        install_root / name,
+                    )
+                    if candidate.exists() and (candidate == install_root / name or install_root in candidate.parents)
+                ),
+                None,
+            )
+            if child is None:
+                if name in optional:
+                    log.debug("graft optional dependency omitted package=%s", name)
+                    continue
+                raise FileNotFoundError(f"required Graft dependency is not installed: {name}")
             inspect(child)
 
     inspect(package_dir)
@@ -152,7 +164,8 @@ def install_graft() -> None:
         raise RuntimeError("Graft secure installation requires npm 12+")
     env = os.environ | {"DO_NOT_TRACK": "1"}
     subprocess.run(["npm", "install", "-g", "@nanonets/graft@latest", "--ignore-scripts"], check=True, env=env)
-    allowed = ",".join(_install_script_packages(Path(_run_quiet(["npm", "root", "-g"])) / "@nanonets/graft"))
+    npm_root = Path(_run_quiet(["npm", "root", "-g"]))
+    allowed = ",".join(_install_script_packages(npm_root / "@nanonets/graft", npm_root))
     if not allowed:
         raise RuntimeError("Graft dependency audit found no install scripts")
     subprocess.run(

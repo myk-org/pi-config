@@ -86,7 +86,7 @@ COPY scripts/graft-allow-scripts.mjs /usr/local/lib/graft-allow-scripts.mjs
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
   DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --ignore-scripts && \
-  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/graft-allow-scripts.mjs "$(npm root -g)/@nanonets/graft")" && \
+  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/graft-allow-scripts.mjs "$(npm root -g)/@nanonets/graft" "$(npm root -g)")" && \
   test -n "$GRAFT_ALLOW_SCRIPTS" && \
   npm rebuild -g @nanonets/graft --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
   graft --version

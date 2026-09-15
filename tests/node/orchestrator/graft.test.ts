@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as graft from "../../../extensions/orchestrator/graft.js";
@@ -68,6 +69,29 @@ describe("Graft opt-in, trust, and startup", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("builds absent graphs only for trusted eligible sessions", async () => { const r = register({ graph: async () => "absent" }); await start(r); assert.deepEqual(r.calls.map(c => c.args), [["build"]]); });
+  it("ignores an older overlapping startup result", async () => {
+    let release!: (status: "absent") => void;
+    const firstGraph = new Promise<"absent">(resolve => { release = resolve; });
+    let checks = 0;
+    const r = register({ graph: async () => ++checks === 1 ? firstGraph : "fresh" });
+    const oldCtx = ctx();
+    const oldStart = r.handlers.get("session_start")![0]({ reason: "startup" }, oldCtx);
+    await new Promise(resolve => setImmediate(resolve));
+    const nextCtx = ctx();
+    await r.handlers.get("session_start")![0]({ reason: "new" }, nextCtx);
+    const statusCount = nextCtx.status.length;
+    release("absent");
+    await oldStart;
+    assert.equal(nextCtx.status.length, statusCount);
+    assert.equal(r.calls.some(call => call.args[0] === "build"), false);
+  });
+  it("rebuilds a graph deleted before a new session", async () => {
+    let checks = 0;
+    const r = register({ graph: async () => ++checks === 1 ? "fresh" : "absent" });
+    const c = await start(r);
+    await r.handlers.get("session_start")![0]({ reason: "new" }, c);
+    assert.deepEqual(r.calls.map(call => call.args), [["build"]]);
+  });
   it("probes the Graft version before graph work and stops when unavailable", async () => {
     const mock = mockPi(); const command = runner([{ code: 1 }]);
     graft.createGraftIntegration({ enabled: true, graph: async () => "absent", run: command.run }).register(mock.pi as any);
@@ -134,6 +158,26 @@ describe("Graft retrieval and accounting", () => {
     release({ pointers: [] }); await retrieval;
     assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
   });
+  it("discards CLI retrieval savings from a replaced session", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const output = `${JSON.stringify({ coverage: .9, hits: [{ title: "old", pointer: "src/old.ts:1" }] })}\n[graft] tokens saved ≈ 450`;
+    const r = register({ run: async (args: readonly string[], { cwd }: { cwd: string }) => {
+      r.calls.push({ args, cwd });
+      if (args[0] === "ask") await pending;
+      return { stdout: args[0] === "ask" ? output : "", stderr: "", code: 0 };
+    }, interactiveTimeoutMs: 1_000 });
+    const oldCtx = await start(r, ctx(defaultRoot, true, "old-retrieval"));
+    const retrieval = r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "old" }, oldCtx);
+    await new Promise(resolve => setImmediate(resolve));
+    const nextCtx = ctx(defaultRoot, true, "new-retrieval");
+    await r.handlers.get("session_start")![0]({ reason: "new" }, nextCtx);
+    const published = r.emitted.filter(item => item.event === "pidash:graft-savings").length;
+    release();
+    assert.equal(await retrieval, undefined);
+    assert.equal(r.emitted.filter(item => item.event === "pidash:graft-savings").length, published);
+    assert.doesNotMatch(nextCtx.status.at(-1)?.text ?? "", /tok saved/);
+  });
   it("fails automatic retrieval open at the interactive deadline", async () => {
     const r = register({ retrieve: async () => new Promise(() => {}), interactiveTimeoutMs: 20 }); const c = await start(r);
     const started = Date.now();
@@ -199,6 +243,28 @@ describe("Graft retrieval and accounting", () => {
       const stores = readdirSync(join(root, ".pi/tmp"));
       assert.equal(stores.filter(name => name.startsWith("graft-savings-") && name.endsWith(".json")).length, 1);
       assert.equal(stores.some(name => name.includes(".events")), false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("treats an unreadable savings lock as contended", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-partial-lock-"));
+    try {
+      const seeded = register(); const c = await start(seeded, ctx(root, true, "partial-lock"));
+      const store = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".dirty"))!.replace(/\.dirty$/, ""));
+      writeFileSync(`${store}.lock`, "{", { mode: 0o600 });
+      seeded.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 100" }], isError: false }, c);
+      assert.equal(readFileSync(`${store}.lock`, "utf8"), "{");
+      assert.equal(existsSync(store), false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("releases its savings lock after a persist failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-failed-save-"));
+    try {
+      const r = register(); const c = await start(r, ctx(root, true, "failed-save"));
+      const store = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".dirty"))!.replace(/\.dirty$/, ""));
+      mkdirSync(store);
+      r.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 100" }], isError: false }, c);
+      assert.equal(existsSync(`${store}.lock`), false);
+      assert.equal(readdirSync(join(root, ".pi/tmp")).some(name => name.endsWith(".tmp")), false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("does not lose deltas from independently initialized writers", async () => {
@@ -371,18 +437,54 @@ describe("Graft retrieval and accounting", () => {
       assert.deepEqual(r.calls.map(call => call.args), [["build"]], toolName);
     }
   });
-  for (const mode of ["sync", "async"] as const) it(`lets the parent consume ${mode} child edit notifications and own the rebuild`, async () => {
-    const root = mkdtempSync(join(tmpdir(), `graft-${mode}-child-`));
+  for (const mode of ["sync", "async"] as const) {
+    it(`transitions stale after consuming a ${mode} child edit notification`, async () => {
+      const root = mkdtempSync(join(tmpdir(), `graft-${mode}-child-`));
+      try {
+        const parent = register(); const parentCtx = await start(parent, ctx(root, true, "parent"));
+        process.env.PI_SUBAGENT_CHILD = "1"; process.env.__PI_PARENT_SESSION_ID = "parent";
+        const child = register(); const childCtx = await start(child, ctx(root, true, `${mode}-child`));
+        child.handlers.get("tool_result")![0]({ toolName: mode === "sync" ? "write" : "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
+        delete process.env.PI_SUBAGENT_CHILD; delete process.env.__PI_PARENT_SESSION_ID;
+        await parent.handlers.get("before_agent_start")![0]({ prompt: "yes", systemPrompt: "base" }, parentCtx);
+        assert.match(parentCtx.status.at(-1)?.text ?? "", /stale/);
+        assert.equal(parent.calls.length, 0);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+    it(`gives only the parent rebuild ownership for a ${mode} child edit`, async () => {
+      const root = mkdtempSync(join(tmpdir(), `graft-${mode}-consumer-`));
+      try {
+        const parent = register(); const parentCtx = await start(parent, ctx(root, true, "parent"));
+        process.env.PI_SUBAGENT_CHILD = "1"; process.env.__PI_PARENT_SESSION_ID = "parent";
+        const child = register(); const childCtx = await start(child, ctx(root, true, `${mode}-child`));
+        child.handlers.get("tool_result")![0]({ toolName: mode === "sync" ? "write" : "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
+        child.handlers.get("agent_end")![0]({}, childCtx);
+        delete process.env.PI_SUBAGENT_CHILD; delete process.env.__PI_PARENT_SESSION_ID;
+        parent.handlers.get("agent_end")![0]({}, parentCtx); await new Promise(resolve => setImmediate(resolve));
+        assert.equal(child.calls.some(call => call.args[0] === "build"), false);
+        assert.deepEqual(parent.calls.map(call => call.args), [["build"]]);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+  it("writes child dirty signals under the resolved worktree root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-child-root-"));
     try {
-      const parent = register(); const parentCtx = await start(parent, ctx(root, true, "parent"));
+      execFileSync("git", ["init", "-q", root]);
+      const nested = join(root, "nested"); mkdirSync(nested);
       process.env.PI_SUBAGENT_CHILD = "1"; process.env.__PI_PARENT_SESSION_ID = "parent";
-      const child = register(); const childCtx = await start(child, ctx(root, true, `${mode}-child`));
-      child.handlers.get("tool_result")![0]({ toolName: mode === "sync" ? "write" : "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
-      child.handlers.get("agent_end")![0]({}, childCtx); await new Promise(resolve => setImmediate(resolve));
-      assert.equal(child.calls.some(call => call.args[0] === "build"), false);
-      delete process.env.PI_SUBAGENT_CHILD; delete process.env.__PI_PARENT_SESSION_ID;
-      parent.handlers.get("agent_end")![0]({}, parentCtx); await new Promise(resolve => setImmediate(resolve));
-      assert.deepEqual(parent.calls.map(call => call.args), [["build"]]);
+      const child = register(); const childCtx = await start(child, ctx(nested, true, "child"));
+      child.handlers.get("tool_result")![0]({ toolName: "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
+      assert.equal(existsSync(join(nested, ".pi")), false);
+      assert.equal(readdirSync(join(root, ".pi/tmp")).some(name => name.endsWith(".dirty")), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("does not write a child dirty signal without a session identifier", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-child-no-id-"));
+    try {
+      process.env.PI_SUBAGENT_CHILD = "1";
+      const child = register(); const childCtx = await start(child, ctx(root, true, ""));
+      child.handlers.get("tool_result")![0]({ toolName: "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
+      assert.deepEqual(readdirSync(root), []);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
